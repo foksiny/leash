@@ -355,13 +355,18 @@ class CodeGen:
         for stmt in node.body:
             self._codegen(stmt)
 
-        if name == 'main' or node.return_type == 'void':
-            if not self.builder.block.is_terminated:
-                self._emit_cleanup() # Auto-free everything
-                if name == 'main':
-                    self.builder.ret(ir.Constant(ir.IntType(32), 0))
-                else:
-                    self.builder.ret_void()
+        if not self.builder.block.is_terminated:
+            self._emit_cleanup() # Auto-free everything
+            if name == 'main':
+                self.builder.ret(ir.Constant(ir.IntType(32), 0))
+            elif node.return_type == 'void':
+                self.builder.ret_void()
+            else:
+                # If a non-void function reaches the end without a return, 
+                # it's technically undefined behavior in Leash, but for 
+                # valid LLVM IR we must terminate the block. 
+                # 'unreachable' is appropriate here.
+                self.builder.unreachable()
         
         # Reset tracking
         self.current_func_allocs_array = None

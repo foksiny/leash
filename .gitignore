@@ -37,6 +37,7 @@ examples/stmts
 examples/strops
 examples/structs
 examples/customtypes
+examples/enums
 
 # Trash
 trash/
