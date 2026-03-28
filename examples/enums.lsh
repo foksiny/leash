@@ -1,0 +1,21 @@
+def Color : enum {
+    RED,
+    GREEN,
+    BLUE
+};
+
+fnc main() : void {
+    c: Color = Color::RED;
+    show("c = ", c);
+    show("c.name = ", c.name); // should show RED as the name
+
+    // btw, the .name is a string :D
+    name: string = c.name;
+    show("name: ", name);
+
+    colors: Color[3] = {Color::RED, Color::GREEN, Color::BLUE};
+
+    foreach i, v in<array> colors {
+        show(i, ": ", v.name);
+    }
+}

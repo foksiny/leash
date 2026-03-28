@@ -20,6 +20,11 @@ class UnionDef(ASTNode):
         self.name = name
         self.variants = variants # list of (name, type) tuples
 
+class EnumDef(ASTNode):
+    def __init__(self, name, members):
+        self.name = name
+        self.members = members # list of member names
+
 class Function(ASTNode):
     def __init__(self, name, args, return_type, body):
         self.name = name
@@ -117,6 +122,11 @@ class MemberAccess(Expression):
     def __init__(self, expr, member):
         self.expr = expr
         self.member = member
+
+class EnumMemberAccess(Expression):
+    def __init__(self, enum_name, member_name):
+        self.enum_name = enum_name
+        self.member_name = member_name
 
 class CastExpr(Expression):
     def __init__(self, target_type, expr):

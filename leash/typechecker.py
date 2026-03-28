@@ -20,6 +20,7 @@ class TypeChecker:
         self.func_types = {}      # name -> (arg_types, return_type)
         self.struct_types = {}    # name -> {field: type}
         self.union_types = {}     # name -> {variant: type}
+        self.enum_types = {}      # name -> list of member names
         self.type_aliases = {}    # name -> resolved type string
         self.warnings = []
         self.current_func = None  # name of current function being checked
@@ -33,6 +34,8 @@ class TypeChecker:
                 self._register_struct(item)
             elif isinstance(item, UnionDef):
                 self._register_union(item)
+            elif isinstance(item, EnumDef):
+                self._register_enum(item)
             elif isinstance(item, TypeAlias):
                 self._register_alias(item)
             elif isinstance(item, Function):
@@ -66,6 +69,15 @@ class TypeChecker:
                     f"Union '{node.name}' variant '{vname}' has unknown type '{vtype}'")
             variants[vname] = vtype
         self.union_types[node.name] = variants
+
+    def _register_enum(self, node):
+        seen = set()
+        for member in node.members:
+            if member in seen:
+                raise LeashError(f"Duplicate member '{member}' in enum '{node.name}'",
+                                 tip=f"Enum members must have unique names within the same enum definition.")
+            seen.add(member)
+        self.enum_types[node.name] = node.members
 
     def _register_alias(self, node):
         self.type_aliases[node.name] = node.target_type
@@ -106,7 +118,7 @@ class TypeChecker:
         base = self._base_type(t)
         if base in ('int', 'uint', 'float', 'string', 'char', 'bool', 'void'):
             return True
-        if t in self.struct_types or t in self.union_types:
+        if t in self.struct_types or t in self.union_types or t in self.enum_types:
             return True
         return False
 
@@ -144,6 +156,18 @@ class TypeChecker:
             for _, vtype in self.union_types[dst_r].items():
                 if self._types_compatible(src, vtype):
                     return True
+
+        # Enums are only compatible with the same enum type or int
+        if src_r in self.enum_types and dst_r in self.enum_types:
+            if src_r != dst_r:
+                raise LeashError(f"Cannot compare or assign different enum types: '{src_r}' and '{dst_r}'",
+                                 tip="To compare different enums, cast one to int: `(int)Enum::Member == (int)OtherEnum::OtherMember`")
+            return True
+            
+        if src_r in self.enum_types and dst_b == 'int':
+            return True
+        if dst_r in self.enum_types and src_b == 'int':
+            return True
 
         return False
 
@@ -215,9 +239,12 @@ class TypeChecker:
             for s in stmt.body:
                 self._check_stmt(s)
         elif isinstance(stmt, ForeachArrayStatement):
-            self._infer_type(stmt.array_expr)
+            arr_t = self._infer_type(stmt.array_expr)
+            elem_t = 'int'
+            if arr_t and '[' in arr_t:
+                elem_t = arr_t.split('[')[0]
             self.var_types[stmt.index_var] = 'int'
-            self.var_types[stmt.value_var] = 'int'  # Approximate
+            self.var_types[stmt.value_var] = elem_t
             for s in stmt.body:
                 self._check_stmt(s)
 
@@ -319,6 +346,8 @@ class TypeChecker:
             return self._check_struct_init(expr)
         elif isinstance(expr, ArrayInit):
             return self._check_array_init(expr)
+        elif isinstance(expr, EnumMemberAccess):
+            return self._check_enum_member_access(expr)
         return None
 
     def _check_binary_op(self, expr):
@@ -408,6 +437,15 @@ class TypeChecker:
                     f"Struct '{resolved}' has no member named '{expr.member}'",
                     tip=f"Available members: {', '.join(fields.keys())}")
             return fields[expr.member]
+
+        # Enum .name property
+        if resolved in self.enum_types:
+            if expr.member == 'name':
+                return 'string'
+            else:
+                 raise LeashError(
+                    f"Enum '{resolved}' has no property named '{expr.member}'",
+                    tip="Enums only have a `.name` property which returns the member name as a string.")
 
         # Union member
         if resolved in self.union_types:
@@ -510,3 +548,16 @@ class TypeChecker:
                     f"Warning: Array contains mixed types: '{first_type}' and '{elem_type}'.")
         base = first_type or 'int'
         return f"{base}[]"
+
+    def _check_enum_member_access(self, expr):
+        if expr.enum_name not in self.enum_types:
+            # Maybe it's not an enum, but someone used :: anyway
+            raise LeashError(f"Undefined enum: '{expr.enum_name}'",
+                             tip=f"Did you forget to define it? `def {expr.enum_name} : enum {{ ... }};` ")
+        
+        members = self.enum_types[expr.enum_name]
+        if expr.member_name not in members:
+            raise LeashError(f"Enum '{expr.enum_name}' has no member named '{expr.member_name}'",
+                             tip=f"Available members: {', '.join(members)}")
+        
+        return expr.enum_name

@@ -14,7 +14,7 @@ class Token:
 class Lexer:
     # Token types
     KEYWORDS = {'fnc', 'return', 'int', 'void', 'def', 'struct', 'true', 'false', 'null', 'string', 'char', 'bool', 'float', 'uint',
-                'if', 'also', 'else', 'while', 'for', 'do', 'foreach', 'in', 'array', 'type', 'union'}
+                'if', 'also', 'else', 'while', 'for', 'do', 'foreach', 'in', 'array', 'type', 'union', 'enum'}
     
     # regexes
     TOKEN_SPECIFICATION = [
@@ -37,6 +37,7 @@ class Lexer:
         ('RBRACE',   r'\}'),                      # Right brace
         ('LBRACKET', r'\['),                      # Left bracket
         ('RBRACKET', r'\]'),                      # Right bracket
+        ('DCOLON',   r'::'),                      # Double colon
         ('COLON',    r':'),                       # Colon
         ('COMMA',    r','),                       # Comma
         ('SEMI',     r';'),                       # Statement terminator

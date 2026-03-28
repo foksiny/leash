@@ -11,8 +11,18 @@ class CodeGen:
         self.struct_symtab = {}
         self.type_aliases = {}   # name -> resolved type string
         self.union_symtab = {}   # name -> { 'type': ir_type, 'variants': [...], 'variant_types': {...}, 'max_size': int }
+        self.enum_symtab = {}    # name -> { 'members': [names], 'names_arr': ir.GlobalVariable }
         self.printf = None
         self.current_target_type = None
+        
+        # stderr - declared as external global
+        self.stderr_var = ir.GlobalVariable(self.module, ir.IntType(8).as_pointer(), name="stderr")
+        self.stderr_var.linkage = 'external'
+        
+        # Memory tracking for SAMM (Scope-based Automatic Memory Management)
+        self.current_func_allocs_array = None
+        self.current_func_alloc_counter = None
+        self.current_func_alloc_limit = 511 # Use 511 + 1 (garbage slot)
         
         self.setup_builtins()
 
@@ -47,9 +57,85 @@ class CodeGen:
         fprintf_ty = ir.FunctionType(ir.IntType(32), [ir.IntType(8).as_pointer(), ir.IntType(8).as_pointer()], var_arg=True)
         self.fprintf = ir.Function(self.module, fprintf_ty, name="fprintf")
 
-        # stderr - declared as external global
-        self.stderr_var = ir.GlobalVariable(self.module, ir.IntType(8).as_pointer(), name="stderr")
-        self.stderr_var.linkage = 'external'
+        free_ty = ir.FunctionType(ir.VoidType(), [ir.IntType(8).as_pointer()])
+        self.free = ir.Function(self.module, free_ty, name="free")
+
+    def _track_alloc(self, ptr):
+        """Record an allocation in the current function's tracking array. Branch-free for safety."""
+        if self.current_func_allocs_array is None:
+            return ptr
+            
+        # cast to i8* for the array
+        ptr_cast = self.builder.bitcast(ptr, ir.IntType(8).as_pointer())
+        
+        # curr_idx = load counter
+        curr_idx = self.builder.load(self.current_func_alloc_counter)
+        
+        # check if counter < limit
+        limit_val = ir.Constant(ir.IntType(32), self.current_func_alloc_limit)
+        is_safe = self.builder.icmp_unsigned('<', curr_idx, limit_val)
+        
+        # Use a branch-free select to determine where to store
+        # If unsafe, we store at the last index (the "garbage" slot)
+        safe_idx = self.builder.select(is_safe, curr_idx, limit_val)
+        slot = self.builder.gep(self.current_func_allocs_array, [ir.Constant(ir.IntType(32), 0), safe_idx])
+        self.builder.store(ptr_cast, slot)
+        
+        # only increment if safe
+        new_idx = self.builder.select(is_safe, self.builder.add(curr_idx, ir.Constant(ir.IntType(32), 1)), curr_idx)
+        self.builder.store(new_idx, self.current_func_alloc_counter)
+            
+        return ptr
+
+    def _emit_cleanup(self, ret_val=None):
+        """Emit code to free all tracked allocations except (optionally) the return value."""
+        if self.current_func_allocs_array is None:
+            return
+
+        counter = self.builder.load(self.current_func_alloc_counter)
+        
+        # Loop: i = 0; while i < counter { p = array[i]; if p != ret_val free(p); i++; }
+        loop_cond_bb = self.builder.function.append_basic_block('cleanup_cond')
+        loop_body_bb = self.builder.function.append_basic_block('cleanup_body')
+        loop_end_bb = self.builder.function.append_basic_block('cleanup_end')
+        
+        idx_ptr = self.builder.alloca(ir.IntType(32))
+        self.builder.store(ir.Constant(ir.IntType(32), 0), idx_ptr)
+        self.builder.branch(loop_cond_bb)
+        
+        self.builder.position_at_start(loop_cond_bb)
+        i = self.builder.load(idx_ptr)
+        is_less = self.builder.icmp_unsigned('<', i, counter)
+        self.builder.cbranch(is_less, loop_body_bb, loop_end_bb)
+        
+        self.builder.position_at_start(loop_body_bb)
+        ptr_slot = self.builder.gep(self.current_func_allocs_array, [ir.Constant(ir.IntType(32), 0), i])
+        p = self.builder.load(ptr_slot)
+        
+        # Check if p is not null
+        null_ptr = ir.Constant(ir.IntType(8).as_pointer(), None)
+        is_not_null = self.builder.icmp_unsigned('!=', p, null_ptr)
+        
+        with self.builder.if_then(is_not_null):
+            if ret_val is not None and isinstance(ret_val.type, ir.PointerType):
+                # cast ret_val to i8* for comparison
+                rv_cast = self.builder.bitcast(ret_val, ir.IntType(8).as_pointer()) if ret_val.type != ir.IntType(8).as_pointer() else ret_val
+                is_not_ret = self.builder.icmp_unsigned('!=', p, rv_cast)
+                with self.builder.if_then(is_not_ret):
+                    self.builder.call(self.free, [p])
+            elif ret_val is not None:
+                # If ret_val is not a pointer, it can never match p
+                self.builder.call(self.free, [p])
+            else:
+                self.builder.call(self.free, [p])
+                
+        # increment i
+        next_i = self.builder.add(i, ir.Constant(ir.IntType(32), 1))
+        self.builder.store(next_i, idx_ptr)
+        self.builder.branch(loop_cond_bb)
+        
+        self.builder.position_at_start(loop_end_bb)
+
 
     def generate_code(self, node):
         return self._codegen(node)
@@ -61,6 +147,29 @@ class CodeGen:
             return method(node)
         else:
             raise NotImplementedError(f"No codegen for {type(node).__name__}")
+
+    def _get_leash_type_name(self, node):
+        """Helper to try and get the Leash type name for an AST node during codegen."""
+        from .ast_nodes import Identifier, MemberAccess, IndexAccess, Call, EnumMemberAccess, CastExpr
+        if isinstance(node, Identifier):
+            if node.name in self.var_symtab:
+                 return self.var_symtab[node.name][1]
+        elif isinstance(node, MemberAccess):
+            base_type = self._get_leash_type_name(node.expr)
+            resolved = self._resolve_type_name(base_type)
+            if resolved in self.struct_symtab:
+                return self.struct_symtab[resolved]['field_types'].get(node.member, 'int')
+            if resolved in self.union_symtab:
+                return self.union_symtab[resolved]['variants'].get(node.member, {}).get('type_name', 'int')
+        elif isinstance(node, IndexAccess):
+            base_type = self._get_leash_type_name(node.expr)
+            if '[' in base_type:
+                return base_type.split('[')[0]
+        elif isinstance(node, EnumMemberAccess):
+            return node.enum_name
+        elif isinstance(node, CastExpr):
+            return node.target_type
+        return 'int'
 
     def _resolve_type_name(self, type_name):
         """Resolve type aliases to their underlying type."""
@@ -112,6 +221,8 @@ class CodeGen:
             return self.union_symtab[type_name]['type']
         elif type_name in self.struct_symtab:
             return self.struct_symtab[type_name]['type']
+        elif type_name in self.enum_symtab:
+            return ir.IntType(32)
         return ir.IntType(32) # default fallback
 
     def _codegen_StructDef(self, node):
@@ -154,6 +265,35 @@ class CodeGen:
             'type': union_type,
             'variants': variant_info,
             'max_size': max_size
+        }
+
+    def _codegen_EnumDef(self, node):
+        # Create a global array of strings for member names
+        names = []
+        for mname in node.members:
+            # Create a global string for this member name
+            s = bytearray(mname.encode("utf8") + b'\0')
+            c_str = ir.Constant(ir.ArrayType(ir.IntType(8), len(s)), s)
+            g = ir.GlobalVariable(self.module, c_str.type, name=self.module.get_unique_name(f"enum_{node.name}_{mname}"))
+            g.linkage = 'internal'
+            g.global_constant = True
+            g.initializer = c_str
+            # Store pointer to this global string
+            names.append(self.builder.bitcast(g, ir.IntType(8).as_pointer()) if self.builder else g.bitcast(ir.IntType(8).as_pointer()))
+        
+        # Now create an array of these pointers
+        ptr_type = ir.IntType(8).as_pointer()
+        arr_type = ir.ArrayType(ptr_type, len(names))
+        c_names_arr = ir.Constant(arr_type, names)
+        
+        g_names = ir.GlobalVariable(self.module, arr_type, name=f"enum_names_{node.name}")
+        g_names.linkage = 'internal'
+        g_names.global_constant = True
+        g_names.initializer = c_names_arr
+        
+        self.enum_symtab[node.name] = {
+            'members': node.members,
+            'names_arr': g_names
         }
 
     def _type_byte_size(self, llvm_ty):
@@ -206,17 +346,30 @@ class CodeGen:
             self.builder.store(func.args[i], ptr)
             self.var_symtab[arg_name] = (ptr, arg_type_name)
 
+        # Initialize memory tracking for this function
+        # array size = limit + 1 (garbage slot)
+        self.current_func_allocs_array = self.builder.alloca(ir.ArrayType(ir.IntType(8).as_pointer(), self.current_func_alloc_limit + 1), name="allocs")
+        self.current_func_alloc_counter = self.builder.alloca(ir.IntType(32), name="alloc_count")
+        self.builder.store(ir.Constant(ir.IntType(32), 0), self.current_func_alloc_counter)
+
         for stmt in node.body:
             self._codegen(stmt)
 
-        if name == 'main':
-            self.builder.ret(ir.Constant(ir.IntType(32), 0))
-        elif node.return_type == 'void':
+        if name == 'main' or node.return_type == 'void':
             if not self.builder.block.is_terminated:
-                self.builder.ret_void()
+                self._emit_cleanup() # Auto-free everything
+                if name == 'main':
+                    self.builder.ret(ir.Constant(ir.IntType(32), 0))
+                else:
+                    self.builder.ret_void()
+        
+        # Reset tracking
+        self.current_func_allocs_array = None
+        self.current_func_alloc_counter = None
 
     def _codegen_ReturnStatement(self, node):
         val = self._codegen(node.value)
+        self._emit_cleanup(ret_val=val) # Auto-free everything EXCEPT the return value
         self.builder.ret(val)
 
     def _codegen_VariableDecl(self, node):
@@ -718,6 +871,12 @@ class CodeGen:
                 self._codegen(stmt)
 
     def _codegen_ForeachArrayStatement(self, node):
+        try:
+            _, full_type_name = self._codegen_lvalue(node.array_expr)
+            elem_type_name = full_type_name.split('[')[0] if '[' in full_type_name else 'int'
+        except:
+            elem_type_name = 'int'
+
         slice_val = self._codegen(node.array_expr)
         
         length_val = self.builder.extract_value(slice_val, 0)
@@ -729,7 +888,7 @@ class CodeGen:
         
         elem_type = data_ptr.type.pointee
         val_ptr = self.builder.alloca(elem_type, name=node.value_var)
-        self.var_symtab[node.value_var] = (val_ptr, 'int') # Default to int fallback
+        self.var_symtab[node.value_var] = (val_ptr, elem_type_name)
         
         cond_bb = self.builder.function.append_basic_block('foreach_cond')
         body_bb = self.builder.function.append_basic_block('foreach_body')
@@ -775,6 +934,7 @@ class CodeGen:
                 total_len = self.builder.add(len_l, len_r)
                 total_len_plus_1 = self.builder.add(total_len, ir.Constant(ir.IntType(32), 1))
                 new_str = self.builder.call(self.malloc, [total_len_plus_1])
+                self._track_alloc(new_str) # TRACK THIS ALLOCATION
                 self.builder.call(self.strcpy, [new_str, left])
                 self.builder.call(self.strcat, [new_str, right])
                 return new_str
@@ -801,6 +961,7 @@ class CodeGen:
                 new_len = self.builder.sub(len_l, len_r)
                 new_len_plus_1 = self.builder.add(new_len, ir.Constant(ir.IntType(32), 1))
                 res_found = self.builder.call(self.malloc, [new_len_plus_1])
+                self._track_alloc(res_found) # TRACK
                 
                 self.builder.call(self.strncpy, [res_found, left, prefix_len])
                 zero = ir.Constant(ir.IntType(32), 0)
@@ -815,6 +976,7 @@ class CodeGen:
                 len_l2 = self.builder.call(self.strlen, [left])
                 len_l2_plus_1 = self.builder.add(len_l2, ir.Constant(ir.IntType(32), 1))
                 res_not_found = self.builder.call(self.malloc, [len_l2_plus_1])
+                self._track_alloc(res_not_found) # TRACK
                 self.builder.call(self.strcpy, [res_not_found, left])
                 self.builder.branch(merge_bb)
                 
@@ -906,9 +1068,22 @@ class CodeGen:
 
     def _codegen_MemberAccess(self, node):
         from .ast_nodes import Identifier
-        val = self._codegen(node.expr)
         
-        # Check if this is a string .size
+        # Get the leash type name of the base expression
+        type_name = self._get_leash_type_name(node.expr)
+        resolved = self._resolve_type_name(type_name)
+
+        # 1. Handle Enum .name
+        if resolved in self.enum_symtab and node.member == 'name':
+            enum_info = self.enum_symtab[resolved]
+            enum_val = self._codegen(node.expr)
+            idx = self._emit_cast(enum_val, ir.IntType(32))
+            names_ptr = enum_info['names_arr']
+            member_ptr = self.builder.gep(names_ptr, [ir.Constant(ir.IntType(32), 0), idx], inbounds=True)
+            return self.builder.load(member_ptr)
+
+        # 2. Handle String .size
+        val = self._codegen(node.expr)
         is_string = getattr(val.type, 'pointee', None) == ir.IntType(8)
         if hasattr(ir, 'PointerType') and getattr(ir, 'PointerType') is not None:
             is_string = is_string and isinstance(val.type, ir.PointerType)
@@ -918,30 +1093,25 @@ class CodeGen:
         if is_string and node.member == 'size':
             return self.builder.call(self.strlen, [val])
 
-        # Check if this is a union member access
-        if isinstance(node.expr, Identifier) and node.expr.name in self.var_symtab:
-            ptr, type_name = self.var_symtab[node.expr.name]
-            resolved = self._resolve_type_name(type_name)
-            if resolved in self.union_symtab:
-                union_info = self.union_symtab[resolved]
-                data_ptr = self.builder.gep(ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)], inbounds=True)
-                
-                if node.member == 'cur':
-                    # Smart-cast: read tag, branch to load appropriate type
-                    tag_ptr = self.builder.gep(ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)], inbounds=True)
-                    tag_val = self.builder.load(tag_ptr)
-                    return self._union_cur_load(tag_val, data_ptr, union_info)
-                elif node.member in union_info['variants']:
-                    vdata = union_info['variants'][node.member]
-                    # Runtime tag check
-                    tag_ptr = self.builder.gep(ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)], inbounds=True)
-                    tag_val = self.builder.load(tag_ptr)
-                    self._emit_union_tag_check(tag_val, vdata['index'], node.member, resolved)
-                    typed_ptr = self.builder.bitcast(data_ptr, vdata['llvm_type'].as_pointer())
-                    return self.builder.load(typed_ptr)
-                else:
-                    raise LeashError(f"Union '{resolved}' has no variant named '{node.member}'")
+        # 3. Handle Union variants and .cur
+        if resolved in self.union_symtab:
+            ptr, _ = self._codegen_lvalue(node.expr)
+            union_info = self.union_symtab[resolved]
+            data_ptr = self.builder.gep(ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)], inbounds=True)
             
+            if node.member == 'cur':
+                tag_ptr = self.builder.gep(ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)], inbounds=True)
+                tag_val = self.builder.load(tag_ptr)
+                return self._union_cur_load(tag_val, data_ptr, union_info)
+            elif node.member in union_info['variants']:
+                vdata = union_info['variants'][node.member]
+                tag_ptr = self.builder.gep(ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)], inbounds=True)
+                tag_val = self.builder.load(tag_ptr)
+                self._emit_union_tag_check(tag_val, vdata['index'], node.member, resolved)
+                typed_ptr = self.builder.bitcast(data_ptr, vdata['llvm_type'].as_pointer())
+                return self.builder.load(typed_ptr)
+
+        # 4. Standard Struct access or other l-values
         ptr, _ = self._codegen_lvalue(node)
         return self.builder.load(ptr)
 
@@ -1144,6 +1314,18 @@ class CodeGen:
         slice_val = self.builder.insert_value(slice_val, elem_ptr, 1)
         
         return slice_val
+
+    def _codegen_EnumMemberAccess(self, node):
+        enum_info = self.enum_symtab.get(node.enum_name)
+        if not enum_info:
+             raise LeashError(f"Undefined enum: '{node.enum_name}'")
+        
+        try:
+            idx = enum_info['members'].index(node.member_name)
+        except ValueError:
+            raise LeashError(f"Enum '{node.enum_name}' has no member named '{node.member_name}'")
+        
+        return ir.Constant(ir.IntType(32), idx)
 
     def _codegen_IndexAccess(self, node):
         ptr, _ = self._codegen_lvalue(node)

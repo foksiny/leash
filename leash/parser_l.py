@@ -105,6 +105,8 @@ class Parser:
             'INT': "Standard `int` is 32 bits. Use `int<64>` for bigger numbers.",
             'FLOAT': "Standard `float` is 64 bits. You can use any bit size with `float<n>`.",
             'ALSO': "Leash uses `also` as its `else if` keyword to keep conditions clean!",
+            'ENUM': "Define a set of named constants with `def Name : enum { MEMBER1, MEMBER2 };`",
+            'DCOLON': "Use double colons (::) to access enum members. Example: `Color::RED`",
         }
         
         if expected_type in tips:
@@ -176,11 +178,13 @@ class Parser:
             return self._parse_union_body(name)
         elif self.current().type == 'TYPE':
             return self._parse_type_alias_body(name)
+        elif self.current().type == 'ENUM':
+            return self._parse_enum_body(name)
         else:
             tok = self.current()
-            raise LeashError(f"Expected 'struct', 'union', or 'type' after 'def {name} :', but found {tok.type} ('{tok.value}')",
+            raise LeashError(f"Expected 'struct', 'union', 'enum' or 'type' after 'def {name} :', but found {tok.type} ('{tok.value}')",
                              tok.line, tok.column,
-                             tip="Use `def Name : struct { ... };`, `def Name : union { ... };`, or `def Name : type <existing_type>;`")
+                             tip="Use `def Name : struct { ... };`, `def Name : enum { ... };`, or `def Name : type <existing_type>;`")
 
     def _parse_struct_body(self, name):
         self.eat('STRUCT')
@@ -212,6 +216,22 @@ class Parser:
         self.eat('RBRACE')
         self.eat('SEMI')
         return UnionDef(name, variants)
+
+    def _parse_enum_body(self, name):
+        self.eat('ENUM')
+        self.eat('LBRACE')
+        members = []
+        while self.current().type != 'RBRACE':
+            member_name = self.eat('IDENT').value
+            members.append(member_name)
+            if self.current().type == 'COMMA':
+                self.eat('COMMA')
+            elif self.current().type == 'SEMI':
+                # Accept semicolons too if user prefers
+                self.eat('SEMI')
+        self.eat('RBRACE')
+        self.eat('SEMI')
+        return EnumDef(name, members)
 
     def _parse_type_alias_body(self, name):
         self.eat('TYPE')
@@ -493,6 +513,12 @@ class Parser:
                         self.eat('COMMA')
                 self.eat('RBRACE')
                 return StructInit(name, kwargs)
+            
+            if self.current().type == 'DCOLON':
+                self.eat('DCOLON')
+                member = self.eat('IDENT').value
+                return EnumMemberAccess(name, member)
+
             return Identifier(name)
         elif self.current().type == 'LPAREN':
             # Check if this is a cast: (type)expr

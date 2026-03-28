@@ -4,7 +4,7 @@ if exists("b:current_syntax")
 endif
 
 " Keywords
-syn keyword leashKeyword fnc def struct union type return if also else while for do foreach in
+syn keyword leashKeyword fnc def struct union enum type return if also else while for do foreach in
 syn keyword leashBoolean true false
 
 " Types with optional bitwidths
