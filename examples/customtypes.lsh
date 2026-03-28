@@ -1,0 +1,47 @@
+def uint8 : type uint<8>;
+def value : union {
+    i: int,
+    u: uint,
+    f: float,
+    s: string
+};
+
+fnc print_value(v value) : void {
+    show(v.cur);
+}
+
+fnc main() : void {
+    a: uint8 = 65;
+    show("a = ", a);
+    
+    // also, casting is supported!
+    b: char = (char)a;
+    
+    show(b);
+
+    c: uint8 = (uint8)'b';
+    show("c = ", c);
+
+    d: int = 67;
+    e: uint8 = (uint8)d;
+    show("e = ", e);
+
+    f: value = 10;
+    show("f = ", f.cur); // .cur smart-casts to the current type of the union
+
+    f = 1.5;
+    show("f = ", f.cur);
+
+    f = "hello";
+    show("f = ", f.cur);
+
+    // also, i can manually set the type of the union
+    f.i = 10;
+    show("f = ", f); // now i don't need .cur! but i still can use if i want :)
+
+    // also if you try to access the wrong type, it will throw an error
+    f.s = "hello";
+    show("f = ", f.i); // this will throw an error
+
+    print_value(f);
+}

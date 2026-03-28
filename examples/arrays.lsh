@@ -1,0 +1,23 @@
+fnc prt_iarr(arr int[]) : void {
+    foreach i, v in<array> arr {
+        show(i, ": ", v);
+    }
+}
+
+fnc ret_iarr() : int[] {
+    return {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+}
+
+fnc main() : void {
+    a: int<64>[10] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+    
+    foreach i, v in<array> a {
+        show(i, ": ", v);
+    }
+
+    b: int[10] = ret_iarr();
+
+    prt_iarr(b);
+
+    show("b[2] = ", b[2]);
+}

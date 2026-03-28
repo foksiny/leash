@@ -1,0 +1,18 @@
+fnc main() : void {
+    a: string = "hello";
+    b: string = "world!";
+    
+    c: string = a + b;
+
+    show("a + b: ", c);
+    show("c - b: ", c - b);
+    show("c[1]: ", c[1]);
+
+    if a == b { // != is also supported (obviously)
+        show("a is equal to b");
+    } else {
+        show("a is not equal to b");
+    }
+
+    show("c.size: ", c.size);
+}

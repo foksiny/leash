@@ -1,0 +1,13 @@
+def Point : struct {
+    x: int;
+    y: int;
+};
+
+fnc main() : void {
+    p: Point = Point {x: 10, y: 20};
+    show("p.x: ", p.x, ", p.y: ", p.y);
+
+    p.x = 15;
+    p.y = 25;
+    show("MODIFIED: p.x: ", p.x, ", p.y: ", p.y);
+}

@@ -1,0 +1,40 @@
+def Point : struct {
+    x: int;
+    y: int;
+};
+
+fnc main() : void {
+    a: int = 10;
+    b: int = 20;
+    if a < b {
+        show("a is less than b");
+    } also a > b {
+        show("a is greater than b");
+    } else {
+        show("a is equal to b");
+    }
+
+    i: int = 0;
+    while i < 10 {
+        show("(WHILE): ", i);
+        i = i + 1;
+    }
+
+    for j: int = 0; j < 10; j = j + 1 {
+        show("(FOR): ", j);
+    }
+
+    k: int = 0;
+    
+    do {
+        show("(DO-WHILE): ", k);
+        k = k + 1;
+    } while k < 10;
+
+    p: Point = Point {x: 10, y: 20};
+
+    // in needs to specify what is iterating over, like struct, array, etc.
+    foreach name, value in<struct> p {
+        show(name, ": ", value);
+    }
+}

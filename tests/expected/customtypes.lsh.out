@@ -1,0 +1,9 @@
+a = A
+A
+c = b
+e = C
+f = 10
+f = 1.500000
+f = hello
+f = 10
+Runtime error: Attempted to access '.i' on union 'value', but the active variant is different.

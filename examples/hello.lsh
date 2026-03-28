@@ -1,0 +1,12 @@
+fnc add(a int, b int) : int {
+    return a + b;
+}
+
+fnc main() : void {
+    show("Hello, world!");
+    a: int = 10;
+    b: int = 20;
+
+    result: int = add(a, b);
+    show(a, " + ", b, " = ", result);
+}

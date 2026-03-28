@@ -1,0 +1,5 @@
+a + b: helloworld!
+c - b: hello
+c[1]: e
+a is not equal to b
+c.size: 11
