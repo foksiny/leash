@@ -7,6 +7,14 @@ class Parser:
         self.tokens = tokens
         self.pos = 0
 
+    def _pos(self, node, tok=None):
+        """Set line/col on an AST node from a token (defaults to current token)."""
+        if tok is None:
+            tok = self.current()
+        node.line = tok.line
+        node.col = tok.column
+        return node
+
     def current(self):
         return self.tokens[self.pos]
     
@@ -115,6 +123,10 @@ class Parser:
         return None
 
     def parse_type(self):
+        is_imut = False
+        if self.current().type == 'IMUT':
+            self.eat('IMUT')
+            is_imut = True
         tok = self.current()
         if tok.type in ('INT', 'VOID', 'IDENT', 'STRING', 'CHAR', 'BOOL', 'FLOAT', 'UINT'):
             base = self.eat(tok.type).value
@@ -132,13 +144,16 @@ class Parser:
                     arr_size = self.eat('NUMBER').value
                 self.eat('RBRACKET')
                 if arr_size is not None:
-                    return f"{base}[{arr_size}]"
-                return f"{base}[]"
+                    base = f"{base}[{arr_size}]"
+                else:
+                    base = f"{base}[]"
+            if is_imut:
+                return f"imut {base}"
             return base
         raise LeashError(f"Unexpected token {tok.type} ('{tok.value}') where a type was expected", tok.line, tok.column)
 
     # Type token types that can start a type in a cast
-    TYPE_STARTERS = {'INT', 'UINT', 'FLOAT', 'STRING', 'CHAR', 'BOOL', 'VOID'}
+    TYPE_STARTERS = {'INT', 'UINT', 'FLOAT', 'STRING', 'CHAR', 'BOOL', 'VOID', 'IMUT'}
 
     def _is_cast(self):
         """Look ahead to determine if (type)expr pattern."""
@@ -278,6 +293,7 @@ class Parser:
             self._check_keyword_misuse(current)
 
         if current.type == 'IF':
+            tok = self.current()
             self.eat('IF')
             cond = self.parse_expression(no_struct_init=True)
             self.eat('LBRACE')
@@ -299,16 +315,18 @@ class Parser:
                 self.eat('ELSE')
                 self.eat('LBRACE')
                 else_block = self.parse_block()
-            return IfStatement(cond, then_block, also_blocks, else_block)
+            return self._pos(IfStatement(cond, then_block, also_blocks, else_block), tok)
 
         elif current.type == 'WHILE':
+            tok = self.current()
             self.eat('WHILE')
             cond = self.parse_expression(no_struct_init=True)
             self.eat('LBRACE')
             body = self.parse_block()
-            return WhileStatement(cond, body)
+            return self._pos(WhileStatement(cond, body), tok)
 
         elif current.type == 'FOR':
+            tok = self.current()
             self.eat('FOR')
             init = self.parse_statement()
             cond = self.parse_expression(no_struct_init=True)
@@ -323,18 +341,20 @@ class Parser:
             step_stmt = Assignment(step_target, step_val)
             self.eat('LBRACE')
             body = self.parse_block()
-            return ForStatement(init, cond, step_stmt, body)
+            return self._pos(ForStatement(init, cond, step_stmt, body), tok)
 
         elif current.type == 'DO':
+            tok = self.current()
             self.eat('DO')
             self.eat('LBRACE')
             body = self.parse_block()
             self.eat('WHILE')
             cond = self.parse_expression()
             self.eat('SEMI')
-            return DoWhileStatement(cond, body)
+            return self._pos(DoWhileStatement(cond, body), tok)
 
         elif current.type == 'FOREACH':
+            tok = self.current()
             self.eat('FOREACH')
             name_var = self.eat('IDENT').value
             self.eat('COMMA')
@@ -351,18 +371,20 @@ class Parser:
             self.eat('LBRACE')
             body = self.parse_block()
             if iterable_type == 'STRUCT':
-                return ForeachStructStatement(name_var, value_var, expr, body)
+                return self._pos(ForeachStructStatement(name_var, value_var, expr, body), tok)
             else:
-                return ForeachArrayStatement(name_var, value_var, expr, body)
+                return self._pos(ForeachArrayStatement(name_var, value_var, expr, body), tok)
 
         elif current.type == 'RETURN':
+            tok = self.current()
             self.eat('RETURN')
             expr = self.parse_expression()
             self.eat('SEMI')
-            return ReturnStatement(expr)
+            return self._pos(ReturnStatement(expr), tok)
         elif self.current().type == 'IDENT':
             # Could be assignment or function call or show
             if self.current().value == 'show':
+                tok = self.current()
                 self.eat('IDENT')
                 self.eat('LPAREN')
                 args = []
@@ -372,25 +394,27 @@ class Parser:
                         self.eat('COMMA')
                 self.eat('RPAREN')
                 self.eat('SEMI')
-                return ShowStatement(args)
+                return self._pos(ShowStatement(args), tok)
             elif self.tokens[self.pos + 1].type == 'COLON':
                 # Variable declaration: name : type = expr ;
+                tok = self.current()
                 name = self.eat('IDENT').value
                 self.eat('COLON')
                 var_type = self.parse_type()
                 self.eat('ASSIGN')
                 expr = self.parse_expression()
                 self.eat('SEMI')
-                return VariableDecl(name, var_type, expr)
+                return self._pos(VariableDecl(name, var_type, expr), tok)
             else:
+                tok = self.current()
                 expr = self.parse_expression()
                 if self.current().type == 'ASSIGN':
                     self.eat('ASSIGN')
                     val = self.parse_expression()
                     self.eat('SEMI')
-                    return Assignment(expr, val)
+                    return self._pos(Assignment(expr, val), tok)
                 self.eat('SEMI')
-                return ExpressionStatement(expr)
+                return self._pos(ExpressionStatement(expr), tok)
         else:
             tok = self.current()
             tip = self._get_smart_tip(None, tok)
@@ -409,7 +433,7 @@ class Parser:
             'function': "Leash uses the short `fnc` keyword for functions!",
             'let': "Leash variables are declared as `name : type = value;`. No `let` or `var` needed!",
             'var': "Leash variables are declared as `name : type = value;`. No `let` or `var` needed!",
-            'const': "Leash doesn't have a `const` keyword yet; all variables are mutable.",
+            'const': "Leash uses `imut` for immutable variables! Example: `a: imut int = 10;`",
             'import': "Leash currently supports single-file compilation. Modules are coming soon!",
             'include': "Looking for `#include`? Leash manages built-ins like `show` and `strlen` automatically.",
             'using': "Leash doesn't have namespaces or `using` statements yet.",
@@ -430,11 +454,60 @@ class Parser:
             raise LeashError(f"Found unsupported keyword '{token.value}'", token.line, token.column, tip=tips[val])
 
     def parse_expression(self, no_struct_init=False):
-        return self.parse_comparison(no_struct_init)
+        return self.parse_logical_or(no_struct_init)
+
+    def parse_logical_or(self, no_struct_init=False):
+        node = self.parse_logical_and(no_struct_init)
+        while self.current().type == 'L_OR':
+            op = self.eat('L_OR')
+            right = self.parse_logical_and(no_struct_init)
+            node = BinaryOp(left=node, op=op.value, right=right)
+        return node
+
+    def parse_logical_and(self, no_struct_init=False):
+        node = self.parse_bitwise_or(no_struct_init)
+        while self.current().type == 'L_AND':
+            op = self.eat('L_AND')
+            right = self.parse_bitwise_or(no_struct_init)
+            node = BinaryOp(left=node, op=op.value, right=right)
+        return node
+
+    def parse_bitwise_or(self, no_struct_init=False):
+        node = self.parse_bitwise_xor(no_struct_init)
+        while self.current().type == 'BIT_OR':
+            op = self.eat('BIT_OR')
+            right = self.parse_bitwise_xor(no_struct_init)
+            node = BinaryOp(left=node, op=op.value, right=right)
+        return node
+
+    def parse_bitwise_xor(self, no_struct_init=False):
+        node = self.parse_bitwise_and(no_struct_init)
+        while self.current().type == 'BIT_XOR':
+            op = self.eat('BIT_XOR')
+            right = self.parse_bitwise_and(no_struct_init)
+            node = BinaryOp(left=node, op=op.value, right=right)
+        return node
+
+    def parse_bitwise_and(self, no_struct_init=False):
+        node = self.parse_comparison(no_struct_init)
+        while self.current().type == 'BIT_AND':
+            op = self.eat('BIT_AND')
+            right = self.parse_comparison(no_struct_init)
+            node = BinaryOp(left=node, op=op.value, right=right)
+        return node
 
     def parse_comparison(self, no_struct_init=False):
-        node = self.parse_term(no_struct_init)
+        node = self.parse_shift(no_struct_init)
         while self.current().type in ('EQ', 'NEQ', 'LT', 'LTE', 'GT', 'GTE'):
+            op = self.current()
+            self.eat(op.type)
+            right = self.parse_shift(no_struct_init)
+            node = BinaryOp(left=node, op=op.value, right=right)
+        return node
+
+    def parse_shift(self, no_struct_init=False):
+        node = self.parse_term(no_struct_init)
+        while self.current().type in ('SHL', 'SHR'):
             op = self.current()
             self.eat(op.type)
             right = self.parse_term(no_struct_init)
@@ -450,12 +523,19 @@ class Parser:
         return left
 
     def parse_factor(self, no_struct_init=False):
-        left = self.parse_postfix(no_struct_init)
-        while self.current().type in ('MUL', 'DIV'):
+        left = self.parse_unary(no_struct_init)
+        while self.current().type in ('MUL', 'DIV', 'MOD'):
             op = self.eat(self.current().type).value
-            right = self.parse_postfix(no_struct_init)
+            right = self.parse_unary(no_struct_init)
             left = BinaryOp(left, op, right)
         return left
+
+    def parse_unary(self, no_struct_init=False):
+        if self.current().type in ('NOT', 'BIT_NOT', 'MINUS'):
+            op = self.eat(self.current().type)
+            expr = self.parse_unary(no_struct_init)
+            return UnaryOp(op.value, expr)
+        return self.parse_postfix(no_struct_init)
 
     def parse_postfix(self, no_struct_init=False):
         expr = self.parse_primary(no_struct_init)
@@ -473,24 +553,31 @@ class Parser:
 
     def parse_primary(self, no_struct_init=False):
         if self.current().type == 'NUMBER':
+            tok = self.current()
             val = self.eat('NUMBER').value
             if isinstance(val, float):
-                return FloatLiteral(val)
-            return NumberLiteral(val)
+                return self._pos(FloatLiteral(val), tok)
+            return self._pos(NumberLiteral(val), tok)
         elif self.current().type == 'STRING':
-            return StringLiteral(self.eat('STRING').value)
+            tok = self.current()
+            return self._pos(StringLiteral(self.eat('STRING').value), tok)
         elif self.current().type == 'CHAR':
-            return CharLiteral(self.eat('CHAR').value)
+            tok = self.current()
+            return self._pos(CharLiteral(self.eat('CHAR').value), tok)
         elif self.current().type == 'TRUE':
+            tok = self.current()
             self.eat('TRUE')
-            return BoolLiteral(True)
+            return self._pos(BoolLiteral(True), tok)
         elif self.current().type == 'FALSE':
+            tok = self.current()
             self.eat('FALSE')
-            return BoolLiteral(False)
+            return self._pos(BoolLiteral(False), tok)
         elif self.current().type == 'NULL':
+            tok = self.current()
             self.eat('NULL')
-            return NullLiteral()
+            return self._pos(NullLiteral(), tok)
         elif self.current().type == 'IDENT':
+            tok = self.current()
             name = self.eat('IDENT').value
             if self.current().type == 'LPAREN':
                 self.eat('LPAREN')
@@ -500,7 +587,7 @@ class Parser:
                     if self.current().type == 'COMMA':
                         self.eat('COMMA')
                 self.eat('RPAREN')
-                return Call(name, args)
+                return self._pos(Call(name, args), tok)
             elif not no_struct_init and self.current().type == 'LBRACE':
                 self.eat('LBRACE')
                 kwargs = []
@@ -512,14 +599,14 @@ class Parser:
                     if self.current().type == 'COMMA':
                         self.eat('COMMA')
                 self.eat('RBRACE')
-                return StructInit(name, kwargs)
+                return self._pos(StructInit(name, kwargs), tok)
             
             if self.current().type == 'DCOLON':
                 self.eat('DCOLON')
                 member = self.eat('IDENT').value
-                return EnumMemberAccess(name, member)
+                return self._pos(EnumMemberAccess(name, member), tok)
 
-            return Identifier(name)
+            return self._pos(Identifier(name), tok)
         elif self.current().type == 'LPAREN':
             # Check if this is a cast: (type)expr
             # We look ahead to see if there's a type name followed by RPAREN

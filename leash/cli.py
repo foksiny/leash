@@ -8,6 +8,41 @@ from .typechecker import TypeChecker
 from .errors import LeashError
 import llvmlite.binding as llvm
 
+def _print_error(e, input_file, code):
+    RED = "\033[1;31m"
+    BLUE = "\033[1;34m"
+    GREEN = "\033[1;32m"
+    BOLD = "\033[1m"
+    RESET = "\033[0m"
+
+    print(f"{RED}error{RESET}: {BOLD}{e.msg}{RESET}")
+    
+    if e.line is not None:
+        lines = code.splitlines()
+        line_idx = e.line - 1
+        
+        # File location
+        print(f"  {BLUE}-->{RESET} {input_file}:{e.line}:{e.col if e.col is not None else 0}")
+        
+        # Line snippet
+        if 0 <= line_idx < len(lines):
+            gutter_width = len(str(e.line)) + 1
+            padding = " " * gutter_width
+            
+            error_line = lines[line_idx]
+            print(f"{padding}{BLUE}|{RESET}")
+            print(f"{BLUE}{e.line} |{RESET} {error_line}")
+            
+            if e.col is not None:
+                # Pointer
+                pointer = " " * e.col + "^"
+                print(f"{padding}{BLUE}|{RESET} {RED}{pointer}{RESET}")
+            
+            print(f"{padding}{BLUE}|{RESET}")
+
+    if e.tip:
+        print(f"{GREEN}tip{RESET}: {e.tip}")
+
 def compile_file(input_file, output_name=None, is_run_mode=False):
     with open(input_file, 'r') as f:
         code = f.read()
@@ -41,19 +76,10 @@ def compile_file(input_file, output_name=None, is_run_mode=False):
         mod = llvm.parse_assembly(llvm_ir)
         mod.verify()
     except LeashError as e:
-        print(f"Error in '{input_file}': {e.msg}")
-        if e.line is not None:
-            lines = code.splitlines()
-            if 0 < e.line <= len(lines):
-                error_line = lines[e.line - 1]
-                print(f"  Line {e.line}: {error_line}")
-                if e.col is not None:
-                    print(f"  {' ' * (len(str(e.line)) + 8 + e.col)}^")
-        if e.tip:
-            print(f"\nTip: {e.tip}")
+        _print_error(e, input_file, code)
         sys.exit(1)
     except Exception as e:
-        print(f"Internal compiler error: {e}")
+        print(f"\033[1;31merror\033[0m: Internal compiler error: {e}")
         # import traceback; traceback.print_exc()
         sys.exit(1)
     

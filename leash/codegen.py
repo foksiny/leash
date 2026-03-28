@@ -172,9 +172,12 @@ class CodeGen:
         return 'int'
 
     def _resolve_type_name(self, type_name):
-        """Resolve type aliases to their underlying type."""
+        """Resolve type aliases to their underlying type (strips imut qualifier)."""
+        # Strip imut qualifier — it's a compile-time-only concept
+        if isinstance(type_name, str) and type_name.startswith('imut '):
+            type_name = type_name[5:]
         visited = set()
-        while type_name in self.type_aliases and type_name not in visited:
+        while isinstance(type_name, str) and type_name in self.type_aliases and type_name not in visited:
             visited.add(type_name)
             type_name = self.type_aliases[type_name]
         return type_name
@@ -316,6 +319,7 @@ class CodeGen:
 
     def _codegen_Function(self, node):
         self.var_symtab = {}
+        self.current_func_ret_type_name = node.return_type
         
         # Determine return type
         ret_type = self._get_llvm_type(node.return_type, is_return=True)
@@ -373,9 +377,21 @@ class CodeGen:
         self.current_func_alloc_counter = None
 
     def _codegen_ReturnStatement(self, node):
+        old_target = self.current_target_type
+        self.current_target_type = getattr(self, 'current_func_ret_type_name', None)
         val = self._codegen(node.value)
+        self.current_target_type = old_target
+        
+        # Cast to return type
+        ret_type = self.builder.function.type.pointee.return_type
+        if not isinstance(ret_type, ir.VoidType):
+            val = self._emit_cast(val, ret_type)
+            
         self._emit_cleanup(ret_val=val) # Auto-free everything EXCEPT the return value
-        self.builder.ret(val)
+        if isinstance(ret_type, ir.VoidType):
+            self.builder.ret_void()
+        else:
+            self.builder.ret(val)
 
     def _codegen_VariableDecl(self, node):
         resolved_type = self._resolve_type_name(node.var_type)
@@ -860,7 +876,7 @@ class CodeGen:
             raise LeashError("Cannot use 'foreach' with 'in<struct>' on a non-struct type")
             
         from .ast_nodes import StringLiteral
-        for i, (field_name, field_type_name) in enumerate(struct_meta['fields'].items()):
+        for i, (field_name, field_idx) in enumerate(struct_meta['fields'].items()):
             name_val = self._codegen(StringLiteral(field_name))
             name_ptr = self.builder.alloca(name_val.type, name=node.name_var)
             self.builder.store(name_val, name_ptr)
@@ -870,7 +886,7 @@ class CodeGen:
             field_val = self.builder.load(field_ptr)
             val_ptr = self.builder.alloca(field_val.type, name=node.value_var)
             self.builder.store(field_val, val_ptr)
-            self.var_symtab[node.value_var] = (val_ptr, field_type_name)
+            self.var_symtab[node.value_var] = (val_ptr, struct_meta['field_types'][field_name])
             
             for stmt in node.body:
                 self._codegen(stmt)
@@ -924,6 +940,30 @@ class CodeGen:
 
     def _codegen_BinaryOp(self, node):
         left = self._codegen(node.left)
+        
+        # Logical operations (short-circuiting)
+        if node.op == '&&':
+            res_ptr = self.builder.alloca(ir.IntType(1))
+            self.builder.store(ir.Constant(ir.IntType(1), 0), res_ptr)
+            left_bool = self._cast_bool(left)
+            with self.builder.if_then(left_bool):
+                right_bool = self._cast_bool(self._codegen(node.right))
+                self.builder.store(right_bool, res_ptr)
+            return self.builder.load(res_ptr)
+        
+        if node.op == '||':
+            res_ptr = self.builder.alloca(ir.IntType(1))
+            self.builder.store(ir.Constant(ir.IntType(1), 1), res_ptr)
+            left_bool = self._cast_bool(left)
+            with self.builder.if_else(left_bool) as (then, otherwise):
+                with then:
+                    pass
+                with otherwise:
+                    right_bool = self._cast_bool(self._codegen(node.right))
+                    self.builder.store(right_bool, res_ptr)
+            return self.builder.load(res_ptr)
+
+        # Standard binary ops
         right = self._codegen(node.right)
         
         is_string = getattr(left.type, 'pointee', None) == ir.IntType(8) and getattr(right.type, 'pointee', None) == ir.IntType(8)
@@ -999,6 +1039,22 @@ class CodeGen:
             else:
                 raise Exception(f"Unknown string binary op {node.op}")
 
+        # Type promotion
+        if left.type != right.type:
+            if isinstance(left.type, ir.IntType) and isinstance(right.type, ir.IntType):
+                if left.type.width < right.type.width:
+                    left = self._emit_cast(left, right.type)
+                else:
+                    right = self._emit_cast(right, left.type)
+            elif isinstance(left.type, (ir.FloatType, ir.DoubleType)) and isinstance(right.type, (ir.FloatType, ir.DoubleType)):
+                target = ir.DoubleType()
+                left = self._emit_cast(left, target)
+                right = self._emit_cast(right, target)
+            elif isinstance(left.type, (ir.FloatType, ir.DoubleType)) and isinstance(right.type, ir.IntType):
+                right = self._emit_cast(right, left.type)
+            elif isinstance(left.type, ir.IntType) and isinstance(right.type, (ir.FloatType, ir.DoubleType)):
+                left = self._emit_cast(left, right.type)
+
         # Determine if float or int based on types (assume matching types for now)
         is_float = isinstance(left.type, (ir.FloatType, ir.DoubleType))
         
@@ -1010,6 +1066,18 @@ class CodeGen:
             return self.builder.fmul(left, right) if is_float else self.builder.mul(left, right)
         elif node.op == '/':
             return self.builder.fdiv(left, right) if is_float else self.builder.sdiv(left, right)
+        elif node.op == '%':
+            return self.builder.frem(left, right) if is_float else self.builder.srem(left, right)
+        elif node.op == '&':
+            return self.builder.and_(left, right)
+        elif node.op == '|':
+            return self.builder.or_(left, right)
+        elif node.op == '^':
+            return self.builder.xor(left, right)
+        elif node.op == '<<':
+            return self.builder.shl(left, right)
+        elif node.op == '>>':
+            return self.builder.ashr(left, right) # assume signed shift right
         elif node.op == '==':
             return self.builder.fcmp_ordered('==', left, right) if is_float else self.builder.icmp_signed('==', left, right)
         elif node.op == '!=':
@@ -1024,6 +1092,21 @@ class CodeGen:
             return self.builder.fcmp_ordered('>=', left, right) if is_float else self.builder.icmp_signed('>=', left, right)
         
         raise LeashError(f"Unknown binary operator: '{node.op}'")
+
+    def _codegen_UnaryOp(self, node):
+        val = self._codegen(node.expr)
+        if node.op == '-':
+            if isinstance(val.type, (ir.FloatType, ir.DoubleType)):
+                return self.builder.fneg(val)
+            else:
+                return self.builder.neg(val)
+        elif node.op == '!':
+            bool_val = self._cast_bool(val)
+            return self.builder.not_(bool_val)
+        elif node.op == '~':
+            return self.builder.not_(val)
+        
+        raise LeashError(f"Unknown unary operator: '{node.op}'")
 
     def _codegen_Call(self, node):
         func = self.func_symtab.get(node.name)
@@ -1040,12 +1123,16 @@ class CodeGen:
 
         args = []
         for i, arg_expr in enumerate(node.args):
+            # Attempt to pass type hint if possible
             old_target = self.current_target_type
-            # If we know the function signature, set target type
-            # (In a more complete compiler we'd have a function signature table)
-            # Use None for now or try to infer from func object
             self.current_target_type = None 
+            
             v = self._codegen(arg_expr)
+            
+            # Cast to formal parameter type if known
+            if i < len(func.args):
+                v = self._emit_cast(v, func.args[i].type)
+            
             self.current_target_type = old_target
             args.append(v)
 
@@ -1245,6 +1332,10 @@ class CodeGen:
 
 
     def _codegen_NumberLiteral(self, node):
+        if self.current_target_type:
+            target_llvm = self._get_llvm_type(self.current_target_type)
+            if isinstance(target_llvm, ir.IntType):
+                return ir.Constant(target_llvm, node.value)
         return ir.Constant(ir.IntType(32), node.value)
 
     def _codegen_FloatLiteral(self, node):

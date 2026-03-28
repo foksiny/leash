@@ -14,7 +14,7 @@ class Token:
 class Lexer:
     # Token types
     KEYWORDS = {'fnc', 'return', 'int', 'void', 'def', 'struct', 'true', 'false', 'null', 'string', 'char', 'bool', 'float', 'uint',
-                'if', 'also', 'else', 'while', 'for', 'do', 'foreach', 'in', 'array', 'type', 'union', 'enum'}
+                'if', 'also', 'else', 'while', 'for', 'do', 'foreach', 'in', 'array', 'type', 'union', 'enum', 'imut'}
     
     # regexes
     TOKEN_SPECIFICATION = [
@@ -26,10 +26,20 @@ class Lexer:
         ('MUL',      r'\*'),                      # Multiplication operator
         ('COMMENT',  r'//.*'),                    # Comments
         ('DIV',      r'/'),                       # Division operator
+        ('MOD',      r'%'),                       # Modulo operator
         ('EQ',       r'=='),                      # Equal to
         ('NEQ',      r'!='),                      # Not equal to
         ('LTE',      r'<='),                      # Less than or equal
         ('GTE',      r'>='),                      # Greater than or equal
+        ('SHL',      r'<<'),                      # Shift left
+        ('SHR',      r'>>'),                      # Shift right
+        ('L_AND',    r'&&'),                      # Logical AND
+        ('L_OR',     r'\|\|'),                    # Logical OR
+        ('BIT_AND',  r'&'),                       # Bitwise AND
+        ('BIT_OR',   r'\|'),                      # Bitwise OR
+        ('BIT_XOR',  r'\^'),                      # Bitwise XOR
+        ('BIT_NOT',  r'~'),                       # Bitwise NOT/Tilde
+        ('NOT',      r'!'),                       # Logical NOT/Bang
         ('ASSIGN',   r'='),                       # Assignment operator
         ('LPAREN',   r'\('),                      # Left parenthesis
         ('RPAREN',   r'\)'),                      # Right parenthesis

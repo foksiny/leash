@@ -17,6 +17,7 @@ class TypeChecker:
 
     def __init__(self):
         self.var_types = {}       # name -> type string
+        self.var_immutable = {}   # name -> bool (True if immutable)
         self.func_types = {}      # name -> (arg_types, return_type)
         self.struct_types = {}    # name -> {field: type}
         self.union_types = {}     # name -> {variant: type}
@@ -88,16 +89,27 @@ class TypeChecker:
 
     # ── Type resolution ─────────────────────────────────────────────
 
-    def _resolve(self, type_name):
-        """Resolve type aliases."""
-        visited = set()
-        while type_name in self.type_aliases and type_name not in visited:
-            visited.add(type_name)
-            type_name = self.type_aliases[type_name]
+    def _strip_imut(self, type_name):
+        """Strip the 'imut ' prefix from a type name if present."""
+        if isinstance(type_name, str) and type_name.startswith('imut '):
+            return type_name[5:]
         return type_name
 
+    def _is_imut(self, type_name):
+        """Check if a type string has the imut qualifier."""
+        return isinstance(type_name, str) and type_name.startswith('imut ')
+
+    def _resolve(self, type_name):
+        """Resolve type aliases (strips imut first, then re-applies if needed)."""
+        stripped = self._strip_imut(type_name)
+        visited = set()
+        while stripped in self.type_aliases and stripped not in visited:
+            visited.add(stripped)
+            stripped = self.type_aliases[stripped]
+        return stripped
+
     def _base_type(self, type_name):
-        """Get the base type category (strip bit-widths, array brackets)."""
+        """Get the base type category (strip bit-widths, array brackets, imut)."""
         t = self._resolve(type_name)
         if t.endswith(']') and '[' in t:
             return 'array'
@@ -129,6 +141,12 @@ class TypeChecker:
     def _is_int_family(self, type_name):
         b = self._base_type(type_name)
         return b in ('int', 'uint', 'char', 'bool')
+
+    def _error(self, msg, node=None, tip=None):
+        """Create a LeashError with position info from an AST node."""
+        line = getattr(node, 'line', None) if node else None
+        col = getattr(node, 'col', None) if node else None
+        raise LeashError(msg, line=line, col=col, tip=tip)
 
     def _types_compatible(self, src, dst):
         """Check if src type can be assigned into dst type."""
@@ -175,18 +193,23 @@ class TypeChecker:
 
     def _check_function(self, node):
         # Save and restore var scope per function
-        saved = self.var_types.copy()
+        saved_types = self.var_types.copy()
+        saved_imut = self.var_immutable.copy()
         self.current_func = node.name
         self.current_return_type = node.return_type
         
         # Register args as local vars
         for arg_name, arg_type in node.args:
-            self.var_types[arg_name] = arg_type
+            is_imut = self._is_imut(arg_type)
+            bare_type = self._strip_imut(arg_type)
+            self.var_types[arg_name] = bare_type
+            self.var_immutable[arg_name] = is_imut
 
         for stmt in node.body:
             self._check_stmt(stmt)
 
-        self.var_types = saved
+        self.var_types = saved_types
+        self.var_immutable = saved_imut
         self.current_func = None
         self.current_return_type = None
 
@@ -206,13 +229,15 @@ class TypeChecker:
                     resolved = self._resolve(t)
                     # Check if it's an array
                     if '[' in resolved and ']' in resolved:
-                        raise LeashError(
+                        self._error(
                             f"Argument {i+1} of show() is an array ('{t}'), which is not supported.",
+                            node=arg,
                             tip="To print an array, use a `foreach` loop to iterate over its elements: `foreach i, v in<array> my_arr { show(v); }`")
-                    # Check if it's a struct (unions are handled via .cur/auto-detection in codegen, but raw struct printing is not supported)
+                    # Check if it's a struct
                     if resolved in self.struct_types:
-                         raise LeashError(
+                         self._error(
                             f"Argument {i+1} of show() is a struct ('{resolved}'), which is not supported.",
+                            node=arg,
                             tip="To print a struct, use a `foreach` loop to iterate over its members: `foreach k, v in<struct> my_struct { show(k, \": \", v); }`")
         elif isinstance(stmt, ExpressionStatement):
             self._infer_type(stmt.expr)
@@ -250,52 +275,78 @@ class TypeChecker:
 
     def _check_var_decl(self, stmt):
         if stmt.name in self.var_types:
-             raise LeashError(f"Redefinition of variable '{stmt.name}' in the same function",
-                              tip=f"Variable '{stmt.name}' is already defined. Use a different name or just assign to it if you want to change its value.")
+             self._error(f"Redefinition of variable '{stmt.name}' in the same function",
+                         node=stmt,
+                         tip=f"Variable '{stmt.name}' is already defined. Use a different name or just assign to it if you want to change its value.")
         decl_type = stmt.var_type
-        resolved = self._resolve(decl_type)
+        is_imut = self._is_imut(decl_type)
+        bare_decl_type = self._strip_imut(decl_type)
+        resolved = self._resolve(bare_decl_type)
         
         if not self._is_valid_type(resolved):
-            raise LeashError(
-                f"Variable '{stmt.name}' declared with unknown type '{decl_type}'",
-                tip=f"Type '{decl_type}' has not been defined. Did you forget to add a `def {decl_type} : type ...;` or `def {decl_type} : struct {{ ... }};`?")
+            self._error(
+                f"Variable '{stmt.name}' declared with unknown type '{bare_decl_type}'",
+                node=stmt,
+                tip=f"Type '{bare_decl_type}' has not been defined. Did you forget to add a `def {bare_decl_type} : type ...;` or `def {bare_decl_type} : struct {{ ... }};`?")
         
         # Add to current scope
-        self.var_types[stmt.name] = decl_type
+        self.var_types[stmt.name] = bare_decl_type
+        self.var_immutable[stmt.name] = is_imut
         val_type = self._infer_type(stmt.value)
+
+        # If the assigned value comes from a function returning imut, the variable becomes immutable
+        if not is_imut and val_type and self._is_imut(val_type):
+            self.var_immutable[stmt.name] = True
 
         # Union types accept any compatible variant
         if resolved in self.union_types:
-            self.var_types[stmt.name] = decl_type
             return
 
-        if val_type and not self._types_compatible(val_type, decl_type):
+        bare_val_type = self._strip_imut(val_type) if val_type else None
+        if bare_val_type and not self._types_compatible(bare_val_type, bare_decl_type):
             self.warnings.append(
-                f"Warning: Variable '{stmt.name}' declared as '{decl_type}' "
-                f"but assigned a value of type '{val_type}'.")
-
-        self.var_types[stmt.name] = decl_type
+                f"Warning: Variable '{stmt.name}' declared as '{bare_decl_type}' "
+                f"but assigned a value of type '{bare_val_type}'.")
 
     def _check_assignment(self, stmt):
+        # Check immutability on the target
+        from .ast_nodes import Identifier
+        if isinstance(stmt.target, Identifier):
+            if self.var_immutable.get(stmt.target.name, False):
+                self._error(
+                    f"Cannot assign to immutable variable '{stmt.target.name}'",
+                    node=stmt,
+                    tip=f"Variable '{stmt.target.name}' was declared as `imut` or received an immutable value from a function. It cannot be reassigned.")
+
         target_type = self._infer_type(stmt.target)
         val_type = self._infer_type(stmt.value)
 
-        if target_type and val_type:
-            target_resolved = self._resolve(target_type)
+        # If the assigned value is imut, make the target variable immutable going forward
+        if isinstance(stmt.target, Identifier) and val_type and self._is_imut(val_type):
+            self.var_immutable[stmt.target.name] = True
+
+        bare_target = self._strip_imut(target_type) if target_type else None
+        bare_val = self._strip_imut(val_type) if val_type else None
+
+        if bare_target and bare_val:
+            target_resolved = self._resolve(bare_target)
             # Union assignment: any variant type is valid
             if target_resolved in self.union_types:
                 return
-            if not self._types_compatible(val_type, target_type):
+            if not self._types_compatible(bare_val, bare_target):
                 self.warnings.append(
-                    f"Warning: Assigning '{val_type}' to a variable of type '{target_type}'.")
+                    f"Warning: Assigning '{bare_val}' to a variable of type '{bare_target}'.")
 
     def _check_return(self, stmt):
         val_type = self._infer_type(stmt.value)
         if self.current_return_type and val_type:
-            if not self._types_compatible(val_type, self.current_return_type):
-                raise LeashError(
-                    f"Function '{self.current_func}' should return '{self.current_return_type}' "
-                    f"but returns '{val_type}'",
+            bare_val = self._strip_imut(val_type)
+            bare_ret = self._strip_imut(self.current_return_type)
+            if not self._types_compatible(bare_val, bare_ret):
+                self._error(
+                    f"Function '{self.current_func}' should return '{bare_ret}' "
+                    f"but returns '{bare_val}'",
+                    node=stmt,
                     tip=f"Make sure your return value matches the declared return type.")
 
     def _check_if(self, stmt):
@@ -329,11 +380,14 @@ class TypeChecker:
         elif isinstance(expr, Identifier):
             t = self.var_types.get(expr.name)
             if t is None:
-                raise LeashError(f"Undefined variable: '{expr.name}'",
-                                 tip="Make sure this variable is declared before use.")
+                self._error(f"Undefined variable: '{expr.name}'",
+                            node=expr,
+                            tip="Make sure this variable is declared before use.")
             return t
         elif isinstance(expr, BinaryOp):
             return self._check_binary_op(expr)
+        elif isinstance(expr, UnaryOp):
+            return self._check_unary_op(expr)
         elif isinstance(expr, Call):
             return self._check_call(expr)
         elif isinstance(expr, MemberAccess):
@@ -369,6 +423,19 @@ class TypeChecker:
                         f"Operator '{expr.op}' is not supported for strings",
                         tip="Strings support: + (concatenation), - (removal), == and != (comparison).")
 
+            # Bitwise and Modulo operations
+            if expr.op in ('&', '|', '^', '<<', '>>', '%'):
+                if self._is_int_family(left_t) and self._is_int_family(right_t):
+                    return left_t
+                else:
+                    raise LeashError(
+                        f"Operator '{expr.op}' is only supported for integer types",
+                        tip=f"Operands are '{left_t}' and '{right_t}'.")
+
+            # Logical operations
+            if expr.op in ('&&', '||'):
+                return 'bool'
+
             # Numeric operations
             if self._is_numeric(left_t) and self._is_numeric(right_t):
                 if expr.op in ('==', '!=', '<', '<=', '>', '>='):
@@ -378,19 +445,41 @@ class TypeChecker:
                     return 'float'
                 
                 # Zero-division safety check (static)
-                if expr.op == '/' and isinstance(expr.right, NumberLiteral) and expr.right.value == 0:
-                     raise LeashError("Division by zero detected statically!", 
+                if expr.op in ('/', '%') and isinstance(expr.right, NumberLiteral) and expr.right.value == 0:
+                     raise LeashError("Division (or modulo) by zero detected statically!", 
                                       tip="Make sure you aren't dividing by zero, as it will crash your program at runtime.")
                 
                 return 'int'
 
             # Mixed string + non-string
-            if (left_b == 'string') != (right_b == 'string'):
-                raise LeashError(
-                    f"Cannot use operator '{expr.op}' between '{left_t}' and '{right_t}'",
-                    tip="You cannot mix string and numeric types in binary operations. Use a cast if needed.")
+            if (left_b == 'string') or (right_b == 'string'):
+                if (left_b == 'string') and (right_b == 'string'):
+                     # already handled above
+                     pass
+                else:
+                    raise LeashError(
+                        f"Cannot use operator '{expr.op}' between '{left_t}' and '{right_t}'",
+                        tip="You cannot mix string and numeric types in binary operations. Use a cast if needed.")
 
         return left_t  # Best guess fallback
+
+    def _check_unary_op(self, expr):
+        val_t = self._infer_type(expr.expr)
+        if val_t:
+            val_b = self._base_type(val_t)
+            if expr.op == '!':
+                if val_b not in ('bool', 'int', 'uint'):
+                    raise LeashError(f"Operator '!' is not supported for type '{val_t}'", tip="Logical NOT is supported for bool and integer types.")
+                return 'bool'
+            if expr.op == '~':
+                if val_b not in ('int', 'uint'):
+                    raise LeashError(f"Operator '~' is not supported for type '{val_t}'", tip="Bitwise NOT is supported for integer types.")
+                return val_t
+            if expr.op == '-':
+                if val_b not in ('int', 'uint', 'float'):
+                    raise LeashError(f"Unary minus is not supported for type '{val_t}'", tip="Unary minus is supported for numeric types.")
+                return val_t
+        return val_t
 
     def _check_call(self, expr):
         if expr.name == 'show':
@@ -398,23 +487,27 @@ class TypeChecker:
 
         sig = self.func_types.get(expr.name)
         if sig is None:
-            raise LeashError(f"Call to undefined function: '{expr.name}'",
-                             tip="Make sure the function is defined before calling it.")
+            self._error(f"Call to undefined function: '{expr.name}'",
+                        node=expr,
+                        tip="Make sure the function is defined before calling it.")
 
         expected_args, return_type = sig
 
         if len(expr.args) != len(expected_args):
-            raise LeashError(
+            self._error(
                 f"Function '{expr.name}' expects {len(expected_args)} argument(s), "
                 f"but got {len(expr.args)}",
+                node=expr,
                 tip="Check the function signature and pass the correct number of arguments.")
 
         for i, (arg_expr, expected_type) in enumerate(zip(expr.args, expected_args)):
             arg_type = self._infer_type(arg_expr)
-            if arg_type and not self._types_compatible(arg_type, expected_type):
+            bare_arg = self._strip_imut(arg_type) if arg_type else None
+            bare_expected = self._strip_imut(expected_type)
+            if bare_arg and not self._types_compatible(bare_arg, bare_expected):
                 self.warnings.append(
-                    f"Warning: Argument {i+1} of '{expr.name}' expects '{expected_type}' "
-                    f"but got '{arg_type}'.")
+                    f"Warning: Argument {i+1} of '{expr.name}' expects '{bare_expected}' "
+                    f"but got '{bare_arg}'.")
 
         return return_type
 

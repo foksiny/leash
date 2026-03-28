@@ -1,5 +1,7 @@
 class ASTNode:
-    pass
+    def __init__(self):
+        self.line = None
+        self.col = None
 
 class Program(ASTNode):
     def __init__(self, items):
@@ -108,6 +110,11 @@ class BinaryOp(Expression):
         self.left = left
         self.op = op
         self.right = right
+
+class UnaryOp(Expression):
+    def __init__(self, op, expr):
+        self.op = op
+        self.expr = expr
 
 class Call(Expression):
     def __init__(self, name, args):

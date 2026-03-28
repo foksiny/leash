@@ -5,7 +5,9 @@ Leash is a strongly-typed, modern compiled programming language built on top of 
 ## Table of Contents
 - [Running Leash](#running-leash)
 - [Defining Variables](#defining-variables)
+- [Immutable Variables](#immutable-variables)
 - [Data Types](#data-types)
+- [Operators](#operators)
 - [Functions](#functions)
 - [Control Flow](#control-flow)
 - [Arrays](#arrays)
@@ -51,6 +53,44 @@ a: int = 10;
 b: string = "Hello World";
 ```
 
+## Immutable Variables
+
+Leash supports immutable (constant) variables using the `imut` qualifier. Once assigned, an `imut` variable cannot be reassigned.
+
+```leash
+a: imut int = 10;
+// a = 20; // ERROR: Cannot assign to immutable variable 'a'
+show(a);
+```
+
+### Immutable Function Parameters
+
+Function parameters can be marked `imut` to prevent modification inside the function body:
+
+```leash
+fnc add(a imut int, b imut int) : int {
+    // a = 5; // ERROR: Cannot assign to immutable parameter 'a'
+    return a + b;
+}
+```
+
+### Infectious Immutability
+
+Functions can return `imut` types. When an `imut` return value is assigned to a variable, that variable **automatically becomes immutable** — even if it wasn't originally declared as `imut`:
+
+```leash
+fnc imut_add(a imut int, b imut int) : imut int {
+    return a + b;
+}
+
+fnc main() : void {
+    c: int = imut_add(10, 20);
+    // c = 50; // ERROR: 'c' is now immutable because it received an imut return value
+}
+```
+
+This makes `imut` a powerful tool for enforcing data safety across function boundaries.
+
 ## Data Types
 
 Leash supports rich generic and specific length types natively! 
@@ -69,6 +109,62 @@ Leash integers and floats can specify an explicit bit width between `<` and `>` 
 maxInt: int<64> = 10;     // 64-bit integer
 smallFl: float<16> = 1.0; // 16-bit float
 pixel: uint<8> = 255;
+```
+
+## Operators
+
+Leash supports a full suite of arithmetic, comparison, bitwise, and logical operators.
+
+### Arithmetic Operators
+| Operator | Description | Example |
+|----------|-------------|---------|
+| `+` | Addition | `a + b` |
+| `-` | Subtraction | `a - b` |
+| `*` | Multiplication | `a * b` |
+| `/` | Division | `a / b` |
+| `%` | Modulo | `a % b` |
+
+### Comparison Operators
+| Operator | Description | Example |
+|----------|-------------|---------|
+| `==` | Equal to | `a == b` |
+| `!=` | Not equal to | `a != b` |
+| `<` | Less than | `a < b` |
+| `>` | Greater than | `a > b` |
+| `<=` | Less than or equal | `a <= b` |
+| `>=` | Greater than or equal | `a >= b` |
+
+### Bitwise Operators
+| Operator | Description | Example |
+|----------|-------------|---------|
+| `&` | Bitwise AND | `a & b` |
+| `\|` | Bitwise OR | `a \| b` |
+| `^` | Bitwise XOR | `a ^ b` |
+| `~` | Bitwise NOT | `~a` |
+| `<<` | Left shift | `a << b` |
+| `>>` | Right shift | `a >> b` |
+
+### Logical Operators
+| Operator | Description | Example |
+|----------|-------------|---------|
+| `&&` | Logical AND | `a && b` |
+| `\|\|` | Logical OR | `a \|\| b` |
+| `!` | Logical NOT | `!a` |
+
+*Note: Logical `&&` and `||` use short-circuit evaluation — the right operand is only evaluated if necessary.*
+
+```leash
+fnc main() : void {
+    a: int = 5;
+    b: int = 3;
+
+    show(a + b);    // 8
+    show(a % b);    // 2
+    show(a & b);    // 1
+    show(a << 1);   // 10
+    show(a > b);    // 1 (true)
+    show(!0);       // 1 (true)
+}
 ```
 
 ## Functions

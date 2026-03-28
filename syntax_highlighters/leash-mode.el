@@ -18,9 +18,11 @@
 
 (defconst leash-font-lock-keywords
   (list
-   '("\\b\\(fnc\\|def\\|struct\\|union\\|enum\\|type\\|return\\|if\\|also\\|else\\|while\\|for\\|do\\|foreach\\|in\\)\\b" . font-lock-keyword-face)
-   '("\\b\\(int\\|uint\\|float\\|bool\\|string\\|char\\|void\\)\\b\\(?:<[0-9]+>\\)?" . font-lock-type-face)
-   '("\\b\\(true\\|false\\)\\b" . font-lock-constant-face)
+   '("\\b\\(fnc\\|def\\|struct\\|union\\|enum\\|type\\|return\\|if\\|also\\|else\\|while\\|for\\|do\\|foreach\\|in\\|imut\\)\\b" . font-lock-keyword-face)
+   '("\\b\\(int\\|uint\\|float\\|bool\\|string\\|char\\|void\\|array\\)\\b\\(?:<[0-9]+>\\)?" . font-lock-type-face)
+   '("\\b\\(true\\|false\\|null\\)\\b" . font-lock-constant-face)
+   '("\\b\\(show\\)\\b" . font-lock-builtin-face)
+   '("&&\\|||\\|<<\\|>>\\|[+\\-*/%&|^~!<>=]=?" . font-lock-variable-name-face)
    )
   "Default font-lock keywords for Leash mode")
 

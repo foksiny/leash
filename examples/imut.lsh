@@ -1,0 +1,33 @@
+// if you want you can return immutable values too, but it's not recommended because
+// if you try, for example, return it to a variable that doesn't have imut, it will turn
+// that variable into immutable automatically, even if you're just modifying it
+// it still turns into an immutable variable and then you can't modify it anymore.
+fnc add(a imut int, b imut int) : int {
+    return a + b;
+}
+
+fnc imut_add(a imut int, b imut int) : imut int {
+    return a + b;
+}
+
+fnc main() : void {
+    a: imut int = 10;
+    // a = 20; // this will error, because 'a' is immutable
+    show(a);
+
+    b: int = add(a, 20);
+    b = 30;
+    show(b);
+
+    c: int = imut_add(a, 20);
+    // c = 30; // this will error, because 'c' is immutable
+    show(c);
+
+    d: int = 10;
+    show(d);
+    d = 20;
+    show(d);
+    d = imut_add(d, 20);
+    show(d);
+    // d = 80; // this will error, because 'd' is now an immutable
+}
