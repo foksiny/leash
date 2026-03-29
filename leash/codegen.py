@@ -363,8 +363,16 @@ class CodeGen:
         
         # Main function usually needs to be i32 main() in standard C compilation
         name = node.name
-        if name == 'main' and node.return_type == 'void':
-            ret_type = ir.IntType(32)
+        
+        is_main_with_args = False
+        if name == 'main':
+            if len(node.args) == 1 and node.args[0][1] == 'string[]':
+                is_main_with_args = True
+                arg_types = [ir.IntType(32), ir.IntType(8).as_pointer().as_pointer()]
+            
+            if node.return_type == 'void':
+                ret_type = ir.IntType(32)
+            
             func_type = ir.FunctionType(ret_type, arg_types)
 
         func = ir.Function(self.module, func_type, name=name)
@@ -374,11 +382,29 @@ class CodeGen:
         self.builder = ir.IRBuilder(block)
 
         # Allocate args
-        for i, (arg_name, arg_type_name) in enumerate(node.args):
-            func.args[i].name = arg_name
-            ptr = self.builder.alloca(func.args[i].type)
-            self.builder.store(func.args[i], ptr)
-            self.var_symtab[arg_name] = (ptr, arg_type_name)
+        if name == 'main' and len(node.args) == 1 and node.args[0][1] == 'string[]':
+            # We have i32 argc, i8** argv
+            argc_val = func.args[0]
+            argv_val = func.args[1]
+            argc_val.name = "argc"
+            argv_val.name = "argv"
+            
+            # Create a string[] slice struct [i32 len, i8** ptr]
+            leash_arg_name = node.args[0][0]
+            slice_type = ir.LiteralStructType([ir.IntType(32), ir.IntType(8).as_pointer().as_pointer()])
+            slice_val = ir.Constant(slice_type, ir.Undefined)
+            slice_val = self.builder.insert_value(slice_val, argc_val, 0)
+            slice_val = self.builder.insert_value(slice_val, argv_val, 1)
+            
+            ptr = self.builder.alloca(slice_type)
+            self.builder.store(slice_val, ptr)
+            self.var_symtab[leash_arg_name] = (ptr, 'string[]')
+        else:
+            for i, (arg_name, arg_type_name) in enumerate(node.args):
+                func.args[i].name = arg_name
+                ptr = self.builder.alloca(func.args[i].type)
+                self.builder.store(func.args[i], ptr)
+                self.var_symtab[arg_name] = (ptr, arg_type_name)
 
         # Initialize memory tracking for this function
         # array size = limit + 1 (garbage slot)
@@ -746,6 +772,19 @@ class CodeGen:
         args = []
         for arg_node in arg_nodes:
             val = self._codegen(arg_node)
+            
+            is_char_slice = False
+            if isinstance(val.type, ir.LiteralStructType) and len(val.type.elements) == 2:
+                 elt = val.type.elements[1]
+                 if (hasattr(ir, 'PointerType') and getattr(ir, 'PointerType') is not None and isinstance(elt, ir.PointerType) and getattr(elt, 'pointee', None) == ir.IntType(8)) or (getattr(elt, 'is_pointer', False) and getattr(elt, 'pointee', None) == ir.IntType(8)):
+                      is_char_slice = True
+
+            if is_char_slice:
+                format_str += "%.*s"
+                args.append(self.builder.extract_value(val, 0))
+                args.append(self.builder.extract_value(val, 1))
+                continue
+
             if isinstance(val.type, ir.IntType):
                 width = val.type.width
                 if width < 32:
@@ -996,24 +1035,75 @@ class CodeGen:
         # Standard binary ops
         right = self._codegen(node.right)
         
-        is_string = getattr(left.type, 'pointee', None) == ir.IntType(8) and getattr(right.type, 'pointee', None) == ir.IntType(8)
-        if hasattr(ir, 'PointerType') and getattr(ir, 'PointerType') is not None:
-            is_string = is_string and isinstance(left.type, ir.PointerType) and isinstance(right.type, ir.PointerType)
-        elif getattr(left.type, 'is_pointer', False):
-            is_string = is_string and left.type.is_pointer and right.type.is_pointer
+        def is_i8_ptr(typ):
+            if hasattr(ir, 'PointerType') and getattr(ir, 'PointerType') is not None:
+                return isinstance(typ, ir.PointerType) and getattr(typ, 'pointee', None) == ir.IntType(8)
+            return getattr(typ, 'is_pointer', False) and getattr(typ, 'pointee', None) == ir.IntType(8)
 
-        if is_string:
-            if node.op == '+':
+        is_string_l = is_i8_ptr(left.type)
+        is_string_r = is_i8_ptr(right.type)
+        
+        is_slice_l = isinstance(left.type, ir.LiteralStructType) and len(left.type.elements) == 2 and is_i8_ptr(left.type.elements[1])
+        is_slice_r = isinstance(right.type, ir.LiteralStructType) and len(right.type.elements) == 2 and is_i8_ptr(right.type.elements[1])
+        
+        is_char_l = isinstance(left.type, ir.IntType) and left.type.width == 8
+        is_char_r = isinstance(right.type, ir.IntType) and right.type.width == 8
+        
+        # Mixed string concatenation
+        if node.op == '+' and ((is_string_l and is_string_r) or (is_string_l and (is_char_r or is_slice_r)) or (is_string_r and (is_char_l or is_slice_l))):
+            len_l = None
+            if is_string_l:
                 len_l = self.builder.call(self.strlen, [left])
+            elif is_slice_l:
+                len_l = self.builder.extract_value(left, 0)
+            elif is_char_l:
+                len_l = ir.Constant(ir.IntType(32), 1)
+
+            len_r = None
+            if is_string_r:
                 len_r = self.builder.call(self.strlen, [right])
-                total_len = self.builder.add(len_l, len_r)
-                total_len_plus_1 = self.builder.add(total_len, ir.Constant(ir.IntType(32), 1))
-                new_str = self.builder.call(self.malloc, [total_len_plus_1])
-                self._track_alloc(new_str) # TRACK THIS ALLOCATION
+            elif is_slice_r:
+                len_r = self.builder.extract_value(right, 0)
+            elif is_char_r:
+                len_r = ir.Constant(ir.IntType(32), 1)
+
+            total_len = self.builder.add(len_l, len_r)
+            total_len_plus_1 = self.builder.add(total_len, ir.Constant(ir.IntType(32), 1))
+            new_str = self.builder.call(self.malloc, [total_len_plus_1])
+            self._track_alloc(new_str) # TRACK THIS ALLOCATION
+
+            # Copy left
+            if is_string_l:
                 self.builder.call(self.strcpy, [new_str, left])
+            elif is_slice_l:
+                ptr_l = self.builder.extract_value(left, 1)
+                self.builder.call(self.strncpy, [new_str, ptr_l, len_l])
+                null_pos = self.builder.gep(new_str, [len_l], inbounds=True)
+                self.builder.store(ir.Constant(ir.IntType(8), 0), null_pos)
+            elif is_char_l:
+                self.builder.store(left, self.builder.gep(new_str, [ir.Constant(ir.IntType(32), 0)], inbounds=True))
+                self.builder.store(ir.Constant(ir.IntType(8), 0), self.builder.gep(new_str, [ir.Constant(ir.IntType(32), 1)], inbounds=True))
+
+            # Concatenate right
+            if is_string_r:
                 self.builder.call(self.strcat, [new_str, right])
-                return new_str
-            elif node.op == '-':
+            elif is_slice_r:
+                ptr_r = self.builder.extract_value(right, 1)
+                dest = self.builder.gep(new_str, [len_l], inbounds=True)
+                self.builder.call(self.strncpy, [dest, ptr_r, len_r])
+                end_pos = self.builder.add(len_l, len_r)
+                self.builder.store(ir.Constant(ir.IntType(8), 0), self.builder.gep(new_str, [end_pos], inbounds=True))
+            elif is_char_r:
+                dest = self.builder.gep(new_str, [len_l], inbounds=True)
+                self.builder.store(right, dest)
+                end_pos = self.builder.add(len_l, ir.Constant(ir.IntType(32), 1))
+                self.builder.store(ir.Constant(ir.IntType(8), 0), self.builder.gep(new_str, [end_pos], inbounds=True))
+
+            return new_str
+
+        is_string = is_string_l and is_string_r
+        if is_string:
+            if node.op == '-':
                 p = self.builder.call(self.strstr, [left, right])
                 null_ptr = getattr(ir.IntType(8), 'as_pointer')()(None) if hasattr(ir.IntType(8), 'as_pointer') else ir.Constant(left.type, None)
                 null_ptr = ir.Constant(left.type, None) if not null_ptr else null_ptr
@@ -1223,6 +1313,29 @@ class CodeGen:
         if node.name == 'get':
             return self._emit_get_input(node)
         
+        if node.name == 'cstr':
+            arg_val = self._codegen(node.args[0])
+            # arg_val is i8*
+            length = self.builder.call(self.strlen, [arg_val])
+            slice_type = ir.LiteralStructType([ir.IntType(32), ir.IntType(8).as_pointer()])
+            slice_val = ir.Constant(slice_type, ir.Undefined)
+            slice_val = self.builder.insert_value(slice_val, length, 0)
+            slice_val = self.builder.insert_value(slice_val, arg_val, 1)
+            return slice_val
+            
+        if node.name == 'lstr':
+            arg_val = self._codegen(node.args[0])
+            # arg_val is {i32, i8*} slice
+            length = self.builder.extract_value(arg_val, 0)
+            ptr = self.builder.extract_value(arg_val, 1)
+            length_plus_1 = self.builder.add(length, ir.Constant(ir.IntType(32), 1))
+            new_str = self.builder.call(self.malloc, [length_plus_1])
+            self._track_alloc(new_str)
+            self.builder.call(self.strncpy, [new_str, ptr, length])
+            null_ptr = self.builder.gep(new_str, [length], inbounds=True)
+            self.builder.store(ir.Constant(ir.IntType(8), 0), null_ptr)
+            return new_str
+
         if node.name == 'tostring':
             arg_val = self._codegen(node.args[0])
             # format based on type
@@ -1306,6 +1419,10 @@ class CodeGen:
 
         if is_string and node.member == 'size':
             return self.builder.call(self.strlen, [val])
+
+        # Handle Array .size
+        if resolved and resolved.endswith(']') and '[' in resolved and node.member == 'size':
+            return self.builder.extract_value(val, 0)
 
         # 3. Handle Union variants and .cur
         if resolved in self.union_symtab:

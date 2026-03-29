@@ -131,12 +131,12 @@ def compile_file(input_file, output_name=None, is_run_mode=False):
         print(f"Successfully compiled '{input_file}' to '{output_name}'")
     return output_name
 
-def run_file(input_file):
+def run_file(input_file, args=[]):
     output_name = compile_file(input_file, output_name=".__temp_run_leash_exe", is_run_mode=True)
     executable_path = f"./{output_name}" if os.name != 'nt' else output_name
 
     try:
-        result = subprocess.run([executable_path])
+        result = subprocess.run([executable_path] + args)
         if result.returncode != 0:
             sys.exit(result.returncode)
     except Exception as e:
@@ -162,7 +162,7 @@ def main():
     input_file = sys.argv[2]
 
     if cmd == "run":
-        run_file(input_file)
+        run_file(input_file, sys.argv[3:])
     else:
         output_name = None
         if len(sys.argv) == 5 and sys.argv[3] == "to":

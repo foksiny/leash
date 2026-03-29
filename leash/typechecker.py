@@ -248,10 +248,11 @@ class TypeChecker:
                     resolved = self._resolve(t)
                     # Check if it's an array
                     if '[' in resolved and ']' in resolved:
-                        self._error(
-                            f"Argument {i+1} of show() is an array ('{t}'), which is not supported.",
-                            node=arg,
-                            tip="To print an array, use a `foreach` loop to iterate over its elements: `foreach i, v in<array> my_arr { show(v); }`")
+                        if resolved != 'char[]':
+                            self._error(
+                                f"Argument {i+1} of show() is an array ('{t}'), which is not supported.",
+                                node=arg,
+                                tip="To print an array, use a `foreach` loop to iterate over its elements: `foreach i, v in<array> my_arr { show(v); }`")
                     # Check if it's a struct
                     if resolved in self.struct_types:
                          self._error(
@@ -443,6 +444,9 @@ class TypeChecker:
                     raise LeashError(
                         f"Operator '{expr.op}' is not supported for strings",
                         tip="Strings support: + (concatenation), - (removal), == and != (comparison).")
+            # Mixed string concatenations
+            elif expr.op == '+' and ((left_b == 'string' and (right_b == 'char' or (right_t and right_t.startswith('char[')))) or (right_b == 'string' and (left_b == 'char' or (left_t and left_t.startswith('char['))))):
+                return 'string'
 
             # Bitwise and Modulo operations
             if expr.op in ('&', '|', '^', '<<', '>>', '%'):
@@ -477,6 +481,8 @@ class TypeChecker:
                 if (left_b == 'string') and (right_b == 'string'):
                      # already handled above
                      pass
+                elif expr.op == '+' and ((left_b == 'string' and (right_b == 'char' or (right_t and right_t.startswith('char[')))) or (right_b == 'string' and (left_b == 'char' or (left_t and left_t.startswith('char['))))):
+                     pass
                 else:
                     raise LeashError(
                         f"Cannot use operator '{expr.op}' between '{left_t}' and '{right_t}'",
@@ -506,6 +512,22 @@ class TypeChecker:
         if expr.name == 'show':
             return 'void'
         
+        if expr.name == 'cstr':
+            if len(expr.args) != 1:
+                self._error(f"Function 'cstr' expects 1 argument", node=expr)
+            arg_t = self._infer_type(expr.args[0])
+            if arg_t and self._resolve(arg_t) != 'string':
+                self._error(f"Argument 1 of 'cstr' must be 'string', got '{arg_t}'", node=expr.args[0])
+            return 'char[]'
+            
+        if expr.name == 'lstr':
+            if len(expr.args) != 1:
+                self._error(f"Function 'lstr' expects 1 argument", node=expr)
+            arg_t = self._infer_type(expr.args[0])
+            if arg_t and self._resolve(arg_t) != 'char[]':
+                self._error(f"Argument 1 of 'lstr' must be 'char[]', got '{arg_t}'", node=expr.args[0])
+            return 'string'
+
         if expr.name == 'get':
             if len(expr.args) > 1:
                 self._error(f"Function 'get' expects 0 or 1 argument(s), but got {len(expr.args)}", node=expr)
@@ -555,6 +577,10 @@ class TypeChecker:
 
         # String .size
         if self._base_type(resolved) == 'string' and expr.member == 'size':
+            return 'int'
+
+        # Array .size
+        if resolved and resolved.endswith(']') and '[' in resolved and expr.member == 'size':
             return 'int'
 
         # Struct member

@@ -11,8 +11,8 @@ syn keyword leashNull null
 " Types with optional bitwidths
 syn match leashType "\b\(int\|uint\|float\|bool\|string\|char\|void\|array\)\b\(<\d+>\)\?"
 
-" Builtin functions
-syn keyword leashBuiltin show get toint tofloat tostring
+" Builtin functions and properties
+syn keyword leashBuiltin show get toint tofloat tostring cstr lstr size cur name
 
 " Operators
 syn match leashOperator "&&\|||\|<<\|>>\|[+\-*/%&|^~!<>=]=\?\|!="

@@ -28,9 +28,9 @@ Leash is a strongly-typed, modern compiled programming language built on top of 
 You can run leash files (`.lsh`) directly using the `run` command, or compile them to an executable using the `compile` command.
 
 ### Running Directly
-To execute a Leash program without creating an output binary executable:
+To execute a Leash program without creating an output binary executable (and optionally pass command line arguments):
 ```bash
-python3 -m leash.cli run program.lsh
+python3 -m leash.cli run program.lsh [arguments...]
 ```
 
 ### Compiling
@@ -184,6 +184,19 @@ fnc main() : void {
 }
 ```
 
+### Command Line Arguments
+
+To accept command line arguments, you can declare `main` with an `args string[]` parameter:
+
+```leash
+fnc main(args string[]) : void {
+    show("Received ", args.size, " arguments!");
+    foreach i, arg in<array> args {
+        show(i, ": ", arg);
+    }
+}
+```
+
 *Note: The `show()` function is built-in and makes printing multiple values to console very easy!*
 
 ## Control Flow
@@ -249,6 +262,9 @@ Data is sequentially packed into memory and can be evaluated or constructed easi
 ```leash
 // Construct inline lists
 a: int<64>[10] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+
+// Query the size of an array dynamically
+len: int = a.size;
 
 // Iterate across items automatically using `in<array>`
 foreach index, value in<array> a {
@@ -405,6 +421,24 @@ if a != b {
 // Character Indexing & Sizes
 charVar: char = c[1];
 strLen: int = c.size; // evaluates length!
+```
+
+### Leash Strings vs Char Arrays
+
+Leash natively supports both automatically managed `string` types and lower-level `char[]` slices. You can easily convert and concatenate between them using the built-in `lstr()` and `cstr()` functions.
+
+```leash
+// cstr() converts a Leash string to a char[]
+str: char[] = cstr("Hello World");
+show(str);
+
+// lstr() converts a char[] to an implicitly managed Leash string
+s: string = lstr(str);
+
+// Standard string concatenation automatically handles mixed conversions:
+s = s + '!';            // concatenate with character
+s = s + cstr(" :D");    // concatenate with char[]
+show(s);
 ```
 
 ## Memory Management

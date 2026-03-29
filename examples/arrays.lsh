@@ -20,4 +20,5 @@ fnc main() : void {
     prt_iarr(b);
 
     show("b[2] = ", b[2]);
+    show("b.size = ", b.size);
 }

@@ -1,0 +1,9 @@
+fnc main(args string[]) : void {
+    argc: int = args.size;
+
+    show(argc);
+
+    foreach i, v in<array> args {
+        show(i, ": ", v);
+    }
+}

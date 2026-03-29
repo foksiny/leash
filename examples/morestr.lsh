@@ -1,0 +1,11 @@
+fnc main() : void {
+    str: char[] = cstr("Hello World");
+    show(str);
+
+    s: string = lstr(str); // lstr stands for leash string
+    s = s + '!'; // now you can concatenate strings with chars! :D
+    show(s);
+
+    s = s + cstr(" :D"); // and with cstr too! (it will be converted to leash string by the compiler)
+    show(s);
+}
