@@ -109,10 +109,10 @@ def compile_file(input_file, output_name=None, is_run_mode=False):
     if os.name == 'nt':
         # On Windows, try calling clang or gcc. If ms linker is preferred, would be `link`.
         # MSYS2/MinGW gcc works too.
-        link_cmd = [cc, obj_name, '-o', output_name]
+        link_cmd = [cc, obj_name, '-o', output_name, '-l:libgc.so.1']
     else:
         # Linux / Mac
-        link_cmd = [cc, obj_name, '-o', output_name, '-no-pie']
+        link_cmd = [cc, obj_name, '-o', output_name, '-no-pie', '-l:libgc.so.1']
 
     try:
         subprocess.run(link_cmd, check=True)

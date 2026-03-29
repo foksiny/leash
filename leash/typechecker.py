@@ -119,6 +119,8 @@ class TypeChecker:
             return 'uint'
         if t.startswith('float<') or t == 'float':
             return 'float'
+        if t.startswith('vec<') and t.endswith('>'):
+            return 'vec'
         return t
 
     def _is_valid_type(self, type_name):
@@ -128,7 +130,7 @@ class TypeChecker:
         if t.endswith(']') and '[' in t:
             t = t.split('[')[0]
         base = self._base_type(t)
-        if base in ('int', 'uint', 'float', 'string', 'char', 'bool', 'void'):
+        if base in ('int', 'uint', 'float', 'string', 'char', 'bool', 'void', 'vec'):
             return True
         if t in self.struct_types or t in self.union_types or t in self.enum_types:
             return True
@@ -292,6 +294,21 @@ class TypeChecker:
             self.var_types[stmt.value_var] = elem_t
             for s in stmt.body:
                 self._check_stmt(s)
+        elif isinstance(stmt, ForeachStringStatement):
+            self._infer_type(stmt.string_expr)
+            self.var_types[stmt.index_var] = 'int'
+            self.var_types[stmt.char_var] = 'char'
+            for s in stmt.body:
+                self._check_stmt(s)
+        elif isinstance(stmt, ForeachVectorStatement):
+            vec_t = self._infer_type(stmt.vector_expr)
+            elem_t = 'any' # default if unknown
+            if vec_t and vec_t.startswith('vec<'):
+                elem_t = vec_t[4:-1]
+            self.var_types[stmt.index_var] = 'int'
+            self.var_types[stmt.value_var] = elem_t
+            for s in stmt.body:
+                self._check_stmt(s)
 
     def _check_var_decl(self, stmt):
         if stmt.name in self.var_types:
@@ -312,6 +329,10 @@ class TypeChecker:
         # Add to current scope
         self.var_types[stmt.name] = bare_decl_type
         self.var_immutable[stmt.name] = is_imut
+        
+        if stmt.value is None:
+             return # Default initialization (codegen should handle this)
+             
         val_type = self._infer_type(stmt.value)
 
         # If the assigned value comes from a function returning imut, the variable becomes immutable
@@ -410,6 +431,8 @@ class TypeChecker:
             return self._check_unary_op(expr)
         elif isinstance(expr, Call):
             return self._check_call(expr)
+        elif isinstance(expr, MethodCall):
+            return self._check_method_call(expr)
         elif isinstance(expr, MemberAccess):
             return self._check_member_access(expr)
         elif isinstance(expr, IndexAccess):
@@ -715,3 +738,38 @@ class TypeChecker:
                              tip=f"Available members: {', '.join(members)}")
         
         return expr.enum_name
+
+    def _check_method_call(self, expr):
+        base_t = self._infer_type(expr.expr)
+        if not base_t:
+            return None
+        base_b = self._base_type(base_t)
+        
+        if base_b == 'vec':
+            inner_t = base_t[4:-1]
+            if expr.method in ('pushb', 'pushf', 'insert'):
+                 # These should take one or two arguments and return void (or maybe something else, let's assume void)
+                 return 'void'
+            elif expr.method in ('popb', 'popf'):
+                 return inner_t
+            elif expr.method == 'size':
+                 return 'int'
+            elif expr.method == 'get':
+                 return inner_t
+            elif expr.method == 'set':
+                 return 'void'
+            elif expr.method == 'clear':
+                 return 'void'
+            else:
+                 raise LeashError(f"Vector has no method named '{expr.method}'", node=expr)
+        
+        # String methods? Currently string only has .size which is member access
+        # but maybe someone uses .size()
+        if base_b == 'string' and expr.method == 'size':
+             return 'int'
+        
+        # Array methods?
+        if base_b == 'array' and expr.method == 'size':
+             return 'int'
+
+        raise LeashError(f"Type '{base_t}' has no method named '{expr.method}'", node=expr)

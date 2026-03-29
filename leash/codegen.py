@@ -19,10 +19,8 @@ class CodeGen:
         self.stderr_var = ir.GlobalVariable(self.module, ir.IntType(8).as_pointer(), name="stderr")
         self.stderr_var.linkage = 'external'
         
-        # Memory tracking for SAMM (Scope-based Automatic Memory Management)
-        self.current_func_allocs_array = None
-        self.current_func_alloc_counter = None
-        self.current_func_alloc_limit = 511 # Use 511 + 1 (garbage slot)
+        # Boehm GC configuration (replacing legacy SAMM)
+        self.current_func_alloc_limit = 0 # Not used with GC
         
         self.setup_builtins()
 
@@ -32,9 +30,6 @@ class CodeGen:
 
         strlen_ty = ir.FunctionType(ir.IntType(32), [ir.IntType(8).as_pointer()])
         self.strlen = ir.Function(self.module, strlen_ty, name="strlen")
-
-        malloc_ty = ir.FunctionType(ir.IntType(8).as_pointer(), [ir.IntType(32)])
-        self.malloc = ir.Function(self.module, malloc_ty, name="malloc")
 
         strcpy_ty = ir.FunctionType(ir.IntType(8).as_pointer(), [ir.IntType(8).as_pointer(), ir.IntType(8).as_pointer()])
         self.strcpy = ir.Function(self.module, strcpy_ty, name="strcpy")
@@ -57,14 +52,22 @@ class CodeGen:
         fprintf_ty = ir.FunctionType(ir.IntType(32), [ir.IntType(8).as_pointer(), ir.IntType(8).as_pointer()], var_arg=True)
         self.fprintf = ir.Function(self.module, fprintf_ty, name="fprintf")
 
+        # Boehm GC functions
+        gc_init_ty = ir.FunctionType(ir.VoidType(), [])
+        self.gc_init = ir.Function(self.module, gc_init_ty, name="GC_init")
+
+        gc_malloc_ty = ir.FunctionType(ir.IntType(8).as_pointer(), [ir.IntType(32)])
+        self.malloc = ir.Function(self.module, gc_malloc_ty, name="GC_malloc")
+
+        gc_realloc_ty = ir.FunctionType(ir.IntType(8).as_pointer(), [ir.IntType(8).as_pointer(), ir.IntType(32)])
+        self.realloc = ir.Function(self.module, gc_realloc_ty, name="GC_realloc")
+
+        # Free is still declared just in case, but GC_malloc doesn't need it.
         free_ty = ir.FunctionType(ir.VoidType(), [ir.IntType(8).as_pointer()])
         self.free = ir.Function(self.module, free_ty, name="free")
 
         getchar_ty = ir.FunctionType(ir.IntType(32), [])
         self.getchar = ir.Function(self.module, getchar_ty, name="getchar")
-
-        realloc_ty = ir.FunctionType(ir.IntType(8).as_pointer(), [ir.IntType(8).as_pointer(), ir.IntType(32)])
-        self.realloc = ir.Function(self.module, realloc_ty, name="realloc")
 
         atoll_ty = ir.FunctionType(ir.IntType(64), [ir.IntType(8).as_pointer()])
         self.atoll = ir.Function(self.module, atoll_ty, name="atoll")
@@ -74,6 +77,9 @@ class CodeGen:
 
         sprintf_ty = ir.FunctionType(ir.IntType(32), [ir.IntType(8).as_pointer(), ir.IntType(8).as_pointer()], var_arg=True)
         self.sprintf = ir.Function(self.module, sprintf_ty, name="sprintf")
+
+        memmove_ty = ir.FunctionType(ir.IntType(8).as_pointer(), [ir.IntType(8).as_pointer(), ir.IntType(8).as_pointer(), ir.IntType(32)])
+        self.memmove = ir.Function(self.module, memmove_ty, name="memmove")
 
     def _emit_const_str(self, string_val):
         """Create a global string constant and return a pointer to it (i8*)."""
@@ -86,81 +92,37 @@ class CodeGen:
         return self.builder.bitcast(global_fmt, ir.IntType(8).as_pointer())
 
     def _track_alloc(self, ptr):
-        """Record an allocation in the current function's tracking array. Branch-free for safety."""
-        if self.current_func_allocs_array is None:
-            return ptr
-            
-        # cast to i8* for the array
-        ptr_cast = self.builder.bitcast(ptr, ir.IntType(8).as_pointer())
-        
-        # curr_idx = load counter
-        curr_idx = self.builder.load(self.current_func_alloc_counter)
-        
-        # check if counter < limit
-        limit_val = ir.Constant(ir.IntType(32), self.current_func_alloc_limit)
-        is_safe = self.builder.icmp_unsigned('<', curr_idx, limit_val)
-        
-        # Use a branch-free select to determine where to store
-        # If unsafe, we store at the last index (the "garbage" slot)
-        safe_idx = self.builder.select(is_safe, curr_idx, limit_val)
-        slot = self.builder.gep(self.current_func_allocs_array, [ir.Constant(ir.IntType(32), 0), safe_idx])
-        self.builder.store(ptr_cast, slot)
-        
-        # only increment if safe
-        new_idx = self.builder.select(is_safe, self.builder.add(curr_idx, ir.Constant(ir.IntType(32), 1)), curr_idx)
-        self.builder.store(new_idx, self.current_func_alloc_counter)
-            
+        """No-op since we are using Boeing GC."""
         return ptr
 
     def _emit_cleanup(self, ret_val=None):
-        """Emit code to free all tracked allocations except (optionally) the return value."""
-        if self.current_func_allocs_array is None:
-            return
+        """No-op since we are using Boeing GC."""
+        pass
 
-        counter = self.builder.load(self.current_func_alloc_counter)
-        
-        # Loop: i = 0; while i < counter { p = array[i]; if p != ret_val free(p); i++; }
-        loop_cond_bb = self.builder.function.append_basic_block('cleanup_cond')
-        loop_body_bb = self.builder.function.append_basic_block('cleanup_body')
-        loop_end_bb = self.builder.function.append_basic_block('cleanup_end')
-        
-        idx_ptr = self.builder.alloca(ir.IntType(32))
-        self.builder.store(ir.Constant(ir.IntType(32), 0), idx_ptr)
-        self.builder.branch(loop_cond_bb)
-        
-        self.builder.position_at_start(loop_cond_bb)
-        i = self.builder.load(idx_ptr)
-        is_less = self.builder.icmp_unsigned('<', i, counter)
-        self.builder.cbranch(is_less, loop_body_bb, loop_end_bb)
-        
-        self.builder.position_at_start(loop_body_bb)
-        ptr_slot = self.builder.gep(self.current_func_allocs_array, [ir.Constant(ir.IntType(32), 0), i])
-        p = self.builder.load(ptr_slot)
-        
-        # Check if p is not null
-        null_ptr = ir.Constant(ir.IntType(8).as_pointer(), None)
-        is_not_null = self.builder.icmp_unsigned('!=', p, null_ptr)
-        
-        with self.builder.if_then(is_not_null):
-            if ret_val is not None and isinstance(ret_val.type, ir.PointerType):
-                # cast ret_val to i8* for comparison
-                rv_cast = self.builder.bitcast(ret_val, ir.IntType(8).as_pointer()) if ret_val.type != ir.IntType(8).as_pointer() else ret_val
-                is_not_ret = self.builder.icmp_unsigned('!=', p, rv_cast)
-                with self.builder.if_then(is_not_ret):
-                    self.builder.call(self.free, [p])
-            elif ret_val is not None:
-                # If ret_val is not a pointer, it can never match p
-                self.builder.call(self.free, [p])
-            else:
-                self.builder.call(self.free, [p])
-                
-        # increment i
-        next_i = self.builder.add(i, ir.Constant(ir.IntType(32), 1))
-        self.builder.store(next_i, idx_ptr)
-        self.builder.branch(loop_cond_bb)
-        
-        self.builder.position_at_start(loop_end_bb)
 
+    def _emit_default_value(self, type_name):
+        resolved = self._resolve_type_name(type_name)
+        llvm_type = self._get_llvm_type(resolved)
+        
+        if resolved in ('int', 'uint') or resolved.startswith('int<') or resolved.startswith('uint<'):
+             return ir.Constant(llvm_type, 0)
+        if resolved == 'float' or resolved.startswith('float<'):
+             return ir.Constant(llvm_type, 0.0)
+        if resolved == 'bool' or resolved == 'char':
+             return ir.Constant(llvm_type, 0)
+        if resolved == 'string':
+             return self._emit_const_str("")
+        if resolved.startswith('vec<'):
+             # Empty vector: { null, 0, 0 }
+             # First element's element type's pointer type
+             ptr_ty = llvm_type.elements[0]
+             return ir.Constant(llvm_type, [ir.Constant(ptr_ty, None), ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)])
+        if resolved.endswith(']') and '[' in resolved:
+             # Empty array/slice: { 0, null }
+             ptr_ty = llvm_type.elements[1]
+             return ir.Constant(llvm_type, [ir.Constant(ir.IntType(32), 0), ir.Constant(ptr_ty, None)])
+        
+        return ir.Constant(llvm_type, [ir.Constant(e, 0) if isinstance(e, ir.IntType) else ir.Constant(e, None) for e in llvm_type.elements])
 
     def generate_code(self, node):
         return self._codegen(node)
@@ -175,7 +137,7 @@ class CodeGen:
 
     def _get_leash_type_name(self, node):
         """Helper to try and get the Leash type name for an AST node during codegen."""
-        from .ast_nodes import Identifier, MemberAccess, IndexAccess, Call, EnumMemberAccess, CastExpr, TypeConvExpr
+        from .ast_nodes import Identifier, MemberAccess, IndexAccess, Call, EnumMemberAccess, CastExpr, TypeConvExpr, MethodCall
         if isinstance(node, Identifier):
             if node.name in self.var_symtab:
                  return self.var_symtab[node.name][1]
@@ -199,6 +161,21 @@ class CodeGen:
         elif isinstance(node, Call):
             if node.name == 'tostring': return 'string'
             if node.name == 'get': return 'string'
+            if node.name in self.func_symtab:
+                 # We don't store return types in func_symtab currently... 
+                 # Wait, CodeGen doesn't have a full func signature map like TypeChecker?
+                 pass
+        elif isinstance(node, MethodCall):
+            base_type = self._get_leash_type_name(node.expr)
+            resolved = self._resolve_type_name(base_type)
+            if resolved.startswith('vec<'):
+                inner = resolved[4:-1]
+                if node.method in ('get', 'popb', 'popf'):
+                    return inner
+                if node.method == 'size':
+                    return 'int'
+            if resolved == 'string' or resolved.endswith(']'):
+                if node.method == 'size': return 'int'
         return 'int'
 
     def _resolve_type_name(self, type_name):
@@ -224,6 +201,11 @@ class CodeGen:
             base = type_name.split('[')[0]
             base_type = self._get_llvm_type(base)
             return ir.LiteralStructType([ir.IntType(32), base_type.as_pointer()])
+            
+        if type_name.startswith('vec<') and type_name.endswith('>'):
+            inner = type_name[4:-1]
+            inner_llvm = self._get_llvm_type(inner)
+            return ir.LiteralStructType([inner_llvm.as_pointer(), ir.IntType(32), ir.IntType(32)])
             
         if type_name in ('int', 'uint'):
             return ir.IntType(32)
@@ -381,6 +363,9 @@ class CodeGen:
         block = func.append_basic_block(name="entry")
         self.builder = ir.IRBuilder(block)
 
+        if name == 'main':
+             self.builder.call(self.gc_init, [])
+
         # Allocate args
         if name == 'main' and len(node.args) == 1 and node.args[0][1] == 'string[]':
             # We have i32 argc, i8** argv
@@ -406,11 +391,7 @@ class CodeGen:
                 self.builder.store(func.args[i], ptr)
                 self.var_symtab[arg_name] = (ptr, arg_type_name)
 
-        # Initialize memory tracking for this function
-        # array size = limit + 1 (garbage slot)
-        self.current_func_allocs_array = self.builder.alloca(ir.ArrayType(ir.IntType(8).as_pointer(), self.current_func_alloc_limit + 1), name="allocs")
-        self.current_func_alloc_counter = self.builder.alloca(ir.IntType(32), name="alloc_count")
-        self.builder.store(ir.Constant(ir.IntType(32), 0), self.current_func_alloc_counter)
+        # SAMM initialization removed (Boeing GC is now used)
 
         for stmt in node.body:
             self._codegen(stmt)
@@ -466,7 +447,10 @@ class CodeGen:
         # Check if we should pass the target type to the expression (useful for ArrayInit)
         old_target = self.current_target_type
         self.current_target_type = node.var_type
-        val = self._codegen(node.value)
+        if node.value is None:
+             val = self._emit_default_value(node.var_type)
+        else:
+             val = self._codegen(node.value)
         self.current_target_type = old_target
 
         # If the declared type maps to a different LLVM type, cast
@@ -1007,6 +991,93 @@ class CodeGen:
             
         self.builder.position_at_end(merge_bb)
 
+    def _codegen_ForeachStringStatement(self, node):
+        str_val = self._codegen(node.string_expr)
+        length_val = self.builder.call(self.strlen, [str_val])
+        
+        idx_ptr = self.builder.alloca(ir.IntType(32), name=node.index_var)
+        self.builder.store(ir.Constant(ir.IntType(32), 0), idx_ptr)
+        self.var_symtab[node.index_var] = (idx_ptr, 'int')
+        
+        val_ptr = self.builder.alloca(ir.IntType(8), name=node.char_var)
+        self.var_symtab[node.char_var] = (val_ptr, 'char')
+        
+        cond_bb = self.builder.function.append_basic_block('foreach_str_cond')
+        body_bb = self.builder.function.append_basic_block('foreach_str_body')
+        merge_bb = self.builder.function.append_basic_block('foreach_str_merge')
+        
+        self.builder.branch(cond_bb)
+        self.builder.position_at_end(cond_bb)
+        
+        curr_idx = self.builder.load(idx_ptr)
+        cmp_res = self.builder.icmp_signed('<', curr_idx, length_val)
+        self.builder.cbranch(cmp_res, body_bb, merge_bb)
+        
+        self.builder.position_at_end(body_bb)
+        
+        curr_char_ptr = self.builder.gep(str_val, [curr_idx], inbounds=True)
+        curr_char_val = self.builder.load(curr_char_ptr)
+        self.builder.store(curr_char_val, val_ptr)
+        
+        for stmt in node.body:
+            self._codegen(stmt)
+            
+        if not self.builder.block.is_terminated:
+            next_idx = self.builder.add(curr_idx, ir.Constant(ir.IntType(32), 1))
+            self.builder.store(next_idx, idx_ptr)
+            self.builder.branch(cond_bb)
+            
+        self.builder.position_at_end(merge_bb)
+
+    def _codegen_ForeachVectorStatement(self, node):
+        vec_val = self._codegen(node.vector_expr)
+        
+        data_ptr = self.builder.extract_value(vec_val, 0)
+        size_val = self.builder.extract_value(vec_val, 1)
+        
+        idx_ptr = self.builder.alloca(ir.IntType(32), name=node.index_var)
+        self.builder.store(ir.Constant(ir.IntType(32), 0), idx_ptr)
+        self.var_symtab[node.index_var] = (idx_ptr, 'int')
+        
+        elem_type = data_ptr.type.pointee
+        val_ptr = self.builder.alloca(elem_type, name=node.value_var)
+        
+        # Get element type name for symtab
+        try:
+             _, full_type_name = self._codegen_lvalue(node.vector_expr)
+             elem_type_name = full_type_name[4:-1] if full_type_name.startswith('vec<') else 'int'
+        except:
+             elem_type_name = 'int'
+        
+        self.var_symtab[node.value_var] = (val_ptr, elem_type_name)
+        
+        cond_bb = self.builder.function.append_basic_block('foreach_vec_cond')
+        body_bb = self.builder.function.append_basic_block('foreach_vec_body')
+        merge_bb = self.builder.function.append_basic_block('foreach_vec_merge')
+        
+        self.builder.branch(cond_bb)
+        self.builder.position_at_end(cond_bb)
+        
+        curr_idx = self.builder.load(idx_ptr)
+        cmp_res = self.builder.icmp_signed('<', curr_idx, size_val)
+        self.builder.cbranch(cmp_res, body_bb, merge_bb)
+        
+        self.builder.position_at_end(body_bb)
+        
+        curr_elem_ptr = self.builder.gep(data_ptr, [curr_idx], inbounds=True)
+        curr_elem_val = self.builder.load(curr_elem_ptr)
+        self.builder.store(curr_elem_val, val_ptr)
+        
+        for stmt in node.body:
+            self._codegen(stmt)
+            
+        if not self.builder.block.is_terminated:
+            next_idx = self.builder.add(curr_idx, ir.Constant(ir.IntType(32), 1))
+            self.builder.store(next_idx, idx_ptr)
+            self.builder.branch(cond_bb)
+            
+        self.builder.position_at_end(merge_bb)
+
     def _codegen_BinaryOp(self, node):
         left = self._codegen(node.left)
         
@@ -1308,6 +1379,200 @@ class CodeGen:
         
         # 5. Track for SAMM and return
         return self._track_alloc(final_buf)
+
+    def _codegen_MethodCall(self, node):
+        base_ptr, type_name = self._codegen_lvalue(node.expr)
+        resolved = self._resolve_type_name(type_name)
+        
+        if resolved.startswith('vec<'):
+            return self._codegen_vector_method(base_ptr, resolved, node.method, node.args)
+        
+        if resolved == 'string' and node.method == 'size':
+             val = self.builder.load(base_ptr)
+             return self.builder.call(self.strlen, [val])
+        
+        if resolved.endswith(']') and node.method == 'size':
+             val = self.builder.load(base_ptr)
+             return self.builder.extract_value(val, 0)
+             
+        raise LeashError(f"Method '{node.method}' is not implemented for type '{resolved}'", node=node)
+
+    def _update_vec_struct(self, vec_ptr, data, size, cap):
+        """Update the fields of a vector struct through its pointer."""
+        struct_val = self.builder.load(vec_ptr)
+        struct_val = self.builder.insert_value(struct_val, data, 0)
+        struct_val = self.builder.insert_value(struct_val, size, 1)
+        struct_val = self.builder.insert_value(struct_val, cap, 2)
+        self.builder.store(struct_val, vec_ptr)
+
+    def _vector_check_capacity(self, vec_ptr, data, size, cap, elem_llvm):
+        """Check if capacity is enough, otherwise allocate larger buffer. Safe for SAMM (uses malloc)."""
+        needed = self.builder.icmp_unsigned('>=', size, cap)
+        
+        merge_bb = self.builder.function.append_basic_block('vec_cap_merge')
+        needed_bb = self.builder.function.append_basic_block('vec_cap_needed')
+        
+        self.builder.cbranch(needed, needed_bb, merge_bb)
+        
+        self.builder.position_at_end(needed_bb)
+        # new_cap = (cap == 0) ? 8 : cap * 2
+        is_zero = self.builder.icmp_unsigned('==', cap, ir.Constant(ir.IntType(32), 0))
+        new_cap = self.builder.select(is_zero, ir.Constant(ir.IntType(32), 8), self.builder.mul(cap, ir.Constant(ir.IntType(32), 2)))
+        
+        # total_bytes = new_cap * sizeof(elem)
+        # sizeof(elem) trick via gep
+        dummy_ptr = ir.Constant(elem_llvm.as_pointer(), None)
+        elem_size_ptr = self.builder.gep(dummy_ptr, [ir.Constant(ir.IntType(32), 1)], inbounds=True)
+        elem_size = self.builder.ptrtoint(elem_size_ptr, ir.IntType(32))
+        total_bytes = self.builder.mul(new_cap, elem_size)
+        
+        new_data_bytes = self.builder.call(self.malloc, [total_bytes])
+        self._track_alloc(new_data_bytes)
+        
+        # Copy old data
+        is_not_null = self.builder.icmp_unsigned('!=', self.builder.ptrtoint(data, ir.IntType(64)), ir.Constant(ir.IntType(64), 0))
+        with self.builder.if_then(is_not_null):
+            old_bytes = self.builder.bitcast(data, ir.IntType(8).as_pointer())
+            copy_bytes = self.builder.mul(size, elem_size)
+            self.builder.call(self.memmove, [new_data_bytes, old_bytes, copy_bytes])
+        
+        new_data = self.builder.bitcast(new_data_bytes, elem_llvm.as_pointer())
+        self._update_vec_struct(vec_ptr, new_data, size, new_cap)
+        self.builder.branch(merge_bb)
+        
+        self.builder.position_at_end(merge_bb)
+        
+        # Reload current state
+        final_struct = self.builder.load(vec_ptr)
+        final_data = self.builder.extract_value(final_struct, 0)
+        final_cap = self.builder.extract_value(final_struct, 2)
+        return final_data, final_cap
+
+    def _codegen_vector_method(self, vec_ptr, vec_type_name, method, args):
+        inner_type_name = vec_type_name[4:-1]
+        inner_llvm = self._get_llvm_type(inner_type_name)
+        
+        struct_val = self.builder.load(vec_ptr)
+        data = self.builder.extract_value(struct_val, 0)
+        size = self.builder.extract_value(struct_val, 1)
+        cap = self.builder.extract_value(struct_val, 2)
+        
+        if method == 'pushb':
+            val = self._codegen(args[0])
+            val = self._emit_cast(val, inner_llvm)
+            
+            new_data, new_cap = self._vector_check_capacity(vec_ptr, data, size, cap, inner_llvm)
+            
+            # Store at data[size]
+            store_ptr = self.builder.gep(new_data, [size], inbounds=True)
+            self.builder.store(val, store_ptr)
+            
+            # Update size
+            new_size = self.builder.add(size, ir.Constant(ir.IntType(32), 1))
+            self._update_vec_struct(vec_ptr, new_data, new_size, new_cap)
+            return None
+            
+        elif method == 'popb':
+            # return data[size-1], size--
+            new_size = self.builder.sub(size, ir.Constant(ir.IntType(32), 1))
+            res_ptr = self.builder.gep(data, [new_size], inbounds=True)
+            res_val = self.builder.load(res_ptr)
+            
+            self._update_vec_struct(vec_ptr, data, new_size, cap)
+            return res_val
+            
+        elif method == 'size':
+            return size
+            
+        elif method == 'get':
+            idx = self._codegen(args[0])
+            idx = self._emit_cast(idx, ir.IntType(32))
+            ptr = self.builder.gep(data, [idx], inbounds=True)
+            return self.builder.load(ptr)
+            
+        elif method == 'set':
+            idx = self._codegen(args[0])
+            idx = self._emit_cast(idx, ir.IntType(32))
+            val = self._codegen(args[1])
+            val = self._emit_cast(val, inner_llvm)
+            ptr = self.builder.gep(data, [idx], inbounds=True)
+            self.builder.store(val, ptr)
+            return None
+            
+        elif method == 'clear':
+            self._update_vec_struct(vec_ptr, data, ir.Constant(ir.IntType(32), 0), cap)
+            return None
+            
+        elif method == 'pushf':
+            val = self._codegen(args[0])
+            val = self._emit_cast(val, inner_llvm)
+            
+            new_data, new_cap = self._vector_check_capacity(vec_ptr, data, size, cap, inner_llvm)
+            
+            # memmove data[1..size] = data[0..size-1]
+            old_data_bytes = self.builder.bitcast(new_data, ir.IntType(8).as_pointer())
+            new_dst_bytes = self.builder.gep(old_data_bytes, [self._type_byte_size(inner_llvm)], inbounds=True)
+            
+            dummy_ptr = ir.Constant(inner_llvm.as_pointer(), None)
+            elem_size = self.builder.ptrtoint(self.builder.gep(dummy_ptr, [ir.Constant(ir.IntType(32), 1)]), ir.IntType(32))
+            copy_bytes = self.builder.mul(size, elem_size)
+            
+            self.builder.call(self.memmove, [new_dst_bytes, old_data_bytes, copy_bytes])
+            
+            # Store at data[0]
+            self.builder.store(val, new_data)
+            
+            new_size = self.builder.add(size, ir.Constant(ir.IntType(32), 1))
+            self._update_vec_struct(vec_ptr, new_data, new_size, new_cap)
+            return None
+            
+        elif method == 'popf':
+            # res = data[0], memmove data[0..size-2] = data[1..size-1], size--
+            res_val = self.builder.load(data)
+            
+            new_size = self.builder.sub(size, ir.Constant(ir.IntType(32), 1))
+            
+            dst_bytes = self.builder.bitcast(data, ir.IntType(8).as_pointer())
+            src_bytes = self.builder.gep(dst_bytes, [self._type_byte_size(inner_llvm)], inbounds=True)
+            
+            dummy_ptr = ir.Constant(inner_llvm.as_pointer(), None)
+            elem_size = self.builder.ptrtoint(self.builder.gep(dummy_ptr, [ir.Constant(ir.IntType(32), 1)]), ir.IntType(32))
+            copy_bytes = self.builder.mul(new_size, elem_size)
+            
+            self.builder.call(self.memmove, [dst_bytes, src_bytes, copy_bytes])
+            
+            self._update_vec_struct(vec_ptr, data, new_size, cap)
+            return res_val
+            
+        elif method == 'insert':
+            idx = self._codegen(args[0])
+            idx = self._emit_cast(idx, ir.IntType(32))
+            val = self._codegen(args[1])
+            val = self._emit_cast(val, inner_llvm)
+            
+            new_data, new_cap = self._vector_check_capacity(vec_ptr, data, size, cap, inner_llvm)
+            
+            # memmove data[idx+1..size] = data[idx..size-1]
+            elem_size = self._type_byte_size(inner_llvm)
+            
+            data_bytes = self.builder.bitcast(new_data, ir.IntType(8).as_pointer())
+            src_bytes = self.builder.gep(data_bytes, [self.builder.mul(idx, ir.Constant(ir.IntType(32), elem_size))], inbounds=True)
+            dst_bytes = self.builder.gep(src_bytes, [ir.Constant(ir.IntType(32), elem_size)], inbounds=True)
+            
+            copy_count = self.builder.sub(size, idx)
+            copy_bytes = self.builder.mul(copy_count, ir.Constant(ir.IntType(32), elem_size))
+            
+            self.builder.call(self.memmove, [dst_bytes, src_bytes, copy_bytes])
+            
+            # Store at data[idx]
+            store_ptr = self.builder.gep(new_data, [idx], inbounds=True)
+            self.builder.store(val, store_ptr)
+            
+            new_size = self.builder.add(size, ir.Constant(ir.IntType(32), 1))
+            self._update_vec_struct(vec_ptr, new_data, new_size, new_cap)
+            return None
+
+        raise LeashError(f"Vector method '{method}' not fully implemented yet", node=vec_ptr)
 
     def _codegen_Call(self, node):
         if node.name == 'get':

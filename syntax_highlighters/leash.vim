@@ -4,15 +4,15 @@ if exists("b:current_syntax")
 endif
 
 " Keywords
-syn keyword leashKeyword fnc def struct union enum type return if also else while for do foreach in imut
+syn keyword leashKeyword fnc def struct union enum type return if also else while for do foreach in imut vector vec
 syn keyword leashBoolean true false
 syn keyword leashNull null
 
 " Types with optional bitwidths
-syn match leashType "\b\(int\|uint\|float\|bool\|string\|char\|void\|array\)\b\(<\d+>\)\?"
+syn match leashType "\b\(int\|uint\|float\|bool\|string\|char\|void\|array\|vec\)\b\(<\d+>\)\?"
 
 " Builtin functions and properties
-syn keyword leashBuiltin show get toint tofloat tostring cstr lstr size cur name
+syn keyword leashBuiltin show get set toint tofloat tostring cstr lstr size cur name pushb popb pushf popf insert clear
 
 " Operators
 syn match leashOperator "&&\|||\|<<\|>>\|[+\-*/%&|^~!<>=]=\?\|!="

@@ -38,6 +38,13 @@ examples/strops
 examples/structs
 examples/customtypes
 examples/enums
+examples/vector
+examples/imut
+examples/input
+examples/binops
+examples/morestr
+examples/totype
+examples/args
 
 # Trash
 trash/

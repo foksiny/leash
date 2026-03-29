@@ -1,0 +1,34 @@
+fnc split(str string, delim char) : vec<string> {
+    out: vec<string>;
+    word: string;
+    foreach i, c in<string> str {
+        if c == delim {
+            out.pushb(word); // pushb is push back
+            word = "";
+        } else {
+            word = word + c;
+        }
+    }
+    out.pushb(word);
+    return out;
+}
+
+fnc main() : void {
+    s: string = "Hello, world!";
+    d: char = ' ';
+    v: vec<string> = split(s, d);
+    foreach i, w in<vector> v {
+        show(i, ": ", w);
+    }
+}
+
+// vector options:
+// pushb -- push back
+// popb -- pop back
+// size -- get size
+// pushf -- push front
+// popf -- pop front
+// get -- get element at index
+// set -- set element at index
+// clear -- clear vector
+// insert -- insert element at index

@@ -90,6 +90,20 @@ class ForeachArrayStatement(Statement):
         self.array_expr = array_expr
         self.body = body
 
+class ForeachStringStatement(Statement):
+    def __init__(self, index_var, char_var, string_expr, body):
+        self.index_var = index_var
+        self.char_var = char_var
+        self.string_expr = string_expr
+        self.body = body
+
+class ForeachVectorStatement(Statement):
+    def __init__(self, index_var, value_var, vector_expr, body):
+        self.index_var = index_var
+        self.value_var = value_var
+        self.vector_expr = vector_expr
+        self.body = body
+
 class ReturnStatement(Statement):
     def __init__(self, value):
         self.value = value
@@ -119,6 +133,12 @@ class UnaryOp(Expression):
 class Call(Expression):
     def __init__(self, name, args):
         self.name = name
+        self.args = args
+
+class MethodCall(Expression):
+    def __init__(self, expr, method, args):
+        self.expr = expr
+        self.method = method
         self.args = args
 
 class Identifier(Expression):

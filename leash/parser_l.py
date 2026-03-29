@@ -6,6 +6,7 @@ from .ast_nodes import (
     MemberAccess, NumberLiteral, StringLiteral, BoolLiteral,
     CastExpr, TypeAlias, StructInit, ArrayInit, IndexAccess,
     CharLiteral, NullLiteral, ForeachStructStatement, ForeachArrayStatement,
+    ForeachStringStatement, ForeachVectorStatement, MethodCall,
     UnionDef, EnumMemberAccess, EnumDef, DoWhileStatement, FloatLiteral,
     TypeConvExpr, ShowStatement
 )
@@ -137,15 +138,23 @@ class Parser:
             self.eat('IMUT')
             is_imut = True
         tok = self.current()
-        if tok.type in ('INT', 'VOID', 'IDENT', 'STRING', 'CHAR', 'BOOL', 'FLOAT', 'UINT'):
+        if tok.type in ('INT', 'VOID', 'IDENT', 'STRING', 'CHAR', 'BOOL', 'FLOAT', 'UINT', 'VEC'):
             base = self.eat(tok.type).value
-            if tok.type != 'IDENT':
+            if tok.type not in ('IDENT', 'VEC'):
                 base = tok.type.lower()
             if self.current().type == 'LT':
                 self.eat('LT')
-                size = self.eat('NUMBER').value
+                is_type = False
+                if self.current().type in self.TYPE_STARTERS or self.current().type in ('IDENT', 'VEC'):
+                     # if it's a type name inside < >, it's a generic (like vec<string>)
+                     base = f"{base}<{self.parse_type()}>"
+                     is_type = True
+                
+                if not is_type:
+                    size = self.eat('NUMBER').value
+                    base = f"{base}<{size}>"
+                
                 self.eat('GT')
-                base = f"{base}<{size}>"
             if self.current().type == 'LBRACKET':
                 self.eat('LBRACKET')
                 arr_size = None
@@ -162,7 +171,7 @@ class Parser:
         raise LeashError(f"Unexpected token {tok.type} ('{tok.value}') where a type was expected", tok.line, tok.column)
 
     # Type token types that can start a type in a cast
-    TYPE_STARTERS = {'INT', 'UINT', 'FLOAT', 'STRING', 'CHAR', 'BOOL', 'VOID', 'IMUT'}
+    TYPE_STARTERS = {'INT', 'UINT', 'FLOAT', 'STRING', 'CHAR', 'BOOL', 'VOID', 'IMUT', 'VEC'}
 
     def _is_cast(self):
         """Look ahead to determine if (type)expr pattern."""
@@ -370,19 +379,25 @@ class Parser:
             value_var = self.eat('IDENT').value
             self.eat('IN')
             self.eat('LT')
-            iterable_type = self.current().type # STRUCT or ARRAY
-            if iterable_type in ('STRUCT', 'ARRAY'):
+            iterable_type = self.current().type # STRUCT, ARRAY, STRING, VECTOR
+            if iterable_type in ('STRUCT', 'ARRAY', 'STRING', 'VECTOR'):
                 self.eat(iterable_type)
             else:
-                raise LeashError(f"Expected 'struct' or 'array' in foreach loop, but got {iterable_type}", self.current().line, self.current().column)
+                raise LeashError(f"Expected 'struct', 'array', 'string' or 'vector' in foreach loop, but got {iterable_type}", self.current().line, self.current().column)
             self.eat('GT')
             expr = self.parse_expression(no_struct_init=True)
             self.eat('LBRACE')
             body = self.parse_block()
             if iterable_type == 'STRUCT':
                 return self._pos(ForeachStructStatement(name_var, value_var, expr, body), tok)
-            else:
+            elif iterable_type == 'ARRAY':
                 return self._pos(ForeachArrayStatement(name_var, value_var, expr, body), tok)
+            elif iterable_type == 'STRING':
+                return self._pos(ForeachStringStatement(name_var, value_var, expr, body), tok)
+            elif iterable_type == 'VECTOR':
+                return self._pos(ForeachVectorStatement(name_var, value_var, expr, body), tok)
+            else:
+                raise LeashError(f"INTERNAL ERROR: unhandled foreach type {iterable_type}", tok.line, tok.column)
 
         elif current.type == 'RETURN':
             tok = self.current()
@@ -410,8 +425,10 @@ class Parser:
                 name = self.eat('IDENT').value
                 self.eat('COLON')
                 var_type = self.parse_type()
-                self.eat('ASSIGN')
-                expr = self.parse_expression()
+                expr = None
+                if self.current().type == 'ASSIGN':
+                    self.eat('ASSIGN')
+                    expr = self.parse_expression()
                 self.eat('SEMI')
                 return self._pos(VariableDecl(name, var_type, expr), tok)
             else:
@@ -552,7 +569,17 @@ class Parser:
             if self.current().type == 'DOT':
                 self.eat('DOT')
                 member = self.eat('IDENT').value
-                expr = MemberAccess(expr, member)
+                if self.current().type == 'LPAREN':
+                    self.eat('LPAREN')
+                    args = []
+                    while self.current().type != 'RPAREN':
+                        args.append(self.parse_expression())
+                        if self.current().type == 'COMMA':
+                            self.eat('COMMA')
+                    self.eat('RPAREN')
+                    expr = MethodCall(expr, member, args)
+                else:
+                    expr = MemberAccess(expr, member)
             elif self.current().type == 'LBRACKET':
                 self.eat('LBRACKET')
                 index = self.parse_expression()
