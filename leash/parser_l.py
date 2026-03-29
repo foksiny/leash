@@ -1,5 +1,14 @@
 from .lexer import Lexer, Token
-from .ast_nodes import *
+from .ast_nodes import (
+    Program, StructDef, Function, Block, VariableDecl, Assignment,
+    IfStatement, WhileStatement, ForStatement, ReturnStatement,
+    ExpressionStatement, BinaryOp, UnaryOp, Call, Identifier,
+    MemberAccess, NumberLiteral, StringLiteral, BoolLiteral,
+    CastExpr, TypeAlias, StructInit, ArrayInit, IndexAccess,
+    CharLiteral, NullLiteral, ForeachStructStatement, ForeachArrayStatement,
+    UnionDef, EnumMemberAccess, EnumDef, DoWhileStatement, FloatLiteral,
+    TypeConvExpr, ShowStatement
+)
 from .errors import LeashError
 
 class Parser:
@@ -579,6 +588,14 @@ class Parser:
         elif self.current().type == 'IDENT':
             tok = self.current()
             name = self.eat('IDENT').value
+            if name in ('toint', 'tofloat') and self.current().type == 'LPAREN':
+                self.eat('LPAREN')
+                target_type = self.parse_type()
+                self.eat('COMMA')
+                value = self.parse_expression()
+                self.eat('RPAREN')
+                return self._pos(TypeConvExpr(name, target_type, value), tok)
+
             if self.current().type == 'LPAREN':
                 self.eat('LPAREN')
                 args = []

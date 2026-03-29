@@ -177,3 +177,9 @@ class BoolLiteral(Expression):
 class NullLiteral(Expression):
     def __init__(self):
         pass
+
+class TypeConvExpr(Expression):
+    def __init__(self, name, target_type, expr):
+        self.name = name # 'toint', 'tofloat', etc.
+        self.target_type = target_type
+        self.expr = expr

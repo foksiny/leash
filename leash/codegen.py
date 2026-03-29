@@ -60,6 +60,31 @@ class CodeGen:
         free_ty = ir.FunctionType(ir.VoidType(), [ir.IntType(8).as_pointer()])
         self.free = ir.Function(self.module, free_ty, name="free")
 
+        getchar_ty = ir.FunctionType(ir.IntType(32), [])
+        self.getchar = ir.Function(self.module, getchar_ty, name="getchar")
+
+        realloc_ty = ir.FunctionType(ir.IntType(8).as_pointer(), [ir.IntType(8).as_pointer(), ir.IntType(32)])
+        self.realloc = ir.Function(self.module, realloc_ty, name="realloc")
+
+        atoll_ty = ir.FunctionType(ir.IntType(64), [ir.IntType(8).as_pointer()])
+        self.atoll = ir.Function(self.module, atoll_ty, name="atoll")
+
+        atof_ty = ir.FunctionType(ir.DoubleType(), [ir.IntType(8).as_pointer()])
+        self.atof = ir.Function(self.module, atof_ty, name="atof")
+
+        sprintf_ty = ir.FunctionType(ir.IntType(32), [ir.IntType(8).as_pointer(), ir.IntType(8).as_pointer()], var_arg=True)
+        self.sprintf = ir.Function(self.module, sprintf_ty, name="sprintf")
+
+    def _emit_const_str(self, string_val):
+        """Create a global string constant and return a pointer to it (i8*)."""
+        fmt_bytes = bytearray(string_val.encode("utf8") + b'\0')
+        c_fmt = ir.Constant(ir.ArrayType(ir.IntType(8), len(fmt_bytes)), fmt_bytes)
+        global_fmt = ir.GlobalVariable(self.module, c_fmt.type, name=self.module.get_unique_name("str"))
+        global_fmt.linkage = 'internal'
+        global_fmt.global_constant = True
+        global_fmt.initializer = c_fmt
+        return self.builder.bitcast(global_fmt, ir.IntType(8).as_pointer())
+
     def _track_alloc(self, ptr):
         """Record an allocation in the current function's tracking array. Branch-free for safety."""
         if self.current_func_allocs_array is None:
@@ -150,7 +175,7 @@ class CodeGen:
 
     def _get_leash_type_name(self, node):
         """Helper to try and get the Leash type name for an AST node during codegen."""
-        from .ast_nodes import Identifier, MemberAccess, IndexAccess, Call, EnumMemberAccess, CastExpr
+        from .ast_nodes import Identifier, MemberAccess, IndexAccess, Call, EnumMemberAccess, CastExpr, TypeConvExpr
         if isinstance(node, Identifier):
             if node.name in self.var_symtab:
                  return self.var_symtab[node.name][1]
@@ -169,6 +194,11 @@ class CodeGen:
             return node.enum_name
         elif isinstance(node, CastExpr):
             return node.target_type
+        elif isinstance(node, TypeConvExpr):
+            return node.target_type
+        elif isinstance(node, Call):
+            if node.name == 'tostring': return 'string'
+            if node.name == 'get': return 'string'
         return 'int'
 
     def _resolve_type_name(self, type_name):
@@ -1108,32 +1138,124 @@ class CodeGen:
         
         raise LeashError(f"Unknown unary operator: '{node.op}'")
 
+    def _emit_get_input(self, node):
+        """Implement the 'get' builtin for interactive input."""
+        # 1. Print prompt if exists
+        if node.args:
+            prompt_val = self._codegen(node.args[0])
+            # Use printf-like show_standard logic for consistency
+            fmt = self._emit_const_str("%s")
+            self.builder.call(self.printf, [fmt, prompt_val])
+
+        # 2. Buffer for reading
+        # capacity = 256; size = 0; buffer = malloc(capacity)
+        capacity_ptr = self.builder.alloca(ir.IntType(32), name="input_cap")
+        size_ptr = self.builder.alloca(ir.IntType(32), name="input_size")
+        self.builder.store(ir.Constant(ir.IntType(32), 256), capacity_ptr)
+        self.builder.store(ir.Constant(ir.IntType(32), 0), size_ptr)
+        
+        buffer_ptr_ptr = self.builder.alloca(ir.IntType(8).as_pointer(), name="input_buf_ptr")
+        initial_buf = self.builder.call(self.malloc, [ir.Constant(ir.IntType(32), 256)])
+        self.builder.store(initial_buf, buffer_ptr_ptr)
+
+        # 3. Read loop
+        loop_bb = self.builder.function.append_basic_block('get_loop')
+        loop_end_bb = self.builder.function.append_basic_block('get_loop_end')
+        
+        self.builder.branch(loop_bb)
+        self.builder.position_at_end(loop_bb)
+        
+        c = self.builder.call(self.getchar, [])
+        
+        # Check for newline (10), carriage return (13), or EOF (-1)
+        is_eof = self.builder.icmp_signed('==', c, ir.Constant(ir.IntType(32), -1))
+        is_nl = self.builder.icmp_signed('==', c, ir.Constant(ir.IntType(32), 10))
+        is_cr = self.builder.icmp_signed('==', c, ir.Constant(ir.IntType(32), 13))
+        should_stop = self.builder.or_(self.builder.or_(is_eof, is_nl), is_cr)
+        
+        next_char_bb = self.builder.function.append_basic_block('get_next_char')
+        self.builder.cbranch(should_stop, loop_end_bb, next_char_bb)
+
+        # Body of next char
+        self.builder.position_at_end(next_char_bb)
+            
+        # Append char: buffer[size] = (i8)c; size++
+        curr_size = self.builder.load(size_ptr)
+        curr_cap = self.builder.load(capacity_ptr)
+        
+        # Check realloc: if size + 2 >= capacity (reserve space for null)
+        is_full = self.builder.icmp_signed('>=', self.builder.add(curr_size, ir.Constant(ir.IntType(32), 2)), curr_cap)
+        
+        realloc_bb = self.builder.function.append_basic_block('get_realloc')
+        store_char_bb = self.builder.function.append_basic_block('get_store_char')
+        self.builder.cbranch(is_full, realloc_bb, store_char_bb)
+
+        # Realloc
+        self.builder.position_at_end(realloc_bb)
+        new_cap = self.builder.mul(curr_cap, ir.Constant(ir.IntType(32), 2))
+        self.builder.store(new_cap, capacity_ptr)
+        old_buf = self.builder.load(buffer_ptr_ptr)
+        new_buf = self.builder.call(self.realloc, [old_buf, new_cap])
+        self.builder.store(new_buf, buffer_ptr_ptr)
+        self.builder.branch(store_char_bb)
+
+        # Store char
+        self.builder.position_at_end(store_char_bb)
+        buf = self.builder.load(buffer_ptr_ptr)
+        idx_ptr = self.builder.gep(buf, [curr_size])
+        self.builder.store(self.builder.trunc(c, ir.IntType(8)), idx_ptr)
+        
+        self.builder.store(self.builder.add(curr_size, ir.Constant(ir.IntType(32), 1)), size_ptr)
+        self.builder.branch(loop_bb)
+        
+        self.builder.position_at_end(loop_end_bb)
+        
+        # 4. Null terminator
+        final_size = self.builder.load(size_ptr)
+        final_buf = self.builder.load(buffer_ptr_ptr)
+        term_ptr = self.builder.gep(final_buf, [final_size])
+        self.builder.store(ir.Constant(ir.IntType(8), 0), term_ptr)
+        
+        # 5. Track for SAMM and return
+        return self._track_alloc(final_buf)
+
     def _codegen_Call(self, node):
+        if node.name == 'get':
+            return self._emit_get_input(node)
+        
+        if node.name == 'tostring':
+            arg_val = self._codegen(node.args[0])
+            # format based on type
+            # allocate 64 bytes for the result string
+            buf = self.builder.call(self.malloc, [ir.Constant(ir.IntType(32), 64)])
+            self._track_alloc(buf)
+            
+            if isinstance(arg_val.type, ir.IntType):
+                fmt = self._emit_const_str("%lld")
+                # cast if needed
+                if arg_val.type.width < 64:
+                     arg_val = self.builder.sext(arg_val, ir.IntType(64))
+                self.builder.call(self.sprintf, [buf, fmt, arg_val])
+            elif isinstance(arg_val.type, (ir.FloatType, ir.DoubleType, ir.HalfType)):
+                fmt = self._emit_const_str("%f")
+                if not isinstance(arg_val.type, ir.DoubleType):
+                     arg_val = self.builder.fpext(arg_val, ir.DoubleType())
+                self.builder.call(self.sprintf, [buf, fmt, arg_val])
+            else:
+                return arg_val
+            return buf
+            
         func = self.func_symtab.get(node.name)
         if not func:
             raise LeashError(f"Call to undefined function: '{node.name}'")
         
         # Get function argument types if available
-        arg_types = []
-        if node.name in self.func_symtab:
-            # We don't store sig in func_symtab directly, it's the ir.Function
-            # but we can get it from attributes or a separate table if we had one.
-            # For now, let's just use the func.args if it's external or defined.
-            pass
-
+        # (sig was used in type checker, here we rely on LLVM ir.Function)
         args = []
         for i, arg_expr in enumerate(node.args):
-            # Attempt to pass type hint if possible
-            old_target = self.current_target_type
-            self.current_target_type = None 
-            
             v = self._codegen(arg_expr)
-            
-            # Cast to formal parameter type if known
             if i < len(func.args):
                 v = self._emit_cast(v, func.args[i].type)
-            
-            self.current_target_type = old_target
             args.append(v)
 
         return self.builder.call(func, args)
@@ -1426,6 +1548,27 @@ class CodeGen:
     def _codegen_IndexAccess(self, node):
         ptr, _ = self._codegen_lvalue(node)
         return self.builder.load(ptr)
+
+    def _codegen_TypeConvExpr(self, node):
+        val = self._codegen(node.expr)
+        dst_type = self._get_llvm_type(node.target_type)
+        
+        # Check if src is string (i8*)
+        src_is_str = isinstance(val.type, ir.PointerType) and isinstance(val.type.pointee, ir.IntType) and val.type.pointee.width == 8
+        
+        if node.name == 'toint':
+            if src_is_str:
+                res64 = self.builder.call(self.atoll, [val])
+                return self._emit_cast(res64, dst_type)
+            else:
+                return self._emit_cast(val, dst_type)
+        elif node.name == 'tofloat':
+            if src_is_str:
+                res64 = self.builder.call(self.atof, [val])
+                return self._emit_cast(res64, dst_type)
+            else:
+                return self._emit_cast(val, dst_type)
+        return val
 
     def _codegen_CastExpr(self, node):
         val = self._codegen(node.expr)

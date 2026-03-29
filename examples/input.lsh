@@ -1,0 +1,4 @@
+fnc main() : void {
+    name: string = get("What's your name? "); // the input message is optional.
+    show("Hello, ", name, "!");
+}

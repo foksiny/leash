@@ -138,9 +138,28 @@ class TypeChecker:
         b = self._base_type(type_name)
         return b in ('int', 'uint', 'float')
 
+    def _check_type_conv(self, expr):
+        src_t = self._infer_type(expr.expr)
+        dst_t = expr.target_type
+        
+        # We allow toint(int, ANY string/number)
+        if expr.name == 'toint':
+            if not self._is_int_family(dst_t):
+                 raise LeashError(f"toint requires a target integer type, got '{dst_t}'", node=expr)
+            return dst_t
+        elif expr.name == 'tofloat':
+            if not self._is_float_family(dst_t):
+                 raise LeashError(f"tofloat requires a target float type, got '{dst_t}'", node=expr)
+            return dst_t
+        return dst_t
+
     def _is_int_family(self, type_name):
         b = self._base_type(type_name)
         return b in ('int', 'uint', 'char', 'bool')
+
+    def _is_float_family(self, type_name):
+        b = self._base_type(type_name)
+        return b == 'float'
 
     def _error(self, msg, node=None, tip=None):
         """Create a LeashError with position info from an AST node."""
@@ -402,6 +421,8 @@ class TypeChecker:
             return self._check_array_init(expr)
         elif isinstance(expr, EnumMemberAccess):
             return self._check_enum_member_access(expr)
+        elif isinstance(expr, TypeConvExpr):
+            return self._check_type_conv(expr)
         return None
 
     def _check_binary_op(self, expr):
@@ -484,6 +505,20 @@ class TypeChecker:
     def _check_call(self, expr):
         if expr.name == 'show':
             return 'void'
+        
+        if expr.name == 'get':
+            if len(expr.args) > 1:
+                self._error(f"Function 'get' expects 0 or 1 argument(s), but got {len(expr.args)}", node=expr)
+            if len(expr.args) == 1:
+               arg_t = self._infer_type(expr.args[0])
+               if arg_t and self._resolve(arg_t) != 'string':
+                   self._error(f"Argument 1 of 'get' must be 'string', got '{arg_t}'", node=expr.args[0])
+            return 'string'
+        
+        if expr.name == 'tostring':
+            if len(expr.args) != 1:
+                self._error(f"Function 'tostring' expects 1 argument, but got {len(expr.args)}", node=expr)
+            return 'string'
 
         sig = self.func_types.get(expr.name)
         if sig is None:

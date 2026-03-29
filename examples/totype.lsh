@@ -1,0 +1,15 @@
+fnc main() : void {
+    // to int arguments: toint(int<size>, "string") or toint(int<size>, float)
+    a: int = toint(int, "123"); // also can use toint(int 123.46)
+    show(a);
+
+    // to float arguments: tofloat(float<size>, "string") or tofloat(float<size>, int)
+    b: float = tofloat(float, "123.45"); // also can use tofloat(float, 123)
+    show(b);
+
+    c: string = tostring(123);
+    show(c);
+
+    d: string = tostring(123.45);
+    show(d);
+}

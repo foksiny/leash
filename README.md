@@ -10,12 +10,14 @@ Leash is a strongly-typed, modern compiled programming language built on top of 
 - [Operators](#operators)
 - [Functions](#functions)
 - [Control Flow](#control-flow)
+- [Input Handling](#input-handling)
 - [Arrays](#arrays)
 - [Structs](#structs)
 - [Unions](#unions)
 - [Enums](#enums)
 - [Type Aliases](#type-aliases)
 - [Type Casting](#type-casting)
+- [Type Conversions](#type-conversions)
 - [Strings](#strings)
 - [Memory Management](#memory-management)
 - [Error Handling & Safety](#error-handling--safety)
@@ -222,6 +224,25 @@ do {
 } while k < 10;
 ```
 
+## Input Handling
+
+Leash provides a built-in `get()` function to read interactive user input from the console.
+
+```leash
+fnc main() : void {
+    // You can provide an optional string prompt
+    name: string = get("What is your name? ");
+    show("Hello, ", name, "!");
+
+    // Or call it without arguments
+    show("Enter something else: ");
+    val: string = get();
+    show("You entered: ", val);
+}
+```
+
+The `get()` function automatically allocates memory for the input string and ensures it is managed by the SAMM system, so you don't have to worry about buffer overflows or manual `free()` calls.
+
 ## Arrays
 
 Data is sequentially packed into memory and can be evaluated or constructed easily:
@@ -337,6 +358,31 @@ u: uint = (uint)c;  // Evaluates to 65 (ASCII)
 arr: int<32>[] = {1, 2, 3};
 arr64: int<64>[] = (int<64>[])arr;
 ```
+
+## Type Conversions
+
+For dynamic conversions (such as parsing a string into a number or formatting a number as a string), Leash provides built-in conversion functions.
+
+### String to Number
+Use `toint(target_type, value)` and `tofloat(target_type, value)` to parse strings.
+
+```leash
+a: int = toint(int, "123");
+b: float<32> = tofloat(float<32>, "3.14159");
+
+// These functions also handle numeric-to-numeric conversions:
+c: int = toint(int, 3.99); // Evaluates to 3
+```
+
+### Number to String
+Use `tostring(value)` to format a numeric value into a string.
+
+```leash
+s1: string = tostring(123);    // "123"
+s2: string = tostring(3.14);   // "3.140000"
+```
+
+Just like `get()`, `tostring()` returns a managed string that will be automatically cleaned up by the SAMM system.
 
 ## Strings
 

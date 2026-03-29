@@ -12,7 +12,7 @@ syn keyword leashNull null
 syn match leashType "\b\(int\|uint\|float\|bool\|string\|char\|void\|array\)\b\(<\d+>\)\?"
 
 " Builtin functions
-syn keyword leashBuiltin show
+syn keyword leashBuiltin show get toint tofloat tostring
 
 " Operators
 syn match leashOperator "&&\|||\|<<\|>>\|[+\-*/%&|^~!<>=]=\?\|!="
