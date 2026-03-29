@@ -198,6 +198,27 @@ class NullLiteral(Expression):
     def __init__(self):
         pass
 
+class ClassDef(ASTNode):
+    def __init__(self, name, fields, methods):
+        self.name = name
+        self.fields = fields # list of ClassField
+        self.methods = methods # list of ClassMethod
+
+class ClassField(ASTNode):
+    def __init__(self, name, var_type, visibility):
+        self.name = name
+        self.var_type = var_type
+        self.visibility = visibility # 'pub' or 'priv'
+
+class ClassMethod(ASTNode):
+    def __init__(self, fnc, visibility):
+        self.fnc = fnc # Function node
+        self.visibility = visibility # 'pub' or 'priv'
+
+class ThisExpr(Expression):
+    def __init__(self):
+        pass
+
 class TypeConvExpr(Expression):
     def __init__(self, name, target_type, expr):
         self.name = name # 'toint', 'tofloat', etc.

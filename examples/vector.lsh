@@ -1,7 +1,7 @@
 fnc split(str string, delim char) : vec<string> {
     out: vec<string>;
     word: string;
-    foreach i, c in<string> str {
+    foreach _, c in<string> str {
         if c == delim {
             out.pushb(word); // pushb is push back
             word = "";

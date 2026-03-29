@@ -8,7 +8,7 @@ from .ast_nodes import (
     CharLiteral, NullLiteral, ForeachStructStatement, ForeachArrayStatement,
     ForeachStringStatement, ForeachVectorStatement, MethodCall,
     UnionDef, EnumMemberAccess, EnumDef, DoWhileStatement, FloatLiteral,
-    TypeConvExpr, ShowStatement
+    TypeConvExpr, ShowStatement, ClassDef, ClassField, ClassMethod, ThisExpr
 )
 from .errors import LeashError
 
@@ -81,16 +81,16 @@ class Parser:
         # Rust/Others
         if obs_val == 'pub' or obs_val == 'fn':
             return "Did you mean `fnc`? Leash doesn't have `pub` visibility yet; everything is public by default."
-        if obs_val == 'interface' or obs_val == 'class':
-            return "Leash keeps it simple: use `struct` for grouping data and `union` for dynamic choices!"
+        if obs_val == 'interface':
+            return "Leash uses `struct` for grouping data and `union` for dynamic choices!"
         if obs_val == 'import' or obs_val == 'include' or obs_val == 'require':
             return "Modules are coming! For now, keep your logic within a single file or use a pre-processor."
         if obs_val == 'null' and obs_type == 'IDENT' and expected_type == 'NULL':
             return "Use `(void)0` or leave a variable empty if you want a null-like state. Generic null support is coming."
         if obs_val == 'switch' or obs_val == 'match' or obs_val == 'case':
             return "Leash doesn't have a switch statement yet. Use an `if ... also ... else` chain instead!"
-        if obs_val == 'self' or obs_val == 'this':
-            return "Leash is functional/procedural. Pass your structs as arguments manually for now!"
+        if obs_val == 'self':
+            return "Leash uses the `this` keyword inside classes!"
         
         # More Specific patterns
         if obs_val == 'main' and expected_type == 'FNC':
@@ -213,11 +213,13 @@ class Parser:
             return self._parse_type_alias_body(name)
         elif self.current().type == 'ENUM':
             return self._parse_enum_body(name)
+        elif self.current().type == 'CLASS':
+            return self._parse_class_body(name)
         else:
             tok = self.current()
-            raise LeashError(f"Expected 'struct', 'union', 'enum' or 'type' after 'def {name} :', but found {tok.type} ('{tok.value}')",
+            raise LeashError(f"Expected 'struct', 'union', 'enum', 'class' or 'type' after 'def {name} :', but found {tok.type} ('{tok.value}')",
                              tok.line, tok.column,
-                             tip="Use `def Name : struct { ... };`, `def Name : enum { ... };`, or `def Name : type <existing_type>;`")
+                             tip="Use `def Name : class { ... };`, `def Name : struct { ... };`, or `def Name : enum { ... };`")
 
     def _parse_struct_body(self, name):
         self.eat('STRUCT')
@@ -271,6 +273,31 @@ class Parser:
         target_type = self.parse_type()
         self.eat('SEMI')
         return TypeAlias(name, target_type)
+
+    def _parse_class_body(self, name):
+        self.eat('CLASS')
+        self.eat('LBRACE')
+        fields = []
+        methods = []
+        while self.current().type != 'RBRACE':
+            visibility = 'pub'
+            if self.current().type in ('PUB', 'PRIV'):
+                visibility = self.eat(self.current().type).value.lower()
+            
+            if self.current().type == 'FNC':
+                fnc = self.parse_function()
+                methods.append(ClassMethod(fnc, visibility))
+            else:
+                field_name = self.eat('IDENT').value
+                self.eat('COLON')
+                field_type = self.parse_type()
+                self.eat('SEMI')
+                fields.append(ClassField(field_name, field_type, visibility))
+        self.eat('RBRACE')
+        # self.eat('SEMI') # Optional for classes
+        if self.current().type == 'SEMI':
+            self.eat('SEMI')
+        return ClassDef(name, fields, methods)
 
 
     def parse_function(self):
@@ -463,15 +490,13 @@ class Parser:
             'import': "Leash currently supports single-file compilation. Modules are coming soon!",
             'include': "Looking for `#include`? Leash manages built-ins like `show` and `strlen` automatically.",
             'using': "Leash doesn't have namespaces or `using` statements yet.",
-            'class': "Leash uses `struct` for grouping data. No classes or inheritance yet!",
-            'interface': "Leash uses `union` for flexible types and `struct` for data. No interfaces yet!",
+            'interface': "Leash uses `union` for flexible types and `struct` for data.",
             'switch': "Leash uses clean `if / also / else` chains instead of `switch` statements.",
             'match': "Leash uses `if / also / else` chains. Pattern matching is on the roadmap!",
             'byte': "For 8-bit integers, use `int<8>` or `uint<8>`.",
             'long': "For 64-bit integers, use `int<64>` or `uint<64>`.",
             'double': "Leash `float` is 64-bit by default! Use `float<32>` if you want single-precision.",
-            'self': "Leash is procedural; pass your structs as arguments manually for now.",
-            'this': "Leash is procedural; pass your structs as arguments manually for now.",
+            'self': "Leash uses `this` inside methods!",
             'nil': "Use a `void` member in a `union` for 'nothing' or 'null' values.",
             'null': "Use a `void` member in a `union` for 'nothing' or 'null' values.",
             'boolean': "Leash uses the short `bool` type name.",
@@ -612,6 +637,10 @@ class Parser:
             tok = self.current()
             self.eat('NULL')
             return self._pos(NullLiteral(), tok)
+        elif self.current().type == 'THIS':
+            tok = self.current()
+            self.eat('THIS')
+            return self._pos(ThisExpr(), tok)
         elif self.current().type == 'IDENT':
             tok = self.current()
             name = self.eat('IDENT').value

@@ -19,6 +19,7 @@ Leash is a strongly-typed, modern compiled programming language built on top of 
 - [Type Casting](#type-casting)
 - [Type Conversions](#type-conversions)
 - [Strings](#strings)
+- [Classes](#classes)
 - [Memory Management](#memory-management)
 - [Error Handling & Safety](#error-handling--safety)
 - [Syntax Highlighting](#syntax-highlighting)
@@ -492,6 +493,46 @@ s = s + '!';            // concatenate with character
 s = s + cstr(" :D");    // concatenate with char[]
 show(s);
 ```
+
+## Classes
+
+Leash supports Object-Oriented Programming through classes. Classes combine data (fields) and behavior (methods) into a single unit.
+
+```leash
+def Person : class {
+    // Fields with visibility modifiers
+    pub name: string;
+    priv age: int;
+
+    // Static conversion/factory method
+    pub fnc new(name string, age int) : Person {
+        return Person { name: name, age: age };
+    }
+
+    // Instance method using the 'this' keyword
+    pub fnc greet() : string {
+        return "Hello, my name is " + this.name + " and I am " + this.age + " years old!";
+    }
+}
+
+fnc main() : void {
+    // Call static method
+    p: Person = Person.new("John", 30);
+    
+    // Call instance method
+    show(p.greet());
+    
+    // Access public fields
+    p.name = "Jane";
+    show(p.name);
+}
+```
+
+### Key Features:
+- **Visibility**: Use `pub` (default) for members accessible from anywhere, and `priv` for members only accessible within the class methods.
+- **Methods**: Functions defined inside a class. If a method is not a "factory" (like `new`), it automatically receives an implicit `this` pointer to the current instance.
+- **Static vs Instance**: Methods called on the class name (e.g., `Person.new()`) are treated as static, while those called on a variable (e.g., `p.greet()`) are instance methods.
+- **The `this` Keyword**: Automatically available inside instance methods to access fields and other methods of the current object.
 
 ## Memory Management
 

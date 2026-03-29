@@ -1,0 +1,24 @@
+def Person : class {
+    pub name: string; // use 'priv' to make it private instead of public
+    pub age: int;
+
+    pub fnc new(name string, age int) : Person {
+        return Person { name: name, age: age };
+    }
+
+    pub fnc greet() : string {
+        return "Hello, my name is " + this.name + " and I am " + this.age + " years old.";
+    }
+}
+
+fnc main() : void {
+    p: Person = Person.new("John", 30);
+    show(p.greet());
+
+    show(p.name);
+    show(p.age);
+
+    p.name = "Jane";
+    p.age = 25;
+    show(p.greet());
+}

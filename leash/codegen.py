@@ -12,6 +12,7 @@ class CodeGen:
         self.type_aliases = {}   # name -> resolved type string
         self.union_symtab = {}   # name -> { 'type': ir_type, 'variants': [...], 'variant_types': {...}, 'max_size': int }
         self.enum_symtab = {}    # name -> { 'members': [names], 'names_arr': ir.GlobalVariable }
+        self.class_symtab = {}   # name -> { 'type': ir_type, 'fields': {...}, 'methods': {...} }
         self.printf = None
         self.current_target_type = None
         
@@ -91,6 +92,42 @@ class CodeGen:
         global_fmt.initializer = c_fmt
         return self.builder.bitcast(global_fmt, ir.IntType(8).as_pointer())
 
+    def _emit_tostring(self, val, llvm_ty):
+        """Convert any basic value to a Leash string (i8*). Allocation via GC_malloc."""
+        # Buffer for conversion (64 bytes is plenty for any numeric)
+        buf = self.builder.call(self.malloc, [ir.Constant(ir.IntType(32), 64)])
+        self._track_alloc(buf)
+        
+        fmt = ""
+        casted_val = val
+        if isinstance(llvm_ty, ir.IntType):
+            if llvm_ty.width == 1: # bool
+                 # Special case for bool: "true" or "false"
+                 true_str = self._emit_const_str("true")
+                 false_str = self._emit_const_str("false")
+                 return self.builder.select(val, true_str, false_str)
+            elif llvm_ty.width == 8: # char
+                 # Create a string of length 1
+                 self.builder.store(val, self.builder.gep(buf, [ir.Constant(ir.IntType(32), 0)]))
+                 self.builder.store(ir.Constant(ir.IntType(8), 0), self.builder.gep(buf, [ir.Constant(ir.IntType(32), 1)]))
+                 return buf
+            elif llvm_ty.width == 64:
+                 fmt = "%lld"
+            else:
+                 fmt = "%d"
+                 if llvm_ty.width < 32:
+                      casted_val = self.builder.sext(val, ir.IntType(32))
+        elif isinstance(llvm_ty, (ir.FloatType, ir.DoubleType)):
+            fmt = "%f"
+            if isinstance(llvm_ty, ir.FloatType):
+                 casted_val = self.builder.fpext(val, ir.DoubleType())
+        else:
+            return val # already a string?
+        
+        fmt_ptr = self._emit_const_str(fmt)
+        self.builder.call(self.sprintf, [buf, fmt_ptr, casted_val])
+        return buf
+
     def _track_alloc(self, ptr):
         """No-op since we are using Boeing GC."""
         return ptr
@@ -137,7 +174,11 @@ class CodeGen:
 
     def _get_leash_type_name(self, node):
         """Helper to try and get the Leash type name for an AST node during codegen."""
-        from .ast_nodes import Identifier, MemberAccess, IndexAccess, Call, EnumMemberAccess, CastExpr, TypeConvExpr, MethodCall
+        from .ast_nodes import Identifier, MemberAccess, IndexAccess, Call, EnumMemberAccess, CastExpr, TypeConvExpr, MethodCall, ThisExpr
+        if isinstance(node, ThisExpr):
+             if 'this' in self.var_symtab:
+                  return self.var_symtab['this'][1]
+             return 'int'
         if isinstance(node, Identifier):
             if node.name in self.var_symtab:
                  return self.var_symtab[node.name][1]
@@ -238,6 +279,8 @@ class CodeGen:
             return self.struct_symtab[type_name]['type']
         elif type_name in self.enum_symtab:
             return ir.IntType(32)
+        elif type_name in self.class_symtab:
+            return self.class_symtab[type_name]['type']
         return ir.IntType(32) # default fallback
 
     def _codegen_StructDef(self, node):
@@ -258,6 +301,56 @@ class CodeGen:
 
     def _codegen_TypeAlias(self, node):
         self.type_aliases[node.name] = node.target_type
+
+    def _codegen_ClassDef(self, node):
+        llvm_types = []
+        fields = {}
+        for idx, f in enumerate(node.fields):
+            fields[f.name] = idx
+            llvm_types.append(self._get_llvm_type(f.var_type))
+        
+        struct_type = ir.LiteralStructType(llvm_types)
+        self.class_symtab[node.name] = {
+            'type': struct_type,
+            'fields': fields,
+            'field_types': {f.name: f.var_type for f in node.fields},
+            'methods': {}
+        }
+        
+        # Codegen methods
+        for m in node.methods:
+            # Instance method if it's not 'new' or if we want to support 'this'
+            # For simplicity, if it's in a class, we'll name it Class_Method
+            # and if it takes 'this' as first arg, it's an instance method.
+            # In Leash, let's assume all methods except 'new' (or those that return the class) are instance methods.
+            # Actually, let's look at the typechecker's logic for 'this'.
+            # A better way: let the user decide? No, let's stick to:
+            # if first arg is named 'this', it's an instance method.
+            # No, 'this' is implicit in Leash? The example doesn't show 'this' in args.
+            # "pub fnc greet() : string" -> implicit this.
+            
+            # Determine if it's a static method
+            is_static = False
+            if m.fnc.name == 'new': # and returns node.name
+                is_static = True
+            
+            orig_name = m.fnc.name
+            m.fnc.name = f"{node.name}_{orig_name}"
+            
+            # If not static, prepend 'this' to args
+            if not is_static:
+                # m.fnc.args is a list of (name, type) tuples
+                new_args = [('this', node.name)] + list(m.fnc.args)
+                m.fnc.args = tuple(new_args)
+            
+            func = self._codegen_Function(m.fnc)
+            self.class_symtab[node.name]['methods'][orig_name] = func
+        
+    def _codegen_ThisExpr(self, node):
+        if 'this' not in self.var_symtab:
+             raise LeashError("'this' is not available in the current context")
+        ptr, type_name = self.var_symtab['this']
+        return self.builder.load(ptr)
 
     def _codegen_UnionDef(self, node):
         # Compute the max size needed for any variant
@@ -410,8 +503,8 @@ class CodeGen:
                 self.builder.unreachable()
         
         # Reset tracking
-        self.current_func_allocs_array = None
         self.current_func_alloc_counter = None
+        return func
 
     def _codegen_ReturnStatement(self, node):
         old_target = self.current_target_type
@@ -546,9 +639,11 @@ class CodeGen:
         self.builder.store(val, ptr)
 
     def _codegen_lvalue(self, node):
-        from .ast_nodes import Identifier, MemberAccess, IndexAccess
+        from .ast_nodes import Identifier, MemberAccess, IndexAccess, ThisExpr
         if isinstance(node, Identifier):
             if node.name not in self.var_symtab:
+                if node.name in self.class_symtab:
+                    return None, node.name # Static access
                 raise LeashError(f"Undefined variable: '{node.name}'")
             return self.var_symtab[node.name]
         elif isinstance(node, MemberAccess):
@@ -560,6 +655,17 @@ class CodeGen:
                 if idx is None:
                     raise LeashError(f"Struct '{resolved}' has no member named '{node.member}'")
                 field_type_name = struct_info['field_types'][node.member]
+                return self.builder.gep(base_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), idx)]), field_type_name
+            elif resolved in self.class_symtab:
+                cls_info = self.class_symtab[resolved]
+                idx = cls_info['fields'].get(node.member)
+                if idx is None:
+                    raise LeashError(f"Class '{resolved}' has no field named '{node.member}'")
+                
+                # We need the type name of the field. We didn't store it in class_symtab yet.
+                # Let's assume we can get it from the AST or just store it.
+                # I'll update ClassDef codegen to store it.
+                field_type_name = cls_info['field_types'][node.member]
                 return self.builder.gep(base_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), idx)]), field_type_name
             elif resolved in self.union_symtab:
                 union_info = self.union_symtab[resolved]
@@ -587,6 +693,10 @@ class CodeGen:
             ptr = self.builder.gep(data_ptr, [idx_val], inbounds=True)
             elem_type_name = slice_type_name.split('[')[0] if '[' in slice_type_name else 'int'
             return (ptr, elem_type_name)
+        elif isinstance(node, ThisExpr):
+            if 'this' not in self.var_symtab:
+                raise LeashError("'this' is not available in the current context")
+            return self.var_symtab['this']
         else:
             raise LeashError(f"Invalid l-value: {type(node).__name__}")
 
@@ -1121,7 +1231,20 @@ class CodeGen:
         is_char_r = isinstance(right.type, ir.IntType) and right.type.width == 8
         
         # Mixed string concatenation
-        if node.op == '+' and ((is_string_l and is_string_r) or (is_string_l and (is_char_r or is_slice_r)) or (is_string_r and (is_char_l or is_slice_l))):
+        is_numeric_l = isinstance(left.type, (ir.IntType, ir.FloatType, ir.DoubleType))
+        is_numeric_r = isinstance(right.type, (ir.IntType, ir.FloatType, ir.DoubleType))
+
+        if node.op == '+' and ((is_string_l or is_slice_l) and (is_string_r or is_slice_r or is_numeric_r or is_char_r)) or \
+           ((is_string_r or is_slice_r) and (is_numeric_l or is_char_l)):
+            
+            # Convert non-strings to strings
+            if not (is_string_l or is_slice_l):
+                left = self._emit_tostring(left, left.type)
+                is_string_l = True
+            if not (is_string_r or is_slice_r):
+                right = self._emit_tostring(right, right.type)
+                is_string_r = True
+
             len_l = None
             if is_string_l:
                 len_l = self.builder.call(self.strlen, [left])
@@ -1390,11 +1513,38 @@ class CodeGen:
         if resolved == 'string' and node.method == 'size':
              val = self.builder.load(base_ptr)
              return self.builder.call(self.strlen, [val])
-        
         if resolved.endswith(']') and node.method == 'size':
              val = self.builder.load(base_ptr)
              return self.builder.extract_value(val, 0)
-             
+
+        if resolved in self.class_symtab:
+            cls_info = self.class_symtab[resolved]
+            func = cls_info['methods'].get(node.method)
+            if not func:
+                 raise LeashError(f"Class '{resolved}' has no method named '{node.method}'")
+            
+            # Prepare arguments
+            call_args = []
+            
+            # If it's an instance method, base_ptr is 'this' (but load it if it's not static)
+            # Actually, most instance methods expect 'this' as first arg.
+            # How do we know if it was defined as static?
+            # In my current simple logic, if it's NOT 'new', it's an instance method.
+            if node.method != 'new':
+                 if base_ptr is None:
+                      raise LeashError(f"Method '{node.method}' of class '{resolved}' is an instance method and requires an instance.")
+                 call_args.append(self.builder.load(base_ptr))
+            
+            for arg_node in node.args:
+                call_args.append(self._codegen(arg_node))
+            
+            # Cast arguments to match function signature
+            casted_args = []
+            for arg_val, expected_type in zip(call_args, func.args):
+                 casted_args.append(self._emit_cast(arg_val, expected_type.type))
+            
+            return self.builder.call(func, casted_args)
+              
         raise LeashError(f"Method '{node.method}' is not implemented for type '{resolved}'", node=node)
 
     def _update_vec_struct(self, vec_ptr, data, size, cap):
@@ -1641,7 +1791,9 @@ class CodeGen:
     def _codegen_StructInit(self, node):
         struct_info = self.struct_symtab.get(node.name)
         if not struct_info:
-            raise LeashError(f"Undefined struct: '{node.name}'")
+             struct_info = self.class_symtab.get(node.name)
+        if not struct_info:
+            raise LeashError(f"Undefined struct or class: '{node.name}'")
         struct_type = struct_info['type']
         val = ir.Constant(struct_type, ir.Undefined)
         for key, expr in node.kwargs:

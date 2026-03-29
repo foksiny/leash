@@ -41,7 +41,7 @@ fnc main() : void {
 
     // also if you try to access the wrong type, it will throw an error
     f.s = "hello";
-    show("f = ", f.i); // this will throw an error
+    // show("f = ", f.i); // this will throw an error
 
     print_value(f);
 }

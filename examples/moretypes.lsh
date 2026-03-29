@@ -4,9 +4,8 @@ fnc main() : void {
     c: int    = 10;
     d: bool   = true;
     e: float  = 1.5;
-    f: void   = null;
 
-    show(a, " ", b, " ", c, " ", d, " ", e, " ", f);
+    show(a, " ", b, " ", c, " ", d, " ", e);
 
     g: int<64>   = 10; // i can change to any size, like 16, 8, 4, 1 or even 128, 256 or 512 (maximum is 512).
     h: float<64> = 1.5; // also minimum is 4 and max is 512.

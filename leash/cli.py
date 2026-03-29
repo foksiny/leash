@@ -43,6 +43,11 @@ def _print_error(e, input_file, code):
     if e.tip:
         print(f"{GREEN}tip{RESET}: {e.tip}")
 
+def _print_warning(msg):
+    YELLOW = "\033[1;33m"
+    RESET = "\033[0m"
+    print(f"{YELLOW}warning{RESET}: {msg}", file=sys.stderr)
+
 def compile_file(input_file, output_name=None, is_run_mode=False):
     with open(input_file, 'r') as f:
         code = f.read()
@@ -60,7 +65,7 @@ def compile_file(input_file, output_name=None, is_run_mode=False):
         checker = TypeChecker()
         warnings = checker.check(ast)
         for w in warnings:
-            print(w)
+            _print_warning(w)
 
         # 4. LLVM Initialization
         llvm.initialize_native_target()

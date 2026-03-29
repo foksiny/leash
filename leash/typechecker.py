@@ -23,9 +23,15 @@ class TypeChecker:
         self.union_types = {}     # name -> {variant: type}
         self.enum_types = {}      # name -> list of member names
         self.type_aliases = {}    # name -> resolved type string
+        self.class_types = {}     # name -> {fields: {name: (type, vis)}, methods: {name: (node, vis)}}
+        self.current_class = None # name of current class being checked
         self.warnings = []
         self.current_func = None  # name of current function being checked
+        self.current_func_node = None # Function node
         self.current_return_type = None
+        self.used_vars = set()    # name
+        self.used_params = set()  # name
+        self.current_func_params = set()
 
     def check(self, program):
         """Run type checking on a Program AST node. Returns list of warnings."""
@@ -39,6 +45,8 @@ class TypeChecker:
                 self._register_enum(item)
             elif isinstance(item, TypeAlias):
                 self._register_alias(item)
+            elif isinstance(item, ClassDef):
+                self._register_class(item)
             elif isinstance(item, Function):
                 self._register_function_sig(item)
 
@@ -46,6 +54,8 @@ class TypeChecker:
         for item in program.items:
             if isinstance(item, Function):
                 self._check_function(item)
+            elif isinstance(item, ClassDef):
+                self._check_class(item)
 
         return self.warnings
 
@@ -54,21 +64,31 @@ class TypeChecker:
     def _register_struct(self, node):
         fields = {}
         for fname, ftype in node.fields:
+            if fname in fields:
+                 self._error(f"Duplicate field '{fname}' in struct '{node.name}'", node=node,
+                             tip="Each field in a struct must have a unique name.")
             resolved = self._resolve(ftype)
             if not self._is_valid_type(resolved):
                 raise LeashError(
                     f"Struct '{node.name}' field '{fname}' has unknown type '{ftype}'")
             fields[fname] = ftype
+        if not fields:
+             self._warn(f"Struct '{node.name}' is empty.", node=node, tip="An empty struct doesn't store any data.")
         self.struct_types[node.name] = fields
 
     def _register_union(self, node):
         variants = {}
         for vname, vtype in node.variants:
+            if vname in variants:
+                 self._error(f"Duplicate variant '{vname}' in union '{node.name}'", node=node,
+                             tip="Each variant in a union must have a unique name.")
             resolved = self._resolve(vtype)
             if not self._is_valid_type(resolved):
                 raise LeashError(
                     f"Union '{node.name}' variant '{vname}' has unknown type '{vtype}'")
             variants[vname] = vtype
+        if not variants:
+             self._warn(f"Union '{node.name}' is empty.", node=node)
         self.union_types[node.name] = variants
 
     def _register_enum(self, node):
@@ -78,10 +98,30 @@ class TypeChecker:
                 raise LeashError(f"Duplicate member '{member}' in enum '{node.name}'",
                                  tip=f"Enum members must have unique names within the same enum definition.")
             seen.add(member)
+        if not node.members:
+             self._warn(f"Enum '{node.name}' is empty.", node=node)
         self.enum_types[node.name] = node.members
 
     def _register_alias(self, node):
         self.type_aliases[node.name] = node.target_type
+
+    def _register_class(self, node):
+        if node.name in self.class_types or node.name in self.struct_types or node.name in self.union_types:
+            self._error(f"Redefinition of type '{node.name}'", node=node)
+        
+        fields = {}
+        for f in node.fields:
+            if f.name in fields:
+                self._error(f"Duplicate field '{f.name}' in class '{node.name}'", node=f)
+            fields[f.name] = (f.var_type, f.visibility)
+        
+        methods = {}
+        for m in node.methods:
+            if m.fnc.name in methods:
+                self._error(f"Duplicate method '{m.fnc.name}' in class '{node.name}'", node=m.fnc)
+            methods[m.fnc.name] = (m.fnc, m.visibility)
+        
+        self.class_types[node.name] = {'fields': fields, 'methods': methods}
 
     def _register_function_sig(self, node):
         arg_types = [t for _, t in node.args]
@@ -121,6 +161,8 @@ class TypeChecker:
             return 'float'
         if t.startswith('vec<') and t.endswith('>'):
             return 'vec'
+        if t in self.class_types:
+            return 'class'
         return t
 
     def _is_valid_type(self, type_name):
@@ -132,7 +174,7 @@ class TypeChecker:
         base = self._base_type(t)
         if base in ('int', 'uint', 'float', 'string', 'char', 'bool', 'void', 'vec'):
             return True
-        if t in self.struct_types or t in self.union_types or t in self.enum_types:
+        if t in self.struct_types or t in self.union_types or t in self.enum_types or t in self.class_types:
             return True
         return False
 
@@ -168,6 +210,13 @@ class TypeChecker:
         line = getattr(node, 'line', None) if node else None
         col = getattr(node, 'col', None) if node else None
         raise LeashError(msg, line=line, col=col, tip=tip)
+
+    def _warn(self, msg, node=None, tip=None):
+        """Add a warning with position info."""
+        line = getattr(node, 'line', None) if node else None
+        col = getattr(node, 'col', None) if node else None
+        pos = f" (line {line}, col {col})" if line else ""
+        self.warnings.append(f"{msg}{pos}" + (f"\n   Tip: {tip}" if tip else ""))
 
     def _types_compatible(self, src, dst):
         """Check if src type can be assigned into dst type."""
@@ -207,32 +256,125 @@ class TypeChecker:
             return True
         if dst_r in self.enum_types and src_b == 'int':
             return True
+        
+        # Class compatibility
+        if src_r == dst_r and src_r in self.class_types:
+            return True
 
         return False
+
+    def _check_visibility(self, type_name, member_name, is_method, node):
+        if type_name not in self.class_types:
+            return
+        
+        cls = self.class_types[type_name]
+        kind = 'methods' if is_method else 'fields'
+        if member_name not in cls[kind]:
+            return # Let the caller handle missing member
+        
+        _, vis = cls[kind][member_name]
+        if vis == 'priv' and self.current_class != type_name:
+            self._error(f"Cannot access private {'method' if is_method else 'field'} '{member_name}' of class '{type_name}'", node=node)
 
     # ── Function checking ───────────────────────────────────────────
 
     def _check_function(self, node):
-        # Save and restore var scope per function
+        # Reset usage tracking for new function
         saved_types = self.var_types.copy()
         saved_imut = self.var_immutable.copy()
-        self.current_func = node.name
-        self.current_return_type = node.return_type
+        saved_used_vars = self.used_vars.copy()
+        saved_used_params = self.used_params.copy()
+        saved_params = self.current_func_params.copy()
         
+        self.current_func = node.name
+        self.current_func_node = node
+        self.current_return_type = node.return_type
+        self.used_vars = set()
+        self.used_params = set()
+        self.current_func_params = set()
+        
+        if not node.body:
+             self._warn(f"Function '{node.name}' has an empty body.", node=node,
+                        tip="Did you forget to implement it? Or maybe you wanted a `void` function that does nothing?")
+
+        if len(node.args) > 8:
+            self._warn(f"Function '{node.name}' has {len(node.args)} parameters.", node=node,
+                       tip="Functions with too many parameters are harder to read and maintain. Consider grouping them in a `struct`.")
+
         # Register args as local vars
         for arg_name, arg_type in node.args:
             is_imut = self._is_imut(arg_type)
             bare_type = self._strip_imut(arg_type)
             self.var_types[arg_name] = bare_type
             self.var_immutable[arg_name] = is_imut
+            self.current_func_params.add(arg_name)
 
-        for stmt in node.body:
-            self._check_stmt(stmt)
+        last_was_return = self._check_statements(node.body)
+        
+        bare_ret = self._strip_imut(node.return_type) if node.return_type else 'void'
+        if bare_ret != 'void' and not last_was_return:
+             self._warn(f"Function '{node.name}' might not return a value on all paths.", node=node,
+                        tip=f"This function is declared to return '{bare_ret}', but its body doesn't end with a `return` statement.")
 
+        # Post-check: usage
+        for var_name in self.var_types:
+            if var_name not in saved_types: # Local variable
+                if var_name not in self.used_vars and var_name not in self.current_func_params:
+                     if var_name != "args": # Specialize for 'args' in main
+                         self._warn(f"Unused local variable '{var_name}' in function '{node.name}'",
+                                    tip=f"If you don't need this variable, consider removing it.")
+        
+        for param_name in self.current_func_params:
+            if param_name not in self.used_params:
+                if node.name == "main" and param_name == "args":
+                     pass # Allow unused args in main
+                else:
+                    self._warn(f"Unused parameter '{param_name}' in function '{node.name}'",
+                               tip=f"If the function logic doesn't require this parameter, consider removing it or renaming it to `_{param_name}`.")
+
+        # Restore
         self.var_types = saved_types
         self.var_immutable = saved_imut
+        self.used_vars = saved_used_vars
+        self.used_params = saved_used_params
+        self.current_func_params = saved_params
         self.current_func = None
+        self.current_func_node = None
         self.current_return_type = None
+
+    def _check_class(self, node):
+        self.current_class = node.name
+        # Register fields and methods in scope? Maybe not fields directly, but methods should be checked.
+        # Actually fields are accessed via 'this' or '.'
+        for f in node.fields:
+             resolved = self._resolve(f.var_type)
+             if not self._is_valid_type(resolved):
+                 self._error(f"Class '{node.name}' field '{f.name}' has unknown type '{f.var_type}'", node=f)
+
+        for m in node.methods:
+             # Add 'this' to scope for methods
+             self.var_types['this'] = node.name
+             self.var_immutable['this'] = True
+             self._check_function(m.fnc)
+             del self.var_types['this']
+             del self.var_immutable['this']
+
+        self.current_class = None
+
+    def _check_statements(self, statements):
+        """Check a list of statements, checking for unreachable code. Returns True if last stmt is return."""
+        was_returned = False
+        for stmt in statements:
+            if was_returned:
+                 self._warn("Unreachable code detected after return statement.", node=stmt,
+                            tip="Any statements after a `return`, `break` or `continue` will never be executed.")
+                 break # Only warn once per block
+            
+            self._check_stmt(stmt)
+            
+            if isinstance(stmt, ReturnStatement):
+                was_returned = True
+        return was_returned
 
     # ── Statement checking ──────────────────────────────────────────
 
@@ -267,24 +409,26 @@ class TypeChecker:
             self._check_if(stmt)
         elif isinstance(stmt, WhileStatement):
             self._infer_type(stmt.condition)
-            for s in stmt.body:
-                self._check_stmt(s)
+            if not stmt.body:
+                 self._warn("Empty `while` loop body.", node=stmt, tip="This loop will spin and probably hang your program if it runs. Did you forget to add logic or a break condition?")
+            self._check_statements(stmt.body)
         elif isinstance(stmt, ForStatement):
             self._check_stmt(stmt.init)
             self._infer_type(stmt.condition)
             self._check_stmt(stmt.step)
-            for s in stmt.body:
-                self._check_stmt(s)
+            if not stmt.body:
+                 self._warn("Empty `for` loop body.", node=stmt, tip="This loop will execute its condition and step repeatedly but do nothing within the body.")
+            self._check_statements(stmt.body)
         elif isinstance(stmt, DoWhileStatement):
-            for s in stmt.body:
-                self._check_stmt(s)
+            if not stmt.body:
+                  self._warn("Empty `do-while` loop body.", node=stmt)
+            self._check_statements(stmt.body)
             self._infer_type(stmt.condition)
         elif isinstance(stmt, ForeachStructStatement):
             self._infer_type(stmt.struct_expr)
             self.var_types[stmt.name_var] = 'string'
             self.var_types[stmt.value_var] = 'int'  # Approximate
-            for s in stmt.body:
-                self._check_stmt(s)
+            self._check_statements(stmt.body)
         elif isinstance(stmt, ForeachArrayStatement):
             arr_t = self._infer_type(stmt.array_expr)
             elem_t = 'int'
@@ -292,14 +436,12 @@ class TypeChecker:
                 elem_t = arr_t.split('[')[0]
             self.var_types[stmt.index_var] = 'int'
             self.var_types[stmt.value_var] = elem_t
-            for s in stmt.body:
-                self._check_stmt(s)
+            self._check_statements(stmt.body)
         elif isinstance(stmt, ForeachStringStatement):
             self._infer_type(stmt.string_expr)
             self.var_types[stmt.index_var] = 'int'
             self.var_types[stmt.char_var] = 'char'
-            for s in stmt.body:
-                self._check_stmt(s)
+            self._check_statements(stmt.body)
         elif isinstance(stmt, ForeachVectorStatement):
             vec_t = self._infer_type(stmt.vector_expr)
             elem_t = 'any' # default if unknown
@@ -307,8 +449,7 @@ class TypeChecker:
                 elem_t = vec_t[4:-1]
             self.var_types[stmt.index_var] = 'int'
             self.var_types[stmt.value_var] = elem_t
-            for s in stmt.body:
-                self._check_stmt(s)
+            self._check_statements(stmt.body)
 
     def _check_var_decl(self, stmt):
         if stmt.name in self.var_types:
@@ -320,6 +461,10 @@ class TypeChecker:
         bare_decl_type = self._strip_imut(decl_type)
         resolved = self._resolve(bare_decl_type)
         
+        if bare_decl_type == 'void':
+             self._error("Cannot declare a variable with type 'void'.", node=stmt, 
+                         tip="'void' is for functions that don't return a value, not for variables.")
+
         if not self._is_valid_type(resolved):
             self._error(
                 f"Variable '{stmt.name}' declared with unknown type '{bare_decl_type}'",
@@ -329,10 +474,22 @@ class TypeChecker:
         # Add to current scope
         self.var_types[stmt.name] = bare_decl_type
         self.var_immutable[stmt.name] = is_imut
+
+        # Check for large array
+        if '[' in resolved and ']' in resolved:
+             try:
+                 size_str = resolved.split('[')[1].strip(']')
+                 if size_str:
+                      total_size = int(size_str)
+                      # Assume element size is at least 1 byte, usually 4 or 8.
+                      if total_size > 10000:
+                           self._warn(f"Variable '{stmt.name}' is a large array ({total_size} elements) declared on the stack.", node=stmt,
+                                      tip="Large stack allocations can cause stack overflow. Consider using a `vec<T>` for dynamic or large data.")
+             except: pass
         
         if stmt.value is None:
              return # Default initialization (codegen should handle this)
-             
+
         val_type = self._infer_type(stmt.value)
 
         # If the assigned value comes from a function returning imut, the variable becomes immutable
@@ -358,6 +515,10 @@ class TypeChecker:
                     f"Cannot assign to immutable variable '{stmt.target.name}'",
                     node=stmt,
                     tip=f"Variable '{stmt.target.name}' was declared as `imut` or received an immutable value from a function. It cannot be reassigned.")
+            
+            # Self assignment check
+            if isinstance(stmt.value, Identifier) and stmt.target.name == stmt.value.name:
+                self._warn(f"Self-assignment: '{stmt.target.name} = {stmt.value.name}' has no effect.", node=stmt)
 
         target_type = self._infer_type(stmt.target)
         val_type = self._infer_type(stmt.value)
@@ -380,9 +541,18 @@ class TypeChecker:
 
     def _check_return(self, stmt):
         val_type = self._infer_type(stmt.value)
+        bare_ret = self._strip_imut(self.current_return_type) if self.current_return_type else 'void'
+        
+        if bare_ret == 'void' and stmt.value is not None:
+             self._error(f"Function '{self.current_func}' is void but returns a value.", node=stmt,
+                         tip="Remove the return value or change the function's return type.")
+        
+        if bare_ret != 'void' and stmt.value is None:
+             self._error(f"Function '{self.current_func}' must return a value of type '{bare_ret}'.", node=stmt,
+                         tip="Add a return value that matches the declared return type.")
+
         if self.current_return_type and val_type:
             bare_val = self._strip_imut(val_type)
-            bare_ret = self._strip_imut(self.current_return_type)
             if not self._types_compatible(bare_val, bare_ret):
                 self._error(
                     f"Function '{self.current_func}' should return '{bare_ret}' "
@@ -392,25 +562,36 @@ class TypeChecker:
 
     def _check_if(self, stmt):
         self._infer_type(stmt.condition)
-        for s in stmt.then_block:
-            self._check_stmt(s)
+        if isinstance(stmt.condition, BoolLiteral):
+             if stmt.condition.value == True:
+                  self._warn("Always-true `if` condition. The `then` block will always execute.", node=stmt)
+             else:
+                  self._warn("Always-false `if` condition. The `then` block will never execute.", node=stmt)
+
+        if not stmt.then_block:
+              self._warn("Empty `if` then-block.", node=stmt)
+        self._check_statements(stmt.then_block)
         for cond, block in stmt.also_blocks:
             self._infer_type(cond)
-            for s in block:
-                self._check_stmt(s)
+            self._check_statements(block)
         if stmt.else_block:
-            for s in stmt.else_block:
-                self._check_stmt(s)
+            if not stmt.else_block:
+                 self._warn("Empty `else` block.", node=stmt)
+            self._check_statements(stmt.else_block)
 
     # ── Expression type inference ───────────────────────────────────
 
     def _infer_type(self, expr):
         """Infer and return the type string for an expression, or None if unknown."""
         if isinstance(expr, NumberLiteral):
+            if expr.value > 9223372036854775807:
+                 self._warn(f"Number literal '{expr.value}' is very large and might overflow 64-bit integer.", node=expr)
             return 'int'
         elif isinstance(expr, FloatLiteral):
             return 'float'
         elif isinstance(expr, StringLiteral):
+            if not expr.value:
+                 self._warn("Empty string literal.", node=expr)
             return 'string'
         elif isinstance(expr, CharLiteral):
             return 'char'
@@ -418,13 +599,25 @@ class TypeChecker:
             return 'bool'
         elif isinstance(expr, NullLiteral):
             return 'void'
+        elif isinstance(expr, ThisExpr):
+            if not self.current_class:
+                self._error("'this' can only be used inside a class method", node=expr)
+            return self.current_class
         elif isinstance(expr, Identifier):
-            t = self.var_types.get(expr.name)
-            if t is None:
-                self._error(f"Undefined variable: '{expr.name}'",
-                            node=expr,
-                            tip="Make sure this variable is declared before use.")
-            return t
+            if expr.name in self.var_types:
+                 if expr.name in self.current_func_params:
+                      self.used_params.add(expr.name)
+                 else:
+                      self.used_vars.add(expr.name)
+                 return self.var_types[expr.name]
+            
+            # If not a variable, check if it's a class name (for static calls)
+            if expr.name in self.class_types:
+                return expr.name
+
+            self._error(f"Undefined variable: '{expr.name}'",
+                        node=expr,
+                        tip="Make sure this variable is declared before use.")
         elif isinstance(expr, BinaryOp):
             return self._check_binary_op(expr)
         elif isinstance(expr, UnaryOp):
@@ -440,6 +633,8 @@ class TypeChecker:
         elif isinstance(expr, CastExpr):
             return self._check_cast(expr)
         elif isinstance(expr, StructInit):
+            if expr.name in self.class_types:
+                return self._check_class_init(expr)
             return self._check_struct_init(expr)
         elif isinstance(expr, ArrayInit):
             return self._check_array_init(expr)
@@ -457,6 +652,37 @@ class TypeChecker:
             left_b = self._base_type(left_t)
             right_b = self._base_type(right_t)
 
+            # Redundancy checks
+            if isinstance(expr.right, NumberLiteral):
+                if expr.op in ('+', '-') and expr.right.value == 0:
+                    self._warn(f"Redundant operation: '{expr.op} 0' has no effect.", node=expr)
+                if expr.op == '*' and expr.right.value == 1:
+                    self._warn(f"Redundant operation: '* 1' has no effect.", node=expr)
+                if expr.op == '/' and expr.right.value == 1:
+                    self._warn(f"Redundant operation: '/ 1' has no effect.", node=expr)
+                if expr.op == '*' and expr.right.value == 0:
+                    self._warn(f"Operation '* 0' always results in 0.", node=expr)
+                if expr.op == '%' and expr.right.value == 1:
+                    self._warn(f"Operation '% 1' always results in 0.", node=expr)
+                if expr.op == '&' and expr.right.value == 0:
+                    self._warn(f"Operation '& 0' always results in 0.", node=expr)
+                if expr.op in ('|', '^') and expr.right.value == 0:
+                    self._warn(f"Redundant operation: '{expr.op} 0' has no effect.", node=expr)
+
+            if isinstance(expr.left, Identifier) and isinstance(expr.right, Identifier) and expr.left.name == expr.right.name:
+                if expr.op == '==':
+                    self._warn(f"Comparison '{expr.left.name} == {expr.right.name}' is always true.", node=expr)
+                if expr.op == '!=':
+                    self._warn(f"Comparison '{expr.left.name} != {expr.right.name}' is always false.", node=expr)
+                if expr.op == '^':
+                    self._warn(f"Operation '{expr.left.name} ^ {expr.right.name}' always results in 0.", node=expr)
+
+            # Mixed sign warning
+            if left_b == 'int' and right_b == 'uint' or left_b == 'uint' and right_b == 'int':
+                if expr.op not in ('<<', '>>'):
+                    self._warn(f"Mixing signed and unsigned integers in '{expr.op}' operation.", node=expr,
+                               tip="This can lead to unexpected results if the signed value is negative. Consider casting both to the same type.")
+
             # String operations
             if left_b == 'string' and right_b == 'string':
                 if expr.op in ('+', '-'):
@@ -468,12 +694,22 @@ class TypeChecker:
                         f"Operator '{expr.op}' is not supported for strings",
                         tip="Strings support: + (concatenation), - (removal), == and != (comparison).")
             # Mixed string concatenations
-            elif expr.op == '+' and ((left_b == 'string' and (right_b == 'char' or (right_t and right_t.startswith('char[')))) or (right_b == 'string' and (left_b == 'char' or (left_t and left_t.startswith('char['))))):
+            elif expr.op == '+' and ((left_b == 'string' and (right_b in ('char', 'int', 'uint', 'float', 'bool') or (right_t and right_t.startswith('char[')))) or (right_b == 'string' and (left_b in ('char', 'int', 'uint', 'float', 'bool') or (left_t and left_t.startswith('char['))))):
                 return 'string'
 
             # Bitwise and Modulo operations
             if expr.op in ('&', '|', '^', '<<', '>>', '%'):
                 if self._is_int_family(left_t) and self._is_int_family(right_t):
+                    # Shift limit check
+                    if expr.op in ('<<', '>>') and isinstance(expr.right, NumberLiteral):
+                        bits = 64 # Default
+                        if '<' in left_t:
+                             try: bits = int(left_t.split('<')[1].split('>')[0])
+                             except: pass
+                        if expr.right.value >= bits:
+                             self._warn(f"Shift amount {expr.right.value} is greater than or equal to bit-width {bits}.", node=expr,
+                                        tip="This is undefined behavior in many environments. Make sure the shift amount is within [0, bits-1].")
+                    
                     return left_t
                 else:
                     raise LeashError(
@@ -482,6 +718,11 @@ class TypeChecker:
 
             # Logical operations
             if expr.op in ('&&', '||'):
+                if isinstance(expr.left, BoolLiteral):
+                    if expr.op == '&&' and expr.left.value == True:
+                         self._warn("Redundant 'true && ...' operation.", node=expr)
+                    if expr.op == '||' and expr.left.value == False:
+                         self._warn("Redundant 'false || ...' operation.", node=expr)
                 return 'bool'
 
             # Numeric operations
@@ -494,7 +735,7 @@ class TypeChecker:
                 
                 # Zero-division safety check (static)
                 if expr.op in ('/', '%') and isinstance(expr.right, NumberLiteral) and expr.right.value == 0:
-                     raise LeashError("Division (or modulo) by zero detected statically!", 
+                     raise LeashError(f"{'Division' if expr.op == '/' else 'Modulo'} by zero detected statically!", 
                                       tip="Make sure you aren't dividing by zero, as it will crash your program at runtime.")
                 
                 return 'int'
@@ -509,7 +750,7 @@ class TypeChecker:
                 else:
                     raise LeashError(
                         f"Cannot use operator '{expr.op}' between '{left_t}' and '{right_t}'",
-                        tip="You cannot mix string and numeric types in binary operations. Use a cast if needed.")
+                        tip="Leash supports '+' for concatenating strings with numbers, but other operators like '-', '*', '/' are not supported for mixed types.")
 
         return left_t  # Best guess fallback
 
@@ -518,6 +759,8 @@ class TypeChecker:
         if val_t:
             val_b = self._base_type(val_t)
             if expr.op == '!':
+                if isinstance(expr.expr, UnaryOp) and expr.expr.op == '!':
+                    self._warn("Double negation '!!' is redundant.", node=expr)
                 if val_b not in ('bool', 'int', 'uint'):
                     raise LeashError(f"Operator '!' is not supported for type '{val_t}'", tip="Logical NOT is supported for bool and integer types.")
                 return 'bool'
@@ -539,7 +782,9 @@ class TypeChecker:
             if len(expr.args) != 1:
                 self._error(f"Function 'cstr' expects 1 argument", node=expr)
             arg_t = self._infer_type(expr.args[0])
-            if arg_t and self._resolve(arg_t) != 'string':
+            if arg_t and self._resolve(arg_t) == 'char[]':
+                 self._warn("Calling 'cstr' on a 'char[]' is redundant.", node=expr)
+            if arg_t and self._resolve(arg_t) != 'string' and self._resolve(arg_t) != 'char[]':
                 self._error(f"Argument 1 of 'cstr' must be 'string', got '{arg_t}'", node=expr.args[0])
             return 'char[]'
             
@@ -547,13 +792,17 @@ class TypeChecker:
             if len(expr.args) != 1:
                 self._error(f"Function 'lstr' expects 1 argument", node=expr)
             arg_t = self._infer_type(expr.args[0])
-            if arg_t and self._resolve(arg_t) != 'char[]':
+            if arg_t and self._resolve(arg_t) == 'string':
+                 self._warn("Calling 'lstr' on a 'string' is redundant.", node=expr)
+            if arg_t and self._resolve(arg_t) != 'char[]' and self._resolve(arg_t) != 'string':
                 self._error(f"Argument 1 of 'lstr' must be 'char[]', got '{arg_t}'", node=expr.args[0])
             return 'string'
 
         if expr.name == 'get':
             if len(expr.args) > 1:
                 self._error(f"Function 'get' expects 0 or 1 argument(s), but got {len(expr.args)}", node=expr)
+            if len(expr.args) == 0:
+                 self._warn("Calling 'get()' without a prompt string.", node=expr, tip="You can pass a string to `get()` to show a prompt: `get(\"Enter name: \")`.")
             if len(expr.args) == 1:
                arg_t = self._infer_type(expr.args[0])
                if arg_t and self._resolve(arg_t) != 'string':
@@ -563,6 +812,9 @@ class TypeChecker:
         if expr.name == 'tostring':
             if len(expr.args) != 1:
                 self._error(f"Function 'tostring' expects 1 argument, but got {len(expr.args)}", node=expr)
+            arg_t = self._infer_type(expr.args[0])
+            if arg_t and self._resolve(arg_t) == 'string':
+                 self._warn("Calling 'tostring' on a 'string' is redundant.", node=expr)
             return 'string'
 
         sig = self.func_types.get(expr.name)
@@ -635,6 +887,15 @@ class TypeChecker:
                     tip=f"Available variants: {', '.join(variants.keys())}")
             return variants[expr.member]
 
+        # Class member
+        if resolved in self.class_types:
+            self._check_visibility(resolved, expr.member, False, expr)
+            fields = self.class_types[resolved]['fields']
+            if expr.member not in fields:
+                raise LeashError(f"Class '{resolved}' has no field named '{expr.member}'",
+                                 tip=f"Available fields: {', '.join(fields.keys())}")
+            return fields[expr.member][0]
+
         return None
 
     def _check_index_access(self, expr):
@@ -645,6 +906,10 @@ class TypeChecker:
             raise LeashError(
                 f"Array/string index must be an integer, but got '{idx_type}'",
                 tip="Use an integer expression as the index.")
+        
+        if isinstance(expr.index, NumberLiteral) and expr.index.value < 0:
+             self._error(f"Negative array index {expr.index.value} is not allowed.", node=expr.index,
+                         tip="Array indices must be non-negative (0 or greater).")
 
         if base_type:
             resolved = self._resolve(base_type)
@@ -714,6 +979,25 @@ class TypeChecker:
                     f"but got '{actual}'.")
         return expr.name
 
+    def _check_class_init(self, expr):
+        if expr.name not in self.class_types:
+            raise LeashError(f"Undefined class: '{expr.name}'")
+        
+        cls = self.class_types[expr.name]
+        fields = cls['fields']
+        for key, val_expr in expr.kwargs:
+            if key not in fields:
+                raise LeashError(f"Class '{expr.name}' has no field named '{key}'",
+                                 tip=f"Available fields: {', '.join(fields.keys())}")
+            
+            self._check_visibility(expr.name, key, False, val_expr)
+            expected, _ = fields[key]
+            actual = self._infer_type(val_expr)
+            if actual and not self._types_compatible(actual, expected):
+                self.warnings.append(f"Warning: Class '{expr.name}' field '{key}' expects '{expected}' but got '{actual}'.")
+        
+        return expr.name
+
     def _check_array_init(self, expr):
         if not expr.elements:
             return 'int[]'
@@ -771,5 +1055,43 @@ class TypeChecker:
         # Array methods?
         if base_b == 'array' and expr.method == 'size':
              return 'int'
+
+        # Class method / Static call
+        # If expr.expr is an Identifier and it's a class name, it's a static call?
+        from .ast_nodes import Identifier
+        is_static = False
+        target_cls = None
+        if isinstance(expr.expr, Identifier) and expr.expr.name in self.class_types:
+            is_static = True
+            target_cls = expr.expr.name
+        elif base_t in self.class_types:
+            target_cls = base_t
+        
+        if target_cls:
+            self._check_visibility(target_cls, expr.method, True, expr)
+            # Static/Instance check
+            if is_static and expr.method != 'new':
+                 self._error(f"Cannot call instance method '{expr.method}' statically on class '{target_cls}'",
+                             node=expr, tip=f"Instance methods require an object. Call it on an instance variable: `let p = {target_cls}.new(...); p.{expr.method}(...);` ")
+            elif not is_static and expr.method == 'new':
+                 self._error(f"Cannot call static method 'new' on an instance of class '{target_cls}'",
+                             node=expr, tip=f"Static methods should be called on the class name: `{target_cls}.new(...)` ")
+            methods = self.class_types[target_cls]['methods']
+            if expr.method not in methods:
+                 raise LeashError(f"Class '{target_cls}' has no method named '{expr.method}'",
+                                  tip=f"Available methods: {', '.join(methods.keys())}")
+            
+            fnc_node, _ = methods[expr.method]
+            expected_args = [t for _, t in fnc_node.args]
+            
+            if len(expr.args) != len(expected_args):
+                 raise LeashError(f"Method '{expr.method}' of class '{target_cls}' expects {len(expected_args)} arguments, but got {len(expr.args)}")
+            
+            for i, (arg_expr, expected_type) in enumerate(zip(expr.args, expected_args)):
+                arg_type = self._infer_type(arg_expr)
+                if arg_type and not self._types_compatible(arg_type, expected_type):
+                    self._warn(f"Argument {i+1} of method '{expr.method}' expects '{expected_type}' but got '{arg_type}'", node=arg_expr)
+            
+            return fnc_node.return_type
 
         raise LeashError(f"Type '{base_t}' has no method named '{expr.method}'", node=expr)
