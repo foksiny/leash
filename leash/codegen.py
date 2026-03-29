@@ -187,6 +187,8 @@ class CodeGen:
             resolved = self._resolve_type_name(base_type)
             if resolved in self.struct_symtab:
                 return self.struct_symtab[resolved]['field_types'].get(node.member, 'int')
+            if resolved in self.class_symtab:
+                return self.class_symtab[resolved]['field_types'].get(node.member, 'int')
             if resolved in self.union_symtab:
                 return self.union_symtab[resolved]['variants'].get(node.member, {}).get('type_name', 'int')
         elif isinstance(node, IndexAccess):
@@ -280,7 +282,7 @@ class CodeGen:
         elif type_name in self.enum_symtab:
             return ir.IntType(32)
         elif type_name in self.class_symtab:
-            return self.class_symtab[type_name]['type']
+            return self.class_symtab[type_name]['type'].as_pointer()
         return ir.IntType(32) # default fallback
 
     def _codegen_StructDef(self, node):
@@ -654,16 +656,15 @@ class CodeGen:
                 field_type_name = struct_info['field_types'][node.member]
                 return self.builder.gep(base_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), idx)]), field_type_name
             elif resolved in self.class_symtab:
+                # Classes are reference types (pointers). LOAD the pointer first.
+                instance_ptr = self.builder.load(base_ptr)
                 cls_info = self.class_symtab[resolved]
                 idx = cls_info['fields'].get(node.member)
                 if idx is None:
                     raise LeashError(f"Class '{resolved}' has no field named '{node.member}'")
                 
-                # We need the type name of the field. We didn't store it in class_symtab yet.
-                # Let's assume we can get it from the AST or just store it.
-                # I'll update ClassDef codegen to store it.
                 field_type_name = cls_info['field_types'][node.member]
-                return self.builder.gep(base_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), idx)]), field_type_name
+                return self.builder.gep(instance_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), idx)]), field_type_name
             elif resolved in self.union_symtab:
                 union_info = self.union_symtab[resolved]
                 if node.member in union_info['variants']:
@@ -1782,20 +1783,42 @@ class CodeGen:
         return self.builder.call(func, args)
         
     def _codegen_StructInit(self, node):
+        is_class = False
         struct_info = self.struct_symtab.get(node.name)
         if not struct_info:
              struct_info = self.class_symtab.get(node.name)
+             is_class = True
         if not struct_info:
             raise LeashError(f"Undefined struct or class: '{node.name}'")
         struct_type = struct_info['type']
-        val = ir.Constant(struct_type, ir.Undefined)
-        for key, expr in node.kwargs:
-            idx = struct_info['fields'].get(key)
-            if idx is None:
-                raise LeashError(f"Struct '{node.name}' has no member named '{key}'")
-            field_val = self._codegen(expr)
-            val = self.builder.insert_value(val, field_val, idx)
-        return val
+        
+        if is_class:
+             # Allocate class instances on the heap (GC_malloc)
+             # To get the size: gep(null, 1) and ptrtoint
+             ptr_type = struct_type.as_pointer()
+             dummy_ptr = ir.Constant(ptr_type, None)
+             size_ptr = self.builder.gep(dummy_ptr, [ir.Constant(ir.IntType(32), 1)], inbounds=True)
+             size = self.builder.ptrtoint(size_ptr, ir.IntType(32))
+             
+             ptr_void = self.builder.call(self.malloc, [size])
+             ptr = self.builder.bitcast(ptr_void, ptr_type)
+             # Initialize fields
+             for key, expr in node.kwargs:
+                 idx = struct_info['fields'].get(key)
+                 field_val = self._codegen(expr)
+                 # gep on the instance pointer
+                 field_ptr = self.builder.gep(ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), idx)])
+                 self.builder.store(field_val, field_ptr)
+             return ptr
+        else:
+             val = ir.Constant(struct_type, ir.Undefined)
+             for key, expr in node.kwargs:
+                 idx = struct_info['fields'].get(key)
+                 if idx is None:
+                     raise LeashError(f"Struct '{node.name}' has no member named '{key}'")
+                 field_val = self._codegen(expr)
+                 val = self.builder.insert_value(val, field_val, idx)
+             return val
 
     def _codegen_Identifier(self, node):
         ptr, _ = self.var_symtab.get(node.name, (None, None))
