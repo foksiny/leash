@@ -119,7 +119,7 @@ class TypeChecker:
         for m in node.methods:
             if m.fnc.name in methods:
                 self._error(f"Duplicate method '{m.fnc.name}' in class '{node.name}'", node=m.fnc)
-            methods[m.fnc.name] = (m.fnc, m.visibility)
+            methods[m.fnc.name] = (m.fnc, m.visibility, m.is_static)
         
         self.class_types[node.name] = {'fields': fields, 'methods': methods}
 
@@ -272,7 +272,8 @@ class TypeChecker:
         if member_name not in cls[kind]:
             return # Let the caller handle missing member
         
-        _, vis = cls[kind][member_name]
+        info = cls[kind][member_name]
+        vis = info[1]
         if vis == 'priv' and self.current_class != type_name:
             self._error(f"Cannot access private {'method' if is_method else 'field'} '{member_name}' of class '{type_name}'", node=node)
 
@@ -352,12 +353,16 @@ class TypeChecker:
                  self._error(f"Class '{node.name}' field '{f.name}' has unknown type '{f.var_type}'", node=f)
 
         for m in node.methods:
-             # Add 'this' to scope for methods
-             self.var_types['this'] = node.name
-             self.var_immutable['this'] = True
+             # Add 'this' to scope for instance methods
+             if not m.is_static:
+                  self.var_types['this'] = node.name
+                  self.var_immutable['this'] = True
+             
              self._check_function(m.fnc)
-             del self.var_types['this']
-             del self.var_immutable['this']
+             
+             if not m.is_static:
+                  del self.var_types['this']
+                  del self.var_immutable['this']
 
         self.current_class = None
 
@@ -1069,19 +1074,21 @@ class TypeChecker:
         
         if target_cls:
             self._check_visibility(target_cls, expr.method, True, expr)
-            # Static/Instance check
-            if is_static and expr.method != 'new':
-                 self._error(f"Cannot call instance method '{expr.method}' statically on class '{target_cls}'",
-                             node=expr, tip=f"Instance methods require an object. Call it on an instance variable: `let p = {target_cls}.new(...); p.{expr.method}(...);` ")
-            elif not is_static and expr.method == 'new':
-                 self._error(f"Cannot call static method 'new' on an instance of class '{target_cls}'",
-                             node=expr, tip=f"Static methods should be called on the class name: `{target_cls}.new(...)` ")
             methods = self.class_types[target_cls]['methods']
             if expr.method not in methods:
                  raise LeashError(f"Class '{target_cls}' has no method named '{expr.method}'",
                                   tip=f"Available methods: {', '.join(methods.keys())}")
             
-            fnc_node, _ = methods[expr.method]
+            fnc_node, _, m_is_static = methods[expr.method]
+            
+            # Static/Instance check 
+            if is_static and not m_is_static:
+                 self._error(f"Cannot call instance method '{expr.method}' statically on class '{target_cls}'",
+                             node=expr, tip=f"Instance methods require an object. Call it on an instance variable: `let p = {target_cls}.new(...); p.{expr.method}(...);` ")
+            elif not is_static and m_is_static:
+                 self._error(f"Cannot call static method '{expr.method}' on an instance of class '{target_cls}'",
+                             node=expr, tip=f"Static methods should be called on the class name: `{target_cls}.{expr.method}(...)` ")
+            
             expected_args = [t for _, t in fnc_node.args]
             
             if len(expr.args) != len(expected_args):

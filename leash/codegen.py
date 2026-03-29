@@ -314,7 +314,8 @@ class CodeGen:
             'type': struct_type,
             'fields': fields,
             'field_types': {f.name: f.var_type for f in node.fields},
-            'methods': {}
+            'methods': {},
+            'method_static': {}
         }
         
         # Codegen methods
@@ -329,22 +330,18 @@ class CodeGen:
             # No, 'this' is implicit in Leash? The example doesn't show 'this' in args.
             # "pub fnc greet() : string" -> implicit this.
             
-            # Determine if it's a static method
-            is_static = False
-            if m.fnc.name == 'new': # and returns node.name
-                is_static = True
-            
             orig_name = m.fnc.name
             m.fnc.name = f"{node.name}_{orig_name}"
             
             # If not static, prepend 'this' to args
-            if not is_static:
+            if not m.is_static:
                 # m.fnc.args is a list of (name, type) tuples
                 new_args = [('this', node.name)] + list(m.fnc.args)
                 m.fnc.args = tuple(new_args)
             
             func = self._codegen_Function(m.fnc)
             self.class_symtab[node.name]['methods'][orig_name] = func
+            self.class_symtab[node.name]['method_static'][orig_name] = m.is_static
         
     def _codegen_ThisExpr(self, node):
         if 'this' not in self.var_symtab:
@@ -1524,23 +1521,19 @@ class CodeGen:
                  raise LeashError(f"Class '{resolved}' has no method named '{node.method}'")
             
             # Prepare arguments
-            call_args = []
+            args = [self._codegen(arg_node) for arg_node in node.args]
             
-            # If it's an instance method, base_ptr is 'this' (but load it if it's not static)
-            # Actually, most instance methods expect 'this' as first arg.
-            # How do we know if it was defined as static?
-            # In my current simple logic, if it's NOT 'new', it's an instance method.
-            if node.method != 'new':
+            is_m_static = cls_info['method_static'].get(node.method, False)
+            
+            if not is_m_static:
                  if base_ptr is None:
                       raise LeashError(f"Method '{node.method}' of class '{resolved}' is an instance method and requires an instance.")
-                 call_args.append(self.builder.load(base_ptr))
-            
-            for arg_node in node.args:
-                call_args.append(self._codegen(arg_node))
+                 # Prepend this pointer
+                 args = [self.builder.load(base_ptr)] + args
             
             # Cast arguments to match function signature
             casted_args = []
-            for arg_val, expected_type in zip(call_args, func.args):
+            for arg_val, expected_type in zip(args, func.args):
                  casted_args.append(self._emit_cast(arg_val, expected_type.type))
             
             return self.builder.call(func, casted_args)

@@ -281,12 +281,18 @@ class Parser:
         methods = []
         while self.current().type != 'RBRACE':
             visibility = 'pub'
-            if self.current().type in ('PUB', 'PRIV'):
-                visibility = self.eat(self.current().type).value.lower()
+            is_static = False
+            
+            while self.current().type in ('PUB', 'PRIV', 'STATIC'):
+                tok = self.eat(self.current().type)
+                if tok.type == 'STATIC':
+                    is_static = True
+                else:
+                    visibility = tok.value.lower()
             
             if self.current().type == 'FNC':
                 fnc = self.parse_function()
-                methods.append(ClassMethod(fnc, visibility))
+                methods.append(ClassMethod(fnc, visibility, is_static))
             else:
                 field_name = self.eat('IDENT').value
                 self.eat('COLON')
@@ -426,13 +432,13 @@ class Parser:
             else:
                 raise LeashError(f"INTERNAL ERROR: unhandled foreach type {iterable_type}", tok.line, tok.column)
 
-        elif current.type == 'RETURN':
+        elif current.type in ('RETURN',):
             tok = self.current()
             self.eat('RETURN')
             expr = self.parse_expression()
             self.eat('SEMI')
             return self._pos(ReturnStatement(expr), tok)
-        elif self.current().type == 'IDENT':
+        elif self.current().type in ('IDENT', 'THIS'):
             # Could be assignment or function call or show
             if self.current().value == 'show':
                 tok = self.current()

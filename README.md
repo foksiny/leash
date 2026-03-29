@@ -505,7 +505,7 @@ def Person : class {
     priv age: int;
 
     // Static conversion/factory method
-    pub fnc new(name string, age int) : Person {
+    static pub fnc new(name string, age int) : Person {
         return Person { name: name, age: age };
     }
 
@@ -530,8 +530,8 @@ fnc main() : void {
 
 ### Key Features:
 - **Visibility**: Use `pub` (default) for members accessible from anywhere, and `priv` for members only accessible within the class methods.
-- **Methods**: Functions defined inside a class. If a method is not a "factory" (like `new`), it automatically receives an implicit `this` pointer to the current instance.
-- **Static vs Instance**: Methods called on the class name (e.g., `Person.new()`) are treated as static, while those called on a variable (e.g., `p.greet()`) are instance methods.
+- **Methods**: Functions defined inside a class. Non-static methods automatically receive an implicit `this` pointer to the current instance.
+- **Static vs Instance**: Methods marked with the `static` keyword are called on the class name (e.g., `Person.new()`), while non-static methods are called on a variable instance (e.g., `p.greet()`).
 - **The `this` Keyword**: Automatically available inside instance methods to access fields and other methods of the current object.
 
 ## Memory Management

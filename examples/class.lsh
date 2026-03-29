@@ -2,7 +2,7 @@ def Person : class {
     pub name: string; // use 'priv' to make it private instead of public
     pub age: int;
 
-    pub fnc new(name string, age int) : Person {
+    static pub fnc new(name string, age int) : Person {
         return Person { name: name, age: age };
     }
 

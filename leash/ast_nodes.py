@@ -211,9 +211,10 @@ class ClassField(ASTNode):
         self.visibility = visibility # 'pub' or 'priv'
 
 class ClassMethod(ASTNode):
-    def __init__(self, fnc, visibility):
+    def __init__(self, fnc, visibility, is_static=False):
         self.fnc = fnc # Function node
         self.visibility = visibility # 'pub' or 'priv'
+        self.is_static = is_static
 
 class ThisExpr(Expression):
     def __init__(self):
