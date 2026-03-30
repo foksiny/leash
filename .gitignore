@@ -45,7 +45,8 @@ examples/binops
 examples/morestr
 examples/totype
 examples/args
-examples/pointer
+examples/pointers
+examples/advanced_class
 
 # Trash
 trash/

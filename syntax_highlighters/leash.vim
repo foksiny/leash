@@ -11,6 +11,12 @@ syn keyword leashNull null
 " Types with optional bitwidths
 syn match leashType "\b\(int\|uint\|float\|bool\|string\|char\|void\|array\|vec\)\b\(<\d+>\)\?"
 
+" Class inheritance syntax: class(Parent)
+syn match leashClassInheritance "class\s*(\s*[A-Z][a-zA-Z0-9_]*\s*)"
+
+" Type annotation with parent: : Type(Parent)
+syn match leashTypeAnnotation ":\s*[A-Z][a-zA-Z0-9_]*\s*(\s*[A-Z][a-zA-Z0-9_]*\s*)"
+
 " Builtin functions and properties
 syn keyword leashBuiltin show get set toint tofloat tostring cstr lstr size cur name pushb popb pushf popf insert clear
 
@@ -21,7 +27,7 @@ syn match leashOperator "&&\|||\|<<\|>>\|[+\-*/%&|^~!<>=]=\?\|!="
 syn match leashPointerOperator "[*&]\|->"
 
 " Strings and Comments
-syn region leashString start=/"/ skip=/\\"/ end=/"
+syn region leashString start=/"/ skip=/\\"/ end=/"/
 syn region leashChar start=/'/ skip=/\\'/ end=/'/
 syn match leashComment "//.*$"
 
@@ -32,6 +38,8 @@ syn match leashFloat "\b\d\+\.\d\*\b"
 " Highlights
 hi def link leashKeyword Keyword
 hi def link leashType Type
+hi def link leashClassInheritance Type
+hi def link leashTypeAnnotation Type
 hi def link leashBoolean Boolean
 hi def link leashNull Constant
 hi def link leashBuiltin Function

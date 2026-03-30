@@ -21,6 +21,8 @@ Leash is a strongly-typed, modern compiled programming language built on top of 
 - [Type Conversions](#type-conversions)
 - [Strings](#strings)
 - [Classes](#classes)
+  - [Class Inheritance (Subclasses)](#class-inheritance-subclasses)
+  - [Polymorphism and Dynamic Dispatch](#polymorphism-and-dynamic-dispatch)
 - [Memory Management](#memory-management)
 - [Error Handling & Safety](#error-handling--safety)
 - [Syntax Highlighting](#syntax-highlighting)
@@ -618,6 +620,111 @@ fnc main() : void {
 - **Methods**: Functions defined inside a class. Non-static methods automatically receive an implicit `this` pointer to the current instance.
 - **Static vs Instance**: Methods marked with the `static` keyword are called on the class name (e.g., `Person.new()`), while non-static methods are called on a variable instance (e.g., `p.greet()`).
 - **The `this` Keyword**: Automatically available inside instance methods to access fields and other methods of the current object.
+
+### Class Inheritance (Subclasses)
+
+Leash supports class inheritance, allowing you to create subclasses that inherit fields and methods from a parent class. Subclasses can override parent methods to provide specialized behavior.
+
+```leash
+def Animal : class {
+    pub name: string;
+
+    static pub fnc new(name string) : Animal {
+        return Animal { name: name };
+    }
+
+    pub fnc talk() : void {
+        show("No sounds");
+    }
+}
+
+// Define a subclass using class(Parent)
+def Dog : class(Animal) {
+    // Dog inherits 'name' field from Animal
+
+    static pub fnc new(name string) : Dog(Animal) {
+        return Dog { name: name };
+    }
+
+    // Override the parent's talk() method
+    pub fnc talk() : void {
+        show("Bark Bark!");
+    }
+}
+
+def Cat : class(Animal) {
+    static pub fnc new(name string) : Cat(Animal) {
+        return Cat { name: name };
+    }
+
+    pub fnc talk() : void {
+        show("Meow!");
+    }
+}
+```
+
+### Polymorphism and Dynamic Dispatch
+
+Leash supports polymorphism - a child class can be used wherever its parent class is expected. Method calls are dispatched dynamically at runtime, so the correct overridden method is called based on the actual object type.
+
+```leash
+fnc main() : void {
+    a: Animal = Animal.new("bob");
+    d: Dog    = Dog.new("Jake");
+    c: Cat    = Cat.new("Justaname");
+
+    a.talk();  // "No sounds"
+    d.talk();  // "Bark Bark!"
+    c.talk();  // "Meow!"
+
+    // Upcasting: Child can be assigned to parent variable
+    a2: Animal = Dog.new("Jakeee");
+
+    // Dynamic dispatch: calls Dog.talk() even though a2 is typed as Animal
+    a2.talk(); // "Bark Bark!"
+
+    // Downcasting: Explicit cast from parent to child
+    d = (Dog)a;
+}
+```
+
+### Inheritance Features:
+- **Subclass Syntax**: Use `def Child : class(Parent)` to create a subclass
+- **Field Inheritance**: Child classes automatically inherit all fields from the parent
+- **Method Inheritance**: Child classes inherit all methods from the parent
+- **Method Overriding**: Child classes can override parent methods by redefining them
+- **Imut Methods**: Use `imut` before `fnc` to make a method non-overridable by subclasses
+- **Upcasting**: Implicit conversion from child to parent type (e.g., `Animal a = Dog.new()`)
+- **Downcasting**: Explicit cast from parent to child using `(ChildType)expr`
+- **Dynamic Dispatch**: Method calls use vtables for runtime polymorphism
+
+### Preventing Method Overriding with `imut`
+
+If you want to make a method non-modifiable by subclasses, use `imut` before `fnc`:
+
+```leash
+def Animal : class {
+    pub name: string;
+
+    static pub fnc new(name string) : Animal {
+        return Animal { name: name };
+    }
+
+    // imut makes this method non-overridable
+    pub imut fnc talk() : void {
+        show("No sounds");
+    }
+}
+
+def Dog : class(Animal) {
+    // ERROR: Cannot override imut method 'talk' from parent class 'Animal'
+    pub fnc talk() : void {
+        show("Bark Bark!"); // Compilation error!
+    }
+}
+```
+
+This is useful when you want to ensure certain methods always behave the same way across all subclasses, maintaining consistent behavior for critical operations.
 
 ## Memory Management
 

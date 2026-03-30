@@ -24,6 +24,10 @@
    '("\\b\\(show\\|get\\|set\\|toint\\|tofloat\\|tostring\\|cstr\\|lstr\\|size\\|cur\\|name\\|pushb\\|popb\\|pushf\\|popf\\|insert\\|clear\\)\\b" . font-lock-builtin-face)
    '("&&\\|||\\|<<\\|>>\\|[+\\-*/%&|^~!<>=]=?" . font-lock-variable-name-face)
    '("\\(&\\|\\*\\|->\\)" . font-lock-type-face)
+   ;; Class inheritance syntax: class(Parent)
+   '("\\bclass\\s*(\\s*\\([A-Z][a-zA-Z0-9_]*\\)\\s*)" . font-lock-type-face)
+   ;; Type annotation with parent: : Type(Parent)
+   '(":\\s*\\([A-Z][a-zA-Z0-9_]*\\)\\s*(\\s*\\([A-Z][a-zA-Z0-9_]*\\)\\s*)" . font-lock-type-face)
    )
   "Default font-lock keywords for Leash mode")
 

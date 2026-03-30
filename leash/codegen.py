@@ -439,45 +439,167 @@ class CodeGen:
         self.type_aliases[node.name] = node.target_type
 
     def _codegen_ClassDef(self, node):
-        llvm_types = []
+        # Vtable pointer type (i8*)
+        vtable_ptr_type = ir.IntType(8).as_pointer()
+
+        llvm_types = []  # Will build from parent or start fresh
         fields = {}
-        for idx, f in enumerate(node.fields):
+        field_types = {}
+
+        # Inherit parent struct type (includes vtable pointer and parent fields)
+        if node.parent and node.parent in self.class_symtab:
+            parent_info = self.class_symtab[node.parent]
+            # Copy all parent types (vtable pointer + parent fields)
+            for i, elem_type in enumerate(parent_info["type"].elements):
+                llvm_types.append(elem_type)
+            # Copy parent field indices (they already include vtable offset)
+            for fname, fidx in parent_info["fields"].items():
+                fields[fname] = fidx
+                field_types[fname] = parent_info["field_types"][fname]
+
+        # If no parent, start with vtable pointer
+        if not node.parent:
+            llvm_types.append(vtable_ptr_type)
+
+        # Add child's own fields
+        idx = len(llvm_types)
+        for f in node.fields:
             fields[f.name] = idx
+            field_types[f.name] = f.var_type
             llvm_types.append(self._get_llvm_type(f.var_type))
+            idx += 1
 
         struct_type = ir.LiteralStructType(llvm_types)
         self.class_symtab[node.name] = {
             "type": struct_type,
             "fields": fields,
-            "field_types": {f.name: f.var_type for f in node.fields},
+            "field_types": field_types,
             "methods": {},
             "method_static": {},
+            "method_imut": {},  # Track which methods are imut (non-overridable)
+            "method_order": [],  # Order of virtual methods for vtable
+            "vtable_type": None,
+            "vtable_global": None,
+            "vtable_indices": {},
+            "parent": node.parent,
         }
+
+        # Build method order - inherit from parent first
+        if node.parent and node.parent in self.class_symtab:
+            parent_info = self.class_symtab[node.parent]
+            # Copy parent's method order
+            for mname in parent_info.get("method_order", []):
+                if not parent_info["method_static"].get(mname, False):
+                    if mname not in self.class_symtab[node.name]["method_order"]:
+                        self.class_symtab[node.name]["method_order"].append(mname)
+            # Inherit parent methods
+            for mname, mfunc in parent_info["methods"].items():
+                self.class_symtab[node.name]["methods"][mname] = mfunc
+                self.class_symtab[node.name]["method_static"][mname] = parent_info[
+                    "method_static"
+                ].get(mname, False)
+                self.class_symtab[node.name]["method_imut"][mname] = parent_info[
+                    "method_imut"
+                ].get(mname, False)
+
+        # Add new methods to method order BEFORE codegen
+        for m in node.methods:
+            if (
+                not m.is_static
+                and m.fnc.name not in self.class_symtab[node.name]["method_order"]
+            ):
+                self.class_symtab[node.name]["method_order"].append(m.fnc.name)
+
+        # Create vtable type and placeholder global BEFORE codegen methods
+        # so StructInit can store the vtable pointer
+        self._create_vtable_placeholder(node.name)
 
         # Codegen methods
         for m in node.methods:
-            # Instance method if it's not 'new' or if we want to support 'this'
-            # For simplicity, if it's in a class, we'll name it Class_Method
-            # and if it takes 'this' as first arg, it's an instance method.
-            # In Leash, let's assume all methods except 'new' (or those that return the class) are instance methods.
-            # Actually, let's look at the typechecker's logic for 'this'.
-            # A better way: let the user decide? No, let's stick to:
-            # if first arg is named 'this', it's an instance method.
-            # No, 'this' is implicit in Leash? The example doesn't show 'this' in args.
-            # "pub fnc greet() : string" -> implicit this.
-
             orig_name = m.fnc.name
             m.fnc.name = f"{node.name}_{orig_name}"
 
             # If not static, prepend 'this' to args
             if not m.is_static:
-                # m.fnc.args is a list of (name, type) tuples
                 new_args = [("this", node.name)] + list(m.fnc.args)
                 m.fnc.args = tuple(new_args)
 
             func = self._codegen_Function(m.fnc)
             self.class_symtab[node.name]["methods"][orig_name] = func
             self.class_symtab[node.name]["method_static"][orig_name] = m.is_static
+            self.class_symtab[node.name]["method_imut"][orig_name] = m.is_imut
+
+        # Update vtable with actual function pointers
+        self._update_vtable(node.name)
+
+    def _create_vtable_placeholder(self, class_name):
+        """Create a vtable type and placeholder global for the given class.
+        This is called before methods are codegen'd so StructInit can use it.
+        The actual function pointers will be filled in later by _update_vtable.
+        """
+        cls_info = self.class_symtab[class_name]
+        method_order = cls_info.get("method_order", [])
+
+        if not method_order:
+            # No virtual methods, no vtable needed
+            cls_info["vtable_type"] = None
+            cls_info["vtable_global"] = None
+            cls_info["vtable_indices"] = {}
+            return
+
+        # Build vtable type: struct of function pointers
+        ptr_type = ir.IntType(8).as_pointer()
+        vtable_elements = []
+        vtable_indices = {}
+
+        for i, method_name in enumerate(method_order):
+            vtable_indices[method_name] = i
+            vtable_elements.append(ptr_type)
+
+        vtable_type = ir.LiteralStructType(vtable_elements)
+
+        # Create placeholder vtable with null pointers
+        vtable_values = [ir.Constant(ptr_type, None) for _ in method_order]
+        vtable_const = ir.Constant(vtable_type, vtable_values)
+        vtable_global = ir.GlobalVariable(
+            self.module, vtable_type, f"{class_name}_vtable"
+        )
+        vtable_global.linkage = "internal"
+        vtable_global.global_constant = True
+        vtable_global.initializer = vtable_const
+
+        cls_info["vtable_type"] = vtable_type
+        cls_info["vtable_global"] = vtable_global
+        cls_info["vtable_indices"] = vtable_indices
+
+    def _update_vtable(self, class_name):
+        """Update the vtable with actual function pointers after methods are codegen'd."""
+        cls_info = self.class_symtab[class_name]
+        method_order = cls_info.get("method_order", [])
+
+        if not method_order or not cls_info.get("vtable_global"):
+            return
+
+        ptr_type = ir.IntType(8).as_pointer()
+        vtable_values = []
+
+        for method_name in method_order:
+            # Get the function for this class (could be inherited or overridden)
+            func = cls_info["methods"].get(method_name)
+            if func:
+                func_ptr = func.bitcast(ptr_type)
+                vtable_values.append(func_ptr)
+            else:
+                vtable_values.append(ir.Constant(ptr_type, None))
+
+        # Update the vtable initializer
+        vtable_const = ir.Constant(cls_info["vtable_type"], vtable_values)
+        cls_info["vtable_global"].initializer = vtable_const
+
+    def _create_vtable(self, class_name):
+        """Create a vtable for the given class (combined placeholder + update)."""
+        self._create_vtable_placeholder(class_name)
+        self._update_vtable(class_name)
 
     def _codegen_ThisExpr(self, node):
         if "this" not in self.var_symtab:
@@ -2052,8 +2174,6 @@ class CodeGen:
             # Prepare arguments
             args = []
             for i, arg_node in enumerate(node.args):
-                # Handle safe pointer args in methods too if we had the signature
-                # For now, standard codegen
                 args.append(self._codegen(arg_node))
 
             is_m_static = cls_info["method_static"].get(node.method, False)
@@ -2063,29 +2183,69 @@ class CodeGen:
                     raise LeashError(
                         f"Method '{node.method}' of class '{resolved}' is an instance method and requires an instance."
                     )
-                # Prepend this pointer
-                args = [
-                    self.builder.load(base_ptr)
-                    if not resolved.startswith("&")
-                    else base_ptr
-                ] + args
-                # Actually if base_ptr came from _codegen_lvalue it's already the pointer we need for 'this'
-                # Wait, for classes, _codegen_lvalue returns the address of the pointer (i8**).
-                # We need the pointer itself (i8*).
+                # Get the 'this' pointer
                 if not resolved.startswith("&"):
-                    # If it's a class instance, base_ptr is the address of the pointer
-                    # We want the pointer itself
                     this_ptr = self.builder.load(base_ptr)
                 else:
                     this_ptr = base_ptr
-                args = [this_ptr] + args[1:]  # Replace first arg (placeholder)
 
-            # Cast arguments to match function signature
-            casted_args = []
-            for arg_val, expected_type in zip(args, func.args):
-                casted_args.append(self._emit_cast(arg_val, expected_type.type))
+                # For dynamic dispatch, use vtable lookup
+                # Find the method index in the vtable
+                vtable_idx = cls_info.get("vtable_indices", {}).get(node.method)
 
-            return self.builder.call(func, casted_args)
+                if vtable_idx is not None and cls_info.get("vtable_global"):
+                    # Load vtable pointer from instance (index 0)
+                    vtable_ptr_ptr = self.builder.gep(
+                        this_ptr,
+                        [
+                            ir.Constant(ir.IntType(32), 0),
+                            ir.Constant(ir.IntType(32), 0),
+                        ],
+                    )
+                    vtable_ptr_i8 = self.builder.load(vtable_ptr_ptr)
+
+                    # Cast i8* vtable pointer to the actual vtable struct pointer type
+                    vtable_struct_ptr_type = cls_info["vtable_type"].as_pointer()
+                    vtable_ptr = self.builder.bitcast(
+                        vtable_ptr_i8, vtable_struct_ptr_type
+                    )
+
+                    # Load function pointer from vtable at the method index
+                    func_ptr_ptr = self.builder.gep(
+                        vtable_ptr,
+                        [
+                            ir.Constant(ir.IntType(32), 0),
+                            ir.Constant(ir.IntType(32), vtable_idx),
+                        ],
+                    )
+                    func_ptr = self.builder.load(func_ptr_ptr)
+
+                    # Cast function pointer to the correct type
+                    func_type = func.function_type
+                    typed_func_ptr = self.builder.bitcast(
+                        func_ptr, func_type.as_pointer()
+                    )
+
+                    # Call through vtable with this as first argument
+                    args = [this_ptr] + args
+                    casted_args = []
+                    for arg_val, expected_type in zip(args, func.args):
+                        casted_args.append(self._emit_cast(arg_val, expected_type.type))
+
+                    return self.builder.call(typed_func_ptr, casted_args)
+                else:
+                    # No vtable (shouldn't happen for instance methods), direct call
+                    args = [this_ptr] + args
+                    casted_args = []
+                    for arg_val, expected_type in zip(args, func.args):
+                        casted_args.append(self._emit_cast(arg_val, expected_type.type))
+                    return self.builder.call(func, casted_args)
+            else:
+                # Static method - direct call
+                casted_args = []
+                for arg_val, expected_type in zip(args, func.args):
+                    casted_args.append(self._emit_cast(arg_val, expected_type.type))
+                return self.builder.call(func, casted_args)
 
         raise LeashError(
             f"Method '{node.method}' is not implemented for type '{resolved}'",
@@ -2427,9 +2587,24 @@ class CodeGen:
 
             ptr_void = self.builder.call(self.malloc, [size])
             ptr = self.builder.bitcast(ptr_void, ptr_type)
-            # Initialize fields
+
+            # Initialize vtable pointer at index 0
+            vtable_global = struct_info.get("vtable_global")
+            if vtable_global:
+                vtable_ptr = self.builder.bitcast(
+                    vtable_global, ir.IntType(8).as_pointer()
+                )
+                vtable_field_ptr = self.builder.gep(
+                    ptr,
+                    [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)],
+                )
+                self.builder.store(vtable_ptr, vtable_field_ptr)
+
+            # Initialize other fields
             for key, expr in node.kwargs:
                 idx = struct_info["fields"].get(key)
+                if idx is None:
+                    raise LeashError(f"Class '{node.name}' has no field named '{key}'")
                 field_val = self._codegen(expr)
                 # gep on the instance pointer
                 field_ptr = self.builder.gep(
@@ -2810,7 +2985,21 @@ class CodeGen:
         return val
 
     def _codegen_CastExpr(self, node):
+        from .ast_nodes import ThisExpr
+
         val = self._codegen(node.expr)
+        src_type_name = self._get_leash_type_name(node.expr)
+        dst_type_name = self._resolve_type_name(node.target_type)
+
+        # Handle class casting (inheritance)
+        src_resolved = self._resolve_type_name(src_type_name)
+        dst_resolved = self._resolve_type_name(dst_type_name)
+
+        if src_resolved in self.class_symtab and dst_resolved in self.class_symtab:
+            # Both are classes - use bitcast for inheritance
+            target_type = self._get_llvm_type(node.target_type)
+            return self.builder.bitcast(val, target_type)
+
         target_type = self._get_llvm_type(node.target_type)
         return self._emit_cast(val, target_type)
 

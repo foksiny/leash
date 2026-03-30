@@ -1,0 +1,49 @@
+def Animal : class {
+    pub name: string;
+
+    static pub fnc new(name string) : Animal {
+        return Animal { name: name };
+    }
+
+    // if you want to make the function non-modifiable, use 'imut' before 'fnc'
+    pub fnc talk() : void {
+        show("No sounds");
+    }
+}
+
+def Dog : class(Animal) {
+    // no need to define 'name', it's already defined in Animal class, so yeah.
+    static pub fnc new(name string) : Dog(Animal) { // needs to tell the parent or ir won't work properly when trying to use Dog as a value for Animal
+        return Dog { name: name };
+    }
+
+    pub fnc talk() : void {
+        show("Bark Bark!");
+    }
+}
+
+def Cat : class(Animal) {
+    static pub fnc new(name string) : Cat(Animal) {
+        return Cat { name: name };
+    }
+
+    pub fnc talk() : void {
+        show("Meow!");
+    }
+}
+
+fnc main() : void {
+    a: Animal = Animal.new("bob");
+    d: Dog    = Dog.new("Jake");
+    c: Cat    = Cat.new("Justaname");
+
+    a.talk();
+    d.talk();
+    c.talk();
+
+    d = (Dog)a; // casting from parent to son.
+    
+    a2: Animal = Dog.new("Jakeee"); // still works because Dog is son of Animal, but only methods in Animal can be accessed.
+
+    a2.talk(); // still should bark.
+}
