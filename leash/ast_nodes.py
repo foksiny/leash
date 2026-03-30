@@ -128,6 +128,16 @@ class ReturnStatement(Statement):
         self.value = value
 
 
+class StopStatement(Statement):
+    def __init__(self):
+        pass
+
+
+class ContinueStatement(Statement):
+    def __init__(self):
+        pass
+
+
 class ExpressionStatement(Statement):
     def __init__(self, expr):
         self.expr = expr

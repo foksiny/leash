@@ -251,6 +251,29 @@ do {
 } while k < 10;
 ```
 
+#### `stop` and `continue`
+
+Inside loops, you can use `stop` to exit the loop early (similar to `break` in other languages) and `continue` to skip to the next iteration immediately.
+
+```leash
+fnc main() : void {
+    i: int = 0;
+    while true {
+        show(i);
+        if i >= 10 {
+            stop; // exit the loop
+        }
+        continue; // skip the rest of this iteration and jump to condition/update
+        show("This will not be printed.");
+    }
+}
+```
+
+- `stop;` terminates the innermost loop and transfers control to the code after the loop.
+- `continue;` skips the remaining statements in the current iteration and jumps to the loop's continuation point (the condition check for `while`/`do-while`, or the update step for `for`).
+
+Both `stop` and `continue` can be used in `while`, `for`, `do-while`, and `foreach` loops (including `foreach` over arrays, strings, and vectors). They are not supported in `foreach` over structs because that loop is unrolled at compile time.
+
 ## Input Handling
 
 Leash provides a built-in `get()` function to read interactive user input from the console.

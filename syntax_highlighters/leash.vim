@@ -4,7 +4,7 @@ if exists("b:current_syntax")
 endif
 
 " Keywords
-syn keyword leashKeyword fnc def struct union enum class type return if also else while for do foreach in imut vector vec this pub priv static
+syn keyword leashKeyword fnc def struct union enum class type return if also else while for do foreach in imut vector vec this pub priv static stop continue
 syn keyword leashBoolean true false
 syn keyword leashNull null
 

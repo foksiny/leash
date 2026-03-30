@@ -1,0 +1,19 @@
+fnc main() : void {
+    i: int = 0;
+    while true {
+        show("(WHILE): ", i);
+        i = i + 1;
+        if i >= 10 {
+            stop; // stop is the same as break, but here in leash it's called stop and not break.
+        }
+        continue;
+        show("This will not be printed because i used continue.");
+    }
+
+    for j: int = 0; true; j = j + 1 {
+        show("(FOR): ", j);
+        if j >= 10 {
+            stop;
+        }
+    }
+}

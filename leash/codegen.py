@@ -16,6 +16,7 @@ class CodeGen:
         self.class_symtab = {}  # name -> { 'type': ir_type, 'fields': {...}, 'methods': {...} }
         self.printf = None
         self.current_target_type = None
+        self.loop_stack = []  # Stack of (break_bb, continue_bb) for nested loops
 
         # stderr - declared as external global
         self.stderr_var = ir.GlobalVariable(
@@ -761,6 +762,8 @@ class CodeGen:
 
         for stmt in node.body:
             self._codegen(stmt)
+            if self.builder.block.is_terminated:
+                break
 
         if not self.builder.block.is_terminated:
             self._emit_cleanup()  # Auto-free everything
@@ -795,6 +798,30 @@ class CodeGen:
             self.builder.ret_void()
         else:
             self.builder.ret(val)
+
+    def _codegen_StopStatement(self, node):
+        # stop (break) - jump to the loop's merge block
+        if not self.loop_stack:
+            raise LeashError(
+                "`stop` can only be used inside a loop",
+                node.line,
+                node.col,
+                tip="`stop` (break) is used to exit a loop early. It can only be used within `while`, `for`, `do-while`, or `foreach` loops."
+            )
+        break_bb, _ = self.loop_stack[-1]
+        self.builder.branch(break_bb)
+
+    def _codegen_ContinueStatement(self, node):
+        # continue - jump to the loop's continue block (usually condition or update)
+        if not self.loop_stack:
+            raise LeashError(
+                "`continue` can only be used inside a loop",
+                node.line,
+                node.col,
+                tip="`continue` skips to the next iteration of a loop. It can only be used within `while`, `for`, `do-while`, or `foreach` loops."
+            )
+        _, continue_bb = self.loop_stack[-1]
+        self.builder.branch(continue_bb)
 
     def _codegen_VariableDecl(self, node):
         resolved_type = self._resolve_type_name(node.var_type)
@@ -1396,6 +1423,8 @@ class CodeGen:
         self.builder.position_at_end(then_bb)
         for stmt in node.then_block:
             self._codegen(stmt)
+            if self.builder.block.is_terminated:
+                break
         if not self.builder.block.is_terminated:
             self.builder.branch(merge_bb)
 
@@ -1413,6 +1442,8 @@ class CodeGen:
             self.builder.position_at_end(body_bb)
             for stmt in also_body:
                 self._codegen(stmt)
+                if self.builder.block.is_terminated:
+                    break
             if not self.builder.block.is_terminated:
                 self.builder.branch(merge_bb)
 
@@ -1420,6 +1451,8 @@ class CodeGen:
             self.builder.position_at_end(else_bb)
             for stmt in node.else_block:
                 self._codegen(stmt)
+                if self.builder.block.is_terminated:
+                    break
             if not self.builder.block.is_terminated:
                 self.builder.branch(merge_bb)
 
@@ -1429,6 +1462,11 @@ class CodeGen:
         cond_bb = self.builder.function.append_basic_block("while_cond")
         body_bb = self.builder.function.append_basic_block("while_body")
         merge_bb = self.builder.function.append_basic_block("while_merge")
+        continue_bb = cond_bb  # continue jumps to condition check
+        break_bb = merge_bb     # break jumps to merge
+
+        # Push loop context for nested stop/continue
+        self.loop_stack.append((break_bb, continue_bb))
 
         self.builder.branch(cond_bb)
         self.builder.position_at_end(cond_bb)
@@ -1439,8 +1477,13 @@ class CodeGen:
         self.builder.position_at_end(body_bb)
         for stmt in node.body:
             self._codegen(stmt)
+            if self.builder.block.is_terminated:
+                break
         if not self.builder.block.is_terminated:
             self.builder.branch(cond_bb)
+
+        # Pop loop context
+        self.loop_stack.pop()
 
         self.builder.position_at_end(merge_bb)
 
@@ -1449,6 +1492,11 @@ class CodeGen:
         cond_bb = self.builder.function.append_basic_block("for_cond")
         body_bb = self.builder.function.append_basic_block("for_body")
         merge_bb = self.builder.function.append_basic_block("for_merge")
+        continue_bb = cond_bb  # continue jumps to condition check (after step)
+        break_bb = merge_bb     # break jumps to merge
+
+        # Push loop context for nested stop/continue
+        self.loop_stack.append((break_bb, continue_bb))
 
         self.builder.branch(cond_bb)
         self.builder.position_at_end(cond_bb)
@@ -1458,9 +1506,14 @@ class CodeGen:
         self.builder.position_at_end(body_bb)
         for stmt in node.body:
             self._codegen(stmt)
+            if self.builder.block.is_terminated:
+                break
         if not self.builder.block.is_terminated:
             self._codegen(node.step)
             self.builder.branch(cond_bb)
+
+        # Pop loop context
+        self.loop_stack.pop()
 
         self.builder.position_at_end(merge_bb)
 
@@ -1468,13 +1521,23 @@ class CodeGen:
         body_bb = self.builder.function.append_basic_block("do_body")
         cond_bb = self.builder.function.append_basic_block("do_cond")
         merge_bb = self.builder.function.append_basic_block("do_merge")
+        continue_bb = cond_bb  # continue jumps to condition check
+        break_bb = merge_bb     # break jumps to merge
+
+        # Push loop context for nested stop/continue
+        self.loop_stack.append((break_bb, continue_bb))
 
         self.builder.branch(body_bb)
         self.builder.position_at_end(body_bb)
         for stmt in node.body:
             self._codegen(stmt)
+            if self.builder.block.is_terminated:
+                break
         if not self.builder.block.is_terminated:
             self.builder.branch(cond_bb)
+
+        # Pop loop context
+        self.loop_stack.pop()
 
         self.builder.position_at_end(cond_bb)
         cond_val = self._cast_bool(self._codegen(node.condition))
@@ -1518,6 +1581,8 @@ class CodeGen:
 
             for stmt in node.body:
                 self._codegen(stmt)
+                if self.builder.block.is_terminated:
+                    break
 
     def _codegen_ForeachArrayStatement(self, node):
         try:
@@ -1544,6 +1609,11 @@ class CodeGen:
         cond_bb = self.builder.function.append_basic_block("foreach_cond")
         body_bb = self.builder.function.append_basic_block("foreach_body")
         merge_bb = self.builder.function.append_basic_block("foreach_merge")
+        continue_bb = cond_bb  # continue goes back to condition
+        break_bb = merge_bb     # break exits to merge
+
+        # Push loop context for nested stop/continue
+        self.loop_stack.append((break_bb, continue_bb))
 
         self.builder.branch(cond_bb)
         self.builder.position_at_end(cond_bb)
@@ -1560,11 +1630,16 @@ class CodeGen:
 
         for stmt in node.body:
             self._codegen(stmt)
+            if self.builder.block.is_terminated:
+                break
 
         if not self.builder.block.is_terminated:
             next_idx = self.builder.add(curr_idx, ir.Constant(ir.IntType(64), 1))
             self.builder.store(next_idx, idx_ptr)
             self.builder.branch(cond_bb)
+
+        # Pop loop context
+        self.loop_stack.pop()
 
         self.builder.position_at_end(merge_bb)
 
@@ -1585,6 +1660,11 @@ class CodeGen:
         cond_bb = self.builder.function.append_basic_block("foreach_str_cond")
         body_bb = self.builder.function.append_basic_block("foreach_str_body")
         merge_bb = self.builder.function.append_basic_block("foreach_str_merge")
+        continue_bb = cond_bb  # continue goes back to condition
+        break_bb = merge_bb     # break exits to merge
+
+        # Push loop context for nested stop/continue
+        self.loop_stack.append((break_bb, continue_bb))
 
         self.builder.branch(cond_bb)
         self.builder.position_at_end(cond_bb)
@@ -1601,11 +1681,16 @@ class CodeGen:
 
         for stmt in node.body:
             self._codegen(stmt)
+            if self.builder.block.is_terminated:
+                break
 
         if not self.builder.block.is_terminated:
             next_idx = self.builder.add(curr_idx, ir.Constant(ir.IntType(64), 1))
             self.builder.store(next_idx, idx_ptr)
             self.builder.branch(cond_bb)
+
+        # Pop loop context
+        self.loop_stack.pop()
 
         self.builder.position_at_end(merge_bb)
 
@@ -1636,6 +1721,11 @@ class CodeGen:
         cond_bb = self.builder.function.append_basic_block("foreach_vec_cond")
         body_bb = self.builder.function.append_basic_block("foreach_vec_body")
         merge_bb = self.builder.function.append_basic_block("foreach_vec_merge")
+        continue_bb = cond_bb  # continue goes back to condition
+        break_bb = merge_bb     # break exits to merge
+
+        # Push loop context for nested stop/continue
+        self.loop_stack.append((break_bb, continue_bb))
 
         self.builder.branch(cond_bb)
         self.builder.position_at_end(cond_bb)
@@ -1652,11 +1742,16 @@ class CodeGen:
 
         for stmt in node.body:
             self._codegen(stmt)
+            if self.builder.block.is_terminated:
+                break
 
         if not self.builder.block.is_terminated:
             next_idx = self.builder.add(curr_idx, ir.Constant(ir.IntType(64), 1))
             self.builder.store(next_idx, idx_ptr)
             self.builder.branch(cond_bb)
+
+        # Pop loop context
+        self.loop_stack.pop()
 
         self.builder.position_at_end(merge_bb)
 

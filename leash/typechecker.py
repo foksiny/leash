@@ -32,6 +32,7 @@ class TypeChecker:
         self.used_vars = set()  # name
         self.used_params = set()  # name
         self.current_func_params = set()
+        self.loop_depth = 0  # Track nesting depth of loops for stop/continue
 
     def check(self, program):
         """Run type checking on a Program AST node. Returns list of warnings."""
@@ -563,6 +564,7 @@ class TypeChecker:
         elif isinstance(stmt, IfStatement):
             self._check_if(stmt)
         elif isinstance(stmt, WhileStatement):
+            self.loop_depth += 1
             self._infer_type(stmt.condition)
             if not stmt.body:
                 self._warn(
@@ -571,7 +573,9 @@ class TypeChecker:
                     tip="This loop will spin and probably hang your program if it runs. Did you forget to add logic or a break condition?",
                 )
             self._check_statements(stmt.body)
+            self.loop_depth -= 1
         elif isinstance(stmt, ForStatement):
+            self.loop_depth += 1
             self._check_stmt(stmt.init)
             self._infer_type(stmt.condition)
             self._check_stmt(stmt.step)
@@ -582,17 +586,22 @@ class TypeChecker:
                     tip="This loop will execute its condition and step repeatedly but do nothing within the body.",
                 )
             self._check_statements(stmt.body)
+            self.loop_depth -= 1
         elif isinstance(stmt, DoWhileStatement):
+            self.loop_depth += 1
             if not stmt.body:
                 self._warn("Empty `do-while` loop body.", node=stmt)
             self._check_statements(stmt.body)
             self._infer_type(stmt.condition)
+            self.loop_depth -= 1
         elif isinstance(stmt, ForeachStructStatement):
+            # Note: foreach over structs is unrolled and does not support stop/continue at runtime
             self._infer_type(stmt.struct_expr)
             self.var_types[stmt.name_var] = "string"
             self.var_types[stmt.value_var] = "int"  # Approximate
             self._check_statements(stmt.body)
         elif isinstance(stmt, ForeachArrayStatement):
+            self.loop_depth += 1
             arr_t = self._infer_type(stmt.array_expr)
             elem_t = "int"
             if arr_t and "[" in arr_t:
@@ -600,12 +609,16 @@ class TypeChecker:
             self.var_types[stmt.index_var] = "int"
             self.var_types[stmt.value_var] = elem_t
             self._check_statements(stmt.body)
+            self.loop_depth -= 1
         elif isinstance(stmt, ForeachStringStatement):
+            self.loop_depth += 1
             self._infer_type(stmt.string_expr)
             self.var_types[stmt.index_var] = "int"
             self.var_types[stmt.char_var] = "char"
             self._check_statements(stmt.body)
+            self.loop_depth -= 1
         elif isinstance(stmt, ForeachVectorStatement):
+            self.loop_depth += 1
             vec_t = self._infer_type(stmt.vector_expr)
             elem_t = "any"  # default if unknown
             if vec_t and vec_t.startswith("vec<"):
@@ -613,6 +626,21 @@ class TypeChecker:
             self.var_types[stmt.index_var] = "int"
             self.var_types[stmt.value_var] = elem_t
             self._check_statements(stmt.body)
+            self.loop_depth -= 1
+        elif isinstance(stmt, StopStatement):
+            if self.loop_depth == 0:
+                self._error(
+                    "`stop` can only be used inside a loop",
+                    node=stmt,
+                    tip="`stop` (break) is used to exit a loop early. It can only be used within `while`, `for`, `do-while`, or `foreach` loops."
+                )
+        elif isinstance(stmt, ContinueStatement):
+            if self.loop_depth == 0:
+                self._error(
+                    "`continue` can only be used inside a loop",
+                    node=stmt,
+                    tip="`continue` skips to the next iteration of a loop. It can only be used within `while`, `for`, `do-while`, or `foreach` loops."
+                )
 
     def _check_var_decl(self, stmt):
         if stmt.name in self.var_types:

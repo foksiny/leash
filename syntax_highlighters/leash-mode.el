@@ -18,7 +18,7 @@
 
 (defconst leash-font-lock-keywords
   (list
-   '("\\b\\(fnc\\|def\\|struct\\|union\\|enum\\|class\\|type\\|return\\|if\\|also\\|else\\|while\\|for\\|do\\|foreach\\|in\\|imut\\|vec\\|vector\\|this\\|pub\\|priv\\|static\\)\\b" . font-lock-keyword-face)
+   '("\\b\\(fnc\\|def\\|struct\\|union\\|enum\\|class\\|type\\|return\\|if\\|also\\|else\\|while\\|for\\|do\\|foreach\\|in\\|imut\\|vec\\|vector\\|this\\|pub\\|priv\\|static\\|stop\\|continue\\)\\b" . font-lock-keyword-face)
    '("\\b\\(int\\|uint\\|float\\|bool\\|string\\|char\\|void\\|array\\|vec\\)\\b\\(?:<[0-9]+>\\)?" . font-lock-type-face)
    '("\\b\\(true\\|false\\|null\\)\\b" . font-lock-constant-face)
    '("\\b\\(show\\|get\\|set\\|toint\\|tofloat\\|tostring\\|cstr\\|lstr\\|size\\|cur\\|name\\|pushb\\|popb\\|pushf\\|popf\\|insert\\|clear\\)\\b" . font-lock-builtin-face)

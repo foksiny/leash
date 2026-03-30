@@ -15,7 +15,7 @@ class Lexer:
     # Token types
     KEYWORDS = {'fnc', 'return', 'int', 'void', 'def', 'struct', 'true', 'false', 'null', 'string', 'char', 'bool', 'float', 'uint',
                 'if', 'also', 'else', 'while', 'for', 'do', 'foreach', 'in', 'array', 'type', 'union', 'enum', 'imut', 'vec', 'vector',
-                'class', 'this', 'pub', 'priv', 'static'}
+                'class', 'this', 'pub', 'priv', 'static', 'stop', 'continue'}
     
     # regexes
     TOKEN_SPECIFICATION = [

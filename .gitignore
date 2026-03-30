@@ -47,6 +47,10 @@ examples/totype
 examples/args
 examples/pointers
 examples/advanced_class
+examples/stop
 
 # Trash
 trash/
+
+# cache
+.ruff_cache/

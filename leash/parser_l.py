@@ -10,6 +10,8 @@ from .ast_nodes import (
     WhileStatement,
     ForStatement,
     ReturnStatement,
+    StopStatement,
+    ContinueStatement,
     ExpressionStatement,
     BinaryOp,
     UnaryOp,
@@ -568,6 +570,19 @@ class Parser:
             expr = self.parse_expression()
             self.eat("SEMI")
             return self._pos(ReturnStatement(expr), tok)
+
+        elif current.type in ("STOP",):
+            tok = self.current()
+            self.eat("STOP")
+            self.eat("SEMI")
+            return self._pos(StopStatement(), tok)
+
+        elif current.type in ("CONTINUE",):
+            tok = self.current()
+            self.eat("CONTINUE")
+            self.eat("SEMI")
+            return self._pos(ContinueStatement(), tok)
+
         elif self.current().type in ("IDENT", "THIS", "MUL", "BIT_AND"):
             # Could be assignment or function call or show
             if self.current().type == "IDENT" and self.current().value == "show":
