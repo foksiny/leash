@@ -151,6 +151,10 @@ class TypeChecker:
     def _base_type(self, type_name):
         """Get the base type category (strip bit-widths, array brackets, imut)."""
         t = self._resolve(type_name)
+        if t.startswith('*'):
+            return 'ptr'
+        if t.startswith('&'):
+            return 'sptr'
         if t.endswith(']') and '[' in t:
             return 'array'
         if t.startswith('int<') or t == 'int':
@@ -168,6 +172,8 @@ class TypeChecker:
     def _is_valid_type(self, type_name):
         """Check if a type name is a known type."""
         t = self._resolve(type_name)
+        if t.startswith('*') or t.startswith('&'):
+            return self._is_valid_type(t[1:])
         # Strip array suffix
         if t.endswith(']') and '[' in t:
             t = t.split('[')[0]
@@ -226,6 +232,21 @@ class TypeChecker:
         if src_r == dst_r:
             return True
 
+        # Handle pointers (including safe pointer compatibility with unsafe)
+        if src_r.startswith('&') and dst_r.startswith('*'):
+            return self._types_compatible(src_r[1:], dst_r[1:])
+        if src_r.startswith('*') and dst_r.startswith('*'):
+            return self._types_compatible(src_r[1:], dst_r[1:])
+        if src_r.startswith('&') and dst_r.startswith('&'):
+            return self._types_compatible(src_r[1:], dst_r[1:])
+
+        # Handle slices (arrays) to pointers compatibility
+        if '[' in src_r and ']' in src_r and dst_r.startswith('*'):
+            src_elem = src_r.split('[')[0]
+            dst_elem = dst_r[1:]
+            if self._types_compatible(src_elem, dst_elem):
+                return True
+
         # Handle arrays
         if '[' in src_r and ']' in src_r and '[' in dst_r and ']' in dst_r:
             src_elem = src_r.split('[')[0]
@@ -234,6 +255,11 @@ class TypeChecker:
 
         src_b = self._base_type(src_r)
         dst_b = self._base_type(dst_r)
+
+        # Allow passing T to a function expecting &T (smart pointer)
+        if dst_r.startswith('&'):
+            if self._types_compatible(src_r, dst_r[1:]):
+                return True
 
         # Numeric types are broadly compatible with each other
         if src_b in ('int', 'uint', 'float', 'char', 'bool') and dst_b in ('int', 'uint', 'float', 'char', 'bool'):
@@ -633,6 +659,8 @@ class TypeChecker:
             return self._check_method_call(expr)
         elif isinstance(expr, MemberAccess):
             return self._check_member_access(expr)
+        elif isinstance(expr, PointerMemberAccess):
+            return self._check_pointer_member_access(expr)
         elif isinstance(expr, IndexAccess):
             return self._check_index_access(expr)
         elif isinstance(expr, CastExpr):
@@ -656,6 +684,12 @@ class TypeChecker:
         if left_t and right_t:
             left_b = self._base_type(left_t)
             right_b = self._base_type(right_t)
+
+            # Pointer arithmetic
+            if (left_b == 'ptr' or left_b == 'sptr') and right_b == 'int':
+                return left_t
+            if left_b == 'int' and (right_b == 'ptr' or right_b == 'sptr'):
+                return right_t
 
             # Redundancy checks
             if isinstance(expr.right, NumberLiteral):
@@ -763,6 +797,14 @@ class TypeChecker:
         val_t = self._infer_type(expr.expr)
         if val_t:
             val_b = self._base_type(val_t)
+            if expr.op == '*': # Dereference
+                if val_b not in ('ptr', 'sptr'):
+                    raise LeashError(f"Cannot dereference non-pointer type '{val_t}'", node=expr)
+                return val_t[1:]
+            if expr.op == '&': # Address-of
+                # In Leash, we can take the address of any l-value.
+                # For simplicity, we allow it for variables.
+                return f"*{val_t}"
             if expr.op == '!':
                 if isinstance(expr.expr, UnaryOp) and expr.expr.op == '!':
                     self._warn("Double negation '!!' is redundant.", node=expr)
@@ -854,6 +896,10 @@ class TypeChecker:
             return None
 
         resolved = self._resolve(base_type)
+        
+        # Safe pointer allows '.' access as if it were the type itself
+        if resolved.startswith('&'):
+            resolved = self._resolve(resolved[1:])
 
         # String .size
         if self._base_type(resolved) == 'string' and expr.member == 'size':
@@ -902,6 +948,38 @@ class TypeChecker:
             return fields[expr.member][0]
 
         return None
+
+    def _check_pointer_member_access(self, expr):
+        base_type = self._infer_type(expr.expr)
+        if base_type is None:
+            return None
+
+        resolved = self._resolve(base_type)
+        if not resolved.startswith('*') and not resolved.startswith('&'):
+            self._error(f"Cannot use '->' on non-pointer type '{base_type}'", node=expr)
+        
+        # Access the member of the underlying type
+        underlying = self._resolve(resolved[1:])
+        
+        # Struct member
+        if underlying in self.struct_types:
+            fields = self.struct_types[underlying]
+            if expr.member not in fields:
+                raise LeashError(
+                    f"Struct '{underlying}' has no member named '{expr.member}'",
+                    tip=f"Available members: {', '.join(fields.keys())}")
+            return fields[expr.member]
+
+        # Class member
+        if underlying in self.class_types:
+            self._check_visibility(underlying, expr.member, False, expr)
+            fields = self.class_types[underlying]['fields']
+            if expr.member not in fields:
+                raise LeashError(f"Class '{underlying}' has no field named '{expr.member}'",
+                                 tip=f"Available fields: {', '.join(fields.keys())}")
+            return fields[expr.member][0]
+
+        raise LeashError(f"Type '{underlying}' is not a struct or class", node=expr)
 
     def _check_index_access(self, expr):
         base_type = self._infer_type(expr.expr)

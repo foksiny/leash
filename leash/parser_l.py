@@ -8,7 +8,8 @@ from .ast_nodes import (
     CharLiteral, NullLiteral, ForeachStructStatement, ForeachArrayStatement,
     ForeachStringStatement, ForeachVectorStatement, MethodCall,
     UnionDef, EnumMemberAccess, EnumDef, DoWhileStatement, FloatLiteral,
-    TypeConvExpr, ShowStatement, ClassDef, ClassField, ClassMethod, ThisExpr
+    TypeConvExpr, ShowStatement, ClassDef, ClassField, ClassMethod, ThisExpr,
+    PointerMemberAccess
 )
 from .errors import LeashError
 
@@ -137,6 +138,15 @@ class Parser:
         if self.current().type == 'IMUT':
             self.eat('IMUT')
             is_imut = True
+        
+        prefix = ""
+        if self.current().type == 'MUL':
+            self.eat('MUL')
+            prefix = "*"
+        elif self.current().type == 'BIT_AND':
+            self.eat('BIT_AND')
+            prefix = "&"
+
         tok = self.current()
         if tok.type in ('INT', 'VOID', 'IDENT', 'STRING', 'CHAR', 'BOOL', 'FLOAT', 'UINT', 'VEC'):
             base = self.eat(tok.type).value
@@ -165,9 +175,11 @@ class Parser:
                     base = f"{base}[{arr_size}]"
                 else:
                     base = f"{base}[]"
+            
+            res = f"{prefix}{base}"
             if is_imut:
-                return f"imut {base}"
-            return base
+                return f"imut {res}"
+            return res
         raise LeashError(f"Unexpected token {tok.type} ('{tok.value}') where a type was expected", tok.line, tok.column)
 
     # Type token types that can start a type in a cast
@@ -438,9 +450,9 @@ class Parser:
             expr = self.parse_expression()
             self.eat('SEMI')
             return self._pos(ReturnStatement(expr), tok)
-        elif self.current().type in ('IDENT', 'THIS'):
+        elif self.current().type in ('IDENT', 'THIS', 'MUL', 'BIT_AND'):
             # Could be assignment or function call or show
-            if self.current().value == 'show':
+            if self.current().type == 'IDENT' and self.current().value == 'show':
                 tok = self.current()
                 self.eat('IDENT')
                 self.eat('LPAREN')
@@ -588,7 +600,7 @@ class Parser:
         return left
 
     def parse_unary(self, no_struct_init=False):
-        if self.current().type in ('NOT', 'BIT_NOT', 'MINUS'):
+        if self.current().type in ('NOT', 'BIT_NOT', 'MINUS', 'MUL', 'BIT_AND'):
             op = self.eat(self.current().type)
             expr = self.parse_unary(no_struct_init)
             return UnaryOp(op.value, expr)
@@ -596,7 +608,7 @@ class Parser:
 
     def parse_postfix(self, no_struct_init=False):
         expr = self.parse_primary(no_struct_init)
-        while self.current().type in ('DOT', 'LBRACKET'):
+        while self.current().type in ('DOT', 'LBRACKET', 'ARROW'):
             if self.current().type == 'DOT':
                 self.eat('DOT')
                 member = self.eat('IDENT').value
@@ -611,6 +623,10 @@ class Parser:
                     expr = MethodCall(expr, member, args)
                 else:
                     expr = MemberAccess(expr, member)
+            elif self.current().type == 'ARROW':
+                self.eat('ARROW')
+                member = self.eat('IDENT').value
+                expr = PointerMemberAccess(expr, member)
             elif self.current().type == 'LBRACKET':
                 self.eat('LBRACKET')
                 index = self.parse_expression()

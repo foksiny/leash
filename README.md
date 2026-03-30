@@ -13,6 +13,7 @@ Leash is a strongly-typed, modern compiled programming language built on top of 
 - [Input Handling](#input-handling)
 - [Arrays](#arrays)
 - [Structs](#structs)
+- [Pointers](#pointers)
 - [Unions](#unions)
 - [Enums](#enums)
 - [Type Aliases](#type-aliases)
@@ -342,6 +343,90 @@ fnc main() : void {
     }
 }
 ```
+
+## Pointers
+
+Leash supports pointers for low-level memory operations and efficient parameter passing. Pointers use the `*` prefix for raw pointers and `&` for safe references.
+
+### Basic Pointer Operations
+
+```leash
+a: int = 10;
+p: *int = &a;       // p holds the address of a
+
+show("p: ", p);     // prints the pointer address
+show("*p: ", *p);   // dereferences p, prints 10
+
+*p = 20;            // modifies a through the pointer
+show("a: ", a);     // prints 20
+```
+
+### Pointer Arithmetic
+
+Pointer arithmetic is supported on `*char` pointers for working with raw character data:
+
+```leash
+c_str: *char = cstr("Hello");
+show(*(c_str + 1)); // prints 'e' (second character)
+show(*(c_str + 4)); // prints 'o' (fifth character)
+```
+
+### Safe References (`&`)
+
+Leash recommends using `&` (references) instead of `*` (raw pointers) for function parameters when possible. References provide the same efficiency with better safety guarantees:
+
+```leash
+// Using a reference - recommended for simple modifications
+fnc increment(v &int) : void {
+    v = v + 1;
+}
+
+// Using a raw pointer - for low-level operations
+fnc decrement(v *int) : void {
+    *v = *v - 1;
+}
+
+fnc main() : void {
+    a: int = 10;
+    
+    increment(a);    // passes address of 'a' automatically
+    show("a: ", a);  // prints 11
+    
+    p: *int = &a;
+    decrement(p);    // passes the pointer directly
+    show("a: ", a);  // prints 10
+}
+```
+
+### Pointer Member Access (`->`)
+
+Use the `->` operator to access struct members through a pointer:
+
+```leash
+def Point : struct {
+    x: int;
+    y: int;
+};
+
+fnc print_point(p *Point) : void {
+    show("x: ", p->x);  // arrow operator for pointer access
+    show("y: ", p->y);
+}
+
+fnc main() : void {
+    pt: Point = Point {x: 10, y: 20};
+    print_point(&pt);
+}
+```
+
+### Pointer Types
+
+| Syntax | Description | Example |
+|--------|-------------|---------|
+| `*T` | Raw pointer to type T | `*int`, `*Point`, `*char` |
+| `&T` | Safe reference to type T | `&int`, `&Point` |
+
+*Note: Leash uses the Boehm Garbage Collector for memory management, so pointers to GC-allocated objects remain valid throughout the program's lifetime.*
 
 ## Unions
 

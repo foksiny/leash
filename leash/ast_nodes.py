@@ -150,6 +150,11 @@ class MemberAccess(Expression):
         self.expr = expr
         self.member = member
 
+class PointerMemberAccess(Expression):
+    def __init__(self, expr, member):
+        self.expr = expr
+        self.member = member
+
 class EnumMemberAccess(Expression):
     def __init__(self, enum_name, member_name):
         self.enum_name = enum_name

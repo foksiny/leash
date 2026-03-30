@@ -23,6 +23,7 @@ class Lexer:
         ('NUMBER',   r'\d+(\.\d*)?'),             # Integer or decimal number
         ('IDENT',    r'[A-Za-z_][A-Za-z0-9_]*'),  # Identifiers
         ('PLUS',     r'\+'),                      # Addition operator
+        ('ARROW',    r'->'),                      # Pointer member access
         ('MINUS',    r'-'),                       # Subtraction operator
         ('MUL',      r'\*'),                      # Multiplication operator
         ('COMMENT',  r'//.*'),                    # Comments

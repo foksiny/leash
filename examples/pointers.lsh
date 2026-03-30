@@ -1,0 +1,44 @@
+def Point : struct {
+    x: int;
+    y: int;
+};
+
+// we recommend you use & instead of * for more safety and also smart compiler help
+fnc inc(v &int) : void {
+    v = v + 1;
+}
+
+fnc dec(v *int) : void {
+    *v = *v - 1;
+}
+
+fnc show_person(p *Point) : void {
+    show("p.x: ", p->x);
+    show("p.y: ", p->y);
+}
+
+fnc show_person_smart(p &Point) : void {
+    show("p.x: ", p.x);
+    show("p.y: ", p.y);
+}
+
+fnc main() : void {
+    a: int = 10;
+    p: *int = &a;
+    show("p: ", p);
+    show("*p: ", *p);
+
+    inc(a);
+    show("a: ", a);
+
+    dec(p); // or dec(&a)
+    show("a: ", a);
+    show("*p: ", *p);
+
+    pt: Point = Point {x: 10, y: 20};
+    show_person(&pt);
+    show_person_smart(pt);
+
+    c_str: *char = cstr("Hello");
+    show(*(c_str + 1)); // e
+}

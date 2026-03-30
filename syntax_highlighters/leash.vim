@@ -17,8 +17,11 @@ syn keyword leashBuiltin show get set toint tofloat tostring cstr lstr size cur 
 " Operators
 syn match leashOperator "&&\|||\|<<\|>>\|[+\-*/%&|^~!<>=]=\?\|!="
 
+" Pointer operators
+syn match leashPointerOperator "[*&]\|->"
+
 " Strings and Comments
-syn region leashString start=/"/ skip=/\\"/ end=/"/
+syn region leashString start=/"/ skip=/\\"/ end=/"
 syn region leashChar start=/'/ skip=/\\'/ end=/'/
 syn match leashComment "//.*$"
 
@@ -33,6 +36,7 @@ hi def link leashBoolean Boolean
 hi def link leashNull Constant
 hi def link leashBuiltin Function
 hi def link leashOperator Operator
+hi def link leashPointerOperator Operator
 hi def link leashString String
 hi def link leashChar Character
 hi def link leashComment Comment
