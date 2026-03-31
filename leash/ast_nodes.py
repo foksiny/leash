@@ -298,6 +298,16 @@ class TemplateDef(ASTNode):
         self.name = name
 
 
+class GlobalVarDecl(ASTNode):
+    """Represents a global variable declaration with visibility (pub/priv)."""
+
+    def __init__(self, name, var_type, value, visibility):
+        self.name = name
+        self.var_type = var_type
+        self.value = value  # expression or None
+        self.visibility = visibility  # 'pub' or 'priv'
+
+
 class GenericCall(Expression):
     """Represents a generic function call like 'add<int>(10, 20)'"""
 

@@ -9,6 +9,7 @@ Leash is a strongly-typed, modern compiled programming language built on top of 
 - [Data Types](#data-types)
 - [Operators](#operators)
 - [Functions](#functions)
+- [Global Variables](#global-variables)
 - [Control Flow](#control-flow)
 - [Input Handling](#input-handling)
 - [Arrays](#arrays)
@@ -213,6 +214,36 @@ fnc main(args string[]) : void {
 ```
 
 *Note: The `show()` function is built-in and makes printing multiple values to console very easy!*
+
+## Global Variables
+
+Leash supports module-level variable declarations. These variables are accessible from any function within the same module. By default, top-level variables are public. You can also explicitly mark them as `pub` or `priv`.
+
+```leash
+// Public global variable (default)
+a: int = 10;
+
+// Explicitly public
+pub b: string = "hello";
+
+// Private global variable (only accessible within this module)
+priv secret: int = 42;
+
+fnc main() : void {
+    show(a);      // 10
+    show(b);      // hello
+    show(secret); // 42 (if in same module)
+}
+```
+
+Global variables can be of any type, including structs, classes, vectors, arrays, unions, and type aliases. They can also have initializers, which are evaluated at program startup (before `main` runs). If a global variable has no initializer, it is zero-initialized by default.
+
+### Visibility
+
+- `pub`: The variable is publicly accessible from other modules (future feature). Currently, all modules are compiled together, so this has no effect but is allowed for forward compatibility.
+- `priv`: The variable is only accessible within the defining module. This is useful for hiding implementation details when modules are introduced.
+
+Note: The `pub`/`priv` modifiers are optional; omitting them defaults to `pub`.
 
 ## Control Flow
 

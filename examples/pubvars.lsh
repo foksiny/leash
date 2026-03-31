@@ -1,0 +1,8 @@
+a: int = 10;
+
+fnc main() : void {
+    show(a);
+}
+
+// public variables support any type, including classes, simple types (int, float, ...),
+// structs, vectors, arrays, type aliases, unions and others.

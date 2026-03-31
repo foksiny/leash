@@ -10,6 +10,7 @@ from .ast_nodes import (
     Function,
     GenericCall,
     TemplateDef,
+    GlobalVarDecl,
 )
 
 
@@ -24,6 +25,9 @@ class CodeGen:
         self.union_symtab = {}  # name -> { 'type': ir_type, 'variants': [...], 'variant_types': {...}, 'max_size': int }
         self.enum_symtab = {}  # name -> { 'members': [names], 'names_arr': ir.GlobalVariable }
         self.class_symtab = {}  # name -> { 'type': ir_type, 'fields': {...}, 'methods': {...} }
+        self.global_var_ptrs = {}  # name -> (ir.GlobalVariable, leash_type_string) for module-level variables
+        self.global_init_list = []  # list of (gv, init_expr, leash_type) for globals with initializers
+        self.init_func = None  # The _leash_init_globals function if any globals need init
         self.printf = None
         self.current_target_type = None
         self.loop_stack = []  # Stack of (break_bb, continue_bb) for nested loops
@@ -426,22 +430,60 @@ class CodeGen:
             elif isinstance(item, UnionDef):
                 self._codegen(item)
 
-        # Second pass: generate non-generic classes (which may reference structs)
+        # Second pass: global variable declarations
+        # Initialize storage for globals (reset in case CodeGen is reused)
+        self.global_var_ptrs = {}
+        self.global_init_list = []
+        self.init_func = None
+        for item in node.items:
+            if isinstance(item, GlobalVarDecl):
+                self._codegen(item)
+
+        # Third pass: generate non-generic classes (which may reference structs)
         for item in node.items:
             if isinstance(item, ClassDef):
                 # Skip generic classes - they will be generated when instantiated
                 if not item.type_params:
                     self._codegen(item)
 
-        # Third pass: generate generic class instantiations
-        # (These are created during type checking and stored in the module)
-        # We need to generate code for any instantiated generic classes
+        # Fourth pass: generate generic class instantiations
         self._codegen_instantiated_generics()
 
-        # Fourth pass: generate functions
+        # Fifth pass: generate init function for globals if needed
+        if self.global_init_list:
+            self._codegen_global_init_function()
+
+        # Sixth pass: generate functions
         for item in node.items:
             if isinstance(item, Function):
                 self._codegen(item)
+
+    def _codegen_GlobalVarDecl(self, node):
+        """Generate LLVM global variable for a top-level pub/priv declaration."""
+        # Resolve the Leash type to LLVM type
+        llvm_type = self._get_llvm_type(node.var_type)
+        # Create the global variable
+        gv = ir.GlobalVariable(self.module, llvm_type, name=node.name)
+        gv.linkage = "internal"  # module-local; could use external for pub but not needed
+        # Store in global symbol table for visibility in functions
+        self.global_var_ptrs[node.name] = (gv, node.var_type)
+        # If there is an initializer, schedule it for runtime initialization
+        if node.value is not None:
+            self.global_init_list.append((gv, node.value, node.var_type))
+
+    def _codegen_global_init_function(self):
+        """Generate a function that initializes all globals with initializers."""
+        init_func = ir.Function(
+            self.module, ir.FunctionType(ir.VoidType(), []), name="_leash_init_globals"
+        )
+        block = init_func.append_basic_block("entry")
+        self.builder = ir.IRBuilder(block)
+        for gv, init_expr, leash_type in self.global_init_list:
+            init_val = self._codegen(init_expr)
+            self.builder.store(init_val, gv)
+        self.builder.ret_void()
+        self.builder = None
+        self.init_func = init_func
 
     def _codegen_instantiated_generics(self):
         """Generate code for all instantiated generic classes and functions.
@@ -803,7 +845,8 @@ class CodeGen:
         return 8  # assume pointer size as fallback
 
     def _codegen_Function(self, node):
-        self.var_symtab = {}
+        # Start with globals in scope (they can be shadowed by locals)
+        self.var_symtab = self.global_var_ptrs.copy() if hasattr(self, 'global_var_ptrs') else {}
         self.current_func_ret_type_name = node.return_type
 
         # Determine return type
@@ -838,6 +881,9 @@ class CodeGen:
 
         if name == "main":
             self.builder.call(self.gc_init, [])
+            # Call global initializer if any globals need runtime init
+            if self.init_func:
+                self.builder.call(self.init_func, [])
 
         # Allocate args
         if name == "main" and len(node.args) == 1 and node.args[0][1] == "string[]":

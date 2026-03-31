@@ -49,6 +49,8 @@ examples/pointers
 examples/advanced_class
 examples/stop
 examples/generictypes
+examples/pubvars
+examples/class
 
 # Trash
 trash/

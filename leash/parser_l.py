@@ -47,6 +47,7 @@ from .ast_nodes import (
     PointerMemberAccess,
     TemplateDef,
     GenericCall,
+    GlobalVarDecl,
 )
 from .errors import LeashError
 
@@ -124,7 +125,7 @@ class Parser:
 
         # Rust/Others
         if obs_val == "pub" or obs_val == "fn":
-            return "Did you mean `fnc`? Leash doesn't have `pub` visibility yet; everything is public by default."
+            return "Did you mean `fnc`? Note: `pub` and `priv` are used for global variable and class member visibility. Top-level variables are public by default."
         if obs_val == "interface":
             return (
                 "Leash uses `struct` for grouping data and `union` for dynamic choices!"
@@ -295,8 +296,20 @@ class Parser:
         while self.current().type != "EOF":
             if self.current().type == "DEF":
                 items.append(self.parse_def())
-            else:
+            elif self.current().type == "FNC":
                 items.append(self.parse_function())
+            elif self.current().type in ("PUB", "PRIV"):
+                items.append(self.parse_global_var())
+            elif self.current().type == "IDENT" and self.peek() and self.peek().type == "COLON":
+                items.append(self.parse_global_var())
+            else:
+                tok = self.current()
+                raise LeashError(
+                    f"Unexpected token: {tok.type} ('{tok.value}')",
+                    tok.line,
+                    tok.column,
+                    tip="Top-level items must be 'def' (for types), 'fnc' (for functions), or variable declarations.",
+                )
         return Program(items)
 
     def parse_def(self):
@@ -381,6 +394,22 @@ class Parser:
         self.eat("TEMPLATE")
         self.eat("SEMI")
         return TemplateDef(name)
+
+    def parse_global_var(self):
+        """Parse a global variable declaration with optional visibility."""
+        visibility = "pub"  # default visibility for top-level vars is public
+        if self.current().type in ("PUB", "PRIV"):
+            visibility = self.current().value.lower()
+            self.eat(self.current().type)
+        name = self.eat("IDENT").value
+        self.eat("COLON")
+        var_type = self.parse_type()
+        value = None
+        if self.current().type == "ASSIGN":
+            self.eat("ASSIGN")
+            value = self.parse_expression(no_struct_init=False)
+        self.eat("SEMI")
+        return GlobalVarDecl(name, var_type, value, visibility)
 
     def _parse_class_body(self, name):
         self.eat("CLASS")

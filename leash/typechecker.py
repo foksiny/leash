@@ -20,7 +20,7 @@ class TypeChecker:
     instantiated_class_nodes = {}  # mangled_name -> ClassDef node
 
     def __init__(self):
-        self.var_types = {}  # name -> type string
+        self.var_types = {}  # name -> type string (local variables)
         self.var_immutable = {}  # name -> bool (True if immutable)
         self.func_types = {}  # name -> (arg_types, return_type)
         self.struct_types = {}  # name -> {field: type}
@@ -42,10 +42,11 @@ class TypeChecker:
         self.used_params = set()  # name
         self.current_func_params = set()
         self.loop_depth = 0  # Track nesting depth of loops for stop/continue
+        self.global_vars = {}  # name -> (type, visibility) for module-level variables
 
     def check(self, program):
         """Run type checking on a Program AST node. Returns list of warnings."""
-        # First pass: register all top-level definitions (structs, unions, aliases, functions, templates)
+        # First pass: register all top-level definitions (structs, unions, aliases, functions, templates, global vars)
         for item in program.items:
             if isinstance(item, TemplateDef):
                 self._register_template(item)
@@ -61,13 +62,17 @@ class TypeChecker:
                 self._register_class(item)
             elif isinstance(item, Function):
                 self._register_function_sig(item)
+            elif isinstance(item, GlobalVarDecl):
+                self._register_global_var(item)
 
-        # Second pass: check function bodies
+        # Second pass: check function bodies and global var initializers
         for item in program.items:
             if isinstance(item, Function):
                 self._check_function(item)
             elif isinstance(item, ClassDef):
                 self._check_class(item)
+            elif isinstance(item, GlobalVarDecl):
+                self._check_global_var(item)
 
         return self.warnings
 
@@ -257,6 +262,30 @@ class TypeChecker:
             "methods": methods,
             "parent": node.parent,
         }
+
+    def _register_global_var(self, node):
+        """Register a global variable."""
+        # Resolve and validate the type
+        resolved_type = self._resolve(node.var_type)
+        if not self._is_valid_type(resolved_type):
+            self._error(
+                f"Global variable '{node.name}' has unknown type '{node.var_type}'",
+                node=node,
+            )
+        if node.name in self.global_vars:
+            self._error(f"Global variable '{node.name}' already defined", node=node)
+        self.global_vars[node.name] = (node.var_type, node.visibility)
+
+    def _check_global_var(self, node):
+        """Check a global variable's initializer if present."""
+        if node.value is not None:
+            # Check the initializer expression
+            init_type = self._infer_type(node.value)
+            if not self._types_compatible(init_type, node.var_type):
+                self._error(
+                    f"Cannot initialize global variable '{node.name}' of type '{node.var_type}' with value of type '{init_type}'",
+                    node=node,
+                )
 
     def _register_function_sig(self, node):
         # Check if this function uses any template parameters
@@ -1087,6 +1116,10 @@ class TypeChecker:
                 else:
                     self.used_vars.add(expr.name)
                 return self.var_types[expr.name]
+
+            # Check global variables
+            if expr.name in self.global_vars:
+                return self.global_vars[expr.name][0]  # return type
 
             # If not a variable, check if it's a class name (for static calls)
             if expr.name in self.class_types:
