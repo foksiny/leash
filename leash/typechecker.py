@@ -15,6 +15,10 @@ class TypeChecker:
     and collects warnings for non-fatal issues.
     """
 
+    # Class-level storage for instantiated generics (shared with code generator)
+    instantiated_func_nodes = {}  # mangled_name -> Function node
+    instantiated_class_nodes = {}  # mangled_name -> ClassDef node
+
     def __init__(self):
         self.var_types = {}  # name -> type string
         self.var_immutable = {}  # name -> bool (True if immutable)
@@ -24,6 +28,11 @@ class TypeChecker:
         self.enum_types = {}  # name -> list of member names
         self.type_aliases = {}  # name -> resolved type string
         self.class_types = {}  # name -> {fields: {name: (type, vis)}, methods: {name: (node, vis)}}
+        self.template_types = {}  # name -> True (tracks template parameters like T1, T2)
+        self.generic_funcs = {}  # name -> Function node (for generic function templates)
+        self.generic_classes = {}  # name -> ClassDef node (for generic class templates)
+        self.instantiated_funcs = {}  # (name, type_args_tuple) -> mangled_name
+        self.instantiated_classes = {}  # (name, type_args_tuple) -> mangled_name
         self.current_class = None  # name of current class being checked
         self.warnings = []
         self.current_func = None  # name of current function being checked
@@ -36,9 +45,11 @@ class TypeChecker:
 
     def check(self, program):
         """Run type checking on a Program AST node. Returns list of warnings."""
-        # First pass: register all top-level definitions (structs, unions, aliases, functions)
+        # First pass: register all top-level definitions (structs, unions, aliases, functions, templates)
         for item in program.items:
-            if isinstance(item, StructDef):
+            if isinstance(item, TemplateDef):
+                self._register_template(item)
+            elif isinstance(item, StructDef):
                 self._register_struct(item)
             elif isinstance(item, UnionDef):
                 self._register_union(item)
@@ -61,6 +72,10 @@ class TypeChecker:
         return self.warnings
 
     # ── Registration ────────────────────────────────────────────────
+
+    def _register_template(self, node):
+        """Register a template parameter like 'def T1 : template;'"""
+        self.template_types[node.name] = True
 
     def _register_struct(self, node):
         fields = {}
@@ -128,6 +143,70 @@ class TypeChecker:
         ):
             self._error(f"Redefinition of type '{node.name}'", node=node)
 
+        # Check if this class uses any template parameters
+        uses_templates = bool(node.type_params)
+
+        if not uses_templates:
+            # Check if any field uses template types
+            for f in node.fields:
+                if self._uses_template_type(f.var_type):
+                    uses_templates = True
+                    break
+
+        if uses_templates:
+            # Store the template params if not explicitly declared
+            if not node.type_params:
+                template_set = set()
+                for f in node.fields:
+                    self._collect_template_types(f.var_type, template_set)
+                node.type_params = list(template_set)
+            self.generic_classes[node.name] = node
+            # Also register the generic class in class_types so that member access
+            # on 'this' inside its methods works correctly. This allows argument
+            # usage tracking for parameters passed to vector methods.
+            fields = {}
+            # Inherit parent fields if any
+            if node.parent:
+                if node.parent in self.class_types:
+                    parent_info = self.class_types[node.parent]
+                    for fname, (ftype, fvis) in parent_info["fields"].items():
+                        fields[fname] = (ftype, fvis)
+                else:
+                    self._error(
+                        f"Parent class '{node.parent}' is not defined",
+                        node=node,
+                        tip=f"Make sure '{node.parent}' is defined before '{node.name}'.",
+                    )
+            for f in node.fields:
+                if f.name in fields:
+                    self._error(
+                        f"Duplicate field '{f.name}' in class '{node.name}'", node=f
+                    )
+                fields[f.name] = (f.var_type, f.visibility)
+            methods = {}
+            if node.parent and node.parent in self.class_types:
+                parent_info = self.class_types[node.parent]
+                for mname, (fnc, vis, is_static, m_is_imut) in parent_info["methods"].items():
+                    methods[mname] = (fnc, vis, is_static, m_is_imut)
+            for m in node.methods:
+                # Check if trying to override an imut method
+                if m.fnc.name in methods:
+                    parent_method = methods[m.fnc.name]
+                    parent_is_imut = parent_method[3]
+                    if parent_is_imut:
+                        self._error(
+                            f"Cannot override imut method '{m.fnc.name}' from parent class '{node.parent}'",
+                            node=m.fnc,
+                            tip="Remove 'imut' from the parent method to allow overriding.",
+                        )
+                methods[m.fnc.name] = (m.fnc, m.visibility, m.is_static, m.is_imut)
+            self.class_types[node.name] = {
+                "fields": fields,
+                "methods": methods,
+                "parent": node.parent,
+            }
+            return
+
         # Validate parent class exists
         if node.parent and node.parent not in self.class_types:
             self._error(
@@ -180,8 +259,68 @@ class TypeChecker:
         }
 
     def _register_function_sig(self, node):
+        # Check if this function uses any template parameters
+        # Template params can be explicitly declared or inferred from usage
+        uses_templates = bool(node.type_params)
+
+        # Also check if the function uses any registered template types
+        if not uses_templates:
+            for _, arg_type in node.args:
+                if self._uses_template_type(arg_type):
+                    uses_templates = True
+                    break
+            if not uses_templates and self._uses_template_type(node.return_type):
+                uses_templates = True
+
+        if uses_templates:
+            # Store the template params if not explicitly declared
+            if not node.type_params:
+                # Find all template types used
+                template_set = set()
+                for _, arg_type in node.args:
+                    self._collect_template_types(arg_type, template_set)
+                self._collect_template_types(node.return_type, template_set)
+                node.type_params = list(template_set)
+            self.generic_funcs[node.name] = node
+            return
         arg_types = [t for _, t in node.args]
         self.func_types[node.name] = (arg_types, node.return_type)
+
+    def _uses_template_type(self, type_name):
+        """Check if a type name contains any template parameters."""
+        if not type_name:
+            return False
+        # Strip qualifiers
+        if type_name.startswith("imut "):
+            type_name = type_name[5:]
+        if type_name.startswith("*") or type_name.startswith("&"):
+            type_name = type_name[1:]
+        # Check vec<T>
+        if type_name.startswith("vec<") and type_name.endswith(">"):
+            inner = type_name[4:-1]
+            return self._uses_template_type(inner) or inner in self.template_types
+        # Check for template type
+        if type_name in self.template_types:
+            return True
+        return False
+
+    def _collect_template_types(self, type_name, template_set):
+        """Collect all template types used in a type name."""
+        if not type_name:
+            return
+        # Strip qualifiers
+        if type_name.startswith("imut "):
+            type_name = type_name[5:]
+        if type_name.startswith("*") or type_name.startswith("&"):
+            type_name = type_name[1:]
+        # Check vec<T>
+        if type_name.startswith("vec<") and type_name.endswith(">"):
+            inner = type_name[4:-1]
+            self._collect_template_types(inner, template_set)
+            return
+        # Check for template type
+        if type_name in self.template_types:
+            template_set.add(type_name)
 
     # ── Type resolution ─────────────────────────────────────────────
 
@@ -202,6 +341,18 @@ class TypeChecker:
         while stripped in self.type_aliases and stripped not in visited:
             visited.add(stripped)
             stripped = self.type_aliases[stripped]
+
+        # Handle generic class instantiation
+        # Format: ClassName<Type1, Type2, ...>
+        if "<" in stripped and stripped.endswith(">"):
+            base_class = stripped.split("<")[0]
+            type_args_str = stripped[len(base_class) + 1 : -1]
+            type_args = [a.strip() for a in type_args_str.split(",")]
+            if base_class in self.generic_classes:
+                key = (base_class, tuple(type_args))
+                if key in self.instantiated_classes:
+                    return self.instantiated_classes[key]
+
         return stripped
 
     def _base_type(self, type_name):
@@ -223,6 +374,11 @@ class TypeChecker:
             return "vec"
         if t in self.class_types:
             return "class"
+        # Check for instantiated generic class
+        if "<" in t and t.endswith(">"):
+            base_class = t.split("<")[0]
+            if base_class in self.generic_classes:
+                return "class"
         return t
 
     def _is_valid_type(self, type_name):
@@ -233,6 +389,9 @@ class TypeChecker:
         # Strip array suffix
         if t.endswith("]") and "[" in t:
             t = t.split("[")[0]
+        # Check if it's a template parameter
+        if t in self.template_types:
+            return True
         base = self._base_type(t)
         if base in ("int", "uint", "float", "string", "char", "bool", "void", "vec"):
             return True
@@ -243,6 +402,19 @@ class TypeChecker:
             or t in self.class_types
         ):
             return True
+        # Check for instantiated generic classes
+        if t in [name for (name, _), _ in self.instantiated_classes.items()]:
+            return True
+        # Check if this is a generic class instantiation that hasn't been instantiated yet
+        # Format: ClassName<Type1, Type2, ...>
+        if "<" in t and t.endswith(">"):
+            base_class = t.split("<")[0]
+            type_args_str = t[len(base_class) + 1 : -1]
+            type_args = [a.strip() for a in type_args_str.split(",")]
+            if base_class in self.generic_classes:
+                # Instantiate the generic class
+                self._instantiate_generic_class(base_class, type_args, None)
+                return True
         return False
 
     def _is_numeric(self, type_name):
@@ -295,6 +467,18 @@ class TypeChecker:
         dst_r = self._resolve(dst)
 
         if src_r == dst_r:
+            return True
+
+        # Allow generic class template to be assigned to any of its instantiations
+        # e.g., Hash (template) can be used where Hash<string, int> is expected
+        if src in self.generic_classes:
+            # Destination might be a generic instantiation using <> syntax (e.g., Hash<string, int>)
+            # or a mangled name (e.g., Hash_string_int)
+            if dst.startswith(src + "<") or dst.startswith(src + "_"):
+                return True
+
+        # nil is compatible with any type
+        if src_r == "nil":
             return True
 
         # Handle pointers (including safe pointer compatibility with unsafe)
@@ -365,6 +549,15 @@ class TypeChecker:
             if self._is_subclass_of(src_r, dst_r):
                 return True
 
+        # Handle placeholder-generic class compatibility
+        # If src is a placeholder-instantiated generic (e.g., Hash__K__V)
+        # and dst is the same generic with concrete types (e.g., Hash_string_int)
+        # they are compatible
+        src_base = self._get_generic_base_name(src_r)
+        dst_base = self._get_generic_base_name(dst_r)
+        if src_base and dst_base and src_base == dst_base:
+            return True
+
         return False
 
     def _check_visibility(self, type_name, member_name, is_method, node):
@@ -403,6 +596,54 @@ class TypeChecker:
             if current == parent:
                 return True
         return False
+
+    def _is_placeholder_generic(self, type_name):
+        """Check if a type name is a placeholder-instantiated generic (e.g., Hash__K__V)."""
+        if not type_name:
+            return False
+        # Placeholder generic names have format: BaseName__Param1__Param2...
+        # where params start with underscore (e.g., _K, _V)
+        if "__" not in type_name:
+            return False
+        parts = type_name.split("__")
+        if len(parts) < 2:
+            return False
+        # Check if all parts after the base name start with underscore
+        for part in parts[1:]:
+            if not part.startswith("_"):
+                return False
+        return True
+
+    def _is_concrete_generic(self, type_name):
+        """Check if a type name is a concrete generic (e.g., Hash_string_int)."""
+        if not type_name:
+            return False
+        # Concrete generic names have format: BaseName_type1_type2...
+        # where type parts are actual types (not starting with underscore)
+        if "_" not in type_name:
+            return False
+        # Check if it's in the class_types (which means it was instantiated)
+        return type_name in self.class_types
+
+    def _get_generic_base_name(self, type_name):
+        """Extract the base class name from a mangled generic type name."""
+        if not type_name:
+            return None
+        # For placeholder generic: Hash__K__V -> Hash
+        if "__" in type_name and type_name.startswith("Hash"):
+            return type_name.split("__")[0]
+        # For concrete generic: Hash_string_int -> Hash
+        # Look for pattern: BaseName_type1_type2...
+        # where BaseName is a known generic class
+        for base_name in self.generic_classes:
+            prefix = base_name + "_"
+            if type_name.startswith(prefix):
+                # Verify the rest are valid type names
+                rest = type_name[len(prefix) :]
+                # Check if it looks like mangled type args (contains only alphanumeric and _)
+                if all(c.isalnum() or c == "_" for c in rest):
+                    return base_name
+        return None
 
     # ── Function checking ───────────────────────────────────────────
 
@@ -632,14 +873,14 @@ class TypeChecker:
                 self._error(
                     "`stop` can only be used inside a loop",
                     node=stmt,
-                    tip="`stop` (break) is used to exit a loop early. It can only be used within `while`, `for`, `do-while`, or `foreach` loops."
+                    tip="`stop` (break) is used to exit a loop early. It can only be used within `while`, `for`, `do-while`, or `foreach` loops.",
                 )
         elif isinstance(stmt, ContinueStatement):
             if self.loop_depth == 0:
                 self._error(
                     "`continue` can only be used inside a loop",
                     node=stmt,
-                    tip="`continue` skips to the next iteration of a loop. It can only be used within `while`, `for`, `do-while`, or `foreach` loops."
+                    tip="`continue` skips to the next iteration of a loop. It can only be used within `while`, `for`, `do-while`, or `foreach` loops.",
                 )
 
     def _check_var_decl(self, stmt):
@@ -749,6 +990,10 @@ class TypeChecker:
                 self.warnings.append(
                     f"Warning: Assigning '{bare_val}' to a variable of type '{bare_target}'."
                 )
+            if not self._types_compatible(bare_val, bare_target):
+                self.warnings.append(
+                    f"Warning: Assigning '{bare_val}' to a variable of type '{bare_target}'."
+                )
 
     def _check_return(self, stmt):
         val_type = self._infer_type(stmt.value)
@@ -829,7 +1074,8 @@ class TypeChecker:
         elif isinstance(expr, BoolLiteral):
             return "bool"
         elif isinstance(expr, NullLiteral):
-            return "void"
+            # nil is a special polymorphic type that's compatible with any type
+            return "nil"
         elif isinstance(expr, ThisExpr):
             if not self.current_class:
                 self._error("'this' can only be used inside a class method", node=expr)
@@ -846,6 +1092,10 @@ class TypeChecker:
             if expr.name in self.class_types:
                 return expr.name
 
+            # Check if it's a generic class template
+            if expr.name in self.generic_classes:
+                return expr.name
+
             self._error(
                 f"Undefined variable: '{expr.name}'",
                 node=expr,
@@ -857,6 +1107,8 @@ class TypeChecker:
             return self._check_unary_op(expr)
         elif isinstance(expr, Call):
             return self._check_call(expr)
+        elif isinstance(expr, GenericCall):
+            return self._check_generic_call(expr)
         elif isinstance(expr, MethodCall):
             return self._check_method_call(expr)
         elif isinstance(expr, MemberAccess):
@@ -868,7 +1120,12 @@ class TypeChecker:
         elif isinstance(expr, CastExpr):
             return self._check_cast(expr)
         elif isinstance(expr, StructInit):
-            if expr.name in self.class_types:
+            # Check if it's a class (including generic classes)
+            resolved_name = self._resolve(expr.name)
+            if resolved_name in self.class_types:
+                return self._check_class_init(expr)
+            # Check if it's a generic class template
+            if expr.name in self.generic_classes:
                 return self._check_class_init(expr)
             return self._check_struct_init(expr)
         elif isinstance(expr, ArrayInit):
@@ -1204,6 +1461,40 @@ class TypeChecker:
 
         return return_type
 
+    def _check_generic_call(self, expr):
+        """Check a generic function call like add<int>(10, 20)."""
+        # Instantiate the generic function with the provided type arguments
+        mangled_name = self._instantiate_generic_func(expr.name, expr.type_args, expr)
+
+        # Now check it like a regular call
+        sig = self.func_types.get(mangled_name)
+        if sig is None:
+            self._error(
+                f"Failed to instantiate generic function: '{expr.name}'",
+                node=expr,
+            )
+
+        expected_args, return_type = sig
+
+        if len(expr.args) != len(expected_args):
+            self._error(
+                f"Function '{expr.name}' expects {len(expected_args)} argument(s), "
+                f"but got {len(expr.args)}",
+                node=expr,
+            )
+
+        for i, (arg_expr, expected_type) in enumerate(zip(expr.args, expected_args)):
+            arg_type = self._infer_type(arg_expr)
+            bare_arg = self._strip_imut(arg_type) if arg_type else None
+            bare_expected = self._strip_imut(expected_type)
+            if bare_arg and not self._types_compatible(bare_arg, bare_expected):
+                self.warnings.append(
+                    f"Warning: Argument {i + 1} of '{expr.name}' expects '{bare_expected}' "
+                    f"but got '{bare_arg}'."
+                )
+
+        return return_type
+
     def _check_member_access(self, expr):
         base_type = self._infer_type(expr.expr)
         if base_type is None:
@@ -1306,7 +1597,7 @@ class TypeChecker:
                 )
             return fields[expr.member][0]
 
-        raise LeashError(f"Type '{underlying}' is not a struct or class", node=expr)
+        self._error(f"Type '{underlying}' is not a struct or class", node=expr)
 
     def _check_index_access(self, expr):
         base_type = self._infer_type(expr.expr)
@@ -1410,10 +1701,21 @@ class TypeChecker:
         return expr.name
 
     def _check_class_init(self, expr):
-        if expr.name not in self.class_types:
-            raise LeashError(f"Undefined class: '{expr.name}'")
+        resolved_name = self._resolve(expr.name)
+        if resolved_name not in self.class_types:
+            # Check if it's a generic class template
+            if expr.name in self.generic_classes:
+                # Instantiate with placeholder types for now
+                # The actual types should come from the context
+                type_params = self.generic_classes[expr.name].type_params
+                placeholder_types = [f"_{p}" for p in type_params]
+                resolved_name = self._instantiate_generic_class(
+                    expr.name, placeholder_types, expr
+                )
+            else:
+                raise LeashError(f"Undefined class: '{expr.name}'")
 
-        cls = self.class_types[expr.name]
+        cls = self.class_types[resolved_name]
         fields = cls["fields"]
         for key, val_expr in expr.kwargs:
             if key not in fields:
@@ -1474,18 +1776,119 @@ class TypeChecker:
 
         if base_b == "vec":
             inner_t = base_t[4:-1]
-            if expr.method in ("pushb", "pushf", "insert"):
-                # These should take one or two arguments and return void (or maybe something else, let's assume void)
+            if expr.method in ("pushb", "pushf"):
+                # Expect 1 argument: value of inner_t
+                if len(expr.args) != 1:
+                    self._error(
+                        f"Vector method '{expr.method}' expects 1 argument, got {len(expr.args)}",
+                        node=expr,
+                    )
+                else:
+                    # Mark argument as used and check type
+                    arg_type = self._infer_type(expr.args[0])
+                    if arg_type and not self._types_compatible(arg_type, inner_t):
+                        self._warn(
+                            f"Vector method '{expr.method}' expects argument of type '{inner_t}' but got '{arg_type}'",
+                            node=expr.args[0],
+                        )
+                return "void"
+            elif expr.method == "insert":
+                # Expect 2 arguments: index (int) and value (inner_t)
+                if len(expr.args) != 2:
+                    self._error(
+                        f"Vector method '{expr.method}' expects 2 arguments, got {len(expr.args)}",
+                        node=expr,
+                    )
+                else:
+                    # Check index
+                    idx_type = self._infer_type(expr.args[0])
+                    if idx_type and not self._types_compatible(idx_type, "int"):
+                        self._warn(
+                            f"Vector method '{expr.method}' expects first argument of type 'int' (index) but got '{idx_type}'",
+                            node=expr.args[0],
+                        )
+                    # Check value
+                    val_type = self._infer_type(expr.args[1])
+                    if val_type and not self._types_compatible(val_type, inner_t):
+                        self._warn(
+                            f"Vector method '{expr.method}' expects second argument of type '{inner_t}' but got '{val_type}'",
+                            node=expr.args[1],
+                        )
                 return "void"
             elif expr.method in ("popb", "popf"):
+                # Expect 0 arguments
+                if len(expr.args) != 0:
+                    self._error(
+                        f"Vector method '{expr.method}' expects 0 arguments, got {len(expr.args)}",
+                        node=expr,
+                    )
                 return inner_t
             elif expr.method == "size":
+                # Expect 0 arguments
+                if len(expr.args) != 0:
+                    self._error(
+                        f"Vector method '{expr.method}' expects 0 arguments, got {len(expr.args)}",
+                        node=expr,
+                    )
                 return "int"
             elif expr.method == "get":
+                # Expect 1 argument: index (int)
+                if len(expr.args) != 1:
+                    self._error(
+                        f"Vector method '{expr.method}' expects 1 argument, got {len(expr.args)}",
+                        node=expr,
+                    )
+                else:
+                    idx_type = self._infer_type(expr.args[0])
+                    if idx_type and not self._types_compatible(idx_type, "int"):
+                        self._warn(
+                            f"Vector method '{expr.method}' expects argument of type 'int' (index) but got '{idx_type}'",
+                            node=expr.args[0],
+                        )
                 return inner_t
             elif expr.method == "set":
+                # Expect 2 arguments: index (int) and value (inner_t)
+                if len(expr.args) != 2:
+                    self._error(
+                        f"Vector method '{expr.method}' expects 2 arguments, got {len(expr.args)}",
+                        node=expr,
+                    )
+                else:
+                    idx_type = self._infer_type(expr.args[0])
+                    if idx_type and not self._types_compatible(idx_type, "int"):
+                        self._warn(
+                            f"Vector method '{expr.method}' expects first argument of type 'int' (index) but got '{idx_type}'",
+                            node=expr.args[0],
+                        )
+                    val_type = self._infer_type(expr.args[1])
+                    if val_type and not self._types_compatible(val_type, inner_t):
+                        self._warn(
+                            f"Vector method '{expr.method}' expects second argument of type '{inner_t}' but got '{val_type}'",
+                            node=expr.args[1],
+                        )
                 return "void"
             elif expr.method == "clear":
+                # Expect 0 arguments
+                if len(expr.args) != 0:
+                    self._error(
+                        f"Vector method '{expr.method}' expects 0 arguments, got {len(expr.args)}",
+                        node=expr,
+                    )
+                return "void"
+            elif expr.method == "remove":
+                # Expect 1 argument: index (int)
+                if len(expr.args) != 1:
+                    self._error(
+                        f"Vector method '{expr.method}' expects 1 argument, got {len(expr.args)}",
+                        node=expr,
+                    )
+                else:
+                    idx_type = self._infer_type(expr.args[0])
+                    if idx_type and not self._types_compatible(idx_type, "int"):
+                        self._warn(
+                            f"Vector method '{expr.method}' expects argument of type 'int' (index) but got '{idx_type}'",
+                            node=expr.args[0],
+                        )
                 return "void"
             else:
                 raise LeashError(
@@ -1507,15 +1910,53 @@ class TypeChecker:
 
         is_static = False
         target_cls = None
-        if isinstance(expr.expr, Identifier) and expr.expr.name in self.class_types:
-            is_static = True
-            target_cls = expr.expr.name
-        elif base_t in self.class_types:
-            target_cls = base_t
+
+        # First check if this is a static call (class name as identifier)
+        if isinstance(expr.expr, Identifier):
+            # Check if it's a regular class
+            if expr.expr.name in self.class_types:
+                is_static = True
+                target_cls = expr.expr.name
+            # Check if it's a generic class template
+            elif expr.expr.name in self.generic_classes:
+                is_static = True
+                target_cls = expr.expr.name
+
+        # If not a static call, check if base_t is or resolves to a class
+        if target_cls is None:
+            # Check direct match in class_types
+            if base_t in self.class_types:
+                target_cls = base_t
+            else:
+                # Try to resolve the type (handles generic types like Hash<string, int>)
+                resolved_base = self._resolve(base_t)
+                if resolved_base in self.class_types:
+                    target_cls = resolved_base
+                elif base_t in self.generic_classes:
+                    target_cls = base_t
 
         if target_cls:
+            # Get methods from either regular class or generic class template
+            if target_cls in self.class_types:
+                methods = self.class_types[target_cls]["methods"]
+            elif target_cls in self.generic_classes:
+                # For generic classes, we need to look at the template's methods
+                # For now, instantiate with placeholder types to get the methods
+                generic_cls = self.generic_classes[target_cls]
+                placeholder_types = [f"_{p}" for p in generic_cls.type_params]
+                instantiated_name = self._instantiate_generic_class(
+                    target_cls, placeholder_types, expr
+                )
+                if instantiated_name in self.class_types:
+                    methods = self.class_types[instantiated_name]["methods"]
+                else:
+                    raise LeashError(
+                        f"Failed to instantiate generic class '{target_cls}'"
+                    )
+            else:
+                raise LeashError(f"Class '{target_cls}' not found")
+
             self._check_visibility(target_cls, expr.method, True, expr)
-            methods = self.class_types[target_cls]["methods"]
             if expr.method not in methods:
                 raise LeashError(
                     f"Class '{target_cls}' has no method named '{expr.method}'",
@@ -1557,6 +1998,321 @@ class TypeChecker:
 
             return fnc_node.return_type
 
-        raise LeashError(
-            f"Type '{base_t}' has no method named '{expr.method}'", node=expr
+        self._error(f"Type '{base_t}' has no method named '{expr.method}'", node=expr)
+
+    # ── Generic type instantiation (monomorphization) ───────────────
+
+    def _mangle_generic_name(self, base_name, type_args):
+        """Create a unique mangled name for a generic instantiation."""
+        args_str = "_".join(
+            t.replace("<", "_").replace(">", "_").replace(",", "_").replace(" ", "")
+            for t in type_args
         )
+        return f"{base_name}_{args_str}"
+
+    def _instantiate_generic_func(self, name, type_args, call_node):
+        """Instantiate a generic function with concrete type arguments."""
+        key = (name, tuple(type_args))
+        if key in self.instantiated_funcs:
+            return self.instantiated_funcs[key]
+
+        # Get the generic function template
+        template = self.generic_funcs.get(name)
+        if not template:
+            self._error(f"Call to undefined function: '{name}'", node=call_node)
+
+        # Create type parameter mapping
+        type_param_map = {}
+        for i, param_name in enumerate(template.type_params):
+            if i < len(type_args):
+                type_param_map[param_name] = type_args[i]
+
+        # Mangle the name
+        mangled_name = self._mangle_generic_name(name, type_args)
+
+        # Substitute type parameters in the function signature
+        new_args = []
+        for arg_name, arg_type in template.args:
+            new_type = self._substitute_type_params(arg_type, type_param_map)
+            new_args.append((arg_name, new_type))
+
+        new_return_type = self._substitute_type_params(
+            template.return_type, type_param_map
+        )
+
+        # Create a new Function node with substituted types
+        new_body = self._substitute_body_types(template.body, type_param_map)
+        new_func = Function(
+            mangled_name, tuple(new_args), new_return_type, new_body, []
+        )
+
+        # Register the instantiated function
+        arg_types = [t for _, t in new_args]
+        self.func_types[mangled_name] = (arg_types, new_return_type)
+        self.instantiated_funcs[key] = mangled_name
+
+        # Store the instantiated function node for code generation
+        TypeChecker.instantiated_func_nodes[mangled_name] = new_func
+
+        return mangled_name
+
+    def _instantiate_generic_class(self, name, type_args, call_node):
+        """Instantiate a generic class with concrete type arguments."""
+        key = (name, tuple(type_args))
+        if key in self.instantiated_classes:
+            return self.instantiated_classes[key]
+
+        # Get the generic class template
+        template = self.generic_classes.get(name)
+        if not template:
+            self._error(f"Undefined class: '{name}'", node=call_node)
+
+        # Create type parameter mapping
+        type_param_map = {}
+        for i, param_name in enumerate(template.type_params):
+            if i < len(type_args):
+                type_param_map[param_name] = type_args[i]
+
+        # Mangle the name
+        mangled_name = self._mangle_generic_name(name, type_args)
+
+        # Class name map: original class name -> mangled name
+        class_name_map = {name: mangled_name}
+
+        # Substitute type parameters in fields
+        new_fields = []
+        for f in template.fields:
+            new_type = self._substitute_type_params(
+                f.var_type, type_param_map, class_name_map
+            )
+            new_fields.append(ClassField(f.name, new_type, f.visibility))
+
+        # Substitute type parameters in methods
+        new_methods = []
+        for m in template.methods:
+            new_args = []
+            for arg_name, arg_type in m.fnc.args:
+                new_type = self._substitute_type_params(arg_type, type_param_map)
+                new_args.append((arg_name, new_type))
+            new_return_type = self._substitute_type_params(
+                m.fnc.return_type, type_param_map, class_name_map
+            )
+            # Pass the class name mapping for StructInit substitution
+            class_name_map = {name: mangled_name}
+            new_body = self._substitute_body_types(
+                m.fnc.body, type_param_map, class_name_map
+            )
+            # Use the original method name (not mangled) so codegen can find it
+            new_fnc = Function(
+                m.fnc.name,  # Keep original name like 'new', 'add', etc.
+                tuple(new_args),
+                new_return_type,
+                new_body,
+                [],
+            )
+            # Store with the original method name for lookup
+            new_methods.append(
+                (m.fnc.name, ClassMethod(new_fnc, m.visibility, m.is_static, m.is_imut))
+            )
+
+        # Create a new ClassDef node
+        # Convert new_methods from list of tuples to list of ClassMethod
+        method_nodes = [method for _, method in new_methods]
+        new_class = ClassDef(
+            mangled_name, new_fields, method_nodes, template.parent, []
+        )
+
+        # Register the instantiated class
+        self._register_class(new_class)
+
+        # Override the method names in class_types to use original names
+        if mangled_name in self.class_types:
+            methods_dict = {}
+            for orig_name, class_method in new_methods:
+                methods_dict[orig_name] = (
+                    class_method.fnc,
+                    class_method.visibility,
+                    class_method.is_static,
+                    class_method.is_imut,
+                )
+            self.class_types[mangled_name]["methods"] = methods_dict
+
+        self.instantiated_classes[key] = mangled_name
+
+        # Store the instantiated class node for code generation
+        TypeChecker.instantiated_class_nodes[mangled_name] = new_class
+
+        return mangled_name
+
+    def _substitute_type_params(self, type_name, type_param_map, class_name_map=None):
+        """Substitute type parameters in a type name."""
+        if not type_name:
+            return type_name
+
+        # Handle imut prefix
+        if type_name.startswith("imut "):
+            return "imut " + self._substitute_type_params(
+                type_name[5:], type_param_map, class_name_map
+            )
+
+        # Handle pointer/reference prefix
+        if type_name.startswith("*") or type_name.startswith("&"):
+            return type_name[0] + self._substitute_type_params(
+                type_name[1:], type_param_map, class_name_map
+            )
+
+        # Handle vec<T>
+        if type_name.startswith("vec<") and type_name.endswith(">"):
+            inner = type_name[4:-1]
+            new_inner = self._substitute_type_params(
+                inner, type_param_map, class_name_map
+            )
+            return f"vec<{new_inner}>"
+
+        # Handle array T[]
+        if type_name.endswith("]") and "[" in type_name:
+            base = type_name.split("[")[0]
+            bracket_part = type_name[len(base) :]
+            new_base = self._substitute_type_params(
+                base, type_param_map, class_name_map
+            )
+            return new_base + bracket_part
+
+        # Check class name map (for class names like Box -> Box_int)
+        if class_name_map and type_name in class_name_map:
+            return class_name_map[type_name]
+
+        # Direct type parameter substitution
+        if type_name in type_param_map:
+            return type_param_map[type_name]
+
+        return type_name
+
+        # Handle imut prefix
+        if type_name.startswith("imut "):
+            return "imut " + self._substitute_type_params(type_name[5:], type_param_map)
+
+        # Handle pointer/reference prefix
+        if type_name.startswith("*") or type_name.startswith("&"):
+            return type_name[0] + self._substitute_type_params(
+                type_name[1:], type_param_map
+            )
+
+        # Handle vec<T>
+        if type_name.startswith("vec<") and type_name.endswith(">"):
+            inner = type_name[4:-1]
+            new_inner = self._substitute_type_params(inner, type_param_map)
+            return f"vec<{new_inner}>"
+
+        # Handle array T[]
+        if type_name.endswith("]") and "[" in type_name:
+            base = type_name.split("[")[0]
+            bracket_part = type_name[len(base) :]
+            new_base = self._substitute_type_params(base, type_param_map)
+            return new_base + bracket_part
+
+        # Direct type parameter substitution
+        if type_name in type_param_map:
+            return type_param_map[type_name]
+
+        return type_name
+
+    def _substitute_body_types(self, statements, type_param_map, class_name_map=None):
+        """Create a deep copy of statements with type parameters substituted."""
+        import copy
+
+        def substitute_node(node):
+            if node is None:
+                return None
+
+            # Create a shallow copy of the node
+            new_node = copy.copy(node)
+
+            # Handle specific node types
+            if isinstance(node, VariableDecl):
+                new_node.var_type = self._substitute_type_params(
+                    node.var_type, type_param_map
+                )
+                new_node.value = substitute_node(node.value)
+            elif isinstance(node, Function):
+                new_node.args = tuple(
+                    (name, self._substitute_type_params(t, type_param_map))
+                    for name, t in node.args
+                )
+                new_node.return_type = self._substitute_type_params(
+                    node.return_type, type_param_map
+                )
+                new_node.body = [substitute_node(s) for s in node.body]
+            elif isinstance(node, ReturnStatement):
+                new_node.value = substitute_node(node.value)
+            elif isinstance(node, Assignment):
+                new_node.target = substitute_node(node.target)
+                new_node.value = substitute_node(node.value)
+            elif isinstance(node, BinaryOp):
+                new_node.left = substitute_node(node.left)
+                new_node.right = substitute_node(node.right)
+            elif isinstance(node, UnaryOp):
+                new_node.expr = substitute_node(node.expr)
+            elif isinstance(node, MethodCall):
+                new_node.expr = substitute_node(node.expr)
+                new_node.args = [substitute_node(a) for a in node.args]
+            elif isinstance(node, Call):
+                new_node.args = [substitute_node(a) for a in node.args]
+            elif isinstance(node, IfStatement):
+                new_node.condition = substitute_node(node.condition)
+                new_node.then_block = [substitute_node(s) for s in node.then_block]
+                new_node.also_blocks = [
+                    (substitute_node(c), [substitute_node(s) for s in b])
+                    for c, b in node.also_blocks
+                ]
+                if new_node.else_block:
+                    new_node.else_block = [substitute_node(s) for s in node.else_block]
+            elif isinstance(node, WhileStatement):
+                new_node.condition = substitute_node(node.condition)
+                new_node.body = [substitute_node(s) for s in node.body]
+            elif isinstance(node, ForeachVectorStatement):
+                new_node.vector_expr = substitute_node(node.vector_expr)
+                new_node.body = [substitute_node(s) for s in node.body]
+            elif isinstance(node, MemberAccess):
+                new_node.expr = substitute_node(node.expr)
+            elif isinstance(node, IndexAccess):
+                new_node.expr = substitute_node(node.expr)
+                new_node.index = substitute_node(node.index)
+            elif isinstance(node, StructInit):
+                # Substitute the class name if it's a generic class
+                if class_name_map and node.name in class_name_map:
+                    new_node.name = class_name_map[node.name]
+                elif node.name in type_param_map:
+                    new_node.name = type_param_map[node.name]
+                elif "<" in node.name and node.name.endswith(">"):
+                    # Substitute type params in the generic name
+                    base = node.name.split("<")[0]
+                    args_str = node.name[len(base) + 1 : -1]
+                    new_args = [
+                        self._substitute_type_params(a.strip(), type_param_map)
+                        for a in args_str.split(",")
+                    ]
+                    new_node.name = f"{base}<{', '.join(new_args)}>"
+                new_node.kwargs = [(k, substitute_node(v)) for k, v in node.kwargs]
+            elif isinstance(node, ExpressionStatement):
+                new_node.expr = substitute_node(node.expr)
+            elif isinstance(node, ShowStatement):
+                new_node.args = [substitute_node(a) for a in node.args]
+            elif isinstance(node, Block):
+                new_node.statements = [substitute_node(s) for s in node.statements]
+
+            # Copy line/col info
+            if hasattr(node, "line"):
+                new_node.line = node.line
+            if hasattr(node, "col"):
+                new_node.col = node.col
+
+            return new_node
+
+        return [substitute_node(s) for s in statements]
+
+    # ── Null/nil handling ──────────────────────────────────────────
+
+    def _is_nil_literal(self, expr):
+        """Check if an expression is a nil/null literal."""
+        return isinstance(expr, NullLiteral)

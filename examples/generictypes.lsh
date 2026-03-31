@@ -1,0 +1,69 @@
+def T1 : template;
+def T2 : template;
+
+fnc add(a T1, b T1) : T1 {
+    return a + b;
+}
+
+def Hash : class<T1, T2> {
+    names:  vec<T1>;
+    values: vec<T2>;
+
+    static pub fnc new() : Hash {
+        return Hash {};
+    }
+
+    pub fnc add(name T1, value T2) : void {
+        this.names.pushb(name);
+        this.values.pushb(value);
+    }
+
+    pub fnc get(name T1) : T2 {
+        io: int = -1;
+        foreach i, n in<vector> this.names {
+            if n == name {
+                io = i;
+                stop;
+            }
+        }
+        if io == -1 {
+            return nil; // nil works with any type.
+        }
+        return this.values.get(io);
+    }
+
+    pub fnc remove(name T1) : T2 {
+        io: int = -1;
+        foreach i, n in<vector> this.names {
+            if n == name {
+                io = i;
+                stop;
+            }
+        }
+        if io == -1 {
+            return nil; // nil works with any type.
+        }
+        this.values.remove(io);
+        this.names.remove(io);
+        return nil; // Return nil after successful removal
+    }
+}
+
+fnc main() : void {
+    i: int = add<int>(10, 20);
+    persons: Hash<string, int> = Hash.new();
+
+    persons.add("John Doe", 23);
+    persons.add("Jane Doe", 22);
+
+    show(persons.get("John Doe"));
+    show(persons.get("Jane Doe"));
+
+    persons.remove("Jane Doe");
+
+    if persons.get("Jane Doe") == nil {
+        show("Jane Doe doesn't exists anymore!");
+    } else {
+        show("Jane Doe still exists: ", persons.get("Jane Doe"));
+    }
+}

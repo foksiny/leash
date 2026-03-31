@@ -34,11 +34,12 @@ class EnumDef(ASTNode):
 
 
 class Function(ASTNode):
-    def __init__(self, name, args, return_type, body):
+    def __init__(self, name, args, return_type, body, type_params=None):
         self.name = name
         self.args = args  # list of (name, type) tuples
         self.return_type = return_type
         self.body = body  # Block
+        self.type_params = type_params or []  # list of template parameter names
 
 
 class Block(ASTNode):
@@ -255,11 +256,12 @@ class NullLiteral(Expression):
 
 
 class ClassDef(ASTNode):
-    def __init__(self, name, fields, methods, parent=None):
+    def __init__(self, name, fields, methods, parent=None, type_params=None):
         self.name = name
         self.fields = fields  # list of ClassField
         self.methods = methods  # list of ClassMethod
         self.parent = parent  # parent class name (for inheritance)
+        self.type_params = type_params or []  # list of template parameter names
 
 
 class ClassField(ASTNode):
@@ -287,3 +289,19 @@ class TypeConvExpr(Expression):
         self.name = name  # 'toint', 'tofloat', etc.
         self.target_type = target_type
         self.expr = expr
+
+
+class TemplateDef(ASTNode):
+    """Represents a template parameter definition like 'def T1 : template;'"""
+
+    def __init__(self, name):
+        self.name = name
+
+
+class GenericCall(Expression):
+    """Represents a generic function call like 'add<int>(10, 20)'"""
+
+    def __init__(self, name, type_args, args):
+        self.name = name
+        self.type_args = type_args  # list of type strings
+        self.args = args  # list of expressions

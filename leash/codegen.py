@@ -1,6 +1,16 @@
 import llvmlite.ir as ir
 import llvmlite.binding as llvm
 from .errors import LeashError
+from .ast_nodes import (
+    TypeAlias,
+    StructDef,
+    EnumDef,
+    UnionDef,
+    ClassDef,
+    Function,
+    GenericCall,
+    TemplateDef,
+)
 
 
 class CodeGen:
@@ -241,6 +251,7 @@ class CodeGen:
             MemberAccess,
             IndexAccess,
             Call,
+            GenericCall,
             EnumMemberAccess,
             CastExpr,
             TypeConvExpr,
@@ -314,6 +325,20 @@ class CodeGen:
             if node.name in self.func_symtab:
                 # We don't store return types in func_symtab currently...
                 pass
+        elif isinstance(node, GenericCall):
+            # Return type is stored in the return type of the mangled function
+            type_args_str = "_".join(
+                t.replace("<", "_").replace(">", "_").replace(",", "_").replace(" ", "")
+                for t in node.type_args
+            )
+            mangled_name = f"{node.name}_{type_args_str}"
+            # Try to get return type from func_symtab
+            if mangled_name in self.func_symtab:
+                func = self.func_symtab[mangled_name]
+                ret_type = func.function_type.return_type
+                # Map LLVM type to Leash type name
+                return self._llvm_type_to_leash_name(ret_type)
+            return "int"  # fallback
         elif isinstance(node, MethodCall):
             base_type = self._get_leash_type_name(node.expr)
             resolved = self._resolve_type_name(base_type)
@@ -330,8 +355,31 @@ class CodeGen:
                     return "int"
         return "int"
 
+    def _llvm_type_to_leash_name(self, llvm_type):
+        """Convert an LLVM type to a Leash type name."""
+        if isinstance(llvm_type, ir.IntType):
+            if llvm_type.width == 1:
+                return "bool"
+            elif llvm_type.width == 8:
+                return "char"
+            elif llvm_type.width == 32:
+                return "int"
+            elif llvm_type.width == 64:
+                return "int<64>"
+        elif isinstance(llvm_type, (ir.FloatType, ir.DoubleType)):
+            return "float"
+        elif isinstance(llvm_type, ir.PointerType):
+            if llvm_type.pointee == ir.IntType(8):
+                return "string"
+            return "ptr"
+        elif isinstance(llvm_type, ir.VoidType):
+            return "void"
+        return "int"  # fallback
+
     def _resolve_type_name(self, type_name):
-        """Resolve type aliases to their underlying type (strips imut qualifier)."""
+        """Resolve type aliases to their underlying type (strips imut qualifier).
+        Also resolves generic type names like Hash<string, int> to Hash_string_int.
+        """
         # Strip imut qualifier — it's a compile-time-only concept
         if isinstance(type_name, str) and type_name.startswith("imut "):
             type_name = type_name[5:]
@@ -351,13 +399,75 @@ class CodeGen:
             visited.add(type_name)
             type_name = self.type_aliases[type_name]
 
+        # Handle generic type names like Hash<string, int> -> Hash_string_int
+        # But don't mangle vec<T> types - they are handled specially
+        if isinstance(type_name, str) and "<" in type_name and type_name.endswith(">"):
+            base_class = type_name.split("<")[0]
+            # Don't mangle vec types or built-in sized types (int<>, uint<>, float<>)
+            if base_class not in ("vec", "int", "uint", "float"):
+                type_args_str = type_name[len(base_class) + 1 : -1]
+                type_args = [a.strip() for a in type_args_str.split(",")]
+                mangled_name = f"{base_class}_{'_'.join(t.replace('<', '_').replace('>', '_').replace(',', '_').replace(' ', '') for t in type_args)}"
+                type_name = mangled_name
+
         if prefix:
             return f"{prefix}{type_name}"
         return type_name
 
     def _codegen_Program(self, node):
+        # First pass: register type aliases and struct/enum definitions
         for item in node.items:
-            self._codegen(item)
+            if isinstance(item, TypeAlias):
+                self._codegen(item)
+            elif isinstance(item, StructDef):
+                self._codegen(item)
+            elif isinstance(item, EnumDef):
+                self._codegen(item)
+            elif isinstance(item, UnionDef):
+                self._codegen(item)
+
+        # Second pass: generate non-generic classes (which may reference structs)
+        for item in node.items:
+            if isinstance(item, ClassDef):
+                # Skip generic classes - they will be generated when instantiated
+                if not item.type_params:
+                    self._codegen(item)
+
+        # Third pass: generate generic class instantiations
+        # (These are created during type checking and stored in the module)
+        # We need to generate code for any instantiated generic classes
+        self._codegen_instantiated_generics()
+
+        # Fourth pass: generate functions
+        for item in node.items:
+            if isinstance(item, Function):
+                self._codegen(item)
+
+    def _codegen_instantiated_generics(self):
+        """Generate code for all instantiated generic classes and functions.
+        This is called after type checking has created the instantiations.
+        """
+        from .typechecker import TypeChecker
+
+        # Generate code for instantiated generic classes
+        # Skip placeholder classes (those with underscore-prefixed type params like _T1)
+        for mangled_name, class_node in TypeChecker.instantiated_class_nodes.items():
+            if mangled_name not in self.class_symtab:
+                # Skip placeholder classes (e.g., Hash__T1__T2)
+                # These have underscore-prefixed type parameters
+                parts = mangled_name.split("_")
+                is_placeholder = any(
+                    p.startswith("T") and p[1:].isalnum()
+                    for p in parts[1:]
+                    if len(p) > 1
+                )
+                if not is_placeholder:
+                    self._codegen(class_node)
+
+        # Generate code for instantiated generic functions
+        for mangled_name, func_node in TypeChecker.instantiated_func_nodes.items():
+            if mangled_name not in self.func_symtab:
+                self._codegen(func_node)
 
     def _get_llvm_type(self, type_name, is_return=False):
         # Resolve aliases first
@@ -806,7 +916,7 @@ class CodeGen:
                 "`stop` can only be used inside a loop",
                 node.line,
                 node.col,
-                tip="`stop` (break) is used to exit a loop early. It can only be used within `while`, `for`, `do-while`, or `foreach` loops."
+                tip="`stop` (break) is used to exit a loop early. It can only be used within `while`, `for`, `do-while`, or `foreach` loops.",
             )
         break_bb, _ = self.loop_stack[-1]
         self.builder.branch(break_bb)
@@ -818,7 +928,7 @@ class CodeGen:
                 "`continue` can only be used inside a loop",
                 node.line,
                 node.col,
-                tip="`continue` skips to the next iteration of a loop. It can only be used within `while`, `for`, `do-while`, or `foreach` loops."
+                tip="`continue` skips to the next iteration of a loop. It can only be used within `while`, `for`, `do-while`, or `foreach` loops.",
             )
         _, continue_bb = self.loop_stack[-1]
         self.builder.branch(continue_bb)
@@ -984,6 +1094,17 @@ class CodeGen:
             if node.name not in self.var_symtab:
                 if node.name in self.class_symtab:
                     return None, node.name  # Static access
+                # Check if this is a generic class name that needs instantiation
+                from .typechecker import TypeChecker
+
+                # Find a concrete instantiation (prefer one without placeholder types)
+                for inst_name in TypeChecker.instantiated_class_nodes:
+                    if inst_name.startswith(node.name + "_") and "_T" not in inst_name:
+                        return None, inst_name
+                # Fallback to any instantiation
+                for inst_name in TypeChecker.instantiated_class_nodes:
+                    if inst_name.startswith(node.name + "_"):
+                        return None, inst_name
                 raise LeashError(f"Undefined variable: '{node.name}'")
             ptr, type_name = self.var_symtab[node.name]
             resolved = self._resolve_type_name(type_name)
@@ -1108,7 +1229,11 @@ class CodeGen:
         if resolved.startswith("*") or resolved.startswith("&"):
             underlying = self._resolve_type_name(resolved[1:])
         else:
-            raise LeashError("Cannot use '->' on non-pointer type", node=node)
+            raise LeashError(
+                "Cannot use '->' on non-pointer type",
+                line=getattr(node, "line", None),
+                col=getattr(node, "col", None),
+            )
 
         if underlying in self.struct_symtab:
             struct_info = self.struct_symtab[underlying]
@@ -1133,7 +1258,11 @@ class CodeGen:
             )
             return self.builder.load(res_ptr)
 
-        raise LeashError(f"Type '{underlying}' is not a struct or class", node=node)
+        raise LeashError(
+            f"Type '{underlying}' is not a struct or class",
+            line=getattr(node, "line", None),
+            col=getattr(node, "col", None),
+        )
 
     def _codegen_ExpressionStatement(self, node):
         self._codegen(node.expr)
@@ -1393,6 +1522,10 @@ class CodeGen:
 
     def _cast_bool(self, cond_val):
         if not isinstance(cond_val.type, ir.IntType) or cond_val.type.width != 1:
+            # Handle pointer types (compare with null)
+            if isinstance(cond_val.type, ir.PointerType):
+                null_ptr = ir.Constant(cond_val.type, None)
+                return self.builder.icmp_unsigned("!=", cond_val, null_ptr)
             zero = ir.Constant(cond_val.type, 0)
             if isinstance(cond_val.type, (ir.FloatType, ir.DoubleType)):
                 return self.builder.fcmp_ordered("!=", cond_val, zero)
@@ -1463,7 +1596,7 @@ class CodeGen:
         body_bb = self.builder.function.append_basic_block("while_body")
         merge_bb = self.builder.function.append_basic_block("while_merge")
         continue_bb = cond_bb  # continue jumps to condition check
-        break_bb = merge_bb     # break jumps to merge
+        break_bb = merge_bb  # break jumps to merge
 
         # Push loop context for nested stop/continue
         self.loop_stack.append((break_bb, continue_bb))
@@ -1493,7 +1626,7 @@ class CodeGen:
         body_bb = self.builder.function.append_basic_block("for_body")
         merge_bb = self.builder.function.append_basic_block("for_merge")
         continue_bb = cond_bb  # continue jumps to condition check (after step)
-        break_bb = merge_bb     # break jumps to merge
+        break_bb = merge_bb  # break jumps to merge
 
         # Push loop context for nested stop/continue
         self.loop_stack.append((break_bb, continue_bb))
@@ -1522,7 +1655,7 @@ class CodeGen:
         cond_bb = self.builder.function.append_basic_block("do_cond")
         merge_bb = self.builder.function.append_basic_block("do_merge")
         continue_bb = cond_bb  # continue jumps to condition check
-        break_bb = merge_bb     # break jumps to merge
+        break_bb = merge_bb  # break jumps to merge
 
         # Push loop context for nested stop/continue
         self.loop_stack.append((break_bb, continue_bb))
@@ -1610,7 +1743,7 @@ class CodeGen:
         body_bb = self.builder.function.append_basic_block("foreach_body")
         merge_bb = self.builder.function.append_basic_block("foreach_merge")
         continue_bb = cond_bb  # continue goes back to condition
-        break_bb = merge_bb     # break exits to merge
+        break_bb = merge_bb  # break exits to merge
 
         # Push loop context for nested stop/continue
         self.loop_stack.append((break_bb, continue_bb))
@@ -1661,7 +1794,7 @@ class CodeGen:
         body_bb = self.builder.function.append_basic_block("foreach_str_body")
         merge_bb = self.builder.function.append_basic_block("foreach_str_merge")
         continue_bb = cond_bb  # continue goes back to condition
-        break_bb = merge_bb     # break exits to merge
+        break_bb = merge_bb  # break exits to merge
 
         # Push loop context for nested stop/continue
         self.loop_stack.append((break_bb, continue_bb))
@@ -1702,7 +1835,7 @@ class CodeGen:
 
         idx_ptr = self.builder.alloca(ir.IntType(64), name=node.index_var)
         self.builder.store(ir.Constant(ir.IntType(64), 0), idx_ptr)
-        self.var_symtab[node.index_var] = (idx_ptr, "int")
+        self.var_symtab[node.index_var] = (idx_ptr, "int<64>")
 
         elem_type = data_ptr.type.pointee
         val_ptr = self.builder.alloca(elem_type, name=node.value_var)
@@ -1722,7 +1855,7 @@ class CodeGen:
         body_bb = self.builder.function.append_basic_block("foreach_vec_body")
         merge_bb = self.builder.function.append_basic_block("foreach_vec_merge")
         continue_bb = cond_bb  # continue goes back to condition
-        break_bb = merge_bb     # break exits to merge
+        break_bb = merge_bb  # break exits to merge
 
         # Push loop context for nested stop/continue
         self.loop_stack.append((break_bb, continue_bb))
@@ -1889,7 +2022,26 @@ class CodeGen:
 
             len_l = None
             if is_string_l:
-                len_l = self.builder.call(self.strlen, [left])
+                # Handle null pointers safely - treat as empty string using explicit blocks
+                null_left = self.builder.icmp_unsigned("==", left, ir.Constant(left.type, None))
+                len_l_null_bb = self.builder.function.append_basic_block("len_l_null")
+                len_l_str_bb = self.builder.function.append_basic_block("len_l_str")
+                len_l_merge_bb = self.builder.function.append_basic_block("len_l_merge")
+                self.builder.cbranch(null_left, len_l_null_bb, len_l_str_bb)
+                
+                self.builder.position_at_end(len_l_null_bb)
+                len_l_null = ir.Constant(ir.IntType(64), 0)
+                self.builder.branch(len_l_merge_bb)
+                
+                self.builder.position_at_end(len_l_str_bb)
+                len_l_str = self.builder.call(self.strlen, [left])
+                self.builder.branch(len_l_merge_bb)
+                
+                self.builder.position_at_end(len_l_merge_bb)
+                phi_l = self.builder.phi(ir.IntType(64))
+                phi_l.add_incoming(len_l_null, len_l_null_bb)
+                phi_l.add_incoming(len_l_str, len_l_str_bb)
+                len_l = phi_l
             elif is_slice_l:
                 len_l = self.builder.zext(
                     self.builder.extract_value(left, 0), ir.IntType(64)
@@ -1899,7 +2051,26 @@ class CodeGen:
 
             len_r = None
             if is_string_r:
-                len_r = self.builder.call(self.strlen, [right])
+                # Handle null pointers safely - treat as empty string using explicit blocks
+                null_right = self.builder.icmp_unsigned("==", right, ir.Constant(right.type, None))
+                len_r_null_bb = self.builder.function.append_basic_block("len_r_null")
+                len_r_str_bb = self.builder.function.append_basic_block("len_r_str")
+                len_r_merge_bb = self.builder.function.append_basic_block("len_r_merge")
+                self.builder.cbranch(null_right, len_r_null_bb, len_r_str_bb)
+                
+                self.builder.position_at_end(len_r_null_bb)
+                len_r_null = ir.Constant(ir.IntType(64), 0)
+                self.builder.branch(len_r_merge_bb)
+                
+                self.builder.position_at_end(len_r_str_bb)
+                len_r_str = self.builder.call(self.strlen, [right])
+                self.builder.branch(len_r_merge_bb)
+                
+                self.builder.position_at_end(len_r_merge_bb)
+                phi_r = self.builder.phi(ir.IntType(64))
+                phi_r.add_incoming(len_r_null, len_r_null_bb)
+                phi_r.add_incoming(len_r_str, len_r_str_bb)
+                len_r = phi_r
             elif is_slice_r:
                 len_r = self.builder.zext(
                     self.builder.extract_value(right, 0), ir.IntType(64)
@@ -1916,7 +2087,26 @@ class CodeGen:
 
             # Copy left
             if is_string_l:
+                # Handle null pointers safely using explicit blocks
+                null_left = self.builder.icmp_unsigned("==", left, ir.Constant(left.type, None))
+                copy_left_null_bb = self.builder.function.append_basic_block("copy_left_null")
+                copy_left_str_bb = self.builder.function.append_basic_block("copy_left_str")
+                copy_left_merge_bb = self.builder.function.append_basic_block("copy_left_merge")
+                self.builder.cbranch(null_left, copy_left_null_bb, copy_left_str_bb)
+                
+                self.builder.position_at_end(copy_left_null_bb)
+                # Left is null, start with empty string
+                self.builder.store(
+                    ir.Constant(ir.IntType(8), 0),
+                    self.builder.gep(new_str, [ir.Constant(ir.IntType(64), 0)], inbounds=True)
+                )
+                self.builder.branch(copy_left_merge_bb)
+                
+                self.builder.position_at_end(copy_left_str_bb)
                 self.builder.call(self.strcpy, [new_str, left])
+                self.builder.branch(copy_left_merge_bb)
+                
+                self.builder.position_at_end(copy_left_merge_bb)
             elif is_slice_l:
                 ptr_l = self.builder.extract_value(left, 1)
                 self.builder.call(self.strncpy, [new_str, ptr_l, len_l])
@@ -1938,7 +2128,22 @@ class CodeGen:
 
             # Concatenate right
             if is_string_r:
+                # Handle null pointers safely using explicit blocks
+                null_right = self.builder.icmp_unsigned("==", right, ir.Constant(right.type, None))
+                concat_right_null_bb = self.builder.function.append_basic_block("concat_right_null")
+                concat_right_str_bb = self.builder.function.append_basic_block("concat_right_str")
+                concat_right_merge_bb = self.builder.function.append_basic_block("concat_right_merge")
+                self.builder.cbranch(null_right, concat_right_null_bb, concat_right_str_bb)
+                
+                self.builder.position_at_end(concat_right_null_bb)
+                # Right is null, nothing to concatenate
+                self.builder.branch(concat_right_merge_bb)
+                
+                self.builder.position_at_end(concat_right_str_bb)
                 self.builder.call(self.strcat, [new_str, right])
+                self.builder.branch(concat_right_merge_bb)
+                
+                self.builder.position_at_end(concat_right_merge_bb)
             elif is_slice_r:
                 ptr_r = self.builder.extract_value(right, 1)
                 dest = self.builder.gep(new_str, [len_l], inbounds=True)
@@ -2344,7 +2549,8 @@ class CodeGen:
 
         raise LeashError(
             f"Method '{node.method}' is not implemented for type '{resolved}'",
-            node=node,
+            line=getattr(node, "line", None),
+            col=getattr(node, "col", None),
         )
 
     def _update_vec_struct(self, vec_ptr, data, size, cap):
@@ -2566,9 +2772,67 @@ class CodeGen:
             self._update_vec_struct(vec_ptr, new_data, new_size, new_cap)
             return None
 
+        elif method == "remove":
+            # vec.remove(index) - remove element at index
+            idx = self._codegen(args[0])
+            idx = self._emit_cast(idx, ir.IntType(32))
+            idx_64 = self.builder.zext(idx, ir.IntType(64))
+
+            # Compute element size at runtime (same as pushf/popf)
+            dummy_ptr = ir.Constant(inner_llvm.as_pointer(), None)
+            elem_size = self.builder.ptrtoint(
+                self.builder.gep(dummy_ptr, [ir.Constant(ir.IntType(32), 1)]),
+                ir.IntType(64),
+            )
+
+            # memmove data[idx..size-2] = data[idx+1..size-1]
+            data_bytes = self.builder.bitcast(data, ir.IntType(8).as_pointer())
+            dst_offset = self.builder.mul(idx_64, elem_size)
+            dst_bytes = self.builder.gep(data_bytes, [dst_offset], inbounds=True)
+            src_bytes = self.builder.gep(dst_bytes, [elem_size], inbounds=True)
+
+            copy_count = self.builder.sub(size, idx_64)
+            copy_count = self.builder.sub(copy_count, ir.Constant(ir.IntType(64), 1))
+            copy_bytes = self.builder.mul(copy_count, elem_size)
+
+            self.builder.call(self.memmove, [dst_bytes, src_bytes, copy_bytes])
+
+            new_size = self.builder.sub(size, ir.Constant(ir.IntType(64), 1))
+            self._update_vec_struct(vec_ptr, data, new_size, cap)
+            return None
+
         raise LeashError(
             f"Vector method '{method}' not fully implemented yet", node=vec_ptr
         )
+
+    def _codegen_GenericCall(self, node):
+        """Handle generic function calls like add<int>(10, 20)."""
+        # Generate the mangled function name
+        type_args_str = "_".join(
+            t.replace("<", "_").replace(">", "_").replace(",", "_").replace(" ", "")
+            for t in node.type_args
+        )
+        mangled_name = f"{node.name}_{type_args_str}"
+
+        # Check if the function exists in the symbol table
+        func = self.func_symtab.get(mangled_name)
+        if not func:
+            raise LeashError(
+                f"Call to undefined generic function: '{node.name}' with types {node.type_args}"
+            )
+
+        # Generate arguments
+        args = []
+        for i, arg_expr in enumerate(node.args):
+            if i < len(func.args):
+                target_llvm = func.args[i].type
+                v = self._codegen(arg_expr)
+                v = self._emit_cast(v, target_llvm)
+                args.append(v)
+            else:
+                args.append(self._codegen(arg_expr))
+
+        return self.builder.call(func, args)
 
     def _codegen_Call(self, node):
         if node.name == "get":

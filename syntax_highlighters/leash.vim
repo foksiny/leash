@@ -4,7 +4,7 @@ if exists("b:current_syntax")
 endif
 
 " Keywords
-syn keyword leashKeyword fnc def struct union enum class type return if also else while for do foreach in imut vector vec this pub priv static stop continue
+syn keyword leashKeyword fnc def struct union enum class type template return if also else while for do foreach in imut vector vec this pub priv static stop continue
 syn keyword leashBoolean true false
 syn keyword leashNull null
 
@@ -16,6 +16,9 @@ syn match leashClassInheritance "class\s*(\s*[A-Z][a-zA-Z0-9_]*\s*)"
 
 " Type annotation with parent: : Type(Parent)
 syn match leashTypeAnnotation ":\s*[A-Z][a-zA-Z0-9_]*\s*(\s*[A-Z][a-zA-Z0-9_]*\s*)"
+" Generic type parameters
+syn match leashGenericParam "<\s*\zs[A-Z][a-zA-Z0-9_]*\ze"
+syn match leashGenericParam ",\s*\zs[A-Z][a-zA-Z0-9_]*\ze"
 
 " Builtin functions and properties
 syn keyword leashBuiltin show get set toint tofloat tostring cstr lstr size cur name pushb popb pushf popf insert clear
@@ -40,6 +43,7 @@ hi def link leashKeyword Keyword
 hi def link leashType Type
 hi def link leashClassInheritance Type
 hi def link leashTypeAnnotation Type
+hi def link leashGenericParam Type
 hi def link leashBoolean Boolean
 hi def link leashNull Constant
 hi def link leashBuiltin Function

@@ -17,6 +17,7 @@ Leash is a strongly-typed, modern compiled programming language built on top of 
 - [Unions](#unions)
 - [Enums](#enums)
 - [Type Aliases](#type-aliases)
+- [Generic Types](#generic-types)
 - [Type Casting](#type-casting)
 - [Type Conversions](#type-conversions)
 - [Strings](#strings)
@@ -516,6 +517,82 @@ def Pixel : type uint<8>;
 a: MyInt = 10;
 p: Pixel = 255;
 ```
+
+## Generic Types
+
+Leash supports generic programming through templates. Templates allow you to define functions and classes that work with multiple types, providing type safety and code reuse.
+
+### Defining Template Parameters
+
+Use the `template` keyword to declare a type parameter:
+
+```leash
+def T : template;
+```
+
+Template parameters are conventionally named with a single uppercase letter (e.g., `T`, `U`, `V`) or with descriptive names like `KeyType`, `ValueType`.
+
+### Generic Functions
+
+You can use template parameters as types in function signatures:
+
+```leash
+def T : template;
+
+fnc identity(x T) : T {
+    return x;
+}
+
+fnc main() : void {
+    show(identity<int>(42));        // 42
+    show(identity<string>("hi"));  // "hi"
+}
+```
+
+When calling a generic function, you must specify the concrete type inside angle brackets after the function name: `identity<int>(42)`.
+
+### Generic Classes
+
+Classes can also have multiple template parameters:
+
+```leash
+def K : template;
+def V : template;
+
+def Pair : class<K, V> {
+    first: K;
+    second: V;
+
+    pub fnc get_first() : K {
+        return this.first;
+    }
+
+    pub fnc get_second() : V {
+        return this.second;
+    }
+}
+
+fnc main() : void {
+    p: Pair<int, string> = Pair<int, string> {first: 1, second: "one"};
+    show(p.get_first());   // 1
+    show(p.get_second()); // "one"
+}
+```
+
+### Using `nil` with Generic Types
+
+The `nil` value can be used with any type, including generic type parameters. This is useful for optional return values:
+
+```leash
+def T : template;
+
+fnc find(key string, map Hash<string, T>) : T {
+    // ... search logic
+    return nil; // nil is valid for any T
+}
+```
+
+Generic types can be used anywhere a regular type is expected, including as function parameters, return types, struct fields, and class members.
 
 ## Type Casting
 

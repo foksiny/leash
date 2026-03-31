@@ -48,6 +48,7 @@ examples/args
 examples/pointers
 examples/advanced_class
 examples/stop
+examples/generictypes
 
 # Trash
 trash/

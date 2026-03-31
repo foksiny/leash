@@ -45,6 +45,8 @@ from .ast_nodes import (
     ClassMethod,
     ThisExpr,
     PointerMemberAccess,
+    TemplateDef,
+    GenericCall,
 )
 from .errors import LeashError
 
@@ -212,8 +214,14 @@ class Parser:
                     "IDENT",
                     "VEC",
                 ):
-                    # if it's a type name inside < >, it's a generic (like vec<string>)
-                    base = f"{base}<{self.parse_type()}>"
+                    # if it's a type name inside < >, it's a generic (like vec<string> or Hash<T1, T2>)
+                    type_args = []
+                    type_args.append(self.parse_type())
+                    # Handle multiple type arguments (comma-separated)
+                    while self.current().type == "COMMA":
+                        self.eat("COMMA")
+                        type_args.append(self.parse_type())
+                    base = f"{base}<{', '.join(type_args)}>"
                     is_type = True
 
                 if not is_type:
@@ -305,13 +313,15 @@ class Parser:
             return self._parse_enum_body(name)
         elif self.current().type == "CLASS":
             return self._parse_class_body(name)
+        elif self.current().type == "TEMPLATE":
+            return self._parse_template_body(name)
         else:
             tok = self.current()
             raise LeashError(
-                f"Expected 'struct', 'union', 'enum', 'class' or 'type' after 'def {name} :', but found {tok.type} ('{tok.value}')",
+                f"Expected 'struct', 'union', 'enum', 'class', 'type' or 'template' after 'def {name} :', but found {tok.type} ('{tok.value}')",
                 tok.line,
                 tok.column,
-                tip="Use `def Name : class { ... };`, `def Name : struct { ... };`, or `def Name : enum { ... };`",
+                tip="Use `def Name : class { ... };`, `def Name : struct { ... };`, `def Name : enum { ... };`, or `def T : template;`",
             )
 
     def _parse_struct_body(self, name):
@@ -367,9 +377,23 @@ class Parser:
         self.eat("SEMI")
         return TypeAlias(name, target_type)
 
+    def _parse_template_body(self, name):
+        self.eat("TEMPLATE")
+        self.eat("SEMI")
+        return TemplateDef(name)
+
     def _parse_class_body(self, name):
         self.eat("CLASS")
+        type_params = []
         parent = None
+        # Check for generic parameters: class<T1, T2>
+        if self.current().type == "LT":
+            self.eat("LT")
+            while self.current().type != "GT":
+                type_params.append(self.eat("IDENT").value)
+                if self.current().type == "COMMA":
+                    self.eat("COMMA")
+            self.eat("GT")
         # Check for inheritance: class(Parent)
         if self.current().type == "LPAREN":
             self.eat("LPAREN")
@@ -405,11 +429,20 @@ class Parser:
         # self.eat('SEMI') # Optional for classes
         if self.current().type == "SEMI":
             self.eat("SEMI")
-        return ClassDef(name, fields, methods, parent)
+        return ClassDef(name, fields, methods, parent, type_params)
 
     def parse_function(self):
         self.eat("FNC")
         name = self.eat("IDENT").value
+        type_params = []
+        # Check for generic parameters: fnc add<T>(a T, b T)
+        if self.current().type == "LT":
+            self.eat("LT")
+            while self.current().type != "GT":
+                type_params.append(self.eat("IDENT").value)
+                if self.current().type == "COMMA":
+                    self.eat("COMMA")
+            self.eat("GT")
         self.eat("LPAREN")
         args = []
         while self.current().type != "RPAREN":
@@ -433,7 +466,7 @@ class Parser:
 
         self.eat("LBRACE")
         statements = self.parse_block()
-        return Function(name, tuple(args), return_type, statements)
+        return Function(name, tuple(args), return_type, statements, type_params)
 
     def parse_block(self):
         statements = []
@@ -798,9 +831,9 @@ class Parser:
             tok = self.current()
             self.eat("FALSE")
             return self._pos(BoolLiteral(False), tok)
-        elif self.current().type == "NULL":
+        elif self.current().type == "NULL" or self.current().type == "NIL":
             tok = self.current()
-            self.eat("NULL")
+            self.eat(self.current().type)
             return self._pos(NullLiteral(), tok)
         elif self.current().type == "THIS":
             tok = self.current()
@@ -816,6 +849,51 @@ class Parser:
                 value = self.parse_expression()
                 self.eat("RPAREN")
                 return self._pos(TypeConvExpr(name, target_type, value), tok)
+
+            # Check for generic function call: name<T>(args)
+            if self.current().type == "LT":
+                # Look ahead to check if this is a generic call
+                saved_pos = self.pos
+                try:
+                    self.eat("LT")
+                    type_args = []
+                    # Parse type arguments
+                    while self.current().type != "GT":
+                        # Type can be a simple identifier or a compound type like vec<T>
+                        if self.current().type in (
+                            "IDENT",
+                            "VEC",
+                            "INT",
+                            "UINT",
+                            "FLOAT",
+                            "STRING",
+                            "CHAR",
+                            "BOOL",
+                        ):
+                            type_args.append(self.parse_type())
+                        else:
+                            # Not a valid type argument, not a generic call
+                            self.pos = saved_pos
+                            break
+                        if self.current().type == "COMMA":
+                            self.eat("COMMA")
+                    else:
+                        self.eat("GT")
+                        if self.current().type == "LPAREN":
+                            self.eat("LPAREN")
+                            args = []
+                            while self.current().type != "RPAREN":
+                                args.append(self.parse_expression())
+                                if self.current().type == "COMMA":
+                                    self.eat("COMMA")
+                            self.eat("RPAREN")
+                            return self._pos(GenericCall(name, type_args, args), tok)
+                        else:
+                            # Not a generic call, restore position
+                            self.pos = saved_pos
+                except LeashError:
+                    # Not a generic call, restore position
+                    self.pos = saved_pos
 
             if self.current().type == "LPAREN":
                 self.eat("LPAREN")
