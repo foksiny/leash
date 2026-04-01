@@ -27,7 +27,9 @@ class CodeGen:
         self.class_symtab = {}  # name -> { 'type': ir_type, 'fields': {...}, 'methods': {...} }
         self.global_var_ptrs = {}  # name -> (ir.GlobalVariable, leash_type_string) for module-level variables
         self.global_init_list = []  # list of (gv, init_expr, leash_type) for globals with initializers
-        self.init_func = None  # The _leash_init_globals function if any globals need init
+        self.init_func = (
+            None  # The _leash_init_globals function if any globals need init
+        )
         self.printf = None
         self.current_target_type = None
         self.loop_stack = []  # Stack of (break_bb, continue_bb) for nested loops
@@ -44,12 +46,14 @@ class CodeGen:
 
         # Global start time for timepass() - { i64 tv_sec, i64 tv_nsec }
         timespec_ty = ir.LiteralStructType([ir.IntType(64), ir.IntType(64)])
-        self.start_time_gv = ir.GlobalVariable(self.module, timespec_ty, name="start_time")
+        self.start_time_gv = ir.GlobalVariable(
+            self.module, timespec_ty, name="start_time"
+        )
         self.start_time_gv.linkage = "internal"
-        self.start_time_gv.initializer = ir.Constant(timespec_ty, [
-            ir.Constant(ir.IntType(64), 0),
-            ir.Constant(ir.IntType(64), 0)
-        ])
+        self.start_time_gv.initializer = ir.Constant(
+            timespec_ty,
+            [ir.Constant(ir.IntType(64), 0), ir.Constant(ir.IntType(64), 0)],
+        )
 
         self.setup_builtins()
 
@@ -155,9 +159,15 @@ class CodeGen:
         self.usleep = ir.Function(self.module, usleep_ty, name="usleep")
 
         # Clock gettime for timepass
-        timespec_ty = ir.LiteralStructType([ir.IntType(64), ir.IntType(64)])  # tv_sec, tv_nsec
-        clock_gettime_ty = ir.FunctionType(ir.IntType(32), [ir.IntType(32), timespec_ty.as_pointer()])
-        self.clock_gettime = ir.Function(self.module, clock_gettime_ty, name="clock_gettime")
+        timespec_ty = ir.LiteralStructType(
+            [ir.IntType(64), ir.IntType(64)]
+        )  # tv_sec, tv_nsec
+        clock_gettime_ty = ir.FunctionType(
+            ir.IntType(32), [ir.IntType(32), timespec_ty.as_pointer()]
+        )
+        self.clock_gettime = ir.Function(
+            self.module, clock_gettime_ty, name="clock_gettime"
+        )
         # CLOCK_MONOTONIC constant (typically 1 on Linux)
         self.CLOCK_MONOTONIC = ir.Constant(ir.IntType(32), 1)
 
@@ -401,6 +411,13 @@ class CodeGen:
             if resolved == "string" or resolved.endswith("]"):
                 if node.method == "size":
                     return "int"
+            # Handle class methods - get return type from the method's function signature
+            if resolved in self.class_symtab:
+                cls_info = self.class_symtab[resolved]
+                func = cls_info["methods"].get(node.method)
+                if func:
+                    ret_type = func.function_type.return_type
+                    return self._llvm_type_to_leash_name(ret_type)
         return "int"
 
     def _llvm_type_to_leash_name(self, llvm_type):
@@ -422,6 +439,11 @@ class CodeGen:
             return "ptr"
         elif isinstance(llvm_type, ir.VoidType):
             return "void"
+        elif isinstance(llvm_type, ir.LiteralStructType):
+            # Find the struct name by matching the LLVM type
+            for name, info in self.struct_symtab.items():
+                if info["type"] == llvm_type:
+                    return name
         return "int"  # fallback
 
     def _resolve_type_name(self, type_name):
@@ -508,7 +530,9 @@ class CodeGen:
         llvm_type = self._get_llvm_type(node.var_type)
         # Create the global variable
         gv = ir.GlobalVariable(self.module, llvm_type, name=node.name)
-        gv.linkage = "internal"  # module-local; could use external for pub but not needed
+        gv.linkage = (
+            "internal"  # module-local; could use external for pub but not needed
+        )
         # Store in global symbol table for visibility in functions
         self.global_var_ptrs[node.name] = (gv, node.var_type)
         # If there is an initializer, schedule it for runtime initialization
@@ -890,7 +914,9 @@ class CodeGen:
 
     def _codegen_Function(self, node):
         # Start with globals in scope (they can be shadowed by locals)
-        self.var_symtab = self.global_var_ptrs.copy() if hasattr(self, 'global_var_ptrs') else {}
+        self.var_symtab = (
+            self.global_var_ptrs.copy() if hasattr(self, "global_var_ptrs") else {}
+        )
         self.current_func_ret_type_name = node.return_type
 
         # Determine return type
@@ -929,11 +955,15 @@ class CodeGen:
             if self.init_func:
                 self.builder.call(self.init_func, [])
             # Initialize start_time for timepass()
-            self.builder.call(self.clock_gettime, [self.CLOCK_MONOTONIC, self.start_time_gv])
+            self.builder.call(
+                self.clock_gettime, [self.CLOCK_MONOTONIC, self.start_time_gv]
+            )
             # Auto-seed random number generator if seed() was not explicitly called
             if not self.seed_called:
                 # time(NULL) returns i64, cast to i32 for srand
-                time_val = self.builder.call(self.time, [ir.Constant(ir.IntType(64).as_pointer(), None)])
+                time_val = self.builder.call(
+                    self.time, [ir.Constant(ir.IntType(64).as_pointer(), None)]
+                )
                 seed_val = self.builder.trunc(time_val, ir.IntType(32))
                 self.builder.call(self.srand, [seed_val])
 
@@ -1186,6 +1216,7 @@ class CodeGen:
             ThisExpr,
             UnaryOp,
             PointerMemberAccess,
+            MethodCall,
         )
 
         if isinstance(node, Identifier):
@@ -1316,8 +1347,22 @@ class CodeGen:
             if "this" not in self.var_symtab:
                 raise LeashError("'this' is not available in the current context")
             return self.var_symtab["this"]
+        elif isinstance(node, MethodCall):
+            # Handle method call as l-value (e.g., for h.get("Joe").age)
+            # Call the method and store result in a temporary, then return pointer to it
+            val = self._codegen_MethodCall(node)
+            type_name = self._get_leash_type_name(node)
+            resolved = self._resolve_type_name(type_name)
+            # Allocate temporary to hold the method result
+            ptr = self.builder.alloca(val.type)
+            self.builder.store(val, ptr)
+            return ptr, resolved
         else:
-            raise LeashError(f"Invalid l-value: {type(node).__name__}")
+            line = getattr(node, "line", None)
+            col = getattr(node, "col", None)
+            raise LeashError(
+                f"Invalid l-value: {type(node).__name__}", line=line, col=col
+            )
 
     def _codegen_PointerMemberAccess(self, node):
         ptr = self._codegen(node.expr)
@@ -2121,20 +2166,22 @@ class CodeGen:
             len_l = None
             if is_string_l:
                 # Handle null pointers safely - treat as empty string using explicit blocks
-                null_left = self.builder.icmp_unsigned("==", left, ir.Constant(left.type, None))
+                null_left = self.builder.icmp_unsigned(
+                    "==", left, ir.Constant(left.type, None)
+                )
                 len_l_null_bb = self.builder.function.append_basic_block("len_l_null")
                 len_l_str_bb = self.builder.function.append_basic_block("len_l_str")
                 len_l_merge_bb = self.builder.function.append_basic_block("len_l_merge")
                 self.builder.cbranch(null_left, len_l_null_bb, len_l_str_bb)
-                
+
                 self.builder.position_at_end(len_l_null_bb)
                 len_l_null = ir.Constant(ir.IntType(64), 0)
                 self.builder.branch(len_l_merge_bb)
-                
+
                 self.builder.position_at_end(len_l_str_bb)
                 len_l_str = self.builder.call(self.strlen, [left])
                 self.builder.branch(len_l_merge_bb)
-                
+
                 self.builder.position_at_end(len_l_merge_bb)
                 phi_l = self.builder.phi(ir.IntType(64))
                 phi_l.add_incoming(len_l_null, len_l_null_bb)
@@ -2150,20 +2197,22 @@ class CodeGen:
             len_r = None
             if is_string_r:
                 # Handle null pointers safely - treat as empty string using explicit blocks
-                null_right = self.builder.icmp_unsigned("==", right, ir.Constant(right.type, None))
+                null_right = self.builder.icmp_unsigned(
+                    "==", right, ir.Constant(right.type, None)
+                )
                 len_r_null_bb = self.builder.function.append_basic_block("len_r_null")
                 len_r_str_bb = self.builder.function.append_basic_block("len_r_str")
                 len_r_merge_bb = self.builder.function.append_basic_block("len_r_merge")
                 self.builder.cbranch(null_right, len_r_null_bb, len_r_str_bb)
-                
+
                 self.builder.position_at_end(len_r_null_bb)
                 len_r_null = ir.Constant(ir.IntType(64), 0)
                 self.builder.branch(len_r_merge_bb)
-                
+
                 self.builder.position_at_end(len_r_str_bb)
                 len_r_str = self.builder.call(self.strlen, [right])
                 self.builder.branch(len_r_merge_bb)
-                
+
                 self.builder.position_at_end(len_r_merge_bb)
                 phi_r = self.builder.phi(ir.IntType(64))
                 phi_r.add_incoming(len_r_null, len_r_null_bb)
@@ -2186,24 +2235,34 @@ class CodeGen:
             # Copy left
             if is_string_l:
                 # Handle null pointers safely using explicit blocks
-                null_left = self.builder.icmp_unsigned("==", left, ir.Constant(left.type, None))
-                copy_left_null_bb = self.builder.function.append_basic_block("copy_left_null")
-                copy_left_str_bb = self.builder.function.append_basic_block("copy_left_str")
-                copy_left_merge_bb = self.builder.function.append_basic_block("copy_left_merge")
+                null_left = self.builder.icmp_unsigned(
+                    "==", left, ir.Constant(left.type, None)
+                )
+                copy_left_null_bb = self.builder.function.append_basic_block(
+                    "copy_left_null"
+                )
+                copy_left_str_bb = self.builder.function.append_basic_block(
+                    "copy_left_str"
+                )
+                copy_left_merge_bb = self.builder.function.append_basic_block(
+                    "copy_left_merge"
+                )
                 self.builder.cbranch(null_left, copy_left_null_bb, copy_left_str_bb)
-                
+
                 self.builder.position_at_end(copy_left_null_bb)
                 # Left is null, start with empty string
                 self.builder.store(
                     ir.Constant(ir.IntType(8), 0),
-                    self.builder.gep(new_str, [ir.Constant(ir.IntType(64), 0)], inbounds=True)
+                    self.builder.gep(
+                        new_str, [ir.Constant(ir.IntType(64), 0)], inbounds=True
+                    ),
                 )
                 self.builder.branch(copy_left_merge_bb)
-                
+
                 self.builder.position_at_end(copy_left_str_bb)
                 self.builder.call(self.strcpy, [new_str, left])
                 self.builder.branch(copy_left_merge_bb)
-                
+
                 self.builder.position_at_end(copy_left_merge_bb)
             elif is_slice_l:
                 ptr_l = self.builder.extract_value(left, 1)
@@ -2227,20 +2286,30 @@ class CodeGen:
             # Concatenate right
             if is_string_r:
                 # Handle null pointers safely using explicit blocks
-                null_right = self.builder.icmp_unsigned("==", right, ir.Constant(right.type, None))
-                concat_right_null_bb = self.builder.function.append_basic_block("concat_right_null")
-                concat_right_str_bb = self.builder.function.append_basic_block("concat_right_str")
-                concat_right_merge_bb = self.builder.function.append_basic_block("concat_right_merge")
-                self.builder.cbranch(null_right, concat_right_null_bb, concat_right_str_bb)
-                
+                null_right = self.builder.icmp_unsigned(
+                    "==", right, ir.Constant(right.type, None)
+                )
+                concat_right_null_bb = self.builder.function.append_basic_block(
+                    "concat_right_null"
+                )
+                concat_right_str_bb = self.builder.function.append_basic_block(
+                    "concat_right_str"
+                )
+                concat_right_merge_bb = self.builder.function.append_basic_block(
+                    "concat_right_merge"
+                )
+                self.builder.cbranch(
+                    null_right, concat_right_null_bb, concat_right_str_bb
+                )
+
                 self.builder.position_at_end(concat_right_null_bb)
                 # Right is null, nothing to concatenate
                 self.builder.branch(concat_right_merge_bb)
-                
+
                 self.builder.position_at_end(concat_right_str_bb)
                 self.builder.call(self.strcat, [new_str, right])
                 self.builder.branch(concat_right_merge_bb)
-                
+
                 self.builder.position_at_end(concat_right_merge_bb)
             elif is_slice_r:
                 ptr_r = self.builder.extract_value(right, 1)
@@ -3042,32 +3111,38 @@ class CodeGen:
             # choose(str1, str2, ...) - randomly selects one of the string arguments
             # Use a chain of if-else to select the right string
             num_args = len(node.args)
-            
+
             # Generate random index
             rand_val = self.builder.call(self.rand, [])
             idx = self.builder.srem(rand_val, ir.Constant(ir.IntType(32), num_args))
-            
+
             # Create blocks
             entry_bb = self.builder.block
             merge_bb = self.builder.function.append_basic_block("choose_merge")
-            
+
             # Build if-else chain, collecting incoming values for phi
             incoming = []
             current_bb = entry_bb
             for i in range(num_args):
                 if i < num_args - 1:
-                    then_bb = self.builder.function.append_basic_block(f"choose_then_{i}")
-                    else_bb = self.builder.function.append_basic_block(f"choose_else_{i}")
-                    
+                    then_bb = self.builder.function.append_basic_block(
+                        f"choose_then_{i}"
+                    )
+                    else_bb = self.builder.function.append_basic_block(
+                        f"choose_else_{i}"
+                    )
+
                     self.builder.position_at_end(current_bb)
-                    cond = self.builder.icmp_signed("==", idx, ir.Constant(ir.IntType(32), i))
+                    cond = self.builder.icmp_signed(
+                        "==", idx, ir.Constant(ir.IntType(32), i)
+                    )
                     self.builder.cbranch(cond, then_bb, else_bb)
-                    
+
                     self.builder.position_at_end(then_bb)
                     str_val = self._codegen(node.args[i])
                     incoming.append((str_val, then_bb))
                     self.builder.branch(merge_bb)
-                    
+
                     current_bb = else_bb
                 else:
                     # Last case - position at current block (else_bb from previous iteration)
@@ -3075,7 +3150,7 @@ class CodeGen:
                     str_val = self._codegen(node.args[i])
                     incoming.append((str_val, current_bb))
                     self.builder.branch(merge_bb)
-            
+
             # Now position at merge_bb and create phi
             self.builder.position_at_end(merge_bb)
             phi = self.builder.phi(ir.IntType(8).as_pointer(), name="choose_result")
@@ -3095,7 +3170,11 @@ class CodeGen:
             if isinstance(wait_val.type, ir.IntType):
                 wait_dbl = self.builder.sitofp(wait_val, ir.DoubleType())
             elif isinstance(wait_val.type, (ir.FloatType, ir.DoubleType)):
-                wait_dbl = wait_val if isinstance(wait_val.type, ir.DoubleType) else self.builder.fpext(wait_val, ir.DoubleType())
+                wait_dbl = (
+                    wait_val
+                    if isinstance(wait_val.type, ir.DoubleType)
+                    else self.builder.fpext(wait_val, ir.DoubleType())
+                )
             else:
                 wait_dbl = wait_val  # shouldn't happen due to typecheck
             # microseconds = seconds * 1_000_000
@@ -3121,13 +3200,25 @@ class CodeGen:
             start_sec = self.builder.extract_value(start_time_val, 0)
             start_nsec = self.builder.extract_value(start_time_val, 1)
             # Load current time fields
-            cur_sec = self.builder.load(self.builder.gep(cur_ts, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)]))
-            cur_nsec = self.builder.load(self.builder.gep(cur_ts, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)]))
+            cur_sec = self.builder.load(
+                self.builder.gep(
+                    cur_ts,
+                    [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)],
+                )
+            )
+            cur_nsec = self.builder.load(
+                self.builder.gep(
+                    cur_ts,
+                    [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)],
+                )
+            )
             # Compute differences
             sec_diff = self.builder.sub(cur_sec, start_sec)
             nsec_diff = self.builder.sub(cur_nsec, start_nsec)
             # If nsec_diff < 0, borrow 1 second
-            nsec_is_neg = self.builder.icmp_signed("<", nsec_diff, ir.Constant(ir.IntType(64), 0))
+            nsec_is_neg = self.builder.icmp_signed(
+                "<", nsec_diff, ir.Constant(ir.IntType(64), 0)
+            )
             entry_bb = self.builder.block
             then_bb = self.builder.function.append_basic_block("timepass_adj")
             else_bb = self.builder.function.append_basic_block("timepass_no_adj")
@@ -3678,6 +3769,22 @@ class CodeGen:
         src_is_ptr = isinstance(src, ir.PointerType)
         dst_is_ptr = isinstance(dst, ir.PointerType)
 
+        # Handle null pointer to non-pointer destination (e.g., returning nil for struct type)
+        # This can happen when a generic function returns nil for a value type
+        if (
+            src_is_ptr
+            and isinstance(src.pointee, ir.IntType)
+            and src.pointee.width == 8
+            and not dst_is_ptr
+        ):
+            # Return undef for the destination type since we can't convert null to a value type
+            return ir.Constant(dst, ir.Undefined)
+        dst_is_int = isinstance(dst, ir.IntType)
+        src_is_float = isinstance(src, (ir.FloatType, ir.DoubleType, ir.HalfType))
+        dst_is_float = isinstance(dst, (ir.FloatType, ir.DoubleType, ir.HalfType))
+        src_is_ptr = isinstance(src, ir.PointerType)
+        dst_is_ptr = isinstance(dst, ir.PointerType)
+
         # int -> int (trunc / zext / sext)
         if src_is_int and dst_is_int:
             if src.width > dst.width:
@@ -3723,10 +3830,12 @@ class CodeGen:
             return self.builder.extract_value(val, 1)
 
         # Pointer to slice (e.g., *char to char[]) - treat as slice of length 1 or unknown
+        # Only apply if the destination struct's second element is actually a pointer (slice type)
         if (
             src_is_ptr
             and isinstance(dst, ir.LiteralStructType)
             and len(dst.elements) == 2
+            and isinstance(dst.elements[1], ir.PointerType)
         ):
             new_slice = ir.Constant(dst, ir.Undefined)
             new_slice = self.builder.insert_value(
