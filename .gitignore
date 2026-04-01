@@ -51,6 +51,8 @@ examples/stop
 examples/generictypes
 examples/pubvars
 examples/class
+examples/time
+examples/rand
 
 # Trash
 trash/
