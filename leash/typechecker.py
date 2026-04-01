@@ -1464,6 +1464,98 @@ class TypeChecker:
                 self._warn("Calling 'tostring' on a 'string' is redundant.", node=expr)
             return "string"
 
+        if expr.name == "rand":
+            if len(expr.args) != 2:
+                self._error(
+                    f"Function 'rand' expects 2 arguments (min, max), but got {len(expr.args)}",
+                    node=expr,
+                )
+            arg_t1 = self._infer_type(expr.args[0])
+            arg_t2 = self._infer_type(expr.args[1])
+            if arg_t1 and not self._is_int_family(self._resolve(arg_t1)):
+                self._error(
+                    f"Argument 1 of 'rand' must be an integer type, got '{arg_t1}'",
+                    node=expr.args[0],
+                )
+            if arg_t2 and not self._is_int_family(self._resolve(arg_t2)):
+                self._error(
+                    f"Argument 2 of 'rand' must be an integer type, got '{arg_t2}'",
+                    node=expr.args[1],
+                )
+            return "int"
+
+        if expr.name == "randf":
+            if len(expr.args) != 2:
+                self._error(
+                    f"Function 'randf' expects 2 arguments (min, max), but got {len(expr.args)}",
+                    node=expr,
+                )
+            arg_t1 = self._infer_type(expr.args[0])
+            arg_t2 = self._infer_type(expr.args[1])
+            if arg_t1 and not self._is_numeric(self._resolve(arg_t1)):
+                self._error(
+                    f"Argument 1 of 'randf' must be a numeric type, got '{arg_t1}'",
+                    node=expr.args[0],
+                )
+            if arg_t2 and not self._is_numeric(self._resolve(arg_t2)):
+                self._error(
+                    f"Argument 2 of 'randf' must be a numeric type, got '{arg_t2}'",
+                    node=expr.args[1],
+                )
+            return "float"
+
+        if expr.name == "seed":
+            if len(expr.args) != 1:
+                self._error(
+                    f"Function 'seed' expects 1 argument, but got {len(expr.args)}",
+                    node=expr,
+                )
+            arg_t = self._infer_type(expr.args[0])
+            if arg_t and not self._is_int_family(self._resolve(arg_t)):
+                self._error(
+                    f"Argument 1 of 'seed' must be an integer type, got '{arg_t}'",
+                    node=expr.args[0],
+                )
+            return "void"
+
+        if expr.name == "choose":
+            if len(expr.args) < 2:
+                self._error(
+                    f"Function 'choose' expects at least 2 arguments, but got {len(expr.args)}",
+                    node=expr,
+                )
+            # All arguments must be strings
+            for i, arg in enumerate(expr.args):
+                arg_t = self._infer_type(arg)
+                if arg_t and self._resolve(arg_t) != "string":
+                    self._error(
+                        f"Argument {i + 1} of 'choose' must be 'string', got '{arg_t}'",
+                        node=arg,
+                    )
+            return "string"
+
+        if expr.name == "wait":
+            if len(expr.args) != 1:
+                self._error(
+                    f"Function 'wait' expects 1 argument (seconds), but got {len(expr.args)}",
+                    node=expr,
+                )
+            arg_t = self._infer_type(expr.args[0])
+            if arg_t and not self._is_numeric(self._resolve(arg_t)):
+                self._error(
+                    f"Argument 1 of 'wait' must be a numeric type, got '{arg_t}'",
+                    node=expr.args[0],
+                )
+            return "void"
+
+        if expr.name == "timepass":
+            if len(expr.args) != 0:
+                self._error(
+                    f"Function 'timepass' expects 0 arguments, but got {len(expr.args)}",
+                    node=expr,
+                )
+            return "float"
+
         sig = self.func_types.get(expr.name)
         if sig is None:
             self._error(

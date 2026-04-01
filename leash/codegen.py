@@ -31,6 +31,7 @@ class CodeGen:
         self.printf = None
         self.current_target_type = None
         self.loop_stack = []  # Stack of (break_bb, continue_bb) for nested loops
+        self.seed_called = False  # Track if seed() was explicitly called
 
         # stderr - declared as external global
         self.stderr_var = ir.GlobalVariable(
@@ -40,6 +41,15 @@ class CodeGen:
 
         # Boehm GC configuration (replacing legacy SAMM)
         self.current_func_alloc_limit = 0  # Not used with GC
+
+        # Global start time for timepass() - { i64 tv_sec, i64 tv_nsec }
+        timespec_ty = ir.LiteralStructType([ir.IntType(64), ir.IntType(64)])
+        self.start_time_gv = ir.GlobalVariable(self.module, timespec_ty, name="start_time")
+        self.start_time_gv.linkage = "internal"
+        self.start_time_gv.initializer = ir.Constant(timespec_ty, [
+            ir.Constant(ir.IntType(64), 0),
+            ir.Constant(ir.IntType(64), 0)
+        ])
 
         self.setup_builtins()
 
@@ -128,6 +138,28 @@ class CodeGen:
             [ir.IntType(8).as_pointer(), ir.IntType(8).as_pointer(), ir.IntType(64)],
         )
         self.memmove = ir.Function(self.module, memmove_ty, name="memmove")
+
+        # Random functions
+        rand_ty = ir.FunctionType(ir.IntType(32), [])
+        self.rand = ir.Function(self.module, rand_ty, name="rand")
+
+        srand_ty = ir.FunctionType(ir.VoidType(), [ir.IntType(32)])
+        self.srand = ir.Function(self.module, srand_ty, name="srand")
+
+        # Time function for auto-seeding
+        time_ty = ir.FunctionType(ir.IntType(64), [ir.IntType(64).as_pointer()])
+        self.time = ir.Function(self.module, time_ty, name="time")
+
+        # Wait function (usleep)
+        usleep_ty = ir.FunctionType(ir.IntType(32), [ir.IntType(64)])
+        self.usleep = ir.Function(self.module, usleep_ty, name="usleep")
+
+        # Clock gettime for timepass
+        timespec_ty = ir.LiteralStructType([ir.IntType(64), ir.IntType(64)])  # tv_sec, tv_nsec
+        clock_gettime_ty = ir.FunctionType(ir.IntType(32), [ir.IntType(32), timespec_ty.as_pointer()])
+        self.clock_gettime = ir.Function(self.module, clock_gettime_ty, name="clock_gettime")
+        # CLOCK_MONOTONIC constant (typically 1 on Linux)
+        self.CLOCK_MONOTONIC = ir.Constant(ir.IntType(32), 1)
 
     def _emit_const_str(self, string_val):
         """Create a global string constant and return a pointer to it (i8*)."""
@@ -326,6 +358,18 @@ class CodeGen:
                 return "string"
             if node.name == "get":
                 return "string"
+            if node.name == "rand":
+                return "int"
+            if node.name == "randf":
+                return "float"
+            if node.name == "seed":
+                return "void"
+            if node.name == "choose":
+                return "string"
+            if node.name == "wait":
+                return "void"
+            if node.name == "timepass":
+                return "float"
             if node.name in self.func_symtab:
                 # We don't store return types in func_symtab currently...
                 pass
@@ -884,6 +928,14 @@ class CodeGen:
             # Call global initializer if any globals need runtime init
             if self.init_func:
                 self.builder.call(self.init_func, [])
+            # Initialize start_time for timepass()
+            self.builder.call(self.clock_gettime, [self.CLOCK_MONOTONIC, self.start_time_gv])
+            # Auto-seed random number generator if seed() was not explicitly called
+            if not self.seed_called:
+                # time(NULL) returns i64, cast to i32 for srand
+                time_val = self.builder.call(self.time, [ir.Constant(ir.IntType(64).as_pointer(), None)])
+                seed_val = self.builder.trunc(time_val, ir.IntType(32))
+                self.builder.call(self.srand, [seed_val])
 
         # Allocate args
         if name == "main" and len(node.args) == 1 and node.args[0][1] == "string[]":
@@ -2932,6 +2984,179 @@ class CodeGen:
             else:
                 return arg_val
             return buf
+
+        if node.name == "rand":
+            # rand(min, max) - returns random int in [min, max]
+            # Uses rand() % (max - min + 1) + min
+            min_val = self._codegen(node.args[0])
+            max_val = self._codegen(node.args[1])
+            # Cast to i32 for calculation (rand returns i32)
+            if isinstance(min_val.type, ir.IntType) and min_val.type.width != 32:
+                min_val = self.builder.trunc(min_val, ir.IntType(32))
+            if isinstance(max_val.type, ir.IntType) and max_val.type.width != 32:
+                max_val = self.builder.trunc(max_val, ir.IntType(32))
+            # range = max - min + 1
+            range_val = self.builder.sub(max_val, min_val)
+            range_val = self.builder.add(range_val, ir.Constant(ir.IntType(32), 1))
+            # rand() % range + min
+            rand_val = self.builder.call(self.rand, [])
+            rand_val = self.builder.srem(rand_val, range_val)
+            result = self.builder.add(rand_val, min_val)
+            return result
+
+        if node.name == "randf":
+            # randf(min, max) - returns random float in [min, max]
+            # Uses (double)rand() / RAND_MAX * (max - min) + min
+            min_val = self._codegen(node.args[0])
+            max_val = self._codegen(node.args[1])
+            # Cast to double
+            if isinstance(min_val.type, ir.IntType):
+                min_val = self.builder.sitofp(min_val, ir.DoubleType())
+            elif isinstance(min_val.type, ir.FloatType):
+                min_val = self.builder.fpext(min_val, ir.DoubleType())
+            if isinstance(max_val.type, ir.IntType):
+                max_val = self.builder.sitofp(max_val, ir.DoubleType())
+            elif isinstance(max_val.type, ir.FloatType):
+                max_val = self.builder.fpext(max_val, ir.DoubleType())
+            # (double)rand() / RAND_MAX
+            rand_val = self.builder.call(self.rand, [])
+            rand_dbl = self.builder.sitofp(rand_val, ir.DoubleType())
+            rand_max = ir.Constant(ir.DoubleType(), 2147483647.0)  # RAND_MAX
+            fraction = self.builder.fdiv(rand_dbl, rand_max)
+            # fraction * (max - min) + min
+            range_val = self.builder.fsub(max_val, min_val)
+            result = self.builder.fmul(fraction, range_val)
+            result = self.builder.fadd(result, min_val)
+            return result
+
+        if node.name == "seed":
+            # seed(value) - sets the random seed
+            seed_val = self._codegen(node.args[0])
+            if isinstance(seed_val.type, ir.IntType) and seed_val.type.width != 32:
+                seed_val = self.builder.trunc(seed_val, ir.IntType(32))
+            self.builder.call(self.srand, [seed_val])
+            self.seed_called = True
+            return None  # void
+
+        if node.name == "choose":
+            # choose(str1, str2, ...) - randomly selects one of the string arguments
+            # Use a chain of if-else to select the right string
+            num_args = len(node.args)
+            
+            # Generate random index
+            rand_val = self.builder.call(self.rand, [])
+            idx = self.builder.srem(rand_val, ir.Constant(ir.IntType(32), num_args))
+            
+            # Create blocks
+            entry_bb = self.builder.block
+            merge_bb = self.builder.function.append_basic_block("choose_merge")
+            
+            # Build if-else chain, collecting incoming values for phi
+            incoming = []
+            current_bb = entry_bb
+            for i in range(num_args):
+                if i < num_args - 1:
+                    then_bb = self.builder.function.append_basic_block(f"choose_then_{i}")
+                    else_bb = self.builder.function.append_basic_block(f"choose_else_{i}")
+                    
+                    self.builder.position_at_end(current_bb)
+                    cond = self.builder.icmp_signed("==", idx, ir.Constant(ir.IntType(32), i))
+                    self.builder.cbranch(cond, then_bb, else_bb)
+                    
+                    self.builder.position_at_end(then_bb)
+                    str_val = self._codegen(node.args[i])
+                    incoming.append((str_val, then_bb))
+                    self.builder.branch(merge_bb)
+                    
+                    current_bb = else_bb
+                else:
+                    # Last case - position at current block (else_bb from previous iteration)
+                    self.builder.position_at_end(current_bb)
+                    str_val = self._codegen(node.args[i])
+                    incoming.append((str_val, current_bb))
+                    self.builder.branch(merge_bb)
+            
+            # Now position at merge_bb and create phi
+            self.builder.position_at_end(merge_bb)
+            phi = self.builder.phi(ir.IntType(8).as_pointer(), name="choose_result")
+            for val, bb in incoming:
+                phi.add_incoming(val, bb)
+            return phi
+
+        if node.name == "wait":
+            # wait(seconds) - pause execution for given number of seconds (float or int)
+            if len(node.args) != 1:
+                self._error(
+                    f"Function 'wait' expects 1 argument (seconds), but got {len(node.args)}",
+                    node=node,
+                )
+            wait_val = self._codegen(node.args[0])
+            # Convert to double for microseconds calculation
+            if isinstance(wait_val.type, ir.IntType):
+                wait_dbl = self.builder.sitofp(wait_val, ir.DoubleType())
+            elif isinstance(wait_val.type, (ir.FloatType, ir.DoubleType)):
+                wait_dbl = wait_val if isinstance(wait_val.type, ir.DoubleType) else self.builder.fpext(wait_val, ir.DoubleType())
+            else:
+                wait_dbl = wait_val  # shouldn't happen due to typecheck
+            # microseconds = seconds * 1_000_000
+            one_million = ir.Constant(ir.DoubleType(), 1000000.0)
+            usec_dbl = self.builder.fmul(wait_dbl, one_million)
+            usec_i64 = self.builder.fptoui(usec_dbl, ir.IntType(64))
+            # Call usleep
+            return self.builder.call(self.usleep, [usec_i64])
+
+        if node.name == "timepass":
+            # timepass() - returns elapsed time in seconds since program start as float
+            if len(node.args) != 0:
+                self._error(
+                    f"Function 'timepass' expects 0 arguments, but got {len(node.args)}",
+                    node=node,
+                )
+            # Allocate timespec for current time
+            timespec_ty = ir.LiteralStructType([ir.IntType(64), ir.IntType(64)])
+            cur_ts = self.builder.alloca(timespec_ty, name="cur_ts")
+            self.builder.call(self.clock_gettime, [self.CLOCK_MONOTONIC, cur_ts])
+            # Load start_time global (stored at program start)
+            start_time_val = self.builder.load(self.start_time_gv)
+            start_sec = self.builder.extract_value(start_time_val, 0)
+            start_nsec = self.builder.extract_value(start_time_val, 1)
+            # Load current time fields
+            cur_sec = self.builder.load(self.builder.gep(cur_ts, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)]))
+            cur_nsec = self.builder.load(self.builder.gep(cur_ts, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)]))
+            # Compute differences
+            sec_diff = self.builder.sub(cur_sec, start_sec)
+            nsec_diff = self.builder.sub(cur_nsec, start_nsec)
+            # If nsec_diff < 0, borrow 1 second
+            nsec_is_neg = self.builder.icmp_signed("<", nsec_diff, ir.Constant(ir.IntType(64), 0))
+            entry_bb = self.builder.block
+            then_bb = self.builder.function.append_basic_block("timepass_adj")
+            else_bb = self.builder.function.append_basic_block("timepass_no_adj")
+            merge_bb = self.builder.function.append_basic_block("timepass_merge")
+            self.builder.cbranch(nsec_is_neg, then_bb, else_bb)
+            # Then: nsec += 1e9, sec -= 1
+            self.builder.position_at_end(then_bb)
+            one_billion = ir.Constant(ir.IntType(64), 1000000000)
+            adj_nsec = self.builder.add(nsec_diff, one_billion)
+            adj_sec = self.builder.sub(sec_diff, ir.Constant(ir.IntType(64), 1))
+            self.builder.branch(merge_bb)
+            # Else: no adjustment
+            self.builder.position_at_end(else_bb)
+            self.builder.branch(merge_bb)
+            # Merge
+            self.builder.position_at_end(merge_bb)
+            phi_sec = self.builder.phi(ir.IntType(64), name="elapsed_sec")
+            phi_nsec = self.builder.phi(ir.IntType(64), name="elapsed_nsec")
+            phi_sec.add_incoming(adj_sec, then_bb)
+            phi_sec.add_incoming(sec_diff, else_bb)
+            phi_nsec.add_incoming(adj_nsec, then_bb)
+            phi_nsec.add_incoming(nsec_diff, else_bb)
+            # Convert to double: sec + nsec / 1e9
+            sec_dbl = self.builder.sitofp(phi_sec, ir.DoubleType())
+            nsec_dbl = self.builder.sitofp(phi_nsec, ir.DoubleType())
+            one_billion_dbl = ir.Constant(ir.DoubleType(), 1000000000.0)
+            nsec_sec = self.builder.fdiv(nsec_dbl, one_billion_dbl)
+            result = self.builder.fadd(sec_dbl, nsec_sec)
+            return result
 
         func = self.func_symtab.get(node.name)
         if not func:

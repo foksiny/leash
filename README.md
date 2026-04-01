@@ -12,6 +12,8 @@ Leash is a strongly-typed, modern compiled programming language built on top of 
 - [Global Variables](#global-variables)
 - [Control Flow](#control-flow)
 - [Input Handling](#input-handling)
+- [Random Numbers](#random-numbers)
+- [Time and Delays](#time-and-delays)
 - [Arrays](#arrays)
 - [Structs](#structs)
 - [Pointers](#pointers)
@@ -324,6 +326,53 @@ fnc main() : void {
 ```
 
 The `get()` function automatically allocates memory for the input string and ensures it is managed by the SAMM system, so you don't have to worry about buffer overflows or manual `free()` calls.
+
+## Random Numbers
+
+Leash provides built-in functions for generating random numbers and making random choices:
+
+- `rand(min, max)` - Returns a random integer between `min` and `max` (inclusive)
+- `randf(min, max)` - Returns a random floating-point number between `min` and `max`
+- `seed(value)` - Sets the random number generator seed. If not called explicitly, the RNG is automatically seeded with the current time.
+- `choose(str1, str2, ...)` - Randomly selects and returns one of the provided string arguments
+
+Example:
+
+```leash
+fnc main() : void {
+    seed(42);  // Optional: set a specific seed for deterministic results
+
+    // Random integer between -10 and 10
+    num: int = rand(-10, 10);
+
+    // Random float between 0 and 2
+    f: float = randf(0, 2);
+
+    // Randomly choose a name
+    name: string = choose("Alice", "Bob", "Charlie");
+
+    show(name, " got ", num, " and ", f);
+}
+```
+
+## Time and Delays
+
+Leash includes functions for measuring elapsed time and introducing delays:
+
+- `wait(seconds)` - Pauses program execution for the specified number of seconds (can be a float for sub-second precision)
+- `timepass()` - Returns the elapsed time in seconds (as a float) since the program started
+
+Example:
+
+```leash
+fnc main() : void {
+    show("Starting...");
+    wait(1.5);  // Wait 1.5 seconds
+
+    elapsed: float = timepass();
+    show("Elapsed time: ", elapsed, " seconds");
+}
+```
 
 ## Arrays
 

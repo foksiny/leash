@@ -1,0 +1,8 @@
+fnc main() : void {
+    seed(10); // i can manually choose a seed if i want
+    name: string = choose("John Doe", "Jane Doe");
+    num:  int    = rand(-10, 10);
+    num2: float  = randf(0, 2);
+
+    show(name, " ", num, " ", num2);
+}

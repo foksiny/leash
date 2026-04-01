@@ -1,0 +1,5 @@
+fnc main() : void {
+    show("before");
+    wait(1.0); // wait in seconds (float)
+    show("after. time passed: ", toint(int, timepass()), "s"); // the time pass returns a float, so it can also measure ms and not only seconds.
+}
