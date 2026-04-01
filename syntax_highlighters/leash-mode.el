@@ -18,12 +18,13 @@
 
 (defconst leash-font-lock-keywords
   (list
-   '("\\b\\(fnc\\|def\\|struct\\|union\\|enum\\|class\\|type\\|template\\|return\\|if\\|also\\|else\\|while\\|for\\|do\\|foreach\\|in\\|imut\\|vec\\|vector\\|this\\|pub\\|priv\\|static\\|stop\\|continue\\)\\b" . font-lock-keyword-face)
+   '("\\b\\(fnc\\|def\\|struct\\|union\\|enum\\|class\\|type\\|template\\|return\\|if\\|also\\|else\\|while\\|for\\|do\\|foreach\\|in\\|imut\\|vec\\|vector\\|this\\|pub\\|priv\\|static\\|stop\\|continue\\|use\\)\\b" . font-lock-keyword-face)
    '("\\b\\(int\\|uint\\|float\\|bool\\|string\\|char\\|void\\|array\\|vec\\)\\b\\(?:<[0-9]+>\\)?" . font-lock-type-face)
    '("\\b\\(true\\|false\\|null\\)\\b" . font-lock-constant-face)
-   '("\\b\\(show\\|get\\|set\\|toint\\|tofloat\\|tostring\\|cstr\\|lstr\\|size\\|cur\\|name\\|pushb\\|popb\\|pushf\\|popf\\|insert\\|clear\\|rand\\|randf\\|seed\\|choose\\|wait\\|timepass\\)\\b" . font-lock-builtin-face)
+   '("\\b\\(show\\|get\\|set\\|toint\\|tofloat\\|tostring\\|cstr\\|lstr\\|size\\|cur\\|name\\|pushb\\|popb\\|pushf\\|popf\\|insert\\|clear\\|rand\\|randf\\|seed\\|choose\\|wait\\|timepass\\|exit\\)\\b" . font-lock-builtin-face)
    '("&&\\|||\\|<<\\|>>\\|[+\\-*/%&|^~!<>=]=?" . font-lock-variable-name-face)
    '("\\(&\\|\\*\\|->\\)" . font-lock-type-face)
+   '("::" . font-lock-special-form-face)
    ;; Class inheritance syntax: class(Parent)
    '("\\bclass\\s*(\\s*\\([A-Z][a-zA-Z0-9_]*\\)\\s*)" . font-lock-type-face)
    ;; Type annotation with parent: : Type(Parent)

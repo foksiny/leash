@@ -191,7 +191,9 @@ class TypeChecker:
             methods = {}
             if node.parent and node.parent in self.class_types:
                 parent_info = self.class_types[node.parent]
-                for mname, (fnc, vis, is_static, m_is_imut) in parent_info["methods"].items():
+                for mname, (fnc, vis, is_static, m_is_imut) in parent_info[
+                    "methods"
+                ].items():
                     methods[mname] = (fnc, vis, is_static, m_is_imut)
             for m in node.methods:
                 # Check if trying to override an imut method
@@ -1556,6 +1558,20 @@ class TypeChecker:
                 )
             return "float"
 
+        if expr.name == "exit":
+            if len(expr.args) != 1:
+                self._error(
+                    f"Function 'exit' expects 1 argument (exit code), but got {len(expr.args)}",
+                    node=expr,
+                )
+            arg_t = self._infer_type(expr.args[0])
+            if arg_t and not self._is_int_family(self._resolve(arg_t)):
+                self._error(
+                    f"Argument 1 of 'exit' must be an integer type, got '{arg_t}'",
+                    node=expr.args[0],
+                )
+            return "void"
+
         sig = self.func_types.get(expr.name)
         if sig is None:
             self._error(
@@ -1640,6 +1656,15 @@ class TypeChecker:
             resolved
             and resolved.endswith("]")
             and "[" in resolved
+            and expr.member == "size"
+        ):
+            return "int"
+
+        # Vector .size property
+        if (
+            resolved
+            and resolved.startswith("vec<")
+            and resolved.endswith(">")
             and expr.member == "size"
         ):
             return "int"

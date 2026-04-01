@@ -54,6 +54,7 @@ class Lexer:
         "continue",
         "template",
         "nil",
+        "use",
     }
 
     # regexes

@@ -4,7 +4,7 @@ if exists("b:current_syntax")
 endif
 
 " Keywords
-syn keyword leashKeyword fnc def struct union enum class type template return if also else while for do foreach in imut vector vec this pub priv static stop continue
+syn keyword leashKeyword fnc def struct union enum class type template return if also else while for do foreach in imut vector vec this pub priv static stop continue use
 syn keyword leashBoolean true false
 syn keyword leashNull null
 
@@ -21,13 +21,16 @@ syn match leashGenericParam "<\s*\zs[A-Z][a-zA-Z0-9_]*\ze"
 syn match leashGenericParam ",\s*\zs[A-Z][a-zA-Z0-9_]*\ze"
 
 " Builtin functions and properties
-syn keyword leashBuiltin show get set toint tofloat tostring cstr lstr size cur name pushb popb pushf popf insert clear rand randf seed choose wait timepass
+syn keyword leashBuiltin show get set toint tofloat tostring cstr lstr size cur name pushb popb pushf popf insert clear rand randf seed choose wait timepass exit
 
 " Operators
 syn match leashOperator "&&\|||\|<<\|>>\|[+\-*/%&|^~!<>=]=\?\|!="
 
 " Pointer operators
 syn match leashPointerOperator "[*&]\|->"
+
+" Import path separator
+syn match leashNamespace "::"
 
 " Strings and Comments
 syn region leashString start=/"/ skip=/\\"/ end=/"/
@@ -49,6 +52,7 @@ hi def link leashNull Constant
 hi def link leashBuiltin Function
 hi def link leashOperator Operator
 hi def link leashPointerOperator Operator
+hi def link leashNamespace Special
 hi def link leashString String
 hi def link leashChar Character
 hi def link leashComment Comment

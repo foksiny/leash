@@ -48,6 +48,7 @@ from .ast_nodes import (
     TemplateDef,
     GenericCall,
     GlobalVarDecl,
+    ImportStmt,
 )
 from .errors import LeashError
 
@@ -294,40 +295,129 @@ class Parser:
     def parse(self):
         items = []
         while self.current().type != "EOF":
-            if self.current().type == "DEF":
+            if self.current().type in ("PUB", "PRIV"):
+                # Peek ahead to see if next token is DEF
+                if self.peek() and self.peek().type == "DEF":
+                    # It's a def with visibility
+                    visibility = self.current().value.lower()
+                    self.eat(self.current().type)  # eat PUB/PRIV
+                    items.append(self.parse_def(visibility=visibility))
+                else:
+                    # It's a global variable with visibility
+                    items.append(self.parse_global_var())
+            elif self.current().type == "DEF":
                 items.append(self.parse_def())
             elif self.current().type == "FNC":
                 items.append(self.parse_function())
-            elif self.current().type in ("PUB", "PRIV"):
+            elif (
+                self.current().type == "IDENT"
+                and self.peek()
+                and self.peek().type == "COLON"
+            ):
                 items.append(self.parse_global_var())
-            elif self.current().type == "IDENT" and self.peek() and self.peek().type == "COLON":
-                items.append(self.parse_global_var())
+            elif self.current().type == "USE":
+                items.append(self.parse_import())
             else:
                 tok = self.current()
                 raise LeashError(
                     f"Unexpected token: {tok.type} ('{tok.value}')",
                     tok.line,
                     tok.column,
-                    tip="Top-level items must be 'def' (for types), 'fnc' (for functions), or variable declarations.",
+                    tip="Top-level items must be 'def' (for types), 'fnc' (for functions), 'use' (for imports), or variable declarations.",
                 )
         return Program(items)
 
-    def parse_def(self):
-        self.eat("DEF")
+    def parse_import(self):
+        """Parse a use statement: use module::item; or use subfolder::module::item;"""
+        tok = self.current()
+        self.eat("USE")
+
+        # Parse the module path (one or more identifiers separated by ::)
+        # We need to distinguish between path segments and the final module name
+        # e.g., use math::operations::add;
+        #   - path: ["math", "operations"], item: "add"
+        # e.g., use math::add;
+        #   - path: ["math"], item: "add"
+        module_path = []
+        module_path.append(self.eat("IDENT").value)
+
+        # Keep parsing path segments as long as we see ::IDENT::
+        # We need to look ahead to determine if the next IDENT is a path segment or item
+        while self.current().type == "DCOLON":
+            # Peek at what comes after ::
+            if not self.peek():
+                break
+
+            if self.peek().type == "MUL":
+                # This is ::* - end of module path, items will be wildcard
+                break
+
+            if self.peek().type != "IDENT":
+                break
+
+            # Look further ahead: if we see IDENT::IDENT or IDENT, then the first IDENT
+            # is part of the path. If we see IDENT followed by comma/semi, it's an item.
+            # For simplicity: if we see IDENT::IDENT, then first is path segment
+            if (
+                self.peek(2)
+                and self.peek(2).type == "DCOLON"
+                and self.peek(3)
+                and self.peek(3).type in ("IDENT", "MUL")
+            ):
+                # This is ::IDENT::IDENT or ::IDENT::* - IDENT is a path segment
+                self.eat("DCOLON")
+                module_path.append(self.eat("IDENT").value)
+            else:
+                # This is ::IDENT followed by comma/semi - stop parsing path
+                break
+
+        # Now we should have :: followed by either * or item name(s)
+        if self.current().type != "DCOLON":
+            raise LeashError(
+                f"Expected '::' after module path in import statement",
+                self.current().line,
+                self.current().column,
+                tip="Use 'use module::Item;' or 'use path::to::module::Item;' syntax",
+            )
+        self.eat("DCOLON")
+
+        imported_items = []
+        # Check for wildcard import
+        if self.current().type == "MUL":
+            self.eat("MUL")
+            imported_items = None  # wildcard means import all
+        else:
+            # Parse specific item(s)
+            while True:
+                item_name = self.eat("IDENT").value
+                imported_items.append(item_name)
+                if self.current().type == "COMMA":
+                    self.eat("COMMA")
+                    continue
+                else:
+                    break
+
+        self.eat("SEMI")
+        return self._pos(ImportStmt(module_path, imported_items), tok)
+
+    def parse_def(self, visibility="pub"):
+        if self.current().type == "DEF":
+            self.eat("DEF")
+        # If visibility already consumed, we don't eat DEF again
         name = self.eat("IDENT").value
         self.eat("COLON")
         if self.current().type == "STRUCT":
-            return self._parse_struct_body(name)
+            return self._parse_struct_body(name, visibility)
         elif self.current().type == "UNION":
-            return self._parse_union_body(name)
+            return self._parse_union_body(name, visibility)
         elif self.current().type == "TYPE":
-            return self._parse_type_alias_body(name)
+            return self._parse_type_alias_body(name, visibility)
         elif self.current().type == "ENUM":
-            return self._parse_enum_body(name)
+            return self._parse_enum_body(name, visibility)
         elif self.current().type == "CLASS":
-            return self._parse_class_body(name)
+            return self._parse_class_body(name, visibility)
         elif self.current().type == "TEMPLATE":
-            return self._parse_template_body(name)
+            return self._parse_template_body(name, visibility)
         else:
             tok = self.current()
             raise LeashError(
@@ -337,7 +427,7 @@ class Parser:
                 tip="Use `def Name : class { ... };`, `def Name : struct { ... };`, `def Name : enum { ... };`, or `def T : template;`",
             )
 
-    def _parse_struct_body(self, name):
+    def _parse_struct_body(self, name, visibility="pub"):
         self.eat("STRUCT")
         self.eat("LBRACE")
         fields = []
@@ -349,9 +439,9 @@ class Parser:
             fields.append((field_name, field_type))
         self.eat("RBRACE")
         self.eat("SEMI")
-        return StructDef(name, fields)
+        return StructDef(name, fields, visibility)
 
-    def _parse_union_body(self, name):
+    def _parse_union_body(self, name, visibility="pub"):
         self.eat("UNION")
         self.eat("LBRACE")
         variants = []
@@ -366,9 +456,9 @@ class Parser:
             variants.append((var_name, var_type))
         self.eat("RBRACE")
         self.eat("SEMI")
-        return UnionDef(name, variants)
+        return UnionDef(name, variants, visibility)
 
-    def _parse_enum_body(self, name):
+    def _parse_enum_body(self, name, visibility="pub"):
         self.eat("ENUM")
         self.eat("LBRACE")
         members = []
@@ -382,18 +472,18 @@ class Parser:
                 self.eat("SEMI")
         self.eat("RBRACE")
         self.eat("SEMI")
-        return EnumDef(name, members)
+        return EnumDef(name, members, visibility)
 
-    def _parse_type_alias_body(self, name):
+    def _parse_type_alias_body(self, name, visibility="pub"):
         self.eat("TYPE")
         target_type = self.parse_type()
         self.eat("SEMI")
-        return TypeAlias(name, target_type)
+        return TypeAlias(name, target_type, visibility)
 
-    def _parse_template_body(self, name):
+    def _parse_template_body(self, name, visibility="pub"):
         self.eat("TEMPLATE")
         self.eat("SEMI")
-        return TemplateDef(name)
+        return TemplateDef(name, visibility)
 
     def parse_global_var(self):
         """Parse a global variable declaration with optional visibility."""
@@ -411,7 +501,7 @@ class Parser:
         self.eat("SEMI")
         return GlobalVarDecl(name, var_type, value, visibility)
 
-    def _parse_class_body(self, name):
+    def _parse_class_body(self, name, visibility="pub"):
         self.eat("CLASS")
         type_params = []
         parent = None
@@ -432,7 +522,7 @@ class Parser:
         fields = []
         methods = []
         while self.current().type != "RBRACE":
-            visibility = "pub"
+            member_visibility = "pub"
             is_static = False
             is_imut = False
 
@@ -443,22 +533,22 @@ class Parser:
                 elif tok.type == "IMUT":
                     is_imut = True
                 else:
-                    visibility = tok.value.lower()
+                    member_visibility = tok.value.lower()
 
             if self.current().type == "FNC":
                 fnc = self.parse_function()
-                methods.append(ClassMethod(fnc, visibility, is_static, is_imut))
+                methods.append(ClassMethod(fnc, member_visibility, is_static, is_imut))
             else:
                 field_name = self.eat("IDENT").value
                 self.eat("COLON")
                 field_type = self.parse_type()
                 self.eat("SEMI")
-                fields.append(ClassField(field_name, field_type, visibility))
+                fields.append(ClassField(field_name, field_type, member_visibility))
         self.eat("RBRACE")
         # self.eat('SEMI') # Optional for classes
         if self.current().type == "SEMI":
             self.eat("SEMI")
-        return ClassDef(name, fields, methods, parent, type_params)
+        return ClassDef(name, fields, methods, parent, type_params, visibility)
 
     def parse_function(self):
         self.eat("FNC")

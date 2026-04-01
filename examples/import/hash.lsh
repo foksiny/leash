@@ -1,0 +1,69 @@
+priv def T1 : template;
+priv def T2 : template;
+
+def Hash : class<T1, T2> {
+    priv names:  vec<T1>;
+    priv values: vec<T2>;
+    pub  size:   int;
+
+    static pub fnc new() : Hash {
+        return Hash {};
+    }
+
+    pub fnc add(name T1, value T2) : int {
+        foreach i, n in<vector> this.names {
+            i = i + i - 1; // to remove the warning of unused variable.
+            if n == name {
+                show(name, " Is already defined.");
+                return 0;
+            }
+        }
+        this.names.pushb(name);
+        this.values.pushb(value);
+        this.size = this.size + 1;
+        return 1;
+    }
+
+    pub fnc get(name T1) : T2 {
+        io: int = -1;
+        foreach i, n in<vector> this.names {
+            if n == name {
+                io = i;
+                stop;
+            }
+        }
+        if io == -1 {
+            return nil;
+        }
+        return this.values.get(io);
+    }
+
+    pub fnc remove(name T1) : T2 {
+        io: int = -1;
+        foreach i, n in<vector> this.names {
+            if n == name {
+                io = i;
+                stop;
+            }
+        }
+        if io == -1 {
+            return nil;
+        }
+        val: T2 = this.values.get(io);
+        this.size = this.size - 1;
+        this.values.remove(io);
+        this.names.remove(io);
+        return val;
+    }
+
+    pub fnc geti(idx int) : T2 {
+        if idx < this.names.size {
+            return this.values.get(idx);
+        }
+        return nil;
+    }
+
+    pub fnc items() : vec<T2> {
+        return this.values;
+    }
+}

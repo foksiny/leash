@@ -29,6 +29,9 @@ Leash is a strongly-typed, modern compiled programming language built on top of 
   - [Polymorphism and Dynamic Dispatch](#polymorphism-and-dynamic-dispatch)
 - [Memory Management](#memory-management)
 - [Error Handling & Safety](#error-handling--safety)
+- [Library Imports](#library-imports)
+- [Program Termination](#program-termination)
+- [Library Installation](#library-installation)
 - [Syntax Highlighting](#syntax-highlighting)
 
 ## Running Leash
@@ -53,6 +56,143 @@ python3 -m leash.cli compile program.lsh
 python3 -m leash.cli compile program.lsh to my_custom_binary
 ./my_custom_binary
 ```
+
+## Library Imports
+
+Leash supports importing definitions from other modules using the `use` statement. The syntax is:
+
+```leash
+use module_name::ItemName;
+```
+
+You can import multiple items from the same module:
+
+```leash
+use hash::Hash;
+use colors::Color;
+```
+
+Or import all public items from a module using the wildcard `*`:
+
+```leash
+use mylib::*;
+```
+
+### Nested Paths
+
+If your libraries are organized in subdirectories, you can use nested paths:
+
+```leash
+use math::operations::add;
+use utils::string_helpers::capitalize;
+```
+
+This looks for files at `math/operations.lsh` or `utils/string_helpers.lsh` in your search paths.
+
+When you import a module, all its public definitions (structs, classes, enums, functions, templates, etc.) become available in your file. The compiler searches for modules in two places:
+
+1. The **local directory** of the file containing the `use` statement (including subdirectories)
+2. The **global libraries directory** (`~/.leash/libs/`) - this is where you can install libraries to be available from anywhere
+
+### Example
+
+Given a file `hash.lsh`:
+
+```leash
+priv def T1 : template;
+priv def T2 : template;
+
+def Hash : class<T1, T2> {
+    priv names:  vec<T1>;
+    priv values: vec<T2>;
+    pub  size:   int;
+
+    static pub fnc new() : Hash {
+        return Hash {};
+    }
+
+    pub fnc add(name T1, value T2) : int { ... }
+    pub fnc get(name T1) : T2 { ... }
+}
+```
+
+You can use it in your program:
+
+```leash
+use hash::Hash;
+
+fnc main() : void {
+    h: Hash<string, string> = Hash.new();
+    h.add("key", "value");
+    show(h.get("key"));
+}
+```
+
+## Program Termination
+
+The built-in `exit(exit_code)` function terminates the program immediately with the given exit code. The argument must be an integer.
+
+```leash
+fnc main() : void {
+    if error_condition {
+        exit(1);
+    }
+    exit(0);
+}
+```
+
+## Library Installation
+
+Leash provides a global library installation system to make your libraries available from any project. Use the `install` command to copy library files or directories into the global libs directory (`~/.leash/libs/`).
+
+### Installing a Single File
+
+```bash
+leash install path/to/mylib.lsh
+```
+
+This copies `mylib.lsh` to `~/.leash/libs/mylib.lsh`. After installation, any program can import it using `use mylib::*;` or `use mylib::SpecificItem;`.
+
+### Installing a Directory
+
+You can also install an entire directory of library files:
+
+```bash
+leash install path/to/mylib_folder/
+```
+
+The **contents** of the directory (files and subdirectories) will be copied directly into `~/.leash/libs/`. The top-level folder name is not preserved.
+
+For example, if you have:
+
+```
+mylib_folder/
+├── hash.lsh
+└── utils/
+    └── string_helpers.lsh
+```
+
+After installation, `~/.leash/libs/` will contain:
+
+```
+~/.leash/libs/
+├── hash.lsh
+└── utils/
+    └── string_helpers.lsh
+```
+
+You can then import using nested paths:
+
+```leash
+use hash::Hash;
+use utils::string_helpers::SomeFunction;
+```
+
+### Notes
+
+- If a file or directory with the same name already exists in the global libs directory, the installation will fail. Remove the existing library first if you want to replace it.
+- The `install` command only copies files; it does not compile them.
+- Once installed, libraries are automatically available to all your Leash programs via the `use` statement.
 
 ## Defining Variables
 
@@ -400,7 +540,7 @@ v.pushb("first");  // push to back
 v.pushb("second");
 v.pushf("start");  // push to front
 
-show("Size: ", v.size());
+show("Size: ", v.size);   // .size is a property (no parentheses)
 show("First: ", v.get(0));
 
 v.set(1, "middle");
@@ -413,6 +553,12 @@ foreach i, s in<vector> v {
 v.clear();
 ```
 
+### Vector Properties
+
+| Property | Description |
+|----------|-------------|
+| `.size` | Return the current number of elements (as an `int`) |
+
 ### Vector Methods
 
 | Method | Description |
@@ -421,7 +567,7 @@ v.clear();
 | `.popb()` | Remove and return the last element |
 | `.pushf(val)` | Push element to the front |
 | `.popf()` | Remove and return the first element |
-| `.size()` | Return the current number of elements |
+| `.size()` | Return the current number of elements (same as `.size` property) |
 | `.get(idx)` | Get the element at the specified index |
 | `.set(idx, val)` | Set the element at the specified index |
 | `.insert(idx, val)` | Insert an element at the specified index |

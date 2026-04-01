@@ -10,27 +10,31 @@ class Program(ASTNode):
 
 
 class StructDef(ASTNode):
-    def __init__(self, name, fields):
+    def __init__(self, name, fields, visibility="pub"):
         self.name = name
         self.fields = fields  # list of (name, type) tuples
+        self.visibility = visibility  # 'pub' or 'priv'
 
 
 class TypeAlias(ASTNode):
-    def __init__(self, name, target_type):
+    def __init__(self, name, target_type, visibility="pub"):
         self.name = name
         self.target_type = target_type  # string type name
+        self.visibility = visibility  # 'pub' or 'priv'
 
 
 class UnionDef(ASTNode):
-    def __init__(self, name, variants):
+    def __init__(self, name, variants, visibility="pub"):
         self.name = name
         self.variants = variants  # list of (name, type) tuples
+        self.visibility = visibility  # 'pub' or 'priv'
 
 
 class EnumDef(ASTNode):
-    def __init__(self, name, members):
+    def __init__(self, name, members, visibility="pub"):
         self.name = name
         self.members = members  # list of member names
+        self.visibility = visibility  # 'pub' or 'priv'
 
 
 class Function(ASTNode):
@@ -256,12 +260,15 @@ class NullLiteral(Expression):
 
 
 class ClassDef(ASTNode):
-    def __init__(self, name, fields, methods, parent=None, type_params=None):
+    def __init__(
+        self, name, fields, methods, parent=None, type_params=None, visibility="pub"
+    ):
         self.name = name
         self.fields = fields  # list of ClassField
         self.methods = methods  # list of ClassMethod
         self.parent = parent  # parent class name (for inheritance)
         self.type_params = type_params or []  # list of template parameter names
+        self.visibility = visibility  # 'pub' or 'priv'
 
 
 class ClassField(ASTNode):
@@ -294,8 +301,9 @@ class TypeConvExpr(Expression):
 class TemplateDef(ASTNode):
     """Represents a template parameter definition like 'def T1 : template;'"""
 
-    def __init__(self, name):
+    def __init__(self, name, visibility="pub"):
         self.name = name
+        self.visibility = visibility  # 'pub' or 'priv'
 
 
 class GlobalVarDecl(ASTNode):
@@ -306,6 +314,23 @@ class GlobalVarDecl(ASTNode):
         self.var_type = var_type
         self.value = value  # expression or None
         self.visibility = visibility  # 'pub' or 'priv'
+
+
+class ImportStmt(ASTNode):
+    """Represents an import statement like 'use hash::Hash;' or 'use subfolder::module::Item;'"""
+
+    def __init__(self, module_path, imported_items):
+        super().__init__()
+        # module_path is a list: ["hash"] or ["subfolder", "helpers"]
+        self.module_path = module_path
+        self.imported_items = (
+            imported_items  # list of item names to import, or None for all
+        )
+
+    @property
+    def module_name(self):
+        """Backward compatibility: returns the first path segment"""
+        return self.module_path[0] if self.module_path else None
 
 
 class GenericCall(Expression):

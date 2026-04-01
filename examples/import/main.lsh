@@ -1,0 +1,13 @@
+use hash::Hash;
+
+fnc main() : void {
+    files: Hash<string, string> = Hash.new();
+
+    files.add("README.md", "README.md bla bla bla");
+    files.add("hello.lsh", "fnc main() : void {\n  show(\"Hello, world!\")\n}");
+
+    show(files.get("README.md"));
+    show(files.get("hello.lsh"));
+
+    show(files.size);
+}

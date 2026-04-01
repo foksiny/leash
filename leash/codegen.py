@@ -3158,6 +3158,25 @@ class CodeGen:
             result = self.builder.fadd(sec_dbl, nsec_sec)
             return result
 
+        if node.name == "exit":
+            # exit(exit_code) - terminates the program with given exit code
+            if len(node.args) != 1:
+                self._error(
+                    f"Function 'exit' expects 1 argument (exit code), but got {len(node.args)}",
+                    node=node,
+                )
+            exit_val = self._codegen(node.args[0])
+            # Convert to i32 if needed
+            if isinstance(exit_val.type, ir.IntType) and exit_val.type.width != 32:
+                exit_val = self.builder.trunc(exit_val, ir.IntType(32))
+            elif isinstance(exit_val.type, (ir.FloatType, ir.DoubleType)):
+                exit_val = self.builder.fptoui(exit_val, ir.IntType(32))
+            self.builder.call(self.exit_fn, [exit_val])
+            # exit doesn't return, but we need to return something to satisfy LLVM
+            # Mark as unreachable for better optimization
+            self.builder.unreachable()
+            return ir.Constant(ir.VoidType(), None)
+
         func = self.func_symtab.get(node.name)
         if not func:
             raise LeashError(f"Call to undefined function: '{node.name}'")
@@ -3306,6 +3325,18 @@ class CodeGen:
         ):
             length = self.builder.extract_value(val, 0)
             return self.builder.trunc(length, ir.IntType(32))
+
+        # 2b. Handle Vector .size (property access, not method call)
+        if (
+            resolved
+            and resolved.startswith("vec<")
+            and resolved.endswith(">")
+            and node.member == "size"
+        ):
+            # Vector layout: { data_ptr, size (i64), capacity (i64) }
+            # Extract the size field (index 1)
+            size_val = self.builder.extract_value(val, 1)
+            return self.builder.trunc(size_val, ir.IntType(32))
 
         # 3. Handle Union variants and .cur
         if resolved in self.union_symtab:
