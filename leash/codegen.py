@@ -1876,7 +1876,7 @@ class CodeGen:
 
         idx_ptr = self.builder.alloca(ir.IntType(64), name=node.index_var)
         self.builder.store(ir.Constant(ir.IntType(64), 0), idx_ptr)
-        self.var_symtab[node.index_var] = (idx_ptr, "int")
+        self.var_symtab[node.index_var] = (idx_ptr, "int<64>")
 
         elem_type = data_ptr.type.pointee
         val_ptr = self.builder.alloca(elem_type, name=node.value_var)
@@ -1925,10 +1925,7 @@ class CodeGen:
 
         idx_ptr = self.builder.alloca(ir.IntType(64), name=node.index_var)
         self.builder.store(ir.Constant(ir.IntType(64), 0), idx_ptr)
-        self.var_symtab[node.index_var] = (
-            idx_ptr,
-            "int",
-        )  # it's i64 now but symtab just needs a type name
+        self.var_symtab[node.index_var] = (idx_ptr, "int<64>")
 
         val_ptr = self.builder.alloca(ir.IntType(8), name=node.char_var)
         self.var_symtab[node.char_var] = (val_ptr, "char")
