@@ -333,6 +333,13 @@ class ImportStmt(ASTNode):
         return self.module_path[0] if self.module_path else None
 
 
+class TernaryOp(Expression):
+    def __init__(self, condition, true_expr, false_expr):
+        self.condition = condition
+        self.true_expr = true_expr
+        self.false_expr = false_expr
+
+
 class GenericCall(Expression):
     """Represents a generic function call like 'add<int>(10, 20)'"""
 

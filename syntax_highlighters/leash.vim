@@ -29,6 +29,9 @@ syn keyword leashBuiltin File open close read write readln readb writeb readlnb 
 " Operators
 syn match leashOperator "&&\|||\|<<\|>>\|[+\-*/%&|^~!<>=]=\?\|!="
 
+" Ternary operator
+syn match leashTernary "?"
+
 " Pointer operators
 syn match leashPointerOperator "[*&]\|->"
 
@@ -54,6 +57,7 @@ hi def link leashBoolean Boolean
 hi def link leashNull Constant
 hi def link leashBuiltin Function
 hi def link leashOperator Operator
+hi def link leashTernary Operator
 hi def link leashPointerOperator Operator
 hi def link leashNamespace Special
 hi def link leashString String

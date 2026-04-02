@@ -1,0 +1,7 @@
+fnc main() : void {
+    a: int = 10 == 10 ? 10 : 20;
+    show(a);
+
+    b: string = "Hello" != "World!" ? "Hello" : "World!";
+    show(b);
+}

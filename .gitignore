@@ -53,6 +53,8 @@ examples/pubvars
 examples/class
 examples/time
 examples/rand
+examples/ternary
+examples/files
 
 # Trash
 trash/

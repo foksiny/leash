@@ -1292,6 +1292,8 @@ class TypeChecker:
             return self._check_enum_member_access(expr)
         elif isinstance(expr, TypeConvExpr):
             return self._check_type_conv(expr)
+        elif isinstance(expr, TernaryOp):
+            return self._check_ternary_op(expr)
         return None
 
     def _check_binary_op(self, expr):
@@ -1518,6 +1520,33 @@ class TypeChecker:
                     )
                 return val_t
         return val_t
+
+    def _check_ternary_op(self, expr):
+        cond_t = self._infer_type(expr.condition)
+        true_t = self._infer_type(expr.true_expr)
+        false_t = self._infer_type(expr.false_expr)
+
+        if cond_t:
+            cond_b = self._base_type(cond_t)
+            if cond_b not in ("bool", "int", "uint"):
+                raise LeashError(
+                    f"Ternary condition must be a boolean type, got '{cond_t}'",
+                    node=expr,
+                )
+
+        if true_t and false_t:
+            if self._types_compatible(false_t, true_t):
+                return true_t
+            elif self._types_compatible(true_t, false_t):
+                return false_t
+            else:
+                raise LeashError(
+                    f"Ternary branches have incompatible types: '{true_t}' and '{false_t}'",
+                    node=expr,
+                    tip="Both branches of a ternary expression must have compatible types.",
+                )
+
+        return true_t
 
     def _check_call(self, expr):
         if expr.name == "show":

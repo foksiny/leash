@@ -314,6 +314,30 @@ Leash supports a full suite of arithmetic, comparison, bitwise, and logical oper
 
 *Note: Logical `&&` and `||` use short-circuit evaluation — the right operand is only evaluated if necessary.*
 
+### Ternary Operator
+
+Leash supports the ternary conditional operator `? :` for concise conditional expressions:
+
+```leash
+fnc main() : void {
+    a: int = 10 == 10 ? 10 : 20;
+    show(a); // 10
+
+    b: string = "Hello" != "World!" ? "Hello" : "World!";
+    show(b); // "Hello"
+}
+```
+
+The ternary operator evaluates the condition and returns the value of the matching branch. Both branches must have compatible types.
+
+```leash
+fnc main() : void {
+    x: int = 5;
+    result: string = x > 3 ? "big" : "small";
+    show(result); // "big"
+}
+```
+
 ```leash
 fnc main() : void {
     a: int = 5;

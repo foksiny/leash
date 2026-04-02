@@ -49,6 +49,7 @@ from .ast_nodes import (
     GenericCall,
     GlobalVarDecl,
     ImportStmt,
+    TernaryOp,
 )
 from .errors import LeashError
 
@@ -818,7 +819,17 @@ class Parser:
             )
 
     def parse_expression(self, no_struct_init=False):
-        return self.parse_logical_or(no_struct_init)
+        return self.parse_ternary(no_struct_init)
+
+    def parse_ternary(self, no_struct_init=False):
+        node = self.parse_logical_or(no_struct_init)
+        if self.current().type == "QUESTION":
+            self.eat("QUESTION")
+            true_expr = self.parse_expression(no_struct_init)
+            self.eat("COLON")
+            false_expr = self.parse_expression(no_struct_init)
+            node = TernaryOp(condition=node, true_expr=true_expr, false_expr=false_expr)
+        return node
 
     def parse_logical_or(self, no_struct_init=False):
         node = self.parse_logical_and(no_struct_init)

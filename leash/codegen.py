@@ -2167,6 +2167,39 @@ class CodeGen:
 
         self.builder.position_at_end(merge_bb)
 
+    def _codegen_TernaryOp(self, node):
+        cond_val = self._cast_bool(self._codegen(node.condition))
+        true_bb = self.builder.function.append_basic_block("ternary_true")
+        false_bb = self.builder.function.append_basic_block("ternary_false")
+        merge_bb = self.builder.function.append_basic_block("ternary_merge")
+
+        self.builder.cbranch(cond_val, true_bb, false_bb)
+
+        self.builder.position_at_end(true_bb)
+        true_val = self._codegen(node.true_expr)
+        true_bb_terminated = self.builder.block.is_terminated
+        if not true_bb_terminated:
+            self.builder.branch(merge_bb)
+
+        self.builder.position_at_end(false_bb)
+        false_val = self._codegen(node.false_expr)
+        false_bb_terminated = self.builder.block.is_terminated
+        if not false_bb_terminated:
+            self.builder.branch(merge_bb)
+
+        self.builder.position_at_end(merge_bb)
+
+        result_type = true_val.type
+        if false_val.type != result_type:
+            false_val = self._emit_cast(false_val, result_type)
+
+        phi = self.builder.phi(result_type)
+        if not true_bb_terminated:
+            phi.add_incoming(true_val, true_bb)
+        if not false_bb_terminated:
+            phi.add_incoming(false_val, false_bb)
+        return phi
+
     def _codegen_BinaryOp(self, node):
         left = self._codegen(node.left)
 
