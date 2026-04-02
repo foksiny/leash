@@ -171,6 +171,116 @@ class CodeGen:
         # CLOCK_MONOTONIC constant (typically 1 on Linux)
         self.CLOCK_MONOTONIC = ir.Constant(ir.IntType(32), 1)
 
+        # File I/O functions (FILE* is i8*)
+        fopen_ty = ir.FunctionType(
+            ir.IntType(8).as_pointer(),  # FILE*
+            [ir.IntType(8).as_pointer(), ir.IntType(8).as_pointer()],  # filename, mode
+        )
+        self.fopen = ir.Function(self.module, fopen_ty, name="fopen")
+
+        fclose_ty = ir.FunctionType(
+            ir.IntType(32),  # int
+            [ir.IntType(8).as_pointer()],  # FILE*
+        )
+        self.fclose = ir.Function(self.module, fclose_ty, name="fclose")
+
+        fread_ty = ir.FunctionType(
+            ir.IntType(64),  # size_t
+            [
+                ir.IntType(8).as_pointer(),
+                ir.IntType(64),
+                ir.IntType(64),
+                ir.IntType(8).as_pointer(),
+            ],  # ptr, size, nmemb, FILE*
+        )
+        self.fread = ir.Function(self.module, fread_ty, name="fread")
+
+        fwrite_ty = ir.FunctionType(
+            ir.IntType(64),  # size_t
+            [
+                ir.IntType(8).as_pointer(),
+                ir.IntType(64),
+                ir.IntType(64),
+                ir.IntType(8).as_pointer(),
+            ],  # ptr, size, nmemb, FILE*
+        )
+        self.fwrite = ir.Function(self.module, fwrite_ty, name="fwrite")
+
+        fgets_ty = ir.FunctionType(
+            ir.IntType(8).as_pointer(),  # char*
+            [
+                ir.IntType(8).as_pointer(),
+                ir.IntType(32),
+                ir.IntType(8).as_pointer(),
+            ],  # buf, n, FILE*
+        )
+        self.fgets = ir.Function(self.module, fgets_ty, name="fgets")
+
+        fseek_ty = ir.FunctionType(
+            ir.IntType(32),  # int
+            [
+                ir.IntType(8).as_pointer(),
+                ir.IntType(64),
+                ir.IntType(32),
+            ],  # FILE*, offset, whence
+        )
+        self.fseek = ir.Function(self.module, fseek_ty, name="fseek")
+
+        ftell_ty = ir.FunctionType(
+            ir.IntType(64),  # long
+            [ir.IntType(8).as_pointer()],  # FILE*
+        )
+        self.ftell = ir.Function(self.module, ftell_ty, name="ftell")
+
+        frewind_ty = ir.FunctionType(
+            ir.VoidType(),
+            [ir.IntType(8).as_pointer()],  # FILE*
+        )
+        self.frewind = ir.Function(self.module, frewind_ty, name="rewind")
+
+        rename_ty = ir.FunctionType(
+            ir.IntType(32),  # int
+            [
+                ir.IntType(8).as_pointer(),
+                ir.IntType(8).as_pointer(),
+            ],  # oldpath, newpath
+        )
+        self.rename_fn = ir.Function(self.module, rename_ty, name="rename")
+
+        remove_ty = ir.FunctionType(
+            ir.IntType(32),  # int
+            [ir.IntType(8).as_pointer()],  # pathname
+        )
+        self.remove_fn = ir.Function(self.module, remove_ty, name="remove")
+
+        fflush_ty = ir.FunctionType(
+            ir.IntType(32),  # int
+            [ir.IntType(8).as_pointer()],  # FILE*
+        )
+        self.fflush = ir.Function(self.module, fflush_ty, name="fflush")
+
+        feof_ty = ir.FunctionType(
+            ir.IntType(32),  # int
+            [ir.IntType(8).as_pointer()],  # FILE*
+        )
+        self.feof = ir.Function(self.module, feof_ty, name="feof")
+
+        malloc_ty = ir.FunctionType(ir.IntType(8).as_pointer(), [ir.IntType(64)])
+        # Note: malloc is already declared above as GC_malloc, but we need C malloc for file buffers
+        self.c_malloc = ir.Function(self.module, malloc_ty, name="malloc")
+
+        fileno_ty = ir.FunctionType(
+            ir.IntType(32),  # int (file descriptor)
+            [ir.IntType(8).as_pointer()],  # FILE*
+        )
+        self.fileno_fn = ir.Function(self.module, fileno_ty, name="fileno")
+
+        ftruncate_fn_ty = ir.FunctionType(
+            ir.IntType(32),  # int
+            [ir.IntType(32), ir.IntType(64)],  # int fd, off_t length
+        )
+        self.ftruncate_fn = ir.Function(self.module, ftruncate_fn_ty, name="ftruncate")
+
     def _emit_const_str(self, string_val):
         """Create a global string constant and return a pointer to it (i8*)."""
         # Search for existing constant
@@ -411,6 +521,29 @@ class CodeGen:
             if resolved == "string" or resolved.endswith("]"):
                 if node.method == "size":
                     return "int"
+            # Handle File static methods
+            from .ast_nodes import Identifier
+
+            if isinstance(node.expr, Identifier) and node.expr.name == "File":
+                if node.method == "open":
+                    return "File"
+                elif node.method in ("rename", "delete"):
+                    return "int"
+            # Handle File instance methods
+            if resolved == "File":
+                file_method_returns = {
+                    "read": "string",
+                    "write": "int",
+                    "close": "int",
+                    "writeb": "int",
+                    "readb": "char[]",
+                    "readln": "string",
+                    "readlnb": "char[]",
+                    "replace": "int",
+                    "replaceall": "int",
+                    "rewind": "void",
+                }
+                return file_method_returns.get(node.method, "int")
             # Handle class methods - get return type from the method's function signature
             if resolved in self.class_symtab:
                 cls_info = self.class_symtab[resolved]
@@ -638,6 +771,9 @@ class CodeGen:
             return ir.IntType(32)
         elif type_name in self.class_symtab:
             return self.class_symtab[type_name]["type"].as_pointer()
+        # File type - represented as an opaque pointer (FILE*)
+        elif type_name == "File":
+            return ir.IntType(8).as_pointer()  # FILE* is i8*
         return ir.IntType(32)  # default fallback
 
     def _codegen_StructDef(self, node):
@@ -1223,6 +1359,9 @@ class CodeGen:
             if node.name not in self.var_symtab:
                 if node.name in self.class_symtab:
                     return None, node.name  # Static access
+                # Special handling for File class (built-in)
+                if node.name == "File":
+                    return None, "File"  # Static access to File class
                 # Check if this is a generic class name that needs instantiation
                 from .typechecker import TypeChecker
 
@@ -2627,6 +2766,16 @@ class CodeGen:
             length = self.builder.extract_value(val, 0)
             return self.builder.trunc(length, ir.IntType(32))
 
+        # Handle static File methods (File.open, File.rename, File.delete)
+        from .ast_nodes import Identifier
+
+        if isinstance(node.expr, Identifier) and node.expr.name == "File":
+            return self._codegen_file_static_method(node.method, node.args)
+
+        # Handle File instance methods
+        if resolved == "File":
+            return self._codegen_file_method(base_ptr, node.method, node.args)
+
         if resolved in self.class_symtab:
             cls_info = self.class_symtab[resolved]
             func = cls_info["methods"].get(node.method)
@@ -2968,6 +3117,464 @@ class CodeGen:
         raise LeashError(
             f"Vector method '{method}' not fully implemented yet", node=vec_ptr
         )
+
+    def _codegen_file_method(self, file_ptr, method, args):
+        """Handle File instance methods."""
+        # Load the FILE* pointer
+        file_handle = self.builder.load(file_ptr)
+
+        if method == "read":
+            # read() -> string: Read entire file content
+            # First, seek to end to get file size
+            self.builder.call(
+                self.fseek,
+                [
+                    file_handle,
+                    ir.Constant(ir.IntType(64), 0),
+                    ir.Constant(ir.IntType(32), 2),
+                ],
+            )  # SEEK_END = 2
+            file_size = self.builder.call(self.ftell, [file_handle])
+            # Rewind to beginning
+            self.builder.call(self.frewind, [file_handle])
+
+            # Allocate buffer for file content + null terminator
+            buffer_size = self.builder.add(file_size, ir.Constant(ir.IntType(64), 1))
+            buffer = self.builder.call(self.malloc, [buffer_size])
+            self._track_alloc(buffer)
+
+            # Read the file
+            bytes_read = self.builder.call(
+                self.fread,
+                [buffer, ir.Constant(ir.IntType(64), 1), file_size, file_handle],
+            )
+            # Null terminate
+            null_pos = self.builder.gep(buffer, [bytes_read], inbounds=True)
+            self.builder.store(ir.Constant(ir.IntType(8), 0), null_pos)
+
+            return buffer
+
+        elif method == "write":
+            # write(text string) -> int: Write string to file
+            text_val = self._codegen(args[0])
+            # Get string length
+            str_len = self.builder.call(self.strlen, [text_val])
+            # Write to file
+            bytes_written = self.builder.call(
+                self.fwrite,
+                [text_val, ir.Constant(ir.IntType(64), 1), str_len, file_handle],
+            )
+            # Return 0 on success (compare bytes_written == str_len)
+            success = self.builder.icmp_unsigned("==", bytes_written, str_len)
+            return self.builder.select(
+                success, ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), -1)
+            )
+
+        elif method == "close":
+            # close() -> int: Close the file
+            result = self.builder.call(self.fclose, [file_handle])
+            # Set FILE* to null after closing
+            self.builder.store(ir.Constant(ir.IntType(8).as_pointer(), None), file_ptr)
+            return self.builder.trunc(result, ir.IntType(32))
+
+        elif method == "writeb":
+            # writeb(btext char[]) -> int: Write bytes to file
+            # char[] is a slice: {i64 len, i8* ptr}
+            bytes_val = self._codegen(args[0])
+            slice_len = self.builder.extract_value(bytes_val, 0)
+            slice_ptr = self.builder.extract_value(bytes_val, 1)
+            bytes_written = self.builder.call(
+                self.fwrite,
+                [slice_ptr, ir.Constant(ir.IntType(64), 1), slice_len, file_handle],
+            )
+            success = self.builder.icmp_unsigned("==", bytes_written, slice_len)
+            return self.builder.select(
+                success, ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), -1)
+            )
+
+        elif method == "readb":
+            # readb() -> char[]: Read bytes as char array
+            # First, seek to end to get file size
+            self.builder.call(
+                self.fseek,
+                [
+                    file_handle,
+                    ir.Constant(ir.IntType(64), 0),
+                    ir.Constant(ir.IntType(32), 2),
+                ],
+            )
+            file_size = self.builder.call(self.ftell, [file_handle])
+            self.builder.call(self.frewind, [file_handle])
+
+            # Allocate buffer
+            buffer = self.builder.call(self.malloc, [file_size])
+            self._track_alloc(buffer)
+
+            # Read the file
+            bytes_read = self.builder.call(
+                self.fread,
+                [buffer, ir.Constant(ir.IntType(64), 1), file_size, file_handle],
+            )
+
+            # Return as char[] slice
+            slice_type = ir.LiteralStructType(
+                [ir.IntType(64), ir.IntType(8).as_pointer()]
+            )
+            slice_val = ir.Constant(slice_type, ir.Undefined)
+            slice_val = self.builder.insert_value(slice_val, bytes_read, 0)
+            slice_val = self.builder.insert_value(slice_val, buffer, 1)
+            return slice_val
+
+        elif method == "readln":
+            # readln() -> string: Read a line from file (strips trailing newline)
+            # Allocate a buffer for reading
+            buffer_size = 4096
+            buffer = self.builder.call(
+                self.malloc, [ir.Constant(ir.IntType(64), buffer_size)]
+            )
+            self._track_alloc(buffer)
+
+            # Read a line using fgets
+            result = self.builder.call(
+                self.fgets,
+                [buffer, ir.Constant(ir.IntType(32), buffer_size), file_handle],
+            )
+
+            # Check if we got a line (result != null)
+            is_null = self.builder.icmp_unsigned(
+                "==", result, ir.Constant(ir.IntType(8).as_pointer(), None)
+            )
+
+            # If null, return empty string
+            empty_str = self._emit_const_str("")
+
+            # Strip trailing newline (\n) and carriage return (\r) if present
+            # Find the newline character
+            newline_ptr = self.builder.call(
+                self.strstr, [buffer, self._emit_const_str("\n")]
+            )
+            has_newline = self.builder.icmp_unsigned(
+                "!=", newline_ptr, ir.Constant(ir.IntType(8).as_pointer(), None)
+            )
+            # If newline found, replace with null terminator
+            with self.builder.if_then(has_newline):
+                self.builder.store(ir.Constant(ir.IntType(8), 0), newline_ptr)
+
+            # Also check for carriage return (for Windows line endings)
+            cr_ptr = self.builder.call(
+                self.strstr, [buffer, self._emit_const_str("\r")]
+            )
+            has_cr = self.builder.icmp_unsigned(
+                "!=", cr_ptr, ir.Constant(ir.IntType(8).as_pointer(), None)
+            )
+            with self.builder.if_then(has_cr):
+                self.builder.store(ir.Constant(ir.IntType(8), 0), cr_ptr)
+
+            return self.builder.select(is_null, empty_str, buffer)
+
+        elif method == "readlnb":
+            # readlnb() -> char[]: Read a line as bytes (strips trailing newline)
+            buffer_size = 4096
+            buffer = self.builder.call(
+                self.malloc, [ir.Constant(ir.IntType(64), buffer_size)]
+            )
+            self._track_alloc(buffer)
+
+            result = self.builder.call(
+                self.fgets,
+                [buffer, ir.Constant(ir.IntType(32), buffer_size), file_handle],
+            )
+
+            is_null = self.builder.icmp_unsigned(
+                "==", result, ir.Constant(ir.IntType(8).as_pointer(), None)
+            )
+
+            # Strip trailing newline (\n) if present
+            newline_ptr = self.builder.call(
+                self.strstr, [buffer, self._emit_const_str("\n")]
+            )
+            has_newline = self.builder.icmp_unsigned(
+                "!=", newline_ptr, ir.Constant(ir.IntType(8).as_pointer(), None)
+            )
+            with self.builder.if_then(has_newline):
+                self.builder.store(ir.Constant(ir.IntType(8), 0), newline_ptr)
+
+            # Also strip carriage return (\r) for Windows line endings
+            cr_ptr = self.builder.call(
+                self.strstr, [buffer, self._emit_const_str("\r")]
+            )
+            has_cr = self.builder.icmp_unsigned(
+                "!=", cr_ptr, ir.Constant(ir.IntType(8).as_pointer(), None)
+            )
+            with self.builder.if_then(has_cr):
+                self.builder.store(ir.Constant(ir.IntType(8), 0), cr_ptr)
+
+            # Calculate string length after stripping
+            str_len = self.builder.call(self.strlen, [buffer])
+
+            # Return as char[] slice
+            slice_type = ir.LiteralStructType(
+                [ir.IntType(64), ir.IntType(8).as_pointer()]
+            )
+            slice_val = ir.Constant(slice_type, ir.Undefined)
+            # If null, return empty slice
+            zero_len = ir.Constant(ir.IntType(64), 0)
+            final_len = self.builder.select(is_null, zero_len, str_len)
+            empty_buf = self.builder.call(self.malloc, [ir.Constant(ir.IntType(64), 1)])
+            self.builder.store(ir.Constant(ir.IntType(8), 0), empty_buf)
+            final_buf = self.builder.select(is_null, empty_buf, buffer)
+            slice_val = self.builder.insert_value(slice_val, final_len, 0)
+            slice_val = self.builder.insert_value(slice_val, final_buf, 1)
+            return slice_val
+
+        elif method == "replace":
+            # replace(oldstr, newstr) -> int: Replace first occurrence
+            # This is complex - we need to read the file, do the replacement, and write it back
+            old_str = self._codegen(args[0])
+            new_str = self._codegen(args[1])
+            return self._file_replace(
+                file_ptr, file_handle, old_str, new_str, replace_all=False
+            )
+
+        elif method == "replaceall":
+            # replaceall(oldstr, newstr) -> int: Replace all occurrences
+            old_str = self._codegen(args[0])
+            new_str = self._codegen(args[1])
+            return self._file_replace(
+                file_ptr, file_handle, old_str, new_str, replace_all=True
+            )
+
+        elif method == "rewind":
+            # rewind() -> void: Reset file position to beginning
+            self.builder.call(self.frewind, [file_handle])
+            return None
+
+        raise LeashError(f"File method '{method}' not implemented")
+
+    def _codegen_file_static_method(self, method, args):
+        """Handle File static methods: open, rename, delete."""
+        if method == "open":
+            # open(filename string, mode string) -> File
+            filename = self._codegen(args[0])
+            mode = self._codegen(args[1])
+
+            # Call fopen
+            file_handle = self.builder.call(self.fopen, [filename, mode])
+
+            # Check if file was opened successfully
+            is_null = self.builder.icmp_unsigned(
+                "==", file_handle, ir.Constant(ir.IntType(8).as_pointer(), None)
+            )
+
+            # Return the FILE* pointer (or null if failed)
+            # The File type is just an i8* (FILE*)
+            return file_handle
+
+        elif method == "rename":
+            # rename(oldname string, newname string) -> int
+            oldname = self._codegen(args[0])
+            newname = self._codegen(args[1])
+            result = self.builder.call(self.rename_fn, [oldname, newname])
+            return self.builder.trunc(result, ir.IntType(32))
+
+        elif method == "delete":
+            # delete(filename string) -> int
+            filename = self._codegen(args[0])
+            result = self.builder.call(self.remove_fn, [filename])
+            return self.builder.trunc(result, ir.IntType(32))
+
+        raise LeashError(f"File static method '{method}' not implemented")
+
+    def _file_replace(self, file_ptr, file_handle, old_str, new_str, replace_all):
+        """Implement file replace/replaceall functionality."""
+        # Read entire file
+        self.builder.call(
+            self.fseek,
+            [
+                file_handle,
+                ir.Constant(ir.IntType(64), 0),
+                ir.Constant(ir.IntType(32), 2),
+            ],
+        )
+        file_size = self.builder.call(self.ftell, [file_handle])
+        self.builder.call(self.frewind, [file_handle])
+
+        # Allocate buffer for file content + null terminator
+        buffer_size = self.builder.add(file_size, ir.Constant(ir.IntType(64), 1))
+        buffer = self.builder.call(self.malloc, [buffer_size])
+        self._track_alloc(buffer)
+
+        # Read file into buffer
+        self.builder.call(
+            self.fread, [buffer, ir.Constant(ir.IntType(64), 1), file_size, file_handle]
+        )
+        null_pos = self.builder.gep(buffer, [file_size], inbounds=True)
+        self.builder.store(ir.Constant(ir.IntType(8), 0), null_pos)
+
+        # Get lengths
+        old_len = self.builder.call(self.strlen, [old_str])
+        new_len = self.builder.call(self.strlen, [new_str])
+
+        # Allocate result buffer (worst case: all characters replaced could be larger)
+        # We need enough space for the worst case where every character is replaced
+        # Estimate: original size * (new_len / old_len) + extra buffer
+        result_size = self.builder.add(
+            self.builder.mul(file_size, ir.Constant(ir.IntType(64), 4)),
+            ir.Constant(ir.IntType(64), 4096),
+        )
+        result = self.builder.call(self.malloc, [result_size])
+        self._track_alloc(result)
+
+        if replace_all:
+            # Replace all occurrences
+            count_ptr = self.builder.alloca(ir.IntType(32), name="replace_count")
+            self.builder.store(ir.Constant(ir.IntType(32), 0), count_ptr)
+
+            # Current positions
+            src_ptr = self.builder.alloca(ir.IntType(8).as_pointer(), name="src_ptr")
+            dst_ptr = self.builder.alloca(ir.IntType(8).as_pointer(), name="dst_ptr")
+            self.builder.store(buffer, src_ptr)
+            self.builder.store(result, dst_ptr)
+
+            loop_cond_bb = self.builder.function.append_basic_block("replaceall_cond")
+            loop_check_bb = self.builder.function.append_basic_block("replaceall_check")
+            loop_copy_bb = self.builder.function.append_basic_block("replaceall_copy")
+            loop_no_match_bb = self.builder.function.append_basic_block(
+                "replaceall_no_match"
+            )
+            loop_merge_bb = self.builder.function.append_basic_block("replaceall_merge")
+
+            self.builder.branch(loop_cond_bb)
+
+            # Main loop condition: check if we're at end of string
+            self.builder.position_at_end(loop_cond_bb)
+            current_src = self.builder.load(src_ptr)
+            current_char = self.builder.load(current_src)
+            is_end = self.builder.icmp_unsigned(
+                "==", current_char, ir.Constant(ir.IntType(8), 0)
+            )
+            self.builder.cbranch(is_end, loop_merge_bb, loop_check_bb)
+
+            # Check if old_str matches at current position
+            self.builder.position_at_end(loop_check_bb)
+            current_src = self.builder.load(src_ptr)
+            found_ptr = self.builder.call(self.strstr, [current_src, old_str])
+            is_at_start = self.builder.icmp_unsigned("==", found_ptr, current_src)
+            self.builder.cbranch(is_at_start, loop_copy_bb, loop_no_match_bb)
+
+            # Match found: copy new_str instead of old_str
+            self.builder.position_at_end(loop_copy_bb)
+            curr_count = self.builder.load(count_ptr)
+            self.builder.store(
+                self.builder.add(curr_count, ir.Constant(ir.IntType(32), 1)), count_ptr
+            )
+            current_dst = self.builder.load(dst_ptr)
+            self.builder.call(self.strcpy, [current_dst, new_str])
+            # Advance src past old_str and dst past new_str
+            current_src = self.builder.load(src_ptr)
+            new_src = self.builder.gep(current_src, [old_len], inbounds=True)
+            new_dst = self.builder.gep(current_dst, [new_len], inbounds=True)
+            self.builder.store(new_src, src_ptr)
+            self.builder.store(new_dst, dst_ptr)
+            self.builder.branch(loop_cond_bb)
+
+            # No match at current position: copy one character and advance by 1
+            self.builder.position_at_end(loop_no_match_bb)
+            current_src = self.builder.load(src_ptr)
+            current_dst = self.builder.load(dst_ptr)
+            current_char = self.builder.load(current_src)
+            self.builder.store(current_char, current_dst)
+            one = ir.Constant(ir.IntType(64), 1)
+            self.builder.store(
+                self.builder.gep(current_src, [one], inbounds=True), src_ptr
+            )
+            self.builder.store(
+                self.builder.gep(current_dst, [one], inbounds=True), dst_ptr
+            )
+            self.builder.branch(loop_cond_bb)
+
+            # End of string: copy null terminator
+            self.builder.position_at_end(loop_merge_bb)
+            final_dst = self.builder.load(dst_ptr)
+            final_src = self.builder.load(src_ptr)
+            self.builder.call(self.strcpy, [final_dst, final_src])
+
+            count = self.builder.load(count_ptr)
+
+            # Write result back to file
+            self.builder.call(self.frewind, [file_handle])
+            result_len = self.builder.call(self.strlen, [result])
+            self.builder.call(
+                self.fwrite,
+                [result, ir.Constant(ir.IntType(64), 1), result_len, file_handle],
+            )
+            # Truncate file
+            self._truncate_file(file_handle, result_len)
+            self.builder.call(self.frewind, [file_handle])
+
+            return count
+        else:
+            # Replace first occurrence
+            found_ptr = self.builder.call(self.strstr, [buffer, old_str])
+            is_found = self.builder.icmp_unsigned(
+                "!=", found_ptr, ir.Constant(ir.IntType(8).as_pointer(), None)
+            )
+
+            found_bb = self.builder.function.append_basic_block("replace_found")
+            not_found_bb = self.builder.function.append_basic_block("replace_not_found")
+            merge_bb = self.builder.function.append_basic_block("replace_merge")
+
+            self.builder.cbranch(is_found, found_bb, not_found_bb)
+
+            self.builder.position_at_end(found_bb)
+            # Calculate prefix length
+            prefix_len = self.builder.sub(
+                self.builder.ptrtoint(found_ptr, ir.IntType(64)),
+                self.builder.ptrtoint(buffer, ir.IntType(64)),
+            )
+            # Copy prefix to result
+            self.builder.call(self.strncpy, [result, buffer, prefix_len])
+            # Null terminate after prefix
+            prefix_end = self.builder.gep(result, [prefix_len], inbounds=True)
+            self.builder.store(ir.Constant(ir.IntType(8), 0), prefix_end)
+            # Append new_str
+            dest_ptr = self.builder.gep(result, [prefix_len], inbounds=True)
+            self.builder.call(self.strcpy, [dest_ptr, new_str])
+            # Append suffix
+            suffix_src = self.builder.gep(found_ptr, [old_len], inbounds=True)
+            suffix_dest = self.builder.gep(
+                result, [self.builder.add(prefix_len, new_len)], inbounds=True
+            )
+            self.builder.call(self.strcpy, [suffix_dest, suffix_src])
+            self.builder.branch(merge_bb)
+
+            self.builder.position_at_end(not_found_bb)
+            # No replacement needed, copy original
+            self.builder.call(self.strcpy, [result, buffer])
+            self.builder.branch(merge_bb)
+
+            self.builder.position_at_end(merge_bb)
+            # Write result back to file
+            self.builder.call(self.frewind, [file_handle])
+            result_len = self.builder.call(self.strlen, [result])
+            self.builder.call(
+                self.fwrite,
+                [result, ir.Constant(ir.IntType(64), 1), result_len, file_handle],
+            )
+            # Truncate file using fileno + ftruncate
+            self._truncate_file(file_handle, result_len)
+            self.builder.call(self.frewind, [file_handle])
+
+            return self.builder.select(
+                is_found, ir.Constant(ir.IntType(32), 1), ir.Constant(ir.IntType(32), 0)
+            )
+
+    def _truncate_file(self, file_handle, size):
+        """Truncate a file to the given size using fileno and ftruncate."""
+        # Get file descriptor from FILE*
+        fd = self.builder.call(self.fileno_fn, [file_handle])
+        # Truncate to size
+        self.builder.call(self.ftruncate_fn, [fd, size])
 
     def _codegen_GenericCall(self, node):
         """Handle generic function calls like add<int>(10, 20)."""

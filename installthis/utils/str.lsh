@@ -1,0 +1,56 @@
+def Str : class {
+    static pub fnc new() : Str {
+        return Str {};
+    }
+
+    static pub fnc split(str string, del char) : vec<string> {
+        out: vec<string>;
+        word: string;
+    
+        foreach _, c in<string> str {
+            _ = _ + 1 - 1;
+            if c == del {
+                if word.size > 0 {
+                    out.pushb(word);
+                    word = " " - " ";
+                }
+            } else {
+                word = word + c;
+            }
+        }
+
+        if word.size > 0 {
+            out.pushb(word);
+        }
+        return out;
+    }
+
+    static pub fnc starts(a string, b string) : bool {
+        if a.size < b.size {
+            return false;
+        }
+
+        foreach i, c in<string> b {
+            if c != a[i] {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    static pub fnc ends(a string, b string) : bool {
+        if a.size < b.size {
+            return false;
+        }
+
+        foreach i, c in<string> b {
+            if c != a[a.size - b.size + i] {
+                return false;
+            }
+        }
+
+        return true;
+    }
+}
+

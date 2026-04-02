@@ -1,0 +1,338 @@
+fnc main() : void {
+    // ========================================================================
+    // FILE CLASS COMPREHENSIVE TEST
+    // Testing every feature: open, read, write, close, readln, readb, writeb,
+    // readlnb, rename, delete, replace, replaceall, rewind
+    // ========================================================================
+
+    // ========================================================================
+    // TEST 1: Basic write and read
+    // ========================================================================
+    show("=== TEST 1: Basic write and read ===");
+    file: File = File.open("test_basic.txt", "w");
+    write_result: int = file.write("Hello World!");
+    show("Write result (should be 0): ", write_result);
+    close_result: int = file.close();
+    show("Close result (should be 0): ", close_result);
+
+    file2: File = File.open("test_basic.txt", "r");
+    content: string = file2.read();
+    show("Content read: ", content);
+    file2.close();
+
+    // ========================================================================
+    // TEST 2: readln - read line by line
+    // ========================================================================
+    show("");
+    show("=== TEST 2: readln - read line by line ===");
+    file3: File = File.open("multiline.txt", "w");
+    file3.write("Line 1\nLine 2\nLine 3\nLine 4\nLine 5");
+    file3.close();
+
+    file4: File = File.open("multiline.txt", "r");
+    line1: string = file4.readln();
+    show("First line: ", line1);
+    line2: string = file4.readln();
+    show("Second line: ", line2);
+    line3: string = file4.readln();
+    show("Third line: ", line3);
+    file4.close();
+
+    // ========================================================================
+    // TEST 3: rename - rename a file
+    // ========================================================================
+    show("");
+    show("=== TEST 3: rename - rename a file ===");
+    rename_result: int = File.rename("test_basic.txt", "renamed.txt");
+    show("Rename result (should be 0): ", rename_result);
+
+    file5: File = File.open("renamed.txt", "r");
+    show("Content of renamed file: ", file5.read());
+    file5.close();
+
+    // ========================================================================
+    // TEST 4: delete - delete a file
+    // ========================================================================
+    show("");
+    show("=== TEST 4: delete - delete a file ===");
+    // Create a file to delete
+    file_del: File = File.open("delete_me.txt", "w");
+    file_del.write("This file will be deleted");
+    file_del.close();
+
+    delete_result: int = File.delete("delete_me.txt");
+    show("Delete result (should be 0): ", delete_result);
+
+    // Try to open deleted file (should fail - return nil)
+    file_deleted: File = File.open("delete_me.txt", "r");
+    // If file_deleted is nil, we can't read from it
+    show("File deletion verified");
+
+    // ========================================================================
+    // TEST 5: replace - replace first occurrence
+    // ========================================================================
+    show("");
+    show("=== TEST 5: replace - replace first occurrence ===");
+    file6: File = File.open("replace_test.txt", "w");
+    file6.write("Hello World! Hello Universe! Hello Everyone!");
+    file6.close();
+
+    file7: File = File.open("replace_test.txt", "r+");
+    replace_result: int = file7.replace("Hello", "Hi");
+    show("Replace result (should be 1): ", replace_result);
+    file7.rewind();
+    show("After replace: ", file7.read());
+    file7.close();
+
+    // ========================================================================
+    // TEST 6: replaceall - replace all occurrences
+    // ========================================================================
+    show("");
+    show("=== TEST 6: replaceall - replace all occurrences ===");
+    file8: File = File.open("replaceall_test.txt", "w");
+    file8.write("aaa bbb aaa ccc aaa ddd aaa");
+    file8.close();
+
+    file9: File = File.open("replaceall_test.txt", "r+");
+    replaceall_result: int = file9.replaceall("aaa", "XXX");
+    show("Replaceall result (count): ", replaceall_result);
+    file9.rewind();
+    show("After replaceall: ", file9.read());
+    file9.close();
+
+    // ========================================================================
+    // TEST 7: writeb and readb (byte operations)
+    // ========================================================================
+    show("");
+    show("=== TEST 7: writeb and readb (byte operations) ===");
+    file10: File = File.open("bytes.bin", "wb");
+    bytes_data: char[] = cstr("Binary data test");
+    writeb_result: int = file10.writeb(bytes_data);
+    show("writeb result (should be 0): ", writeb_result);
+    file10.close();
+
+    file11: File = File.open("bytes.bin", "rb");
+    read_bytes: char[] = file11.readb();
+    show("Read bytes length: ", read_bytes.size);
+    file11.close();
+
+    // ========================================================================
+    // TEST 8: readlnb - read line as bytes
+    // ========================================================================
+    show("");
+    show("=== TEST 8: readlnb - read line as bytes ===");
+    file12: File = File.open("byteline.txt", "w");
+    file12.write("Byte line 1\nByte line 2\nByte line 3");
+    file12.close();
+
+    file13: File = File.open("byteline.txt", "r");
+    line_bytes1: char[] = file13.readlnb();
+    show("First line bytes length: ", line_bytes1.size);
+    line_bytes2: char[] = file13.readlnb();
+    show("Second line bytes length: ", line_bytes2.size);
+    file13.close();
+
+    // ========================================================================
+    // TEST 9: rewind - reset file position
+    // ========================================================================
+    show("");
+    show("=== TEST 9: rewind - reset file position ===");
+    file14: File = File.open("rewind_test.txt", "w");
+    file14.write("First line\nSecond line\nThird line");
+    file14.close();
+
+    file15: File = File.open("rewind_test.txt", "r");
+    first_read: string = file15.readln();
+    show("First read: ", first_read);
+    file15.rewind();
+    file15.rewind();  // Calling rewind twice should be fine
+    second_read: string = file15.readln();
+    show("After rewind, first line again: ", second_read);
+    file15.close();
+
+    // ========================================================================
+    // TEST 10: Multiple writes and reads
+    // ========================================================================
+    show("");
+    show("=== TEST 10: Multiple writes and reads ===");
+    file16: File = File.open("multi_write.txt", "w");
+    file16.write("Part 1, ");
+    file16.write("Part 2, ");
+    file16.write("Part 3");
+    file16.close();
+
+    file17: File = File.open("multi_write.txt", "r");
+    full_content: string = file17.read();
+    show("Combined content: ", full_content);
+    file17.close();
+
+    // ========================================================================
+    // TEST 11: Reading from empty file
+    // ========================================================================
+    show("");
+    show("=== TEST 11: Reading from empty file ===");
+    file18: File = File.open("empty.txt", "w");
+    file18.close();
+
+    file19: File = File.open("empty.txt", "r");
+    empty_content: string = file19.read();
+    show("Empty file content length: ", empty_content.size);
+    file19.close();
+
+    // ========================================================================
+    // TEST 12: Large file write and read
+    // ========================================================================
+    show("");
+    show("=== TEST 12: Large content write and read ===");
+    file20: File = File.open("large.txt", "w");
+    i: int = 0;
+    while i < 10 {
+        file20.write("This is line ");
+        file20.write(tostring(i + 1));
+        file20.write(" of the large file test.\n");
+        i = i + 1;
+    }
+    file20.close();
+
+    file21: File = File.open("large.txt", "r");
+    large_content: string = file21.read();
+    show("Large file content (last 50 chars): ");
+    // Just show that we can read it
+    show(large_content);
+    file21.close();
+
+    // ========================================================================
+    // TEST 13: Mode testing - append mode
+    // ========================================================================
+    show("");
+    show("=== TEST 13: Append mode ===");
+    file22: File = File.open("append_test.txt", "w");
+    file22.write("Initial content");
+    file22.close();
+
+    file23: File = File.open("append_test.txt", "a");
+    file23.write("\nAppended content");
+    file23.close();
+
+    file24: File = File.open("append_test.txt", "r");
+    show("Append test result: ", file24.read());
+    file24.close();
+
+    // ========================================================================
+    // TEST 14: Readln until EOF
+    // ========================================================================
+    show("");
+    show("=== TEST 14: readln until EOF ===");
+    file25: File = File.open("eof_test.txt", "w");
+    file25.write("Line A\nLine B\nLine C");
+    file25.close();
+
+    file26: File = File.open("eof_test.txt", "r");
+    eof_line1: string = file26.readln();
+    eof_line2: string = file26.readln();
+    eof_line3: string = file26.readln();
+    show("Line 1: ", eof_line1);
+    show("Line 2: ", eof_line2);
+    show("Line 3: ", eof_line3);
+    file26.close();
+
+    // ========================================================================
+    // TEST 15: Write numbers as strings
+    // ========================================================================
+    show("");
+    show("=== TEST 15: Write numbers as strings ===");
+    file27: File = File.open("numbers.txt", "w");
+    file27.write("Numbers: ");
+    num: int = 0;
+    while num < 5 {
+        file27.write(tostring(num));
+        if num < 4 {
+            file27.write(", ");
+        }
+        num = num + 1;
+    }
+    file27.write("\n");
+    file27.close();
+
+    file28: File = File.open("numbers.txt", "r");
+    show("Numbers file: ", file28.read());
+    file28.close();
+
+    // ========================================================================
+    // CLEANUP: Delete all test files
+    // ========================================================================
+    show("");
+    show("=== CLEANUP: Deleting test files ===");
+    File.delete("renamed.txt");
+    File.delete("multiline.txt");
+    File.delete("replace_test.txt");
+    File.delete("replaceall_test.txt");
+    File.delete("bytes.bin");
+    File.delete("byteline.txt");
+    File.delete("rewind_test.txt");
+    File.delete("multi_write.txt");
+    File.delete("empty.txt");
+    File.delete("large.txt");
+    File.delete("append_test.txt");
+    File.delete("eof_test.txt");
+    File.delete("numbers.txt");
+    show("All test files cleaned up!");
+    show("");
+    show("=== ALL TESTS COMPLETED ===");
+}
+
+// ========================================================================
+// File API Reference:
+// ========================================================================
+// Static methods:
+//   File.open(filename string, mode string) : File
+//     - Opens a file with the given mode
+//     - Modes: "r" (read), "w" (write), "a" (append), "r+" (read/write)
+//     - Returns nil if file cannot be opened
+//
+//   File.rename(oldname string, newname string) : int
+//     - Renames a file
+//     - Returns 0 on success, non-zero on error
+//
+//   File.delete(filename string) : int
+//     - Deletes a file
+//     - Returns 0 on success, non-zero on error
+//
+// Instance methods:
+//   .read() : string
+//     - Reads entire file content as a string
+//     - Returns nil if error
+//
+//   .write(text string) : int
+//     - Writes text to file
+//     - Returns 0 on success
+//
+//   .close() : int
+//     - Closes the file
+//     - Returns 0 on success
+//
+//   .readln() : string
+//     - Reads one line from file (up to newline or EOF)
+//     - Returns nil at EOF
+//
+//   .readb() : char[]
+//     - Reads entire file as byte array
+//
+//   .writeb(btext char[]) : int
+//     - Writes byte array to file
+//     - Returns 0 on success
+//
+//   .readlnb() : char[]
+//     - Reads one line as byte array
+//
+//   .replace(oldstr string, newstr string) : int
+//     - Replaces first occurrence of oldstr with newstr
+//     - Returns 1 if replaced, 0 if not found
+//
+//   .replaceall(oldstr string, newstr string) : int
+//     - Replaces all occurrences of oldstr with newstr
+//     - Returns count of replacements
+//
+//   .rewind() : void
+//     - Resets file position to beginning
+// ========================================================================

@@ -27,6 +27,7 @@ Leash is a strongly-typed, modern compiled programming language built on top of 
 - [Classes](#classes)
   - [Class Inheritance (Subclasses)](#class-inheritance-subclasses)
   - [Polymorphism and Dynamic Dispatch](#polymorphism-and-dynamic-dispatch)
+- [File I/O](#file-io)
 - [Memory Management](#memory-management)
 - [Error Handling & Safety](#error-handling--safety)
 - [Library Imports](#library-imports)
@@ -1051,6 +1052,155 @@ def Dog : class(Animal) {
 ```
 
 This is useful when you want to ensure certain methods always behave the same way across all subclasses, maintaining consistent behavior for critical operations.
+
+## File I/O
+
+Leash provides a built-in `File` class for reading and writing files. The `File` class is a native class (not a primitive type) that wraps the C standard library's `FILE*` operations.
+
+### Opening and Closing Files
+
+Use `File.open()` to open a file and `.close()` to close it:
+
+```leash
+fnc main() : void {
+    // Open a file for writing (creates or truncates)
+    file: File = File.open("output.txt", "w");
+    file.write("Hello, World!");
+    file.close();
+
+    // Open a file for reading
+    reader: File = File.open("output.txt", "r");
+    content: string = reader.read();
+    show(content);  // "Hello, World!"
+    reader.close();
+}
+```
+
+### File Modes
+
+| Mode | Description |
+|------|-------------|
+| `"r"` | Open for reading (file must exist) |
+| `"w"` | Open for writing (creates or truncates) |
+| `"a"` | Open for appending (creates if doesn't exist) |
+| `"r+"` | Open for reading and writing (file must exist) |
+
+### Static Methods
+
+These methods are called on the `File` class directly:
+
+| Method | Description | Returns |
+|--------|-------------|---------|
+| `File.open(filename, mode)` | Open a file with the specified mode | `File` (or `nil` on error) |
+| `File.rename(oldname, newname)` | Rename a file | `int` (0 on success) |
+| `File.delete(filename)` | Delete a file | `int` (0 on success) |
+
+### Instance Methods
+
+These methods are called on a `File` object:
+
+| Method | Description | Returns |
+|--------|-------------|---------|
+| `.read()` | Read entire file content | `string` |
+| `.write(text)` | Write text to file | `int` (0 on success) |
+| `.close()` | Close the file | `int` (0 on success) |
+| `.readln()` | Read one line (strips newline) | `string` |
+| `.readb()` | Read entire file as bytes | `char[]` |
+| `.writeb(bytes)` | Write bytes to file | `int` (0 on success) |
+| `.readlnb()` | Read one line as bytes | `char[]` |
+| `.replace(old, new)` | Replace first occurrence | `int` (1 if found, 0 otherwise) |
+| `.replaceall(old, new)` | Replace all occurrences | `int` (count of replacements) |
+| `.rewind()` | Reset file position to start | `void` |
+
+### Reading Line by Line
+
+```leash
+fnc main() : void {
+    file: File = File.open("data.txt", "w");
+    file.write("Line 1\nLine 2\nLine 3");
+    file.close();
+
+    reader: File = File.open("data.txt", "r");
+    
+    line1: string = reader.readln();  // "Line 1"
+    line2: string = reader.readln();  // "Line 2"
+    line3: string = reader.readln();  // "Line 3"
+    
+    show(line1);
+    show(line2);
+    show(line3);
+    
+    reader.close();
+}
+```
+
+### Byte Operations
+
+For binary data, use `readb()`, `writeb()`, and `readlnb()`:
+
+```leash
+fnc main() : void {
+    // Write binary data
+    file: File = File.open("data.bin", "wb");
+    data: char[] = cstr("Binary content");
+    file.writeb(data);
+    file.close();
+
+    // Read binary data
+    reader: File = File.open("data.bin", "rb");
+    bytes: char[] = reader.readb();
+    show("Read ", bytes.size, " bytes");
+    reader.close();
+}
+```
+
+### String Replacement in Files
+
+The `replace()` and `replaceall()` methods allow in-place string replacement:
+
+```leash
+fnc main() : void {
+    file: File = File.open("template.txt", "w");
+    file.write("Hello {name}! Welcome to {place}.");
+    file.close();
+
+    // Open for reading and writing
+    editor: File = File.open("template.txt", "r+");
+    
+    // Replace first occurrence
+    editor.replace("{name}", "World");
+    
+    // Replace all remaining occurrences
+    editor.replaceall("{place}", "Leash");
+    
+    editor.rewind();
+    show(editor.read());  // "Hello World! Welcome to Leash."
+    
+    editor.close();
+}
+```
+
+### Appending to Files
+
+```leash
+fnc main() : void {
+    // Create initial file
+    file: File = File.open("log.txt", "w");
+    file.write("Log started\n");
+    file.close();
+
+    // Append more content
+    logger: File = File.open("log.txt", "a");
+    logger.write("Entry 1\n");
+    logger.write("Entry 2\n");
+    logger.close();
+
+    // Read all content
+    reader: File = File.open("log.txt", "r");
+    show(reader.read());
+    reader.close();
+}
+```
 
 ## Memory Management
 

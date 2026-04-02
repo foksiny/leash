@@ -44,6 +44,9 @@ class TypeChecker:
         self.loop_depth = 0  # Track nesting depth of loops for stop/continue
         self.global_vars = {}  # name -> (type, visibility) for module-level variables
 
+        # Register built-in classes
+        self._register_builtin_classes()
+
     def check(self, program):
         """Run type checking on a Program AST node. Returns list of warnings."""
         # First pass: register all top-level definitions (structs, unions, aliases, functions, templates, global vars)
@@ -75,6 +78,128 @@ class TypeChecker:
                 self._check_global_var(item)
 
         return self.warnings
+
+    def _register_builtin_classes(self):
+        """Register built-in classes like File."""
+        # File class
+        # The File class has a single field: the FILE* pointer (represented as int for simplicity)
+        # In codegen, this will be handled specially
+        self.class_types["File"] = {
+            "fields": {},  # No user-visible fields, internal state only
+            "methods": {
+                # Static methods - we use placeholder Function nodes for type checking
+                "open": (
+                    Function(
+                        "File_open",
+                        [("filename", "string"), ("mode", "string")],
+                        "File",
+                        None,
+                    ),
+                    "pub",
+                    True,
+                    False,
+                ),
+                "rename": (
+                    Function(
+                        "File_rename",
+                        [("oldname", "string"), ("newname", "string")],
+                        "int",
+                        None,
+                    ),
+                    "pub",
+                    True,
+                    False,
+                ),
+                "delete": (
+                    Function("File_delete", [("filename", "string")], "int", None),
+                    "pub",
+                    True,
+                    False,
+                ),
+                # Instance methods
+                "read": (
+                    Function("File_read", [("this", "File")], "string", None),
+                    "pub",
+                    False,
+                    False,
+                ),
+                "write": (
+                    Function(
+                        "File_write",
+                        [("this", "File"), ("text", "string")],
+                        "int",
+                        None,
+                    ),
+                    "pub",
+                    False,
+                    False,
+                ),
+                "close": (
+                    Function("File_close", [("this", "File")], "int", None),
+                    "pub",
+                    False,
+                    False,
+                ),
+                "writeb": (
+                    Function(
+                        "File_writeb",
+                        [("this", "File"), ("btext", "char[]")],
+                        "int",
+                        None,
+                    ),
+                    "pub",
+                    False,
+                    False,
+                ),
+                "readb": (
+                    Function("File_readb", [("this", "File")], "char[]", None),
+                    "pub",
+                    False,
+                    False,
+                ),
+                "readln": (
+                    Function("File_readln", [("this", "File")], "string", None),
+                    "pub",
+                    False,
+                    False,
+                ),
+                "readlnb": (
+                    Function("File_readlnb", [("this", "File")], "char[]", None),
+                    "pub",
+                    False,
+                    False,
+                ),
+                "replace": (
+                    Function(
+                        "File_replace",
+                        [("this", "File"), ("oldstr", "string"), ("newstr", "string")],
+                        "int",
+                        None,
+                    ),
+                    "pub",
+                    False,
+                    False,
+                ),
+                "replaceall": (
+                    Function(
+                        "File_replaceall",
+                        [("this", "File"), ("oldstr", "string"), ("newstr", "string")],
+                        "int",
+                        None,
+                    ),
+                    "pub",
+                    False,
+                    False,
+                ),
+                "rewind": (
+                    Function("File_rewind", [("this", "File")], "void", None),
+                    "pub",
+                    False,
+                    False,
+                ),
+            },
+            "parent": None,
+        }
 
     # ── Registration ────────────────────────────────────────────────
 
@@ -489,8 +614,8 @@ class TypeChecker:
         """Add a warning with position info."""
         line = getattr(node, "line", None) if node else None
         col = getattr(node, "col", None) if node else None
-        pos = f" (line {line}, col {col})" if line else ""
-        self.warnings.append(f"{msg}{pos}" + (f"\n   Tip: {tip}" if tip else ""))
+        # Store as a structured dict for better formatting in CLI
+        self.warnings.append({"msg": msg, "line": line, "col": col, "tip": tip})
 
     def _types_compatible(self, src, dst):
         """Check if src type can be assigned into dst type."""
@@ -1097,8 +1222,6 @@ class TypeChecker:
         elif isinstance(expr, FloatLiteral):
             return "float"
         elif isinstance(expr, StringLiteral):
-            if not expr.value:
-                self._warn("Empty string literal.", node=expr)
             return "string"
         elif isinstance(expr, CharLiteral):
             return "char"
@@ -2129,7 +2252,16 @@ class TypeChecker:
                     tip=f"Static methods should be called on the class name: `{target_cls}.{expr.method}(...)` ",
                 )
 
-            expected_args = [t for _, t in fnc_node.args]
+            # For instance methods, skip the first argument if it's 'this'
+            # (built-in types like File include 'this' in args, user-defined classes don't)
+            # For static methods, use all arguments
+            if is_static:
+                expected_args = [t for _, t in fnc_node.args]
+            else:
+                if fnc_node.args and fnc_node.args[0][0] == "this":
+                    expected_args = [t for _, t in fnc_node.args[1:]]
+                else:
+                    expected_args = [t for _, t in fnc_node.args]
 
             if len(expr.args) != len(expected_args):
                 raise LeashError(

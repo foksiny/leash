@@ -1,5 +1,4 @@
 0: Hello,
 1: world!
-warning: Empty string literal. (line 7, col 19)
 warning: Unused local variable '_' in function 'split'
-   Tip: If you don't need this variable, consider removing it.
+tip: If you don't need this variable, consider removing it.

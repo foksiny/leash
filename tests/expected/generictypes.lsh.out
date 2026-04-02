@@ -2,4 +2,4 @@
 22
 Jane Doe doesn't exists anymore!
 warning: Unused local variable 'i' in function 'main'
-   Tip: If you don't need this variable, consider removing it.
+tip: If you don't need this variable, consider removing it.

@@ -1,0 +1,77 @@
+=== TEST 1: Basic write and read ===
+Write result (should be 0): 0
+Close result (should be 0): 0
+Content read: Hello World!
+
+=== TEST 2: readln - read line by line ===
+First line: Line 1
+Second line: Line 2
+Third line: Line 3
+
+=== TEST 3: rename - rename a file ===
+Rename result (should be 0): 0
+Content of renamed file: Hello World!
+
+=== TEST 4: delete - delete a file ===
+Delete result (should be 0): 0
+File deletion verified
+
+=== TEST 5: replace - replace first occurrence ===
+Replace result (should be 1): 1
+After replace: Hi World! Hello Universe! Hello Everyone!
+
+=== TEST 6: replaceall - replace all occurrences ===
+Replaceall result (count): 4
+After replaceall: XXX bbb XXX ccc XXX ddd XXX
+
+=== TEST 7: writeb and readb (byte operations) ===
+writeb result (should be 0): 0
+Read bytes length: 16
+
+=== TEST 8: readlnb - read line as bytes ===
+First line bytes length: 11
+Second line bytes length: 11
+
+=== TEST 9: rewind - reset file position ===
+First read: First line
+After rewind, first line again: First line
+
+=== TEST 10: Multiple writes and reads ===
+Combined content: Part 1, Part 2, Part 3
+
+=== TEST 11: Reading from empty file ===
+Empty file content length: 0
+
+=== TEST 12: Large content write and read ===
+Large file content (last 50 chars): 
+This is line 1 of the large file test.
+This is line 2 of the large file test.
+This is line 3 of the large file test.
+This is line 4 of the large file test.
+This is line 5 of the large file test.
+This is line 6 of the large file test.
+This is line 7 of the large file test.
+This is line 8 of the large file test.
+This is line 9 of the large file test.
+This is line 10 of the large file test.
+
+
+=== TEST 13: Append mode ===
+Append test result: Initial content
+Appended content
+
+=== TEST 14: readln until EOF ===
+Line 1: Line A
+Line 2: Line B
+Line 3: Line C
+
+=== TEST 15: Write numbers as strings ===
+Numbers file: Numbers: 0, 1, 2, 3, 4
+
+
+=== CLEANUP: Deleting test files ===
+All test files cleaned up!
+
+=== ALL TESTS COMPLETED ===
+warning: Unused local variable 'file_deleted' in function 'main'
+tip: If you don't need this variable, consider removing it.

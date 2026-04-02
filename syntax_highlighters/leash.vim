@@ -23,6 +23,9 @@ syn match leashGenericParam ",\s*\zs[A-Z][a-zA-Z0-9_]*\ze"
 " Builtin functions and properties
 syn keyword leashBuiltin show get set toint tofloat tostring cstr lstr size cur name pushb popb pushf popf insert clear rand randf seed choose wait timepass exit
 
+" Built-in File class and methods
+syn keyword leashBuiltin File open close read write readln readb writeb readlnb replace replaceall rewind rename delete
+
 " Operators
 syn match leashOperator "&&\|||\|<<\|>>\|[+\-*/%&|^~!<>=]=\?\|!="
 

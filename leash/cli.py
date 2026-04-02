@@ -235,8 +235,15 @@ def _print_error(e, input_file, code):
         print(f"tip: {e.tip}")
 
 
-def _print_warning(msg):
-    print(f"warning: {msg}", file=sys.stderr)
+def _print_warning(w):
+    print(f"warning: {w['msg']}", file=sys.stderr)
+    if w.get("line") is not None:
+        print(
+            f"  --> {w.get('file', 'unknown')}:{w['line']}:{w.get('col', 0)}",
+            file=sys.stderr,
+        )
+    if w.get("tip"):
+        print(f"tip: {w['tip']}", file=sys.stderr)
 
 
 def compile_file(input_file, output_name=None, is_run_mode=False):
