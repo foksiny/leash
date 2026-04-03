@@ -434,19 +434,93 @@ class TypeChecker:
             if not uses_templates and self._uses_template_type(node.return_type):
                 uses_templates = True
 
+        # Also check for multi-type syntax: [int, float, ...]
+        if not uses_templates:
+            for _, arg_type in node.args:
+                if self._is_multi_type(arg_type):
+                    uses_templates = True
+                    break
+            if not uses_templates and self._is_multi_type(node.return_type):
+                uses_templates = True
+
         if uses_templates:
             # Store the template params if not explicitly declared
             if not node.type_params:
                 # Find all template types used
                 template_set = set()
+                type_param_map = {}  # Map from multi-type string to generated param name
                 for _, arg_type in node.args:
                     self._collect_template_types(arg_type, template_set)
+                    self._extract_multi_type_params(
+                        arg_type, template_set, type_param_map
+                    )
                 self._collect_template_types(node.return_type, template_set)
+                self._extract_multi_type_params(
+                    node.return_type, template_set, type_param_map
+                )
+
+                # Convert multi-types to single type params
+                new_args = []
+                for arg_name, arg_type in node.args:
+                    if arg_type in type_param_map:
+                        new_args.append((arg_name, type_param_map[arg_type]))
+                    else:
+                        new_args.append((arg_name, arg_type))
+                node.args = tuple(new_args)
+
+                if node.return_type in type_param_map:
+                    node.return_type = type_param_map[node.return_type]
+
                 node.type_params = list(template_set)
             self.generic_funcs[node.name] = node
             return
         arg_types = [t for _, t in node.args]
         self.func_types[node.name] = (arg_types, node.return_type)
+
+    def _is_multi_type(self, type_name):
+        """Check if a type name has multi-type syntax like [int, float]."""
+        if not type_name:
+            return False
+        type_name = self._strip_imut(type_name)
+        return type_name.startswith("[") and "]" in type_name
+
+    def _extract_multi_type_params(self, type_name, template_set, type_param_map):
+        """Extract type parameters from multi-type syntax like [int, float]."""
+        if not type_name:
+            return
+        type_name = self._strip_imut(type_name)
+        if not self._is_multi_type(type_name):
+            return
+        # Extract types from [int, float, ...]
+        inner = type_name[1:-1]  # Remove [ and ]
+        # Handle nested brackets in types like vec<int>
+        types = []
+        depth = 0
+        current = ""
+        for c in inner:
+            if c == "<":
+                depth += 1
+                current += c
+            elif c == ">":
+                depth -= 1
+                current += c
+            elif c == "," and depth == 0:
+                types.append(current.strip())
+                current = ""
+            else:
+                current += c
+        if current.strip():
+            types.append(current.strip())
+
+        # Generate a unique type parameter name for this multi-type
+        type_param_name = f"_T_{len(template_set)}"
+
+        # Store the mapping from original type to generated param
+        type_param_map[type_name] = type_param_name
+
+        # Add the generated type parameter
+        if type_param_name not in template_set:
+            template_set.add(type_param_name)
 
     def _uses_template_type(self, type_name):
         """Check if a type name contains any template parameters."""
@@ -1141,9 +1215,10 @@ class TypeChecker:
 
         bare_val_type = self._strip_imut(val_type) if val_type else None
         if bare_val_type and not self._types_compatible(bare_val_type, bare_decl_type):
-            self.warnings.append(
-                f"Warning: Variable '{stmt.name}' declared as '{bare_decl_type}' "
-                f"but assigned a value of type '{bare_val_type}'."
+            self._warn(
+                f"Variable '{stmt.name}' declared as '{bare_decl_type}' "
+                f"but assigned a value of type '{bare_val_type}'.",
+                node=stmt,
             )
 
     def _check_assignment(self, stmt):
@@ -1184,12 +1259,9 @@ class TypeChecker:
             if target_resolved in self.union_types:
                 return
             if not self._types_compatible(bare_val, bare_target):
-                self.warnings.append(
-                    f"Warning: Assigning '{bare_val}' to a variable of type '{bare_target}'."
-                )
-            if not self._types_compatible(bare_val, bare_target):
-                self.warnings.append(
-                    f"Warning: Assigning '{bare_val}' to a variable of type '{bare_target}'."
+                self._warn(
+                    f"Assigning '{bare_val}' to a variable of type '{bare_target}'.",
+                    node=stmt,
                 )
 
     def _check_return(self, stmt):
@@ -1767,6 +1839,9 @@ class TypeChecker:
 
         sig = self.func_types.get(expr.name)
         if sig is None:
+            # Check if it's a generic function (including multi-type functions)
+            if expr.name in self.generic_funcs:
+                return self._handle_multi_type_call(expr)
             self._error(
                 f"Call to undefined function: '{expr.name}'",
                 node=expr,
@@ -1788,9 +1863,10 @@ class TypeChecker:
             bare_arg = self._strip_imut(arg_type) if arg_type else None
             bare_expected = self._strip_imut(expected_type)
             if bare_arg and not self._types_compatible(bare_arg, bare_expected):
-                self.warnings.append(
-                    f"Warning: Argument {i + 1} of '{expr.name}' expects '{bare_expected}' "
-                    f"but got '{bare_arg}'."
+                self._warn(
+                    f"Argument {i + 1} of '{expr.name}' expects '{bare_expected}' "
+                    f"but got '{bare_arg}'.",
+                    node=expr,
                 )
 
         return return_type
@@ -1822,9 +1898,10 @@ class TypeChecker:
             bare_arg = self._strip_imut(arg_type) if arg_type else None
             bare_expected = self._strip_imut(expected_type)
             if bare_arg and not self._types_compatible(bare_arg, bare_expected):
-                self.warnings.append(
-                    f"Warning: Argument {i + 1} of '{expr.name}' expects '{bare_expected}' "
-                    f"but got '{bare_arg}'."
+                self._warn(
+                    f"Argument {i + 1} of '{expr.name}' expects '{bare_expected}' "
+                    f"but got '{bare_arg}'.",
+                    node=expr,
                 )
 
         return return_type
@@ -2037,9 +2114,10 @@ class TypeChecker:
             expected = fields[key]
             actual = self._infer_type(val_expr)
             if actual and not self._types_compatible(actual, expected):
-                self.warnings.append(
-                    f"Warning: Struct '{expr.name}' field '{key}' expects '{expected}' "
-                    f"but got '{actual}'."
+                self._warn(
+                    f"Struct '{expr.name}' field '{key}' expects '{expected}' "
+                    f"but got '{actual}'.",
+                    node=expr,
                 )
         return expr.name
 
@@ -2071,8 +2149,9 @@ class TypeChecker:
             expected, _ = fields[key]
             actual = self._infer_type(val_expr)
             if actual and not self._types_compatible(actual, expected):
-                self.warnings.append(
-                    f"Warning: Class '{expr.name}' field '{key}' expects '{expected}' but got '{actual}'."
+                self._warn(
+                    f"Class '{expr.name}' field '{key}' expects '{expected}' but got '{actual}'.",
+                    node=expr,
                 )
 
         return expr.name
@@ -2088,8 +2167,9 @@ class TypeChecker:
                 and first_type
                 and not self._types_compatible(elem_type, first_type)
             ):
-                self.warnings.append(
-                    f"Warning: Array contains mixed types: '{first_type}' and '{elem_type}'."
+                self._warn(
+                    f"Array contains mixed types: '{first_type}' and '{elem_type}'.",
+                    node=expr,
                 )
         base = first_type or "int"
         return f"{base}[]"
@@ -2408,6 +2488,131 @@ class TypeChecker:
 
         return mangled_name
 
+    def _handle_multi_type_call(self, expr):
+        """Handle function calls to functions with multi-type arguments like [int, float]."""
+        template = self.generic_funcs.get(expr.name)
+        if not template:
+            self._error(f"Call to undefined function: '{expr.name}'", node=expr)
+
+        # Determine concrete types from arguments
+        type_param_map = {}
+
+        # Build a map from type parameter to position in multi-type
+        multi_type_params = {}  # param_name -> (arg_index, position_in_multi_type)
+        for arg_idx, (arg_name, arg_type) in enumerate(template.args):
+            multi_types = self._parse_multi_type(arg_type)
+            if multi_types:
+                for pos, mt in enumerate(multi_types):
+                    if mt in template.type_params:
+                        multi_type_params[mt] = (arg_idx, pos)
+
+        # Now map each concrete argument type to its corresponding type parameter
+        for arg_idx, (arg_expr, (arg_name, arg_type)) in enumerate(
+            zip(expr.args, template.args)
+        ):
+            arg_type_inferred = self._infer_type(arg_expr)
+            if not arg_type_inferred:
+                continue
+            arg_type_inferred = self._strip_imut(arg_type_inferred)
+
+            # Check if template arg type is multi-type
+            template_multi_types = self._parse_multi_type(arg_type)
+            if template_multi_types:
+                # Find which type parameter this concrete type matches
+                for param in template.type_params:
+                    if param in template_multi_types:
+                        type_param_map[param] = arg_type_inferred
+                        break
+            else:
+                # Non-multi-type argument
+                if arg_type in template.type_params:
+                    type_param_map[arg_type] = arg_type_inferred
+
+        # Create the mangled name with concrete types
+        type_args = [type_param_map.get(p, p) for p in template.type_params]
+        mangled_name = self._mangle_generic_name(expr.name, type_args)
+
+        # Check if already instantiated
+        key = (expr.name, tuple(type_args))
+        if key in self.instantiated_funcs:
+            # Get return type from registered function
+            sig = self.func_types.get(mangled_name)
+            if sig:
+                return sig[1]
+            # Otherwise, instantiate it
+            return self._instantiate_generic_func(expr.name, type_args, expr)
+
+        # Create and register the new instantiation with concrete types
+        new_args = []
+        for arg_name, arg_type in template.args:
+            # If arg_type is a multi-type with a single parameter, substitute it
+            new_type = self._substitute_type_params(arg_type, type_param_map)
+            new_args.append((arg_name, new_type))
+
+        new_return_type = self._substitute_type_params(
+            template.return_type, type_param_map
+        )
+        new_body = self._substitute_body_types(template.body, type_param_map)
+        new_func = Function(
+            mangled_name, tuple(new_args), new_return_type, new_body, []
+        )
+
+        # Register the instantiated function
+        arg_types = [t for _, t in new_args]
+        self.func_types[mangled_name] = (arg_types, new_return_type)
+        self.instantiated_funcs[key] = mangled_name
+        TypeChecker.instantiated_func_nodes[mangled_name] = new_func
+
+        # Modify the Call node to use the mangled name so codegen finds correct function
+        expr.name = mangled_name
+
+        return new_return_type
+
+    def _resolve_concrete_type(self, type_name):
+        """Resolve a type to its concrete type for mapping."""
+        if not type_name:
+            return None
+        type_name = self._strip_imut(type_name)
+        # Check for known types
+        if type_name in ("int", "uint", "float", "string", "char", "bool", "void"):
+            return type_name
+        if type_name in self.struct_types:
+            return type_name
+        if type_name in self.class_types:
+            return type_name
+        return type_name
+
+    def _is_builtin_type(self, type_name):
+        """Check if a type is a builtin type."""
+        return type_name in ("int", "uint", "float", "string", "char", "bool", "void")
+
+    def _parse_multi_type(self, type_name):
+        """Parse a multi-type like [int, float] into a list of types."""
+        if not type_name:
+            return []
+        type_name = self._strip_imut(type_name)
+        if not (type_name.startswith("[") and "]" in type_name):
+            return []
+        inner = type_name[1:-1]
+        types = []
+        depth = 0
+        current = ""
+        for c in inner:
+            if c == "<":
+                depth += 1
+                current += c
+            elif c == ">":
+                depth -= 1
+                current += c
+            elif c == "," and depth == 0:
+                types.append(current.strip())
+                current = ""
+            else:
+                current += c
+        if current.strip():
+            types.append(current.strip())
+        return types
+
     def _instantiate_generic_class(self, name, type_args, call_node):
         """Instantiate a generic class with concrete type arguments."""
         key = (name, tuple(type_args))
@@ -2507,6 +2712,37 @@ class TypeChecker:
                 type_name[5:], type_param_map, class_name_map
             )
 
+        # Handle multi-type syntax: [int, float] - just return as-is for now
+        # (the actual type selection happens during call handling)
+        if type_name.startswith("[") and "]" in type_name:
+            # Check if all types in the multi-type can be resolved
+            inner = type_name[1:-1]
+            types = []
+            depth = 0
+            current = ""
+            for c in inner:
+                if c == "<":
+                    depth += 1
+                    current += c
+                elif c == ">":
+                    depth -= 1
+                    current += c
+                elif c == "," and depth == 0:
+                    types.append(current.strip())
+                    current = ""
+                else:
+                    current += c
+            if current.strip():
+                types.append(current.strip())
+
+            # Substitute any type parameters in each type
+            new_types = []
+            for t in types:
+                new_t = self._substitute_type_params(t, type_param_map, class_name_map)
+                new_types.append(new_t)
+
+            return f"[{', '.join(new_types)}]"
+
         # Handle pointer/reference prefix
         if type_name.startswith("*") or type_name.startswith("&"):
             return type_name[0] + self._substitute_type_params(
@@ -2533,35 +2769,6 @@ class TypeChecker:
         # Check class name map (for class names like Box -> Box_int)
         if class_name_map and type_name in class_name_map:
             return class_name_map[type_name]
-
-        # Direct type parameter substitution
-        if type_name in type_param_map:
-            return type_param_map[type_name]
-
-        return type_name
-
-        # Handle imut prefix
-        if type_name.startswith("imut "):
-            return "imut " + self._substitute_type_params(type_name[5:], type_param_map)
-
-        # Handle pointer/reference prefix
-        if type_name.startswith("*") or type_name.startswith("&"):
-            return type_name[0] + self._substitute_type_params(
-                type_name[1:], type_param_map
-            )
-
-        # Handle vec<T>
-        if type_name.startswith("vec<") and type_name.endswith(">"):
-            inner = type_name[4:-1]
-            new_inner = self._substitute_type_params(inner, type_param_map)
-            return f"vec<{new_inner}>"
-
-        # Handle array T[]
-        if type_name.endswith("]") and "[" in type_name:
-            base = type_name.split("[")[0]
-            bracket_part = type_name[len(base) :]
-            new_base = self._substitute_type_params(base, type_param_map)
-            return new_base + bracket_part
 
         # Direct type parameter substitution
         if type_name in type_param_map:

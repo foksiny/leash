@@ -20,6 +20,8 @@
   (list
    '("\\b\\(fnc\\|def\\|struct\\|union\\|enum\\|class\\|type\\|template\\|return\\|if\\|also\\|else\\|while\\|for\\|do\\|foreach\\|in\\|imut\\|vec\\|vector\\|this\\|pub\\|priv\\|static\\|stop\\|continue\\|use\\|works\\|otherwise\\)\\b" . font-lock-keyword-face)
    '("\\b\\(int\\|uint\\|float\\|bool\\|string\\|char\\|void\\|array\\|vec\\)\\b\\(?:<[0-9]+>\\)?" . font-lock-type-face)
+   ;; Multi-type syntax: [int, float]
+   '("\\[[ \t]*\\(int\\|uint\\|float\\|bool\\|string\\|char\\|void\\)[ \t]*\\(,[ \t]*\\(int\\|uint\\|float\\|bool\\|string\\|char\\|void\\)[ \t]*\\)*\\]" . font-lock-type-face)
    '("\\b\\(true\\|false\\|null\\)\\b" . font-lock-constant-face)
    '("\\b\\(show\\|get\\|set\\|toint\\|tofloat\\|tostring\\|cstr\\|lstr\\|size\\|cur\\|name\\|pushb\\|popb\\|pushf\\|popf\\|insert\\|clear\\|rand\\|randf\\|seed\\|choose\\|wait\\|timepass\\|exit\\|File\\|open\\|close\\|read\\|write\\|readln\\|readb\\|writeb\\|readlnb\\|replace\\|replaceall\\|rewind\\|rename\\|delete\\)\\b" . font-lock-builtin-face)
     '("&&\\|||\\|<<\\|>>\\|[+\\-*/%&|^~!<>=]=?" . font-lock-variable-name-face)

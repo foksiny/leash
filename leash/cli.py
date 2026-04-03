@@ -287,7 +287,6 @@ def compile_file(input_file, output_name=None, is_run_mode=False):
         sys.exit(1)
     except Exception as e:
         print(f"error: Internal compiler error: {e}")
-        # import traceback; traceback.print_exc()
         sys.exit(1)
 
     # Create target machine

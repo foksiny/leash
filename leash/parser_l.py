@@ -196,6 +196,22 @@ class Parser:
             self.eat("BIT_AND")
             prefix = "&"
 
+        # Handle multi-type syntax: [int, float, ...]
+        if self.current().type == "LBRACKET":
+            self.eat("LBRACKET")
+            types = []
+            while self.current().type != "RBRACKET":
+                types.append(self.parse_type())
+                if self.current().type == "COMMA":
+                    self.eat("COMMA")
+                else:
+                    break
+            self.eat("RBRACKET")
+            result = f"[{', '.join(types)}]"
+            if is_imut:
+                return f"imut {result}"
+            return result
+
         tok = self.current()
         if tok.type in (
             "INT",

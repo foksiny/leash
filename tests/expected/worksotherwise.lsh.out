@@ -1,0 +1,4 @@
+Error: Undefined variable: 'unknown_var'
+After 'works'
+warning: Unused local variable 'a' in function 'main'
+tip: If you don't need this variable, consider removing it.

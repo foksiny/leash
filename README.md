@@ -21,6 +21,7 @@ Leash is a strongly-typed, modern compiled programming language built on top of 
 - [Enums](#enums)
 - [Type Aliases](#type-aliases)
 - [Generic Types](#generic-types)
+- [Multi-Type Functions](#multi-type-functions)
 - [Type Casting](#type-casting)
 - [Type Conversions](#type-conversions)
 - [Strings](#strings)
@@ -845,6 +846,45 @@ fnc find(key string, map Hash<string, T>) : T {
 ```
 
 Generic types can be used anywhere a regular type is expected, including as function parameters, return types, struct fields, and class members.
+
+## Multi-Type Functions
+
+Leash supports functions that can accept and return multiple types using the **multi-type syntax**. This allows you to write generic-like functions without explicitly declaring template parameters.
+
+### Syntax
+
+Use square brackets `[type1, type2, ...]` to specify multiple allowed types for parameters and return values:
+
+```leash
+fnc add(a [int, float], b [int, float]) : [int, float] {
+    return a + b;
+}
+
+fnc main() : void {
+    i: int = add(10, 20);
+    f: float = add(10.5, 20.5);
+    show(i, " ", f);  // prints: 30 31.0
+}
+```
+
+### How It Works
+
+When you call a multi-type function, Leash automatically instantiates a specialized version based on the concrete argument types:
+
+- `add(10, 20)` creates an `int` version of the function
+- `add(10.5, 20.5)` creates a `float` version of the function
+
+Each instantiation is type-checked and compiled separately, ensuring type safety while maintaining the flexibility of generic functions.
+
+### Use Cases
+
+Multi-type functions are useful when:
+
+- You want simple overloading without explicit template syntax
+- A function should work with multiple related types (e.g., `int` and `float`)
+- You need the compiler to automatically generate the right function based on usage
+
+This is similar to how C++ templates work, but with Leash's type checker automatically handling the specialization.
 
 ## Type Casting
 

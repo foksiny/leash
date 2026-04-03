@@ -1,0 +1,11 @@
+fnc add(a [int, float, string], b [int, float]) : [int, float, string] {
+    return a + b;
+}
+
+fnc main() : void {
+    i: int = add(10, 20);
+    f: float = add(10.5, 20.5);
+    s: string = add("Hello ", "World");
+
+    show(i, " ", f, " ", s);
+}
