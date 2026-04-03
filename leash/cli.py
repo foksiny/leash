@@ -246,6 +246,74 @@ def _print_warning(w):
         print(f"tip: {w['tip']}", file=sys.stderr)
 
 
+def install_clang_on_windows():
+    print("Attempting to install clang...")
+
+    installers = [
+        (
+            "winget",
+            [
+                "winget",
+                "install",
+                "-e",
+                "--accept-package-agreements",
+                "--accept-source-agreements",
+                "LLVM.LLVM",
+            ],
+        ),
+        ("choco", ["choco", "install", "llvm", "-y"]),
+        ("scoop", ["scoop", "install", "llvm"]),
+    ]
+
+    for name, cmd in installers:
+        print(f"Trying {name}...")
+        try:
+            result = subprocess.run(cmd, capture_output=True)
+            if result.returncode == 0:
+                print(f"Successfully installed clang via {name}.")
+                return True
+        except FileNotFoundError:
+            continue
+
+    print("Trying direct download via Python urllib...")
+    try:
+        import urllib.request
+        import json
+
+        api_url = "https://api.github.com/repos/llvm/llvm-project/releases/latest"
+        req = urllib.request.Request(api_url, headers={"User-Agent": "Python"})
+        with urllib.request.urlopen(req) as response:
+            releases = json.loads(response.read().decode())
+        assets = [a["name"] for a in releases["assets"] if a["name"].endswith(".exe")]
+        print(f"Found {len(assets)} exe assets")
+        asset = next(
+            (
+                a
+                for a in releases["assets"]
+                if a["name"].lower().startswith("llvm") and a["name"].endswith(".exe")
+            ),
+            None,
+        )
+        if not asset:
+            asset = next(
+                (a for a in releases["assets"] if a["name"].endswith(".exe")), None
+            )
+        if not asset:
+            raise Exception("No LLVM x64 installer found in latest release")
+        url = asset["browser_download_url"]
+        dest = os.path.join(os.environ.get("TEMP", "."), "llvm-installer.exe")
+        print(f"Downloading {asset['name']}...")
+        urllib.request.urlretrieve(url, dest)
+        print(f"Downloaded installer to {dest}")
+        print("To install clang, please run the installer manually:")
+        print(f"  wine {dest}")
+        return True
+    except Exception as e:
+        print(f"Download failed: {e}")
+
+    return False
+
+
 def compile_file(input_file, output_name=None, is_run_mode=False):
     with open(input_file, "r") as f:
         code = f.read()
@@ -289,7 +357,6 @@ def compile_file(input_file, output_name=None, is_run_mode=False):
         print(f"error: Internal compiler error: {e}")
         sys.exit(1)
 
-    # Create target machine
     target = llvm.Target.from_default_triple()
     target_machine = target.create_target_machine()
 
@@ -309,15 +376,54 @@ def compile_file(input_file, output_name=None, is_run_mode=False):
     with open(obj_name, "wb") as f:
         f.write(target_machine.emit_object(mod))
 
-    # Link to executable using system compiler
-    cc = os.environ.get("CC", "gcc")
+    # Determine the C compiler to use
+    cc = os.environ.get("CC")
+    if cc is None and os.name == "nt":
+        try:
+            subprocess.run(["clang", "--version"], capture_output=True, check=True)
+            cc = "clang"
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            try:
+                subprocess.run(["gcc", "--version"], capture_output=True, check=True)
+                cc = "gcc"
+            except (FileNotFoundError, subprocess.CalledProcessError):
+                print("Error: No C compiler found on Windows.")
+                try:
+                    response = (
+                        input("Would you like to install clang? [Y/n]: ")
+                        .strip()
+                        .lower()
+                    )
+                except EOFError:
+                    response = ""
+                if response in ("", "y", "yes"):
+                    if install_clang_on_windows():
+                        try:
+                            subprocess.run(
+                                ["clang", "--version"], capture_output=True, check=True
+                            )
+                            cc = "clang"
+                        except (FileNotFoundError, subprocess.CalledProcessError):
+                            print(
+                                "Clang installed but not found in PATH. Please restart your terminal or add LLVM to PATH."
+                            )
+                            print(
+                                'Then run: setx PATH "%PATH%;C:\\Program Files\\LLVM\\bin"'
+                            )
+                            sys.exit(1)
+                    else:
+                        print("Could not install clang automatically.")
+                        print("To install manually, run: winget install LLVM.LLVM")
+                        print("Or download from: https://clang.llvm.org/")
+                        sys.exit(1)
+                else:
+                    sys.exit(1)
+    elif cc is None:
+        cc = "gcc"
 
     if os.name == "nt":
-        # On Windows, try calling clang or gcc. If ms linker is preferred, would be `link`.
-        # MSYS2/MinGW gcc works too.
         link_cmd = [cc, obj_name, "-o", output_name, "-l:libgc.so.1"]
     else:
-        # Linux / Mac
         link_cmd = [cc, obj_name, "-o", output_name, "-no-pie", "-l:libgc.so.1"]
 
     try:
