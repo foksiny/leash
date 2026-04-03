@@ -50,6 +50,7 @@ from .ast_nodes import (
     GlobalVarDecl,
     ImportStmt,
     TernaryOp,
+    WorksOtherwiseStatement,
 )
 from .errors import LeashError
 
@@ -633,6 +634,19 @@ class Parser:
                 else_block = self.parse_block()
             return self._pos(
                 IfStatement(cond, then_block, also_blocks, else_block), tok
+            )
+
+        elif current.type == "WORKS":
+            tok = self.current()
+            self.eat("WORKS")
+            self.eat("LBRACE")
+            body = self.parse_block()
+            self.eat("OTHERWISE")
+            err_var = self.eat("IDENT").value
+            self.eat("LBRACE")
+            otherwise_block = self.parse_block()
+            return self._pos(
+                WorksOtherwiseStatement(body, err_var, otherwise_block), tok
             )
 
         elif current.type == "WHILE":

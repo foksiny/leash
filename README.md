@@ -30,6 +30,7 @@ Leash is a strongly-typed, modern compiled programming language built on top of 
 - [File I/O](#file-io)
 - [Memory Management](#memory-management)
 - [Error Handling & Safety](#error-handling--safety)
+  - [Works-Otherwise Error Handling](#works-otherwise-error-handling)
 - [Library Imports](#library-imports)
 - [Program Termination](#program-termination)
 - [Library Installation](#library-installation)
@@ -1243,6 +1244,41 @@ Leash prioritizes developer experience with helpful error reporting and safety f
 - **Static Type Checker**: The compiler validates types before generating code, catching undefined variables, incompatible assignments, and member access errors.
 - **Smart Error Tips**: When a syntax error occurs, Leash provides actionable tips (e.g., suggesting a missing semicolon or parenthetical).
 - **Runtime Union Checks**: Accessing union members is checked at runtime to ensure the correct "tag" is active, avoiding memory-unsafe operations common in C.
+
+### Works-Otherwise Error Handling
+
+Leash provides a `works...otherwise` construct for catching and handling errors. Unlike traditional try-catch, it can catch **any** error (undefined variables, type errors, etc.):
+
+```leash
+fnc main() : void {
+    works {
+        a: int = unknown_var;  // This would normally cause an error
+    } otherwise err {
+        show("Error caught: ", err);  // Prints: "Error caught: Undefined variable: 'unknown_var'"
+    }
+    show("Program continues...");
+}
+```
+
+**How it works:**
+- The `works` block attempts to execute its statements
+- If any error occurs (undefined variable, type mismatch, etc.), instead of crashing, control jumps to the `otherwise` block
+- The error variable (`err` in the example) contains a string describing what went wrong
+- After the `otherwise` block completes, the program continues normally
+
+```leash
+fnc main() : void {
+    works {
+        x: int = 10;
+        show("Works block executed");
+    } otherwise err {
+        show("Caught error: ", err);
+    }
+    show("After works");  // This runs because no error occurred
+}
+```
+
+This feature is useful for graceful error handling, fallback logic, and recovering from unexpected conditions.
 
 ## Syntax Highlighting
 

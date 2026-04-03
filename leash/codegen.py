@@ -11,6 +11,7 @@ from .ast_nodes import (
     GenericCall,
     TemplateDef,
     GlobalVarDecl,
+    WorksOtherwiseStatement,
 )
 
 
@@ -34,6 +35,11 @@ class CodeGen:
         self.current_target_type = None
         self.loop_stack = []  # Stack of (break_bb, continue_bb) for nested loops
         self.seed_called = False  # Track if seed() was explicitly called
+
+        # For works...otherwise error handling
+        self.in_works_block = False  # Track if we're generating code for a works block
+        self.works_error_occured = False  # Flag if error occurred in works block
+        self.works_error_info = None  # Store error info for otherwise block
 
         # stderr - declared as external global
         self.stderr_var = ir.GlobalVariable(
@@ -1197,6 +1203,56 @@ class CodeGen:
         _, continue_bb = self.loop_stack[-1]
         self.builder.branch(continue_bb)
 
+    def _codegen_WorksOtherwiseStatement(self, node):
+        works_bb = self.builder.function.append_basic_block("works_body")
+        otherwise_bb = self.builder.function.append_basic_block("otherwise_body")
+        merge_bb = self.builder.function.append_basic_block("works_merge")
+
+        self.builder.branch(works_bb)
+        self.builder.position_at_end(works_bb)
+
+        old_in_works = self.in_works_block
+        self.in_works_block = True
+
+        for stmt in node.body:
+            self._codegen(stmt)
+            if self.builder.block.is_terminated:
+                break
+            if self.works_error_occured:
+                self.builder.branch(otherwise_bb)
+                break
+
+        self.in_works_block = old_in_works
+
+        if not self.builder.block.is_terminated and not self.works_error_occured:
+            self.builder.branch(merge_bb)
+
+        if self.works_error_occured:
+            err_msg = self.works_error_info or "Runtime error in works block"
+        else:
+            err_msg = getattr(node, "err_msg", "Runtime error in works block")
+
+        self.builder.position_at_end(otherwise_bb)
+        err_ptr = self.builder.alloca(ir.IntType(8).as_pointer())
+        err_str = self._emit_const_str(err_msg)
+        self.builder.store(err_str, err_ptr)
+        self.var_symtab[node.err_var] = (err_ptr, "string")
+
+        self.works_error_occured = False
+        self.works_error_info = None
+
+        for stmt in node.otherwise_block:
+            self._codegen(stmt)
+            if self.builder.block.is_terminated:
+                break
+
+        if not self.builder.block.is_terminated:
+            self.builder.branch(merge_bb)
+
+        self.builder.position_at_end(merge_bb)
+        if node.err_var in self.var_symtab:
+            del self.var_symtab[node.err_var]
+
     def _codegen_VariableDecl(self, node):
         resolved_type = self._resolve_type_name(node.var_type)
 
@@ -1373,7 +1429,16 @@ class CodeGen:
                 for inst_name in TypeChecker.instantiated_class_nodes:
                     if inst_name.startswith(node.name + "_"):
                         return None, inst_name
-                raise LeashError(f"Undefined variable: '{node.name}'")
+
+                if self.in_works_block:
+                    self.works_error_occured = True
+                    self.works_error_info = f"Undefined variable: '{node.name}'"
+                    err_ptr = self.builder.alloca(ir.IntType(8).as_pointer())
+                    err_str = self._emit_const_str(f"Undefined variable: '{node.name}'")
+                    self.builder.store(err_str, err_ptr)
+                    return err_ptr, "string"
+                else:
+                    raise LeashError(f"Undefined variable: '{node.name}'")
             ptr, type_name = self.var_symtab[node.name]
             resolved = self._resolve_type_name(type_name)
             while resolved.startswith("&"):
@@ -4005,7 +4070,15 @@ class CodeGen:
     def _codegen_Identifier(self, node):
         ptr, type_name = self.var_symtab.get(node.name, (None, None))
         if not ptr:
-            raise LeashError(f"Undefined variable: '{node.name}'")
+            if self.in_works_block:
+                self.works_error_occured = True
+                self.works_error_info = f"Undefined variable: '{node.name}'"
+                err_ptr = self.builder.alloca(ir.IntType(8).as_pointer())
+                err_str = self._emit_const_str(f"Undefined variable: '{node.name}'")
+                self.builder.store(err_str, err_ptr)
+                return err_ptr
+            else:
+                raise LeashError(f"Undefined variable: '{node.name}'")
         val = self.builder.load(ptr)
         resolved = self._resolve_type_name(type_name)
         while resolved.startswith("&"):

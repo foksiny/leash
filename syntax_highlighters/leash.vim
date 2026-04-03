@@ -4,7 +4,7 @@ if exists("b:current_syntax")
 endif
 
 " Keywords
-syn keyword leashKeyword fnc def struct union enum class type template return if also else while for do foreach in imut vector vec this pub priv static stop continue use
+syn keyword leashKeyword fnc def struct union enum class type template return if also else while for do foreach in imut vector vec this pub priv static stop continue use works otherwise
 syn keyword leashBoolean true false
 syn keyword leashNull null
 

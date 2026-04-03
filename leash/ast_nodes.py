@@ -347,3 +347,14 @@ class GenericCall(Expression):
         self.name = name
         self.type_args = type_args  # list of type strings
         self.args = args  # list of expressions
+
+
+class WorksOtherwiseStatement(Statement):
+    """Try-catch-like construct: works { body } otherwise err_var { handler }"""
+
+    def __init__(self, body, err_var, otherwise_block):
+        self.body = body  # list of statements in the works block
+        self.err_var = err_var  # string: name of the error variable
+        self.otherwise_block = (
+            otherwise_block  # list of statements in the otherwise block
+        )

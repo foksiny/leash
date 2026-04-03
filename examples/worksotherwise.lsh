@@ -1,0 +1,8 @@
+fnc main() : void {
+    works {
+        a: int = unknown_var;
+    } otherwise err {
+        show("Error: ", err);
+    }
+    show("After 'works'");
+}

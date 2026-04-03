@@ -55,6 +55,8 @@ class Lexer:
         "template",
         "nil",
         "use",
+        "works",
+        "otherwise",
     }
 
     # regexes

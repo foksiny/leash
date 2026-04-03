@@ -43,6 +43,12 @@ class TypeChecker:
         self.current_func_params = set()
         self.loop_depth = 0  # Track nesting depth of loops for stop/continue
         self.global_vars = {}  # name -> (type, visibility) for module-level variables
+        self.in_works_block = (
+            False  # Track if we're inside a works block for error catching
+        )
+        self.works_error_occured = False  # Flag for errors caught in works block
+        self.error_collecting = False  # Whether to collect errors instead of raising
+        self.collected_errors = []  # Errors collected in works block
 
         # Register built-in classes
         self._register_builtin_classes()
@@ -608,7 +614,13 @@ class TypeChecker:
         """Create a LeashError with position info from an AST node."""
         line = getattr(node, "line", None) if node else None
         col = getattr(node, "col", None) if node else None
-        raise LeashError(msg, line=line, col=col, tip=tip)
+        if self.in_works_block and self.error_collecting:
+            self.collected_errors.append(
+                {"msg": msg, "line": line, "col": col, "tip": tip}
+            )
+            self.works_error_occured = True
+        else:
+            raise LeashError(msg, line=line, col=col, tip=tip)
 
     def _warn(self, msg, node=None, tip=None):
         """Add a warning with position info."""
@@ -1038,6 +1050,35 @@ class TypeChecker:
                     node=stmt,
                     tip="`continue` skips to the next iteration of a loop. It can only be used within `while`, `for`, `do-while`, or `foreach` loops.",
                 )
+        elif isinstance(stmt, WorksOtherwiseStatement):
+            self.in_works_block = True
+            self.works_error_occured = False
+            self.error_collecting = True
+            self.collected_errors = []
+            try:
+                self._check_statements(stmt.body)
+            except:
+                pass
+            finally:
+                self.error_collecting = False
+                self.in_works_block = False
+
+            err_msg = "Runtime error in works block"
+            if self.works_error_occured and self.collected_errors:
+                err = self.collected_errors[0]
+                err_msg = err.get("msg", "Runtime error in works block")
+
+            self.var_types[stmt.err_var] = "string"
+            self.var_immutable[stmt.err_var] = False
+
+            if hasattr(stmt, "err_msg"):
+                stmt.err_msg = err_msg
+            else:
+                stmt.err_msg = err_msg
+
+            self._check_statements(stmt.otherwise_block)
+            del self.var_types[stmt.err_var]
+            del self.var_immutable[stmt.err_var]
 
     def _check_var_decl(self, stmt):
         if stmt.name in self.var_types:
