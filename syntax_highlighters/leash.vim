@@ -8,6 +8,9 @@ syn keyword leashKeyword fnc def struct union enum class type template return if
 syn keyword leashBoolean true false
 syn keyword leashNull null
 
+" @from native import directive
+syn match leashNativeImport "@from\s*("me=s+1
+
 " Types with optional bitwidths
 syn match leashType "\b\(int\|uint\|float\|bool\|string\|char\|void\|array\|vec\)\b\(<\d+>\)\?"
 
@@ -21,7 +24,7 @@ syn match leashGenericParam "<\s*\zs[A-Z][a-zA-Z0-9_]*\ze"
 syn match leashGenericParam ",\s*\zs[A-Z][a-zA-Z0-9_]*\ze"
 
 " Multi-type syntax: [int, float]
-syn match leashMultiType "\[\s*[a-z_][a-z0-9_]*\s*\(,\s*[a-z_][a-z0-9_]*\s*\)*\]"
+syn match leashMultiType "\[\s*[a-z_][a-zA-Z0-9_]*\s*\(,\s*[a-z_][a-zA-Z0-9_]*\s*\)*\]"
 
 " Builtin functions and properties
 syn keyword leashBuiltin show get set toint tofloat tostring cstr lstr size cur name pushb popb pushf popf insert clear rand randf seed choose wait timepass exit
@@ -30,7 +33,7 @@ syn keyword leashBuiltin show get set toint tofloat tostring cstr lstr size cur 
 syn keyword leashBuiltin File open close read write readln readb writeb readlnb replace replaceall rewind rename delete
 
 " Operators
-syn match leashOperator "&&\|||\|<<\|>>\|[+\-*/%&|^~!<>=]=\?\|!="
+syn match leashOperator "&&\|||\|<<\|>>\|[+\-*/%&|^~!<>=]="
 
 " Ternary operator
 syn match leashTernary "?"
@@ -69,5 +72,6 @@ hi def link leashChar Character
 hi def link leashComment Comment
 hi def link leashNumber Number
 hi def link leashFloat Float
+hi def link leashNativeImport Special
 
 let b:current_syntax = "leash"

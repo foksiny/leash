@@ -314,7 +314,9 @@ def install_clang_on_windows():
     return False
 
 
-def compile_file(input_file, output_name=None, is_run_mode=False):
+def compile_file(
+    input_file, output_name=None, output_type="executable", is_run_mode=False
+):
     with open(input_file, "r") as f:
         code = f.read()
 
@@ -367,9 +369,6 @@ def compile_file(input_file, output_name=None, is_run_mode=False):
         else:
             output_name = "out"
 
-    if os.name == "nt":
-        output_name += ".exe"
-
     obj_name = output_name + ".o"
 
     # Compile to object file
@@ -421,13 +420,71 @@ def compile_file(input_file, output_name=None, is_run_mode=False):
     elif cc is None:
         cc = "gcc"
 
-    if os.name == "nt":
-        link_cmd = [cc, obj_name, "-o", output_name, "-l:libgc.so.1"]
-    else:
-        link_cmd = [cc, obj_name, "-o", output_name, "-no-pie", "-l:libgc.so.1"]
+    # Collect native library paths for linking
+    native_libs = codegen.native_libs
+    native_lib_args = []
+    for lib_path, func_decls, var_decls in native_libs:
+        if lib_path.startswith("."):
+            lib_path = os.path.join(base_path, lib_path)
+        if os.name == "nt":
+            native_lib_args.append(lib_path)
+        else:
+            native_lib_args.append(lib_path)
 
     try:
-        subprocess.run(link_cmd, check=True)
+        if output_type == "executable":
+            if os.name == "nt":
+                output_name_final = output_name + ".exe"
+                link_cmd = [
+                    cc,
+                    obj_name,
+                    "-o",
+                    output_name_final,
+                    "-l:libgc.so.1",
+                ] + native_lib_args
+            else:
+                output_name_final = output_name
+                link_cmd = [
+                    cc,
+                    obj_name,
+                    "-o",
+                    output_name_final,
+                    "-no-pie",
+                    "-l:libgc.so.1",
+                ] + native_lib_args
+            subprocess.run(link_cmd, check=True)
+        elif output_type == "dynamic":
+            if os.name == "nt":
+                output_name_final = output_name + ".dll"
+            else:
+                output_name_final = "lib" + output_name + ".so"
+            if os.name == "nt":
+                link_cmd = [
+                    cc,
+                    "-shared",
+                    obj_name,
+                    "-o",
+                    output_name_final,
+                ] + native_lib_args
+            else:
+                link_cmd = [
+                    cc,
+                    "-shared",
+                    obj_name,
+                    "-o",
+                    output_name_final,
+                    "-fPIC",
+                ] + native_lib_args
+            subprocess.run(link_cmd, check=True)
+        elif output_type == "static":
+            if os.name == "nt":
+                output_name_final = output_name + ".lib"
+            else:
+                output_name_final = "lib" + output_name + ".a"
+            ar_cmd = ["ar", "rcs", output_name_final, obj_name]
+            subprocess.run(ar_cmd, check=True)
+        else:
+            output_name_final = output_name
     except FileNotFoundError:
         print(f"Error: A C compiler ('{cc}') is required to link the executable.")
         sys.exit(1)
@@ -440,8 +497,8 @@ def compile_file(input_file, output_name=None, is_run_mode=False):
         os.remove(obj_name)
 
     if not is_run_mode:
-        print(f"Successfully compiled '{input_file}' to '{output_name}'")
-    return output_name
+        print(f"Successfully compiled '{input_file}' to '{output_name_final}'")
+    return output_name_final
 
 
 def run_file(input_file, args=[]):
@@ -468,6 +525,9 @@ def run_file(input_file, args=[]):
 def main():
     if len(sys.argv) < 2:
         print("Usage: leash <compile|run|install> ...")
+        print("       leash compile <file.lsh> [to <outname>]")
+        print("       leash compile <file.lsh> to-dynamic [<outname>]")
+        print("       leash compile <file.lsh> to-static [<outname>]")
         sys.exit(1)
 
     cmd = sys.argv[1]
@@ -480,9 +540,20 @@ def main():
             run_file(input_file, sys.argv[3:])
         else:
             output_name = None
-            if len(sys.argv) == 5 and sys.argv[3] == "to":
-                output_name = sys.argv[4]
-            compile_file(input_file, output_name)
+            output_type = "executable"
+            if len(sys.argv) >= 4:
+                if sys.argv[3] == "to":
+                    if len(sys.argv) >= 5:
+                        output_name = sys.argv[4]
+                elif sys.argv[3] == "to-dynamic":
+                    output_type = "dynamic"
+                    if len(sys.argv) >= 5:
+                        output_name = sys.argv[4]
+                elif sys.argv[3] == "to-static":
+                    output_type = "static"
+                    if len(sys.argv) >= 5:
+                        output_name = sys.argv[4]
+            compile_file(input_file, output_name, output_type)
     elif cmd == "install":
         if len(sys.argv) < 3:
             print("Usage: leash install <path> [<path> ...]")

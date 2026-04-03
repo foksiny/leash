@@ -358,3 +358,15 @@ class WorksOtherwiseStatement(Statement):
         self.otherwise_block = (
             otherwise_block  # list of statements in the otherwise block
         )
+
+
+class NativeImport(ASTNode):
+    """Represents a native library import like '@from("lib.so") { fnc add(a int, b int) : int; my_var: int; };'"""
+
+    def __init__(self, lib_path, func_declarations, var_declarations):
+        super().__init__()
+        self.lib_path = lib_path  # string: path to the .a or .so file
+        self.func_declarations = (
+            func_declarations  # list of (name, args, return_type) tuples
+        )
+        self.var_declarations = var_declarations  # list of (name, var_type) tuples

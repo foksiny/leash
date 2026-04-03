@@ -51,6 +51,7 @@ from .ast_nodes import (
     ImportStmt,
     TernaryOp,
     WorksOtherwiseStatement,
+    NativeImport,
 )
 from .errors import LeashError
 
@@ -335,6 +336,8 @@ class Parser:
                 items.append(self.parse_global_var())
             elif self.current().type == "USE":
                 items.append(self.parse_import())
+            elif self.current().type == "AT":
+                items.append(self.parse_native_import())
             else:
                 tok = self.current()
                 raise LeashError(
@@ -417,6 +420,52 @@ class Parser:
 
         self.eat("SEMI")
         return self._pos(ImportStmt(module_path, imported_items), tok)
+
+    def parse_native_import(self):
+        """Parse a native library import: @from("lib.so") { fnc add(a int, b int) : int; };"""
+        tok = self.current()
+        self.eat("AT")
+        self.eat("IDENT")  # eat "from"
+        self.eat("LPAREN")
+        lib_path = self.eat("STRING").value
+        self.eat("RPAREN")
+        self.eat("LBRACE")
+        func_decls = []
+        var_decls = []
+        while self.current().type != "RBRACE":
+            if self.current().type == "FNC":
+                func_decls.append(self.parse_native_decl())
+            else:
+                var_decls.append(self.parse_native_var_decl())
+        self.eat("RBRACE")
+        self.eat("SEMI")
+        return self._pos(NativeImport(lib_path, func_decls, var_decls), tok)
+
+    def parse_native_decl(self):
+        """Parse a function declaration inside @from block (no body)."""
+        self.eat("FNC")
+        name = self.eat("IDENT").value
+        self.eat("LPAREN")
+        args = []
+        while self.current().type != "RPAREN":
+            arg_name = self.eat("IDENT").value
+            arg_type = self.parse_type()
+            args.append((arg_name, arg_type))
+            if self.current().type == "COMMA":
+                self.eat("COMMA")
+        self.eat("RPAREN")
+        self.eat("COLON")
+        return_type = self.parse_type()
+        self.eat("SEMI")
+        return (name, tuple(args), return_type)
+
+    def parse_native_var_decl(self):
+        """Parse a variable declaration inside @from block (no initializer)."""
+        name = self.eat("IDENT").value
+        self.eat("COLON")
+        var_type = self.parse_type()
+        self.eat("SEMI")
+        return (name, var_type)
 
     def parse_def(self, visibility="pub"):
         if self.current().type == "DEF":

@@ -32,6 +32,7 @@ Leash is a strongly-typed, modern compiled programming language built on top of 
 - [Memory Management](#memory-management)
 - [Error Handling & Safety](#error-handling--safety)
   - [Works-Otherwise Error Handling](#works-otherwise-error-handling)
+- [Native Library Imports (FFI)](#native-library-imports-ffi)
 - [Library Imports](#library-imports)
 - [Program Termination](#program-termination)
 - [Library Installation](#library-installation)
@@ -58,7 +59,108 @@ python3 -m leash.cli compile program.lsh
 # You can also use the 'to' keyword to specify a custom output binary name
 python3 -m leash.cli compile program.lsh to my_custom_binary
 ./my_custom_binary
+
+# Compile to a dynamic library (.so)
+python3 -m leash.cli compile program.lsh to-dynamic mylib
+
+# Compile to a static library (.a)
+python3 -m leash.cli compile program.lsh to-static mylib
 ```
+
+### Native Library Compilation
+
+Leash can compile programs into shared (`.so`) or static (`.a`) libraries for use by other programs or languages:
+
+| Output Type | Flag | Output File |
+|-------------|------|-------------|
+| Executable | `to <name>` | `<name>` |
+| Dynamic Library | `to-dynamic <name>` | `lib<name>.so` |
+| Static Library | `to-static <name>` | `lib<name>.a` |
+
+```bash
+# Compile as dynamic library
+leash compile math.lsh to-dynamic math
+# Creates: libmath.so
+
+# Compile as static library
+leash compile utils.lsh to-static utils
+# Creates: libutils.a
+```
+
+## Native Library Imports (FFI)
+
+Leash supports importing functions from native libraries (`.a` or `.so` files) using the `@from` directive. This enables Foreign Function Interface (FFI) with C, C++, Rust, and other languages that compile to static or shared libraries.
+
+```leash
+@from("mylib.so") {
+    fnc add(a int, b int) : int;
+    fnc multiply(a int, b int) : int;
+};
+
+fnc main() : void {
+    show(add(10, 20));        // 30
+    show(multiply(5, 4));     // 20
+}
+```
+
+### How It Works
+
+The `@from` directive tells the compiler:
+1. To declare functions and variables as external (provided at link time)
+2. To link against the specified library during compilation
+
+You can declare both functions and variables from native libraries:
+
+```leash
+@from("mylib.so") {
+    fnc add(a int, b int) : int;
+    my_global: int;
+    config: int;
+};
+```
+
+You can use `.a` (static) or `.so` (dynamic) library files:
+
+```leash
+// Link against a static library
+@from("libmath.a") {
+    fnc sin(x float) : float;
+    fnc cos(x float) : float;
+    PI: float;
+};
+
+// Link against a shared library
+@from("/usr/lib/libcurl.so") {
+    fnc curl_init() : int;
+    fnc curl_setopt(handle int, option int, value string) : int;
+};
+```
+
+### Creating Native Libraries
+
+To use C functions in Leash, compile them to a library first:
+
+```c
+// math_utils.c
+int add(int a, int b) {
+    return a + b;
+}
+```
+
+```bash
+# Compile to static library
+gcc -c math_utils.c -o math_utils.o
+ar rcs libmath.a math_utils.o
+
+# Or compile to shared library
+gcc -shared -fPIC math_utils.c -o libmath.so
+```
+
+### Limitations
+
+- Function signatures must match exactly between Leash and the native library
+- The library must be available at link time
+- Initializers are not supported for variable declarations (e.g., `x: int = 10;` is not allowed)
 
 ## Library Imports
 

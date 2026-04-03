@@ -12,6 +12,7 @@ from .ast_nodes import (
     TemplateDef,
     GlobalVarDecl,
     WorksOtherwiseStatement,
+    NativeImport,
 )
 
 
@@ -46,6 +47,9 @@ class CodeGen:
             self.module, ir.IntType(8).as_pointer(), name="stderr"
         )
         self.stderr_var.linkage = "external"
+
+        # Native libraries for FFI (from @from statements)
+        self.native_libs = []  # list of (lib_path, declarations) tuples
 
         # Boehm GC configuration (replacing legacy SAMM)
         self.current_func_alloc_limit = 0  # Not used with GC
@@ -624,6 +628,9 @@ class CodeGen:
         return type_name
 
     def _codegen_Program(self, node):
+        # Reset native libs for this compilation
+        self.native_libs = []
+
         # First pass: register type aliases and struct/enum definitions
         for item in node.items:
             if isinstance(item, TypeAlias):
@@ -634,6 +641,8 @@ class CodeGen:
                 self._codegen(item)
             elif isinstance(item, UnionDef):
                 self._codegen(item)
+            elif isinstance(item, NativeImport):
+                self._codegen(item)
 
         # Second pass: global variable declarations
         # Initialize storage for globals (reset in case CodeGen is reused)
@@ -643,6 +652,8 @@ class CodeGen:
         for item in node.items:
             if isinstance(item, GlobalVarDecl):
                 self._codegen(item)
+            elif isinstance(item, NativeImport):
+                self._codegen_native_import_vars(item)
 
         # Third pass: generate non-generic classes (which may reference structs)
         for item in node.items:
@@ -677,6 +688,27 @@ class CodeGen:
         # If there is an initializer, schedule it for runtime initialization
         if node.value is not None:
             self.global_init_list.append((gv, node.value, node.var_type))
+
+    def _codegen_NativeImport(self, node):
+        """Generate external function declarations for native library imports (first pass)."""
+        for name, args, return_type in node.func_declarations:
+            arg_types = [self._get_llvm_type(arg_type) for _, arg_type in args]
+            ret_type = self._get_llvm_type(return_type, is_return=True)
+            func_type = ir.FunctionType(ret_type, arg_types)
+            func = ir.Function(self.module, func_type, name=name)
+            func.linkage = "external"
+            self.func_symtab[name] = func
+        self.native_libs.append(
+            (node.lib_path, node.func_declarations, node.var_declarations)
+        )
+
+    def _codegen_native_import_vars(self, node):
+        """Generate external global variable declarations for native library imports (second pass)."""
+        for name, var_type in node.var_declarations:
+            llvm_type = self._get_llvm_type(var_type)
+            gv = ir.GlobalVariable(self.module, llvm_type, name=name)
+            gv.linkage = "external"
+            self.global_var_ptrs[name] = (gv, var_type)
 
     def _codegen_global_init_function(self):
         """Generate a function that initializes all globals with initializers."""
@@ -4069,6 +4101,11 @@ class CodeGen:
 
     def _codegen_Identifier(self, node):
         ptr, type_name = self.var_symtab.get(node.name, (None, None))
+        if not ptr:
+            # Check global variables (including those from @from)
+            gv_info = self.global_var_ptrs.get(node.name)
+            if gv_info:
+                ptr, type_name = gv_info
         if not ptr:
             if self.in_works_block:
                 self.works_error_occured = True

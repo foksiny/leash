@@ -100,6 +100,7 @@ class Lexer:
         ("LT", r"<"),  # Less than
         ("GT", r">"),  # Greater than
         ("CHAR", r"'[^'\\]*(\\.[^'\\]*)*'"),  # Char literal
+        ("AT", r"@"),  # @ symbol for native imports
         ("NEWLINE", r"\n"),  # Line endings
         ("SKIP", r"[ \t]+"),  # Skip over spaces and tabs
         ("MISMATCH", r"."),  # Any other character

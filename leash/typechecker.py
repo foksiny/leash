@@ -73,6 +73,8 @@ class TypeChecker:
                 self._register_function_sig(item)
             elif isinstance(item, GlobalVarDecl):
                 self._register_global_var(item)
+            elif isinstance(item, NativeImport):
+                self._register_native_import(item)
 
         # Second pass: check function bodies and global var initializers
         for item in program.items:
@@ -84,6 +86,14 @@ class TypeChecker:
                 self._check_global_var(item)
 
         return self.warnings
+
+    def _register_native_import(self, node):
+        """Register function and variable signatures from a native library import."""
+        for name, args, return_type in node.func_declarations:
+            arg_types = tuple(arg_type for _, arg_type in args)
+            self.func_types[name] = (arg_types, return_type)
+        for name, var_type in node.var_declarations:
+            self.global_vars[name] = (var_type, "pub")
 
     def _register_builtin_classes(self):
         """Register built-in classes like File."""
