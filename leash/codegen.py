@@ -698,8 +698,17 @@ class CodeGen:
             func = ir.Function(self.module, func_type, name=name)
             func.linkage = "external"
             self.func_symtab[name] = func
+        self._codegen_native_import_structs_unions_enums(node)
         self.native_libs.append(
-            (node.lib_path, node.func_declarations, node.var_declarations)
+            (
+                node.lib_path,
+                node.func_declarations,
+                node.var_declarations,
+                node.struct_declarations,
+                node.union_declarations,
+                node.enum_declarations,
+                node.typedef_declarations,
+            )
         )
 
     def _codegen_native_import_vars(self, node):
@@ -709,6 +718,67 @@ class CodeGen:
             gv = ir.GlobalVariable(self.module, llvm_type, name=name)
             gv.linkage = "external"
             self.global_var_ptrs[name] = (gv, var_type)
+
+    def _codegen_native_import_structs_unions_enums(self, node):
+        """Generate struct, union, and enum types for native library imports."""
+        for _, name, fields in node.struct_declarations:
+            llvm_types = [self._get_llvm_type(ftype) for _, ftype in fields]
+            struct_type = ir.LiteralStructType(llvm_types)
+            self.struct_symtab[name] = {
+                "type": struct_type,
+                "fields": {fname: idx for idx, (fname, _) in enumerate(fields)},
+                "field_types": {fname: ftype for fname, ftype in fields},
+            }
+        for _, name, variants in node.union_declarations:
+            variant_info = {}
+            max_size = 0
+            for idx, (vname, vtype) in enumerate(variants):
+                llvm_ty = self._get_llvm_type(vtype)
+                size = self._type_byte_size(llvm_ty)
+                if size > max_size:
+                    max_size = size
+                variant_info[vname] = {
+                    "index": idx,
+                    "type_name": vtype,
+                    "llvm_type": llvm_ty,
+                    "size": size,
+                }
+            if max_size < 8:
+                max_size = 8
+            union_type = ir.LiteralStructType(
+                [ir.IntType(32), ir.ArrayType(ir.IntType(8), max_size)]
+            )
+            self.union_symtab[name] = {
+                "type": union_type,
+                "variants": variant_info,
+                "max_size": max_size,
+            }
+        for _, name, members in node.enum_declarations:
+            names = []
+            for mname in members:
+                s = bytearray(mname.encode("utf8") + b"\0")
+                c_str = ir.Constant(ir.ArrayType(ir.IntType(8), len(s)), s)
+                g = ir.GlobalVariable(
+                    self.module,
+                    c_str.type,
+                    name=self.module.get_unique_name(f"enum_{name}_{mname}"),
+                )
+                g.linkage = "internal"
+                g.global_constant = True
+                g.initializer = c_str
+                names.append(g.bitcast(ir.IntType(8).as_pointer()))
+            ptr_type = ir.IntType(8).as_pointer()
+            arr_type = ir.ArrayType(ptr_type, len(names))
+            c_names_arr = ir.Constant(arr_type, names)
+            g_names = ir.GlobalVariable(
+                self.module, arr_type, name=f"enum_names_{name}"
+            )
+            g_names.linkage = "internal"
+            g_names.global_constant = True
+            g_names.initializer = c_names_arr
+            self.enum_symtab[name] = {"members": members, "names_arr": g_names}
+        for _, name, target_type in node.typedef_declarations:
+            self.type_aliases[name] = target_type
 
     def _codegen_global_init_function(self):
         """Generate a function that initializes all globals with initializers."""

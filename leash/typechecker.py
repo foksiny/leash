@@ -88,12 +88,20 @@ class TypeChecker:
         return self.warnings
 
     def _register_native_import(self, node):
-        """Register function and variable signatures from a native library import."""
+        """Register function, variable, struct, union, enum, and typedef signatures from a native library import."""
         for name, args, return_type in node.func_declarations:
             arg_types = tuple(arg_type for _, arg_type in args)
             self.func_types[name] = (arg_types, return_type)
         for name, var_type in node.var_declarations:
             self.global_vars[name] = (var_type, "pub")
+        for _, name, fields in node.struct_declarations:
+            self.struct_types[name] = {fname: ftype for fname, ftype in fields}
+        for _, name, variants in node.union_declarations:
+            self.union_types[name] = {vname: vtype for vname, vtype in variants}
+        for _, name, members in node.enum_declarations:
+            self.enum_types[name] = members
+        for _, name, target_type in node.typedef_declarations:
+            self.type_aliases[name] = target_type
 
     def _register_builtin_classes(self):
         """Register built-in classes like File."""

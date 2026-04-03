@@ -106,16 +106,25 @@ fnc main() : void {
 ### How It Works
 
 The `@from` directive tells the compiler:
-1. To declare functions and variables as external (provided at link time)
+1. To declare functions, variables, structs, unions, enums, and type aliases as external
 2. To link against the specified library during compilation
 
-You can declare both functions and variables from native libraries:
+You can declare functions, variables, structs, unions, enums, and type aliases from native libraries:
 
 ```leash
 @from("mylib.so") {
     fnc add(a int, b int) : int;
     my_global: int;
-    config: int;
+    def Point : struct {
+        x: int;
+        y: int;
+    };
+    def ErrorCode : union {
+        code: int;
+        message: string;
+    };
+    def Color : enum { RED, GREEN, BLUE };
+    def MyInt : type int;
 };
 ```
 
@@ -158,9 +167,10 @@ gcc -shared -fPIC math_utils.c -o libmath.so
 
 ### Limitations
 
-- Function signatures must match exactly between Leash and the native library
+- Type signatures must match exactly between Leash and the native library
 - The library must be available at link time
 - Initializers are not supported for variable declarations (e.g., `x: int = 10;` is not allowed)
+- Only basic struct/union/enum fields are supported (no nested anonymous structs)
 
 ## Library Imports
 

@@ -361,12 +361,33 @@ class WorksOtherwiseStatement(Statement):
 
 
 class NativeImport(ASTNode):
-    """Represents a native library import like '@from("lib.so") { fnc add(a int, b int) : int; my_var: int; };'"""
+    """Represents a native library import with functions, variables, structs, unions, enums, and typedefs."""
 
-    def __init__(self, lib_path, func_declarations, var_declarations):
+    def __init__(
+        self,
+        lib_path,
+        func_declarations,
+        var_declarations,
+        struct_declarations,
+        union_declarations,
+        enum_declarations,
+        typedef_declarations,
+    ):
         super().__init__()
-        self.lib_path = lib_path  # string: path to the .a or .so file
+        self.lib_path = lib_path
         self.func_declarations = (
             func_declarations  # list of (name, args, return_type) tuples
         )
         self.var_declarations = var_declarations  # list of (name, var_type) tuples
+        self.struct_declarations = (
+            struct_declarations  # list of ("struct", name, fields) tuples
+        )
+        self.union_declarations = (
+            union_declarations  # list of ("union", name, variants) tuples
+        )
+        self.enum_declarations = (
+            enum_declarations  # list of ("enum", name, members) tuples
+        )
+        self.typedef_declarations = (
+            typedef_declarations  # list of ("typedef", name, target_type) tuples
+        )

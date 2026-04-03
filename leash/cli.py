@@ -423,7 +423,8 @@ def compile_file(
     # Collect native library paths for linking
     native_libs = codegen.native_libs
     native_lib_args = []
-    for lib_path, func_decls, var_decls in native_libs:
+    for native_lib in native_libs:
+        lib_path = native_lib[0]
         if lib_path.startswith("."):
             lib_path = os.path.join(base_path, lib_path)
         if os.name == "nt":

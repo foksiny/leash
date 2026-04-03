@@ -422,7 +422,7 @@ class Parser:
         return self._pos(ImportStmt(module_path, imported_items), tok)
 
     def parse_native_import(self):
-        """Parse a native library import: @from("lib.so") { fnc add(a int, b int) : int; };"""
+        """Parse a native library import: @from("lib.so") { ... };"""
         tok = self.current()
         self.eat("AT")
         self.eat("IDENT")  # eat "from"
@@ -432,14 +432,42 @@ class Parser:
         self.eat("LBRACE")
         func_decls = []
         var_decls = []
+        struct_decls = []
+        union_decls = []
+        enum_decls = []
+        typedef_decls = []
         while self.current().type != "RBRACE":
             if self.current().type == "FNC":
                 func_decls.append(self.parse_native_decl())
+            elif self.current().type == "DEF":
+                decl = self.parse_native_def_decl()
+                decl_type = decl[0]
+                if decl_type == "struct":
+                    struct_decls.append(decl)
+                elif decl_type == "union":
+                    union_decls.append(decl)
+                elif decl_type == "enum":
+                    enum_decls.append(decl)
+                elif decl_type == "typedef":
+                    typedef_decls.append(decl)
+                else:
+                    var_decls.append(decl)
             else:
                 var_decls.append(self.parse_native_var_decl())
         self.eat("RBRACE")
         self.eat("SEMI")
-        return self._pos(NativeImport(lib_path, func_decls, var_decls), tok)
+        return self._pos(
+            NativeImport(
+                lib_path,
+                func_decls,
+                var_decls,
+                struct_decls,
+                union_decls,
+                enum_decls,
+                typedef_decls,
+            ),
+            tok,
+        )
 
     def parse_native_decl(self):
         """Parse a function declaration inside @from block (no body)."""
@@ -466,6 +494,64 @@ class Parser:
         var_type = self.parse_type()
         self.eat("SEMI")
         return (name, var_type)
+
+    def parse_native_def_decl(self):
+        """Parse a def declaration inside @from block (struct, union, enum, typedef, or var)."""
+        self.eat("DEF")
+        name = self.eat("IDENT").value
+        self.eat("COLON")
+        if self.current().type == "STRUCT":
+            self.eat("STRUCT")
+            self.eat("LBRACE")
+            fields = []
+            while self.current().type != "RBRACE":
+                field_name = self.eat("IDENT").value
+                self.eat("COLON")
+                field_type = self.parse_type()
+                self.eat("SEMI")
+                fields.append((field_name, field_type))
+            self.eat("RBRACE")
+            self.eat("SEMI")
+            return ("struct", name, fields)
+        elif self.current().type == "UNION":
+            self.eat("UNION")
+            self.eat("LBRACE")
+            variants = []
+            while self.current().type != "RBRACE":
+                var_name = self.eat("IDENT").value
+                self.eat("COLON")
+                var_type = self.parse_type()
+                if self.current().type == "COMMA":
+                    self.eat("COMMA")
+                elif self.current().type == "SEMI":
+                    self.eat("SEMI")
+                variants.append((var_name, var_type))
+            self.eat("RBRACE")
+            self.eat("SEMI")
+            return ("union", name, variants)
+        elif self.current().type == "ENUM":
+            self.eat("ENUM")
+            self.eat("LBRACE")
+            members = []
+            while self.current().type != "RBRACE":
+                member_name = self.eat("IDENT").value
+                members.append(member_name)
+                if self.current().type == "COMMA":
+                    self.eat("COMMA")
+                elif self.current().type == "SEMI":
+                    self.eat("SEMI")
+            self.eat("RBRACE")
+            self.eat("SEMI")
+            return ("enum", name, members)
+        elif self.current().type == "TYPE":
+            self.eat("TYPE")
+            target_type = self.parse_type()
+            self.eat("SEMI")
+            return ("typedef", name, target_type)
+        else:
+            var_type = self.parse_type()
+            self.eat("SEMI")
+            return ("var", name, var_type)
 
     def parse_def(self, visibility="pub"):
         if self.current().type == "DEF":
