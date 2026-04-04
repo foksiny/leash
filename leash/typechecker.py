@@ -640,6 +640,9 @@ class TypeChecker:
         t = self._resolve(type_name)
         if t.startswith("*") or t.startswith("&"):
             return self._is_valid_type(t[1:])
+        # Handle function pointer types: fnc(...) : ...
+        if self._is_function_pointer_type(t):
+            return True
         # Strip array suffix
         if t.endswith("]") and "[" in t:
             t = t.split("[")[0]
@@ -674,6 +677,22 @@ class TypeChecker:
     def _is_numeric(self, type_name):
         b = self._base_type(type_name)
         return b in ("int", "uint", "float")
+
+    def _is_function_pointer_type(self, type_name):
+        """Check if a type string represents a function pointer type."""
+        if not isinstance(type_name, str):
+            return False
+        return type_name.startswith("fnc(") and " : " in type_name
+
+    def _get_function_pointer_signature(self, type_name):
+        """Extract (param_types, return_type) from a function pointer type string."""
+        if not self._is_function_pointer_type(type_name):
+            return None, None
+        # Format: fnc(param1, param2) : return_type
+        inner = type_name[4 : type_name.index(")")]
+        return_type = type_name.split(" : ")[-1]
+        param_types = [p.strip() for p in inner.split(",")] if inner else []
+        return param_types, return_type
 
     def _check_type_conv(self, expr):
         src_t = self._infer_type(expr.expr)
@@ -728,6 +747,12 @@ class TypeChecker:
 
         if src_r == dst_r:
             return True
+
+        # Handle function pointer types
+        if self._is_function_pointer_type(src_r) and self._is_function_pointer_type(
+            dst_r
+        ):
+            return src_r == dst_r
 
         # Allow generic class template to be assigned to any of its instantiations
         # e.g., Hash (template) can be used where Hash<string, int> is expected
@@ -1614,6 +1639,16 @@ class TypeChecker:
         return left_t  # Best guess fallback
 
     def _check_unary_op(self, expr):
+        from .ast_nodes import Identifier
+
+        if expr.op == "&":  # Address-of
+            # Check if we're taking address of a function (identifier referring to a function)
+            if isinstance(expr.expr, Identifier):
+                if expr.expr.name in self.func_types:
+                    # It's a function name - return function pointer type
+                    arg_types, return_type = self.func_types[expr.expr.name]
+                    return f"fnc({', '.join(arg_types)}) : {return_type}"
+
         val_t = self._infer_type(expr.expr)
         if val_t:
             val_b = self._base_type(val_t)
@@ -1623,9 +1658,8 @@ class TypeChecker:
                         f"Cannot dereference non-pointer type '{val_t}'", node=expr
                     )
                 return val_t[1:]
-            if expr.op == "&":  # Address-of
-                # In Leash, we can take the address of any l-value.
-                # For simplicity, we allow it for variables.
+            if expr.op == "&":  # Address-of (for variables)
+                # For variables, return pointer to type
                 return f"*{val_t}"
             if expr.op == "!":
                 if isinstance(expr.expr, UnaryOp) and expr.expr.op == "!":
@@ -1860,6 +1894,42 @@ class TypeChecker:
             # Check if it's a generic function (including multi-type functions)
             if expr.name in self.generic_funcs:
                 return self._handle_multi_type_call(expr)
+
+            # Check if it's a function pointer variable being called
+            if expr.name in self.var_types:
+                var_type = self.var_types[expr.name]
+                resolved_type = self._resolve(var_type)
+                if self._is_function_pointer_type(resolved_type):
+                    # Mark the variable as used
+                    if expr.name in self.current_func_params:
+                        self.used_params.add(expr.name)
+                    else:
+                        self.used_vars.add(expr.name)
+                    param_types, return_type = self._get_function_pointer_signature(
+                        resolved_type
+                    )
+                    if len(expr.args) != len(param_types):
+                        self._error(
+                            f"Function pointer expects {len(param_types)} argument(s), "
+                            f"but got {len(expr.args)}",
+                            node=expr,
+                        )
+                    for i, (arg_expr, expected_type) in enumerate(
+                        zip(expr.args, param_types)
+                    ):
+                        arg_type = self._infer_type(arg_expr)
+                        bare_arg = self._strip_imut(arg_type) if arg_type else None
+                        bare_expected = self._strip_imut(expected_type)
+                        if bare_arg and not self._types_compatible(
+                            bare_arg, bare_expected
+                        ):
+                            self._warn(
+                                f"Argument {i + 1} of function pointer expects '{bare_expected}' "
+                                f"but got '{bare_arg}'.",
+                                node=expr,
+                            )
+                    return return_type
+
             self._error(
                 f"Call to undefined function: '{expr.name}'",
                 node=expr,

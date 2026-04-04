@@ -13,6 +13,14 @@
     map)
   "Keymap for Leash major mode")
 
+(defun leash-mode-indent-setup ()
+  "Setup indentation for Leash mode."
+  (setq-local indent-tabs-mode nil)
+  (setq-local tab-width 4)
+  (setq-local leash-indent-level 4))
+
+(add-hook 'leash-mode-hook #'leash-mode-indent-setup)
+
 ;;;###autoload
 (add-to-list 'auto-mode-alist '("\\.lsh\\'" . leash-mode))
 
@@ -24,6 +32,8 @@
    '("@from\\s*(" . font-lock-preprocessor-face)
    ;; Multi-type syntax: [int, float]
    '("\\[[ \t]*\\(int\\|uint\\|float\\|bool\\|string\\|char\\|void\\)[ \t]*\\(,[ \t]*\\(int\\|uint\\|float\\|bool\\|string\\|char\\|void\\)[ \t]*\\)*\\]" . font-lock-type-face)
+   ;; Function pointer types: fnc(int, int) : int
+   '("fnc[ \t]*([^) ]*)" . font-lock-type-face)
    '("\\b\\(true\\|false\\|null\\)\\b" . font-lock-constant-face)
    '("\\b\\(show\\|get\\|set\\|toint\\|tofloat\\|tostring\\|cstr\\|lstr\\|size\\|cur\\|name\\|pushb\\|popb\\|pushf\\|popf\\|insert\\|clear\\|rand\\|randf\\|seed\\|choose\\|wait\\|timepass\\|exit\\|File\\|open\\|close\\|read\\|write\\|readln\\|readb\\|writeb\\|readlnb\\|replace\\|replaceall\\|rewind\\|rename\\|delete\\)\\b" . font-lock-builtin-face)
     '("&&\\|||\\|<<\\|>>\\|[+\\-*/%&|^~!<>=]=?" . font-lock-variable-name-face)

@@ -1,0 +1,21 @@
+fnc add(a int, b int) : int {
+    return a + b;
+}
+
+def MathFunc : type fnc(int, int) : int;
+
+fnc call_math(a int, b int, f fnc(int, int) : int) : int {
+    return f(a, b);
+}
+
+fnc main() : void {
+    add_p: fnc(int, int) : int = &add;
+
+    show(add_p(1, 2));
+
+    add2: MathFunc = &add;
+
+    show(add2(1, 2));
+
+    show(call_math(1, 2, &add));
+}

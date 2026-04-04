@@ -627,6 +627,22 @@ class CodeGen:
             return f"{prefix}{type_name}"
         return type_name
 
+    def _is_function_pointer_type(self, type_name):
+        """Check if a type string represents a function pointer type."""
+        if not isinstance(type_name, str):
+            return False
+        return type_name.startswith("fnc(") and " : " in type_name
+
+    def _get_function_pointer_signature(self, type_name):
+        """Extract (param_types, return_type) from a function pointer type string."""
+        if not self._is_function_pointer_type(type_name):
+            return None, None
+        # Format: fnc(param1, param2) : return_type
+        inner = type_name[4 : type_name.index(")")]
+        return_type = type_name.split(" : ")[-1]
+        param_types = [p.strip() for p in inner.split(",")] if inner else []
+        return param_types, return_type
+
     def _codegen_Program(self, node):
         # Reset native libs for this compilation
         self.native_libs = []
@@ -825,7 +841,25 @@ class CodeGen:
         type_name = self._resolve_type_name(type_name)
 
         if type_name.startswith("*") or type_name.startswith("&"):
-            return self._get_llvm_type(type_name[1:]).as_pointer()
+            inner_type = type_name[1:] if type_name.startswith("*") else type_name[1:]
+            # If inner type is a function pointer, we still need to return a pointer type
+            if self._is_function_pointer_type(inner_type):
+                param_types, return_type = self._get_function_pointer_signature(
+                    inner_type
+                )
+                llvm_params = [self._get_llvm_type(t) for t in param_types]
+                llvm_ret = self._get_llvm_type(return_type, is_return=True)
+                fn_type = ir.FunctionType(llvm_ret, llvm_params)
+                return fn_type.as_pointer()
+            return self._get_llvm_type(inner_type).as_pointer()
+
+        # Handle function pointer types: fnc(param_types) : return_type
+        if self._is_function_pointer_type(type_name):
+            param_types, return_type = self._get_function_pointer_signature(type_name)
+            llvm_params = [self._get_llvm_type(t) for t in param_types]
+            llvm_ret = self._get_llvm_type(return_type, is_return=True)
+            fn_type = ir.FunctionType(llvm_ret, llvm_params)
+            return fn_type.as_pointer()
 
         if type_name.endswith("]") and "[" in type_name:
             base = type_name.split("[")[0]
@@ -2840,10 +2874,18 @@ class CodeGen:
         raise LeashError(f"Unknown binary operator: '{node.op}'")
 
     def _codegen_UnaryOp(self, node):
+        from .ast_nodes import Identifier
+
         if node.op == "*":  # Dereference
             val = self._codegen(node.expr)
             return self.builder.load(val)
         if node.op == "&":  # Address-of
+            # Check if we're taking address of a function
+            if isinstance(node.expr, Identifier) and node.expr.name in self.func_symtab:
+                # Return the function as a pointer
+                func = self.func_symtab[node.expr.name]
+                return func
+            # For variables, return pointer to variable
             ptr, _ = self._codegen_lvalue(node.expr)
             return ptr
 
@@ -4074,6 +4116,26 @@ class CodeGen:
 
         func = self.func_symtab.get(node.name)
         if not func:
+            # Check if it's a function pointer variable being called
+            var_info = self.var_symtab.get(node.name)
+            if var_info:
+                ptr, var_type = var_info
+                # Resolve type aliases
+                resolved_type = self._resolve_type_name(var_type)
+                if self._is_function_pointer_type(resolved_type):
+                    # It's a function pointer - load it and call through the pointer
+                    param_types, return_type = self._get_function_pointer_signature(
+                        resolved_type
+                    )
+                    fn_ptr = self.builder.load(ptr)
+                    # Generate arguments
+                    args = []
+                    for arg_expr in node.args:
+                        v = self._codegen(arg_expr)
+                        args.append(v)
+                    # Call through the function pointer
+                    return self.builder.call(fn_ptr, args)
+
             raise LeashError(f"Call to undefined function: '{node.name}'")
 
         args = []

@@ -197,6 +197,15 @@ class Parser:
             self.eat("BIT_AND")
             prefix = "&"
 
+        # Handle function pointer types: fnc(int, int) : int
+        if self.current().type == "FNC":
+            fnc_type = self._parse_function_pointer_type()
+            if prefix:
+                fnc_type = prefix + fnc_type
+            if is_imut:
+                return f"imut {fnc_type}"
+            return fnc_type
+
         # Handle multi-type syntax: [int, float, ...]
         if self.current().type == "LBRACKET":
             self.eat("LBRACKET")
@@ -279,6 +288,20 @@ class Parser:
             tok.column,
         )
 
+    def _parse_function_pointer_type(self):
+        """Parse a function pointer type: fnc(param_types) : return_type"""
+        self.eat("FNC")
+        self.eat("LPAREN")
+        param_types = []
+        while self.current().type != "RPAREN":
+            param_types.append(self.parse_type())
+            if self.current().type == "COMMA":
+                self.eat("COMMA")
+        self.eat("RPAREN")
+        self.eat("COLON")
+        return_type = self.parse_type()
+        return f"fnc({', '.join(param_types)}) : {return_type}"
+
     # Type token types that can start a type in a cast
     TYPE_STARTERS = {
         "INT",
@@ -290,6 +313,7 @@ class Parser:
         "VOID",
         "IMUT",
         "VEC",
+        "FNC",
     }
 
     def _is_cast(self):

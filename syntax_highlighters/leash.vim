@@ -26,6 +26,9 @@ syn match leashGenericParam ",\s*\zs[A-Z][a-zA-Z0-9_]*\ze"
 " Multi-type syntax: [int, float]
 syn match leashMultiType "\[\s*[a-z_][a-zA-Z0-9_]*\s*\(,\s*[a-z_][a-zA-Z0-9_]*\s*\)*\]"
 
+" Function pointer types: fnc(int, int) : int
+syn match leashFuncPointer "fnc\s*(\s*[^)]*\s*)\s*:\s*[a-z_][a-zA-Z0-9_]*\s*\(\s*<\s*[0-9, ]\+\s*>\s*\)\?"
+
 " Builtin functions and properties
 syn keyword leashBuiltin show get set toint tofloat tostring cstr lstr size cur name pushb popb pushf popf insert clear rand randf seed choose wait timepass exit
 
@@ -60,6 +63,7 @@ hi def link leashClassInheritance Type
 hi def link leashTypeAnnotation Type
 hi def link leashGenericParam Type
 hi def link leashMultiType Type
+hi def link leashFuncPointer Type
 hi def link leashBoolean Boolean
 hi def link leashNull Constant
 hi def link leashBuiltin Function

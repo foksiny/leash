@@ -17,6 +17,7 @@ Leash is a strongly-typed, modern compiled programming language built on top of 
 - [Arrays](#arrays)
 - [Structs](#structs)
 - [Pointers](#pointers)
+  - [Function Pointers](#function-pointers)
 - [Unions](#unions)
 - [Enums](#enums)
 - [Type Aliases](#type-aliases)
@@ -738,6 +739,47 @@ fnc main() : void {
 ## Pointers
 
 Leash supports pointers for low-level memory operations and efficient parameter passing. Pointers use the `*` prefix for raw pointers and `&` for safe references.
+
+### Function Pointers
+
+Leash supports function pointers, allowing you to pass functions as arguments, store them in variables, and call them indirectly.
+
+```leash
+fnc add(a int, b int) : int {
+    return a + b;
+}
+
+def MathFunc : type fnc(int, int) : int;
+
+fnc call_math(a int, b int, f fnc(int, int) : int) : int {
+    return f(a, b);
+}
+
+fnc main() : void {
+    add_p: fnc(int, int) : int = &add;
+
+    show(add_p(1, 2));
+
+    add2: MathFunc = &add;
+
+    show(add2(1, 2));
+
+    show(call_math(1, 2, &add));
+}
+```
+
+### Function Pointer Type Syntax
+
+| Syntax | Description |
+|--------|-------------|
+| `fnc(param_types) : return_type` | Function pointer type |
+| `def Alias : type fnc(params) : ret;` | Type alias for function pointer |
+
+### Key Features:
+- **Address-of operator**: Use `&function_name` to get a function pointer
+- **Type aliases**: Create named function pointer types using `def Name : type fnc(...) : ret;`
+- **Function parameters**: Pass functions to other functions as arguments
+- **Direct calls**: Call function pointers like regular functions `fn_ptr(arg1, arg2)`
 
 ### Basic Pointer Operations
 
