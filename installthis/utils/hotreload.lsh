@@ -1,0 +1,34 @@
+priv use utils::str::Str;
+
+pub def Reloader : class {
+    priv filename: string;
+
+    static pub fnc new(name string) : Reloader {
+        return Reloader { filename: name };
+    }
+
+    pub fnc start() : void {
+        if !Str.ends(this.filename, _FILENAME) {
+            show("Hot Reloader Error: You can't hot reload the hot reloader");
+            exit(1);
+        }
+        
+        f: File = File.open(this.filename, "r");
+
+        old_code: string = "";
+
+        while 1 {
+            f.rewind();
+            new_code: string = f.read();
+
+            if new_code != old_code {
+                show("\n======== Reloading... ========\n");
+                old_code = new_code;
+                exec("leash run " + this.filename, nil);
+                show("\n========== Reloaded ==========\n");
+            }
+
+            wait(0.1);
+        }
+    }
+}

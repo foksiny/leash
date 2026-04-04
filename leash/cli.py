@@ -154,9 +154,17 @@ def resolve_imports(program, base_path):
                 # Recursively expand imports using the module's directory as base
                 module_dir = os.path.dirname(module_file_abs) or "."
                 module_ast = _expand_items(module_ast.items, module_dir)
-                # Collect definitions
+                # Collect definitions (respecting visibility)
                 available = {}
                 for mod_item in module_ast.items:
+                    # For priv use, include all items; for pub use, skip private items
+                    is_priv_import = item.visibility == "priv"
+                    if (
+                        hasattr(mod_item, "visibility")
+                        and mod_item.visibility == "priv"
+                        and not is_priv_import
+                    ):
+                        continue
                     if isinstance(
                         mod_item,
                         (
@@ -171,8 +179,15 @@ def resolve_imports(program, base_path):
                     ):
                         available[mod_item.name] = mod_item
                     elif isinstance(mod_item, GlobalVarDecl):
-                        if mod_item.visibility == "pub":
+                        if mod_item.visibility == "pub" or is_priv_import:
                             available[mod_item.name] = mod_item
+
+                # If this is a private import, don't add items to be re-exported
+                if item.visibility == "priv":
+                    # For private imports, add the imported items to current scope but don't export them
+                    for def_item in available.values():
+                        new_items.append(def_item)
+                    continue
                 # Verify requested items exist
                 if item.imported_items is not None:
                     for name in item.imported_items:
@@ -326,7 +341,7 @@ def compile_file(
         tokens = lexer.tokenize()
 
         # 2. Parsing
-        parser = Parser(tokens)
+        parser = Parser(tokens, input_file)
         ast = parser.parse()
 
         # 2.5. Resolve imports (expand them into the AST)
@@ -356,7 +371,10 @@ def compile_file(
         _print_error(e, input_file, code)
         sys.exit(1)
     except Exception as e:
+        import traceback
+
         print(f"error: Internal compiler error: {e}")
+        traceback.print_exc()
         sys.exit(1)
 
     target = llvm.Target.from_default_triple()

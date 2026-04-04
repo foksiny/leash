@@ -1,0 +1,13 @@
+fnc main() : void {
+    exec("echo Hello World", nil);
+
+    exit_c: string = exec("echo Hello World", "code");
+    show(exit_c);
+}
+
+// fnc exec(command string, mode string) : string;
+// modes:
+// nil - no mode, only output (supports inputs)
+// "wait" - wait for command to finish and then show output (no input support)
+// "silent" - no output, only return result after command finishes
+// "code" - return exit code of command as string, no output

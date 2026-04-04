@@ -1,0 +1,4 @@
+fnc main() : void {
+    show("File path: ", _FILEPATH);
+    show("File name: ", _FILENAME);
+}

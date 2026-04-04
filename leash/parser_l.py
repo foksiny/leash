@@ -52,14 +52,16 @@ from .ast_nodes import (
     TernaryOp,
     WorksOtherwiseStatement,
     NativeImport,
+    FilePathLiteral,
 )
 from .errors import LeashError
 
 
 class Parser:
-    def __init__(self, tokens):
+    def __init__(self, tokens, source_file=None):
         self.tokens = tokens
         self.pos = 0
+        self.source_file = source_file  # Store for _FILEPATH/_FILENAME
 
     def _pos(self, node, tok=None):
         """Set line/col on an AST node from a token (defaults to current token)."""
@@ -339,12 +341,22 @@ class Parser:
         items = []
         while self.current().type != "EOF":
             if self.current().type in ("PUB", "PRIV"):
-                # Peek ahead to see if next token is DEF
+                # Peek ahead to see if next token is DEF or FNC or USE
                 if self.peek() and self.peek().type == "DEF":
                     # It's a def with visibility
                     visibility = self.current().value.lower()
                     self.eat(self.current().type)  # eat PUB/PRIV
                     items.append(self.parse_def(visibility=visibility))
+                elif self.peek() and self.peek().type == "FNC":
+                    # It's a fnc with visibility
+                    visibility = self.current().value.lower()
+                    self.eat(self.current().type)  # eat PUB/PRIV
+                    items.append(self.parse_function(visibility=visibility))
+                elif self.peek() and self.peek().type == "USE":
+                    # It's a use with visibility
+                    visibility = self.current().value.lower()
+                    self.eat(self.current().type)  # eat PUB/PRIV
+                    items.append(self.parse_import(visibility=visibility))
                 else:
                     # It's a global variable with visibility
                     items.append(self.parse_global_var())
@@ -372,7 +384,7 @@ class Parser:
                 )
         return Program(items)
 
-    def parse_import(self):
+    def parse_import(self, visibility="pub"):
         """Parse a use statement: use module::item; or use subfolder::module::item;"""
         tok = self.current()
         self.eat("USE")
@@ -443,7 +455,7 @@ class Parser:
                     break
 
         self.eat("SEMI")
-        return self._pos(ImportStmt(module_path, imported_items), tok)
+        return self._pos(ImportStmt(module_path, imported_items, visibility), tok)
 
     def parse_native_import(self):
         """Parse a native library import: @from("lib.so") { ... };"""
@@ -727,7 +739,7 @@ class Parser:
             self.eat("SEMI")
         return ClassDef(name, fields, methods, parent, type_params, visibility)
 
-    def parse_function(self):
+    def parse_function(self, visibility="pub"):
         self.eat("FNC")
         name = self.eat("IDENT").value
         type_params = []
@@ -762,7 +774,9 @@ class Parser:
 
         self.eat("LBRACE")
         statements = self.parse_block()
-        return Function(name, tuple(args), return_type, statements, type_params)
+        return Function(
+            name, tuple(args), return_type, statements, type_params, visibility
+        )
 
     def parse_block(self):
         statements = []
@@ -1161,6 +1175,9 @@ class Parser:
         elif self.current().type == "IDENT":
             tok = self.current()
             name = self.eat("IDENT").value
+            # Check for special file path literals
+            if name in ("_FILEPATH", "_FILENAME"):
+                return self._pos(FilePathLiteral(name, self.source_file), tok)
             if name in ("toint", "tofloat") and self.current().type == "LPAREN":
                 self.eat("LPAREN")
                 target_type = self.parse_type()

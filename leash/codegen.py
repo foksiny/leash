@@ -226,6 +226,14 @@ class CodeGen:
         )
         self.fgets = ir.Function(self.module, fgets_ty, name="fgets")
 
+        # exec functions use the same fgets (and alias existing functions)
+        self.fgets_fn = self.fgets
+        self.malloc_fn = self.malloc
+        self.realloc_fn = self.realloc
+        self.strlen_fn = self.strlen
+        self.strcpy_fn = self.strcpy
+        self.sprintf_fn = self.sprintf
+
         fseek_ty = ir.FunctionType(
             ir.IntType(32),  # int
             [
@@ -290,6 +298,19 @@ class CodeGen:
             [ir.IntType(32), ir.IntType(64)],  # int fd, off_t length
         )
         self.ftruncate_fn = ir.Function(self.module, ftruncate_fn_ty, name="ftruncate")
+
+        # exec functions
+        system_ty = ir.FunctionType(ir.IntType(32), [ir.IntType(8).as_pointer()])
+        self.system_fn = ir.Function(self.module, system_ty, name="system")
+
+        popen_ty = ir.FunctionType(
+            ir.IntType(8).as_pointer(),  # FILE*
+            [ir.IntType(8).as_pointer(), ir.IntType(8).as_pointer()],  # command, mode
+        )
+        self.popen_fn = ir.Function(self.module, popen_ty, name="popen")
+
+        pclose_ty = ir.FunctionType(ir.IntType(32), [ir.IntType(8).as_pointer()])
+        self.pclose_fn = ir.Function(self.module, pclose_ty, name="pclose")
 
     def _emit_const_str(self, string_val):
         """Create a global string constant and return a pointer to it (i8*)."""
@@ -2990,6 +3011,142 @@ class CodeGen:
         # 5. Track for SAMM and return
         return self._track_alloc(final_buf)
 
+    def _emit_exec(self, node):
+        """Implement the 'exec' builtin for running shell commands.
+
+        Modes:
+        - nil or no mode: execute with input support (interactive), return output
+        - "wait": wait for command to finish, return output
+        - "silent": execute and return result after finish, no output
+        - "code": return exit code as string
+        """
+        if len(node.args) < 1:
+            raise LeashError("exec requires at least 1 argument (command)", node=node)
+
+        command_val = self._codegen(node.args[0])
+
+        mode = None
+        if len(node.args) >= 2:
+            mode_arg = node.args[1]
+            from .ast_nodes import NullLiteral, StringLiteral
+
+            if isinstance(mode_arg, NullLiteral):
+                mode = None
+            elif isinstance(mode_arg, StringLiteral):
+                mode = mode_arg.value
+            else:
+                mode_val = self._codegen(mode_arg)
+                mode = None
+
+        if mode == "code":
+            redirect_cmd = self._emit_const_str("sh -c '(%s) >/dev/null 2>&1; echo $?'")
+            cmd_buf = self.builder.call(
+                self.malloc_fn, [ir.Constant(ir.IntType(64), 256)]
+            )
+            self.builder.call(self.sprintf_fn, [cmd_buf, redirect_cmd, command_val])
+            pipe = self.builder.call(
+                self.popen_fn, [cmd_buf, self._emit_const_str("r")]
+            )
+
+            read_buffer = self.builder.call(
+                self.malloc_fn, [ir.Constant(ir.IntType(64), 64)]
+            )
+            line = self.builder.call(
+                self.fgets_fn, [read_buffer, ir.Constant(ir.IntType(32), 64), pipe]
+            )
+            self.builder.call(self.pclose_fn, [pipe])
+
+            return line
+        elif mode == "silent" or mode == "wait":
+            popen_mode = self._emit_const_str("r")
+            pipe = self.builder.call(self.popen_fn, [command_val, popen_mode])
+
+            read_buffer = self.builder.call(
+                self.malloc_fn, [ir.Constant(ir.IntType(64), 4096)]
+            )
+
+            alloc_size = ir.Constant(ir.IntType(64), 4096)
+            result_ptr_ptr = self.builder.alloca(
+                ir.IntType(8).as_pointer(), name="exec_result_ptr"
+            )
+            result_size_ptr = self.builder.alloca(
+                ir.IntType(64), name="exec_result_size"
+            )
+            capacity_ptr = self.builder.alloca(ir.IntType(64), name="exec_capacity")
+
+            self.builder.store(read_buffer, result_ptr_ptr)
+            self.builder.store(ir.Constant(ir.IntType(64), 0), result_size_ptr)
+            self.builder.store(alloc_size, capacity_ptr)
+
+            loop_bb = self.builder.function.append_basic_block("exec_read_loop")
+            loop_end_bb = self.builder.function.append_basic_block("exec_read_end")
+
+            self.builder.branch(loop_bb)
+            self.builder.position_at_end(loop_bb)
+
+            line = self.builder.call(
+                self.fgets_fn, [read_buffer, ir.Constant(ir.IntType(32), 4096), pipe]
+            )
+            is_null = self.builder.icmp_signed(
+                "==", line, ir.Constant(ir.IntType(8).as_pointer(), None)
+            )
+
+            next_char_bb = self.builder.function.append_basic_block("exec_next_line")
+            self.builder.cbranch(is_null, loop_end_bb, next_char_bb)
+
+            self.builder.position_at_end(next_char_bb)
+
+            line_len = self.builder.call(self.strlen_fn, [line])
+
+            curr_result_ptr = self.builder.load(result_ptr_ptr)
+            curr_result_size = self.builder.load(result_size_ptr)
+            curr_capacity = self.builder.load(capacity_ptr)
+
+            new_size = self.builder.add(curr_result_size, line_len)
+
+            need_realloc = self.builder.icmp_signed(">=", new_size, curr_capacity)
+
+            realloc_bb = self.builder.function.append_basic_block("exec_realloc")
+            copy_bb = self.builder.function.append_basic_block("exec_copy")
+            self.builder.cbranch(need_realloc, realloc_bb, copy_bb)
+
+            self.builder.position_at_end(realloc_bb)
+            new_alloc_size = self.builder.mul(
+                curr_capacity, ir.Constant(ir.IntType(64), 2)
+            )
+            new_buffer = self.builder.call(
+                self.realloc_fn, [curr_result_ptr, new_alloc_size]
+            )
+            self.builder.store(new_buffer, result_ptr_ptr)
+            self.builder.store(new_alloc_size, capacity_ptr)
+            self.builder.branch(copy_bb)
+
+            self.builder.position_at_end(copy_bb)
+
+            copy_result_ptr = self.builder.load(result_ptr_ptr)
+            self.builder.call(self.strcpy_fn, [copy_result_ptr, line])
+
+            self.builder.store(
+                self.builder.add(self.builder.load(result_size_ptr), line_len),
+                result_size_ptr,
+            )
+            self.builder.branch(loop_bb)
+
+            self.builder.position_at_end(loop_end_bb)
+
+            self.builder.call(self.pclose_fn, [pipe])
+
+            final_result_ptr = self.builder.load(result_ptr_ptr)
+            final_result_size = self.builder.load(result_size_ptr)
+
+            term_ptr = self.builder.gep(final_result_ptr, [final_result_size])
+            self.builder.store(ir.Constant(ir.IntType(8), 0), term_ptr)
+
+            return final_result_ptr
+        else:
+            self.builder.call(self.system_fn, [command_val])
+            return self._emit_const_str("")
+
     def _codegen_MethodCall(self, node):
         base_ptr, type_name = self._codegen_lvalue(node.expr)
         resolved = self._resolve_type_name(type_name)
@@ -3588,7 +3745,15 @@ class CodeGen:
 
         elif method == "rewind":
             # rewind() -> void: Reset file position to beginning
-            self.builder.call(self.frewind, [file_handle])
+            # Use fseek(file, 0, SEEK_SET) instead of rewind() for safety
+            self.builder.call(
+                self.fseek,
+                [
+                    file_handle,
+                    ir.Constant(ir.IntType(64), 0),
+                    ir.Constant(ir.IntType(32), 0),  # SEEK_SET = 0
+                ],
+            )
             return None
 
         raise LeashError(f"File method '{method}' not implemented")
@@ -4109,10 +4274,12 @@ class CodeGen:
             elif isinstance(exit_val.type, (ir.FloatType, ir.DoubleType)):
                 exit_val = self.builder.fptoui(exit_val, ir.IntType(32))
             self.builder.call(self.exit_fn, [exit_val])
-            # exit doesn't return, but we need to return something to satisfy LLVM
-            # Mark as unreachable for better optimization
+            # exit doesn't return - mark as unreachable
             self.builder.unreachable()
-            return ir.Constant(ir.VoidType(), None)
+            return None
+
+        if node.name == "exec":
+            return self._emit_exec(node)
 
         func = self.func_symtab.get(node.name)
         if not func:
@@ -4498,6 +4665,26 @@ class CodeGen:
 
     def _codegen_NullLiteral(self, node):
         return ir.Constant(ir.IntType(8).as_pointer(), None)
+
+    def _codegen_FilePathLiteral(self, node):
+        if node.name == "_FILEPATH":
+            path = node.source_file or ""
+        elif node.name == "_FILENAME":
+            import os
+
+            path = os.path.basename(node.source_file) if node.source_file else ""
+        else:
+            path = ""
+
+        s = bytearray(path.encode("utf-8") + b"\0")
+        c_str = ir.Constant(ir.ArrayType(ir.IntType(8), len(s)), s)
+        global_str = ir.GlobalVariable(
+            self.module, c_str.type, name=self.module.get_unique_name("filepath")
+        )
+        global_str.linkage = "internal"
+        global_str.global_constant = True
+        global_str.initializer = c_str
+        return self.builder.bitcast(global_str, ir.IntType(8).as_pointer())
 
     def _codegen_StringLiteral(self, node):
         s = bytearray(node.value.encode("utf-8") + b"\0")

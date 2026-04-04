@@ -38,12 +38,15 @@ class EnumDef(ASTNode):
 
 
 class Function(ASTNode):
-    def __init__(self, name, args, return_type, body, type_params=None):
+    def __init__(
+        self, name, args, return_type, body, type_params=None, visibility="pub"
+    ):
         self.name = name
         self.args = args  # list of (name, type) tuples
         self.return_type = return_type
         self.body = body  # Block
         self.type_params = type_params or []  # list of template parameter names
+        self.visibility = visibility  # 'pub' or 'priv'
 
 
 class Block(ASTNode):
@@ -259,6 +262,14 @@ class NullLiteral(Expression):
         pass
 
 
+class FilePathLiteral(Expression):
+    """Represents a special file path literal like _FILEPATH or _FILENAME."""
+
+    def __init__(self, name, source_file=None):
+        self.name = name  # "_FILEPATH" or "_FILENAME"
+        self.source_file = source_file  # Path to the source file
+
+
 class ClassDef(ASTNode):
     def __init__(
         self, name, fields, methods, parent=None, type_params=None, visibility="pub"
@@ -319,13 +330,14 @@ class GlobalVarDecl(ASTNode):
 class ImportStmt(ASTNode):
     """Represents an import statement like 'use hash::Hash;' or 'use subfolder::module::Item;'"""
 
-    def __init__(self, module_path, imported_items):
+    def __init__(self, module_path, imported_items, visibility="pub"):
         super().__init__()
         # module_path is a list: ["hash"] or ["subfolder", "helpers"]
         self.module_path = module_path
         self.imported_items = (
             imported_items  # list of item names to import, or None for all
         )
+        self.visibility = visibility  # 'pub' or 'priv'
 
     @property
     def module_name(self):

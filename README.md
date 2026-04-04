@@ -14,6 +14,8 @@ Leash is a strongly-typed, modern compiled programming language built on top of 
 - [Input Handling](#input-handling)
 - [Random Numbers](#random-numbers)
 - [Time and Delays](#time-and-delays)
+- [Built-in Compile-Time Variables](#built-in-compile-time-variables)
+- [Executing Shell Commands](#executing-shell-commands)
 - [Arrays](#arrays)
 - [Structs](#structs)
 - [Pointers](#pointers)
@@ -192,6 +194,17 @@ Or import all public items from a module using the wildcard `*`:
 
 ```leash
 use mylib::*;
+```
+
+### Private Imports
+
+You can use `priv use` to import items from a module without re-exporting them. This is useful when creating library modules that depend on other libraries internally:
+
+```leash
+priv use mylib::*;  # Import all items, including private ones, but don't re-export them
+pub fnc helper() : int {
+    return lib_priv();  # Can use private items from mylib
+}
 ```
 
 ### Nested Paths
@@ -651,6 +664,66 @@ fnc main() : void {
 
     elapsed: float = timepass();
     show("Elapsed time: ", elapsed, " seconds");
+}
+```
+
+## Built-in Compile-Time Variables
+
+Leash provides special built-in variables that are automatically available in every program:
+
+- `_FILEPATH` - The full path to the current source file being compiled
+- `_FILENAME` - The name of the current source file (without path)
+
+```leash
+fnc main() : void {
+    show("File path: ", _FILEPATH);
+    show("File name: ", _FILENAME);
+}
+```
+
+This is useful for debugging, logging, or including file information in your program's output.
+
+## Executing Shell Commands
+
+Leash provides the built-in `exec()` function to execute shell commands and capture their output. It accepts a command string and an optional mode.
+
+```leash
+fnc main() : void {
+    // Execute a command - returns the output as a string
+    result: string = exec("echo Hello World", nil);
+    show(result);  // Prints: Hello World
+
+    // Different modes:
+    // nil - Execute command and return output (prints to stdout)
+    // "wait" - Wait for command to finish and return output
+    // "silent" - Execute command, suppress output, return empty string
+    // "code" - Return the exit code as a string (no output)
+}
+```
+
+### Modes
+
+| Mode | Description | Returns |
+|------|-------------|---------|
+| `nil` | Execute command, return output (default) | Command output string |
+| `"wait"` | Wait for command to finish, return output | Command output string |
+| `"silent"` | Execute command, suppress all output | Empty string `""` |
+| `"code"` | Return the exit code of the command | Exit code as string |
+
+### Examples
+
+```leash
+fnc main() : void {
+    // nil mode - captures output
+    out: string = exec("ls -la", nil);
+    show(out);
+
+    // silent mode - runs command without showing output
+    exec("echo This is hidden", "silent");
+
+    // code mode - get exit code
+    code: string = exec("ls /nonexistent", "code");
+    show("Exit code: ", code);  // Prints: Exit code: 2
 }
 ```
 

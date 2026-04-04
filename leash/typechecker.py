@@ -1386,6 +1386,8 @@ class TypeChecker:
         elif isinstance(expr, NullLiteral):
             # nil is a special polymorphic type that's compatible with any type
             return "nil"
+        elif isinstance(expr, FilePathLiteral):
+            return "string"
         elif isinstance(expr, ThisExpr):
             if not self.current_class:
                 self._error("'this' can only be used inside a class method", node=expr)
@@ -1866,6 +1868,43 @@ class TypeChecker:
                     node=expr.args[0],
                 )
             return "void"
+
+        if expr.name == "exec":
+            if len(expr.args) < 1 or len(expr.args) > 2:
+                self._error(
+                    f"Function 'exec' expects 1 or 2 arguments (command, mode), but got {len(expr.args)}",
+                    node=expr,
+                )
+            arg_t = self._infer_type(expr.args[0])
+            if arg_t and self._resolve(arg_t) != "string":
+                self._error(
+                    f"Argument 1 of 'exec' must be 'string', got '{arg_t}'",
+                    node=expr.args[0],
+                )
+            if len(expr.args) == 2:
+                arg_t2 = self._infer_type(expr.args[1])
+                if (
+                    arg_t2
+                    and self._resolve(arg_t2) != "string"
+                    and self._resolve(arg_t2) != "nil"
+                ):
+                    self._error(
+                        f"Argument 2 of 'exec' must be 'string' or 'nil', got '{arg_t2}'",
+                        node=expr.args[1],
+                    )
+                if arg_t2 and self._resolve(arg_t2) == "string":
+                    from .ast_nodes import StringLiteral
+
+                    mode = None
+                    if isinstance(expr.args[1], StringLiteral):
+                        mode = expr.args[1].value
+                    if mode == "code":
+                        return "string"
+                    elif mode == "silent":
+                        return "string"
+                    elif mode == "wait":
+                        return "string"
+            return "string"
 
         if expr.name == "timepass":
             if len(expr.args) != 0:
