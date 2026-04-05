@@ -1,0 +1,11 @@
+if _PLATFORM == "html-js" {
+    fnc main() : void {
+        show("Not supported in html-js target");
+    }
+} else {
+    fnc main() : void {
+        file: File = File.open(_FILEPATH, "r");
+        show(file.read());
+        file.close();
+    }
+}

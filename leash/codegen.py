@@ -42,11 +42,7 @@ class CodeGen:
         self.works_error_occured = False  # Flag if error occurred in works block
         self.works_error_info = None  # Store error info for otherwise block
 
-        # stderr - declared as external global
-        self.stderr_var = ir.GlobalVariable(
-            self.module, ir.IntType(8).as_pointer(), name="stderr"
-        )
-        self.stderr_var.linkage = "external"
+        # stderr - REMOVED, now using printf for error output
 
         # Native libraries for FFI (from @from statements)
         self.native_libs = []  # list of (lib_path, declarations) tuples
@@ -4660,9 +4656,8 @@ class CodeGen:
         g_err.initializer = c_err
         err_ptr = self.builder.bitcast(g_err, ir.IntType(8).as_pointer())
 
-        # Load stderr and call fprintf
-        stderr_val = self.builder.load(self.stderr_var)
-        self.builder.call(self.fprintf, [stderr_val, err_ptr])
+        # Print error message to stdout using printf
+        self.builder.call(self.printf, [err_ptr])
         self.builder.call(self.exit_fn, [ir.Constant(ir.IntType(32), 1)])
         self.builder.unreachable()
 
@@ -4688,8 +4683,8 @@ class CodeGen:
         g_err.initializer = c_err
         err_ptr = self.builder.bitcast(g_err, ir.IntType(8).as_pointer())
 
-        stderr_val = self.builder.load(self.stderr_var)
-        self.builder.call(self.fprintf, [stderr_val, err_ptr])
+        # Print error message to stdout using printf
+        self.builder.call(self.printf, [err_ptr])
         self.builder.call(self.exit_fn, [ir.Constant(ir.IntType(32), 1)])
         self.builder.unreachable()
 

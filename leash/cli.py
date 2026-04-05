@@ -18,6 +18,12 @@ from .ast_nodes import (
     GlobalVarDecl,
     TemplateDef,
     ImportStmt,
+    ConditionalDef,
+    BuiltinVarLiteral,
+    StringLiteral,
+    BoolLiteral,
+    BinaryOp,
+    UnaryOp,
 )
 from .targets import get_target, get_native_target, list_targets, TargetConfig
 import llvmlite.binding as llvm
@@ -209,6 +215,93 @@ def resolve_imports(program, base_path):
     return _expand_items(program.items, base_path)
 
 
+def resolve_conditionals(program, target_config):
+    """Resolve top-level ConditionalDef nodes based on the target platform, recursively."""
+    # Determine platform string for the target
+    if target_config.is_js:
+        platform = "html-js" if target_config.is_html_js else "js"
+    else:
+        platform = target_config.name
+
+    def resolve_items(items):
+        resolved = []
+        for item in items:
+            if isinstance(item, ConditionalDef):
+                selected = _evaluate_conditional(item, platform)
+                if selected:
+                    # Recursively resolve nested conditionals in the selected branch
+                    resolved.extend(resolve_items(selected))
+            else:
+                resolved.append(item)
+        return resolved
+
+    resolved_items = resolve_items(program.items)
+    return Program(resolved_items)
+
+
+def _evaluate_conditional(cond_def, platform):
+    """Evaluate a ConditionalDef's condition chain and return items for first true branch."""
+
+    def eval_expr(expr):
+        if isinstance(expr, BuiltinVarLiteral):
+            if expr.name == "_PLATFORM":
+                return platform
+            else:
+                raise LeashError(
+                    f"Unsupported builtin variable '{expr.name}' in compile-time condition",
+                    expr.line,
+                    expr.col,
+                )
+        elif isinstance(expr, StringLiteral):
+            return expr.value
+        elif isinstance(expr, BoolLiteral):
+            return expr.value
+        elif isinstance(expr, BinaryOp):
+            left = eval_expr(expr.left)
+            right = eval_expr(expr.right)
+            if expr.op == "==":
+                return left == right
+            elif expr.op == "!=":
+                return left != right
+            elif expr.op == "&&":
+                return left and right
+            elif expr.op == "||":
+                return left or right
+            else:
+                raise LeashError(
+                    f"Operator '{expr.op}' not supported in conditional expression",
+                    expr.line,
+                    expr.col,
+                )
+        elif isinstance(expr, UnaryOp):
+            if expr.op == "!":
+                return not eval_expr(expr.expr)
+            else:
+                raise LeashError(
+                    f"Unary operator '{expr.op}' not supported in conditional expression",
+                    expr.line,
+                    expr.col,
+                )
+        else:
+            raise LeashError(
+                f"Expression type {type(expr).__name__} cannot be used in compile-time conditional",
+                getattr(expr, "line", None),
+                getattr(expr, "col", None),
+            )
+
+    # Then branch
+    if eval_expr(cond_def.condition):
+        return cond_def.then_block
+    # Also branches
+    for also_cond, also_block in cond_def.also_blocks:
+        if eval_expr(also_cond):
+            return also_block
+    # Else branch
+    if cond_def.else_block:
+        return cond_def.else_block
+    return None
+
+
 def _print_error(e, input_file, code):
     print(f"error: {e.msg}", file=sys.stderr)
 
@@ -355,6 +448,9 @@ def check_file(input_file, verbose=False):
 
         base_path = os.path.dirname(os.path.abspath(input_file)) or "."
         ast = resolve_imports(ast, base_path)
+        # Resolve conditionals using native target
+        target_config = get_native_target()
+        ast = resolve_conditionals(ast, target_config)
     except LeashError as e:
         _print_error(e, input_file, code)
         errors.append(e)
@@ -426,6 +522,8 @@ def compile_file(
         # 2.5. Resolve imports (expand them into the AST)
         base_path = os.path.dirname(os.path.abspath(input_file)) or "."
         ast = resolve_imports(ast, base_path)
+        # 2.75. Resolve top-level conditionals based on target
+        ast = resolve_conditionals(ast, target_config)
 
         # 3. Static Type Checking
         checker = TypeChecker(check_mode=check_mode)
@@ -517,6 +615,8 @@ def _compile_to_js(
         # 2.5. Resolve imports (expand them into the AST)
         base_path = os.path.dirname(os.path.abspath(input_file)) or "."
         ast = resolve_imports(ast, base_path)
+        # 2.75. Resolve top-level conditionals based on target
+        ast = resolve_conditionals(ast, target_config)
 
         # 3. Static Type Checking
         checker = TypeChecker(check_mode=check_mode)

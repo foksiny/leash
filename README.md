@@ -23,6 +23,7 @@ Leash is a strongly-typed, modern compiled programming language built on top of 
 - [Random Numbers](#random-numbers)
 - [Time and Delays](#time-and-delays)
 - [Built-in Compile-Time Variables](#built-in-compile-time-variables)
+- [Conditional Compilation (Top-Level If)](#conditional-compilation-top-level-if)
 - [Executing Shell Commands](#executing-shell-commands)
 - [Arrays](#arrays)
 - [Structs](#structs)
@@ -996,6 +997,95 @@ fnc main() : void {
 ```
 
 This is useful for debugging, logging, conditional compilation based on platform, or including file information in your program's output.
+
+## Conditional Compilation (Top-Level If)
+
+Leash supports conditional compilation using `if` statements at the top-level (outside any function). This allows you to include or exclude code based on compile-time conditions, such as the target platform.
+
+### How It Works
+
+When the compiler encounters a top-level `if`, it evaluates the condition at **compile time**. Only the branch whose condition evaluates to `true` is included in the final program. The other branches are completely ignored (no code is generated, and they are not type-checked).
+
+This is particularly useful for platform-specific code:
+
+```leash
+if _PLATFORM == "linux64" {
+    fnc main() : void {
+        show("Running on Linux");
+        // Linux-specific code here
+    }
+} also _PLATFORM == "win64" {
+    fnc main() : void {
+        show("Running on Windows");
+        // Windows-specific code here
+    }
+} else {
+    fnc main() : void {
+        show("Running on an unsupported platform");
+    }
+}
+```
+
+The `also` keyword acts like `else if`, allowing you to chain multiple conditions. The `else` branch is optional and runs if none of the previous conditions were true.
+
+### Supported Compile-Time Expressions
+
+The condition can use:
+
+- **Builtin variables**: `_PLATFORM`, `_FILEPATH`, `_FILENAME`
+- **String literals**: `"linux64"`, `"win64"`, `"js"`, `"html-js"`, `"macos"`, `"macos-arm"`, etc.
+- **Boolean literals**: `true`, `false`
+- **Comparison operators**: `==`, `!=`
+- **Logical operators**: `&&` (AND), `||` (OR), `!` (NOT)
+
+Examples:
+
+```leash
+// Simple equality check
+if _PLATFORM == "js" {
+    // JavaScript-specific code
+}
+
+// Combining conditions
+if _PLATFORM == "linux64" || _PLATFORM == "macos" {
+    // Unix-like specific code
+}
+
+// Negation
+if _PLATFORM != "win64" {
+    // Non-Windows code
+}
+
+// Complex expression
+if _PLATFORM == "linux64" && _PLATFORM != "js" {
+    // Linux native but not JS (always false, just an example)
+}
+```
+
+### Nesting
+
+Top-level `if` statements can be nested inside each other, allowing complex conditional compilation:
+
+```leash
+if _PLATFORM == "linux64" {
+    if true {  // constant foldable
+        fnc main() : void {
+            show("Nested condition");
+        }
+    }
+}
+```
+
+### Limitations
+
+- **Compile-time evaluation only**: The condition must be evaluable at compile time. It cannot use runtime variables or function calls.
+- **Branch items must be valid top-level items**: Inside each branch, you can define structs, classes, functions, global variables, etc., just like at the normal top level.
+- **No `else if`**: The syntax uses `also` instead of `else if`.
+
+### Notes
+
+- The condition is evaluated using the target platform you specify with `--target`. For example, if you compile with `--target win64`, then `_PLATFORM` evaluates to `"win64"`.
+- This feature is similar to C/C++ preprocessor `#if` but happens at the AST level, so the unused branches are never type-checked or codegen'd.
 
 ## Executing Shell Commands
 

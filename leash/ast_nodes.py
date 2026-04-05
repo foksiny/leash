@@ -368,6 +368,16 @@ class GenericCall(Expression):
         self.args = args  # list of expressions
 
 
+class ConditionalDef(ASTNode):
+    """Represents a top-level conditional definition: if condition { ... } also ... else ..."""
+
+    def __init__(self, condition, then_block, also_blocks=None, else_block=None):
+        self.condition = condition  # expression (should be evaluable at compile time)
+        self.then_block = then_block  # list of top-level items
+        self.also_blocks = also_blocks or []  # list of (condition, block) tuples
+        self.else_block = else_block  # list of top-level items or None
+
+
 class WorksOtherwiseStatement(Statement):
     """Try-catch-like construct: works { body } otherwise err_var { handler }"""
 

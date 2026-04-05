@@ -55,6 +55,7 @@ from .ast_nodes import (
     FilePathLiteral,
     BuiltinVarLiteral,
     SwitchStatement,
+    ConditionalDef,
 )
 from .errors import LeashError
 
@@ -381,6 +382,8 @@ class Parser:
                 items.append(self.parse_import())
             elif self.current().type == "AT":
                 items.append(self.parse_native_import())
+            elif self.current().type == "IF":
+                items.append(self.parse_conditional_def())
             else:
                 tok = self.current()
                 raise LeashError(
@@ -464,6 +467,50 @@ class Parser:
         self.eat("SEMI")
         return self._pos(ImportStmt(module_path, imported_items, visibility), tok)
 
+    def parse_top_level_item(self):
+        """Parse a single top-level item (used inside conditional branches)."""
+        if self.current().type in ("PUB", "PRIV"):
+            # Peek ahead to see if next token is DEF or FNC or USE
+            if self.peek() and self.peek().type == "DEF":
+                visibility = self.current().value.lower()
+                self.eat(self.current().type)
+                return self.parse_def(visibility=visibility)
+            elif self.peek() and self.peek().type == "FNC":
+                visibility = self.current().value.lower()
+                self.eat(self.current().type)
+                return self.parse_function(visibility=visibility)
+            elif self.peek() and self.peek().type == "USE":
+                visibility = self.current().value.lower()
+                self.eat(self.current().type)
+                return self.parse_import(visibility=visibility)
+            else:
+                # It's a global variable with visibility
+                return self.parse_global_var()
+        elif self.current().type == "DEF":
+            return self.parse_def()
+        elif self.current().type == "FNC":
+            return self.parse_function()
+        elif (
+            self.current().type == "IDENT"
+            and self.peek()
+            and self.peek().type == "COLON"
+        ):
+            return self.parse_global_var()
+        elif self.current().type == "USE":
+            return self.parse_import()
+        elif self.current().type == "AT":
+            return self.parse_native_import()
+        elif self.current().type == "IF":
+            return self.parse_conditional_def()
+        else:
+            tok = self.current()
+            raise LeashError(
+                f"Unexpected token in top-level context: {tok.type} ('{tok.value}')",
+                tok.line,
+                tok.column,
+                tip="Top-level items must be 'def', 'fnc', 'use', '@from', 'if', or variable declarations.",
+            )
+
     def parse_native_import(self):
         """Parse a native library import: @from("lib.so") { ... };"""
         tok = self.current()
@@ -510,6 +557,41 @@ class Parser:
                 typedef_decls,
             ),
             tok,
+        )
+
+    def parse_conditional_def(self):
+        """Parse a top-level conditional: if condition { ... } also ... else ..."""
+        tok = self.current()
+        self.eat("IF")
+        cond = self.parse_expression(no_struct_init=True)
+        self.eat("LBRACE")
+        then_items = []
+        while self.current().type != "RBRACE":
+            then_items.append(self.parse_top_level_item())
+        self.eat("RBRACE")
+
+        also_branches = []
+        while self.current().type == "ALSO":
+            self.eat("ALSO")
+            also_cond = self.parse_expression(no_struct_init=True)
+            self.eat("LBRACE")
+            also_items = []
+            while self.current().type != "RBRACE":
+                also_items.append(self.parse_top_level_item())
+            self.eat("RBRACE")
+            also_branches.append((also_cond, also_items))
+
+        else_items = None
+        if self.current().type == "ELSE":
+            self.eat("ELSE")
+            self.eat("LBRACE")
+            else_items = []
+            while self.current().type != "RBRACE":
+                else_items.append(self.parse_top_level_item())
+            self.eat("RBRACE")
+
+        return self._pos(
+            ConditionalDef(cond, then_items, also_branches, else_items), tok
         )
 
     def parse_native_decl(self):

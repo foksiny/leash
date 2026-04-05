@@ -65,6 +65,7 @@ examples/worksotherwise
 examples/getfile
 examples/exec
 examples/switchcase
+examples/pubif
 
 # Trash
 trash/
