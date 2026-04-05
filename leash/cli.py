@@ -210,52 +210,60 @@ def resolve_imports(program, base_path):
 
 
 def _print_error(e, input_file, code):
-    print(f"error: {e.msg}")
+    print(f"error: {e.msg}", file=sys.stderr)
 
-    # Use the error's file path if available, otherwise use the input_file
     error_file = e.file if e.file else input_file
 
     if e.line is not None:
-        # If error has a file attribute, read that file's code for the snippet
         error_code = code
         if e.file and e.file != input_file:
             try:
                 with open(e.file, "r") as f:
                     error_code = f.read()
             except Exception:
-                error_code = code  # Fall back to original code
+                error_code = code
 
         lines = error_code.splitlines()
         line_idx = e.line - 1
 
-        # File location
-        print(f"  --> {error_file}:{e.line}:{e.col if e.col is not None else 0}")
+        if e.code:
+            print(
+                f"  --> {error_file}:{e.line}:{e.col if e.col is not None else 0} [{e.code}]",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"  --> {error_file}:{e.line}:{e.col if e.col is not None else 0}",
+                file=sys.stderr,
+            )
 
-        # Line snippet
         if 0 <= line_idx < len(lines):
             gutter_width = len(str(e.line)) + 1
             padding = " " * gutter_width
 
             error_line = lines[line_idx]
-            print(f"{padding}|")
-            print(f"{e.line} | {error_line}")
+            print(f"{padding}|", file=sys.stderr)
+            print(f"{e.line} | {error_line}", file=sys.stderr)
 
             if e.col is not None:
-                # Pointer
                 pointer = " " * e.col + "^"
-                print(f"{padding}| {pointer}")
+                print(f"{padding}| {pointer}", file=sys.stderr)
 
-            print(f"{padding}|")
+            print(f"{padding}|", file=sys.stderr)
 
     if e.tip:
-        print(f"tip: {e.tip}")
+        print(f"tip: {e.tip}", file=sys.stderr)
 
 
-def _print_warning(w):
-    print(f"warning: {w['msg']}", file=sys.stderr)
+def _print_warning(w, warnings_as_errors=False):
+    prefix = "error:" if warnings_as_errors else "warning:"
+    print(f"{prefix} {w['msg']}", file=sys.stderr)
     if w.get("line") is not None:
+        code_str = ""
+        if w.get("code"):
+            code_str = f" [{w['code']}]"
         print(
-            f"  --> {w.get('file', 'unknown')}:{w['line']}:{w.get('col', 0)}",
+            f"  --> {w.get('file', 'unknown')}:{w['line']}:{w.get('col', 0)}{code_str}",
             file=sys.stderr,
         )
     if w.get("tip"):
@@ -330,12 +338,60 @@ def install_clang_on_windows():
     return False
 
 
+def check_file(input_file, verbose=False):
+    """Run thorough checking on a leash file without compiling. Returns (errors, warnings)."""
+    with open(input_file, "r") as f:
+        code = f.read()
+
+    errors = []
+    all_warnings = []
+
+    try:
+        lexer = Lexer(code)
+        tokens = lexer.tokenize()
+
+        parser = Parser(tokens, input_file)
+        ast = parser.parse()
+
+        base_path = os.path.dirname(os.path.abspath(input_file)) or "."
+        ast = resolve_imports(ast, base_path)
+    except LeashError as e:
+        _print_error(e, input_file, code)
+        errors.append(e)
+        return errors, all_warnings
+    except Exception as e:
+        import traceback
+
+        print(f"error: Internal compiler error: {e}", file=sys.stderr)
+        traceback.print_exc()
+        sys.exit(1)
+
+    try:
+        checker = TypeChecker(check_mode=True)
+        warnings = checker.check(ast)
+        all_warnings = warnings
+    except LeashError as e:
+        _print_error(e, input_file, code)
+        errors.append(e)
+        return errors, all_warnings
+    except Exception as e:
+        import traceback
+
+        print(f"error: Internal type checker error: {e}", file=sys.stderr)
+        traceback.print_exc()
+        sys.exit(1)
+
+    return errors, all_warnings
+
+
 def compile_file(
     input_file,
     output_name=None,
     output_type="executable",
     is_run_mode=False,
     target_name=None,
+    check_mode=False,
+    warnings_as_errors=False,
 ):
     with open(input_file, "r") as f:
         code = f.read()
@@ -348,7 +404,15 @@ def compile_file(
 
     # JavaScript target - use JS codegen, no LLVM
     if target_config.is_js:
-        return _compile_to_js(input_file, output_name, target_config, is_run_mode, code)
+        return _compile_to_js(
+            input_file,
+            output_name,
+            target_config,
+            is_run_mode,
+            code,
+            check_mode=check_mode,
+            warnings_as_errors=warnings_as_errors,
+        )
 
     try:
         # 1. Lexical Analysis
@@ -364,10 +428,12 @@ def compile_file(
         ast = resolve_imports(ast, base_path)
 
         # 3. Static Type Checking
-        checker = TypeChecker()
+        checker = TypeChecker(check_mode=check_mode)
         warnings = checker.check(ast)
         for w in warnings:
-            _print_warning(w)
+            _print_warning(w, warnings_as_errors=warnings_as_errors)
+        if warnings_as_errors and warnings:
+            sys.exit(1)
 
         # 4. LLVM Initialization
         llvm.initialize_native_target()
@@ -425,7 +491,15 @@ def compile_file(
     )
 
 
-def _compile_to_js(input_file, output_name, target_config, is_run_mode, code):
+def _compile_to_js(
+    input_file,
+    output_name,
+    target_config,
+    is_run_mode,
+    code,
+    check_mode=False,
+    warnings_as_errors=False,
+):
     """Compile to JavaScript using the JS codegen backend."""
     from .codegen_js import JSCodeGen
 
@@ -445,10 +519,12 @@ def _compile_to_js(input_file, output_name, target_config, is_run_mode, code):
         ast = resolve_imports(ast, base_path)
 
         # 3. Static Type Checking
-        checker = TypeChecker()
+        checker = TypeChecker(check_mode=check_mode)
         warnings = checker.check(ast)
         for w in warnings:
-            _print_warning(w)
+            _print_warning(w, warnings_as_errors=warnings_as_errors)
+        if warnings_as_errors and warnings:
+            sys.exit(1)
 
         # 4. JS Code Generation
         codegen = JSCodeGen(is_browser=is_browser, target_name=target_config.name)
@@ -675,7 +751,9 @@ def _link_native(
     return output_name_final
 
 
-def run_file(input_file, args=[], target_name=None):
+def run_file(
+    input_file, args=[], target_name=None, check_mode=False, warnings_as_errors=False
+):
     from .targets import get_target, get_native_target
     import platform
 
@@ -686,6 +764,8 @@ def run_file(input_file, args=[], target_name=None):
         output_name=".__temp_run_leash_exe",
         is_run_mode=True,
         target_name=target_name,
+        check_mode=check_mode,
+        warnings_as_errors=warnings_as_errors,
     )
 
     # JS target needs to be run with node
@@ -771,6 +851,168 @@ def main():
         sys.exit(1)
 
     cmd = sys.argv[1]
+
+    if cmd in ("--help", "-h"):
+        print("Leash Programming Language v1.0")
+        print("")
+        print("Usage: leash <command> [options]")
+        print("")
+        print("Commands:")
+        print("  compile <file.lsh> [to <outname>] [--target <target>]")
+        print("                            Compile a Leash file to an executable")
+        print("  compile <file.lsh> to-dynamic [<outname>] [--target <target>]")
+        print("                            Compile to a shared library (.so)")
+        print("  compile <file.lsh> to-static [<outname>] [--target <target>]")
+        print("                            Compile to a static library (.a)")
+        print("  run <file.lsh> [args...] [--target <target>]")
+        print("                            Run a Leash file directly")
+        print("  check <file.lsh>          Check a file for errors and warnings")
+        print("                            (more verbose, includes safety analysis)")
+        print("  install <path> [<path> ...]")
+        print(
+            "                            Install libraries to the global libs directory"
+        )
+        print("")
+        print("Options:")
+        print(
+            "  --target <target>         Specify compilation target (js, html-js, win64, macos, etc.)"
+        )
+        print("  --list-targets            List all supported compilation targets")
+        print(
+            "  --check                   Run thorough safety checks while compiling/running"
+        )
+        print("  --warnings-as-errors      Treat all warnings as errors")
+        print("  --help, -h                Show this help message")
+        print("  --version, -v             Show version information")
+        print("")
+        print("Supported targets:")
+        for name, desc in list_targets():
+            print(f"  {name:12s} - {desc}")
+        sys.exit(0)
+
+    if cmd in ("--version", "-v"):
+        print("Leash Programming Language v1.0")
+        print("Copyright (c) 2026 Leash Project")
+        print("")
+        print("Built on LLVM with Boehm Garbage Collection")
+        print("Targets: linux64, linux32, win64, macos, macos-arm, js, html-js")
+        sys.exit(0)
+
+    if cmd == "check":
+        if len(sys.argv) < 3:
+            print("Usage: leash check <file.lsh>")
+            sys.exit(1)
+        input_file = sys.argv[2]
+        if not os.path.exists(input_file):
+            print(f"error: File not found: {input_file}", file=sys.stderr)
+            sys.exit(1)
+
+        print(f"Checking '{input_file}'...")
+        print()
+
+        errors, warnings = check_file(input_file, verbose=True)
+
+        if warnings:
+            print(f"Found {len(warnings)} warning(s):")
+            print()
+            for w in warnings:
+                _print_warning(w)
+                print()
+
+        if not errors and not warnings:
+            print("No issues found.")
+            sys.exit(0)
+        elif not errors:
+            print(f"Summary: 0 errors, {len(warnings)} warning(s).")
+            sys.exit(0)
+        else:
+            print(f"Summary: {len(errors)} error(s), {len(warnings)} warning(s).")
+            sys.exit(1)
+
+    cmd = sys.argv[1]
+
+    if cmd in ("--help", "-h"):
+        print("Leash Programming Language v1.0")
+        print("")
+        print("Usage: leash <command> [options]")
+        print("")
+        print("Commands:")
+        print("  compile <file.lsh> [to <outname>] [--target <target>]")
+        print("                            Compile a Leash file to an executable")
+        print("  compile <file.lsh> to-dynamic [<outname>] [--target <target>]")
+        print("                            Compile to a shared library (.so)")
+        print("  compile <file.lsh> to-static [<outname>] [--target <target>]")
+        print("                            Compile to a static library (.a)")
+        print("  run <file.lsh> [args...] [--target <target>]")
+        print("                            Run a Leash file directly")
+        print("  check <file.lsh>          Check a file for errors and warnings")
+        print("                            (more verbose, includes safety analysis)")
+        print("  install <path> [<path> ...]")
+        print(
+            "                            Install libraries to the global libs directory"
+        )
+        print("")
+        print("Options:")
+        print(
+            "  --target <target>         Specify compilation target (js, html-js, win64, macos, etc.)"
+        )
+        print("  --list-targets            List all supported compilation targets")
+        print(
+            "  --check                   Run thorough safety checks while compiling/running"
+        )
+        print("  --warnings-as-errors      Treat all warnings as errors")
+        print("  --help, -h                Show this help message")
+        print("  --version, -v             Show version information")
+        print("")
+        print("Supported targets:")
+        for name, desc in list_targets():
+            print(f"  {name:12s} - {desc}")
+        sys.exit(0)
+
+    if cmd in ("--version", "-v"):
+        print("Leash Programming Language v1.0")
+        print("Copyright (c) 2026 Leash Project")
+        print("")
+        print("Built on LLVM with Boehm Garbage Collection")
+        print("Targets: linux64, linux32, win64, macos, macos-arm, js, html-js")
+        sys.exit(0)
+
+    if cmd == "check":
+        if len(sys.argv) < 3:
+            print("Usage: leash check <file.lsh>")
+            sys.exit(1)
+        input_file = sys.argv[2]
+        if not os.path.exists(input_file):
+            print(
+                _colorize("error:", "red"),
+                f"File not found: {input_file}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+        print(f"Checking '{input_file}'...")
+        print()
+
+        errors, warnings = check_file(input_file, verbose=True)
+
+        if warnings:
+            print(f"Found {len(warnings)} warning(s):")
+            print()
+            for w in warnings:
+                _print_warning(w)
+                print()
+
+        if not errors and not warnings:
+            print("No issues found.")
+            sys.exit(0)
+        elif not errors:
+            print(f"Summary: 0 errors, {len(warnings)} warning(s).")
+            sys.exit(0)
+        else:
+            print(f"Summary: {len(errors)} error(s), {len(warnings)} warning(s).")
+            sys.exit(1)
+
+    cmd = sys.argv[1]
     if cmd in ("compile", "run"):
         if len(sys.argv) < 3:
             print(f"Usage: leash {cmd} <file.lsh> [to <outname>] [--target <target>]")
@@ -782,8 +1024,9 @@ def main():
         target_name = None
         output_name = None
         output_type = "executable"
+        check_mode = False
+        warnings_as_errors = False
 
-        # Extract --target flag
         i = 0
         positional = []
         while i < len(remaining_args):
@@ -798,14 +1041,25 @@ def main():
                 for name, desc in list_targets():
                     print(f"  {name:12s} - {desc}")
                 sys.exit(0)
+            elif remaining_args[i] == "--check":
+                check_mode = True
+                i += 1
+            elif remaining_args[i] == "--warnings-as-errors":
+                warnings_as_errors = True
+                i += 1
             else:
                 positional.append(remaining_args[i])
                 i += 1
 
         if cmd == "run":
-            run_file(input_file, positional, target_name)
+            run_file(
+                input_file,
+                positional,
+                target_name,
+                check_mode=check_mode,
+                warnings_as_errors=warnings_as_errors,
+            )
         else:
-            # Parse positional arguments: [to|to-dynamic|to-static] [outname]
             if len(positional) >= 1:
                 if positional[0] == "to":
                     if len(positional) >= 2:
@@ -819,10 +1073,16 @@ def main():
                     if len(positional) >= 2:
                         output_name = positional[1]
                 else:
-                    # Treat as output name for backward compatibility
                     output_name = positional[0]
 
-            compile_file(input_file, output_name, output_type, target_name=target_name)
+            compile_file(
+                input_file,
+                output_name,
+                output_type,
+                target_name=target_name,
+                check_mode=check_mode,
+                warnings_as_errors=warnings_as_errors,
+            )
     elif cmd == "install":
         if len(sys.argv) < 3:
             print("Usage: leash install <path> [<path> ...]")

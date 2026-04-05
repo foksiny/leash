@@ -4,6 +4,7 @@ Leash is a strongly-typed, modern compiled programming language built on top of 
 
 ## Table of Contents
 - [Running Leash](#running-leash)
+- [Checking for Errors](#checking-for-errors)
 - [Compilation Targets](#compilation-targets)
   - [Native Targets (linux64, win64, macos)](#native-targets-linux64-win64-macos)
   - [JavaScript/Node.js Target](#javascriptnodejs-target)
@@ -76,6 +77,118 @@ python3 -m leash.cli compile program.lsh to-dynamic mylib
 # Compile to a static library (.a)
 python3 -m leash.cli compile program.lsh to-static mylib
 ```
+
+## Checking for Errors
+
+Leash provides thorough static analysis to catch errors and potential issues before your code runs.
+
+### The `check` Command
+
+Use the `check` command to analyze a file without compiling it. This runs the full type checker with enhanced safety analysis:
+
+```bash
+python3 -m leash.cli check program.lsh
+```
+
+The checker reports:
+- **Type errors** — incompatible assignments, undefined variables, unknown types
+- **Duplicate switch cases** — unreachable case blocks
+- **Shadowed globals** — local variables that hide global ones
+- **Missing switch defaults** — switch statements without a `default` block
+- **Large stack arrays** — arrays over 10,000 elements that risk stack overflow
+- **Self-assignments** — assignments like `x = x` that have no effect
+- **Unused variables and parameters** — declared but never referenced
+- **Empty blocks** — empty if/else/loop/case bodies
+- **Unreachable code** — statements after `return`
+- **Always-true/false conditions** — `if true` or `if false` branches
+- **Redundant operations** — `+ 0`, `* 1`, `x == x`, etc.
+
+### The `--check` Flag
+
+You can also run the same thorough checks during compilation or execution by adding the `--check` flag:
+
+```bash
+# Check while compiling
+python3 -m leash.cli compile program.lsh --check
+
+# Check while running
+python3 -m leash.cli run program.lsh --check
+```
+
+### Warnings as Errors
+
+For strict builds (e.g., CI/CD), treat all warnings as errors:
+
+```bash
+python3 -m leash.cli compile program.lsh --warnings-as-errors
+```
+
+### Runtime Safety
+
+Leash also embeds runtime safety checks into compiled programs:
+
+- **Division by zero** — caught at runtime with a descriptive error message
+- **Vector bounds checking** — `get()`, `set()`, `popb()`, `popf()` validate indices and empty vectors
+- **Null file handle checks** — file operations on unopened or closed files produce clear errors
+- **Union tag mismatch** — accessing the wrong union variant halts with a runtime error
+
+All errors include error codes (e.g., `LEASH-E004`) for easy reference and suppression.
+
+## Checking for Errors
+
+Leash provides thorough static analysis to catch errors and potential issues before your code runs.
+
+### The `check` Command
+
+Use the `check` command to analyze a file without compiling it. This runs the full type checker with enhanced safety analysis:
+
+```bash
+python3 -m leash.cli check program.lsh
+```
+
+The checker reports:
+- **Type errors** — incompatible assignments, undefined variables, unknown types
+- **Duplicate switch cases** — unreachable case blocks
+- **Shadowed globals** — local variables that hide global ones
+- **Missing switch defaults** — switch statements without a `default` block
+- **Large stack arrays** — arrays over 10,000 elements that risk stack overflow
+- **Self-assignments** — assignments like `x = x` that have no effect
+- **Unused variables and parameters** — declared but never referenced
+- **Empty blocks** — empty if/else/loop/case bodies
+- **Unreachable code** — statements after `return`
+- **Always-true/false conditions** — `if true` or `if false` branches
+- **Redundant operations** — `+ 0`, `* 1`, `x == x`, etc.
+
+### The `--check` Flag
+
+You can also run the same thorough checks during compilation or execution by adding the `--check` flag:
+
+```bash
+# Check while compiling
+python3 -m leash.cli compile program.lsh --check
+
+# Check while running
+python3 -m leash.cli run program.lsh --check
+```
+
+### Warnings as Errors
+
+For strict builds (e.g., CI/CD), treat all warnings as errors:
+
+```bash
+python3 -m leash.cli compile program.lsh --warnings-as-errors
+```
+
+### Runtime Safety
+
+Leash also embeds runtime safety checks into compiled programs:
+
+- **Division by zero** — caught at runtime with a descriptive error message
+- **Vector bounds checking** — `get()`, `set()`, `popb()`, `popf()` validate indices and empty vectors
+- **Null file handle checks** — file operations on unopened or closed files produce clear errors
+- **Union tag mismatch** — accessing the wrong union variant halts with a runtime error
+
+All errors include error codes (e.g., `LEASH-E004`) for easy reference and suppression.
 
 ### Native Library Compilation
 
@@ -1712,6 +1825,14 @@ Leash prioritizes developer experience with helpful error reporting and safety f
 - **Static Type Checker**: The compiler validates types before generating code, catching undefined variables, incompatible assignments, and member access errors.
 - **Smart Error Tips**: When a syntax error occurs, Leash provides actionable tips (e.g., suggesting a missing semicolon or parenthetical).
 - **Runtime Union Checks**: Accessing union members is checked at runtime to ensure the correct "tag" is active, avoiding memory-unsafe operations common in C.
+- **Runtime Safety Checks**: Division by zero, vector bounds, and null pointer dereferences are caught at runtime with descriptive error messages.
+- **Error Codes**: Every error and warning has a unique code (e.g., `LEASH-E004`) for easy reference.
+
+See the [Checking for Errors](#checking-for-errors) section for details on the `check` command, `--check` flag, and `--warnings-as-errors` option.
+- **Runtime Safety Checks**: Division by zero, vector bounds, and null pointer dereferences are caught at runtime with descriptive error messages.
+- **Error Codes**: Every error and warning has a unique code (e.g., `LEASH-E004`) for easy reference.
+
+See the [Checking for Errors](#checking-for-errors) section for details on the `check` command, `--check` flag, and `--warnings-as-errors` option.
 
 ### Works-Otherwise Error Handling
 

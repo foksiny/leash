@@ -2916,12 +2916,16 @@ class CodeGen:
                 else self.builder.mul(left, right)
             )
         elif node.op == "/":
+            if not is_float:
+                self._emit_division_by_zero_check(right)
             return (
                 self.builder.fdiv(left, right)
                 if is_float
                 else self.builder.sdiv(left, right)
             )
         elif node.op == "%":
+            if not is_float:
+                self._emit_division_by_zero_check(right)
             return (
                 self.builder.frem(left, right)
                 if is_float
@@ -3435,6 +3439,13 @@ class CodeGen:
             return None
 
         elif method == "popb":
+            # Check vector is not empty
+            is_nonempty = self.builder.icmp_unsigned(
+                ">", size, ir.Constant(ir.IntType(64), 0)
+            )
+            self._emit_runtime_check(
+                is_nonempty, "Runtime error: popb called on empty vector.\n"
+            )
             # return data[size-1], size--
             new_size = self.builder.sub(size, ir.Constant(ir.IntType(64), 1))
             res_ptr = self.builder.gep(data, [new_size], inbounds=True)
@@ -3449,15 +3460,35 @@ class CodeGen:
         elif method == "get":
             idx = self._codegen(args[0])
             idx = self._emit_cast(idx, ir.IntType(32))
-            ptr = self.builder.gep(data, [idx], inbounds=True)
+            idx64 = self.builder.sext(idx, ir.IntType(64))
+            # Bounds check: idx >= 0 && idx < size
+            idx_nonneg = self.builder.icmp_signed(
+                ">=", idx64, ir.Constant(ir.IntType(64), 0)
+            )
+            idx_in_bounds = self.builder.icmp_unsigned("<", idx64, size)
+            in_bounds = self.builder.and_(idx_nonneg, idx_in_bounds)
+            self._emit_runtime_check(
+                in_bounds, "Runtime error: Vector index out of bounds in get().\n"
+            )
+            ptr = self.builder.gep(data, [idx64], inbounds=True)
             return self.builder.load(ptr)
 
         elif method == "set":
             idx = self._codegen(args[0])
             idx = self._emit_cast(idx, ir.IntType(32))
+            idx64 = self.builder.sext(idx, ir.IntType(64))
+            # Bounds check
+            idx_nonneg = self.builder.icmp_signed(
+                ">=", idx64, ir.Constant(ir.IntType(64), 0)
+            )
+            idx_in_bounds = self.builder.icmp_unsigned("<", idx64, size)
+            in_bounds = self.builder.and_(idx_nonneg, idx_in_bounds)
+            self._emit_runtime_check(
+                in_bounds, "Runtime error: Vector index out of bounds in set().\n"
+            )
             val = self._codegen(args[1])
             val = self._emit_cast(val, inner_llvm)
-            ptr = self.builder.gep(data, [idx], inbounds=True)
+            ptr = self.builder.gep(data, [idx64], inbounds=True)
             self.builder.store(val, ptr)
             return None
 
@@ -3603,6 +3634,12 @@ class CodeGen:
         """Handle File instance methods."""
         # Load the FILE* pointer
         file_handle = self.builder.load(file_ptr)
+
+        # Null check: if file_handle is null, the file was never opened or already closed
+        self._emit_null_pointer_check(
+            file_handle,
+            "Runtime error: File operation on a null file handle. Make sure File.open() succeeded and the file is not already closed.\n",
+        )
 
         if method == "read":
             # read() -> string: Read entire file content
@@ -4631,6 +4668,45 @@ class CodeGen:
 
         # Continue on the ok path
         self.builder.position_at_end(ok_bb)
+
+    def _emit_runtime_check(self, condition, message):
+        """Emit a generic runtime check: if condition is false, print message to stderr and exit(1)."""
+        ok_bb = self.builder.function.append_basic_block("safety_check_ok")
+        fail_bb = self.builder.function.append_basic_block("safety_check_fail")
+
+        self.builder.cbranch(condition, ok_bb, fail_bb)
+
+        self.builder.position_at_end(fail_bb)
+
+        err_bytes = bytearray(message.encode("utf8") + b"\0")
+        c_err = ir.Constant(ir.ArrayType(ir.IntType(8), len(err_bytes)), err_bytes)
+        g_err = ir.GlobalVariable(
+            self.module, c_err.type, name=self.module.get_unique_name("safety_err")
+        )
+        g_err.linkage = "internal"
+        g_err.global_constant = True
+        g_err.initializer = c_err
+        err_ptr = self.builder.bitcast(g_err, ir.IntType(8).as_pointer())
+
+        stderr_val = self.builder.load(self.stderr_var)
+        self.builder.call(self.fprintf, [stderr_val, err_ptr])
+        self.builder.call(self.exit_fn, [ir.Constant(ir.IntType(32), 1)])
+        self.builder.unreachable()
+
+        self.builder.position_at_end(ok_bb)
+
+    def _emit_division_by_zero_check(self, divisor):
+        """Emit a runtime check that divisor is not zero."""
+        zero = ir.Constant(divisor.type, 0)
+        is_nonzero = self.builder.icmp_signed("!=", divisor, zero)
+        self._emit_runtime_check(is_nonzero, "Runtime error: Division by zero.\n")
+
+    def _emit_null_pointer_check(self, ptr, message=None):
+        """Emit a runtime check that a pointer is not null."""
+        null = ir.Constant(ptr.type, None)
+        is_nonnull = self.builder.icmp_unsigned("!=", ptr, null)
+        msg = message or "Runtime error: Null pointer dereference.\n"
+        self._emit_runtime_check(is_nonnull, msg)
 
     def _union_cur_load(self, tag_val, data_ptr, union_info):
         """Load the current value from a union based on the runtime tag."""

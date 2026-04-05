@@ -19,7 +19,7 @@ class TypeChecker:
     instantiated_func_nodes = {}  # mangled_name -> Function node
     instantiated_class_nodes = {}  # mangled_name -> ClassDef node
 
-    def __init__(self):
+    def __init__(self, check_mode=False):
         self.var_types = {}  # name -> type string (local variables)
         self.var_immutable = {}  # name -> bool (True if immutable)
         self.func_types = {}  # name -> (arg_types, return_type)
@@ -49,6 +49,9 @@ class TypeChecker:
         self.works_error_occured = False  # Flag for errors caught in works block
         self.error_collecting = False  # Whether to collect errors instead of raising
         self.collected_errors = []  # Errors collected in works block
+        self.check_mode = check_mode  # Verbose checking mode
+        self.defined_vars = {}  # name -> (line, col) for tracking declaration order
+        self.shadows = []  # list of shadowing warnings
 
         # Register built-in classes
         self._register_builtin_classes()
@@ -721,24 +724,25 @@ class TypeChecker:
         b = self._base_type(type_name)
         return b == "float"
 
-    def _error(self, msg, node=None, tip=None):
+    def _error(self, msg, node=None, tip=None, code=None):
         """Create a LeashError with position info from an AST node."""
         line = getattr(node, "line", None) if node else None
         col = getattr(node, "col", None) if node else None
         if self.in_works_block and self.error_collecting:
             self.collected_errors.append(
-                {"msg": msg, "line": line, "col": col, "tip": tip}
+                {"msg": msg, "line": line, "col": col, "tip": tip, "code": code}
             )
             self.works_error_occured = True
         else:
-            raise LeashError(msg, line=line, col=col, tip=tip)
+            raise LeashError(msg, line=line, col=col, tip=tip, code=code)
 
-    def _warn(self, msg, node=None, tip=None):
+    def _warn(self, msg, node=None, tip=None, code=None):
         """Add a warning with position info."""
         line = getattr(node, "line", None) if node else None
         col = getattr(node, "col", None) if node else None
-        # Store as a structured dict for better formatting in CLI
-        self.warnings.append({"msg": msg, "line": line, "col": col, "tip": tip})
+        self.warnings.append(
+            {"msg": msg, "line": line, "col": col, "tip": tip, "code": code}
+        )
 
     def _types_compatible(self, src, dst):
         """Check if src type can be assigned into dst type."""
@@ -1206,7 +1210,19 @@ class TypeChecker:
                 f"Redefinition of variable '{stmt.name}' in the same function",
                 node=stmt,
                 tip=f"Variable '{stmt.name}' is already defined. Use a different name or just assign to it if you want to change its value.",
+                code="LEASH-E001",
             )
+
+        # Shadowing check for global variables
+        if stmt.name in self.global_vars:
+            gtype, _ = self.global_vars[stmt.name]
+            self._warn(
+                f"Local variable '{stmt.name}' shadows a global variable of type '{gtype}'.",
+                node=stmt,
+                tip="Shadowing can lead to confusion. Consider using a different name for the local variable.",
+                code="LEASH-W001",
+            )
+
         decl_type = stmt.var_type
         is_imut = self._is_imut(decl_type)
         bare_decl_type = self._strip_imut(decl_type)
@@ -1217,6 +1233,7 @@ class TypeChecker:
                 "Cannot declare a variable with type 'void'.",
                 node=stmt,
                 tip="'void' is for functions that don't return a value, not for variables.",
+                code="LEASH-E002",
             )
 
         if not self._is_valid_type(resolved):
@@ -1224,11 +1241,18 @@ class TypeChecker:
                 f"Variable '{stmt.name}' declared with unknown type '{bare_decl_type}'",
                 node=stmt,
                 tip=f"Type '{bare_decl_type}' has not been defined. Did you forget to add a `def {bare_decl_type} : type ...;` or `def {bare_decl_type} : struct {{ ... }};`?",
+                code="LEASH-E003",
             )
 
         # Add to current scope
         self.var_types[stmt.name] = bare_decl_type
         self.var_immutable[stmt.name] = is_imut
+
+        # Track declaration order for use-before-declare diagnostics
+        self.defined_vars[stmt.name] = (
+            getattr(stmt, "line", None),
+            getattr(stmt, "col", None),
+        )
 
         # Check for large array
         if "[" in resolved and "]" in resolved:
@@ -1236,18 +1260,18 @@ class TypeChecker:
                 size_str = resolved.split("[")[1].strip("]")
                 if size_str:
                     total_size = int(size_str)
-                    # Assume element size is at least 1 byte, usually 4 or 8.
                     if total_size > 10000:
                         self._warn(
                             f"Variable '{stmt.name}' is a large array ({total_size} elements) declared on the stack.",
                             node=stmt,
                             tip="Large stack allocations can cause stack overflow. Consider using a `vec<T>` for dynamic or large data.",
+                            code="LEASH-W002",
                         )
             except:
                 pass
 
         if stmt.value is None:
-            return  # Default initialization (codegen should handle this)
+            return
 
         val_type = self._infer_type(stmt.value)
 
@@ -1261,14 +1285,15 @@ class TypeChecker:
 
         bare_val_type = self._strip_imut(val_type) if val_type else None
         if bare_val_type and not self._types_compatible(bare_val_type, bare_decl_type):
-            self._warn(
+            self._error(
                 f"Variable '{stmt.name}' declared as '{bare_decl_type}' "
                 f"but assigned a value of type '{bare_val_type}'.",
                 node=stmt,
+                tip=f"Type mismatch: cannot assign '{bare_val_type}' to '{bare_decl_type}'. Use a type cast if the conversion is intentional.",
+                code="LEASH-E004",
             )
 
     def _check_assignment(self, stmt):
-        # Check immutability on the target
         from .ast_nodes import Identifier
 
         if isinstance(stmt.target, Identifier):
@@ -1277,9 +1302,9 @@ class TypeChecker:
                     f"Cannot assign to immutable variable '{stmt.target.name}'",
                     node=stmt,
                     tip=f"Variable '{stmt.target.name}' was declared as `imut` or received an immutable value from a function. It cannot be reassigned.",
+                    code="LEASH-E005",
                 )
 
-            # Self assignment check
             if (
                 isinstance(stmt.value, Identifier)
                 and stmt.target.name == stmt.value.name
@@ -1287,12 +1312,12 @@ class TypeChecker:
                 self._warn(
                     f"Self-assignment: '{stmt.target.name} = {stmt.value.name}' has no effect.",
                     node=stmt,
+                    code="LEASH-W003",
                 )
 
         target_type = self._infer_type(stmt.target)
         val_type = self._infer_type(stmt.value)
 
-        # If the assigned value is imut, make the target variable immutable going forward
         if isinstance(stmt.target, Identifier) and val_type and self._is_imut(val_type):
             self.var_immutable[stmt.target.name] = True
 
@@ -1301,13 +1326,14 @@ class TypeChecker:
 
         if bare_target and bare_val:
             target_resolved = self._resolve(bare_target)
-            # Union assignment: any variant type is valid
             if target_resolved in self.union_types:
                 return
             if not self._types_compatible(bare_val, bare_target):
-                self._warn(
-                    f"Assigning '{bare_val}' to a variable of type '{bare_target}'.",
+                self._error(
+                    f"Cannot assign '{bare_val}' to a variable of type '{bare_target}'.",
                     node=stmt,
+                    tip=f"Type mismatch: '{bare_val}' is not compatible with '{bare_target}'. Use a type cast if the conversion is intentional.",
+                    code="LEASH-E006",
                 )
 
     def _check_return(self, stmt):
@@ -1373,7 +1399,7 @@ class TypeChecker:
             switch_type = "int"
         switch_type = self._resolve(switch_type)
 
-        seen_case_values = []
+        seen_case_values = set()
         for case_expr, case_body in stmt.cases:
             case_type = self._infer_type(case_expr)
             if case_type:
@@ -1383,15 +1409,55 @@ class TypeChecker:
                         f"Case type '{case_type}' does not match switch expression type '{switch_type}'",
                         node=case_expr,
                         tip="All case expressions must have the same type as the switch expression.",
+                        code="LEASH-E007",
                     )
+
+            # Duplicate case value detection
+            case_key = self._case_value_key(case_expr)
+            if case_key is not None:
+                if case_key in seen_case_values:
+                    self._error(
+                        f"Duplicate case value in switch statement.",
+                        node=case_expr,
+                        tip="Each case value must be unique. This case will never be reached.",
+                        code="LEASH-E008",
+                    )
+                seen_case_values.add(case_key)
+
             if not case_body:
-                self._warn("Empty case block.", node=case_expr)
+                self._warn("Empty case block.", node=case_expr, code="LEASH-W004")
             self._check_statements(case_body)
 
         if stmt.default_block is not None:
             if not stmt.default_block:
-                self._warn("Empty default block.", node=stmt)
+                self._warn("Empty default block.", node=stmt, code="LEASH-W005")
             self._check_statements(stmt.default_block)
+        elif self.check_mode:
+            self._warn(
+                "Switch statement has no default block. Unmatched values will be silently ignored.",
+                node=stmt,
+                tip="Consider adding a `default { }` block to handle unexpected values.",
+                code="LEASH-W006",
+            )
+
+    def _case_value_key(self, case_expr):
+        """Extract a hashable key from a case expression for duplicate detection."""
+        from .ast_nodes import (
+            NumberLiteral,
+            StringLiteral,
+            BoolLiteral,
+            EnumMemberAccess,
+        )
+
+        if isinstance(case_expr, NumberLiteral):
+            return ("num", case_expr.value)
+        elif isinstance(case_expr, StringLiteral):
+            return ("str", case_expr.value)
+        elif isinstance(case_expr, BoolLiteral):
+            return ("bool", case_expr.value)
+        elif isinstance(case_expr, EnumMemberAccess):
+            return ("enum", case_expr.enum_name, case_expr.member_name)
+        return None
 
     # ── Expression type inference ───────────────────────────────────
 
@@ -2588,7 +2654,11 @@ class TypeChecker:
 
             return fnc_node.return_type
 
-        self._error(f"Type '{base_t}' has no method named '{expr.method}'", node=expr)
+        self._error(
+            f"Type '{base_t}' has no method named '{expr.method}'",
+            node=expr,
+            code="LEASH-E009",
+        )
 
     # ── Generic type instantiation (monomorphization) ───────────────
 

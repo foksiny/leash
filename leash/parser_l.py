@@ -215,6 +215,11 @@ class Parser:
             self.eat("LBRACKET")
             types = []
             while self.current().type != "RBRACKET":
+                if self.current().type == "EOF":
+                    raise LeashError(
+                        "Unexpected end of file while parsing multi-type. Expected ']'.",
+                        tip="Multi-type syntax requires a closing bracket: `[int, float]`",
+                    )
                 types.append(self.parse_type())
                 if self.current().type == "COMMA":
                     self.eat("COMMA")
@@ -783,6 +788,11 @@ class Parser:
     def parse_block(self):
         statements = []
         while self.current().type != "RBRACE":
+            if self.current().type == "EOF":
+                raise LeashError(
+                    "Unexpected end of file. Expected closing '}'.",
+                    tip="Make sure every opening brace '{' has a matching closing brace '}'.",
+                )
             statements.append(self.parse_statement())
         self.eat("RBRACE")
         return statements
@@ -982,7 +992,10 @@ class Parser:
                 self.eat("RPAREN")
                 self.eat("SEMI")
                 return self._pos(ShowStatement(args), tok)
-            elif self.tokens[self.pos + 1].type == "COLON":
+            elif (
+                self.pos + 1 < len(self.tokens)
+                and self.tokens[self.pos + 1].type == "COLON"
+            ):
                 # Variable declaration: name : type = expr ;
                 tok = self.current()
                 name = self.eat("IDENT").value
