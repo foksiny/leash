@@ -1,0 +1,23 @@
+fnc main() : void {
+    show("Platform: ", _PLATFORM);
+
+    switch _PLATFORM {
+        case "win64" {
+            show("Windows 64-bit");
+        } case "linux64" {
+            show("Linux 64-bit");
+        } case "linux32" {
+            show("Linux 32-bit");
+        } case "macos" {
+            show("macOS");
+        } case "macos-arm" {
+            show("macOS ARM");
+        } case "js" {
+            show("JavaScript");
+        } case "html-js" {
+            show("HTML + JavaScript");
+        } default {
+            show("Unknown platform");
+        }
+    }
+}

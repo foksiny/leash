@@ -49,6 +49,7 @@ from .ast_nodes import (
     BoolLiteral,
     NullLiteral,
     FilePathLiteral,
+    BuiltinVarLiteral,
     ThisExpr,
     TypeConvExpr,
     TernaryOp,
@@ -64,7 +65,7 @@ from .ast_nodes import (
 class JSCodeGen:
     """Generate JavaScript code from Leash AST."""
 
-    def __init__(self, is_browser=False):
+    def __init__(self, is_browser=False, target_name=None):
         self.indent_level = 0
         self.output = []
         self.struct_symtab = {}
@@ -91,6 +92,7 @@ class JSCodeGen:
         self.needs_runtime = False
         self.async_methods = set()
         self.is_browser = is_browser
+        self.target_name = target_name
 
     def generate_code(self, node):
         """Generate JavaScript code from the AST and return as string."""
@@ -1590,6 +1592,16 @@ class JSCodeGen:
             return f'"{os.path.basename(node.source_file) if node.source_file else ""}"'
         return '""'
 
+    def _expr_BuiltinVarLiteral(self, node):
+        if node.name == "_PLATFORM":
+            platform_name = (
+                self.target_name
+                if self.target_name
+                else ("html-js" if self.is_browser else "js")
+            )
+            return f'"{platform_name}"'
+        return '""'
+
     def _expr_ThisExpr(self, node):
         return "this"
 
@@ -2041,6 +2053,8 @@ class JSCodeGen:
         elif isinstance(node, NullLiteral):
             return "int"
         elif isinstance(node, FilePathLiteral):
+            return "string"
+        elif isinstance(node, BuiltinVarLiteral):
             return "string"
         elif isinstance(node, ArrayInit):
             return "int[]"

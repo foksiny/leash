@@ -872,15 +872,17 @@ Leash provides special built-in variables that are automatically available in ev
 
 - `_FILEPATH` - The full path to the current source file being compiled
 - `_FILENAME` - The name of the current source file (without path)
+- `_PLATFORM` - The compilation target platform (e.g., `"linux64"`, `"win64"`, `"macos"`, `"macos-arm"`, `"js"`, `"html-js"`)
 
 ```leash
 fnc main() : void {
     show("File path: ", _FILEPATH);
     show("File name: ", _FILENAME);
+    show("Platform: ", _PLATFORM);
 }
 ```
 
-This is useful for debugging, logging, or including file information in your program's output.
+This is useful for debugging, logging, conditional compilation based on platform, or including file information in your program's output.
 
 ## Executing Shell Commands
 

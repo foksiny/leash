@@ -53,6 +53,7 @@ from .ast_nodes import (
     WorksOtherwiseStatement,
     NativeImport,
     FilePathLiteral,
+    BuiltinVarLiteral,
     SwitchStatement,
 )
 from .errors import LeashError
@@ -1206,6 +1207,8 @@ class Parser:
             # Check for special file path literals
             if name in ("_FILEPATH", "_FILENAME"):
                 return self._pos(FilePathLiteral(name, self.source_file), tok)
+            if name == "_PLATFORM":
+                return self._pos(BuiltinVarLiteral(name), tok)
             if name in ("toint", "tofloat") and self.current().type == "LPAREN":
                 self.eat("LPAREN")
                 target_type = self.parse_type()

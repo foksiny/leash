@@ -270,6 +270,13 @@ class FilePathLiteral(Expression):
         self.source_file = source_file  # Path to the source file
 
 
+class BuiltinVarLiteral(Expression):
+    """Represents a special built-in variable like _PLATFORM."""
+
+    def __init__(self, name):
+        self.name = name  # "_PLATFORM"
+
+
 class ClassDef(ASTNode):
     def __init__(
         self, name, fields, methods, parent=None, type_params=None, visibility="pub"

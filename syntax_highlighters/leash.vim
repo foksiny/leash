@@ -8,8 +8,8 @@ syn keyword leashKeyword fnc def struct union enum class type template return if
 syn keyword leashBoolean true false
 syn keyword leashNull null
 
-" Special file path literals
-syn keyword leashBuiltin _FILEPATH _FILENAME
+" Special file path literals and built-in variables
+syn keyword leashBuiltin _FILEPATH _FILENAME _PLATFORM
 
 " @from native import directive
 syn match leashNativeImport "@from\s*("me=s+1

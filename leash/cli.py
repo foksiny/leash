@@ -451,7 +451,7 @@ def _compile_to_js(input_file, output_name, target_config, is_run_mode, code):
             _print_warning(w)
 
         # 4. JS Code Generation
-        codegen = JSCodeGen(is_browser=is_browser)
+        codegen = JSCodeGen(is_browser=is_browser, target_name=target_config.name)
         js_code = codegen.generate_code(ast)
 
     except LeashError as e:

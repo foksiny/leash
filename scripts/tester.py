@@ -3,6 +3,7 @@ import os
 import sys
 import argparse
 import re
+import platform as pyplatform
 from pathlib import Path
 
 # Paths to important directories
@@ -17,8 +18,30 @@ LEASH_COMPILE_CMD = ["python3", "-m", "leash.cli", "compile"]
 # Pattern to match pointer values (e.g., 0x7ffe417814fc)
 POINTER_PATTERN = re.compile(r"0x[0-9a-fA-F]+")
 
+# Known platform identifiers that should be normalized
+KNOWN_PLATFORMS = ["linux64", "linux32", "win64", "macos", "macos-arm", "js", "html-js"]
+
 # Targets that require different execution methods
 JS_TARGET = "js"
+
+
+def get_current_platform():
+    """Detect the current platform identifier matching leash target names."""
+    system = pyplatform.system().lower()
+    machine = pyplatform.machine().lower()
+    if system == "linux":
+        if machine in ("x86_64", "amd64"):
+            return "linux64"
+        elif machine in ("i386", "i686", "x86"):
+            return "linux32"
+    elif system == "windows":
+        return "win64"
+    elif system == "darwin":
+        if machine in ("arm64", "aarch64"):
+            return "macos-arm"
+        else:
+            return "macos"
+    return "linux64"  # fallback
 
 
 def normalize_pointers(text):
@@ -76,6 +99,12 @@ def normalize_pointers(text):
     text = re.sub(r"Using cross-compiler: .+", "", text)
     # Normalize Wine stack overflow errors (known Wine limitation)
     text = re.sub(r".*stack overflow.*\n?", "", text)
+    # Normalize platform-dependent output (e.g., _PLATFORM variable)
+    # Replace known platform identifiers with a placeholder so tests pass on any platform
+    current_platform = get_current_platform()
+    for plat in KNOWN_PLATFORMS:
+        if plat != current_platform:
+            text = text.replace(plat, "__PLATFORM__")
     # Normalize trailing whitespace and extra blank lines
     text = "\n".join(l.rstrip() for l in text.split("\n"))
     # Remove trailing blank lines

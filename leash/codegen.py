@@ -4768,6 +4768,24 @@ class CodeGen:
         global_str.initializer = c_str
         return self.builder.bitcast(global_str, ir.IntType(8).as_pointer())
 
+    def _codegen_BuiltinVarLiteral(self, node):
+        if node.name == "_PLATFORM":
+            from .targets import get_native_target
+
+            platform_name = get_native_target().name
+        else:
+            platform_name = ""
+
+        s = bytearray(platform_name.encode("utf-8") + b"\0")
+        c_str = ir.Constant(ir.ArrayType(ir.IntType(8), len(s)), s)
+        global_str = ir.GlobalVariable(
+            self.module, c_str.type, name=self.module.get_unique_name("builtinvar")
+        )
+        global_str.linkage = "internal"
+        global_str.global_constant = True
+        global_str.initializer = c_str
+        return self.builder.bitcast(global_str, ir.IntType(8).as_pointer())
+
     def _codegen_StringLiteral(self, node):
         s = bytearray(node.value.encode("utf-8") + b"\0")
         c_str = ir.Constant(ir.ArrayType(ir.IntType(8), len(s)), s)

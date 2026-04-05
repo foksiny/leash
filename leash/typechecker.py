@@ -1417,6 +1417,8 @@ class TypeChecker:
             return "nil"
         elif isinstance(expr, FilePathLiteral):
             return "string"
+        elif isinstance(expr, BuiltinVarLiteral):
+            return "string"
         elif isinstance(expr, ThisExpr):
             if not self.current_class:
                 self._error("'this' can only be used inside a class method", node=expr)
