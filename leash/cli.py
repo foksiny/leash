@@ -19,6 +19,7 @@ from .ast_nodes import (
     TemplateDef,
     ImportStmt,
 )
+from .targets import get_target, get_native_target, list_targets, TargetConfig
 import llvmlite.binding as llvm
 
 
@@ -330,10 +331,24 @@ def install_clang_on_windows():
 
 
 def compile_file(
-    input_file, output_name=None, output_type="executable", is_run_mode=False
+    input_file,
+    output_name=None,
+    output_type="executable",
+    is_run_mode=False,
+    target_name=None,
 ):
     with open(input_file, "r") as f:
         code = f.read()
+
+    # Resolve target configuration
+    if target_name:
+        target_config = get_target(target_name)
+    else:
+        target_config = get_native_target()
+
+    # JavaScript target - use JS codegen, no LLVM
+    if target_config.is_js:
+        return _compile_to_js(input_file, output_name, target_config, is_run_mode, code)
 
     try:
         # 1. Lexical Analysis
@@ -377,7 +392,12 @@ def compile_file(
         traceback.print_exc()
         sys.exit(1)
 
-    target = llvm.Target.from_default_triple()
+    # Get target and create target machine
+    try:
+        target = llvm.Target.from_triple(target_config.llvm_triple)
+    except Exception:
+        target = llvm.Target.from_default_triple()
+
     target_machine = target.create_target_machine()
 
     # Optional Output name
@@ -393,8 +413,158 @@ def compile_file(
     with open(obj_name, "wb") as f:
         f.write(target_machine.emit_object(mod))
 
+    # Native/cross-compilation targets - link with C compiler
+    return _link_native(
+        obj_name,
+        output_name,
+        target_config,
+        is_run_mode,
+        output_type,
+        codegen,
+        base_path,
+    )
+
+
+def _compile_to_js(input_file, output_name, target_config, is_run_mode, code):
+    """Compile to JavaScript using the JS codegen backend."""
+    from .codegen_js import JSCodeGen
+
+    is_browser = target_config.is_html_js
+
+    try:
+        # 1. Lexical Analysis
+        lexer = Lexer(code)
+        tokens = lexer.tokenize()
+
+        # 2. Parsing
+        parser = Parser(tokens, input_file)
+        ast = parser.parse()
+
+        # 2.5. Resolve imports (expand them into the AST)
+        base_path = os.path.dirname(os.path.abspath(input_file)) or "."
+        ast = resolve_imports(ast, base_path)
+
+        # 3. Static Type Checking
+        checker = TypeChecker()
+        warnings = checker.check(ast)
+        for w in warnings:
+            _print_warning(w)
+
+        # 4. JS Code Generation
+        codegen = JSCodeGen(is_browser=is_browser)
+        js_code = codegen.generate_code(ast)
+
+    except LeashError as e:
+        _print_error(e, input_file, code)
+        sys.exit(1)
+    except Exception as e:
+        import traceback
+
+        print(f"error: Internal compiler error: {e}")
+        traceback.print_exc()
+        sys.exit(1)
+
+    # Write output
+    if output_name is None:
+        if input_file.endswith(".lsh"):
+            output_name = input_file[:-4]
+        else:
+            output_name = "out"
+
+    output_file = target_config.get_output_name(output_name)
+
+    if is_browser:
+        # Wrap JS code in HTML
+        html_content = _wrap_js_in_html(js_code, input_file)
+        with open(output_file, "w") as f:
+            f.write(html_content)
+    else:
+        with open(output_file, "w") as f:
+            f.write(js_code)
+
+    if not is_run_mode:
+        print(f"Successfully compiled '{input_file}' to '{output_file}'")
+    return output_file
+
+
+def _wrap_js_in_html(js_code, source_file):
+    """Wrap JavaScript code in an HTML document with basic styling."""
+    import html
+
+    source_name = os.path.basename(source_file) if source_file else "program"
+    escaped_js = js_code
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Leash - {html.escape(source_name)}</title>
+    <style>
+        body {{
+            font-family: monospace;
+            background-color: #1e1e1e;
+            color: #d4d4d4;
+            margin: 0;
+            padding: 20px;
+        }}
+        #leash-output {{
+            background-color: #0d0d0d;
+            border: 1px solid #333;
+            border-radius: 4px;
+            padding: 10px;
+            min-height: 200px;
+            max-height: 80vh;
+            overflow-y: auto;
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }}
+        h1 {{
+            color: #569cd6;
+            font-size: 1.2em;
+            margin-bottom: 10px;
+        }}
+    </style>
+</head>
+<body>
+    <h1>Leash Program: {html.escape(source_name)}</h1>
+    <div id="leash-output"></div>
+    <script>
+{escaped_js}
+    </script>
+</body>
+</html>"""
+
+
+def _link_native(
+    obj_name, output_name, target_config, is_run_mode, output_type, codegen, base_path
+):
+    """Link native object file with appropriate cross-compiler."""
+    # Collect native library paths
+    native_libs = codegen.native_libs
+    native_lib_args = []
+    for native_lib in native_libs:
+        lib_path = native_lib[0]
+        if lib_path.startswith("."):
+            lib_path = os.path.join(base_path, lib_path)
+        if os.name == "nt":
+            native_lib_args.append(lib_path)
+        else:
+            native_lib_args.append(lib_path)
+
     # Determine the C compiler to use
     cc = os.environ.get("CC")
+    is_cross_compile = False
+
+    # Try cross-compiler detection if target differs from host
+    if cc is None:
+        cross_linker = target_config.detect_cross_linker()
+        if cross_linker:
+            cc = cross_linker
+            is_cross_compile = True
+            print(f"Using cross-compiler: {cc}")
+
+    # Platform-specific compiler detection
     if cc is None and os.name == "nt":
         try:
             subprocess.run(["clang", "--version"], capture_output=True, check=True)
@@ -438,62 +608,41 @@ def compile_file(
     elif cc is None:
         cc = "gcc"
 
-    # Collect native library paths for linking
-    native_libs = codegen.native_libs
-    native_lib_args = []
-    for native_lib in native_libs:
-        lib_path = native_lib[0]
-        if lib_path.startswith("."):
-            lib_path = os.path.join(base_path, lib_path)
-        if os.name == "nt":
-            native_lib_args.append(lib_path)
+    # Add cross-compilation stubs when cross-compiling
+    cross_stubs = []
+    stubs_obj = None
+    if is_cross_compile:
+        stubs_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "cross_compile_stubs.c"
+        )
+        if os.path.exists(stubs_path):
+            # Compile stubs to object file first
+            stubs_obj = os.path.join(os.path.dirname(obj_name), "cross_stubs.o")
+            try:
+                compile_cmd = [cc, "-c", stubs_path, "-o", stubs_obj]
+                subprocess.run(compile_cmd, check=True, capture_output=True)
+                cross_stubs = [stubs_obj]
+            except subprocess.CalledProcessError as e:
+                print(f"warning: Failed to compile cross-compilation stubs: {e}")
         else:
-            native_lib_args.append(lib_path)
+            print(f"warning: Cross-compilation stubs not found at {stubs_path}")
+            print("tip: Cross-compilation may fail without GC and clock stubs.")
 
+    # Determine output name and link command
     try:
         if output_type == "executable":
-            if os.name == "nt":
-                output_name_final = output_name + ".exe"
-                link_cmd = [
-                    cc,
-                    obj_name,
-                    "-o",
-                    output_name_final,
-                    "-l:libgc.so.1",
-                ] + native_lib_args
-            else:
-                output_name_final = output_name
-                link_cmd = [
-                    cc,
-                    obj_name,
-                    "-o",
-                    output_name_final,
-                    "-no-pie",
-                    "-l:libgc.so.1",
-                ] + native_lib_args
+            output_name_final = target_config.get_output_name(output_name)
+            link_cmd = [cc, obj_name] + cross_stubs + ["-o", output_name_final]
+            link_cmd.extend(target_config.linker_flags)
+            link_cmd.extend(native_lib_args)
             subprocess.run(link_cmd, check=True)
         elif output_type == "dynamic":
             if os.name == "nt":
                 output_name_final = output_name + ".dll"
             else:
                 output_name_final = "lib" + output_name + ".so"
-            if os.name == "nt":
-                link_cmd = [
-                    cc,
-                    "-shared",
-                    obj_name,
-                    "-o",
-                    output_name_final,
-                ] + native_lib_args
-            else:
-                link_cmd = [
-                    cc,
-                    "-shared",
-                    obj_name,
-                    "-o",
-                    output_name_final,
-                    "-fPIC",
-                ] + native_lib_args
+            link_cmd = [cc, "-shared", obj_name, "-o", output_name_final, "-fPIC"]
+            link_cmd.extend(native_lib_args)
             subprocess.run(link_cmd, check=True)
         elif output_type == "static":
             if os.name == "nt":
@@ -505,29 +654,92 @@ def compile_file(
         else:
             output_name_final = output_name
     except FileNotFoundError:
-        print(f"Error: A C compiler ('{cc}') is required to link the executable.")
+        print(f"Error: C compiler '{cc}' not found for target '{target_config.name}'.")
+        print(
+            f"tip: Install appropriate cross-compiler or set CC environment variable."
+        )
+        print(f"Object file available at: {obj_name}")
         sys.exit(1)
     except subprocess.CalledProcessError as e:
         print(f"Linking failed: {e}")
         sys.exit(1)
 
-    # Finally, cleanup object file
+    # Cleanup object files
     if os.path.exists(obj_name):
         os.remove(obj_name)
+    if stubs_obj and os.path.exists(stubs_obj):
+        os.remove(stubs_obj)
 
     if not is_run_mode:
-        print(f"Successfully compiled '{input_file}' to '{output_name_final}'")
+        print(f"Successfully compiled to '{output_name_final}'")
     return output_name_final
 
 
-def run_file(input_file, args=[]):
+def run_file(input_file, args=[], target_name=None):
+    from .targets import get_target, get_native_target
+    import platform
+
+    target_config = get_target(target_name) if target_name else get_native_target()
+
     output_name = compile_file(
-        input_file, output_name=".__temp_run_leash_exe", is_run_mode=True
+        input_file,
+        output_name=".__temp_run_leash_exe",
+        is_run_mode=True,
+        target_name=target_name,
     )
-    executable_path = f"./{output_name}" if os.name != "nt" else output_name
+
+    # JS target needs to be run with node
+    if target_config.is_js:
+        executable_path = output_name
+        cmd = ["node", executable_path] + args
+    else:
+        # Check if this is a cross-compiled target that can't run natively
+        system = platform.system().lower()
+        machine = platform.machine().lower()
+        can_run = True
+
+        if target_config.name == "win64" and system != "windows":
+            can_run = False
+            runner = None
+            # Try wine
+            try:
+                subprocess.run(["wine", "--version"], capture_output=True, check=True)
+                runner = "wine"
+                can_run = True
+            except (FileNotFoundError, subprocess.CalledProcessError):
+                pass
+
+            if can_run and runner:
+                executable_path = output_name
+                cmd = [runner, executable_path] + args
+            else:
+                print(f"error: Cannot run Windows executable on {system}.")
+                print(
+                    f"tip: Install 'wine' to run Windows binaries, or run on Windows."
+                )
+                print(f"Binary compiled at: {output_name}")
+                if os.path.exists(output_name):
+                    os.remove(output_name)
+                sys.exit(1)
+        elif target_config.name in ("macos", "macos-arm") and system != "darwin":
+            can_run = False
+            print(f"error: Cannot run macOS binary on {system}.")
+            print(f"tip: Compile on macOS or transfer the binary to a Mac.")
+            print(f"Binary compiled at: {output_name}")
+            if os.path.exists(output_name):
+                os.remove(output_name)
+            sys.exit(1)
+        elif target_config.name == "linux32" and machine not in ("i386", "i686", "x86"):
+            # linux32 on linux64 might work with multiarch
+            can_run = True
+            executable_path = f"./{output_name}" if os.name != "nt" else output_name
+            cmd = [executable_path] + args
+        else:
+            executable_path = f"./{output_name}" if os.name != "nt" else output_name
+            cmd = [executable_path] + args
 
     try:
-        result = subprocess.run([executable_path] + args)
+        result = subprocess.run(cmd)
         if result.returncode != 0:
             sys.exit(result.returncode)
     except Exception as e:
@@ -544,35 +756,73 @@ def run_file(input_file, args=[]):
 def main():
     if len(sys.argv) < 2:
         print("Usage: leash <compile|run|install> ...")
-        print("       leash compile <file.lsh> [to <outname>]")
-        print("       leash compile <file.lsh> to-dynamic [<outname>]")
-        print("       leash compile <file.lsh> to-static [<outname>]")
+        print("       leash compile <file.lsh> [to <outname>] [--target <target>]")
+        print(
+            "       leash compile <file.lsh> to-dynamic [<outname>] [--target <target>]"
+        )
+        print(
+            "       leash compile <file.lsh> to-static [<outname>] [--target <target>]"
+        )
+        print("       leash compile <file.lsh> --target <target>")
+        print("")
+        print("Supported targets:")
+        for name, desc in list_targets():
+            print(f"  {name:12s} - {desc}")
         sys.exit(1)
 
     cmd = sys.argv[1]
     if cmd in ("compile", "run"):
         if len(sys.argv) < 3:
-            print(f"Usage: leash {cmd} <file.lsh> [to <outname>]")
+            print(f"Usage: leash {cmd} <file.lsh> [to <outname>] [--target <target>]")
             sys.exit(1)
         input_file = sys.argv[2]
+
+        # Parse remaining arguments
+        remaining_args = sys.argv[3:]
+        target_name = None
+        output_name = None
+        output_type = "executable"
+
+        # Extract --target flag
+        i = 0
+        positional = []
+        while i < len(remaining_args):
+            if remaining_args[i] == "--target":
+                if i + 1 >= len(remaining_args):
+                    print("error: --target requires a value")
+                    sys.exit(1)
+                target_name = remaining_args[i + 1]
+                i += 2
+            elif remaining_args[i] == "--list-targets":
+                print("Supported targets:")
+                for name, desc in list_targets():
+                    print(f"  {name:12s} - {desc}")
+                sys.exit(0)
+            else:
+                positional.append(remaining_args[i])
+                i += 1
+
         if cmd == "run":
-            run_file(input_file, sys.argv[3:])
+            run_file(input_file, positional, target_name)
         else:
-            output_name = None
-            output_type = "executable"
-            if len(sys.argv) >= 4:
-                if sys.argv[3] == "to":
-                    if len(sys.argv) >= 5:
-                        output_name = sys.argv[4]
-                elif sys.argv[3] == "to-dynamic":
+            # Parse positional arguments: [to|to-dynamic|to-static] [outname]
+            if len(positional) >= 1:
+                if positional[0] == "to":
+                    if len(positional) >= 2:
+                        output_name = positional[1]
+                elif positional[0] == "to-dynamic":
                     output_type = "dynamic"
-                    if len(sys.argv) >= 5:
-                        output_name = sys.argv[4]
-                elif sys.argv[3] == "to-static":
+                    if len(positional) >= 2:
+                        output_name = positional[1]
+                elif positional[0] == "to-static":
                     output_type = "static"
-                    if len(sys.argv) >= 5:
-                        output_name = sys.argv[4]
-            compile_file(input_file, output_name, output_type)
+                    if len(positional) >= 2:
+                        output_name = positional[1]
+                else:
+                    # Treat as output name for backward compatibility
+                    output_name = positional[0]
+
+            compile_file(input_file, output_name, output_type, target_name=target_name)
     elif cmd == "install":
         if len(sys.argv) < 3:
             print("Usage: leash install <path> [<path> ...]")

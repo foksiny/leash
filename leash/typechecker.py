@@ -1197,6 +1197,9 @@ class TypeChecker:
             del self.var_types[stmt.err_var]
             del self.var_immutable[stmt.err_var]
 
+        elif isinstance(stmt, SwitchStatement):
+            self._check_switch(stmt)
+
     def _check_var_decl(self, stmt):
         if stmt.name in self.var_types:
             self._error(
@@ -1363,6 +1366,32 @@ class TypeChecker:
             if not stmt.else_block:
                 self._warn("Empty `else` block.", node=stmt)
             self._check_statements(stmt.else_block)
+
+    def _check_switch(self, stmt):
+        switch_type = self._infer_type(stmt.expression)
+        if not switch_type:
+            switch_type = "int"
+        switch_type = self._resolve(switch_type)
+
+        seen_case_values = []
+        for case_expr, case_body in stmt.cases:
+            case_type = self._infer_type(case_expr)
+            if case_type:
+                case_type = self._resolve(case_type)
+                if case_type != switch_type:
+                    self._error(
+                        f"Case type '{case_type}' does not match switch expression type '{switch_type}'",
+                        node=case_expr,
+                        tip="All case expressions must have the same type as the switch expression.",
+                    )
+            if not case_body:
+                self._warn("Empty case block.", node=case_expr)
+            self._check_statements(case_body)
+
+        if stmt.default_block is not None:
+            if not stmt.default_block:
+                self._warn("Empty default block.", node=stmt)
+            self._check_statements(stmt.default_block)
 
     # ── Expression type inference ───────────────────────────────────
 

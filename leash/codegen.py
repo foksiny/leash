@@ -2095,6 +2095,88 @@ class CodeGen:
 
         self.builder.position_at_end(merge_bb)
 
+    def _codegen_SwitchStatement(self, node):
+        switch_val = self._codegen(node.expression)
+        switch_type = switch_val.type
+
+        case_bbs = []
+        for i, (case_expr, case_body) in enumerate(node.cases):
+            case_bbs.append(
+                self.builder.function.append_basic_block(f"switch_case_{i}")
+            )
+
+        default_bb = None
+        if node.default_block is not None:
+            default_bb = self.builder.function.append_basic_block("switch_default")
+
+        merge_bb = self.builder.function.append_basic_block("switch_merge")
+        is_string_switch = isinstance(
+            switch_type, ir.PointerType
+        ) and switch_type.pointee == ir.IntType(8)
+
+        if node.cases:
+            # Build check blocks for the comparison chain
+            check_bbs = []
+            for i in range(len(node.cases) - 1):
+                check_bbs.append(
+                    self.builder.function.append_basic_block(f"switch_check_{i}")
+                )
+
+            # Emit comparison chain from the entry block
+            for i, (case_expr, case_body) in enumerate(node.cases):
+                case_val = self._codegen(case_expr)
+                case_val = self._emit_cast(case_val, switch_type)
+
+                if is_string_switch:
+                    cmp_res = self.builder.call(self.strcmp, [switch_val, case_val])
+                    cmp = self.builder.icmp_signed(
+                        "==", cmp_res, ir.Constant(ir.IntType(32), 0)
+                    )
+                else:
+                    cmp = self.builder.icmp_signed("==", switch_val, case_val)
+
+                if i + 1 < len(node.cases):
+                    next_check = check_bbs[i]
+                else:
+                    next_check = default_bb if default_bb else merge_bb
+                self.builder.cbranch(cmp, case_bbs[i], next_check)
+                # Move to next check block to continue the chain
+                if i + 1 < len(node.cases):
+                    self.builder.position_at_end(check_bbs[i])
+
+            # Emit case bodies
+            for i, (case_expr, case_body) in enumerate(node.cases):
+                self.builder.position_at_end(case_bbs[i])
+                for stmt in case_body:
+                    self._codegen(stmt)
+                    if self.builder.block.is_terminated:
+                        break
+                if not self.builder.block.is_terminated:
+                    self.builder.branch(merge_bb)
+
+            # Emit default body
+            if default_bb:
+                self.builder.position_at_end(default_bb)
+                for stmt in node.default_block:
+                    self._codegen(stmt)
+                    if self.builder.block.is_terminated:
+                        break
+                if not self.builder.block.is_terminated:
+                    self.builder.branch(merge_bb)
+        elif default_bb:
+            self.builder.branch(default_bb)
+            self.builder.position_at_end(default_bb)
+            for stmt in node.default_block:
+                self._codegen(stmt)
+                if self.builder.block.is_terminated:
+                    break
+            if not self.builder.block.is_terminated:
+                self.builder.branch(merge_bb)
+        else:
+            self.builder.branch(merge_bb)
+
+        self.builder.position_at_end(merge_bb)
+
     def _codegen_WhileStatement(self, node):
         cond_bb = self.builder.function.append_basic_block("while_cond")
         body_bb = self.builder.function.append_basic_block("while_body")

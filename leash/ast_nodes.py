@@ -372,6 +372,17 @@ class WorksOtherwiseStatement(Statement):
         )
 
 
+class SwitchStatement(Statement):
+    """Switch-case construct: switch expr { case val { body } ... default { body } }"""
+
+    def __init__(self, expression, cases, default_block=None):
+        self.expression = expression  # expression to switch on
+        self.cases = cases  # list of (case_expression, block) tuples
+        self.default_block = (
+            default_block  # optional default block (list of statements)
+        )
+
+
 class NativeImport(ASTNode):
     """Represents a native library import with functions, variables, structs, unions, enums, and typedefs."""
 

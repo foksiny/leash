@@ -57,6 +57,9 @@ class Lexer:
         "use",
         "works",
         "otherwise",
+        "switch",
+        "case",
+        "default",
     }
 
     # regexes

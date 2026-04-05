@@ -53,6 +53,7 @@ from .ast_nodes import (
     WorksOtherwiseStatement,
     NativeImport,
     FilePathLiteral,
+    SwitchStatement,
 )
 from .errors import LeashError
 
@@ -141,7 +142,7 @@ class Parser:
         if obs_val == "null" and obs_type == "IDENT" and expected_type == "NULL":
             return "Use `(void)0` or leave a variable empty if you want a null-like state. Generic null support is coming."
         if obs_val == "switch" or obs_val == "match" or obs_val == "case":
-            return "Leash doesn't have a switch statement yet. Use an `if ... also ... else` chain instead!"
+            return "Leash uses switch-case statements! Use `switch expr { case val { ... } default { ... } }` syntax."
         if obs_val == "self":
             return "Leash uses the `this` keyword inside classes!"
 
@@ -838,6 +839,33 @@ class Parser:
                 WorksOtherwiseStatement(body, err_var, otherwise_block), tok
             )
 
+        elif current.type == "SWITCH":
+            tok = self.current()
+            self.eat("SWITCH")
+            expr = self.parse_expression(no_struct_init=True)
+            self.eat("LBRACE")
+            cases = []
+            default_block = None
+            while self.current().type != "RBRACE":
+                if self.current().type == "CASE":
+                    self.eat("CASE")
+                    case_expr = self.parse_expression(no_struct_init=True)
+                    self.eat("LBRACE")
+                    case_body = self.parse_block()
+                    cases.append((case_expr, case_body))
+                elif self.current().type == "DEFAULT":
+                    self.eat("DEFAULT")
+                    self.eat("LBRACE")
+                    default_block = self.parse_block()
+                else:
+                    raise LeashError(
+                        f"Expected 'case' or 'default' inside switch block, but found {self.current().type}",
+                        self.current().line,
+                        self.current().column,
+                    )
+            self.eat("RBRACE")
+            return self._pos(SwitchStatement(expr, cases, default_block), tok)
+
         elif current.type == "WHILE":
             tok = self.current()
             self.eat("WHILE")
@@ -1003,8 +1031,8 @@ class Parser:
             "include": "Looking for `#include`? Leash manages built-ins like `show` and `strlen` automatically.",
             "using": "Leash doesn't have namespaces or `using` statements yet.",
             "interface": "Leash uses `union` for flexible types and `struct` for data.",
-            "switch": "Leash uses clean `if / also / else` chains instead of `switch` statements.",
-            "match": "Leash uses `if / also / else` chains. Pattern matching is on the roadmap!",
+            "switch": "Leash uses `switch / case / default` for multi-way branching! Example: `switch val { case 1 { ... } default { ... } }`",
+            "match": "Leash uses `switch / case / default` for multi-way branching! Example: `switch val { case 1 { ... } default { ... } }`",
             "byte": "For 8-bit integers, use `int<8>` or `uint<8>`.",
             "long": "For 64-bit integers, use `int<64>` or `uint<64>`.",
             "double": "Leash `float` is 64-bit by default! Use `float<32>` if you want single-precision.",

@@ -1,0 +1,28 @@
+def Color : enum {
+    RED,
+    GREEN,
+    BLUE
+};
+
+fnc main() : void {
+    c: Color = Color::RED;
+
+    switch c {
+        case Color::RED {
+            show("it's RED!");
+        } case Color::GREEN {
+            show("it's GREEN!");
+        } case Color::BLUE {
+            show("it's BLUE!");
+        } default {
+            show("it's something else!");
+        }
+    }
+}
+
+// switch cases support any type, including:
+// - integers
+// - floats
+// - booleans
+// - strings
+// - enums

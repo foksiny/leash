@@ -26,7 +26,7 @@
 
 (defconst leash-font-lock-keywords
   (list
-   '("\\b\\(fnc\\|def\\|struct\\|union\\|enum\\|class\\|type\\|template\\|return\\|if\\|also\\|else\\|while\\|for\\|do\\|foreach\\|in\\|imut\\|vec\\|vector\\|this\\|pub\\|priv\\|static\\|stop\\|continue\\|use\\|works\\|otherwise\\)\\b" . font-lock-keyword-face)
+   '("\\b\\(fnc\\|def\\|struct\\|union\\|enum\\|class\\|type\\|template\\|return\\|if\\|also\\|else\\|while\\|for\\|do\\|foreach\\|in\\|imut\\|vec\\|vector\\|this\\|pub\\|priv\\|static\\|stop\\|continue\\|use\\|works\\|otherwise\\|switch\\|case\\|default\\)\\b" . font-lock-keyword-face)
    '("\\b\\(int\\|uint\\|float\\|bool\\|string\\|char\\|void\\|array\\|vec\\)\\b\\(?:<[0-9]+>\\)?" . font-lock-type-face)
    ;; @from native import directive
    '("@from\\s*(" . font-lock-preprocessor-face)
