@@ -42,6 +42,11 @@ class CodeGen:
         self.works_error_occured = False  # Flag if error occurred in works block
         self.works_error_info = None  # Store error info for otherwise block
 
+        # For unsafe functions - skip runtime safety checks
+        self.in_unsafe_func = (
+            False  # Track if we're generating code for an unsafe function
+        )
+
         # stderr - REMOVED, now using printf for error output
 
         # Native libraries for FFI (from @from statements)
@@ -1030,7 +1035,10 @@ class CodeGen:
         # so StructInit can store the vtable pointer
         self._create_vtable_placeholder(node.name)
 
-        # Codegen methods
+        # Two-pass method codegen to handle recursive/self-referential calls:
+        # Pass 1: Create function declarations and register them in the method table
+        # Pass 2: Fill in function bodies
+        method_info = []
         for m in node.methods:
             orig_name = m.fnc.name
             m.fnc.name = f"{node.name}_{orig_name}"
@@ -1040,10 +1048,26 @@ class CodeGen:
                 new_args = [("this", node.name)] + list(m.fnc.args)
                 m.fnc.args = tuple(new_args)
 
-            func = self._codegen_Function(m.fnc)
+            # Determine function type
+            ret_type = self._get_llvm_type(m.fnc.return_type, is_return=True)
+            arg_types = [self._get_llvm_type(t, is_return=False) for _, t in m.fnc.args]
+            func_type = ir.FunctionType(ret_type, arg_types)
+
+            # Create function declaration (no body yet)
+            func = ir.Function(self.module, func_type, name=m.fnc.name)
+            self.func_symtab[m.fnc.name] = func
+
+            # Register in method table immediately so recursive calls work
             self.class_symtab[node.name]["methods"][orig_name] = func
             self.class_symtab[node.name]["method_static"][orig_name] = m.is_static
             self.class_symtab[node.name]["method_imut"][orig_name] = m.is_imut
+
+            method_info.append((m.fnc, orig_name))
+
+        # Pass 2: Fill in function bodies
+        for fnc_node, orig_name in method_info:
+            func = self.func_symtab[fnc_node.name]
+            self._codegen_Function_body(fnc_node, func)
 
         # Update vtable with actual function pointers
         self._update_vtable(node.name)
@@ -1140,11 +1164,13 @@ class CodeGen:
                 "size": size,
             }
 
-        # Union layout: { i32 tag, [max_size x i8] }
+        # Union layout: { i64 tag (padded for alignment), [max_size x i8] }
+        # Tag is i64 so data region starts at offset 8, ensuring proper alignment
+        # for i64/double variants when bitcasting the data pointer.
         if max_size < 8:
             max_size = 8  # minimum 8 bytes for pointer-sized data
         union_type = ir.LiteralStructType(
-            [ir.IntType(32), ir.ArrayType(ir.IntType(8), max_size)]
+            [ir.IntType(64), ir.ArrayType(ir.IntType(8), max_size)]
         )
 
         self.union_symtab[node.name] = {
@@ -1241,8 +1267,19 @@ class CodeGen:
         func = ir.Function(self.module, func_type, name=name)
         self.func_symtab[name] = func
 
+        self._codegen_Function_body(node, func, is_main_with_args=is_main_with_args)
+
+        return func
+
+    def _codegen_Function_body(self, node, func, is_main_with_args=False):
+        """Fill in the body of an already-declared function."""
         block = func.append_basic_block(name="entry")
         self.builder = ir.IRBuilder(block)
+
+        name = node.name
+
+        old_unsafe = self.in_unsafe_func
+        self.in_unsafe_func = getattr(node, "is_unsafe", False)
 
         if name == "main":
             self.builder.call(self.gc_init, [])
@@ -1255,7 +1292,6 @@ class CodeGen:
             )
             # Auto-seed random number generator if seed() was not explicitly called
             if not self.seed_called:
-                # time(NULL) returns i64, cast to i32 for srand
                 time_val = self.builder.call(
                     self.time, [ir.Constant(ir.IntType(64).as_pointer(), None)]
                 )
@@ -1263,14 +1299,12 @@ class CodeGen:
                 self.builder.call(self.srand, [seed_val])
 
         # Allocate args
-        if name == "main" and len(node.args) == 1 and node.args[0][1] == "string[]":
-            # We have i32 argc, i8** argv
+        if is_main_with_args and len(node.args) == 1 and node.args[0][1] == "string[]":
             argc_val = func.args[0]
             argv_val = func.args[1]
             argc_val.name = "argc"
             argv_val.name = "argv"
 
-            # Create a string[] slice struct [i64 len, i8** ptr]
             leash_arg_name = node.args[0][0]
             slice_type = ir.LiteralStructType(
                 [ir.IntType(64), ir.IntType(8).as_pointer().as_pointer()]
@@ -1291,29 +1325,22 @@ class CodeGen:
                 self.builder.store(func.args[i], ptr)
                 self.var_symtab[arg_name] = (ptr, arg_type_name)
 
-        # SAMM initialization removed (Boeing GC is now used)
-
         for stmt in node.body:
             self._codegen(stmt)
             if self.builder.block.is_terminated:
                 break
 
         if not self.builder.block.is_terminated:
-            self._emit_cleanup()  # Auto-free everything
+            self._emit_cleanup()
             if name == "main":
                 self.builder.ret(ir.Constant(ir.IntType(32), 0))
             elif node.return_type == "void":
                 self.builder.ret_void()
             else:
-                # If a non-void function reaches the end without a return,
-                # it's technically undefined behavior in Leash, but for
-                # valid LLVM IR we must terminate the block.
-                # 'unreachable' is appropriate here.
                 self.builder.unreachable()
 
-        # Reset tracking
-        self.current_func_alloc_counter = None
-        return func
+        self.builder = None
+        self.in_unsafe_func = old_unsafe
 
     def _codegen_ReturnStatement(self, node):
         old_target = self.current_target_type
@@ -1470,7 +1497,7 @@ class CodeGen:
             [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)],
             inbounds=True,
         )
-        self.builder.store(ir.Constant(ir.IntType(32), matched_idx), tag_ptr)
+        self.builder.store(ir.Constant(ir.IntType(64), matched_idx), tag_ptr)
         # Store value into data region
         data_ptr = self.builder.gep(
             union_ptr,
@@ -1509,7 +1536,7 @@ class CodeGen:
                             inbounds=True,
                         )
                         self.builder.store(
-                            ir.Constant(ir.IntType(32), vdata["index"]), tag_ptr
+                            ir.Constant(ir.IntType(64), vdata["index"]), tag_ptr
                         )
 
                         # Store data
@@ -1896,7 +1923,7 @@ class CodeGen:
         # Build if-else chain
         for i, (vname, vdata) in enumerate(variants[:-1]):
             cmp = self.builder.icmp_signed(
-                "==", tag_val, ir.Constant(ir.IntType(32), vdata["index"])
+                "==", tag_val, ir.Constant(ir.IntType(64), vdata["index"])
             )
             next_check = self.builder.function.append_basic_block(
                 f"union_show_check_{i + 1}"
@@ -3230,6 +3257,34 @@ class CodeGen:
             return self._emit_const_str("")
 
     def _codegen_MethodCall(self, node):
+        from .ast_nodes import Identifier
+
+        # Handle static method calls on class names (e.g., pMath.exp(x))
+        if isinstance(node.expr, Identifier) and node.expr.name in self.class_symtab:
+            cls_info = self.class_symtab[node.expr.name]
+            func = cls_info["methods"].get(node.method)
+            if not func:
+                raise LeashError(
+                    f"Class '{node.expr.name}' has no method named '{node.method}'"
+                )
+
+            is_m_static = cls_info["method_static"].get(node.method, False)
+            if not is_m_static:
+                raise LeashError(
+                    f"Cannot call instance method '{node.method}' on class name '{node.expr.name}'"
+                )
+
+            # Prepare arguments for static method
+            args = []
+            for i, arg_node in enumerate(node.args):
+                args.append(self._codegen(arg_node))
+
+            casted_args = []
+            for arg_val, expected_type in zip(args, func.args):
+                casted_args.append(self._emit_cast(arg_val, expected_type.type))
+
+            return self.builder.call(func, casted_args)
+
         base_ptr, type_name = self._codegen_lvalue(node.expr)
         resolved = self._resolve_type_name(type_name)
 
@@ -3261,6 +3316,18 @@ class CodeGen:
             cls_info = self.class_symtab[resolved]
             func = cls_info["methods"].get(node.method)
             if not func:
+                raise LeashError(
+                    f"Class '{resolved}' has no method named '{node.method}'"
+                )
+                print(
+                    f"DEBUG CODEGEN: class_symtab keys={list(self.class_symtab.keys())}",
+                    file=sys.stderr,
+                )
+                if resolved in self.class_symtab:
+                    print(
+                        f"DEBUG CODEGEN: cls_info methods={list(cls_info['methods'].keys())}",
+                        file=sys.stderr,
+                    )
                 raise LeashError(
                     f"Class '{resolved}' has no method named '{node.method}'"
                 )
@@ -4540,6 +4607,23 @@ class CodeGen:
     def _codegen_MemberAccess(self, node):
         from .ast_nodes import Identifier
 
+        # Handle static class field access (e.g., pMath.PI)
+        if isinstance(node.expr, Identifier) and node.expr.name in self.class_symtab:
+            cls_info = self.class_symtab[node.expr.name]
+            if node.member in cls_info["fields"]:
+                # Static field access: load from the struct stored in class_symtab
+                # For now, class fields are instance fields, so this is an error
+                # unless they're actually stored as globals.
+                # In Leash, class fields are instance fields, so ClassName.field
+                # should refer to the field type, not a value.
+                # However, for constants like PI/E, they need to be stored somewhere.
+                # For now, return the default value for the field type.
+                field_type = cls_info["field_types"][node.member]
+                return self._emit_default_value(field_type)
+            raise LeashError(
+                f"Class '{node.expr.name}' has no field named '{node.member}'"
+            )
+
         # Get the leash type name of the base expression
         type_name = self._get_leash_type_name(node.expr)
         resolved = self._resolve_type_name(type_name)
@@ -4630,12 +4714,14 @@ class CodeGen:
         return self.builder.load(ptr)
 
     def _emit_union_tag_check(self, tag_val, expected_idx, member_name, union_name):
-        """Emit runtime check: if tag != expected_idx, print error to stderr and exit(1)."""
+        """Emit runtime check: if tag != expected_idx, print error to stderr and exit(1). Skipped in unsafe functions."""
+        if self.in_unsafe_func:
+            return
         ok_bb = self.builder.function.append_basic_block("union_check_ok")
         fail_bb = self.builder.function.append_basic_block("union_check_fail")
 
         cmp = self.builder.icmp_signed(
-            "==", tag_val, ir.Constant(ir.IntType(32), expected_idx)
+            "==", tag_val, ir.Constant(ir.IntType(64), expected_idx)
         )
         self.builder.cbranch(cmp, ok_bb, fail_bb)
 
@@ -4665,7 +4751,9 @@ class CodeGen:
         self.builder.position_at_end(ok_bb)
 
     def _emit_runtime_check(self, condition, message):
-        """Emit a generic runtime check: if condition is false, print message to stderr and exit(1)."""
+        """Emit a generic runtime check: if condition is false, print message to stderr and exit(1). Skipped in unsafe functions."""
+        if self.in_unsafe_func:
+            return
         ok_bb = self.builder.function.append_basic_block("safety_check_ok")
         fail_bb = self.builder.function.append_basic_block("safety_check_fail")
 
@@ -4691,13 +4779,17 @@ class CodeGen:
         self.builder.position_at_end(ok_bb)
 
     def _emit_division_by_zero_check(self, divisor):
-        """Emit a runtime check that divisor is not zero."""
+        """Emit a runtime check that divisor is not zero. Skipped in unsafe functions."""
+        if self.in_unsafe_func:
+            return
         zero = ir.Constant(divisor.type, 0)
         is_nonzero = self.builder.icmp_signed("!=", divisor, zero)
         self._emit_runtime_check(is_nonzero, "Runtime error: Division by zero.\n")
 
     def _emit_null_pointer_check(self, ptr, message=None):
-        """Emit a runtime check that a pointer is not null."""
+        """Emit a runtime check that a pointer is not null. Skipped in unsafe functions."""
+        if self.in_unsafe_func:
+            return
         null = ir.Constant(ptr.type, None)
         is_nonnull = self.builder.icmp_unsigned("!=", ptr, null)
         msg = message or "Runtime error: Null pointer dereference.\n"
@@ -4736,7 +4828,7 @@ class CodeGen:
         # Build the if-else chain from current position
         for i, (vname, vdata) in enumerate(variants[:-1]):
             cmp = self.builder.icmp_signed(
-                "==", tag_val, ir.Constant(ir.IntType(32), vdata["index"])
+                "==", tag_val, ir.Constant(ir.IntType(64), vdata["index"])
             )
             next_check = self.builder.function.append_basic_block(
                 f"union_cur_check_{i + 1}"
@@ -4805,6 +4897,11 @@ class CodeGen:
             target_llvm = self._get_llvm_type(self.current_target_type)
             if isinstance(target_llvm, ir.IntType):
                 return ir.Constant(target_llvm, node.value)
+        # Use i64 if the value doesn't fit in i32
+        if isinstance(node.value, int) and (
+            node.value > 2147483647 or node.value < -2147483648
+        ):
+            return ir.Constant(ir.IntType(64), node.value)
         return ir.Constant(ir.IntType(32), node.value)
 
     def _codegen_FloatLiteral(self, node):

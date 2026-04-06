@@ -61,12 +61,16 @@ class Lexer:
         "case",
         "default",
         "pubif",
+        "unsafe",
     }
 
     # regexes
     TOKEN_SPECIFICATION = [
         ("STRING", r'"[^"\\]*(\\.[^"\\]*)*"'),  # String literal
-        ("NUMBER", r"\d+(\.\d*)?"),  # Integer or decimal number
+        (
+            "NUMBER",
+            r"(?:0[xX][0-9a-fA-F]+(?:\.[0-9a-fA-F]*)?(?:[pP][+-]?\d+)?|0[bB][01]+|0[oO][0-7]+|\d+(?:\.\d*)?(?:[eE][+-]?\d+)?|\.\d+(?:[eE][+-]?\d+)?)",
+        ),  # Integer, float, hex, binary, octal, scientific
         ("IDENT", r"[A-Za-z_][A-Za-z0-9_]*"),  # Identifiers
         ("PLUS", r"\+"),  # Addition operator
         ("ARROW", r"->"),  # Pointer member access
@@ -113,6 +117,39 @@ class Lexer:
     def __init__(self, code):
         self.code = code
 
+    @staticmethod
+    def _parse_number(raw):
+        """Parse a numeric literal into an int or float.
+
+        Supported forms:
+          - Decimal:  42, 3.14, .5, 1e10, 2.5E-3
+          - Hex:      0xFF, 0xDEAD.BEEF, 0x1p10
+          - Binary:   0b1010
+          - Octal:    0o755
+        """
+        lower = raw.lower()
+
+        # Hexadecimal (with optional hex-float exponent p/P)
+        if lower.startswith("0x"):
+            if "." in raw or "p" in lower:
+                return float.fromhex(raw)
+            return int(raw, 16)
+
+        # Binary
+        if lower.startswith("0b"):
+            return int(raw, 2)
+
+        # Octal
+        if lower.startswith("0o"):
+            return int(raw, 8)
+
+        # Decimal with exponent or dot → float
+        if "e" in lower or "." in raw:
+            return float(raw)
+
+        # Plain decimal integer
+        return int(raw, 10)
+
     def tokenize(self):
         tok_regex = "|".join("(?P<%s>%s)" % pair for pair in self.TOKEN_SPECIFICATION)
         line_num = 1
@@ -123,8 +160,7 @@ class Lexer:
             value = mo.group(kind)
             column = mo.start() - line_start
             if kind == "NUMBER":
-                # determine if int or float (for now just int based on grammar)
-                value = int(value) if "." not in value else float(value)
+                value = self._parse_number(value)
             elif kind == "STRING" or kind == "CHAR":
                 value = value[1:-1]  # strip quotes
                 # naive unescape

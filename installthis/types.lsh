@@ -1,0 +1,19 @@
+def double : type float<64>;
+def uint64 : type uint<64>;
+def int64  : type int<64>;
+def uint16 : type uint<16>;
+def int16  : type int<16>;
+def uint8  : type uint<8>;
+def int8   : type int<8>;
+def uint128 : type uint<128>;
+def int128  : type int<128>;
+def uint256 : type uint<256>;
+def int256  : type int<256>;
+def uint512 : type uint<512>;
+def int512  : type int<512>;
+
+def float128 : type float<128>;
+def float64  : type float<64>;
+def float16  : type float<16>;
+def float256 : type float<256>;
+def float512 : type float<512>;

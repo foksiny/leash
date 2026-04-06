@@ -348,6 +348,11 @@ class Parser:
     def parse(self):
         items = []
         while self.current().type != "EOF":
+            is_unsafe = False
+            if self.current().type == "UNSAFE":
+                self.eat("UNSAFE")
+                is_unsafe = True
+
             if self.current().type in ("PUB", "PRIV"):
                 # Peek ahead to see if next token is DEF or FNC or USE
                 if self.peek() and self.peek().type == "DEF":
@@ -359,7 +364,9 @@ class Parser:
                     # It's a fnc with visibility
                     visibility = self.current().value.lower()
                     self.eat(self.current().type)  # eat PUB/PRIV
-                    items.append(self.parse_function(visibility=visibility))
+                    items.append(
+                        self.parse_function(visibility=visibility, is_unsafe=is_unsafe)
+                    )
                 elif self.peek() and self.peek().type == "USE":
                     # It's a use with visibility
                     visibility = self.current().value.lower()
@@ -371,7 +378,7 @@ class Parser:
             elif self.current().type == "DEF":
                 items.append(self.parse_def())
             elif self.current().type == "FNC":
-                items.append(self.parse_function())
+                items.append(self.parse_function(is_unsafe=is_unsafe))
             elif (
                 self.current().type == "IDENT"
                 and self.peek()
@@ -469,6 +476,11 @@ class Parser:
 
     def parse_top_level_item(self):
         """Parse a single top-level item (used inside conditional branches)."""
+        is_unsafe = False
+        if self.current().type == "UNSAFE":
+            self.eat("UNSAFE")
+            is_unsafe = True
+
         if self.current().type in ("PUB", "PRIV"):
             # Peek ahead to see if next token is DEF or FNC or USE
             if self.peek() and self.peek().type == "DEF":
@@ -478,7 +490,7 @@ class Parser:
             elif self.peek() and self.peek().type == "FNC":
                 visibility = self.current().value.lower()
                 self.eat(self.current().type)
-                return self.parse_function(visibility=visibility)
+                return self.parse_function(visibility=visibility, is_unsafe=is_unsafe)
             elif self.peek() and self.peek().type == "USE":
                 visibility = self.current().value.lower()
                 self.eat(self.current().type)
@@ -489,7 +501,7 @@ class Parser:
         elif self.current().type == "DEF":
             return self.parse_def()
         elif self.current().type == "FNC":
-            return self.parse_function()
+            return self.parse_function(is_unsafe=is_unsafe)
         elif (
             self.current().type == "IDENT"
             and self.peek()
@@ -803,19 +815,24 @@ class Parser:
             member_visibility = "pub"
             is_static = False
             is_imut = False
+            is_unsafe = False
 
-            while self.current().type in ("PUB", "PRIV", "STATIC", "IMUT"):
+            while self.current().type in ("PUB", "PRIV", "STATIC", "IMUT", "UNSAFE"):
                 tok = self.eat(self.current().type)
                 if tok.type == "STATIC":
                     is_static = True
                 elif tok.type == "IMUT":
                     is_imut = True
+                elif tok.type == "UNSAFE":
+                    is_unsafe = True
                 else:
                     member_visibility = tok.value.lower()
 
             if self.current().type == "FNC":
-                fnc = self.parse_function()
-                methods.append(ClassMethod(fnc, member_visibility, is_static, is_imut))
+                fnc = self.parse_function(is_unsafe=is_unsafe)
+                methods.append(
+                    ClassMethod(fnc, member_visibility, is_static, is_imut, is_unsafe)
+                )
             else:
                 field_name = self.eat("IDENT").value
                 self.eat("COLON")
@@ -828,7 +845,7 @@ class Parser:
             self.eat("SEMI")
         return ClassDef(name, fields, methods, parent, type_params, visibility)
 
-    def parse_function(self, visibility="pub"):
+    def parse_function(self, visibility="pub", is_unsafe=False):
         self.eat("FNC")
         name = self.eat("IDENT").value
         type_params = []
@@ -864,7 +881,13 @@ class Parser:
         self.eat("LBRACE")
         statements = self.parse_block()
         return Function(
-            name, tuple(args), return_type, statements, type_params, visibility
+            name,
+            tuple(args),
+            return_type,
+            statements,
+            type_params,
+            visibility,
+            is_unsafe,
         )
 
     def parse_block(self):

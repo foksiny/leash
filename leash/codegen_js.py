@@ -277,8 +277,9 @@ class JSCodeGen:
             elif bits <= 64:
                 return "int64" if signed else "uint64"
             else:
-                # Arbitrary precision: int128, int256, int512, etc.
                 return f"int{bits}" if signed else f"uint{bits}"
+        elif type_name.startswith("float<"):
+            return "float"
         return "int32"
 
     def _get_pointee_type(self, type_name):
@@ -568,12 +569,58 @@ class JSCodeGen:
         }
         # Generate JS factory functions for each variant
         self._emit(f"// Union: {node.name}")
+        variant_names = [v[0] for v in variants]
+        has_float = any(v[1].startswith("float") for v in variants)
+        has_int64 = any(v[1] in ("int<64>", "uint<64>") for v in variants)
+        needs_bit_reinterpret = has_float and has_int64
+
+        if needs_bit_reinterpret:
+            self._emit(f"const _{node.name}_buf = new ArrayBuffer(8);")
+            self._emit(f"const _{node.name}_f64 = new Float64Array(_{node.name}_buf);")
+            self._emit(
+                f"const _{node.name}_u64 = new BigUint64Array(_{node.name}_buf);"
+            )
+            self._emit(f"const _{node.name}_i64 = new BigInt64Array(_{node.name}_buf);")
+
         for vname, vtype in variants:
             self._emit(
                 f"function {node.name}_{vname}(value = {self._default_value(vtype)}) {{"
             )
             self.indent_level += 1
-            self._emit(f'return {{ _tag: "{vname}", _value: value }};')
+            if needs_bit_reinterpret:
+                if vtype.startswith("float"):
+                    self._emit(f"_{node.name}_f64[0] = Number(value);")
+                    raw_i = f"_{node.name}_i64[0]"
+                elif vtype == "int<64>":
+                    self._emit(f"_{node.name}_i64[0] = BigInt(value);")
+                    raw_i = f"_{node.name}_i64[0]"
+                elif vtype == "uint<64>":
+                    self._emit(f"_{node.name}_u64[0] = BigInt(value);")
+                    raw_i = f"_{node.name}_u64[0]"
+                else:
+                    raw_i = "BigInt(0)"
+
+                float_val = f"_{node.name}_f64[0]"
+                int64_val = f"_{node.name}_i64[0]"
+                uint64_val = f"_{node.name}_u64[0]"
+
+                fields = []
+                for vn, vt in variants:
+                    if vt.startswith("float"):
+                        fields.append(f"{vn}: {float_val}")
+                    elif vt == "int<64>":
+                        fields.append(f"{vn}: {int64_val}")
+                    elif vt == "uint<64>":
+                        fields.append(f"{vn}: {uint64_val}")
+                    else:
+                        fields.append(f"{vn}: value")
+
+                self._emit(
+                    f'return {{ _tag: "{vname}", _value: value, {", ".join(fields)} }};'
+                )
+            else:
+                fields = ", ".join(f"{vn}: value" for vn in variant_names)
+                self._emit(f'return {{ _tag: "{vname}", _value: value, {fields} }};')
             self.indent_level -= 1
             self._emit(f"}}")
         self._emit("")
@@ -850,6 +897,13 @@ class JSCodeGen:
                     self._emit(f"let {var_name} = _leash_alloc({value_expr}, 8);")
                 else:
                     self._emit(f"let {var_name} = {value_expr};")
+            elif resolved_type in self.union_symtab:
+                # Union: wrap value in the appropriate variant
+                union_info = self.union_symtab[resolved_type]
+                wrap_expr = self._union_auto_wrap(
+                    value_expr, node.value, union_info, resolved_type
+                )
+                self._emit(f"let {var_name} = _leash_alloc({wrap_expr}, 8);")
             else:
                 self._emit(f"let {var_name} = _leash_alloc({value_expr}, 8);")
         else:
@@ -1305,6 +1359,15 @@ class JSCodeGen:
         }
 
         js_op = op_map.get(node.op, node.op)
+
+        # Handle bitwise operators with BigInt: if either operand is BigInt, convert both
+        if node.op in ("&", "|", "^", "<<", ">>"):
+            left_is_bigint = left.endswith("n")
+            right_is_bigint = right.endswith("n")
+            if left_is_bigint and not right_is_bigint:
+                right = f"BigInt({right})"
+            elif right_is_bigint and not left_is_bigint:
+                left = f"BigInt({left})"
 
         # Handle boolean operators to return 0/1 instead of truthy values
         if node.op == "&&":
@@ -2018,7 +2081,7 @@ class JSCodeGen:
         elif node.target_type == "bool":
             return f"Boolean({expr})"
         elif target.startswith("int<") or target.startswith("uint<"):
-            bits = int(node.target_type.split("<")[1].rstrip(">"))
+            bits = int(target.split("<")[1].rstrip(">"))
             if bits > 64:
                 signed = target.startswith("int<")
                 if signed:
@@ -2038,6 +2101,23 @@ class JSCodeGen:
 
     def _get_expr_type(self, node):
         """Try to determine the Leash type of an expression."""
+        from .ast_nodes import (
+            Identifier,
+            StringLiteral,
+            NumberLiteral,
+            FloatLiteral,
+            BoolLiteral,
+            CharLiteral,
+            NullLiteral,
+            FilePathLiteral,
+            BuiltinVarLiteral,
+            ArrayInit,
+            Call,
+            MethodCall,
+            BinaryOp,
+            UnaryOp,
+        )
+
         if isinstance(node, Identifier):
             return self.var_symtab.get(node.name, "int")
         elif isinstance(node, StringLiteral):
@@ -2071,6 +2151,11 @@ class JSCodeGen:
                 return "char[]"
             elif node.name == "lstr":
                 return "string"
+            # Look up user-defined function return type
+            if node.name in self.func_symtab:
+                f = self.func_symtab[node.name]
+                if hasattr(f, "return_type"):
+                    return f.return_type
             return "int"
         elif isinstance(node, MethodCall):
             if node.method == "readb" or node.method == "readlnb":
@@ -2091,6 +2176,17 @@ class JSCodeGen:
             resolved = self._resolve_type(base_type)
             if resolved in self.class_symtab:
                 methods = self.class_symtab[resolved].get("methods", {})
+                if node.method in methods:
+                    method_node = methods[node.method]
+                    return method_node.fnc.return_type
+            # Handle static method calls: ClassName.method() where ClassName is a class
+            from .ast_nodes import Identifier
+
+            if (
+                isinstance(node.expr, Identifier)
+                and node.expr.name in self.class_symtab
+            ):
+                methods = self.class_symtab[node.expr.name].get("methods", {})
                 if node.method in methods:
                     method_node = methods[node.method]
                     return method_node.fnc.return_type

@@ -44,6 +44,7 @@ Leash is a strongly-typed, modern compiled programming language built on top of 
 - [Memory Management](#memory-management)
 - [Error Handling & Safety](#error-handling--safety)
   - [Works-Otherwise Error Handling](#works-otherwise-error-handling)
+  - [Unsafe Functions](#unsafe-functions)
 - [Native Library Imports (FFI)](#native-library-imports-ffi)
 - [Library Imports](#library-imports)
 - [Program Termination](#program-termination)
@@ -134,6 +135,52 @@ Leash also embeds runtime safety checks into compiled programs:
 - **Union tag mismatch** — accessing the wrong union variant halts with a runtime error
 
 All errors include error codes (e.g., `LEASH-E004`) for easy reference and suppression.
+
+### Unsafe Functions
+
+Leash provides an `unsafe` keyword that disables runtime safety checks and static safety warnings within a function. This is useful for low-level operations like bit manipulation, type punning through unions, or performance-critical code where you want to bypass the overhead of safety checks.
+
+```leash
+def Memory : union {
+    i: int<64>;
+    f: float<64>;
+};
+
+unsafe fnc fabs(x float<64>) : float<64> {
+    mem: Memory = x;
+    mem.i = mem.i & 0x7FFFFFFFFFFFFFFF;  // Clear sign bit
+    return mem.f;
+}
+
+fnc main() : void {
+    show(fabs(-5.0));   // 5.000000
+    show(fabs(100.0));  // 100.000000
+}
+```
+
+When a function is marked `unsafe`, the following safety checks are disabled:
+
+- **Division by zero** — no runtime check is emitted
+- **Union tag mismatch** — accessing inactive variants does not error
+- **Null pointer dereference** — null checks are skipped
+- **Vector bounds checking** — index validation is bypassed
+- **Static division-by-zero** — compile-time warning is suppressed
+- **Static array bounds** — compile-time index checks are suppressed
+- **Negative array index** — compile-time check is suppressed
+
+`unsafe` also works on class methods:
+
+```leash
+def pMath : class {
+    static pub unsafe fnc fabs(x float<64>) : float<64> {
+        mem: Memory = x;
+        mem.i = mem.i & 0x7FFFFFFFFFFFFFFF;
+        return mem.f;
+    }
+}
+```
+
+> **Warning:** Use `unsafe` only when you truly need to bypass safety checks. Unsafe code can cause undefined behavior, crashes, or memory corruption if used incorrectly.
 
 ## Checking for Errors
 
@@ -627,6 +674,34 @@ Leash supports rich generic and specific length types natively!
 - `bool` (e.g., `true` / `false`)
 - `string` and `char` (e.g., `'a'`)
 - `void` (for null or empty values)
+
+### Number Literals
+
+Leash supports multiple number literal formats for integers and floats:
+
+```leash
+// Decimal (default)
+a: int = 42;
+b: float = 3.14;
+
+// Hexadecimal (0x prefix)
+c: int = 0xFF;          // 255
+d: int = 0xDEADBEEF;    // 3735928559
+e: float = 0x1.5p3;     // 10.5 (hex float with binary exponent)
+
+// Binary (0b prefix)
+f: int = 0b1010;        // 10
+g: int = 0b11110000;    // 240
+
+// Octal (0o prefix)
+h: int = 0o755;         // 493
+i: int = 0o17;          // 15
+
+// Scientific notation
+j: float = 1e10;        // 10000000000.0
+k: float = 2.5E-3;      // 0.0025
+l: float = .5;          // 0.5 (leading dot)
+```
 
 ### Explicit Integer & Float Sizes
 Leash integers and floats can specify an explicit bit width between `<` and `>` brackets to optimize memory and calculations. Maximum size is up to 512 bits:

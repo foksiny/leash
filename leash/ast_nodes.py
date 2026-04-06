@@ -39,7 +39,14 @@ class EnumDef(ASTNode):
 
 class Function(ASTNode):
     def __init__(
-        self, name, args, return_type, body, type_params=None, visibility="pub"
+        self,
+        name,
+        args,
+        return_type,
+        body,
+        type_params=None,
+        visibility="pub",
+        is_unsafe=False,
     ):
         self.name = name
         self.args = args  # list of (name, type) tuples
@@ -47,6 +54,7 @@ class Function(ASTNode):
         self.body = body  # Block
         self.type_params = type_params or []  # list of template parameter names
         self.visibility = visibility  # 'pub' or 'priv'
+        self.is_unsafe = is_unsafe
 
 
 class Block(ASTNode):
@@ -297,11 +305,14 @@ class ClassField(ASTNode):
 
 
 class ClassMethod(ASTNode):
-    def __init__(self, fnc, visibility, is_static=False, is_imut=False):
+    def __init__(
+        self, fnc, visibility, is_static=False, is_imut=False, is_unsafe=False
+    ):
         self.fnc = fnc  # Function node
         self.visibility = visibility  # 'pub' or 'priv'
         self.is_static = is_static
         self.is_imut = is_imut  # If true, method cannot be overridden by subclasses
+        self.is_unsafe = is_unsafe
 
 
 class ThisExpr(Expression):

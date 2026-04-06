@@ -1,0 +1,15 @@
+def Memory : union {
+    i: int<64>;
+    f: float<64>;
+};
+
+unsafe fnc fabs(x float<64>) : float<64> {
+    mem: Memory = x;
+    mem.i = mem.i & 0x7FFFFFFFFFFFFFFF;
+    return mem.f;
+}
+
+fnc main() : void {
+    show(fabs(-5.0));
+    show(fabs(100.0));
+}

@@ -52,6 +52,7 @@ class TypeChecker:
         self.check_mode = check_mode  # Verbose checking mode
         self.defined_vars = {}  # name -> (line, col) for tracking declaration order
         self.shadows = []  # list of shadowing warnings
+        self.in_unsafe_func = False  # Track if we're inside an unsafe function
 
         # Register built-in classes
         self._register_builtin_classes()
@@ -950,6 +951,7 @@ class TypeChecker:
         self.used_vars = set()
         self.used_params = set()
         self.current_func_params = set()
+        self.in_unsafe_func = getattr(node, "is_unsafe", False)
 
         if not node.body:
             self._warn(
@@ -1697,7 +1699,8 @@ class TypeChecker:
 
                 # Zero-division safety check (static)
                 if (
-                    expr.op in ("/", "%")
+                    not self.in_unsafe_func
+                    and expr.op in ("/", "%")
                     and isinstance(expr.right, NumberLiteral)
                     and expr.right.value == 0
                 ):
@@ -2254,11 +2257,12 @@ class TypeChecker:
             )
 
         if isinstance(expr.index, NumberLiteral) and expr.index.value < 0:
-            self._error(
-                f"Negative array index {expr.index.value} is not allowed.",
-                node=expr.index,
-                tip="Array indices must be non-negative (0 or greater).",
-            )
+            if not self.in_unsafe_func:
+                self._error(
+                    f"Negative array index {expr.index.value} is not allowed.",
+                    node=expr.index,
+                    tip="Array indices must be non-negative (0 or greater).",
+                )
 
         if base_type:
             resolved = self._resolve(base_type)
@@ -2271,10 +2275,11 @@ class TypeChecker:
                         if isinstance(expr.index, NumberLiteral):
                             idx = expr.index.value
                             if idx < 0 or idx >= size:
-                                raise LeashError(
-                                    f"Array index {idx} is out of bounds for '{resolved}'",
-                                    tip=f"This array only has {size} elements. Remember that Leash uses 0-based indexing (0 to {size - 1}).",
-                                )
+                                if not self.in_unsafe_func:
+                                    raise LeashError(
+                                        f"Array index {idx} is out of bounds for '{resolved}'",
+                                        tip=f"This array only has {size} elements. Remember that Leash uses 0-based indexing (0 to {size - 1}).",
+                                    )
                 except (ValueError, IndexError):
                     pass
 
@@ -2605,6 +2610,20 @@ class TypeChecker:
 
             self._check_visibility(target_cls, expr.method, True, expr)
             if expr.method not in methods:
+                raise LeashError(
+                    f"Class '{target_cls}' has no method named '{expr.method}'",
+                    tip=f"Available methods: {', '.join(methods.keys())}",
+                )
+                print(f"DEBUG: methods={list(methods.keys())}", file=sys.stderr)
+                print(f"DEBUG: is_static={is_static}", file=sys.stderr)
+                print(
+                    f"DEBUG: target_cls in class_types={target_cls in self.class_types}",
+                    file=sys.stderr,
+                )
+                print(
+                    f"DEBUG: target_cls in generic_classes={target_cls in self.generic_classes}",
+                    file=sys.stderr,
+                )
                 raise LeashError(
                     f"Class '{target_cls}' has no method named '{expr.method}'",
                     tip=f"Available methods: {', '.join(methods.keys())}",

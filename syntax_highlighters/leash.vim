@@ -4,7 +4,7 @@ if exists("b:current_syntax")
 endif
 
 " Keywords
-syn keyword leashKeyword fnc def struct union enum class type template return if also else while for do foreach in imut vector vec this pub priv static stop continue use works otherwise switch case default
+syn keyword leashKeyword fnc def struct union enum class type template return if also else while for do foreach in imut vector vec this pub priv static stop continue use works otherwise switch case default unsafe unsafe
 syn keyword leashBoolean true false
 syn keyword leashNull null
 
@@ -56,8 +56,19 @@ syn region leashChar start=/'/ skip=/\\'/ end=/'/
 syn match leashComment "//.*$"
 
 " Numbers
-syn match leashNumber "\b\d+\b"
-syn match leashFloat "\b\d\+\.\d\*\b"
+" Hexadecimal: 0xFF, 0xDEADBEEF, 0x1.5p3 (hex float)
+syn match leashHex "\b0[xX][0-9a-fA-F]\+\(\.[0-9a-fA-F]*\)\?\([pP][+-]\?\d\+\)\?"
+" Binary: 0b1010
+syn match leashBinary "\b0[bB][01]\+"
+" Octal: 0o755
+syn match leashOctal "\b0[oO][0-7]\+"
+" Scientific notation: 1e10, 2.5E-3, .5
+syn match leashScientific "\b\d\+\(\.\d*\)\?\([eE][+-]\?\d\+\)\+"
+syn match leashScientific "\b\.\d\+\([eE][+-]\?\d\+\)\?"
+" Decimal float: 3.14
+syn match leashFloat "\b\d\+\.\d*\b"
+" Decimal integer: 42
+syn match leashNumber "\b\d\+\b"
 
 " Highlights
 hi def link leashKeyword Keyword
@@ -79,6 +90,10 @@ hi def link leashChar Character
 hi def link leashComment Comment
 hi def link leashNumber Number
 hi def link leashFloat Float
+hi def link leashHex Number
+hi def link leashBinary Number
+hi def link leashOctal Number
+hi def link leashScientific Float
 hi def link leashNativeImport Special
 
 let b:current_syntax = "leash"

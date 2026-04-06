@@ -1,0 +1,215 @@
+priv use types::*;
+
+pub def Memory : union {
+    i: int64;
+    d: double;
+};
+
+pub def pMath : class {
+    pub PI: double;
+    pub E: double;
+    pub HALF_PI: double;
+    pub LN10: double;
+    pub LN2: double;
+
+    static pub fnc new() : pMath {
+        return pMath {PI: 3.14159265358979323846, E: 2.71828182845904523536,
+                      HALF_PI: 1.57079632679489661923, LN10: 2.30258509299404568402,
+                      LN2: 0.69314718055994530942};
+    }
+
+    static pub fnc floor(x double) : double {
+        i: int64 = toint(int64, x);
+        if x < 0.0 && x != tofloat(double, i) {
+            i = i - 1;
+        }
+        return tofloat(double, i);
+    }
+
+    static pub fnc ceil(x double) : double {
+        i: int64 = toint(int64, x);
+        if x < 0.0 && x != tofloat(double, i) {
+            i = i + 1;
+        }
+        return tofloat(double, i);
+    }
+
+    static pub fnc fmod(x double, y double) : double {
+        if y == 0.0 { return 0.0; }
+        quotient: double = pMath.floor(x / y);
+        return x - (y * quotient);
+    }
+
+    static pub fnc sqrt(x double) : double {
+        if x < 0.0 { return nil; }
+        if x == 0.0 || x == 1.0 { return x; }
+
+        guess: double = x / 2.0;
+
+        for i: int = 0; i < 8; i = i + 1 {
+            guess = 0.5 * (guess + (x / guess));
+        }
+        return guess;
+    }
+
+    static pub fnc exp(x double) : double {
+        if x < 0.0 {
+            return 1.0 / pMath.exp(-x);
+        }
+
+        sum: double = 1.0;
+        term: double = 1.0;
+
+        limit: int = 30 * toint(int, x);
+
+        for i: int = 1; i < limit; i = i + 1 {
+            term = term * x / tofloat(double, i);
+            sum = sum + term;
+
+            if term < 1e-15 { stop; }
+        }
+        
+        return sum;
+    }
+
+    static pub fnc log(x double) : double {
+        if x <= 0.0 { return nil; }
+
+        guess: double = 1.0;
+
+        for i: int = 0; i < 15; i = i + 1 {
+            e_guess: double = pMath.exp(guess);
+            guess = guess - ((e_guess - x) / e_guess);
+        }
+
+        return guess;
+    }
+
+    static pub fnc sin(x double) : double {
+        x = pMath.fmod(x, 2.0 * pMath.PI);
+        if x < 0.0 { x = x + 2.0 * pMath.PI; }
+        x = x - pMath.PI;
+
+        sum: double = 0.0;
+        term: double = x;
+        x_squared: double = x * x;
+
+        for i: int = 1; i < 12; i = i + 2 {
+            sum = sum + term;
+            term = term * (-x_squared) / (tofloat(double, i) * tofloat(double, i + 1));
+        }
+
+        return sum;
+    }
+    
+    static pub fnc cos(x double) : double {
+        return pMath.sin(x + pMath.PI / 2.0);
+    }
+
+    static pub fnc tan(x double) : double {
+        return pMath.sin(x) / pMath.cos(x);
+    }
+
+    static pub fnc pow(base double, exponent double) : double {
+        if base == 0.0 && exponent == 0.0 { return 1.0; }
+        if base == 0.0 { return 0.0; }
+        if exponent == 0.0 { return 1.0; }
+
+        if exponent == pMath.floor(exponent) && exponent > 0.0 {
+            result: double = 1.0;
+            exp_int: int64 = toint(int64, exponent);
+            current_base: double = base;
+
+            while exp_int > 0 {
+                if exp_int % 2 == 1 { result = result * current_base; }
+                current_base = current_base * current_base;
+                exp_int = exp_int / 2;
+            }
+
+            return result;
+        }
+
+        if base > 0.0 {
+            return pMath.exp(exponent * pMath.log(base));
+        }
+
+        return nil;
+    }
+
+    static pub fnc newton_asin(x double) : double {
+        guess: double = x;
+
+        for i: int = 0; i < 8; i = i + 1 {
+            mycurrent_sin: double = pMath.sin(guess);
+            mycurrent_cos: double = pMath.cos(guess);
+
+            guess = guess - ((mycurrent_sin - x) / mycurrent_cos);
+        }
+
+        return guess;
+    }
+
+    static pub fnc asin(x double) : double {
+        if x < -1.0 || x > 1.0 { return nil; }
+
+        if x < 0.0 { return -pMath.asin(-x); }
+
+        if x > .85 {
+            new_x: double = pMath.sqrt((1.0 - x) / 2.0);
+            return pMath.HALF_PI - 2.0 * pMath.newton_asin(new_x);
+        }
+
+        return pMath.newton_asin(x);
+    }
+
+    static pub fnc acos(x double) : double {
+        if x < -1.0 || x > 1.0 { return nil; }
+        return pMath.HALF_PI - pMath.asin(x);
+    }
+
+    static pub fnc atan(x double) : double {
+        hypotenuse: double = pMath.sqrt(1.0 + x * x);
+        return pMath.asin(x / hypotenuse);
+    }
+
+    static pub fnc cosh(x double) : double {
+        return (pMath.exp(x) + pMath.exp(-x)) / 2.0;
+    }
+
+    static pub fnc squared(x double) : double {
+        return x * x;
+    }
+
+    static pub fnc sinh(x double) : double {
+        if x > -1.0 && x < 1.0 {
+            sum: double = x;
+            term: double = x;
+            x_squared: double = pMath.squared(x);
+
+            for i: int = 1; i < 8; i = i + 1 {
+                term = term * x_squared / tofloat(double, ((2 * i) * (2 * i + 1)));
+                sum = sum + term;
+            }
+
+            return sum;
+        }
+
+        return (pMath.exp(x) - pMath.exp(-x)) / 2.0;
+    }
+
+    static pub fnc log10(x double) : double {
+        if x <= 0.0 { return nil; }
+        return pMath.log(x) / pMath.LN10;
+    }
+
+    static pub fnc log2(x double) : double {
+        if x <= 0.0 { return nil; }
+        return pMath.log(x) / pMath.LN2;
+    }
+
+    static pub unsafe fnc fabs(x double) : double {
+        mem: Memory = x;
+        mem.i = mem.i & 0x7FFFFFFFFFFFFFFF;
+        return mem.d;
+    }
+}
