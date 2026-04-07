@@ -22,6 +22,7 @@ from .ast_nodes import (
     StringLiteral,
     BoolLiteral,
     CastExpr,
+    AsExpr,
     TypeAlias,
     StructInit,
     ArrayInit,
@@ -1223,7 +1224,7 @@ class Parser:
 
     def parse_comparison(self, no_struct_init=False):
         node = self.parse_shift(no_struct_init)
-        while self.current().type in ("EQ", "NEQ", "LT", "LTE", "GT", "GTE"):
+        while self.current().type in ("EQ", "NEQ", "LT", "LTE", "GT", "GTE", "ISIN"):
             op = self.current()
             self.eat(op.type)
             right = self.parse_shift(no_struct_init)
@@ -1248,12 +1249,20 @@ class Parser:
         return left
 
     def parse_factor(self, no_struct_init=False):
-        left = self.parse_unary(no_struct_init)
+        left = self.parse_as(no_struct_init)
         while self.current().type in ("MUL", "DIV", "MOD"):
             op = self.eat(self.current().type).value
-            right = self.parse_unary(no_struct_init)
+            right = self.parse_as(no_struct_init)
             left = BinaryOp(left, op, right)
         return left
+
+    def parse_as(self, no_struct_init=False):
+        node = self.parse_unary(no_struct_init)
+        if self.current().type == "AS":
+            self.eat("AS")
+            target_type = self.parse_type()
+            node = self._pos(AsExpr(target_type, node))
+        return node
 
     def parse_unary(self, no_struct_init=False):
         if self.current().type in ("NOT", "BIT_NOT", "MINUS", "MUL", "BIT_AND"):

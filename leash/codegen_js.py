@@ -39,6 +39,7 @@ from .ast_nodes import (
     PointerMemberAccess,
     EnumMemberAccess,
     CastExpr,
+    AsExpr,
     IndexAccess,
     StructInit,
     ArrayInit,
@@ -144,7 +145,6 @@ class JSCodeGen:
         code = re.sub(r"(\w+)\.insert\((\w+),\s*(\w+)\)", r"\1.splice(\2, 0, \3)", code)
         code = re.sub(r"(\w+)\.clear\(\)", r"\1.length = 0", code)
         code = re.sub(r"(\w+)\.size\(\)", r"\1.length", code)
-        code = re.sub(r"(\w+)\.contains\((\w+)\)", r"\1.includes(\2)", code)
 
         return code
 
@@ -1429,6 +1429,18 @@ class JSCodeGen:
             if left_resolved == "string" and right_resolved == "string":
                 return f"_leash_str_sub({left}, {right})"
 
+        # Handle is-in operator: value <> array
+        if node.op == "<>":
+            right_type = self._get_expr_type(node.right)
+            right_resolved = self._resolve_type(right_type)
+            if right_resolved.endswith("]") and "[" in right_resolved:
+                return f"{right}.includes({left})"
+            else:
+                raise LeashError(
+                    f"Operator '<>' is only supported for array types in JS target, got '{right_resolved}'",
+                    node=node,
+                )
+
         # Handle pointer arithmetic (ptr + n, ptr - n)
         # This only applies when the LEFT operand is a raw pointer variable (not a loaded value)
         if node.op in ("+", "-"):
@@ -1930,44 +1942,18 @@ class JSCodeGen:
                 return f"{expr}.splice({args}, 1)"
             elif node.method == "clear":
                 return f"{expr}.length = 0"
-            elif node.method == "contains":
+            elif node.method == "isin":
                 return f"{expr}.includes({args})"
 
         # String methods
         if resolved == "string":
             if node.method == "size":
                 return f"{expr}.length"
-            elif node.method == "toupper":
-                return f"{expr}.toUpperCase()"
-            elif node.method == "tolower":
-                return f"{expr}.toLowerCase()"
-            elif node.method == "trim":
-                return f"{expr}.trim()"
-            elif node.method == "split":
-                return f"{expr}.split({args})"
-            elif node.method == "replace":
-                return f"{expr}.replace({args})"
-            elif node.method == "replaceall":
-                return f"{expr}.replaceAll({args})"
-            elif node.method == "contains":
-                return f"{expr}.includes({args})"
-            elif node.method == "startswith":
-                return f"{expr}.startsWith({args})"
-            elif node.method == "endswith":
-                return f"{expr}.endsWith({args})"
-            elif node.method == "find":
-                return f"{expr}.indexOf({args})"
-            elif node.method == "substr":
-                return f"{expr}.substring({args})"
 
         # Array/slice methods
         if resolved.endswith("]") and "[" in resolved:
             if node.method == "size":
                 return f"{expr}.length"
-            elif node.method == "push":
-                return f"{expr}.push({args})"
-            elif node.method == "pop":
-                return f"{expr}.pop()"
 
         # Class methods
         if resolved in self.class_symtab:
@@ -2067,6 +2053,33 @@ class JSCodeGen:
                     return f"_leash_intN(BigInt({expr}), {bits})"
                 else:
                     return f"_leash_uintN(BigInt({expr}), {bits})"
+        return expr
+
+    def _expr_AsExpr(self, node):
+        expr = self._expr(node.expr)
+        target = self._resolve_type(node.target_type)
+        if target in ("int", "uint"):
+            return f"parseInt({expr})"
+        elif target == "float":
+            return f"parseFloat({expr})"
+        elif target == "string":
+            return f"String({expr})"
+        elif target == "bool":
+            return f"Boolean({expr})"
+        elif target == "char":
+            return f"String.fromCharCode({expr})"
+        elif target.startswith("uint<") or target.startswith("int<"):
+            bits = int(target.split("<")[1].rstrip(">"))
+            if bits <= 64:
+                return f"({expr} & 0x{'f' * (bits // 4)})"
+            else:
+                signed = target.startswith("int<")
+                if signed:
+                    return f"_leash_intN(BigInt({expr}), {bits})"
+                else:
+                    return f"_leash_uintN(BigInt({expr}), {bits})"
+        elif target.startswith("float<"):
+            return f"parseFloat({expr})"
         return expr
 
     def _expr_TypeConvExpr(self, node):
@@ -2252,6 +2265,8 @@ class JSCodeGen:
         elif isinstance(node, TernaryOp):
             return self._get_expr_type(node.true_expr)
         elif isinstance(node, CastExpr):
+            return node.target_type
+        elif isinstance(node, AsExpr):
             return node.target_type
         elif isinstance(node, TypeConvExpr):
             return node.target_type

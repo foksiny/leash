@@ -223,6 +223,12 @@ class CastExpr(Expression):
         self.expr = expr
 
 
+class AsExpr(Expression):
+    def __init__(self, target_type, expr):
+        self.target_type = target_type
+        self.expr = expr
+
+
 class IndexAccess(Expression):
     def __init__(self, expr, index):
         self.expr = expr

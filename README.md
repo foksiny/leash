@@ -13,6 +13,7 @@ Leash is a strongly-typed, modern compiled programming language built on top of 
 - [Immutable Variables](#immutable-variables)
 - [Data Types](#data-types)
 - [Operators](#operators)
+  - [Is-In Operator](#is-in-operator-)
 - [Functions](#functions)
 - [Global Variables](#global-variables)
 - [Control Flow](#control-flow)
@@ -35,6 +36,7 @@ Leash is a strongly-typed, modern compiled programming language built on top of 
 - [Generic Types](#generic-types)
 - [Multi-Type Functions](#multi-type-functions)
 - [Type Casting](#type-casting)
+- [The `as` Keyword](#the-as-keyword)
 - [Type Conversions](#type-conversions)
 - [Strings](#strings)
 - [Classes](#classes)
@@ -757,6 +759,33 @@ Leash supports a full suite of arithmetic, comparison, bitwise, and logical oper
 | `>` | Greater than | `a > b` |
 | `<=` | Less than or equal | `a <= b` |
 | `>=` | Greater than or equal | `a >= b` |
+| `<>` | Is-in (checks if left operand exists in right array) | `val <> arr` |
+
+### Is-In Operator (`<>`)
+
+The `<>` operator checks if a value exists within an array. It returns `true` if the value is found, `false` otherwise:
+
+```leash
+fnc main() : void {
+    nums: int[5] = {1, 2, 3, 4, 5};
+    
+    if 3 <> nums {
+        show("3 is in the array");
+    }
+    
+    if 10 <> nums == false {
+        show("10 is not in the array");
+    }
+    
+    // Works with strings too
+    words: string[3] = {"hello", "world", "leash"};
+    if "world" <> words {
+        show("Found 'world'!");
+    }
+}
+```
+
+For vectors, use the `.isin()` method instead (see [Vectors](#vectors)).
 
 ### Bitwise Operators
 | Operator | Description | Example |
@@ -1263,7 +1292,9 @@ v.clear();
 | `.get(idx)` | Get the element at the specified index |
 | `.set(idx, val)` | Set the element at the specified index |
 | `.insert(idx, val)` | Insert an element at the specified index |
+| `.remove(idx)` | Remove the element at the specified index |
 | `.clear()` | Remove all elements from the vector |
+| `.isin(val)` | Return `true` if the value exists in the vector, `false` otherwise |
 
 ## Structs
 
@@ -1607,6 +1638,50 @@ u: uint = (uint)c;  // Evaluates to 65 (ASCII)
 arr: int<32>[] = {1, 2, 3};
 arr64: int<64>[] = (int<64>[])arr;
 ```
+
+## The `as` Keyword
+
+The `as` keyword provides a clean, readable way to convert values between compatible types. Unlike the C-style cast `(type)expr`, `as` is designed for safe and fast type conversions with clear intent.
+
+```leash
+fnc main() : void {
+    a: int = 10;
+    
+    show(a as float);           // 10.000000
+    show((a as float<64>) + .5); // 10.500000
+}
+```
+
+### Supported Conversions
+
+| Conversion | Example | Description |
+|------------|---------|-------------|
+| Numeric → Numeric | `10 as float` | Integer to float, float to int, etc. |
+| Bit-width changes | `x as int<64>` | Change integer/float precision |
+| Class upcasting | `dog as Animal` | Child class to parent class |
+| Class downcasting | `animal as Dog` | Parent class to child class |
+| Pointer conversions | `ptr as *char` | Between pointer types |
+
+### Unsafe Mode
+
+Inside `unsafe` functions, `as` also allows pointer ↔ integer conversions for low-level operations:
+
+```leash
+unsafe fnc ptr_to_int(p *int) : int<64> {
+    return p as int<64>;
+}
+```
+
+### `as` vs `(type)expr` vs Conversion Functions
+
+| Syntax | Use Case | Safety |
+|--------|----------|--------|
+| `expr as type` | Safe numeric/class conversions | Type-checked at compile time |
+| `(type)expr` | Low-level casts, bit manipulation | Allows any cast (may be unsafe) |
+| `toint(type, expr)` | String parsing, explicit conversion | Runtime parsing |
+| `tofloat(type, expr)` | String parsing, explicit conversion | Runtime parsing |
+
+Use `as` when you want clear, readable type conversions that the compiler can validate. Use `(type)expr` for low-level pointer casts or when you need to bypass type checking. Use `toint`/`tofloat` when parsing strings.
 
 ## Type Conversions
 

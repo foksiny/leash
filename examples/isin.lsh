@@ -1,0 +1,32 @@
+fnc main() : void {
+    myvec: vec<int>;
+    
+    myvec.pushb(1);
+    myvec.pushb(3);
+    myvec.pushb(7);
+
+    if myvec.isin(3) {
+        show("There's a 3 in the vector");
+    }
+
+    if myvec.isin(8) { // this shouldn't be true
+        show("There's a 8 in the vector");
+    }
+
+    myarray: int[10] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+
+    // <> is a more low-level 'is in', which is made for working with arrays or pointers
+    if 10 <> myarray { // this shouldn't be true
+        show("There's a 10 in the array");
+    }
+
+    if 5 <> myarray {
+        show("There's a 5 in the array");
+    }
+
+    mystrarr: string[3] = {"Hello", "world", "!"};
+
+    if "Hello" <> mystrarr {
+        show(mystrarr[1]);
+    }
+}

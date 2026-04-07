@@ -66,9 +66,16 @@ examples/getfile
 examples/exec
 examples/switchcase
 examples/pubif
+examples/unsafe
+examples/as
+examples/isin
 
 # Trash
 trash/
 
 # cache
 .ruff_cache/
+
+# IDE
+.idea/
+.vscode/

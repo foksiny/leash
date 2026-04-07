@@ -442,6 +442,7 @@ class CodeGen:
             GenericCall,
             EnumMemberAccess,
             CastExpr,
+            AsExpr,
             TypeConvExpr,
             MethodCall,
             ThisExpr,
@@ -502,6 +503,8 @@ class CodeGen:
         elif isinstance(node, EnumMemberAccess):
             return node.enum_name
         elif isinstance(node, CastExpr):
+            return node.target_type
+        elif isinstance(node, AsExpr):
             return node.target_type
         elif isinstance(node, TypeConvExpr):
             return node.target_type
@@ -3000,6 +3003,8 @@ class CodeGen:
                 if is_float
                 else self.builder.icmp_signed(">=", left, right)
             )
+        elif node.op == "<>":
+            return self._codegen_isin_operator(left, right, node)
 
         raise LeashError(f"Unknown binary operator: '{node.op}'")
 
@@ -3660,6 +3665,55 @@ class CodeGen:
             self._update_vec_struct(vec_ptr, new_data, new_size, new_cap)
             return None
 
+        elif method == "isin":
+            val = self._codegen(args[0])
+            val = self._emit_cast(val, inner_llvm)
+
+            loop_head = self.builder.function.append_basic_block("vec_isin_loop")
+            found_bb = self.builder.function.append_basic_block("vec_isin_found")
+            not_found_bb = self.builder.function.append_basic_block(
+                "vec_isin_not_found"
+            )
+            merge_bb = self.builder.function.append_basic_block("vec_isin_merge")
+
+            i = self.builder.alloca(ir.IntType(64))
+            self.builder.store(ir.Constant(ir.IntType(64), 0), i)
+
+            self.builder.branch(loop_head)
+
+            self.builder.position_at_end(loop_head)
+            cur_i = self.builder.load(i)
+            in_bounds = self.builder.icmp_unsigned("<", cur_i, size)
+            self.builder.cbranch(in_bounds, found_bb, not_found_bb)
+
+            self.builder.position_at_end(found_bb)
+            elem_ptr = self.builder.gep(data, [cur_i], inbounds=True)
+            elem_val = self.builder.load(elem_ptr)
+            if isinstance(inner_llvm, ir.IntType):
+                eq = self.builder.icmp_signed("==", elem_val, val)
+            elif isinstance(inner_llvm, (ir.FloatType, ir.DoubleType)):
+                eq = self.builder.fcmp_ordered("==", elem_val, val)
+            else:
+                eq = self.builder.icmp_signed(
+                    "==",
+                    self.builder.ptrtoint(elem_val, ir.IntType(64)),
+                    self.builder.ptrtoint(val, ir.IntType(64)),
+                )
+
+            next_i = self.builder.add(cur_i, ir.Constant(ir.IntType(64), 1))
+            self.builder.store(next_i, i)
+
+            self.builder.cbranch(eq, merge_bb, loop_head)
+
+            self.builder.position_at_end(not_found_bb)
+            self.builder.branch(merge_bb)
+
+            self.builder.position_at_end(merge_bb)
+            phi = self.builder.phi(ir.IntType(1), name="isin_result")
+            phi.add_incoming(ir.Constant(ir.IntType(1), 1), found_bb)
+            phi.add_incoming(ir.Constant(ir.IntType(1), 0), not_found_bb)
+            return phi
+
         elif method == "remove":
             # vec.remove(index) - remove element at index
             idx = self._codegen(args[0])
@@ -3691,6 +3745,94 @@ class CodeGen:
 
         raise LeashError(
             f"Vector method '{method}' not fully implemented yet", node=vec_ptr
+        )
+
+    def _codegen_isin_operator(self, left, right, node):
+        """Handle the <> operator: value <> array_or_pointer
+        Returns true if value is found in the array/pointer range.
+        """
+        left_leash = self._get_leash_type_name(node.left)
+        right_leash = self._get_leash_type_name(node.right)
+        resolved_right = self._resolve_type_name(right_leash)
+
+        # Handle array/slice types (e.g., int[10], int[])
+        if resolved_right.endswith("]") and "[" in resolved_right:
+            base_type = resolved_right.split("[")[0]
+            inner_llvm = self._get_llvm_type(base_type)
+
+            # Load array struct: { i64 size, ptr data }
+            size = self.builder.extract_value(right, 0)
+            data = self.builder.extract_value(right, 1)
+
+            loop_head = self.builder.function.append_basic_block("isin_arr_loop")
+            found_bb = self.builder.function.append_basic_block("isin_arr_found")
+            not_found_bb = self.builder.function.append_basic_block(
+                "isin_arr_not_found"
+            )
+            merge_bb = self.builder.function.append_basic_block("isin_arr_merge")
+
+            i = self.builder.alloca(ir.IntType(64))
+            self.builder.store(ir.Constant(ir.IntType(64), 0), i)
+
+            self.builder.branch(loop_head)
+
+            self.builder.position_at_end(loop_head)
+            cur_i = self.builder.load(i)
+            in_bounds = self.builder.icmp_unsigned("<", cur_i, size)
+            self.builder.cbranch(in_bounds, found_bb, not_found_bb)
+
+            self.builder.position_at_end(found_bb)
+            elem_ptr = self.builder.gep(data, [cur_i], inbounds=True)
+            elem_val = self.builder.load(elem_ptr)
+            if isinstance(inner_llvm, ir.IntType):
+                eq = self.builder.icmp_signed("==", elem_val, left)
+            elif isinstance(inner_llvm, (ir.FloatType, ir.DoubleType)):
+                eq = self.builder.fcmp_ordered("==", elem_val, left)
+            elif isinstance(
+                inner_llvm, ir.PointerType
+            ) and inner_llvm.pointee == ir.IntType(8):
+                cmp = self.builder.call(self.strcmp, [elem_val, left])
+                eq = self.builder.icmp_signed("==", cmp, ir.Constant(ir.IntType(32), 0))
+            else:
+                eq = self.builder.icmp_signed(
+                    "==",
+                    self.builder.ptrtoint(elem_val, ir.IntType(64)),
+                    self.builder.ptrtoint(left, ir.IntType(64)),
+                )
+
+            next_i = self.builder.add(cur_i, ir.Constant(ir.IntType(64), 1))
+            self.builder.store(next_i, i)
+
+            self.builder.cbranch(eq, merge_bb, loop_head)
+
+            self.builder.position_at_end(not_found_bb)
+            self.builder.branch(merge_bb)
+
+            self.builder.position_at_end(merge_bb)
+            phi = self.builder.phi(ir.IntType(1), name="isin_result")
+            phi.add_incoming(ir.Constant(ir.IntType(1), 1), found_bb)
+            phi.add_incoming(ir.Constant(ir.IntType(1), 0), not_found_bb)
+            return phi
+
+        # Handle pointer types (e.g., *int)
+        if resolved_right.startswith("*"):
+            inner_type = resolved_right[1:]
+            inner_llvm = self._get_llvm_type(inner_type)
+
+            # For pointers, we need a size - this is a low-level operation
+            # We'll need to pass the size as context or use a sentinel
+            # For now, this requires the pointer to be part of an array struct
+            raise LeashError(
+                "The '<>' operator on raw pointers requires a size context. "
+                "Use it with array types instead.",
+                line=getattr(node, "line", None),
+                col=getattr(node, "col", None),
+            )
+
+        raise LeashError(
+            f"The '<>' operator is not supported for type '{resolved_right}'",
+            line=getattr(node, "line", None),
+            col=getattr(node, "col", None),
         )
 
     def _codegen_file_method(self, file_ptr, method, args):
@@ -5086,6 +5228,11 @@ class CodeGen:
             target_type = self._get_llvm_type(node.target_type)
             return self.builder.bitcast(val, target_type)
 
+        target_type = self._get_llvm_type(node.target_type)
+        return self._emit_cast(val, target_type)
+
+    def _codegen_AsExpr(self, node):
+        val = self._codegen(node.expr)
         target_type = self._get_llvm_type(node.target_type)
         return self._emit_cast(val, target_type)
 

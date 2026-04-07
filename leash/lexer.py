@@ -62,6 +62,7 @@ class Lexer:
         "default",
         "pubif",
         "unsafe",
+        "as",
     }
 
     # regexes
@@ -105,6 +106,7 @@ class Lexer:
         ("COMMA", r","),  # Comma
         ("SEMI", r";"),  # Statement terminator
         ("DOT", r"\."),  # Dot operator
+        ("ISIN", r"<>"),  # Is-in operator for arrays/pointers
         ("LT", r"<"),  # Less than
         ("GT", r">"),  # Greater than
         ("CHAR", r"'[^'\\]*(\\.[^'\\]*)*'"),  # Char literal

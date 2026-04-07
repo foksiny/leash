@@ -26,7 +26,7 @@
 
 (defconst leash-font-lock-keywords
   (list
-   '("\\b\\(fnc\\|def\\|struct\\|union\\|enum\\|class\\|type\\|template\\|return\\|if\\|also\\|else\\|while\\|for\\|do\\|foreach\\|in\\|imut\\|vec\\|vector\\|this\\|pub\\|priv\\|static\\|stop\\|continue\\|use\\|works\\|otherwise\\|switch\\|case\\|default\\|unsafe\\)\\b" . font-lock-keyword-face)
+   '("\\b\\(fnc\\|def\\|struct\\|union\\|enum\\|class\\|type\\|template\\|return\\|if\\|also\\|else\\|while\\|for\\|do\\|foreach\\|in\\|imut\\|vec\\|vector\\|this\\|pub\\|priv\\|static\\|stop\\|continue\\|use\\|works\\|otherwise\\|switch\\|case\\|default\\|unsafe\\|as\\)\\b" . font-lock-keyword-face)
    '("\\b\\(int\\|uint\\|float\\|bool\\|string\\|char\\|void\\|array\\|vec\\)\\b\\(?:<[0-9]+>\\)?" . font-lock-type-face)
    ;; @from native import directive
    '("@from\\s*(" . font-lock-preprocessor-face)
@@ -36,8 +36,8 @@
    '("fnc[ \t]*([^) ]*)" . font-lock-type-face)
    '("\\b\\(true\\|false\\|null\\)\\b" . font-lock-constant-face)
    '("\\b\\_FILEPATH\\_\\|\\_FILENAME\\_\\|\\_PLATFORM\\_\\b" . font-lock-constant-face)
-   '("\\b\\(show\\|get\\|set\\|toint\\|tofloat\\|tostring\\|cstr\\|lstr\\|size\\|cur\\|name\\|pushb\\|popb\\|pushf\\|popf\\|insert\\|clear\\|rand\\|randf\\|seed\\|choose\\|wait\\|timepass\\|exit\\|exec\\|File\\|open\\|close\\|read\\|write\\|readln\\|readb\\|writeb\\|readlnb\\|replace\\|replaceall\\|rewind\\|rename\\|delete\\)\\b" . font-lock-builtin-face)
-    '("&&\\|||\\|<<\\|>>\\|[+\\-*/%&|^~!<>=]=?" . font-lock-variable-name-face)
+    '("\\b\\(show\\|get\\|set\\|toint\\|tofloat\\|tostring\\|cstr\\|lstr\\|size\\|cur\\|name\\|pushb\\|popb\\|pushf\\|popf\\|insert\\|clear\\|remove\\|contains\\|isin\\|rand\\|randf\\|seed\\|choose\\|wait\\|timepass\\|exit\\|exec\\|File\\|open\\|close\\|read\\|write\\|readln\\|readb\\|writeb\\|readlnb\\|replace\\|replaceall\\|rewind\\|rename\\|delete\\)\\b" . font-lock-builtin-face)
+     '("&&\\|||\\|<<\\|>>\\|<>\\|[+\\-*/%&|^~!<>=]=?" . font-lock-variable-name-face)
     '("\\?" . font-lock-variable-name-face)
    '("\\(&\\|\\*\\|->\\)" . font-lock-type-face)
     '("::" . font-lock-special-form-face)

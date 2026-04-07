@@ -1534,6 +1534,8 @@ class TypeChecker:
             return self._check_index_access(expr)
         elif isinstance(expr, CastExpr):
             return self._check_cast(expr)
+        elif isinstance(expr, AsExpr):
+            return self._check_as(expr)
         elif isinstance(expr, StructInit):
             # Check if it's a class (including generic classes)
             resolved_name = self._resolve(expr.name)
@@ -1633,6 +1635,22 @@ class TypeChecker:
                     raise LeashError(
                         f"Operator '{expr.op}' is not supported for strings",
                         tip="Strings support: + (concatenation), - (removal), == and != (comparison).",
+                    )
+
+            # Is-in operator: value <> array
+            if expr.op == "<>":
+                if right_b == "array":
+                    array_inner = right_t.split("[")[0]
+                    if not self._types_compatible(left_t, array_inner):
+                        self._warn(
+                            f"Operator '<>' expects left operand of type '{array_inner}' but got '{left_t}'",
+                            node=expr,
+                        )
+                    return "bool"
+                else:
+                    raise LeashError(
+                        f"Operator '<>' is only supported for array types, got '{right_t}'",
+                        tip="Use 'value <> array' to check if a value exists in an array.",
                     )
             # Mixed string concatenations
             elif expr.op == "+" and (
@@ -2329,6 +2347,54 @@ class TypeChecker:
 
         return dst_type
 
+    def _check_as(self, expr):
+        src_type = self._infer_type(expr.expr)
+        dst_type = expr.target_type
+
+        if not self._is_valid_type(self._resolve(dst_type)):
+            raise LeashError(
+                f"Cannot convert to unknown type '{dst_type}'",
+                tip="Make sure the target type is defined before using 'as'.",
+            )
+
+        if src_type:
+            src_b = self._base_type(src_type)
+            dst_b = self._base_type(dst_type)
+
+            # Allow numeric-to-numeric conversions (safe)
+            castable = {"int", "uint", "float", "char", "bool"}
+            if src_b in castable and dst_b in castable:
+                return dst_type
+
+            # Class conversions (upcasting and downcasting)
+            src_resolved = self._resolve(src_type)
+            dst_resolved = self._resolve(dst_type)
+            if src_resolved in self.class_types and dst_resolved in self.class_types:
+                if self._is_subclass_of(
+                    src_resolved, dst_resolved
+                ) or self._is_subclass_of(dst_resolved, src_resolved):
+                    return dst_type
+
+            # Pointer conversions
+            if src_b in ("ptr", "sptr") and dst_b in ("ptr", "sptr"):
+                return dst_type
+
+            # Allow ptr <-> int in unsafe mode
+            if self.in_unsafe_func:
+                if (src_b in ("ptr", "sptr") and dst_b in castable) or (
+                    src_b in castable and dst_b in ("ptr", "sptr")
+                ):
+                    return dst_type
+
+            # Disallow clearly incompatible conversions
+            if src_b == "string" or dst_b == "string":
+                raise LeashError(
+                    f"Cannot convert from '{src_type}' to '{dst_type}' using 'as'",
+                    tip="Converting between strings and other types is not supported with 'as'. Use 'toint' or 'tofloat' instead.",
+                )
+
+        return dst_type
+
     def _check_struct_init(self, expr):
         if expr.name not in self.struct_types:
             raise LeashError(f"Undefined struct: '{expr.name}'")
@@ -2542,6 +2608,21 @@ class TypeChecker:
                             node=expr.args[0],
                         )
                 return "void"
+            elif expr.method == "isin":
+                # Expect 1 argument: value of inner_t
+                if len(expr.args) != 1:
+                    self._error(
+                        f"Vector method '{expr.method}' expects 1 argument, got {len(expr.args)}",
+                        node=expr,
+                    )
+                else:
+                    arg_type = self._infer_type(expr.args[0])
+                    if arg_type and not self._types_compatible(arg_type, inner_t):
+                        self._warn(
+                            f"Vector method '{expr.method}' expects argument of type '{inner_t}' but got '{arg_type}'",
+                            node=expr.args[0],
+                        )
+                return "bool"
             else:
                 raise LeashError(
                     f"Vector has no method named '{expr.method}'", node=expr

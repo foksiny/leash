@@ -4,7 +4,7 @@ if exists("b:current_syntax")
 endif
 
 " Keywords
-syn keyword leashKeyword fnc def struct union enum class type template return if also else while for do foreach in imut vector vec this pub priv static stop continue use works otherwise switch case default unsafe unsafe
+syn keyword leashKeyword fnc def struct union enum class type template return if also else while for do foreach in imut vector vec this pub priv static stop continue use works otherwise switch case default unsafe as
 syn keyword leashBoolean true false
 syn keyword leashNull null
 
@@ -33,7 +33,7 @@ syn match leashMultiType "\[\s*[a-z_][a-zA-Z0-9_]*\s*\(,\s*[a-z_][a-zA-Z0-9_]*\s
 syn match leashFuncPointer "fnc\s*(\s*[^)]*\s*)\s*:\s*[a-z_][a-zA-Z0-9_]*\s*\(\s*<\s*[0-9, ]\+\s*>\s*\)\?"
 
 " Builtin functions and properties
-syn keyword leashBuiltin show get set toint tofloat tostring cstr lstr size cur name pushb popb pushf popf insert clear rand randf seed choose wait timepass exit exec
+syn keyword leashBuiltin show get set toint tofloat tostring cstr lstr size cur name pushb popb pushf popf insert clear remove contains isin rand randf seed choose wait timepass exit exec
 
 " Built-in File class and methods
 syn keyword leashBuiltin File open close read write readln readb writeb readlnb replace replaceall rewind rename delete
