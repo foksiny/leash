@@ -69,6 +69,7 @@ examples/pubif
 examples/unsafe
 examples/as
 examples/isin
+examples/staticvar
 
 # Trash
 trash/

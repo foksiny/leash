@@ -691,6 +691,17 @@ class JSCodeGen:
     def _codegen_ClassDef(self, node):
         parent_name = node.parent
 
+        static_fields = {}
+        instance_fields = []
+        for f in node.fields:
+            if getattr(f, "is_static", False):
+                static_fields[f.name] = {
+                    "type": f.var_type,
+                    "value": f.value,
+                }
+            else:
+                instance_fields.append(f)
+
         # Register class in symtab BEFORE generating methods so StructInit can find it
         self.class_symtab[node.name] = {
             "fields": [
@@ -700,6 +711,7 @@ class JSCodeGen:
                 )
                 for f in node.fields
             ],
+            "static_fields": static_fields,
             "methods": {m.fnc.name: m for m in node.methods},
             "parent": parent_name,
         }
@@ -712,6 +724,17 @@ class JSCodeGen:
             self._emit(f"class {node.name} {{")
 
         self.indent_level += 1
+
+        # Emit static fields inside the class
+        if static_fields:
+            for fname, finfo in static_fields.items():
+                ftype = finfo["type"]
+                if finfo["value"] is not None:
+                    val = self._expr(finfo["value"])
+                    self._emit(f"static {fname} = {val};")
+                else:
+                    default_val = self._default_value(ftype)
+                    self._emit(f"static {fname} = {default_val};")
 
         # Constructor
         all_fields = []
@@ -1681,13 +1704,21 @@ class JSCodeGen:
         return "this"
 
     def _expr_MemberAccess(self, node):
+        from .ast_nodes import Identifier
+
+        # Handle static class field access (e.g., idkMath.PI)
+        if isinstance(node.expr, Identifier) and node.expr.name in self.class_symtab:
+            cls_info = self.class_symtab[node.expr.name]
+            static_fields = cls_info.get("static_fields", {})
+            if node.member in static_fields:
+                # Static field access - generate ClassName.field
+                return f"{node.expr.name}.{node.member}"
+
         expr = self._expr(node.expr)
         expr_type = self._get_expr_type(node.expr)
         resolved = self._resolve_type(expr_type)
 
         # If the expression is a raw pointer to a struct, dereference first
-        from .ast_nodes import Identifier
-
         if (
             isinstance(node.expr, Identifier)
             and resolved.startswith("*")
@@ -2250,6 +2281,10 @@ class JSCodeGen:
                     ftype = f[1] if isinstance(f, tuple) else f.var_type
                     if fname == node.member:
                         return ftype
+                # Also check static fields
+                static_fields = self.class_symtab[resolved].get("static_fields", {})
+                if node.member in static_fields:
+                    return static_fields[node.member]["type"]
             return "int"
         elif isinstance(node, ThisExpr):
             return self.var_symtab.get("this", "int")

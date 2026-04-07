@@ -6,16 +6,14 @@ pub def Memory : union {
 };
 
 pub def pMath : class {
-    pub PI: double;
-    pub E: double;
-    pub HALF_PI: double;
-    pub LN10: double;
-    pub LN2: double;
+    static pub PI: double = 3.14159265358979323846;
+    static pub E: double = 2.71828182845904523536;
+    static pub HALF_PI: double = 1.57079632679489661923;
+    static pub LN10: double = 2.30258509299404568402;
+    static pub LN2: double = 0.69314718055994530942;
 
     static pub fnc new() : pMath {
-        return pMath {PI: 3.14159265358979323846, E: 2.71828182845904523536,
-                      HALF_PI: 1.57079632679489661923, LN10: 2.30258509299404568402,
-                      LN2: 0.69314718055994530942};
+        return pMath {};
     }
 
     static pub fnc floor(x double) : double {

@@ -304,10 +304,12 @@ class ClassDef(ASTNode):
 
 
 class ClassField(ASTNode):
-    def __init__(self, name, var_type, visibility):
+    def __init__(self, name, var_type, visibility, value=None, is_static=False):
         self.name = name
         self.var_type = var_type
         self.visibility = visibility  # 'pub' or 'priv'
+        self.value = value  # default value expression or None
+        self.is_static = is_static
 
 
 class ClassMethod(ASTNode):

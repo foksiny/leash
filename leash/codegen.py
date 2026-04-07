@@ -987,17 +987,35 @@ class CodeGen:
 
         # Add child's own fields
         idx = len(llvm_types)
+        static_fields = {}
         for f in node.fields:
-            fields[f.name] = idx
-            field_types[f.name] = f.var_type
-            llvm_types.append(self._get_llvm_type(f.var_type))
-            idx += 1
+            if getattr(f, "is_static", False):
+                # Static field - generate a global variable
+                static_llvm_type = self._get_llvm_type(f.var_type)
+                static_gv = ir.GlobalVariable(
+                    self.module, static_llvm_type, name=f"{node.name}_{f.name}"
+                )
+                static_gv.linkage = "internal"
+                static_fields[f.name] = {
+                    "global": static_gv,
+                    "type": f.var_type,
+                    "value": f.value,
+                }
+                # If there's a default value, schedule for initialization
+                if f.value is not None:
+                    self.global_init_list.append((static_gv, f.value, f.var_type))
+            else:
+                fields[f.name] = idx
+                field_types[f.name] = f.var_type
+                llvm_types.append(self._get_llvm_type(f.var_type))
+                idx += 1
 
         struct_type = ir.LiteralStructType(llvm_types)
         self.class_symtab[node.name] = {
             "type": struct_type,
             "fields": fields,
             "field_types": field_types,
+            "static_fields": static_fields,
             "methods": {},
             "method_static": {},
             "method_imut": {},  # Track which methods are imut (non-overridable)
@@ -4749,19 +4767,20 @@ class CodeGen:
     def _codegen_MemberAccess(self, node):
         from .ast_nodes import Identifier
 
-        # Handle static class field access (e.g., pMath.PI)
+        # Handle static class field access (e.g., idkMath.PI)
         if isinstance(node.expr, Identifier) and node.expr.name in self.class_symtab:
             cls_info = self.class_symtab[node.expr.name]
+            # Check static fields first
+            if "static_fields" in cls_info and node.member in cls_info["static_fields"]:
+                static_info = cls_info["static_fields"][node.member]
+                static_gv = static_info["global"]
+                return self.builder.load(static_gv)
+            # Fall back to instance fields (error case)
             if node.member in cls_info["fields"]:
-                # Static field access: load from the struct stored in class_symtab
-                # For now, class fields are instance fields, so this is an error
-                # unless they're actually stored as globals.
-                # In Leash, class fields are instance fields, so ClassName.field
-                # should refer to the field type, not a value.
-                # However, for constants like PI/E, they need to be stored somewhere.
-                # For now, return the default value for the field type.
-                field_type = cls_info["field_types"][node.member]
-                return self._emit_default_value(field_type)
+                # Static field access on instance field is an error
+                raise LeashError(
+                    f"Instance field '{node.member}' cannot be accessed without an instance"
+                )
             raise LeashError(
                 f"Class '{node.expr.name}' has no field named '{node.member}'"
             )

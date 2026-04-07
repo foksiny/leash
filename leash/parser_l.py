@@ -838,8 +838,20 @@ class Parser:
                 field_name = self.eat("IDENT").value
                 self.eat("COLON")
                 field_type = self.parse_type()
+                field_value = None
+                if self.current().type == "ASSIGN":
+                    self.eat("ASSIGN")
+                    field_value = self.parse_expression()
                 self.eat("SEMI")
-                fields.append(ClassField(field_name, field_type, member_visibility))
+                fields.append(
+                    ClassField(
+                        field_name,
+                        field_type,
+                        member_visibility,
+                        field_value,
+                        is_static,
+                    )
+                )
         self.eat("RBRACE")
         # self.eat('SEMI') # Optional for classes
         if self.current().type == "SEMI":

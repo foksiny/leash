@@ -379,15 +379,20 @@ class TypeChecker:
         # Inherit parent fields
         if node.parent:
             parent_info = self.class_types[node.parent]
-            for fname, (ftype, fvis) in parent_info["fields"].items():
-                fields[fname] = (ftype, fvis)
+            for fname, field_info in parent_info["fields"].items():
+                if len(field_info) == 3:
+                    ftype, fvis, fstatic = field_info
+                else:
+                    ftype, fvis = field_info
+                    fstatic = False
+                fields[fname] = (ftype, fvis, fstatic)
 
         for f in node.fields:
             if f.name in fields:
                 self._error(
                     f"Duplicate field '{f.name}' in class '{node.name}'", node=f
                 )
-            fields[f.name] = (f.var_type, f.visibility)
+            fields[f.name] = (f.var_type, f.visibility, getattr(f, "is_static", False))
 
         methods = {}
         # Inherit parent methods
@@ -1029,6 +1034,22 @@ class TypeChecker:
                     f"Class '{node.name}' field '{f.name}' has unknown type '{f.var_type}'",
                     node=f,
                 )
+            # Check static field default value
+            if f.value is not None:
+                val_type = self._infer_type(f.value)
+                if val_type is not None:
+                    val_resolved = self._resolve(val_type)
+                    if not self._is_valid_type(val_resolved):
+                        self._error(
+                            f"Static field '{f.name}' has unknown value type '{val_type}'",
+                            node=f.value,
+                        )
+                    # Check type compatibility
+                    if not self._types_compatible(resolved, val_resolved):
+                        self._error(
+                            f"Static field '{f.name}' value type '{val_resolved}' does not match declared type '{resolved}'",
+                            node=f.value,
+                        )
 
         for m in node.methods:
             # Add 'this' to scope for instance methods
@@ -2441,7 +2462,8 @@ class TypeChecker:
                 )
 
             self._check_visibility(expr.name, key, False, val_expr)
-            expected, _ = fields[key]
+            field_info = fields[key]
+            expected = field_info[0]
             actual = self._infer_type(val_expr)
             if actual and not self._types_compatible(actual, expected):
                 self._warn(
