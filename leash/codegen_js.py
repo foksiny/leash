@@ -60,6 +60,8 @@ from .ast_nodes import (
     Block,
     ASTNode,
     SwitchStatement,
+    DeferStatement,
+    Lambda,
 )
 
 
@@ -94,6 +96,7 @@ class JSCodeGen:
         self.async_methods = set()
         self.is_browser = is_browser
         self.target_name = target_name
+        self.defer_stack = []  # Stack of lists of deferred Call nodes
 
     def generate_code(self, node):
         """Generate JavaScript code from the AST and return as string."""
@@ -877,6 +880,9 @@ class JSCodeGen:
         self.current_func_ret_type = node.return_type
         self.var_symtab = {}
 
+        # Push new defer stack frame for this function
+        self.defer_stack.append([])
+
         # Add args to symtab
         # Track which params are value types (not pointers) - these receive values directly
         self._value_params = set()
@@ -889,6 +895,14 @@ class JSCodeGen:
         # Generate statements
         for stmt in node.body:
             self._codegen(stmt)
+
+        # Execute deferred calls in reverse order
+        while self.defer_stack[-1]:
+            deferred_call = self.defer_stack[-1].pop()
+            self._emit(self._expr(deferred_call) + ";")
+
+        # Pop defer stack frame
+        self.defer_stack.pop()
 
         # Add implicit return for main
         if is_main and node.return_type == "void":
@@ -905,6 +919,8 @@ class JSCodeGen:
     # ========== Statements ==========
 
     def _codegen_VariableDecl(self, node):
+        from .ast_nodes import Lambda
+
         resolved_type = self._resolve_type(node.var_type)
         var_name = node.name
         self.var_symtab[var_name] = node.var_type
@@ -912,10 +928,16 @@ class JSCodeGen:
         # ALL variables are addresses in virtual memory
         if node.value is not None:
             value_expr = self._expr(node.value)
+
+            # Handle Lambda expressions specially
+            if isinstance(node.value, Lambda):
+                # Lambda returns a JS arrow function string
+                # Store it directly in memory
+                self._emit(f"let {var_name} = _leash_alloc({value_expr}, 8);")
             # For pointer types, the value IS already an address (e.g., from cstr(), &var)
             # Don't wrap in another _leash_alloc
             # Exception: function pointer types where value is a bare function name
-            if self._is_pointer_type(resolved_type):
+            elif self._is_pointer_type(resolved_type):
                 if resolved_type.startswith("fnc(") and value_expr in self.func_symtab:
                     self._emit(f"let {var_name} = _leash_alloc({value_expr}, 8);")
                 else:
@@ -1225,6 +1247,10 @@ class JSCodeGen:
             self._emit("}")
 
     def _codegen_ReturnStatement(self, node):
+        # Execute deferred calls before returning
+        while self.defer_stack and self.defer_stack[-1]:
+            deferred_call = self.defer_stack[-1].pop()
+            self._emit(self._expr(deferred_call) + ";")
         if node.value is not None:
             value_expr = self._expr(node.value)
             self._emit(f"return {value_expr};")
@@ -1232,9 +1258,17 @@ class JSCodeGen:
             self._emit("return;")
 
     def _codegen_StopStatement(self, node):
+        # Execute deferred calls before breaking
+        while self.defer_stack and self.defer_stack[-1]:
+            deferred_call = self.defer_stack[-1].pop()
+            self._emit(self._expr(deferred_call) + ";")
         self._emit("break;")
 
     def _codegen_ContinueStatement(self, node):
+        # Execute deferred calls before continuing
+        while self.defer_stack and self.defer_stack[-1]:
+            deferred_call = self.defer_stack[-1].pop()
+            self._emit(self._expr(deferred_call) + ";")
         loop_info = self.loop_stack[-1] if self.loop_stack else None
         if loop_info and isinstance(loop_info.get("continue"), str):
             # Labeled continue - jump to step label
@@ -1928,6 +1962,14 @@ class JSCodeGen:
             if resolved.startswith("fnc("):
                 return f"_leash_load({node.name})({args})"
 
+        # Check if this is a call to a variable that holds a lambda
+        if node.name in self.var_symtab:
+            var_type = self.var_symtab[node.name]
+            resolved = self._resolve_type(var_type)
+            if resolved.startswith("fnc("):
+                # For function pointers, load from address and call
+                return f"_leash_load({node.name})({args})"
+
         return f"{node.name}({args})"
 
     def _expr_GenericCall(self, node):
@@ -2112,6 +2154,9 @@ class JSCodeGen:
         elif target.startswith("float<"):
             return f"parseFloat({expr})"
         return expr
+
+    def _expr_Lambda(self, node):
+        return self._codegen_Lambda(node)
 
     def _expr_TypeConvExpr(self, node):
         expr = self._expr(node.expr)
@@ -2306,3 +2351,31 @@ class JSCodeGen:
         elif isinstance(node, TypeConvExpr):
             return node.target_type
         return "int"
+
+    def _codegen_DeferStatement(self, node):
+        self.defer_stack[-1].append(node.call)
+
+    def _codegen_Lambda(self, node):
+        param_names = [arg_name for arg_name, _ in node.args]
+
+        # Temporarily redirect output to capture body
+        old_output = self.output
+        self.output = []
+
+        for stmt in node.body:
+            self._codegen(stmt)
+
+        body_code = self.output
+        self.output = old_output
+
+        # Format as arrow function
+        if len(param_names) == 1:
+            func_str = f"({param_names[0]}) => {{ "
+        else:
+            func_str = f"({', '.join(param_names)}) => {{ "
+
+        for line in body_code:
+            func_str += line.strip() + " "
+        func_str = func_str.strip().rstrip(";") + " }"
+
+        return func_str

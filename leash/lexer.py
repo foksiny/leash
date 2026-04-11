@@ -63,6 +63,8 @@ class Lexer:
         "pubif",
         "unsafe",
         "as",
+        "inline",
+        "defer",
     }
 
     # regexes

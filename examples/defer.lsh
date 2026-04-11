@@ -1,0 +1,13 @@
+fnc read_file(fname string) : string {
+    f: File = File.open(fname, "r");
+
+    defer f.close();
+
+    result: string = f.read();
+
+    return result;
+}
+
+fnc main() : void {
+    show(read_file(_FILEPATH));
+}

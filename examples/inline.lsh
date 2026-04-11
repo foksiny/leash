@@ -1,0 +1,11 @@
+inline fnc add(a int, b int) : int {
+    return a + b;
+}
+
+fnc main() : void {
+    show(add(10, 20));
+
+    r: int = add(20, 30);
+
+    show(r);
+}

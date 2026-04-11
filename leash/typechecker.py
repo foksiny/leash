@@ -1226,6 +1226,8 @@ class TypeChecker:
 
         elif isinstance(stmt, SwitchStatement):
             self._check_switch(stmt)
+        elif isinstance(stmt, DeferStatement):
+            self._check_defer(stmt)
 
     def _check_var_decl(self, stmt):
         if stmt.name in self.var_types:
@@ -1574,6 +1576,8 @@ class TypeChecker:
             return self._check_type_conv(expr)
         elif isinstance(expr, TernaryOp):
             return self._check_ternary_op(expr)
+        elif isinstance(expr, Lambda):
+            return self._check_lambda(expr)
         return None
 
     def _check_binary_op(self, expr):
@@ -1853,6 +1857,54 @@ class TypeChecker:
                 )
 
         return true_t
+
+    def _check_lambda(self, expr):
+        for arg_name, arg_type in expr.args:
+            resolved = self._resolve(arg_type)
+            if not self._is_valid_type(resolved):
+                self._error(
+                    f"Lambda parameter '{arg_name}' has unknown type '{arg_type}'",
+                    node=expr,
+                )
+
+        resolved_ret = self._resolve(expr.return_type)
+        if not self._is_valid_type(resolved_ret):
+            self._error(
+                f"Lambda return type '{expr.return_type}' is unknown",
+                node=expr,
+            )
+
+        saved_vars = self.var_types.copy()
+        saved_imut = self.var_immutable.copy()
+        saved_func = self.current_func
+        saved_return = self.current_return_type
+
+        self.current_func = "<lambda>"
+        self.current_return_type = expr.return_type
+
+        for arg_name, arg_type in expr.args:
+            self.var_types[arg_name] = arg_type
+            self.var_immutable[arg_name] = False
+
+        self._check_statements(expr.body)
+
+        self.var_types = saved_vars
+        self.var_immutable = saved_imut
+        self.current_func = saved_func
+        self.current_return_type = saved_return
+
+        param_types = ", ".join(arg_type for _, arg_type in expr.args)
+        return f"fnc({param_types}) : {expr.return_type}"
+
+    def _check_defer(self, stmt):
+        from .ast_nodes import Call, MethodCall
+
+        if not isinstance(stmt.call, (Call, MethodCall)):
+            self._error(
+                "defer must be followed by a function call",
+                node=stmt,
+            )
+        self._infer_type(stmt.call)
 
     def _check_call(self, expr):
         if expr.name == "show":

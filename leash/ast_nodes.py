@@ -47,6 +47,7 @@ class Function(ASTNode):
         type_params=None,
         visibility="pub",
         is_unsafe=False,
+        is_inline=False,
     ):
         self.name = name
         self.args = args  # list of (name, type) tuples
@@ -55,6 +56,7 @@ class Function(ASTNode):
         self.type_params = type_params or []  # list of template parameter names
         self.visibility = visibility  # 'pub' or 'priv'
         self.is_unsafe = is_unsafe
+        self.is_inline = is_inline
 
 
 class Block(ASTNode):
@@ -166,6 +168,18 @@ class ShowStatement(Statement):
 
 class Expression(ASTNode):
     pass
+
+
+class Lambda(Expression):
+    def __init__(self, args, return_type, body):
+        self.args = args  # list of (name, type) tuples
+        self.return_type = return_type
+        self.body = body  # Block (list of statements)
+
+
+class DeferStatement(Statement):
+    def __init__(self, call):
+        self.call = call  # The Call expression to execute on scope exit
 
 
 class BinaryOp(Expression):

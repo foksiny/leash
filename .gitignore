@@ -70,6 +70,9 @@ examples/unsafe
 examples/as
 examples/isin
 examples/staticvar
+examples/defer
+examples/lambdas
+examples/inline
 
 # Trash
 trash/

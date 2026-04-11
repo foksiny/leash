@@ -57,6 +57,8 @@ from .ast_nodes import (
     BuiltinVarLiteral,
     SwitchStatement,
     ConditionalDef,
+    DeferStatement,
+    Lambda,
 )
 from .errors import LeashError
 
@@ -350,9 +352,14 @@ class Parser:
         items = []
         while self.current().type != "EOF":
             is_unsafe = False
+            is_inline = False
             if self.current().type == "UNSAFE":
                 self.eat("UNSAFE")
                 is_unsafe = True
+
+            if self.current().type == "INLINE":
+                self.eat("INLINE")
+                is_inline = True
 
             if self.current().type in ("PUB", "PRIV"):
                 # Peek ahead to see if next token is DEF or FNC or USE
@@ -366,7 +373,11 @@ class Parser:
                     visibility = self.current().value.lower()
                     self.eat(self.current().type)  # eat PUB/PRIV
                     items.append(
-                        self.parse_function(visibility=visibility, is_unsafe=is_unsafe)
+                        self.parse_function(
+                            visibility=visibility,
+                            is_unsafe=is_unsafe,
+                            is_inline=is_inline,
+                        )
                     )
                 elif self.peek() and self.peek().type == "USE":
                     # It's a use with visibility
@@ -379,7 +390,9 @@ class Parser:
             elif self.current().type == "DEF":
                 items.append(self.parse_def())
             elif self.current().type == "FNC":
-                items.append(self.parse_function(is_unsafe=is_unsafe))
+                items.append(
+                    self.parse_function(is_unsafe=is_unsafe, is_inline=is_inline)
+                )
             elif (
                 self.current().type == "IDENT"
                 and self.peek()
@@ -858,7 +871,7 @@ class Parser:
             self.eat("SEMI")
         return ClassDef(name, fields, methods, parent, type_params, visibility)
 
-    def parse_function(self, visibility="pub", is_unsafe=False):
+    def parse_function(self, visibility="pub", is_unsafe=False, is_inline=False):
         self.eat("FNC")
         name = self.eat("IDENT").value
         type_params = []
@@ -901,6 +914,7 @@ class Parser:
             type_params,
             visibility,
             is_unsafe,
+            is_inline,
         )
 
     def parse_block(self):
@@ -914,6 +928,25 @@ class Parser:
             statements.append(self.parse_statement())
         self.eat("RBRACE")
         return statements
+
+    def _parse_lambda(self):
+        """Parse a lambda expression: fnc(a int, b int) : int { ... }"""
+        tok = self.current()
+        self.eat("FNC")
+        self.eat("LPAREN")
+        args = []
+        while self.current().type != "RPAREN":
+            arg_name = self.eat("IDENT").value
+            arg_type = self.parse_type()
+            args.append((arg_name, arg_type))
+            if self.current().type == "COMMA":
+                self.eat("COMMA")
+        self.eat("RPAREN")
+        self.eat("COLON")
+        return_type = self.parse_type()
+        self.eat("LBRACE")
+        body = self.parse_block()
+        return self._pos(Lambda(args, return_type, body), tok)
 
     def parse_statement(self):
         current = self.current()
@@ -1083,6 +1116,13 @@ class Parser:
             expr = self.parse_expression()
             self.eat("SEMI")
             return self._pos(ReturnStatement(expr), tok)
+
+        elif current.type == "DEFER":
+            tok = self.current()
+            self.eat("DEFER")
+            call = self.parse_expression()
+            self.eat("SEMI")
+            return self._pos(DeferStatement(call), tok)
 
         elif current.type in ("STOP",):
             tok = self.current()
@@ -1340,6 +1380,8 @@ class Parser:
             tok = self.current()
             self.eat("THIS")
             return self._pos(ThisExpr(), tok)
+        elif self.current().type == "FNC":
+            return self._parse_lambda()
         elif self.current().type == "IDENT":
             tok = self.current()
             name = self.eat("IDENT").value

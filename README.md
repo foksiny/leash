@@ -874,6 +874,66 @@ fnc main(args string[]) : void {
 
 *Note: The `show()` function is built-in and makes printing multiple values to console very easy!*
 
+### Inline Functions
+
+Functions can be marked with the `inline` keyword to suggest the compiler should inline them (insert the function body at the call site instead of generating a function call). This can improve performance for small, frequently-called functions.
+
+```leash
+inline fnc add(a int, b int) : int {
+    return a + b;
+}
+
+fnc main() : void {
+    show(add(10, 20));  // Inlined at compile time
+    
+    r: int = add(20, 30);
+    show(r);
+}
+```
+
+### Deferred Execution
+
+The `defer` keyword schedules a function call to be executed automatically when the current scope exits. This is useful for resource cleanup (like closing files) and ensures cleanup happens even if the function returns early or throws an error.
+
+```leash
+fnc read_file(fname string) : string {
+    f: File = File.open(fname, "r");
+    
+    defer f.close();  // Called when read_file returns
+    
+    result: string = f.read();
+    return result;
+}
+
+fnc main() : void {
+    content: string = read_file("data.txt");
+    show(content);
+}
+```
+
+Deferred calls are executed in **reverse order** (last defer runs first) when the scope exits, which is the standard behavior for defer statements.
+
+### Lambdas
+
+Leash supports anonymous functions (lambdas) that can be assigned to variables and passed around:
+
+```leash
+fnc main() : void {
+    add: fnc(int, int) : int = fnc(a int, b int) : int {
+        return a + b;
+    };
+    
+    sub: fnc(int, int) : int = fnc(a int, b int) : int {
+        return a - b;
+    };
+    
+    show(add(1, 2));  // 3
+    show(sub(2, 1));  // 1
+}
+```
+
+Lambda type syntax is `fnc(param_types) : return_type`. Lambdas can be stored in variables of function pointer type and called like regular functions.
+
 ## Global Variables
 
 Leash supports module-level variable declarations. These variables are accessible from any function within the same module. By default, top-level variables are public. You can also explicitly mark them as `pub` or `priv`.

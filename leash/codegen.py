@@ -13,6 +13,8 @@ from .ast_nodes import (
     GlobalVarDecl,
     WorksOtherwiseStatement,
     NativeImport,
+    DeferStatement,
+    Lambda,
 )
 
 
@@ -54,6 +56,9 @@ class CodeGen:
 
         # Boehm GC configuration (replacing legacy SAMM)
         self.current_func_alloc_limit = 0  # Not used with GC
+
+        # Deferred function calls stack (per scope)
+        self.defer_stack = []  # list of lists of Call nodes
 
         # Global start time for timepass() - { i64 tv_sec, i64 tv_nsec }
         timespec_ty = ir.LiteralStructType([ir.IntType(64), ir.IntType(64)])
@@ -1346,10 +1351,18 @@ class CodeGen:
                 self.builder.store(func.args[i], ptr)
                 self.var_symtab[arg_name] = (ptr, arg_type_name)
 
+        self.defer_stack.append([])  # Push new defer stack frame for this function
+
         for stmt in node.body:
             self._codegen(stmt)
             if self.builder.block.is_terminated:
                 break
+
+        while self.defer_stack[-1]:
+            deferred_call = self.defer_stack[-1].pop()
+            self._codegen(deferred_call)
+
+        self.defer_stack.pop()  # Pop defer stack frame
 
         if not self.builder.block.is_terminated:
             self._emit_cleanup()
@@ -1374,6 +1387,11 @@ class CodeGen:
         if not isinstance(ret_type, ir.VoidType):
             val = self._emit_cast(val, ret_type)
 
+        # Execute deferred calls before returning
+        while self.defer_stack and self.defer_stack[-1]:
+            deferred_call = self.defer_stack[-1].pop()
+            self._codegen(deferred_call)
+
         self._emit_cleanup(ret_val=val)  # Auto-free everything EXCEPT the return value
         if isinstance(ret_type, ir.VoidType):
             self.builder.ret_void()
@@ -1389,6 +1407,9 @@ class CodeGen:
                 node.col,
                 tip="`stop` (break) is used to exit a loop early. It can only be used within `while`, `for`, `do-while`, or `foreach` loops.",
             )
+        while self.defer_stack and self.defer_stack[-1]:
+            deferred_call = self.defer_stack[-1].pop()
+            self._codegen(deferred_call)
         break_bb, _ = self.loop_stack[-1]
         self.builder.branch(break_bb)
 
@@ -1401,6 +1422,9 @@ class CodeGen:
                 node.col,
                 tip="`continue` skips to the next iteration of a loop. It can only be used within `while`, `for`, `do-while`, or `foreach` loops.",
             )
+        while self.defer_stack and self.defer_stack[-1]:
+            deferred_call = self.defer_stack[-1].pop()
+            self._codegen(deferred_call)
         _, continue_bb = self.loop_stack[-1]
         self.builder.branch(continue_bb)
 
@@ -5367,3 +5391,46 @@ class CodeGen:
 
     def get_ir(self):
         return str(self.module)
+
+    def _codegen_DeferStatement(self, node):
+        self.defer_stack[-1].append(node.call)
+
+    def _codegen_Lambda(self, node):
+        lambda_name = self.module.get_unique_name("lambda")
+
+        ret_type = self._get_llvm_type(node.return_type, is_return=True)
+
+        arg_types = []
+        for _, arg_type in node.args:
+            arg_types.append(self._get_llvm_type(arg_type, is_return=False))
+
+        func_type = ir.FunctionType(ret_type, arg_types)
+        func = ir.Function(self.module, func_type, name=lambda_name)
+        func.linkage = "internal"
+
+        block = func.append_basic_block(name="entry")
+        old_builder = self.builder
+        self.builder = ir.IRBuilder(block)
+
+        old_vars = self.var_symtab.copy()
+        for i, (arg_name, _) in enumerate(node.args):
+            func.args[i].name = arg_name
+            ptr = self.builder.alloca(func.args[i].type)
+            self.builder.store(func.args[i], ptr)
+            self.var_symtab[arg_name] = (ptr, node.args[i][1])
+
+        for stmt in node.body:
+            self._codegen(stmt)
+            if self.builder.block.is_terminated:
+                break
+
+        if not self.builder.block.is_terminated:
+            if node.return_type == "void":
+                self.builder.ret_void()
+            else:
+                self.builder.unreachable()
+
+        self.builder = old_builder
+        self.var_symtab = old_vars
+
+        return func
