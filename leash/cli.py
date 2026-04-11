@@ -166,7 +166,10 @@ def resolve_imports(program, base_path):
                 for mod_item in module_ast.items:
                     # For priv use, include all items; for pub use, skip private items
                     is_priv_import = item.visibility == "priv"
-                    if (
+                    # Always include TemplateDef items - they're needed for generic class instantiation
+                    # even when importing via public 'use' (the templates themselves are implementation details)
+                    is_template = isinstance(mod_item, TemplateDef)
+                    if not is_template and (
                         hasattr(mod_item, "visibility")
                         and mod_item.visibility == "priv"
                         and not is_priv_import

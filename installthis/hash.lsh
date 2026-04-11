@@ -57,7 +57,7 @@ def Hash : class<T1, T2> {
     }
 
     pub fnc geti(idx int) : T2 {
-        if idx < this.names.size {
+        if idx < this.names.size && idx >= 0 {
             return this.values.get(idx);
         }
         return nil;
@@ -65,5 +65,30 @@ def Hash : class<T1, T2> {
 
     pub fnc items() : vec<T2> {
         return this.values;
+    }
+
+    pub fnc fields() : vec<T1> {
+        return this.names;
+    }
+
+    pub fnc set(nm T1, val T2) : void {
+        if this.names.isin(nm) {
+            io: int = -1;
+            foreach i, n in<vector> this.names {
+                if n == nm {
+                    io = i;
+                    stop;
+                }
+            }
+            if io != -1 {
+                this.values.set(io, val);
+            }
+        }
+    }
+
+    pub fnc seti(idx int, val T2) : void {
+        if idx < this.values.size && idx >= 0 {
+            this.values.set(idx, val);
+        }
     }
 }
