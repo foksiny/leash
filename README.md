@@ -1791,6 +1791,32 @@ charVar: char = c[1];
 strLen: int = c.size; // evaluates length!
 ```
 
+### String Methods
+
+Leash strings support the following methods:
+
+| Method | Description |
+|--------|-------------|
+| `.replace(old, new)` | Replace the first occurrence of `old` with `new` |
+| `.size` | Return the length of the string (property) |
+
+Example:
+
+```leash
+fnc main() : void {
+    str: string = "Hello World!";
+    
+    show(str.replace("World", "Luna"));  // "Hello Luna!"
+    
+    newStr: string = str.replace("Hello", "Hi");
+    show(newStr);  // "Hi World!"
+    
+    // Works with string literals too
+    result: string = "Hello Bro".replace("Bro", "World!");
+    show(result);  // "Hello World!"
+}
+```
+
 ### Leash Strings vs Char Arrays
 
 Leash natively supports both automatically managed `string` types and lower-level `char[]` slices. You can easily convert and concatenate between them using the built-in `lstr()` and `cstr()` functions.

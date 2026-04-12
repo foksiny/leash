@@ -2022,6 +2022,8 @@ class JSCodeGen:
         if resolved == "string":
             if node.method == "size":
                 return f"{expr}.length"
+            if node.method == "replace":
+                return f"{expr}.replace({args})"
 
         # Array/slice methods
         if resolved.endswith("]") and "[" in resolved:
@@ -2253,6 +2255,8 @@ class JSCodeGen:
                 return "string"
             elif node.method == "size":
                 return "int"
+            elif node.method == "replace":
+                return "string"
             elif node.method in ("popb", "popf", "get"):
                 base_type = self._get_expr_type(node.expr)
                 if base_type.startswith("vec<"):

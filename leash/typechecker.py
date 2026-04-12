@@ -2713,10 +2713,22 @@ class TypeChecker:
                     f"Vector has no method named '{expr.method}'", node=expr
                 )
 
-        # String methods? Currently string only has .size which is member access
-        # but maybe someone uses .size()
-        if base_b == "string" and expr.method == "size":
-            return "int"
+        # String methods
+        if base_b == "string":
+            if expr.method == "size":
+                return "int"
+            if expr.method == "replace":
+                if len(expr.args) != 2:
+                    raise LeashError(
+                        f".replace() requires exactly 2 arguments (old, new)", node=expr
+                    )
+                arg1_t = self._infer_type(expr.args[0])
+                arg2_t = self._infer_type(expr.args[1])
+                if arg1_t != "string" or arg2_t != "string":
+                    raise LeashError(
+                        f".replace() requires both arguments to be strings", node=expr
+                    )
+                return "string"
 
         # Array methods?
         if base_b == "array" and expr.method == "size":

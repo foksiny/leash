@@ -1,0 +1,14 @@
+fnc main() : void {
+    str: string = "Hello World!";
+
+    show(str.replace("World", "Luna"));
+
+    show(str.replace("Hello", "Hi"));
+
+    str2: string = str.replace("Hello", "Hi");
+
+    show(str2);
+
+    str3: string = "Hello Bro".replace("Bro", "World!");
+    show(str3);
+}

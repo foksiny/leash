@@ -52,5 +52,31 @@ pub def Str : class {
 
         return true;
     }
+
+    static pub fnc upper(str string) : string {
+        out: string;
+        foreach _, c in<string> str {
+            _ = _ + 1 - 1;
+            if c >= 'a' && c <= 'z' {
+                out = out + (char)(c - 32);
+            } else {
+                out = out + c;
+            }
+        }
+        return out;
+    }
+
+    static pub fnc lower(str string) : string {
+        out: string;
+        foreach _, c in<string> str {
+            _ = _ + 1 - 1;
+            if c >= 'A' && c <= 'Z' {
+                out = out + (char)(c + 32);
+            } else {
+                out = out + c;
+            }
+        }
+        return out;
+    }
 }
 

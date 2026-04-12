@@ -36,7 +36,10 @@ syn match leashFuncPointer "fnc\s*(\s*[^)]*\s*)\s*:\s*[a-z_][a-zA-Z0-9_]*\s*\(\s
 syn keyword leashBuiltin show get set toint tofloat tostring cstr lstr size cur name pushb popb pushf popf insert clear remove isin rand randf seed choose wait timepass exit exec
 
 " Built-in File class and methods
-syn keyword leashBuiltin File open close read write readln readb writeb readlnb replace replaceall rewind rename delete
+syn keyword leashBuiltin File open close read write readln readb writeb readlnb replaceall rewind rename delete
+
+" String methods
+syn keyword leashBuiltin replace
 
 " Operators
 syn match leashOperator "&&\|||\|<<\|>>\|[+\-*/%&|^~!<>=]="

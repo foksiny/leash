@@ -73,6 +73,7 @@ examples/staticvar
 examples/defer
 examples/lambdas
 examples/inline
+examples/streplace
 
 # Trash
 trash/

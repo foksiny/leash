@@ -561,6 +561,8 @@ class CodeGen:
             if resolved == "string" or resolved.endswith("]"):
                 if node.method == "size":
                     return "int"
+                if resolved == "string" and node.method == "replace":
+                    return "string"
             # Handle File static methods
             from .ast_nodes import Identifier
 
@@ -3332,6 +3334,14 @@ class CodeGen:
 
             return self.builder.call(func, casted_args)
 
+        from .ast_nodes import Identifier, StringLiteral
+
+        if isinstance(node.expr, StringLiteral):
+            str_val = self._codegen(node.expr)
+            if node.method == "replace":
+                return self._codegen_string_replace_from_value(str_val, node.args)
+            raise LeashError(f"String has no method named '{node.method}'")
+
         base_ptr, type_name = self._codegen_lvalue(node.expr)
         resolved = self._resolve_type_name(type_name)
 
@@ -3344,6 +3354,9 @@ class CodeGen:
             val = self.builder.load(base_ptr)
             length = self.builder.call(self.strlen, [val])
             return self.builder.trunc(length, ir.IntType(32))
+        if resolved == "string" and node.method == "replace":
+            return self._codegen_string_replace(base_ptr, node.args)
+
         if resolved.endswith("]") and node.method == "size":
             val = self.builder.load(base_ptr)
             length = self.builder.extract_value(val, 0)
@@ -5388,6 +5401,122 @@ class CodeGen:
 
         # Fallback: bitcast if same size, otherwise error
         return self.builder.bitcast(val, dst)
+
+    def _codegen_string_replace(self, base_ptr, args):
+        """Implement string.replace(old, new) - replace first occurrence."""
+        str_val = self.builder.load(base_ptr)
+
+        old_str = self._codegen(args[0])
+        new_str = self._codegen(args[1])
+
+        old_len = self.builder.call(self.strlen, [old_str])
+        new_len = self.builder.call(self.strlen, [new_str])
+        str_len = self.builder.call(self.strlen, [str_val])
+
+        found_bb = self.builder.function.append_basic_block("str_replace_found")
+        not_found_bb = self.builder.function.append_basic_block("str_replace_not_found")
+        merge_bb = self.builder.function.append_basic_block("str_replace_merge")
+
+        p = self.builder.call(self.strstr, [str_val, old_str])
+        is_not_null = self.builder.icmp_signed("!=", p, ir.Constant(old_str.type, None))
+        self.builder.cbranch(is_not_null, found_bb, not_found_bb)
+
+        self.builder.position_at_end(found_bb)
+        p_int = self.builder.ptrtoint(p, ir.IntType(64))
+        l_int = self.builder.ptrtoint(str_val, ir.IntType(64))
+        prefix_len = self.builder.sub(p_int, l_int)
+
+        suffix_start = self.builder.gep(p, [old_len], inbounds=True)
+        suffix_len = self.builder.sub(str_len, prefix_len)
+        suffix_len = self.builder.sub(suffix_len, old_len)
+
+        result_len = self.builder.add(prefix_len, new_len)
+        result_len = self.builder.add(result_len, suffix_len)
+        result_len_plus_1 = self.builder.add(result_len, ir.Constant(ir.IntType(64), 1))
+        result = self.builder.call(self.malloc, [result_len_plus_1])
+        self._track_alloc(result)
+
+        self.builder.call(self.strncpy, [result, str_val, prefix_len])
+
+        result_after_prefix = self.builder.gep(result, [prefix_len], inbounds=True)
+        self.builder.call(self.strcat, [result_after_prefix, new_str])
+
+        result_after_new = self.builder.gep(
+            result_after_prefix, [new_len], inbounds=True
+        )
+        self.builder.call(self.strcat, [result_after_new, suffix_start])
+
+        self.builder.branch(merge_bb)
+
+        self.builder.position_at_end(not_found_bb)
+        str_len_plus_1 = self.builder.add(str_len, ir.Constant(ir.IntType(64), 1))
+        result_copy = self.builder.call(self.malloc, [str_len_plus_1])
+        self._track_alloc(result_copy)
+        self.builder.call(self.strcpy, [result_copy, str_val])
+        self.builder.branch(merge_bb)
+
+        self.builder.position_at_end(merge_bb)
+        phi = self.builder.phi(str_val.type, name="str_replace_res")
+        phi.add_incoming(result, found_bb)
+        phi.add_incoming(result_copy, not_found_bb)
+        return phi
+
+    def _codegen_string_replace_from_value(self, str_val, args):
+        """Implement string.replace(old, new) for StringLiteral - replace first occurrence."""
+        old_str = self._codegen(args[0])
+        new_str = self._codegen(args[1])
+
+        old_len = self.builder.call(self.strlen, [old_str])
+        new_len = self.builder.call(self.strlen, [new_str])
+        str_len = self.builder.call(self.strlen, [str_val])
+
+        found_bb = self.builder.function.append_basic_block("str_replace_found")
+        not_found_bb = self.builder.function.append_basic_block("str_replace_not_found")
+        merge_bb = self.builder.function.append_basic_block("str_replace_merge")
+
+        p = self.builder.call(self.strstr, [str_val, old_str])
+        is_not_null = self.builder.icmp_signed("!=", p, ir.Constant(old_str.type, None))
+        self.builder.cbranch(is_not_null, found_bb, not_found_bb)
+
+        self.builder.position_at_end(found_bb)
+        p_int = self.builder.ptrtoint(p, ir.IntType(64))
+        l_int = self.builder.ptrtoint(str_val, ir.IntType(64))
+        prefix_len = self.builder.sub(p_int, l_int)
+
+        suffix_start = self.builder.gep(p, [old_len], inbounds=True)
+        suffix_len = self.builder.sub(str_len, prefix_len)
+        suffix_len = self.builder.sub(suffix_len, old_len)
+
+        result_len = self.builder.add(prefix_len, new_len)
+        result_len = self.builder.add(result_len, suffix_len)
+        result_len_plus_1 = self.builder.add(result_len, ir.Constant(ir.IntType(64), 1))
+        result = self.builder.call(self.malloc, [result_len_plus_1])
+        self._track_alloc(result)
+
+        self.builder.call(self.strncpy, [result, str_val, prefix_len])
+
+        result_after_prefix = self.builder.gep(result, [prefix_len], inbounds=True)
+        self.builder.call(self.strcat, [result_after_prefix, new_str])
+
+        result_after_new = self.builder.gep(
+            result_after_prefix, [new_len], inbounds=True
+        )
+        self.builder.call(self.strcat, [result_after_new, suffix_start])
+
+        self.builder.branch(merge_bb)
+
+        self.builder.position_at_end(not_found_bb)
+        str_len_plus_1 = self.builder.add(str_len, ir.Constant(ir.IntType(64), 1))
+        result_copy = self.builder.call(self.malloc, [str_len_plus_1])
+        self._track_alloc(result_copy)
+        self.builder.call(self.strcpy, [result_copy, str_val])
+        self.builder.branch(merge_bb)
+
+        self.builder.position_at_end(merge_bb)
+        phi = self.builder.phi(str_val.type, name="str_replace_res")
+        phi.add_incoming(result, found_bb)
+        phi.add_incoming(result_copy, not_found_bb)
+        return phi
 
     def get_ir(self):
         return str(self.module)
