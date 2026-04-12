@@ -1,6 +1,6 @@
 priv use types::*;
 
-pub def Memory : union {
+priv def Memory : union {
     i: int64;
     d: double;
 };

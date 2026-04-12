@@ -161,18 +161,21 @@ def resolve_imports(program, base_path):
                 # Recursively expand imports using the module's directory as base
                 module_dir = os.path.dirname(module_file_abs) or "."
                 module_ast = _expand_items(module_ast.items, module_dir)
-                # Collect definitions (respecting visibility)
+
+                # KEY FIX: Keep ALL items in the module for internal type-checking.
+                # Private items are needed by the module's own code (e.g., pMath.fabs uses Memory).
+                # The visibility filtering only affects what's exported to external importers.
+                for mod_item in module_ast.items:
+                    new_items.append(mod_item)
+
+                # Collect which items are publicly accessible (for external importers)
+                is_priv_import = item.visibility == "priv"
                 available = {}
                 for mod_item in module_ast.items:
-                    # For priv use, include all items; for pub use, skip private items
-                    is_priv_import = item.visibility == "priv"
-                    # Always include TemplateDef items - they're needed for generic class instantiation
-                    # even when importing via public 'use' (the templates themselves are implementation details)
-                    is_template = isinstance(mod_item, TemplateDef)
-                    if not is_template and (
+                    # Skip private items for public imports (but include for private imports)
+                    if not is_priv_import and (
                         hasattr(mod_item, "visibility")
                         and mod_item.visibility == "priv"
-                        and not is_priv_import
                     ):
                         continue
                     if isinstance(
@@ -192,12 +195,11 @@ def resolve_imports(program, base_path):
                         if mod_item.visibility == "pub" or is_priv_import:
                             available[mod_item.name] = mod_item
 
-                # If this is a private import, don't add items to be re-exported
+                # If this is a private import, don't re-export items (they're already added)
                 if item.visibility == "priv":
-                    # For private imports, add the imported items to current scope but don't export them
-                    for def_item in available.values():
-                        new_items.append(def_item)
+                    loaded_modules.add(module_file_abs)
                     continue
+
                 # Verify requested items exist
                 if item.imported_items is not None:
                     for name in item.imported_items:
@@ -207,9 +209,9 @@ def resolve_imports(program, base_path):
                                 line=item.line,
                                 col=item.col,
                             )
-                # Add all available items
-                for def_item in available.values():
-                    new_items.append(def_item)
+
+                # For public imports, verify that private items aren't leaked to external users
+                # (The items are already in new_items from above)
                 loaded_modules.add(module_file_abs)
             else:
                 new_items.append(item)

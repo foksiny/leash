@@ -27,6 +27,12 @@ class TypeChecker:
         self.union_types = {}  # name -> {variant: type}
         self.enum_types = {}  # name -> list of member names
         self.type_aliases = {}  # name -> resolved type string
+        self.type_alias_vis = {}  # name -> visibility ("pub" or "priv")
+        self.struct_types_vis = {}  # name -> visibility ("pub" or "priv")
+        self.union_types_vis = {}  # name -> visibility ("pub" or "priv")
+        self.enum_types_vis = {}  # name -> visibility ("pub" or "priv")
+        self.func_signatures = {}  # name -> (arg_types, return_type)
+        self.func_signatures_vis = {}  # name -> visibility ("pub" or "priv")
         self.class_types = {}  # name -> {fields: {name: (type, vis)}, methods: {name: (node, vis)}}
         self.template_types = {}  # name -> True (tracks template parameters like T1, T2)
         self.generic_funcs = {}  # name -> Function node (for generic function templates)
@@ -257,6 +263,7 @@ class TypeChecker:
                 tip="An empty struct doesn't store any data.",
             )
         self.struct_types[node.name] = fields
+        self.struct_types_vis[node.name] = getattr(node, "visibility", "pub")
 
     def _register_union(self, node):
         variants = {}
@@ -276,6 +283,7 @@ class TypeChecker:
         if not variants:
             self._warn(f"Union '{node.name}' is empty.", node=node)
         self.union_types[node.name] = variants
+        self.union_types_vis[node.name] = getattr(node, "visibility", "pub")
 
     def _register_enum(self, node):
         seen = set()
@@ -289,9 +297,11 @@ class TypeChecker:
         if not node.members:
             self._warn(f"Enum '{node.name}' is empty.", node=node)
         self.enum_types[node.name] = node.members
+        self.enum_types_vis[node.name] = getattr(node, "visibility", "pub")
 
     def _register_alias(self, node):
         self.type_aliases[node.name] = node.target_type
+        self.type_alias_vis[node.name] = getattr(node, "visibility", "pub")
 
     def _register_class(self, node):
         if (
@@ -503,6 +513,7 @@ class TypeChecker:
             return
         arg_types = [t for _, t in node.args]
         self.func_types[node.name] = (arg_types, node.return_type)
+        self.func_signatures_vis[node.name] = getattr(node, "visibility", "pub")
 
     def _is_multi_type(self, type_name):
         """Check if a type name has multi-type syntax like [int, float]."""
