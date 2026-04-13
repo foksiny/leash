@@ -71,6 +71,25 @@ class CodeGen:
             [ir.Constant(ir.IntType(64), 0), ir.Constant(ir.IntType(64), 0)],
         )
 
+        # Global buffer for showb()
+        self.showb_buffer_gv = ir.GlobalVariable(
+            self.module, ir.IntType(8).as_pointer(), name="_leash_showb_buffer"
+        )
+        self.showb_buffer_gv.linkage = "internal"
+        self.showb_buffer_gv.initializer = ir.Constant(ir.IntType(8).as_pointer(), None)
+
+        self.showb_size_gv = ir.GlobalVariable(
+            self.module, ir.IntType(64), name="_leash_showb_size"
+        )
+        self.showb_size_gv.linkage = "internal"
+        self.showb_size_gv.initializer = ir.Constant(ir.IntType(64), 0)
+
+        self.showb_cap_gv = ir.GlobalVariable(
+            self.module, ir.IntType(64), name="_leash_showb_cap"
+        )
+        self.showb_cap_gv.linkage = "internal"
+        self.showb_cap_gv.initializer = ir.Constant(ir.IntType(64), 0)
+
         self.setup_builtins()
 
     def setup_builtins(self):
@@ -139,6 +158,9 @@ class CodeGen:
 
         getchar_ty = ir.FunctionType(ir.IntType(32), [])
         self.getchar = ir.Function(self.module, getchar_ty, name="getchar")
+
+        putchar_ty = ir.FunctionType(ir.IntType(32), [ir.IntType(32)])
+        self.putchar = ir.Function(self.module, putchar_ty, name="putchar")
 
         atoll_ty = ir.FunctionType(ir.IntType(64), [ir.IntType(8).as_pointer()])
         self.atoll = ir.Function(self.module, atoll_ty, name="atoll")
@@ -317,6 +339,10 @@ class CodeGen:
 
         pclose_ty = ir.FunctionType(ir.IntType(32), [ir.IntType(8).as_pointer()])
         self.pclose_fn = ir.Function(self.module, pclose_ty, name="pclose")
+
+        # Helper to get stdout portably
+        get_stdout_ty = ir.FunctionType(ir.IntType(8).as_pointer(), [])
+        self.get_stdout_fn = ir.Function(self.module, get_stdout_ty, name="_leash_get_stdout")
 
     def _emit_const_str(self, string_val):
         """Create a global string constant and return a pointer to it (i8*)."""
@@ -678,6 +704,9 @@ class CodeGen:
     def _codegen_Program(self, node):
         # Reset native libs for this compilation
         self.native_libs = []
+
+        # Create showb helpers
+        self._create_showb_helpers()
 
         # First pass: register type aliases and struct/enum definitions
         for item in node.items:
@@ -1369,6 +1398,7 @@ class CodeGen:
         if not self.builder.block.is_terminated:
             self._emit_cleanup()
             if name == "main":
+                self.builder.call(self.showb_flush_fn, [])
                 self.builder.ret(ir.Constant(ir.IntType(32), 0))
             elif node.return_type == "void":
                 self.builder.ret_void()
@@ -1844,6 +1874,13 @@ class CodeGen:
     def _codegen_ShowStatement(self, node):
         from .ast_nodes import Identifier, MemberAccess
 
+        is_buffer = getattr(node, "is_buffer", False)
+
+        # showb: print vector elements in buffer format
+        if is_buffer:
+            self._show_buffer(node.args)
+            return
+
         # Check if any arg is a union variable or union .cur — those need special per-variant printing
         # First, collect which args are "union-cur" args
         union_arg_indices = set()
@@ -2093,6 +2130,223 @@ class CodeGen:
 
         fmt_ptr = self.builder.bitcast(global_fmt, ir.IntType(8).as_pointer())
         self.builder.call(self.printf, [fmt_ptr] + args)
+
+    def _show_buffer(self, arg_nodes):
+        """showb: print elements of vectors and nested vectors in buffer format."""
+        for arg_node in arg_nodes:
+            val = self._codegen(arg_node)
+            type_name = self._get_leash_type_name(arg_node)
+            resolved = self._resolve_type_name(type_name)
+
+            if resolved.startswith("vec<") and resolved.endswith(">"):
+                inner_type = resolved[4:-1]
+                self._print_vec_buffer(val, inner_type)
+            elif resolved == "string":
+                self.builder.call(self.showb_append_str_fn, [val])
+            else:
+                self._print_value_buffered(val)
+
+    def _print_vec_buffer(self, vec_val, inner_type):
+        """Print a vector in buffer format (elements without separators)."""
+        data_ptr = self.builder.extract_value(vec_val, 0)
+        size_val = self.builder.extract_value(vec_val, 1)
+
+        size_i32 = self.builder.trunc(size_val, ir.IntType(32))
+
+        entry_bb = self.builder.block
+
+        # Pre-header: initialize idx = 0
+        idx_ptr = self.builder.alloca(ir.IntType(32), name="buf_idx")
+        self.builder.store(ir.Constant(ir.IntType(32), 0), idx_ptr)
+
+        # Loop header block
+        loop_cond_bb = self.builder.function.append_basic_block("vec_buffer_cond")
+        self.builder.branch(loop_cond_bb)
+        self.builder.position_at_end(loop_cond_bb)
+
+        idx_val = self.builder.load(idx_ptr)
+        done = self.builder.icmp_unsigned("==", idx_val, size_i32)
+
+        loop_body_bb = self.builder.function.append_basic_block("vec_buffer_body")
+        merge_bb = self.builder.function.append_basic_block("vec_buffer_merge")
+
+        self.builder.cbranch(done, merge_bb, loop_body_bb)
+
+        # Loop body
+        self.builder.position_at_end(loop_body_bb)
+
+        elem_ptr = self.builder.gep(data_ptr, [idx_val], inbounds=True)
+        elem_val = self.builder.load(elem_ptr)
+        self._print_buffer_element(elem_val, inner_type)
+
+        if not self.builder.block.is_terminated:
+            next_idx = self.builder.add(idx_val, ir.Constant(ir.IntType(32), 1))
+            self.builder.store(next_idx, idx_ptr)
+            self.builder.branch(loop_cond_bb)
+
+        # Merge block
+        self.builder.position_at_end(merge_bb)
+
+    def _print_buffer_element(self, elem_val, inner_type):
+        """Print a single element in buffer format."""
+        resolved = self._resolve_type_name(inner_type)
+
+        if resolved.startswith("vec<") and resolved.endswith(">"):
+            inner_inner = resolved[4:-1]
+            self._print_vec_buffer(elem_val, inner_inner)
+        elif resolved == "string":
+            self.builder.call(self.showb_append_str_fn, [elem_val])
+        else:
+            self._print_value_buffered(elem_val)
+
+    def _print_value_buffered(self, val):
+        """Print a value to the internal showb buffer."""
+        # For buffered output, we first convert everything to string then append
+        # This is simpler than implementing full buffered printf logic
+        str_val = self._emit_tostring(val, val.type)
+        self.builder.call(self.showb_append_str_fn, [str_val])
+
+    def _print_value(self, val):
+        """Print a value using standard show formatting."""
+        if isinstance(val.type, ir.IntType):
+            width = val.type.width
+            if width < 32:
+                val = self.builder.zext(val, ir.IntType(32))
+            if width == 64:
+                fmt = "%lld"
+            elif width == 8:
+                fmt = "%c"
+            else:
+                fmt = "%d"
+            self._print_formatted(fmt, [val])
+        elif isinstance(val.type, ir.FloatType):
+            val = self.builder.fpext(val, ir.DoubleType())
+            self._print_formatted("%f", [val])
+        elif isinstance(val.type, ir.DoubleType):
+            self._print_formatted("%f", [val])
+        elif isinstance(val.type, ir.PointerType):
+            if val.type.pointee == ir.IntType(8):
+                self._print_formatted("%s", [val])
+            else:
+                self._print_formatted("%p", [val])
+        else:
+            self._print_formatted("%s", [val])
+
+    def _print_formatted(self, fmt_str, args):
+        """Print using printf with format string."""
+        fmt_bytes = bytearray(fmt_str.encode("utf8") + b"\0")
+        c_fmt = ir.Constant(ir.ArrayType(ir.IntType(8), len(fmt_bytes)), fmt_bytes)
+        global_fmt = ir.GlobalVariable(
+            self.module, c_fmt.type, name=self.module.get_unique_name("fmt")
+        )
+        global_fmt.linkage = "internal"
+        global_fmt.global_constant = True
+        global_fmt.initializer = c_fmt
+        fmt_ptr = self.builder.bitcast(global_fmt, ir.IntType(8).as_pointer())
+        self.builder.call(self.printf, [fmt_ptr] + args)
+
+    def _create_showb_helpers(self):
+        """Create internal functions for showb buffer management."""
+        # _leash_showb_ensure_capacity(size_t needed)
+        ensure_ty = ir.FunctionType(ir.VoidType(), [ir.IntType(64)])
+        ensure_fn = ir.Function(self.module, ensure_ty, name="_leash_showb_ensure_capacity")
+        block = ensure_fn.append_basic_block("entry")
+        builder = ir.IRBuilder(block)
+        
+        needed = ensure_fn.args[0]
+        curr_cap = builder.load(self.showb_cap_gv)
+        curr_size = builder.load(self.showb_size_gv)
+        
+        new_size = builder.add(curr_size, needed)
+        is_enough = builder.icmp_unsigned(">=", curr_cap, new_size)
+        
+        with builder.if_then(builder.not_(is_enough)):
+            # new_cap = max(curr_cap * 2, new_size, 1024)
+            double_cap = builder.mul(curr_cap, ir.Constant(ir.IntType(64), 2))
+            
+            # Simple max logic
+            cond1 = builder.icmp_unsigned(">", double_cap, new_size)
+            max1 = builder.select(cond1, double_cap, new_size)
+            
+            cond2 = builder.icmp_unsigned(">", max1, ir.Constant(ir.IntType(64), 1024))
+            new_cap = builder.select(cond2, max1, ir.Constant(ir.IntType(64), 1024))
+            
+            curr_buf = builder.load(self.showb_buffer_gv)
+            is_null = builder.icmp_unsigned("==", builder.ptrtoint(curr_buf, ir.IntType(64)), ir.Constant(ir.IntType(64), 0))
+            
+            new_buf = builder.select(is_null, 
+                builder.call(self.malloc, [new_cap]),
+                builder.call(self.realloc, [curr_buf, new_cap])
+            )
+            
+            builder.store(new_buf, self.showb_buffer_gv)
+            builder.store(new_cap, self.showb_cap_gv)
+            
+        builder.ret_void()
+        self.showb_ensure_fn = ensure_fn
+
+        # _leash_showb_append_char(i8 char)
+        append_char_ty = ir.FunctionType(ir.VoidType(), [ir.IntType(8)])
+        append_char_fn = ir.Function(self.module, append_char_ty, name="_leash_showb_append_char")
+        block = append_char_fn.append_basic_block("entry")
+        builder = ir.IRBuilder(block)
+        
+        char_val = append_char_fn.args[0]
+        builder.call(ensure_fn, [ir.Constant(ir.IntType(64), 1)])
+        
+        buf = builder.load(self.showb_buffer_gv)
+        size = builder.load(self.showb_size_gv)
+        
+        pos_ptr = builder.gep(buf, [size])
+        builder.store(char_val, pos_ptr)
+        
+        new_size = builder.add(size, ir.Constant(ir.IntType(64), 1))
+        builder.store(new_size, self.showb_size_gv)
+        builder.ret_void()
+        self.showb_append_char_fn = append_char_fn
+
+        # _leash_showb_append_str(i8* str)
+        append_str_ty = ir.FunctionType(ir.VoidType(), [ir.IntType(8).as_pointer()])
+        append_str_fn = ir.Function(self.module, append_str_ty, name="_leash_showb_append_str")
+        block = append_str_fn.append_basic_block("entry")
+        builder = ir.IRBuilder(block)
+        
+        str_val = append_str_fn.args[0]
+        str_len = builder.call(self.strlen, [str_val])
+        builder.call(ensure_fn, [str_len])
+        
+        buf = builder.load(self.showb_buffer_gv)
+        size = builder.load(self.showb_size_gv)
+        
+        dest_ptr = builder.gep(buf, [size])
+        # Use memmove or strcpy? strcpy is for null-terminated.
+        # Since Leash strings are null-terminated, strcpy is fine.
+        builder.call(self.strcpy, [dest_ptr, str_val])
+        
+        new_size = builder.add(size, str_len)
+        builder.store(new_size, self.showb_size_gv)
+        builder.ret_void()
+        self.showb_append_str_fn = append_str_fn
+
+        # _leash_showb_flush()
+        flush_ty = ir.FunctionType(ir.VoidType(), [])
+        flush_fn = ir.Function(self.module, flush_ty, name="_leash_showb_flush")
+        block = flush_fn.append_basic_block("entry")
+        builder = ir.IRBuilder(block)
+        
+        size = builder.load(self.showb_size_gv)
+        is_empty = builder.icmp_unsigned("==", size, ir.Constant(ir.IntType(64), 0))
+        
+        with builder.if_then(builder.not_(is_empty)):
+            buf = builder.load(self.showb_buffer_gv)
+            # Call portable helper to get stdout
+            stdout = builder.call(self.get_stdout_fn, [])
+            # fwrite(buf, 1, size, stdout)
+            builder.call(self.fwrite, [buf, ir.Constant(ir.IntType(64), 1), size, stdout])
+            builder.store(ir.Constant(ir.IntType(64), 0), self.showb_size_gv)
+            
+        builder.ret_void()
+        self.showb_flush_fn = flush_fn
 
     def _cast_bool(self, cond_val):
         if not isinstance(cond_val.type, ir.IntType) or cond_val.type.width != 1:
@@ -5166,6 +5420,7 @@ class CodeGen:
     def _codegen_ArrayInit(self, node):
         target = self.current_target_type
         elem_type = None
+        elem_type_name = None
         if target and "[" in target:
             elem_type_name = target.split("[")[0]
             elem_type = self._get_llvm_type(elem_type_name)
@@ -5271,7 +5526,19 @@ class CodeGen:
     def _codegen_CastExpr(self, node):
         from .ast_nodes import ThisExpr
 
+        dst_type_name = self._resolve_type_name(node.target_type)
+        old_target = self.current_target_type
+
+        # Provide target type context for the inner expression (especially for ArrayInit)
+        if dst_type_name.startswith("vec<") and dst_type_name.endswith(">"):
+            inner = dst_type_name[4:-1]
+            self.current_target_type = f"{inner}[]"
+        else:
+            self.current_target_type = node.target_type
+
         val = self._codegen(node.expr)
+        self.current_target_type = old_target
+
         src_type_name = self._get_leash_type_name(node.expr)
         dst_type_name = self._resolve_type_name(node.target_type)
 
@@ -5284,7 +5551,33 @@ class CodeGen:
             target_type = self._get_llvm_type(node.target_type)
             return self.builder.bitcast(val, target_type)
 
+        # Handle casting from slice (e.g., {i64, ptr}) to vec (e.g., {ptr, i64, i64})
         target_type = self._get_llvm_type(node.target_type)
+        src = val.type
+
+        if (
+            isinstance(src, ir.LiteralStructType)
+            and len(src.elements) == 2
+            and isinstance(src.elements[0], ir.IntType)
+            and isinstance(src.elements[1], ir.PointerType)
+            and dst_resolved.startswith("vec<")
+            and dst_resolved.endswith(">")
+        ):
+            # Convert slice {length, ptr} to vec {ptr, size, cap}
+            length = self.builder.extract_value(val, 0)
+            data_ptr = self.builder.extract_value(val, 1)
+
+            # Bitcast the data pointer to the expected element pointer type
+            expected_ptr_type = target_type.elements[0]
+            data_ptr = self.builder.bitcast(data_ptr, expected_ptr_type)
+
+            vec_type = target_type
+            vec_val = ir.Constant(vec_type, ir.Undefined)
+            vec_val = self.builder.insert_value(vec_val, data_ptr, 0)
+            vec_val = self.builder.insert_value(vec_val, length, 1)
+            vec_val = self.builder.insert_value(vec_val, length, 2)
+            return vec_val
+
         return self._emit_cast(val, target_type)
 
     def _codegen_AsExpr(self, node):
@@ -5398,6 +5691,28 @@ class CodeGen:
                     new_slice = self.builder.insert_value(new_slice, length, 0)
                     new_slice = self.builder.insert_value(new_slice, new_ptr, 1)
                     return new_slice
+
+            # Vector struct types: {ptr, i64, i64} - handle casting between different vec types
+            if len(src.elements) == 3 and len(dst.elements) == 3:
+                # Check if both are vec-like: {ptr, i64, i64}
+                if (
+                    isinstance(src.elements[0], ir.PointerType)
+                    and isinstance(src.elements[1], ir.IntType)
+                    and isinstance(src.elements[2], ir.IntType)
+                    and isinstance(dst.elements[0], ir.PointerType)
+                    and isinstance(dst.elements[1], ir.IntType)
+                    and isinstance(dst.elements[2], ir.IntType)
+                ):
+                    # Extract the data pointer and do bitcast
+                    data_ptr = self.builder.extract_value(val, 0)
+                    size_val = self.builder.extract_value(val, 1)
+                    cap_val = self.builder.extract_value(val, 2)
+                    new_data_ptr = self.builder.bitcast(data_ptr, dst.elements[0])
+                    new_vec = ir.Constant(dst, ir.Undefined)
+                    new_vec = self.builder.insert_value(new_vec, new_data_ptr, 0)
+                    new_vec = self.builder.insert_value(new_vec, size_val, 1)
+                    new_vec = self.builder.insert_value(new_vec, cap_val, 2)
+                    return new_vec
 
         # Fallback: bitcast if same size, otherwise error
         return self.builder.bitcast(val, dst)

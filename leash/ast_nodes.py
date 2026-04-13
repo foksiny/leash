@@ -162,8 +162,9 @@ class ExpressionStatement(Statement):
 
 
 class ShowStatement(Statement):
-    def __init__(self, args):
+    def __init__(self, args, is_buffer=False):
         self.args = args
+        self.is_buffer = is_buffer
 
 
 class Expression(ASTNode):

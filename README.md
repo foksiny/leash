@@ -754,6 +754,36 @@ fnc main(args string[]) : void {
 
 *Note: The `show()` function is built-in and makes printing multiple values to console very easy!*
 
+### Buffered Output (`showb`)
+
+Leash also provides a `showb()` (show buffer) function for more precise control over console output. Unlike `show()`, which automatically adds a newline and spaces between arguments, `showb()` prints its arguments exactly as they are, without any automatic separators or trailing newlines.
+
+```leash
+fnc main() : void {
+    showb("Hello ");
+    showb("World");
+    showb("!\n"); // Newline must be added manually
+}
+```
+
+`showb()` is particularly powerful when working with vectors and nested vectors, as it can "unpack" and print their contents recursively in a compact format:
+
+```leash
+fnc main() : void {
+    grid: vec<vec<uint<1>>>;
+    grid.pushb((vec<uint<1>>){1, 0, 1});
+    grid.pushb((vec<uint<1>>){0, 1, 0});
+
+    foreach _, row in<vector> grid {
+        showb(row);   // Prints all elements of the inner vector
+        showb("\n");  // Manual newline for each row
+    }
+}
+// Output:
+// 101
+// 010
+```
+
 ### Inline Functions
 
 Functions can be marked with the `inline` keyword to suggest the compiler should inline them (insert the function body at the call site instead of generating a function call). This can improve performance for small, frequently-called functions.

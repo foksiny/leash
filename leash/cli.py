@@ -651,25 +651,24 @@ def _link_native(
     elif cc is None:
         cc = "gcc"
 
-    # Add cross-compilation stubs when cross-compiling
+    # Add built-in stubs (GC, clock, stdout helpers)
     cross_stubs = []
     stubs_obj = None
-    if is_cross_compile:
-        stubs_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "cross_compile_stubs.c"
-        )
-        if os.path.exists(stubs_path):
-            # Compile stubs to object file first
-            stubs_obj = os.path.join(os.path.dirname(obj_name), "cross_stubs.o")
-            try:
-                compile_cmd = [cc, "-c", stubs_path, "-o", stubs_obj]
-                subprocess.run(compile_cmd, check=True, capture_output=True)
-                cross_stubs = [stubs_obj]
-            except subprocess.CalledProcessError as e:
-                print(f"warning: Failed to compile cross-compilation stubs: {e}")
-        else:
-            print(f"warning: Cross-compilation stubs not found at {stubs_path}")
-            print("tip: Cross-compilation may fail without GC and clock stubs.")
+    stubs_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "cross_compile_stubs.c"
+    )
+    if os.path.exists(stubs_path):
+        # Compile stubs to unique object file to avoid race conditions
+        stubs_obj = f"{obj_name}_stubs.o"
+        try:
+            compile_cmd = [cc, "-c", stubs_path, "-o", stubs_obj]
+            subprocess.run(compile_cmd, check=True, capture_output=True)
+            cross_stubs = [stubs_obj]
+        except subprocess.CalledProcessError as e:
+            print(f"warning: Failed to compile built-in stubs: {e}")
+    else:
+        print(f"warning: Built-in stubs not found at {stubs_path}")
+        print("tip: Compilation may fail without internal GC, clock and I/O helpers.")
 
     # Determine output name and link command
     try:
@@ -726,9 +725,13 @@ def run_file(
 
     target_config = get_target(target_name) if target_name else get_native_target()
 
+    # Use a unique name for the temporary executable to avoid race conditions in parallel tests
+    temp_suffix = f"_{os.getpid()}"
+    temp_name = f".__temp_run_leash_exe{temp_suffix}"
+
     output_name = compile_file(
         input_file,
-        output_name=".__temp_run_leash_exe",
+        output_name=temp_name,
         is_run_mode=True,
         target_name=target_name,
         check_mode=check_mode,

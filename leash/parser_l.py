@@ -1185,6 +1185,18 @@ class Parser:
                 self.eat("RPAREN")
                 self.eat("SEMI")
                 return self._pos(ShowStatement(args), tok)
+            elif self.current().type == "IDENT" and self.current().value == "showb":
+                tok = self.current()
+                self.eat("IDENT")
+                self.eat("LPAREN")
+                args = []
+                while self.current().type != "RPAREN":
+                    args.append(self.parse_expression())
+                    if self.current().type == "COMMA":
+                        self.eat("COMMA")
+                self.eat("RPAREN")
+                self.eat("SEMI")
+                return self._pos(ShowStatement(args, is_buffer=True), tok)
             elif (
                 self.pos + 1 < len(self.tokens)
                 and self.tokens[self.pos + 1].type == "COLON"

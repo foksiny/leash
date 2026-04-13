@@ -74,6 +74,7 @@ examples/inline
 examples/streplace
 examples/multiline
 examples/arraysize
+examples/buffershow
 
 # Trash
 trash/

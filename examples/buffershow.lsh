@@ -1,0 +1,16 @@
+fnc main() : void {
+    idk: vec<vec<uint<2>>>;
+
+    idk.pushb((vec<uint<2>>){1, 0, 0, 0, 0});
+    idk.pushb((vec<uint<2>>){0, 1, 0, 0, 0});
+    idk.pushb((vec<uint<2>>){0, 0, 1, 0, 0});
+    idk.pushb((vec<uint<2>>){0, 0, 0, 1, 0});
+    idk.pushb((vec<uint<2>>){0, 0, 0, 0, 1});
+
+    foreach _, v in<vector> idk {
+        foreach _2, v2 in<vector> v {
+            showb(v2); // showb stands for 'show buffer'.
+        }
+        showb("\n"); // because it's buffered, you need to manually add new line indicators.
+    }
+}

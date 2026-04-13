@@ -1104,25 +1104,25 @@ class TypeChecker:
         elif isinstance(stmt, ReturnStatement):
             self._check_return(stmt)
         elif isinstance(stmt, ShowStatement):
+            is_buffer = getattr(stmt, "is_buffer", False)
             for i, arg in enumerate(stmt.args):
                 t = self._infer_type(arg)
                 if t:
                     resolved = self._resolve(t)
-                    # Check if it's an array
-                    if "[" in resolved and "]" in resolved:
-                        if resolved != "char[]":
+                    if not is_buffer:
+                        if "[" in resolved and "]" in resolved:
+                            if resolved != "char[]":
+                                self._error(
+                                    f"Argument {i + 1} of show() is an array ('{t}'), which is not supported.",
+                                    node=arg,
+                                    tip="To print an array, use a `foreach` loop to iterate over its elements: `foreach i, v in<array> my_arr { show(v); }`",
+                                )
+                        if resolved in self.struct_types:
                             self._error(
-                                f"Argument {i + 1} of show() is an array ('{t}'), which is not supported.",
+                                f"Argument {i + 1} of show() is a struct ('{resolved}'), which is not supported.",
                                 node=arg,
-                                tip="To print an array, use a `foreach` loop to iterate over its elements: `foreach i, v in<array> my_arr { show(v); }`",
+                                tip='To print a struct, use a `foreach` loop to iterate over its members: `foreach k, v in<struct> my_struct { show(k, ": ", v); }`',
                             )
-                    # Check if it's a struct
-                    if resolved in self.struct_types:
-                        self._error(
-                            f"Argument {i + 1} of show() is a struct ('{resolved}'), which is not supported.",
-                            node=arg,
-                            tip='To print a struct, use a `foreach` loop to iterate over its members: `foreach k, v in<struct> my_struct { show(k, ": ", v); }`',
-                        )
         elif isinstance(stmt, ExpressionStatement):
             self._infer_type(stmt.expr)
         elif isinstance(stmt, IfStatement):
