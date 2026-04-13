@@ -5,7 +5,7 @@ priv def Memory : union {
     d: double;
 };
 
-pub def pMath : class {
+pub def Math : class {
     static pub PI: double = 3.14159265358979323846;
     static pub E: double = 2.71828182845904523536;
     static pub HALF_PI: double = 1.57079632679489661923;

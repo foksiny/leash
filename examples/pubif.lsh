@@ -1,6 +1,9 @@
-if _PLATFORM == "html-js" {
+if _PLATFORM == "win64" {
     fnc main() : void {
-        show("Not supported in html-js target");
+        show("This is Windows!");
+        file: File = File.open(_FILEPATH, "r");
+        show(file.read());
+        file.close();
     }
 } else {
     fnc main() : void {

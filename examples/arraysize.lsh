@@ -1,0 +1,30 @@
+fnc retSize(s int) : int {
+    return s + 5;
+}
+
+fnc main() : void {
+    str: string = "Hello World";
+    myarr: char[str.size] = cstr(str);
+
+    size: int = 5;
+
+    myiarr: int[size] = {1,2,3,4,5};
+
+    myiarr2: int[retSize(size)] = {1,2,3,4,5,6,7,8,9,10};
+
+    show("------ Variable name ------");
+    foreach _, v in<array> myiarr {
+        show(v);
+    }
+
+    show("------  String size  ------");
+    foreach _, c in<array> myarr {
+        show(c);
+    }
+
+    show("------ Function call ------");
+    foreach _, v in<array> myiarr2 {
+        show(v);
+    }
+    show("---------------------------");
+}

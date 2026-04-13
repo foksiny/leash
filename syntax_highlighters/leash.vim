@@ -17,6 +17,10 @@ syn match leashNativeImport "@from\s*("me=s+1
 " Types with optional bitwidths
 syn match leashType "\b\(int\|uint\|float\|bool\|string\|char\|void\|array\|vec\)\b\(<\d+>\)\?"
 
+" Array types with fixed sizes: int[5], char[10], int[n], char[str.size], int[x + y]
+syn match leashArrayType "\b\(int\|uint\|float\|bool\|string\|char\|void\)\[[\]\d\+\]\b"
+syn match leashArrayType "\b\(int\|uint\|float\|bool\|string\|char\|void\)\[\([a-zA-Z_][a-zA-Z0-9_.*+\- ]*\)\]\b"
+
 " Class inheritance syntax: class(Parent)
 syn match leashClassInheritance "class\s*(\s*[A-Z][a-zA-Z0-9_]*\s*)"
 
@@ -86,6 +90,7 @@ hi def link leashClassInheritance Type
 hi def link leashTypeAnnotation Type
 hi def link leashGenericParam Type
 hi def link leashMultiType Type
+hi def link leashArrayType Type
 hi def link leashFuncPointer Type
 hi def link leashBoolean Boolean
 hi def link leashNull Constant

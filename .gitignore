@@ -30,11 +30,9 @@ share/python-wheels/
 
 # Leash generated files
 *.ll
-examples/*.js
 examples/*.exe
 examples/*.wasm
 examples/*.wat
-examples/*.html
 examples/hello
 examples/arrays
 examples/moretypes
@@ -75,6 +73,7 @@ examples/lambdas
 examples/inline
 examples/streplace
 examples/multiline
+examples/arraysize
 
 # Trash
 trash/

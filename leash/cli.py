@@ -223,10 +223,7 @@ def resolve_imports(program, base_path):
 def resolve_conditionals(program, target_config):
     """Resolve top-level ConditionalDef nodes based on the target platform, recursively."""
     # Determine platform string for the target
-    if target_config.is_js:
-        platform = "html-js" if target_config.is_html_js else "js"
-    else:
-        platform = target_config.name
+    platform = target_config.name
 
     def resolve_items(items):
         resolved = []
@@ -503,18 +500,6 @@ def compile_file(
     else:
         target_config = get_native_target()
 
-    # JavaScript target - use JS codegen, no LLVM
-    if target_config.is_js:
-        return _compile_to_js(
-            input_file,
-            output_name,
-            target_config,
-            is_run_mode,
-            code,
-            check_mode=check_mode,
-            warnings_as_errors=warnings_as_errors,
-        )
-
     try:
         # 1. Lexical Analysis
         lexer = Lexer(code)
@@ -592,129 +577,6 @@ def compile_file(
         codegen,
         base_path,
     )
-
-
-def _compile_to_js(
-    input_file,
-    output_name,
-    target_config,
-    is_run_mode,
-    code,
-    check_mode=False,
-    warnings_as_errors=False,
-):
-    """Compile to JavaScript using the JS codegen backend."""
-    from .codegen_js import JSCodeGen
-
-    is_browser = target_config.is_html_js
-
-    try:
-        # 1. Lexical Analysis
-        lexer = Lexer(code)
-        tokens = lexer.tokenize()
-
-        # 2. Parsing
-        parser = Parser(tokens, input_file)
-        ast = parser.parse()
-
-        # 2.5. Resolve imports (expand them into the AST)
-        base_path = os.path.dirname(os.path.abspath(input_file)) or "."
-        ast = resolve_imports(ast, base_path)
-        # 2.75. Resolve top-level conditionals based on target
-        ast = resolve_conditionals(ast, target_config)
-
-        # 3. Static Type Checking
-        checker = TypeChecker(check_mode=check_mode)
-        warnings = checker.check(ast)
-        for w in warnings:
-            _print_warning(w, warnings_as_errors=warnings_as_errors)
-        if warnings_as_errors and warnings:
-            sys.exit(1)
-
-        # 4. JS Code Generation
-        codegen = JSCodeGen(is_browser=is_browser, target_name=target_config.name)
-        js_code = codegen.generate_code(ast)
-
-    except LeashError as e:
-        _print_error(e, input_file, code)
-        sys.exit(1)
-    except Exception as e:
-        import traceback
-
-        print(f"error: Internal compiler error: {e}")
-        traceback.print_exc()
-        sys.exit(1)
-
-    # Write output
-    if output_name is None:
-        if input_file.endswith(".lsh"):
-            output_name = input_file[:-4]
-        else:
-            output_name = "out"
-
-    output_file = target_config.get_output_name(output_name)
-
-    if is_browser:
-        # Wrap JS code in HTML
-        html_content = _wrap_js_in_html(js_code, input_file)
-        with open(output_file, "w") as f:
-            f.write(html_content)
-    else:
-        with open(output_file, "w") as f:
-            f.write(js_code)
-
-    if not is_run_mode:
-        print(f"Successfully compiled '{input_file}' to '{output_file}'")
-    return output_file
-
-
-def _wrap_js_in_html(js_code, source_file):
-    """Wrap JavaScript code in an HTML document with basic styling."""
-    import html
-
-    source_name = os.path.basename(source_file) if source_file else "program"
-    escaped_js = js_code
-
-    return f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Leash - {html.escape(source_name)}</title>
-    <style>
-        body {{
-            font-family: monospace;
-            background-color: #1e1e1e;
-            color: #d4d4d4;
-            margin: 0;
-            padding: 20px;
-        }}
-        #leash-output {{
-            background-color: #0d0d0d;
-            border: 1px solid #333;
-            border-radius: 4px;
-            padding: 10px;
-            min-height: 200px;
-            max-height: 80vh;
-            overflow-y: auto;
-            white-space: pre-wrap;
-            word-wrap: break-word;
-        }}
-        h1 {{
-            color: #569cd6;
-            font-size: 1.2em;
-            margin-bottom: 10px;
-        }}
-    </style>
-</head>
-<body>
-    <h1>Leash Program: {html.escape(source_name)}</h1>
-    <div id="leash-output"></div>
-    <script>
-{escaped_js}
-    </script>
-</body>
-</html>"""
 
 
 def _link_native(
@@ -873,55 +735,46 @@ def run_file(
         warnings_as_errors=warnings_as_errors,
     )
 
-    # JS target needs to be run with node
-    if target_config.is_js:
-        executable_path = output_name
-        cmd = ["node", executable_path] + args
-    else:
-        # Check if this is a cross-compiled target that can't run natively
-        system = platform.system().lower()
-        machine = platform.machine().lower()
-        can_run = True
+    # Check if this is a cross-compiled target that can't run natively
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+    can_run = True
 
-        if target_config.name == "win64" and system != "windows":
-            can_run = False
-            runner = None
-            # Try wine
-            try:
-                subprocess.run(["wine", "--version"], capture_output=True, check=True)
-                runner = "wine"
-                can_run = True
-            except (FileNotFoundError, subprocess.CalledProcessError):
-                pass
+    if target_config.name == "win64" and system != "windows":
+        can_run = False
+        runner = None
+        try:
+            subprocess.run(["wine", "--version"], capture_output=True, check=True)
+            runner = "wine"
+            can_run = True
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            pass
 
-            if can_run and runner:
-                executable_path = output_name
-                cmd = [runner, executable_path] + args
-            else:
-                print(f"error: Cannot run Windows executable on {system}.")
-                print(
-                    f"tip: Install 'wine' to run Windows binaries, or run on Windows."
-                )
-                print(f"Binary compiled at: {output_name}")
-                if os.path.exists(output_name):
-                    os.remove(output_name)
-                sys.exit(1)
-        elif target_config.name in ("macos", "macos-arm") and system != "darwin":
-            can_run = False
-            print(f"error: Cannot run macOS binary on {system}.")
-            print(f"tip: Compile on macOS or transfer the binary to a Mac.")
+        if can_run and runner:
+            executable_path = output_name
+            cmd = [runner, executable_path] + args
+        else:
+            print(f"error: Cannot run Windows executable on {system}.")
+            print(f"tip: Install 'wine' to run Windows binaries, or run on Windows.")
             print(f"Binary compiled at: {output_name}")
             if os.path.exists(output_name):
                 os.remove(output_name)
             sys.exit(1)
-        elif target_config.name == "linux32" and machine not in ("i386", "i686", "x86"):
-            # linux32 on linux64 might work with multiarch
-            can_run = True
-            executable_path = f"./{output_name}" if os.name != "nt" else output_name
-            cmd = [executable_path] + args
-        else:
-            executable_path = f"./{output_name}" if os.name != "nt" else output_name
-            cmd = [executable_path] + args
+    elif target_config.name in ("macos", "macos-arm") and system != "darwin":
+        can_run = False
+        print(f"error: Cannot run macOS binary on {system}.")
+        print(f"tip: Compile on macOS or transfer the binary to a Mac.")
+        print(f"Binary compiled at: {output_name}")
+        if os.path.exists(output_name):
+            os.remove(output_name)
+        sys.exit(1)
+    elif target_config.name == "linux32" and machine not in ("i386", "i686", "x86"):
+        can_run = True
+        executable_path = f"./{output_name}" if os.name != "nt" else output_name
+        cmd = [executable_path] + args
+    else:
+        executable_path = f"./{output_name}" if os.name != "nt" else output_name
+        cmd = [executable_path] + args
 
     try:
         result = subprocess.run(cmd)
@@ -980,7 +833,7 @@ def main():
         print("")
         print("Options:")
         print(
-            "  --target <target>         Specify compilation target (js, html-js, win64, macos, etc.)"
+            "  --target <target>         Specify compilation target (win64, macos, etc.)"
         )
         print("  --list-targets            List all supported compilation targets")
         print(
@@ -1000,7 +853,7 @@ def main():
         print("Copyright (c) 2026 Leash Project")
         print("")
         print("Built on LLVM with Boehm Garbage Collection")
-        print("Targets: linux64, linux32, win64, macos, macos-arm, js, html-js")
+        print("Targets: linux64, linux32, win64, macos, macos-arm, ")
         sys.exit(0)
 
     if cmd == "check":
@@ -1059,7 +912,7 @@ def main():
         print("")
         print("Options:")
         print(
-            "  --target <target>         Specify compilation target (js, html-js, win64, macos, etc.)"
+            "  --target <target>         Specify compilation target (win64, macos, etc.)"
         )
         print("  --list-targets            List all supported compilation targets")
         print(
@@ -1079,7 +932,7 @@ def main():
         print("Copyright (c) 2026 Leash Project")
         print("")
         print("Built on LLVM with Boehm Garbage Collection")
-        print("Targets: linux64, linux32, win64, macos, macos-arm, js, html-js")
+        print("Targets: linux64, linux32, win64, macos, macos-arm, ")
         sys.exit(0)
 
     if cmd == "check":

@@ -19,10 +19,7 @@ LEASH_COMPILE_CMD = ["python3", "-m", "leash.cli", "compile"]
 POINTER_PATTERN = re.compile(r"0x[0-9a-fA-F]+")
 
 # Known platform identifiers that should be normalized
-KNOWN_PLATFORMS = ["linux64", "linux32", "win64", "macos", "macos-arm", "js", "html-js"]
-
-# Targets that require different execution methods
-JS_TARGET = "js"
+KNOWN_PLATFORMS = ["linux64", "linux32", "win64", "macos", "macos-arm"]
 
 
 def get_current_platform():
@@ -87,8 +84,6 @@ def normalize_pointers(text):
     text = re.sub(r"Hello World\n\n", "Hello World\n0\n", text)
     # Normalize input.lsh - Wine stdin handling differs
     text = re.sub(r"What's your name\? Hello, !", "ERROR: Program timed out!", text)
-    # JS target shows readline prompt with ANSI codes instead of timing out
-    text = re.sub(r".*What's your name\?.*", "ERROR: Program timed out!", text)
     # Normalize args.lsh output - argv differs between platforms
     # Native: "0: ./.__temp_run_leash_exe" vs Wine: "0: Z:\path\to\exe.exe"
     text = re.sub(r"0: Z:.*", "0: ./.__temp_run_leash_exe", text)
@@ -115,47 +110,17 @@ def normalize_pointers(text):
 def run_leash(file_path, target=None):
     """Run a leash file and return its combined output (stdout and stderr)."""
     try:
-        if target == JS_TARGET:
-            # For JS target: compile to JS, then run with node
-            js_file = file_path.with_suffix(".js")
-            compile_result = subprocess.run(
-                LEASH_COMPILE_CMD + [str(file_path), "--target", JS_TARGET],
-                capture_output=True,
-                text=True,
-                cwd=WORKSPACE_DIR,
-                timeout=10,
-            )
-            if compile_result.returncode != 0:
-                return f"COMPILE ERROR: {compile_result.stderr}", 1
-            if not js_file.exists():
-                # Try finding the JS file (might have different name)
-                js_candidates = list(file_path.parent.glob(file_path.stem + "*.js"))
-                if js_candidates:
-                    js_file = js_candidates[0]
-                else:
-                    return "COMPILE ERROR: JS file not found", 1
-
-            result = subprocess.run(
-                ["node", str(js_file)],
-                capture_output=True,
-                text=True,
-                cwd=WORKSPACE_DIR,
-                timeout=10,
-            )
-            return result.stdout + result.stderr, result.returncode
-        else:
-            # Native target: use run command
-            cmd = LEASH_RUN_CMD + [str(file_path)]
-            if target and target != "linux64":
-                cmd += ["--target", target]
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                cwd=WORKSPACE_DIR,
-                timeout=10,
-            )
-            return result.stdout + result.stderr, result.returncode
+        cmd = LEASH_RUN_CMD + [str(file_path)]
+        if target and target != "linux64":
+            cmd += ["--target", target]
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            cwd=WORKSPACE_DIR,
+            timeout=10,
+        )
+        return result.stdout + result.stderr, result.returncode
     except subprocess.TimeoutExpired:
         return "ERROR: Program timed out!", 1
     except Exception as e:
@@ -227,7 +192,7 @@ def main():
         "--target",
         type=str,
         default=None,
-        help="Target architecture to test (e.g., js, linux64, win64, wasm32)",
+        help="Target architecture to test (e.g., linux64, win64)",
     )
     parser.add_argument(
         "mode",

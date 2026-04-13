@@ -1008,7 +1008,7 @@ class TypeChecker:
                     var_name not in self.used_vars
                     and var_name not in self.current_func_params
                 ):
-                    if var_name != "args":  # Specialize for 'args' in main
+                    if var_name != "args" and not var_name.startswith("_"):
                         self._warn(
                             f"Unused local variable '{var_name}' in function '{node.name}'",
                             tip=f"If you don't need this variable, consider removing it.",
@@ -1018,7 +1018,7 @@ class TypeChecker:
             if param_name not in self.used_params:
                 if node.name == "main" and param_name == "args":
                     pass  # Allow unused args in main
-                else:
+                elif not param_name.startswith("_"):
                     self._warn(
                         f"Unused parameter '{param_name}' in function '{node.name}'",
                         tip=f"If the function logic doesn't require this parameter, consider removing it or renaming it to `_{param_name}`.",
@@ -1279,6 +1279,18 @@ class TypeChecker:
                 tip=f"Type '{bare_decl_type}' has not been defined. Did you forget to add a `def {bare_decl_type} : type ...;` or `def {bare_decl_type} : struct {{ ... }};`?",
                 code="LEASH-E003",
             )
+
+        # Check array size expressions in the type (e.g., int[size], char[str.size])
+        # Mark variables used in array size as used (but only those already declared)
+        if "[" in bare_decl_type and "]" in bare_decl_type:
+            inner = bare_decl_type.split("[")[1].split("]")[0]
+            if inner:  # Non-empty size (not a slice)
+                import re
+
+                for ident_match in re.finditer(r"[a-zA-Z_][a-zA-Z0-9_]*", inner):
+                    ident = ident_match.group()
+                    if ident in self.var_types and ident not in self.used_vars:
+                        self.used_vars.add(ident)
 
         # Add to current scope
         self.var_types[stmt.name] = bare_decl_type

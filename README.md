@@ -7,8 +7,6 @@ Leash is a strongly-typed, modern compiled programming language built on top of 
 - [Checking for Errors](#checking-for-errors)
 - [Compilation Targets](#compilation-targets)
   - [Native Targets (linux64, win64, macos)](#native-targets-linux64-win64-macos)
-  - [JavaScript/Node.js Target](#javascriptnodejs-target)
-  - [HTML/JavaScript (Browser) Target](#htmljavascript-browser-target)
 - [Defining Variables](#defining-variables)
 - [Immutable Variables](#immutable-variables)
 - [Data Types](#data-types)
@@ -262,17 +260,11 @@ leash compile utils.lsh to-static utils
 
 ## Compilation Targets
 
-Leash supports multiple compilation targets, allowing you to compile your code for different platforms and execution environments. Use the `--target` flag to specify the target architecture:
+Leash supports multiple compilation targets, allowing you to compile your code for different platforms. Use the `--target` flag to specify the target architecture:
 
 ```bash
 # Compile for your current system (default)
 python3 -m leash.cli compile program.lsh
-
-# Compile for JavaScript/Node.js
-python3 -m leash.cli compile program.lsh --target js
-
-# Compile for HTML/JavaScript (Browser)
-python3 -m leash.cli compile program.lsh --target html-js
 
 # Compile for Windows 64-bit (cross-compile)
 python3 -m leash.cli compile program.lsh --target win64
@@ -286,95 +278,6 @@ python3 -m leash.cli compile program.lsh --target macos
 The default target (`linux64`) compiles to a native Linux 64-bit executable using LLVM and GCC. Cross-compilation to Windows (`win64`) and macOS (`macos`) is also supported when the appropriate cross-compilation toolchains are installed.
 
 Native targets produce standalone binaries with full access to the system's C library, garbage collector, and OS APIs.
-
-### JavaScript/Node.js Target
-
-The `js` target compiles Leash code to JavaScript that runs on Node.js. This is useful for:
-- **Rapid prototyping** without needing a C compiler toolchain
-- **Cross-platform deployment** on any system with Node.js installed
-- **Web server integration** since the output is standard Node.js code
-- **Testing** your Leash logic without compiling native binaries
-
-#### How the JS Target Works
-
-The JS target translates Leash code into JavaScript with a **simulated virtual memory system** that faithfully reproduces the behavior of native compiled code, including:
-
-1. **Virtual Memory System**: All variables, arrays, and structs are stored in a simulated memory map (`_leash_memory`). Every variable is an address — reading and writing goes through `_leash_load()` and `_leash_store()` functions. This makes pointer semantics natural and consistent with the native target.
-
-2. **Type System Emulation**: Integer types (`int<8>`, `int<16>`, `int<32>`, `uint<8>`, etc.) are enforced at runtime using type-constrained arithmetic operations (`_leash_add`, `_leash_sub`, etc.) that apply proper bit-width masking and sign extension, matching native C behavior.
-
-3. **Pointer Semantics**: Raw pointers (`*T`) and references (`&T`) work correctly. The address-of operator (`&`), dereference operator (`*`), and pointer arithmetic (`ptr + n`) all behave as they would in native code.
-
-4. **Garbage Collection Simulation**: Instead of the Boehm GC used in native targets, the JS target uses a simple virtual memory allocator. Memory is managed through the runtime's address system.
-
-5. **Runtime Library**: A comprehensive runtime (`runtime_js.js`) provides:
-   - Virtual memory allocation (`_leash_alloc`, `_leash_load`, `_leash_store`)
-   - Type-constrained arithmetic with proper overflow behavior
-   - Display formatting for all types
-   - File I/O simulation using Node.js `fs` module
-   - Random number generation, timing, and shell command execution
-   - String helper methods (`toupper`, `tolower`, `split`, etc.)
-
-#### Running JS Output
-
-After compiling to JS, run the output with Node.js:
-
-```bash
-python3 -m leash.cli compile program.lsh --target js
-node program.js
-```
-
-Or use the `run` command which handles compilation and execution automatically:
-
-```bash
-python3 -m leash.cli run program.lsh --target js
-```
-
-#### Limitations
-
-- **No native library imports**: `@from("lib.so")` FFI is not available in the JS target since Node.js cannot directly load C shared libraries in the same way
-- **Interactive input**: The `get()` function uses Node.js `readline` which behaves differently from native stdin (shows prompts, handles terminal input)
-- **Signal handling**: CTRL+C (SIGINT) is caught and exits with code 130, matching native behavior
-- **Performance**: The virtual memory system adds overhead compared to native compilation
-
-### HTML/JavaScript (Browser) Target
-
-The `html-js` target compiles Leash code to a self-contained HTML file with embedded JavaScript that runs in any modern web browser. This is useful for:
-- **Web applications** that run directly in the browser
-- **Sharing programs** as a single `.html` file
-- **Interactive demos** with browser-native input/output
-- **No server required** - just open the file in a browser
-
-#### How the HTML/JS Target Works
-
-The `html-js` target uses the same virtual memory system as the Node.js target, but with browser-compatible I/O:
-
-1. **Virtual Memory System**: Same as the JS target - all variables are addresses in a simulated memory map.
-
-2. **Browser I/O**:
-   - `show()` output is displayed in a styled `<div id="leash-output">` element and also logged to the browser console
-   - `get()` uses the browser's `prompt()` dialog for interactive input
-   - `File` operations use in-memory storage (no actual filesystem access)
-   - `exec()` is not available and will throw an error
-
-3. **Self-Contained Output**: The generated `.html` file includes all runtime code, styling, and your program logic in a single file.
-
-#### Running HTML/JS Output
-
-After compiling, simply open the `.html` file in any web browser:
-
-```bash
-python3 -m leash.cli compile program.lsh --target html-js
-# Then open program.html in your browser
-```
-
-#### Limitations
-
-- **No native library imports**: FFI is not available in the browser
-- **No filesystem access**: `File` operations are simulated in-memory
-- **No `exec()`**: Shell command execution is not available in browsers
-- **`get()` uses `prompt()`**: Browser-native dialog instead of terminal input
-- **Performance**: Virtual memory system adds overhead compared to native compilation
 
 ## Native Library Imports (FFI)
 
@@ -713,29 +616,6 @@ maxInt: int<64> = 10;     // 64-bit integer
 smallFl: float<16> = 1.0; // 16-bit float
 pixel: uint<8> = 255;
 ```
-
-### Arbitrary-Precision Integers (JS Target)
-
-The JavaScript/Node.js target supports arbitrary-precision integers up to 512 bits using JavaScript's native `BigInt` type. This includes `int<128>`, `int<256>`, `int<512>` and their unsigned counterparts `uint<128>`, `uint<256>`, `uint<512>`.
-
-```leash
-// 128-bit signed integer
-a: int<128> = 170141183460469231731687303715884105727;
-show(a);
-
-// 256-bit unsigned integer
-b: uint<256> = 115792089237316195423570985008687907853269984665640564039457584007913129639935;
-show(b);
-
-// 512-bit integer arithmetic
-c: int<512> = 1000000000000000000000000000000000000;
-d: int<512> = c * c;
-show(d);
-```
-
-All arithmetic operations (`+`, `-`, `*`, `/`, `%`), bitwise operations (`&`, `|`, `^`, `~`, `<<`, `>>`), and comparisons work correctly with arbitrary-precision integers. Overflow behavior matches native C semantics (two's complement wrapping for signed types, modular wrapping for unsigned types).
-
-**Note:** Number literals that exceed JavaScript's safe integer range (2^53 - 1) are automatically emitted as BigInt literals (with the `n` suffix) in the generated JavaScript code, ensuring full precision is preserved.
 
 ## Operators
 
@@ -1163,7 +1043,7 @@ Leash provides special built-in variables that are automatically available in ev
 
 - `_FILEPATH` - The full path to the current source file being compiled
 - `_FILENAME` - The name of the current source file (without path)
-- `_PLATFORM` - The compilation target platform (e.g., `"linux64"`, `"win64"`, `"macos"`, `"macos-arm"`, `"js"`, `"html-js"`)
+- `_PLATFORM` - The compilation target platform (e.g., `"linux64"`, `"win64"`, `"macos"`, `"macos-arm"`)
 
 ```leash
 fnc main() : void {
@@ -1210,7 +1090,7 @@ The `also` keyword acts like `else if`, allowing you to chain multiple condition
 The condition can use:
 
 - **Builtin variables**: `_PLATFORM`, `_FILEPATH`, `_FILENAME`
-- **String literals**: `"linux64"`, `"win64"`, `"js"`, `"html-js"`, `"macos"`, `"macos-arm"`, etc.
+- **String literals**: `"linux64"`, `"win64"`, `"macos"`, `"macos-arm"`, etc.
 - **Boolean literals**: `true`, `false`
 - **Comparison operators**: `==`, `!=`
 - **Logical operators**: `&&` (AND), `||` (OR), `!` (NOT)
@@ -1219,8 +1099,8 @@ Examples:
 
 ```leash
 // Simple equality check
-if _PLATFORM == "js" {
-    // JavaScript-specific code
+if _PLATFORM == "linux64" {
+    // Linux-specific code
 }
 
 // Combining conditions
@@ -1231,11 +1111,6 @@ if _PLATFORM == "linux64" || _PLATFORM == "macos" {
 // Negation
 if _PLATFORM != "win64" {
     // Non-Windows code
-}
-
-// Complex expression
-if _PLATFORM == "linux64" && _PLATFORM != "js" {
-    // Linux native but not JS (always false, just an example)
 }
 ```
 
@@ -1312,7 +1187,7 @@ fnc main() : void {
 
 Data is sequentially packed into memory and can be evaluated or constructed easily:
 ```leash
-// Construct inline lists
+// Construct inline lists with fixed size
 a: int<64>[10] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
 
 // Query the size of an array dynamically
@@ -1323,6 +1198,32 @@ foreach index, value in<array> a {
     show(index, ": ", value);
 }
 ```
+
+### Dynamic Array Sizes
+
+Leash supports using variables, member access, and even math expressions to specify array sizes at runtime:
+
+```leash
+fnc main() : void {
+    // Using a variable
+    n: int = 5;
+    arr1: int[n] = {1, 2, 3, 4, 5};
+
+    // Using member access (e.g., string size)
+    str: string = "Hello";
+    chars: char[str.size] = cstr(str);
+
+    // Using math expressions
+    x: int = 2;
+    y: int = 3;
+    arr2: int[x + y + 1] = {1, 2, 3, 4, 5, 6};
+
+    // Even using function calls
+    arr3: int[getSize()] = {1, 2, 3};
+}
+```
+
+All arrays in Leash are stored as runtime-sized structures (`{ i64 size, ptr data }`), so the size is evaluated at runtime and the array can hold any number of elements up to that size.
 
 ## Vectors
 

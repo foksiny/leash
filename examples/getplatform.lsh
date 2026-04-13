@@ -12,10 +12,6 @@ fnc main() : void {
             show("macOS");
         } case "macos-arm" {
             show("macOS ARM");
-        } case "js" {
-            show("JavaScript");
-        } case "html-js" {
-            show("HTML + JavaScript");
         } default {
             show("Unknown platform");
         }

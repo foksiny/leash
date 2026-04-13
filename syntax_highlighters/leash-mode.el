@@ -28,6 +28,8 @@
   (list
    '("\\b\\(fnc\\|def\\|struct\\|union\\|enum\\|class\\|type\\|template\\|return\\|if\\|also\\|else\\|while\\|for\\|do\\|foreach\\|in\\|imut\\|vec\\|vector\\|this\\|pub\\|priv\\|static\\|stop\\|continue\\|use\\|works\\|otherwise\\|switch\\|case\\|default\\|unsafe\\|as\\|inline\\|defer\\)\\b" . font-lock-keyword-face)
    '("\\b\\(int\\|uint\\|float\\|bool\\|string\\|char\\|void\\|array\\|vec\\)\\b\\(?:<[0-9]+>\\)?" . font-lock-type-face)
+   ;; Array types with sizes: int[5], char[n], int[x + y]
+   '("\\b\\(int\\|uint\\|float\\|bool\\|string\\|char\\)\\[[^\\]]+\\]" . font-lock-type-face)
    ;; @from native import directive
    '("@from\\s*(" . font-lock-preprocessor-face)
    ;; Multi-type syntax: [int, float]

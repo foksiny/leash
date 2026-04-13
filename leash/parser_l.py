@@ -272,11 +272,46 @@ class Parser:
                     base = f"{base}<{size}>"
 
                 self.eat("GT")
+
             if self.current().type == "LBRACKET":
                 self.eat("LBRACKET")
                 arr_size = None
                 if self.current().type == "NUMBER":
                     arr_size = self.eat("NUMBER").value
+                elif self.current().type == "IDENT":
+                    start_pos = self.pos
+                    arr_size = self.current().value
+                    self.eat("IDENT")
+                    while self.current().type == "DOT":
+                        self.eat("DOT")
+                        arr_size += "." + self.current().value
+                        self.eat("IDENT")
+                    if self.current().type in (
+                        "LPAREN",
+                        "MINUS",
+                        "NOT",
+                        "NUMBER",
+                        "STRING",
+                        "CHAR",
+                        "TRUE",
+                        "FALSE",
+                        "VEC",
+                        "IDENT",
+                    ):
+                        self.pos = start_pos
+                        arr_size = self.parse_expression()
+                elif self.current().type in (
+                    "LPAREN",
+                    "MINUS",
+                    "NOT",
+                    "NUMBER",
+                    "STRING",
+                    "CHAR",
+                    "TRUE",
+                    "FALSE",
+                    "VEC",
+                ):
+                    arr_size = self.parse_expression()
                 self.eat("RBRACKET")
                 if arr_size is not None:
                     base = f"{base}[{arr_size}]"

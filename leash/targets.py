@@ -15,8 +15,6 @@ class TargetConfig:
         linker=None,
         linker_flags=None,
         platform_name=None,
-        is_js=False,
-        is_html_js=False,
         description="",
     ):
         self.name = name
@@ -25,24 +23,15 @@ class TargetConfig:
         self.linker = linker
         self.linker_flags = linker_flags or []
         self.platform_name = platform_name or name
-        self.is_js = is_js
-        self.is_html_js = is_html_js
         self.description = description
 
     def get_output_name(self, base_name):
         """Get the output filename for this target."""
-        if self.is_html_js:
-            return base_name + ".html"
-        if self.is_js:
-            return base_name + ".js"
         return base_name + self.output_extension
 
     def get_linker_cmd(self, obj_file, output_file, native_libs=None):
         """Get the linker command for this target."""
         native_libs = native_libs or []
-
-        if self.is_js:
-            return None  # No linking needed for JS
 
         if self.linker:
             cmd = [self.linker, obj_file, "-o", output_file]
@@ -120,21 +109,6 @@ TARGETS = {
         linker_flags=[],  # No libgc for macOS cross-compilation
         platform_name="macOS",
         description="macOS ARM64 (Apple Silicon)",
-    ),
-    "js": TargetConfig(
-        name="js",
-        llvm_triple=None,
-        output_extension=".js",
-        is_js=True,
-        description="JavaScript (Node.js)",
-    ),
-    "html-js": TargetConfig(
-        name="html-js",
-        llvm_triple=None,
-        output_extension=".html",
-        is_js=True,
-        is_html_js=True,
-        description="JavaScript in HTML (Browser)",
     ),
 }
 
