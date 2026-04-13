@@ -1,0 +1,10 @@
+fnc main() : void {
+    /* this is a multi-line comment!
+        now multi-line comments and multi-line strings are supported :)
+    */
+    code: string = """fnc main() : void {
+    show(\"HEEEY!\");
+}""";
+
+    show(code);
+}

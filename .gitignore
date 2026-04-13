@@ -74,6 +74,7 @@ examples/defer
 examples/lambdas
 examples/inline
 examples/streplace
+examples/multiline
 
 # Trash
 trash/

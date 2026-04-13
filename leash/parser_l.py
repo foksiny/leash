@@ -1358,9 +1358,9 @@ class Parser:
             if isinstance(val, float):
                 return self._pos(FloatLiteral(val), tok)
             return self._pos(NumberLiteral(val), tok)
-        elif self.current().type == "STRING":
+        elif self.current().type in ("STRING", "MLSTRING_D", "MLSTRING_S"):
             tok = self.current()
-            return self._pos(StringLiteral(self.eat("STRING").value), tok)
+            return self._pos(StringLiteral(self.eat(tok.type).value), tok)
         elif self.current().type == "CHAR":
             tok = self.current()
             return self._pos(CharLiteral(self.eat("CHAR").value), tok)

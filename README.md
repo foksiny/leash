@@ -966,6 +966,19 @@ Note: The `pub`/`priv` modifiers are optional; omitting them defaults to `pub`.
 
 ## Control Flow
 
+### Multi-Line Comments
+
+Leash supports multi-line comments using `/* ... */`:
+
+```leash
+fnc main() : void {
+    /* This is a multi-line comment
+       that spans multiple lines
+       and can contain any content */
+    show("Hello");
+}
+```
+
 ### Branching
 Use `if`, `also` (acts like `else if`), and `else`:
 
@@ -1789,6 +1802,28 @@ if a != b {
 // Character Indexing & Sizes
 charVar: char = c[1];
 strLen: int = c.size; // evaluates length!
+```
+
+### Multi-Line Strings
+
+Leash supports multi-line strings using triple quotes (`"""` or `'''`):
+
+```leash
+fnc main() : void {
+    // Multi-line string with double quotes
+    poem: string = """Roses are red,
+    Violets are blue,
+    Leash is awesome,
+    And so are you!""";
+
+    // Multi-line string with single quotes
+    code: string = '''fnc main() : void {
+    show("Hello World!");
+}''';
+
+    show(poem);
+    show(code);
+}
 ```
 
 ### String Methods

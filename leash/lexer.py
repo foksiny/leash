@@ -69,7 +69,18 @@ class Lexer:
 
     # regexes
     TOKEN_SPECIFICATION = [
-        ("STRING", r'"[^"\\]*(\\.[^"\\]*)*"'),  # String literal
+        (
+            "MLSTRING_D",
+            r'"""[\s\S]*"""',
+        ),  # Multi-line string double (greedy to last """")
+        (
+            "MLSTRING_S",
+            r"'''[\s\S]*'''",
+        ),  # Multi-line string single (greedy to last ''')
+        (
+            "STRING",
+            r'"(?:[^"\\]|\\.)*"(?!["])',  # String literal (not followed by another ")
+        ),
         (
             "NUMBER",
             r"(?:0[xX][0-9a-fA-F]+(?:\.[0-9a-fA-F]*)?(?:[pP][+-]?\d+)?|0[bB][01]+|0[oO][0-7]+|\d+(?:\.\d*)?(?:[eE][+-]?\d+)?|\.\d+(?:[eE][+-]?\d+)?)",
@@ -80,6 +91,7 @@ class Lexer:
         ("MINUS", r"-"),  # Subtraction operator
         ("MUL", r"\*"),  # Multiplication operator
         ("COMMENT", r"//.*"),  # Comments
+        ("MLCOMMENT", r"/\*[\s\S]*?\*/"),  # Multi-line comments
         ("DIV", r"/"),  # Division operator
         ("MOD", r"%"),  # Modulo operator
         ("EQ", r"=="),  # Equal to
@@ -165,9 +177,11 @@ class Lexer:
             column = mo.start() - line_start
             if kind == "NUMBER":
                 value = self._parse_number(value)
-            elif kind == "STRING" or kind == "CHAR":
+            elif kind in ("STRING", "CHAR"):
                 value = value[1:-1]  # strip quotes
-                # naive unescape
+                value = value.encode("utf-8").decode("unicode_escape")
+            elif kind in ("MLSTRING_D", "MLSTRING_S"):
+                value = value[3:-3]  # strip triple quotes
                 value = value.encode("utf-8").decode("unicode_escape")
             elif kind == "IDENT" and value in self.KEYWORDS:
                 kind = value.upper()
@@ -175,7 +189,7 @@ class Lexer:
                 line_start = mo.end()
                 line_num += 1
                 continue
-            elif kind == "SKIP" or kind == "COMMENT":
+            elif kind == "SKIP" or kind == "COMMENT" or kind == "MLCOMMENT":
                 continue
             elif kind == "MISMATCH":
                 raise LeashError(f"Unexpected character: {value}", line_num, column)

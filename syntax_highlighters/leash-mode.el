@@ -65,10 +65,12 @@
 
 (defvar leash-syntax-table
   (let ((st (make-syntax-table)))
-    ;; Comments //
-    (modify-syntax-entry ?/ ". 12" st)
+    ;; Comments
+    ;; /*...*/ - multi-line comments
+    (modify-syntax-entry ?/ ". 14" st)
+    (modify-syntax-entry ?* ". 23" st)
     (modify-syntax-entry ?\n ">" st)
-    ;; Strings
+    ;; Strings: "..." and """..."""
     (modify-syntax-entry ?\" "\"" st)
     (modify-syntax-entry ?' "\"" st)
     st)

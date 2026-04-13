@@ -54,8 +54,14 @@ syn match leashPointerOperator "[*&]\|->"
 syn match leashNamespace "::"
 
 " Strings and Comments
+" Multi-line strings: """...""" and '''...'''
+syn region leashMLString start=/"""/ end=/""/ keepend
+syn region leashMLString start=/'''/ end=/'''/ keepend
+" Regular strings and chars
 syn region leashString start=/"/ skip=/\\"/ end=/"/
 syn region leashChar start=/'/ skip=/\\'/ end=/'/
+" Multi-line comments: /*...*/
+syn region leashMLComment start=/\/\*/ end=/\*\// keepend
 syn match leashComment "//.*$"
 
 " Numbers
@@ -88,8 +94,10 @@ hi def link leashOperator Operator
 hi def link leashTernary Operator
 hi def link leashPointerOperator Operator
 hi def link leashNamespace Special
+hi def link leashMLString String
 hi def link leashString String
 hi def link leashChar Character
+hi def link leashMLComment Comment
 hi def link leashComment Comment
 hi def link leashNumber Number
 hi def link leashFloat Float
