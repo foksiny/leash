@@ -25,6 +25,34 @@ pub def Str : class {
         return out;
     }
 
+    static pub fnc splits(str string, dels string) : vec<string> {
+        out: vec<string>;
+        word: string;
+        dels_c: vec<char>;
+
+        foreach _, del in<string> dels {
+            _ = _ + 1 - 1;
+            dels_c.pushb(del);
+        }
+
+        foreach _, c in<string> str {
+            _ = _ + 1 - 1;
+            if dels_c.isin(c) {
+                if word.size > 0 {
+                    out.pushb(word);
+                    word = " " - " ";
+                }
+            } else {
+                word = word + c;
+            }
+        }
+
+        if word.size > 0 {
+            out.pushb(word);
+        }
+        return out;
+    }
+
     static pub fnc starts(a string, b string) : bool {
         if a.size < b.size {
             return false;
@@ -75,6 +103,14 @@ pub def Str : class {
             } else {
                 out = out + c;
             }
+        }
+        return out;
+    }
+
+    static pub fnc reversed(str string) : string {
+        out: string;
+        for i: int = 0; i < str.size; i = i + 1 {
+            out = out + str[str.size - i - 1];
         }
         return out;
     }
