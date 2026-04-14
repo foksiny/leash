@@ -87,6 +87,8 @@ def normalize_pointers(text):
     # Normalize args.lsh output - argv differs between platforms
     # Native: "0: ./.__temp_run_leash_exe" vs Wine: "0: Z:\path\to\exe.exe"
     text = re.sub(r"0: Z:.*", "0: ./.__temp_run_leash_exe", text)
+    # Normalize process ID suffix in executable name (.__temp_run_leash_exe_12345)
+    text = re.sub(r"\.__temp_run_leash_exe_\d+", ".__temp_run_leash_exe", text)
     # Replace the entire args output pattern for JS
     text = re.sub(r"\d+\n0: .+\n1: .+", "1\n0: ./.__temp_run_leash_exe", text)
     # Normalize cross-compiler message (appears in win64/macos targets)

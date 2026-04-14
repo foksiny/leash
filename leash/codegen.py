@@ -342,7 +342,9 @@ class CodeGen:
 
         # Helper to get stdout portably
         get_stdout_ty = ir.FunctionType(ir.IntType(8).as_pointer(), [])
-        self.get_stdout_fn = ir.Function(self.module, get_stdout_ty, name="_leash_get_stdout")
+        self.get_stdout_fn = ir.Function(
+            self.module, get_stdout_ty, name="_leash_get_stdout"
+        )
 
     def _emit_const_str(self, string_val):
         """Create a global string constant and return a pointer to it (i8*)."""
@@ -2249,57 +2251,66 @@ class CodeGen:
         """Create internal functions for showb buffer management."""
         # _leash_showb_ensure_capacity(size_t needed)
         ensure_ty = ir.FunctionType(ir.VoidType(), [ir.IntType(64)])
-        ensure_fn = ir.Function(self.module, ensure_ty, name="_leash_showb_ensure_capacity")
+        ensure_fn = ir.Function(
+            self.module, ensure_ty, name="_leash_showb_ensure_capacity"
+        )
         block = ensure_fn.append_basic_block("entry")
         builder = ir.IRBuilder(block)
-        
+
         needed = ensure_fn.args[0]
         curr_cap = builder.load(self.showb_cap_gv)
         curr_size = builder.load(self.showb_size_gv)
-        
+
         new_size = builder.add(curr_size, needed)
         is_enough = builder.icmp_unsigned(">=", curr_cap, new_size)
-        
+
         with builder.if_then(builder.not_(is_enough)):
             # new_cap = max(curr_cap * 2, new_size, 1024)
             double_cap = builder.mul(curr_cap, ir.Constant(ir.IntType(64), 2))
-            
+
             # Simple max logic
             cond1 = builder.icmp_unsigned(">", double_cap, new_size)
             max1 = builder.select(cond1, double_cap, new_size)
-            
+
             cond2 = builder.icmp_unsigned(">", max1, ir.Constant(ir.IntType(64), 1024))
             new_cap = builder.select(cond2, max1, ir.Constant(ir.IntType(64), 1024))
-            
+
             curr_buf = builder.load(self.showb_buffer_gv)
-            is_null = builder.icmp_unsigned("==", builder.ptrtoint(curr_buf, ir.IntType(64)), ir.Constant(ir.IntType(64), 0))
-            
-            new_buf = builder.select(is_null, 
-                builder.call(self.malloc, [new_cap]),
-                builder.call(self.realloc, [curr_buf, new_cap])
+            is_null = builder.icmp_unsigned(
+                "==",
+                builder.ptrtoint(curr_buf, ir.IntType(64)),
+                ir.Constant(ir.IntType(64), 0),
             )
-            
+
+            new_buf = builder.select(
+                is_null,
+                builder.call(self.malloc, [new_cap]),
+                builder.call(self.realloc, [curr_buf, new_cap]),
+            )
+
             builder.store(new_buf, self.showb_buffer_gv)
             builder.store(new_cap, self.showb_cap_gv)
-            
+
         builder.ret_void()
         self.showb_ensure_fn = ensure_fn
 
         # _leash_showb_append_char(i8 char)
         append_char_ty = ir.FunctionType(ir.VoidType(), [ir.IntType(8)])
-        append_char_fn = ir.Function(self.module, append_char_ty, name="_leash_showb_append_char")
+        append_char_fn = ir.Function(
+            self.module, append_char_ty, name="_leash_showb_append_char"
+        )
         block = append_char_fn.append_basic_block("entry")
         builder = ir.IRBuilder(block)
-        
+
         char_val = append_char_fn.args[0]
         builder.call(ensure_fn, [ir.Constant(ir.IntType(64), 1)])
-        
+
         buf = builder.load(self.showb_buffer_gv)
         size = builder.load(self.showb_size_gv)
-        
+
         pos_ptr = builder.gep(buf, [size])
         builder.store(char_val, pos_ptr)
-        
+
         new_size = builder.add(size, ir.Constant(ir.IntType(64), 1))
         builder.store(new_size, self.showb_size_gv)
         builder.ret_void()
@@ -2307,22 +2318,24 @@ class CodeGen:
 
         # _leash_showb_append_str(i8* str)
         append_str_ty = ir.FunctionType(ir.VoidType(), [ir.IntType(8).as_pointer()])
-        append_str_fn = ir.Function(self.module, append_str_ty, name="_leash_showb_append_str")
+        append_str_fn = ir.Function(
+            self.module, append_str_ty, name="_leash_showb_append_str"
+        )
         block = append_str_fn.append_basic_block("entry")
         builder = ir.IRBuilder(block)
-        
+
         str_val = append_str_fn.args[0]
         str_len = builder.call(self.strlen, [str_val])
         builder.call(ensure_fn, [str_len])
-        
+
         buf = builder.load(self.showb_buffer_gv)
         size = builder.load(self.showb_size_gv)
-        
+
         dest_ptr = builder.gep(buf, [size])
         # Use memmove or strcpy? strcpy is for null-terminated.
         # Since Leash strings are null-terminated, strcpy is fine.
         builder.call(self.strcpy, [dest_ptr, str_val])
-        
+
         new_size = builder.add(size, str_len)
         builder.store(new_size, self.showb_size_gv)
         builder.ret_void()
@@ -2333,18 +2346,20 @@ class CodeGen:
         flush_fn = ir.Function(self.module, flush_ty, name="_leash_showb_flush")
         block = flush_fn.append_basic_block("entry")
         builder = ir.IRBuilder(block)
-        
+
         size = builder.load(self.showb_size_gv)
         is_empty = builder.icmp_unsigned("==", size, ir.Constant(ir.IntType(64), 0))
-        
+
         with builder.if_then(builder.not_(is_empty)):
             buf = builder.load(self.showb_buffer_gv)
             # Call portable helper to get stdout
             stdout = builder.call(self.get_stdout_fn, [])
             # fwrite(buf, 1, size, stdout)
-            builder.call(self.fwrite, [buf, ir.Constant(ir.IntType(64), 1), size, stdout])
+            builder.call(
+                self.fwrite, [buf, ir.Constant(ir.IntType(64), 1), size, stdout]
+            )
             builder.store(ir.Constant(ir.IntType(64), 0), self.showb_size_gv)
-            
+
         builder.ret_void()
         self.showb_flush_fn = flush_fn
 
@@ -3609,7 +3624,8 @@ class CodeGen:
             length = self.builder.call(self.strlen, [val])
             return self.builder.trunc(length, ir.IntType(32))
         if resolved == "string" and node.method == "replace":
-            return self._codegen_string_replace(base_ptr, node.args)
+            str_val = self.builder.load(base_ptr)
+            return self._codegen_string_replace_from_value(str_val, node.args)
 
         if resolved.endswith("]") and node.method == "size":
             val = self.builder.load(base_ptr)
@@ -5012,6 +5028,12 @@ class CodeGen:
                 if idx is None:
                     raise LeashError(f"Class '{node.name}' has no field named '{key}'")
                 field_val = self._codegen(expr)
+                # Convert field_val to the expected field type if needed
+                expected_type_str = struct_info["field_types"].get(key)
+                if expected_type_str:
+                    expected_llvm_type = self._get_llvm_type(expected_type_str)
+                    if field_val.type != expected_llvm_type:
+                        field_val = self._emit_cast(field_val, expected_llvm_type)
                 # gep on the instance pointer
                 field_ptr = self.builder.gep(
                     ptr,
@@ -5028,6 +5050,12 @@ class CodeGen:
                         f"Struct '{node.name}' has no member named '{key}'"
                     )
                 field_val = self._codegen(expr)
+                # Convert field_val to the expected field type if needed
+                expected_type_str = struct_info["field_types"].get(key)
+                if expected_type_str:
+                    expected_llvm_type = self._get_llvm_type(expected_type_str)
+                    if field_val.type != expected_llvm_type:
+                        field_val = self._emit_cast(field_val, expected_llvm_type)
                 val = self.builder.insert_value(val, field_val, idx)
             return val
 
@@ -5714,51 +5742,41 @@ class CodeGen:
                     new_vec = self.builder.insert_value(new_vec, cap_val, 2)
                     return new_vec
 
-        # Fallback: bitcast if same size, otherwise error
-        return self.builder.bitcast(val, dst)
-
-    def _codegen_string_replace(self, base_ptr, args):
-        """Implement string.replace(old, new) - replace first occurrence."""
-        str_val = self.builder.load(base_ptr)
-
-        old_str = self._codegen(args[0])
-        new_str = self._codegen(args[1])
-
-        old_len = self.builder.call(self.strlen, [old_str])
-        new_len = self.builder.call(self.strlen, [new_str])
-        str_len = self.builder.call(self.strlen, [str_val])
-
-        found_bb = self.builder.function.append_basic_block("str_replace_found")
-        not_found_bb = self.builder.function.append_basic_block("str_replace_not_found")
-        merge_bb = self.builder.function.append_basic_block("str_replace_merge")
-
-        p = self.builder.call(self.strstr, [str_val, old_str])
-        is_not_null = self.builder.icmp_signed("!=", p, ir.Constant(old_str.type, None))
-        self.builder.cbranch(is_not_null, found_bb, not_found_bb)
-
-        self.builder.position_at_end(found_bb)
-        p_int = self.builder.ptrtoint(p, ir.IntType(64))
-        l_int = self.builder.ptrtoint(str_val, ir.IntType(64))
-        prefix_len = self.builder.sub(p_int, l_int)
-
-        suffix_start = self.builder.gep(p, [old_len], inbounds=True)
-        suffix_len = self.builder.sub(str_len, prefix_len)
-        suffix_len = self.builder.sub(suffix_len, old_len)
-
-        result_len = self.builder.add(prefix_len, new_len)
-        result_len = self.builder.add(result_len, suffix_len)
-        result_len_plus_1 = self.builder.add(result_len, ir.Constant(ir.IntType(64), 1))
-        result = self.builder.call(self.malloc, [result_len_plus_1])
-        self._track_alloc(result)
-
-        self.builder.call(self.strncpy, [result, str_val, prefix_len])
-
-        result_after_prefix = self.builder.gep(result, [prefix_len], inbounds=True)
-        self.builder.call(self.strcat, [result_after_prefix, new_str])
-
-        result_after_new = self.builder.gep(
-            result_after_prefix, [new_len], inbounds=True
-        )
+        # Handle struct to integer conversion (manual bitcast)
+        if isinstance(src, ir.LiteralStructType) and dst_is_int:
+            # Calculate total size of struct in bits
+            src_bits = sum(field.width for field in src.elements)
+            if src_bits != dst.width:
+                raise LeashError(
+                    f"Cannot convert struct of size {src_bits} bits to integer of {dst.width} bits"
+                )
+            # Ensure all fields are integers
+            for field in src.elements:
+                if not isinstance(field, ir.IntType):
+                    raise LeashError(
+                        f"Cannot convert struct with non-integer field to integer"
+                    )
+            # Build integer from fields (little-endian: first field is least significant bits)
+            result = ir.Constant(dst, 0)
+            for idx, field_type in enumerate(src.elements):
+                field_val = self.builder.extract_value(val, idx)
+                # Truncate or extend field_val to its native width
+                if field_type.width != field_val.type.width:
+                    if field_type.width < field_val.type.width:
+                        field_val = self.builder.trunc(field_val, field_type)
+                    else:
+                        field_val = self.builder.zext(field_val, field_type)
+                # Zero-extend to dst width for shifting
+                if field_type.width < dst.width:
+                    field_val = self.builder.zext(field_val, dst)
+                # Shift and combine
+                shift_amount = sum(f.width for f in src.elements[:idx])
+                if shift_amount > 0:
+                    field_val = self.builder.shl(
+                        field_val, ir.Constant(dst, shift_amount)
+                    )
+                result = self.builder.or_(result, field_val)
+            return result
         self.builder.call(self.strcat, [result_after_new, suffix_start])
 
         self.builder.branch(merge_bb)

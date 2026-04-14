@@ -78,6 +78,10 @@ python3 -m leash.cli compile program.lsh to-dynamic mylib
 
 # Compile to a static library (.a)
 python3 -m leash.cli compile program.lsh to-static mylib
+
+# Link with external libraries (-l<name> links lib<name>.so or -l<name>.so)
+python3 -m leash.cli compile program.lsh -lm   # links libm.so (math library)
+python3 -m leash.cli run program.lsh -lcurl   # links libcurl.so
 ```
 
 ## Checking for Errors

@@ -795,6 +795,11 @@ class TypeChecker:
         if src_r.startswith("&") and dst_r.startswith("&"):
             return self._types_compatible(src_r[1:], dst_r[1:])
 
+        # Allow passing value where reference is expected (&Type accepts Type)
+        # e.g., inc(a) where inc expects &int is valid
+        if dst_r.startswith("&"):
+            return self._types_compatible(src_r, dst_r[1:])
+
         # Handle slices (arrays) to pointers compatibility
         if "[" in src_r and "]" in src_r and dst_r.startswith("*"):
             src_elem = src_r.split("[")[0]
@@ -811,10 +816,25 @@ class TypeChecker:
         src_b = self._base_type(src_r)
         dst_b = self._base_type(dst_r)
 
-        # Allow passing T to a function expecting &T (smart pointer)
-        if dst_r.startswith("&"):
-            if self._types_compatible(src_r, dst_r[1:]):
-                return True
+        # Disallow mixing numeric types with aggregate types (struct, class, union, enum)
+        if (
+            src_b in ("struct", "class", "union", "enum")
+            and dst_b in ("int", "uint", "float", "char", "bool")
+        ) or (
+            dst_b in ("struct", "class", "union", "enum")
+            and src_b in ("int", "uint", "float", "char", "bool")
+        ):
+            return False
+
+        # Numeric types are broadly compatible with each other
+        if src_b in ("int", "uint", "float", "char", "bool") and dst_b in (
+            "int",
+            "uint",
+            "float",
+            "char",
+            "bool",
+        ):
+            return True
 
         # Numeric types are broadly compatible with each other
         if src_b in ("int", "uint", "float", "char", "bool") and dst_b in (

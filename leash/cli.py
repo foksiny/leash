@@ -490,6 +490,7 @@ def compile_file(
     target_name=None,
     check_mode=False,
     warnings_as_errors=False,
+    extra_libs=None,
 ):
     with open(input_file, "r") as f:
         code = f.read()
@@ -576,11 +577,19 @@ def compile_file(
         output_type,
         codegen,
         base_path,
+        extra_libs,
     )
 
 
 def _link_native(
-    obj_name, output_name, target_config, is_run_mode, output_type, codegen, base_path
+    obj_name,
+    output_name,
+    target_config,
+    is_run_mode,
+    output_type,
+    codegen,
+    base_path,
+    extra_libs=None,
 ):
     """Link native object file with appropriate cross-compiler."""
     # Collect native library paths
@@ -594,6 +603,11 @@ def _link_native(
             native_lib_args.append(lib_path)
         else:
             native_lib_args.append(lib_path)
+
+    # Add extra libs specified via -l flag
+    if extra_libs:
+        for lib in extra_libs:
+            native_lib_args.append(f"-l{lib}")
 
     # Determine the C compiler to use
     cc = os.environ.get("CC")
@@ -718,7 +732,12 @@ def _link_native(
 
 
 def run_file(
-    input_file, args=[], target_name=None, check_mode=False, warnings_as_errors=False
+    input_file,
+    args=[],
+    target_name=None,
+    check_mode=False,
+    warnings_as_errors=False,
+    extra_libs=None,
 ):
     from .targets import get_target, get_native_target
     import platform
@@ -736,6 +755,7 @@ def run_file(
         target_name=target_name,
         check_mode=check_mode,
         warnings_as_errors=warnings_as_errors,
+        extra_libs=extra_libs,
     )
 
     # Check if this is a cross-compiled target that can't run natively
@@ -922,6 +942,9 @@ def main():
             "  --check                   Run thorough safety checks while compiling/running"
         )
         print("  --warnings-as-errors      Treat all warnings as errors")
+        print(
+            "  -l<name>                 Link with system library (e.g., -lm for libm)"
+        )
         print("  --help, -h                Show this help message")
         print("  --version, -v             Show version information")
         print("")
@@ -945,7 +968,6 @@ def main():
         input_file = sys.argv[2]
         if not os.path.exists(input_file):
             print(
-                _colorize("error:", "red"),
                 f"File not found: {input_file}",
                 file=sys.stderr,
             )
@@ -987,6 +1009,7 @@ def main():
         output_type = "executable"
         check_mode = False
         warnings_as_errors = False
+        extra_libs = []
 
         i = 0
         positional = []
@@ -1008,6 +1031,9 @@ def main():
             elif remaining_args[i] == "--warnings-as-errors":
                 warnings_as_errors = True
                 i += 1
+            elif remaining_args[i].startswith("-l"):
+                extra_libs.append(remaining_args[i][2:])
+                i += 1
             else:
                 positional.append(remaining_args[i])
                 i += 1
@@ -1019,6 +1045,7 @@ def main():
                 target_name,
                 check_mode=check_mode,
                 warnings_as_errors=warnings_as_errors,
+                extra_libs=extra_libs,
             )
         else:
             if len(positional) >= 1:
@@ -1043,6 +1070,7 @@ def main():
                 target_name=target_name,
                 check_mode=check_mode,
                 warnings_as_errors=warnings_as_errors,
+                extra_libs=extra_libs,
             )
     elif cmd == "install":
         if len(sys.argv) < 3:
