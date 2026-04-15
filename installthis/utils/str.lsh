@@ -114,5 +114,80 @@ pub def Str : class {
         }
         return out;
     }
-}
 
+    static pub fnc digit(txt string) : bool {
+        result: bool = false;
+        
+        if txt.size == 0 {
+            return result;
+        }
+
+        foreach _, c in<string> txt {
+            if c >= '0' && c <= '9' {
+                result = true;
+            } else {
+                result = false;
+                stop;
+            }
+        }
+
+        return result;
+    }
+
+    static pub fnc alpha(txt string) : bool {
+        result: bool = false;
+        
+        if txt.size == 0 {
+            return result;
+        }
+
+        foreach _, c in<string> txt {
+            if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+                result = true;
+            } else {
+                result = false;
+                stop;
+            }
+        }
+
+        return result;
+    }
+
+    stattc pub fnc alnum(txt string) : bool {
+        result: bool = false;
+        
+        if txt.size == 0 {
+            return result;
+        }
+
+        foreach _, c in<string> txt {
+            if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
+                result = true;
+            } else {
+                result = false;
+                stop;
+            }
+        }
+
+        return result;
+    }
+
+    static pub fnc ident(txt string) : bool {
+        result: bool = false;
+        
+        if txt.size == 0 {
+            return result;
+        }
+
+        foreach _, c in<string> txt {
+            if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' {
+                result = true;
+            } else {
+                result = false;
+                stop;
+            }
+        }
+
+        return result;
+    }
+}
