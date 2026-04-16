@@ -6,13 +6,17 @@ endif
 " Keywords
 syn keyword leashKeyword fnc def struct union enum class type template return if also else while for do foreach in imut vector vec this pub priv static stop continue use works otherwise switch case default unsafe as inline defer
 syn keyword leashBoolean true false
-syn keyword leashNull null
+syn keyword leashNull null nil
 
 " Special file path literals and built-in variables
 syn keyword leashBuiltin _FILEPATH _FILENAME _PLATFORM
 
 " @from native import directive
 syn match leashNativeImport "@from\s*("me=s+1
+
+" Function Declarations
+syn match leashFunction "\bfnc\s\+\zs[a-zA-Z_][a-zA-Z0-9_]*\ze\s*("
+syn match leashMethod "\.\zs[a-zA-Z_][a-zA-Z0-9_]*\ze\s*("
 
 " Types with optional bitwidths
 syn match leashType "\b\(int\|uint\|float\|bool\|string\|char\|void\|array\|vec\)\b\(<\d+>\)\?"
@@ -37,7 +41,7 @@ syn match leashMultiType "\[\s*[a-z_][a-zA-Z0-9_]*\s*\(,\s*[a-z_][a-zA-Z0-9_]*\s
 syn match leashFuncPointer "fnc\s*(\s*[^)]*\s*)\s*:\s*[a-z_][a-zA-Z0-9_]*\s*\(\s*<\s*[0-9, ]\+\s*>\s*\)\?"
 
 " Builtin functions and properties
-syn keyword leashBuiltin show showb get set toint tofloat tostring cstr lstr size cur name pushb popb pushf popf insert clear remove isin rand randf seed choose wait timepass exit exec
+syn keyword leashBuiltin show showb get set toint tofloat tostring cstr lstr size cur name pushb popb pushf popf insert clear remove extend extendv isin rand randf seed choose wait timepass exit exec
 
 " Built-in File class and methods
 syn keyword leashBuiltin File open close read write readln readb writeb readlnb replaceall rewind rename delete
@@ -95,6 +99,8 @@ hi def link leashFuncPointer Type
 hi def link leashBoolean Boolean
 hi def link leashNull Constant
 hi def link leashBuiltin Function
+hi def link leashFunction Function
+hi def link leashMethod Function
 hi def link leashOperator Operator
 hi def link leashTernary Operator
 hi def link leashPointerOperator Operator

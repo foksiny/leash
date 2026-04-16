@@ -43,33 +43,42 @@ def get_current_platform():
 
 def normalize_pointers(text):
     """Replace pointer values with a placeholder for comparison."""
+    # Normalize execution timestamp (remove it for comparison)
+    text = re.sub(
+        r"--- Executed at \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} ---\n?", "", text
+    )
+    # Normalize pointer values for comparison
     text = POINTER_PATTERN.sub("0xPOINTER", text)
     # Normalize Windows pointer format (00007FFFFE2FFEBC style)
     text = re.sub(r"\b[0-9A-Fa-f]{12,16}\b", "0xPOINTER", text)
-    # Normalize rand.lsh output FIRST (before float normalization interferes)
-    # Pattern: "Name -N N.NNNNNN" where Name is from choose()
+    # Normalize rand.lsh output FIRST
     text = re.sub(r"[A-Z][a-z]+ [A-Z][a-z]+ -?\d+ \d+\.\d+", "RANDOM_OUTPUT", text)
-    # Normalize float precision differences (e.g., 1.500000 -> 1.5)
+    # Normalize float precision differences
     text = re.sub(r"(\d+\.\d+?)0+", r"\1", text)
-    # Normalize warning order (warnings can appear before or after output)
-    # Remove warning lines for comparison since they're compiler-specific
+    # Normalize warning order
     lines = text.split("\n")
     filtered = [
         l for l in lines if not l.startswith("warning:") and not l.startswith("tip:")
     ]
     text = "\n".join(filtered)
-    # Normalize boolean representations (true/false vs 1/0)
+    # Normalize boolean representations
     text = re.sub(r"\btrue\b", "1", text)
     text = re.sub(r"\bfalse\b", "0", text)
-    # Normalize random number differences (replace with placeholder)
+    # Normalize random numbers
     text = re.sub(r"\b\d{6,}\b", "RANDOM", text)
     text = re.sub(r"\b0\.\d+\b", "RANDOM_FLOAT", text)
-    # Normalize file path differences (absolute vs relative)
+    # Normalize path differences - DO ARGS NORMALIZATION FIRST
+    # Normalize args.lsh output pattern for all platforms
+    text = re.sub(r"0: Z:.*", "0: ./.__temp_run_leash_exe", text)
+    text = re.sub(r"0: .*\.__temp_run_leash_exe", "0: ./.__temp_run_leash_exe", text)
+    text = re.sub(r"\d+\n0: .+\n1: .+", "1\n0: ./.__temp_run_leash_exe", text)
+
+    # Normalize file path differences
     text = re.sub(r"/home/jose/projects/leash/", "", text)
-    # Normalize Wine path format (Z:\home\jose\projects\leash\...)
     text = re.sub(r"Z:\\home\\jose\\projects\\leash\\", "", text)
-    # Normalize Windows executable extensions in args
+    # Normalize Windows executable extensions
     text = re.sub(r"\.exe\b", "", text)
+
     # Normalize timing differences
     text = re.sub(r"\d+s\b", "Xs", text)
     # Normalize readline prompt artifacts
@@ -77,36 +86,26 @@ def normalize_pointers(text):
     # Normalize error message format differences
     text = text.replace("ReferenceError: ", "")
     text = text.replace("Error: ", "")
-    # Normalize Wine null output (exec returns "(null)" instead of empty)
+    # Normalize Wine null output
     text = text.replace("(null)", "")
-    # Normalize exec output differences between platforms
-    # On Windows/Wine, exec("echo ...", "code") may return different values
+    # Normalize exec output differences
     text = re.sub(r"Hello World\n\n", "Hello World\n0\n", text)
-    # Normalize input.lsh - Wine stdin handling differs
+    # Normalize input.lsh
     text = re.sub(r"What's your name\? Hello, !", "ERROR: Program timed out!", text)
-    # Normalize args.lsh output - argv differs between platforms
-    # Native: "0: ./.__temp_run_leash_exe" vs Wine: "0: Z:\path\to\exe.exe"
-    text = re.sub(r"0: Z:.*", "0: ./.__temp_run_leash_exe", text)
-    # Normalize process ID suffix in executable name (.__temp_run_leash_exe_12345)
-    text = re.sub(r"\.__temp_run_leash_exe_\d+", ".__temp_run_leash_exe", text)
-    # Replace the entire args output pattern for JS
-    text = re.sub(r"\d+\n0: .+\n1: .+", "1\n0: ./.__temp_run_leash_exe", text)
-    # Normalize cross-compiler message (appears in win64/macos targets)
-    text = re.sub(r"Using cross-compiler: .+\n", "", text)
-    text = re.sub(r"Using cross-compiler: .+", "", text)
-    # Normalize Wine stack overflow errors (known Wine limitation)
+    # Normalize cross-compiler message
+    text = re.sub(r"Using cross-compiler: .+\n?", "", text)
+    # Normalize Wine stack overflow
     text = re.sub(r".*stack overflow.*\n?", "", text)
-    # Normalize platform-dependent output (e.g., _PLATFORM variable)
-    # Replace known platform identifiers with a placeholder so tests pass on any platform
+
+    # Normalize platform-dependent output
     current_platform = get_current_platform()
     for plat in KNOWN_PLATFORMS:
         if plat != current_platform:
             text = text.replace(plat, "__PLATFORM__")
-    # Normalize trailing whitespace and extra blank lines
+
+    # Normalize trailing whitespace
     text = "\n".join(l.rstrip() for l in text.split("\n"))
-    # Remove trailing blank lines
-    text = text.rstrip("\n") + "\n"
-    return text
+    return text.rstrip("\n") + "\n"
 
 
 def run_leash(file_path, target=None):

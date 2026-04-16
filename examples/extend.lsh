@@ -1,0 +1,33 @@
+fnc main() : void {
+    v: vec<char>;
+
+    v.extend((char[])cstr("Hello, world!"));
+    
+    v2: vec<string>;
+
+    v2.extend({"Hello", "world", "it works!"});
+
+    v3: vec<int>;
+
+    v3.extend({1, 2, 3, 4, 10, 23});
+
+    foreach i, c in<vector> v {
+        show("[", i, "]: ", c);
+    }
+
+    show("-----------------------------");
+
+    foreach i, s in<vector> v2 {
+        show("[", i, "]: ", s);
+    }
+
+    show("-----------------------------");
+
+    foreach i, iv in<vector> v3 {
+        show("[", i, "]: ", iv);
+    }
+}
+
+// .extend(T[] arr) || .extend(*T arr)
+
+// .extendv(vec<T> v)

@@ -2740,6 +2740,43 @@ class TypeChecker:
                             node=expr.args[0],
                         )
                 return "bool"
+            elif expr.method == "extend":
+                # Expect 1 argument: array/slice (inner_t[] or *inner_t)
+                if len(expr.args) != 1:
+                    self._error(
+                        f"Vector method '{expr.method}' expects 1 argument, got {len(expr.args)}",
+                        node=expr,
+                    )
+                else:
+                    arg_t = self._infer_type(expr.args[0])
+                    if arg_t:
+                        expected_arr = f"{inner_t}[]"
+                        expected_ptr = f"*{inner_t}"
+                        if not (
+                            self._types_compatible(arg_t, expected_arr)
+                            or self._types_compatible(arg_t, expected_ptr)
+                        ):
+                            self._warn(
+                                f"Vector method '{expr.method}' expects argument of type '{expected_arr}' or '{expected_ptr}', but got '{arg_t}'",
+                                node=expr.args[0],
+                            )
+                return "void"
+            elif expr.method == "extendv":
+                # Expect 1 argument: vec<inner_t>
+                if len(expr.args) != 1:
+                    self._error(
+                        f"Vector method '{expr.method}' expects 1 argument, got {len(expr.args)}",
+                        node=expr,
+                    )
+                else:
+                    arg_t = self._infer_type(expr.args[0])
+                    expected_vec = f"vec<{inner_t}>"
+                    if arg_t and not self._types_compatible(arg_t, expected_vec):
+                        self._warn(
+                            f"Vector method '{expr.method}' expects argument of type '{expected_vec}', but got '{arg_t}'",
+                            node=expr.args[0],
+                        )
+                return "void"
             else:
                 raise LeashError(
                     f"Vector has no method named '{expr.method}'", node=expr

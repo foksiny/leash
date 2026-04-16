@@ -1282,6 +1282,27 @@ foreach i, s in<vector> v {
 v.clear();
 ```
 
+### Expanding Vectors
+
+You can use `.extend()` to append an entire array or slice to a vector, or `.extendv()` to append another vector:
+
+```leash
+v: vec<int>;
+v.pushb(1);
+
+// Extend with an array literal or slice
+v.extend({2, 3, 4});
+
+other: vec<int>;
+other.pushb(5);
+other.pushb(6);
+
+// Extend with another vector
+v.extendv(other);
+
+show(v.size); // 6
+```
+
 ### Vector Properties
 
 | Property | Description |
@@ -1301,6 +1322,8 @@ v.clear();
 | `.set(idx, val)` | Set the element at the specified index |
 | `.insert(idx, val)` | Insert an element at the specified index |
 | `.remove(idx)` | Remove the element at the specified index |
+| `.extend(arr)` | Append all elements from an array or slice to the vector |
+| `.extendv(other)`| Append all elements from another vector to this vector |
 | `.clear()` | Remove all elements from the vector |
 | `.isin(val)` | Return `true` if the value exists in the vector, `false` otherwise |
 

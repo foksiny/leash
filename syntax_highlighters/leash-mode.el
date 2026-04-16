@@ -36,9 +36,9 @@
    '("\\[[ \t]*\\(int\\|uint\\|float\\|bool\\|string\\|char\\|void\\)[ \t]*\\(,[ \t]*\\(int\\|uint\\|float\\|bool\\|string\\|char\\|void\\)[ \t]*\\)*\\]" . font-lock-type-face)
    ;; Function pointer types: fnc(int, int) : int
    '("fnc[ \t]*([^) ]*)" . font-lock-type-face)
-   '("\\b\\(true\\|false\\|null\\)\\b" . font-lock-constant-face)
+   '("\\b\\(true\\|false\\|null\\|nil\\)\\b" . font-lock-constant-face)
    '("\\b\\_FILEPATH\\_\\|\\_FILENAME\\_\\|\\_PLATFORM\\_\\b" . font-lock-constant-face)
-    '("\\b\\(show\\|showb\\|get\\|set\\|toint\\|tofloat\\|tostring\\|cstr\\|lstr\\|size\\|cur\\|name\\|pushb\\|popb\\|pushf\\|popf\\|insert\\|clear\\|remove\\|isin\\|rand\\|randf\\|seed\\|choose\\|wait\\|timepass\\|exit\\|exec\\|File\\|open\\|close\\|read\\|write\\|readln\\|readb\\|writeb\\|readlnb\\|replaceall\\|rewind\\|rename\\|delete\\)\\b" . font-lock-builtin-face)
+    '("\\b\\(show\\|showb\\|get\\|set\\|toint\\|tofloat\\|tostring\\|cstr\\|lstr\\|size\\|cur\\|name\\|pushb\\|popb\\|pushf\\|popf\\|insert\\|clear\\|remove\\|extend\\|extendv\\|isin\\|rand\\|randf\\|seed\\|choose\\|wait\\|timepass\\|exit\\|exec\\|File\\|open\\|close\\|read\\|write\\|readln\\|readb\\|writeb\\|readlnb\\|replaceall\\|rewind\\|rename\\|delete\\)\\b" . font-lock-builtin-face)
    '("\\b\\(replace\\)\\b" . font-lock-builtin-face)
      '("&&\\|||\\|<<\\|>>\\|<>\\|[+\\-*/%&|^~!<>=]=?" . font-lock-variable-name-face)
     '("\\?" . font-lock-variable-name-face)
@@ -57,11 +57,14 @@
     '("\\b[0-9]+\\.[0-9]*\\b" . font-lock-constant-face)
     ;; Decimal integer: 42
     '("\\b[0-9]+\\b" . font-lock-constant-face)
-    ;; Class inheritance syntax: class(Parent)
    '("\\bclass\\s*(\\s*\\([A-Z][a-zA-Z0-9_]*\\)\\s*)" . font-lock-type-face)
    ;; Type annotation with parent: : Type(Parent)
    '(":\\s*\\([A-Z][a-zA-Z0-9_]*\\)\\s*(\\s*\\([A-Z][a-zA-Z0-9_]*\\)\\s*)" . font-lock-type-face)
    '("\\(?:<\\|,\\)[ \t]*\\([A-Z][a-zA-Z0-9_]*\\)" . (1 font-lock-type-face))
+   ;; Function declarations
+   '("\\bfnc\\s-+\\([a-zA-Z_][a-zA-Z0-9_]*\\)" 1 font-lock-function-name-face)
+   ;; Method calls
+   '("\\.\\([a-zA-Z_][a-zA-Z0-9_]*\\)\\s-*(" 1 font-lock-function-name-face)
    )
   "Default font-lock keywords for Leash mode")
 

@@ -3752,9 +3752,9 @@ class CodeGen:
         struct_val = self.builder.insert_value(struct_val, cap, 2)
         self.builder.store(struct_val, vec_ptr)
 
-    def _vector_check_capacity(self, vec_ptr, data, size, cap, elem_llvm):
-        """Check if capacity is enough, otherwise allocate larger buffer. Safe for SAMM (uses malloc)."""
-        needed = self.builder.icmp_unsigned(">=", size, cap)
+    def _vector_ensure_capacity(self, vec_ptr, data, size, cap, needed_size, elem_llvm):
+        """Ensure vector has space for needed_size elements. Safe for SAMM (uses malloc)."""
+        needed = self.builder.icmp_unsigned(">", needed_size, cap)
 
         merge_bb = self.builder.function.append_basic_block("vec_cap_merge")
         needed_bb = self.builder.function.append_basic_block("vec_cap_needed")
@@ -3762,13 +3762,17 @@ class CodeGen:
         self.builder.cbranch(needed, needed_bb, merge_bb)
 
         self.builder.position_at_end(needed_bb)
-        # new_cap = (cap == 0) ? 8 : cap * 2
+        # new_cap = max(needed_size, cap * 2, 8)
         is_zero = self.builder.icmp_unsigned("==", cap, ir.Constant(ir.IntType(64), 0))
-        new_cap = self.builder.select(
-            is_zero,
-            ir.Constant(ir.IntType(64), 8),
-            self.builder.mul(cap, ir.Constant(ir.IntType(64), 2)),
+        cap2 = self.builder.mul(cap, ir.Constant(ir.IntType(64), 2))
+        cap_candidate = self.builder.select(
+            is_zero, ir.Constant(ir.IntType(64), 8), cap2
         )
+
+        is_needed_larger = self.builder.icmp_unsigned(
+            ">", needed_size, cap_candidate
+        )
+        new_cap = self.builder.select(is_needed_larger, needed_size, cap_candidate)
 
         # total_bytes = new_cap * sizeof(elem)
         # sizeof(elem) trick via gep
@@ -3804,6 +3808,13 @@ class CodeGen:
         final_data = self.builder.extract_value(final_struct, 0)
         final_cap = self.builder.extract_value(final_struct, 2)
         return final_data, final_cap
+
+    def _vector_check_capacity(self, vec_ptr, data, size, cap, elem_llvm):
+        """Check if capacity is enough, otherwise allocate larger buffer."""
+        needed_size = self.builder.add(size, ir.Constant(ir.IntType(64), 1))
+        return self._vector_ensure_capacity(
+            vec_ptr, data, size, cap, needed_size, elem_llvm
+        )
 
     def _codegen_vector_method(self, vec_ptr, vec_type_name, method, args):
         inner_type_name = vec_type_name[4:-1]
@@ -4066,6 +4077,78 @@ class CodeGen:
 
             new_size = self.builder.sub(size, ir.Constant(ir.IntType(64), 1))
             self._update_vec_struct(vec_ptr, data, new_size, cap)
+            return None
+
+        elif method == "extend":
+            # Expect T[] (slice) {i64 len, T* ptr}
+            old_target = self.current_target_type
+            self.current_target_type = f"{inner_type_name}[]"
+            arr_val = self._codegen(args[0])
+            self.current_target_type = old_target
+
+            if not (
+                isinstance(arr_val.type, ir.LiteralStructType)
+                and len(arr_val.type.elements) == 2
+            ):
+                # If it's a pointer *T, we can't know the length.
+                # However, if it's a fixed-size array pointer, it might be different.
+                # For now, require a slice.
+                raise LeashError(
+                    "Vector.extend requires a slice or array (length + pointer)",
+                    node=args[0],
+                )
+
+            arr_len = self.builder.extract_value(arr_val, 0)
+            arr_ptr = self.builder.extract_value(arr_val, 1)
+
+            needed_size = self.builder.add(size, arr_len)
+            new_data, new_cap = self._vector_ensure_capacity(
+                vec_ptr, data, size, cap, needed_size, inner_llvm
+            )
+
+            dst_ptr = self.builder.gep(new_data, [size], inbounds=True)
+            dst_bytes = self.builder.bitcast(dst_ptr, ir.IntType(8).as_pointer())
+            src_bytes = self.builder.bitcast(arr_ptr, ir.IntType(8).as_pointer())
+
+            dummy_ptr = ir.Constant(inner_llvm.as_pointer(), None)
+            elem_size = self.builder.ptrtoint(
+                self.builder.gep(dummy_ptr, [ir.Constant(ir.IntType(32), 1)]),
+                ir.IntType(64),
+            )
+            copy_bytes = self.builder.mul(arr_len, elem_size)
+
+            self.builder.call(self.memmove, [dst_bytes, src_bytes, copy_bytes])
+            self._update_vec_struct(vec_ptr, new_data, needed_size, new_cap)
+            return None
+
+        elif method == "extendv":
+            # Expect vec<T> {T* data, i64 size, i64 cap}
+            old_target = self.current_target_type
+            self.current_target_type = f"vec<{inner_type_name}>"
+            other_vec_val = self._codegen(args[0])
+            self.current_target_type = old_target
+
+            other_data = self.builder.extract_value(other_vec_val, 0)
+            other_size = self.builder.extract_value(other_vec_val, 1)
+
+            needed_size = self.builder.add(size, other_size)
+            new_data, new_cap = self._vector_ensure_capacity(
+                vec_ptr, data, size, cap, needed_size, inner_llvm
+            )
+
+            dst_ptr = self.builder.gep(new_data, [size], inbounds=True)
+            dst_bytes = self.builder.bitcast(dst_ptr, ir.IntType(8).as_pointer())
+            src_bytes = self.builder.bitcast(other_data, ir.IntType(8).as_pointer())
+
+            dummy_ptr = ir.Constant(inner_llvm.as_pointer(), None)
+            elem_size = self.builder.ptrtoint(
+                self.builder.gep(dummy_ptr, [ir.Constant(ir.IntType(32), 1)]),
+                ir.IntType(64),
+            )
+            copy_bytes = self.builder.mul(other_size, elem_size)
+
+            self.builder.call(self.memmove, [dst_bytes, src_bytes, copy_bytes])
+            self._update_vec_struct(vec_ptr, new_data, needed_size, new_cap)
             return None
 
         raise LeashError(

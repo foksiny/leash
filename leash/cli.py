@@ -744,9 +744,8 @@ def run_file(
 
     target_config = get_target(target_name) if target_name else get_native_target()
 
-    # Use a unique name for the temporary executable to avoid race conditions in parallel tests
-    temp_suffix = f"_{os.getpid()}"
-    temp_name = f".__temp_run_leash_exe{temp_suffix}"
+    # Use a fixed name for the temporary executable
+    temp_name = ".__temp_run_leash_exe"
 
     output_name = compile_file(
         input_file,
@@ -800,6 +799,10 @@ def run_file(
         cmd = [executable_path] + args
 
     try:
+        import datetime
+
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print(f"--- Executed at {now} ---")
         result = subprocess.run(cmd)
         if result.returncode != 0:
             sys.exit(result.returncode)
