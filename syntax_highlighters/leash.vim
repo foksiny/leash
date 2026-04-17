@@ -12,33 +12,32 @@ syn keyword leashNull null nil
 syn keyword leashBuiltin _FILEPATH _FILENAME _PLATFORM
 
 " @from native import directive
-syn match leashNativeImport "@from\s*("me=s+1
+syn match leashNativeImport /@from\s*(/me=s+1
 
 " Function Declarations
-syn match leashFunction "\bfnc\s\+\zs[a-zA-Z_][a-zA-Z0-9_]*\ze\s*("
-syn match leashMethod "\.\zs[a-zA-Z_][a-zA-Z0-9_]*\ze\s*("
+syn match leashFunction /\<fnc\s\+\zs[a-zA-Z_][a-zA-Z0-9_]*\ze\s*(/
+syn match leashMethod /\.\zs[a-zA-Z_][a-zA-Z0-9_]*\ze\s*(/
 
 " Types with optional bitwidths
-syn match leashType "\b\(int\|uint\|float\|bool\|string\|char\|void\|array\|vec\)\b\(<\d+>\)\?"
+syn match leashType /\<\(int\|uint\|float\|bool\|string\|char\|void\|array\|vec\)\>\(<\d\+>\)\?/
 
 " Array types with fixed sizes: int[5], char[10], int[n], char[str.size], int[x + y]
-syn match leashArrayType "\b\(int\|uint\|float\|bool\|string\|char\|void\)\[[\]\d\+\]\b"
-syn match leashArrayType "\b\(int\|uint\|float\|bool\|string\|char\|void\)\[\([a-zA-Z_][a-zA-Z0-9_.*+\- ]*\)\]\b"
+syn match leashArrayType /\<\(int\|uint\|float\|bool\|string\|char\|void\)\[[^\]]*\]/
 
 " Class inheritance syntax: class(Parent)
-syn match leashClassInheritance "class\s*(\s*[A-Z][a-zA-Z0-9_]*\s*)"
+syn match leashClassInheritance /class\s*(\s*[A-Z][a-zA-Z0-9_]*\s*)/
 
 " Type annotation with parent: : Type(Parent)
-syn match leashTypeAnnotation ":\s*[A-Z][a-zA-Z0-9_]*\s*(\s*[A-Z][a-zA-Z0-9_]*\s*)"
+syn match leashTypeAnnotation /:\s*[A-Z][a-zA-Z0-9_]*\s*(\s*[A-Z][a-zA-Z0-9_]*\s*)/
 " Generic type parameters
-syn match leashGenericParam "<\s*\zs[A-Z][a-zA-Z0-9_]*\ze"
-syn match leashGenericParam ",\s*\zs[A-Z][a-zA-Z0-9_]*\ze"
+syn match leashGenericParam /<\s*\zs[A-Z][a-zA-Z0-9_]*\ze/
+syn match leashGenericParam /,\s*\zs[A-Z][a-zA-Z0-9_]*\ze/
 
 " Multi-type syntax: [int, float]
-syn match leashMultiType "\[\s*[a-z_][a-zA-Z0-9_]*\s*\(,\s*[a-z_][a-zA-Z0-9_]*\s*\)*\]"
+syn match leashMultiType /\[\s*[a-z_][a-zA-Z0-9_]*\s*\(,\s*[a-z_][a-zA-Z0-9_]*\s*\)*\]/
 
 " Function pointer types: fnc(int, int) : int
-syn match leashFuncPointer "fnc\s*(\s*[^)]*\s*)\s*:\s*[a-z_][a-zA-Z0-9_]*\s*\(\s*<\s*[0-9, ]\+\s*>\s*\)\?"
+syn match leashFuncPointer /fnc\s*(\s*[^)]*\s*)\s*:\s*[a-z_][a-zA-Z0-9_]*\s*\(\s*<\s*[0-9, ]\+\s*>\s*\)\?/
 
 " Builtin functions and properties
 syn keyword leashBuiltin show showb get set toint tofloat tostring cstr lstr size cur name pushb popb pushf popf insert clear remove extend extendv isin rand randf seed choose wait timepass exit exec
@@ -50,7 +49,7 @@ syn keyword leashBuiltin File open close read write readln readb writeb readlnb 
 syn keyword leashBuiltin replace
 
 " Operators
-syn match leashOperator "&&\|||\|<<\|>>\|[+\-*/%&|^~!<>=]="
+syn match leashOperator /&&\|||\|<<\|>>\|[+\-*/%&|^~!<>=]=/
 
 " Ternary operator
 syn match leashTernary "?"
@@ -74,18 +73,18 @@ syn match leashComment "//.*$"
 
 " Numbers
 " Hexadecimal: 0xFF, 0xDEADBEEF, 0x1.5p3 (hex float)
-syn match leashHex "\b0[xX][0-9a-fA-F]\+\(\.[0-9a-fA-F]*\)\?\([pP][+-]\?\d\+\)\?"
+syn match leashHex /\<0[xX][0-9a-fA-F]\+\(\.[0-9a-fA-F]*\)\?\([pP][+-]\?\d\+\)\?/
 " Binary: 0b1010
-syn match leashBinary "\b0[bB][01]\+"
+syn match leashBinary /\<0[bB][01]\+/
 " Octal: 0o755
-syn match leashOctal "\b0[oO][0-7]\+"
+syn match leashOctal /\<0[oO][0-7]\+/
 " Scientific notation: 1e10, 2.5E-3, .5
-syn match leashScientific "\b\d\+\(\.\d*\)\?\([eE][+-]\?\d\+\)\+"
-syn match leashScientific "\b\.\d\+\([eE][+-]\?\d\+\)\?"
+syn match leashScientific /\<\d\+\(\.\d*\)\?\([eE][+-]\?\d\+\)\+/
+syn match leashScientific /\<\.\d\+\([eE][+-]\?\d\+\)\?/
 " Decimal float: 3.14
-syn match leashFloat "\b\d\+\.\d*\b"
+syn match leashFloat /\<\d\+\.\d*\>/
 " Decimal integer: 42
-syn match leashNumber "\b\d\+\b"
+syn match leashNumber /\<\d\+\>/
 
 " Highlights
 hi def link leashKeyword Keyword
