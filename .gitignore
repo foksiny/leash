@@ -76,6 +76,7 @@ examples/multiline
 examples/arraysize
 examples/buffershow
 examples/extend
+examples/oneline
 
 # Trash
 trash/

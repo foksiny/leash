@@ -162,7 +162,7 @@ class Parser:
         # 2. Simple but helpful tips (20+)
         tips = {
             "SEMI": "Semicolons (`;`) are mandatory at the end of every statement in Leash.",
-            "LBRACE": "Braces `{ }` are required for all blocks (if, for, while, fnc) - even single-line ones!",
+            "LBRACE": "Braces `{ }` are required for all blocks (if, for, while, fnc) - but one-line functions can use `|>`! (e.g., `fnc add(a, b) |> return a + b;`)",
             "RBRACE": "Each opening brace `{` must have a matching closing brace `}`.",
             "COLON": "Colons `:` define types in Leash. Example: `age : int = 25;`",
             "ASSIGN": "Use `=` for assignment. Example: `a = b + 5;`",
@@ -346,8 +346,10 @@ class Parser:
             if self.current().type == "COMMA":
                 self.eat("COMMA")
         self.eat("RPAREN")
-        self.eat("COLON")
-        return_type = self.parse_type()
+        return_type = "void"
+        if self.current().type == "COLON":
+            self.eat("COLON")
+            return_type = self.parse_type()
         return f"fnc({', '.join(param_types)}) : {return_type}"
 
     # Type token types that can start a type in a cast
@@ -668,8 +670,10 @@ class Parser:
             if self.current().type == "COMMA":
                 self.eat("COMMA")
         self.eat("RPAREN")
-        self.eat("COLON")
-        return_type = self.parse_type()
+        return_type = "void"
+        if self.current().type == "COLON":
+            self.eat("COLON")
+            return_type = self.parse_type()
         self.eat("SEMI")
         return (name, tuple(args), return_type)
 
@@ -927,20 +931,18 @@ class Parser:
             if self.current().type == "COMMA":
                 self.eat("COMMA")
         self.eat("RPAREN")
-        if self.current().type != "COLON":
-            tok = self.current()
-            raise LeashError(
-                f"Expected a colon (':') before the return type, but found {tok.type} ('{tok.value}')",
-                tok.line,
-                tok.column,
-                tip="Leash functions require a colon before the return type: `fnc name() : type { ... }`",
-            )
-        self.eat("COLON")
+        return_type = "void"
+        if self.current().type == "COLON":
+            self.eat("COLON")
+            return_type = self.parse_type()
 
-        return_type = self.parse_type()
+        if self.current().type == "PIPE":
+            self.eat("PIPE")
+            statements = [self.parse_statement()]
+        else:
+            self.eat("LBRACE")
+            statements = self.parse_block()
 
-        self.eat("LBRACE")
-        statements = self.parse_block()
         return Function(
             name,
             tuple(args),
@@ -977,10 +979,17 @@ class Parser:
             if self.current().type == "COMMA":
                 self.eat("COMMA")
         self.eat("RPAREN")
-        self.eat("COLON")
-        return_type = self.parse_type()
-        self.eat("LBRACE")
-        body = self.parse_block()
+        return_type = "void"
+        if self.current().type == "COLON":
+            self.eat("COLON")
+            return_type = self.parse_type()
+        
+        if self.current().type == "PIPE":
+            self.eat("PIPE")
+            body = [self.parse_statement()]
+        else:
+            self.eat("LBRACE")
+            body = self.parse_block()
         return self._pos(Lambda(args, return_type, body), tok)
 
     def parse_statement(self):

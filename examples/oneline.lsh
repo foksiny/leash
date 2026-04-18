@@ -1,0 +1,10 @@
+fnc add(a int, b int) : int |> return a + b;
+
+/* or:
+fnc add(a int, b int) : int
+                        |> return a + b;
+*/
+
+fnc main() { // functions without return type are void by default
+    show(add(1, 2));
+}

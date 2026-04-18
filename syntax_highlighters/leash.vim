@@ -49,7 +49,7 @@ syn keyword leashBuiltin File open close read write readln readb writeb readlnb 
 syn keyword leashBuiltin replace
 
 " Operators
-syn match leashOperator /&&\|||\|<<\|>>\|[+\-*/%&|^~!<>=]=/
+syn match leashOperator /|>\?\|&&\|||\|<<\|>>\|[+\-*/%&|^~!<>=]=\?/
 
 " Ternary operator
 syn match leashTernary "?"
@@ -62,11 +62,11 @@ syn match leashNamespace "::"
 
 " Strings and Comments
 " Multi-line strings: """...""" and '''...'''
-syn region leashMLString start=/"""/ end=/""/ keepend
+syn region leashMLString start=/"""/ end=/"""/ keepend
 syn region leashMLString start=/'''/ end=/'''/ keepend
 " Regular strings and chars
-syn region leashString start=/"/ skip=/\\"/ end=/"/
-syn region leashChar start=/'/ skip=/\\'/ end=/'/
+syn region leashString start=/"/ skip=/\\./ end=/"/
+syn region leashChar start=/'/ skip=/\\./ end=/'/
 " Multi-line comments: /*...*/
 syn region leashMLComment start=/\/\*/ end=/\*\// keepend
 syn match leashComment "//.*$"

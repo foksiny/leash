@@ -160,8 +160,8 @@ pub def Str : class {
             return result;
         }
 
-        foreach _, c in<string> txt {
-            if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') {
+        foreach i, c in<string> txt {
+            if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || ((c >= '0' && c <= '9') && i > 0) {
                 result = true;
             } else {
                 result = false;
@@ -179,8 +179,8 @@ pub def Str : class {
             return result;
         }
 
-        foreach _, c in<string> txt {
-            if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' {
+        foreach i, c in<string> txt {
+            if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || ((c >= '0' && c <= '9') && i > 0) || c == '_' {
                 result = true;
             } else {
                 result = false;

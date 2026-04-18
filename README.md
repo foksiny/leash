@@ -737,10 +737,31 @@ fnc add(a int, b int) : int {
     return a + b;
 }
 
+// One-line function using the pipe operator (|>)
+fnc multiply(a int, b int) : int |> return a * b;
+
+// Functions without a return type default to 'void'
+fnc greet(name string) |> show("Hello, ", name);
+
 fnc main() : void {
     result: int = add(10, 20);
     show("Result: ", result);
+    greet("Leash");
 }
+```
+
+### One-Line Functions
+
+For simple, single-statement functions, you can use the `|>` (pipe) operator instead of curly braces `{ }`. 
+
+```leash
+fnc square(x int) : int |> return x * x;
+```
+
+If a function has no return type specified, it defaults to `void`:
+
+```leash
+fnc log(msg string) |> show("[LOG]: ", msg);
 ```
 
 ### Command Line Arguments

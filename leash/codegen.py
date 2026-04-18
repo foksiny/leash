@@ -1007,6 +1007,7 @@ class CodeGen:
         llvm_types = []  # Will build from parent or start fresh
         fields = {}
         field_types = {}
+        field_defaults = {}
 
         # Inherit parent struct type (includes vtable pointer and parent fields)
         if node.parent and node.parent in self.class_symtab:
@@ -1018,6 +1019,11 @@ class CodeGen:
             for fname, fidx in parent_info["fields"].items():
                 fields[fname] = fidx
                 field_types[fname] = parent_info["field_types"][fname]
+                if (
+                    "field_defaults" in parent_info
+                    and fname in parent_info["field_defaults"]
+                ):
+                    field_defaults[fname] = parent_info["field_defaults"][fname]
 
         # If no parent, start with vtable pointer
         if not node.parent:
@@ -1045,6 +1051,8 @@ class CodeGen:
             else:
                 fields[f.name] = idx
                 field_types[f.name] = f.var_type
+                if f.value is not None:
+                    field_defaults[f.name] = f.value
                 llvm_types.append(self._get_llvm_type(f.var_type))
                 idx += 1
 
@@ -1053,6 +1061,7 @@ class CodeGen:
             "type": struct_type,
             "fields": fields,
             "field_types": field_types,
+            "field_defaults": field_defaults,
             "static_fields": static_fields,
             "methods": {},
             "method_static": {},
@@ -5105,6 +5114,47 @@ class CodeGen:
                 )
                 self.builder.store(vtable_ptr, vtable_field_ptr)
 
+            # Initialize fields with default values
+            if "field_defaults" in struct_info:
+                for fname, default_expr in struct_info["field_defaults"].items():
+                    idx = struct_info["fields"][fname]
+                    field_val = self._codegen(default_expr)
+                    # Ensure type match
+                    expected_type_str = struct_info["field_types"][fname]
+                    expected_llvm_type = self._get_llvm_type(expected_type_str)
+                    if field_val.type != expected_llvm_type:
+                        field_val = self._emit_cast(field_val, expected_llvm_type)
+
+                    field_ptr = self.builder.gep(
+                        ptr,
+                        [
+                            ir.Constant(ir.IntType(32), 0),
+                            ir.Constant(ir.IntType(32), idx),
+                        ],
+                    )
+                    self.builder.store(field_val, field_ptr)
+
+            # Initialize missing fields from kwargs with type-defaults (if not already handled)
+            for fname, idx in struct_info["fields"].items():
+                # Skip if it has an explicit default value (handled above)
+                # or if it's provided in kwargs (handled below)
+                if (
+                    "field_defaults" in struct_info and fname in struct_info["field_defaults"]
+                ) or any(k == fname for k, _ in node.kwargs):
+                    continue
+
+                # Skip vtable pointer (handled above)
+                if fname == "_vtable" or idx == 0:
+                    continue
+
+                ftype = struct_info["field_types"][fname]
+                default_val = self._emit_default_value(ftype)
+                field_ptr = self.builder.gep(
+                    ptr,
+                    [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), idx)],
+                )
+                self.builder.store(default_val, field_ptr)
+
             # Initialize other fields
             for key, expr in node.kwargs:
                 idx = struct_info["fields"].get(key)
@@ -5125,13 +5175,11 @@ class CodeGen:
                 self.builder.store(field_val, field_ptr)
             return ptr
         else:
-            val = ir.Constant(struct_type, ir.Undefined)
+            val = ir.Constant(struct_type, None)  # Zero-initialize the struct constant
             for key, expr in node.kwargs:
                 idx = struct_info["fields"].get(key)
                 if idx is None:
-                    raise LeashError(
-                        f"Struct '{node.name}' has no member named '{key}'"
-                    )
+                    raise LeashError(f"Struct '{node.name}' has no member named '{key}'")
                 field_val = self._codegen(expr)
                 # Convert field_val to the expected field type if needed
                 expected_type_str = struct_info["field_types"].get(key)

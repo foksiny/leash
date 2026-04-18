@@ -103,6 +103,7 @@ class Lexer:
         ("L_AND", r"&&"),  # Logical AND
         ("L_OR", r"\|\|"),  # Logical OR
         ("BIT_AND", r"&"),  # Bitwise AND
+        ("PIPE", r"\|>"),  # Pipe operator
         ("BIT_OR", r"\|"),  # Bitwise OR
         ("BIT_XOR", r"\^"),  # Bitwise XOR
         ("BIT_NOT", r"~"),  # Bitwise NOT/Tilde
