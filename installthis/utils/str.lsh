@@ -153,7 +153,7 @@ pub def Str : class {
         return result;
     }
 
-    stattc pub fnc alnum(txt string) : bool {
+    static pub fnc alnum(txt string) : bool {
         result: bool = false;
         
         if txt.size == 0 {
