@@ -50,7 +50,7 @@ class Function(ASTNode):
         is_inline=False,
     ):
         self.name = name
-        self.args = args  # list of (name, type) tuples
+        self.args = args  # list of (name, type, default) tuples - default can be None
         self.return_type = return_type
         self.body = body  # Block
         self.type_params = type_params or []  # list of template parameter names
@@ -173,7 +173,7 @@ class Expression(ASTNode):
 
 class Lambda(Expression):
     def __init__(self, args, return_type, body):
-        self.args = args  # list of (name, type) tuples
+        self.args = args  # list of (name, type, default) tuples - default can be None
         self.return_type = return_type
         self.body = body  # Block (list of statements)
 
@@ -197,9 +197,10 @@ class UnaryOp(Expression):
 
 
 class Call(Expression):
-    def __init__(self, name, args):
+    def __init__(self, name, args, kwargs=None):
         self.name = name
-        self.args = args
+        self.args = args  # list of positional arguments
+        self.kwargs = kwargs or {}  # dict of keyword arguments: {name: expr}
 
 
 class MethodCall(Expression):
@@ -396,10 +397,11 @@ class TernaryOp(Expression):
 class GenericCall(Expression):
     """Represents a generic function call like 'add<int>(10, 20)'"""
 
-    def __init__(self, name, type_args, args):
+    def __init__(self, name, type_args, args, kwargs=None):
         self.name = name
         self.type_args = type_args  # list of type strings
-        self.args = args  # list of expressions
+        self.args = args  # list of positional arguments
+        self.kwargs = kwargs or {}  # dict of keyword arguments
 
 
 class ConditionalDef(ASTNode):

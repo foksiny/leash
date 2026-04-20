@@ -666,7 +666,7 @@ class Parser:
         while self.current().type != "RPAREN":
             arg_name = self.eat("IDENT").value
             arg_type = self.parse_type()
-            args.append((arg_name, arg_type))
+            args.append((arg_name, arg_type, None))
             if self.current().type == "COMMA":
                 self.eat("COMMA")
         self.eat("RPAREN")
@@ -924,10 +924,23 @@ class Parser:
             self.eat("GT")
         self.eat("LPAREN")
         args = []
+        has_default = False
         while self.current().type != "RPAREN":
             arg_name = self.eat("IDENT").value
             arg_type = self.parse_type()
-            args.append((arg_name, arg_type))
+            default_value = None
+            if self.current().type == "ASSIGN":
+                self.eat("ASSIGN")
+                default_value = self.parse_expression()
+                has_default = True
+            elif has_default:
+                raise LeashError(
+                    f"Cannot have argument without default value after argument with default value",
+                    self.current().line,
+                    self.current().column,
+                    tip="Move required arguments before optional ones with default values",
+                )
+            args.append((arg_name, arg_type, default_value))
             if self.current().type == "COMMA":
                 self.eat("COMMA")
         self.eat("RPAREN")
@@ -972,10 +985,23 @@ class Parser:
         self.eat("FNC")
         self.eat("LPAREN")
         args = []
+        has_default = False
         while self.current().type != "RPAREN":
             arg_name = self.eat("IDENT").value
             arg_type = self.parse_type()
-            args.append((arg_name, arg_type))
+            default_value = None
+            if self.current().type == "ASSIGN":
+                self.eat("ASSIGN")
+                default_value = self.parse_expression()
+                has_default = True
+            elif has_default:
+                raise LeashError(
+                    f"Cannot have argument without default value after argument with default value",
+                    self.current().line,
+                    self.current().column,
+                    tip="Move required arguments before optional ones with default values",
+                )
+            args.append((arg_name, arg_type, default_value))
             if self.current().type == "COMMA":
                 self.eat("COMMA")
         self.eat("RPAREN")
@@ -983,7 +1009,7 @@ class Parser:
         if self.current().type == "COLON":
             self.eat("COLON")
             return_type = self.parse_type()
-        
+
         if self.current().type == "PIPE":
             self.eat("PIPE")
             body = [self.parse_statement()]
@@ -1486,12 +1512,18 @@ class Parser:
                         if self.current().type == "LPAREN":
                             self.eat("LPAREN")
                             args = []
+                            kwargs = {}
                             while self.current().type != "RPAREN":
-                                args.append(self.parse_expression())
+                                if self.current().type == "IDENT" and self.peek() and self.peek().type == "ASSIGN":
+                                    kw_key = self.eat("IDENT").value
+                                    self.eat("ASSIGN")
+                                    kwargs[kw_key] = self.parse_expression()
+                                else:
+                                    args.append(self.parse_expression())
                                 if self.current().type == "COMMA":
                                     self.eat("COMMA")
                             self.eat("RPAREN")
-                            return self._pos(GenericCall(name, type_args, args), tok)
+                            return self._pos(GenericCall(name, type_args, args, kwargs), tok)
                         else:
                             # Not a generic call, restore position
                             self.pos = saved_pos
@@ -1502,12 +1534,18 @@ class Parser:
             if self.current().type == "LPAREN":
                 self.eat("LPAREN")
                 args = []
+                kwargs = {}
                 while self.current().type != "RPAREN":
-                    args.append(self.parse_expression())
+                    if self.current().type == "IDENT" and self.peek() and self.peek().type == "ASSIGN":
+                        kw_key = self.eat("IDENT").value
+                        self.eat("ASSIGN")
+                        kwargs[kw_key] = self.parse_expression()
+                    else:
+                        args.append(self.parse_expression())
                     if self.current().type == "COMMA":
                         self.eat("COMMA")
                 self.eat("RPAREN")
-                return self._pos(Call(name, args), tok)
+                return self._pos(Call(name, args, kwargs), tok)
             elif not no_struct_init and self.current().type == "LBRACE":
                 self.eat("LBRACE")
                 kwargs = []

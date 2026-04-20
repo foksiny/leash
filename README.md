@@ -13,6 +13,8 @@ Leash is a strongly-typed, modern compiled programming language built on top of 
 - [Operators](#operators)
   - [Is-In Operator](#is-in-operator-)
 - [Functions](#functions)
+  - [Default Arguments](#default-arguments)
+  - [Named Arguments](#named-arguments)
 - [Global Variables](#global-variables)
 - [Control Flow](#control-flow)
   - [Branching](#branching)
@@ -762,6 +764,58 @@ If a function has no return type specified, it defaults to `void`:
 
 ```leash
 fnc log(msg string) |> show("[LOG]: ", msg);
+```
+
+### Default Arguments
+
+Leash supports default argument values in functions. Parameters with default values are optional at the call site — if not provided, the default value is used.
+
+```leash
+fnc add(a int, b int, c int = 0) : int {
+    return a + b + c;
+}
+
+fnc main() : void {
+    show(add(10, 20));       // 30 (uses c=0)
+    show(add(10, 20, 30));   // 60
+}
+```
+
+### Named Arguments
+
+When calling a function, you can specify arguments by name using the `name=value` syntax. This is especially useful when:
+- A function has many parameters with default values
+- You want to skip some optional parameters while specifying others
+
+```leash
+fnc math(a int = 1, b int = 2, typ int = 0) : int {
+    if typ == 0 { return a + b; }
+    if typ == 1 { return a - b; }
+    if typ == 2 { return a * b; }
+    if typ == 3 { return a / b; }
+    return 0;
+}
+
+fnc main() : void {
+    show(math());                 // 3 (all defaults)
+    show(math(10, 20));         // 30 (a=10, b=20)
+    show(math(b=20, typ=2));    // 40 (a=1 default, b=20, typ=2)
+    show(math(20, 10, 1));      // 10 (positional)
+}
+```
+
+You can mix positional and named arguments. Named arguments are also supported for parameters without default values.
+
+### Rule: Required Arguments First
+
+Arguments without default values must come **before** arguments with default values:
+
+```leash
+// Valid
+fnc valid(a int, b int = 1, c int = 2) : int { ... }
+
+// Invalid - will cause a compile error
+fnc invalid(a int = 1, b int) : int { ... }
 ```
 
 ### Command Line Arguments

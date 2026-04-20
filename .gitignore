@@ -77,6 +77,8 @@ examples/arraysize
 examples/buffershow
 examples/extend
 examples/oneline
+examples/defav
+examples/.__temp_run*
 
 # Trash
 trash/

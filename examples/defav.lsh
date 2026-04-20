@@ -1,0 +1,40 @@
+fnc add(a int, b int, c int = 0) : int {
+    return a + b + c;
+}
+
+fnc math(a int = 1, b int = 2, typ int = 0) : int {
+    if typ == 0 {
+        return a + b;
+    } also typ == 1 {
+        return a - b;
+    } also typ == 2 {
+        return a * b;
+    } also typ == 3 {
+        return a / b;
+    }
+    return nil;
+}
+
+fnc main() : void {
+    show(add(10, 20));
+    show(add(10, 20, 30));
+
+    show(math());
+    show(math(10, 20));
+    show(math(b=20, typ=2)); // yes, you can specify args like this (supports also args with no default value)
+    show(math(20, 10, 1));
+}
+
+/*
+IMPORTANT:
+you can't add args with no default values after args with default values.
+
+valid:
+fnc name(name type, name type = value, ...);
+fnc name(name type, name type = value, name type = value, ...);
+fnc name(name type = value, name type = value, ...);
+
+invalid:
+fnc name(name type = value, name type, ...);
+fnc name(name type, name type = value, name type, ...);
+*/

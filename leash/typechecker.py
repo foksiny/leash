@@ -100,8 +100,10 @@ class TypeChecker:
     def _register_native_import(self, node):
         """Register function, variable, struct, union, enum, and typedef signatures from a native library import."""
         for name, args, return_type in node.func_declarations:
-            arg_types = tuple(arg_type for _, arg_type in args)
-            self.func_types[name] = (arg_types, return_type)
+            arg_types = tuple(arg_type for _, arg_type, _ in args)
+            arg_names = tuple(arg_name for arg_name, _, _ in args)
+            arg_defaults = tuple(False for _ in args)
+            self.func_types[name] = (arg_types, return_type, arg_names, arg_defaults)
         for name, var_type in node.var_declarations:
             self.global_vars[name] = (var_type, "pub")
         for _, name, fields in node.struct_declarations:
@@ -464,7 +466,7 @@ class TypeChecker:
 
         # Also check if the function uses any registered template types
         if not uses_templates:
-            for _, arg_type in node.args:
+            for _, arg_type, _ in node.args:
                 if self._uses_template_type(arg_type):
                     uses_templates = True
                     break
@@ -473,7 +475,7 @@ class TypeChecker:
 
         # Also check for multi-type syntax: [int, float, ...]
         if not uses_templates:
-            for _, arg_type in node.args:
+            for _, arg_type, _ in node.args:
                 if self._is_multi_type(arg_type):
                     uses_templates = True
                     break
@@ -486,7 +488,7 @@ class TypeChecker:
                 # Find all template types used
                 template_set = set()
                 type_param_map = {}  # Map from multi-type string to generated param name
-                for _, arg_type in node.args:
+                for _, arg_type, _ in node.args:
                     self._collect_template_types(arg_type, template_set)
                     self._extract_multi_type_params(
                         arg_type, template_set, type_param_map
@@ -498,11 +500,11 @@ class TypeChecker:
 
                 # Convert multi-types to single type params
                 new_args = []
-                for arg_name, arg_type in node.args:
+                for arg_name, arg_type, default in node.args:
                     if arg_type in type_param_map:
-                        new_args.append((arg_name, type_param_map[arg_type]))
+                        new_args.append((arg_name, type_param_map[arg_type], default))
                     else:
-                        new_args.append((arg_name, arg_type))
+                        new_args.append((arg_name, arg_type, default))
                 node.args = tuple(new_args)
 
                 if node.return_type in type_param_map:
@@ -511,8 +513,10 @@ class TypeChecker:
                 node.type_params = list(template_set)
             self.generic_funcs[node.name] = node
             return
-        arg_types = [t for _, t in node.args]
-        self.func_types[node.name] = (arg_types, node.return_type)
+        arg_types = [t for _, t, _ in node.args]
+        arg_names = [n for n, _, _ in node.args]
+        arg_defaults = [d is not None for _, _, d in node.args]
+        self.func_types[node.name] = (arg_types, node.return_type, arg_names, arg_defaults)
         self.func_signatures_vis[node.name] = getattr(node, "visibility", "pub")
 
     def _is_multi_type(self, type_name):
@@ -1004,7 +1008,7 @@ class TypeChecker:
             )
 
         # Register args as local vars
-        for arg_name, arg_type in node.args:
+        for arg_name, arg_type, _ in node.args:
             is_imut = self._is_imut(arg_type)
             bare_type = self._strip_imut(arg_type)
             self.var_types[arg_name] = bare_type
@@ -1834,7 +1838,9 @@ class TypeChecker:
             if isinstance(expr.expr, Identifier):
                 if expr.expr.name in self.func_types:
                     # It's a function name - return function pointer type
-                    arg_types, return_type = self.func_types[expr.expr.name]
+                    sig = self.func_types[expr.expr.name]
+                    arg_types = sig[0]
+                    return_type = sig[1]
                     return f"fnc({', '.join(arg_types)}) : {return_type}"
 
         val_t = self._infer_type(expr.expr)
@@ -1902,7 +1908,12 @@ class TypeChecker:
         return true_t
 
     def _check_lambda(self, expr):
-        for arg_name, arg_type in expr.args:
+        # Handle both old format (2-tuple) and new format (3-tuple)
+        for arg_entry in expr.args:
+            if len(arg_entry) == 3:
+                arg_name, arg_type, _ = arg_entry
+            else:
+                arg_name, arg_type = arg_entry
             resolved = self._resolve(arg_type)
             if not self._is_valid_type(resolved):
                 self._error(
@@ -1925,7 +1936,7 @@ class TypeChecker:
         self.current_func = "<lambda>"
         self.current_return_type = expr.return_type
 
-        for arg_name, arg_type in expr.args:
+        for arg_name, arg_type, _ in expr.args:
             self.var_types[arg_name] = arg_type
             self.var_immutable[arg_name] = False
 
@@ -1936,7 +1947,7 @@ class TypeChecker:
         self.current_func = saved_func
         self.current_return_type = saved_return
 
-        param_types = ", ".join(arg_type for _, arg_type in expr.args)
+        param_types = ", ".join(arg[1] for arg in expr.args)
         return f"fnc({param_types}) : {expr.return_type}"
 
     def _check_defer(self, stmt):
@@ -2209,16 +2220,39 @@ class TypeChecker:
                 tip="Make sure the function is defined before calling it.",
             )
 
-        expected_args, return_type = sig
+        expected_args, return_type, arg_names, arg_defaults = sig
 
-        if len(expr.args) != len(expected_args):
-            self._error(
-                f"Function '{expr.name}' expects {len(expected_args)} argument(s), "
-                f"but got {len(expr.args)}",
-                node=expr,
-                tip="Check the function signature and pass the correct number of arguments.",
-            )
+        # Handle kwargs and defaults
+        provided_positional = len(expr.args)
+        provided_kwarg_names = set(expr.kwargs.keys()) if hasattr(expr, 'kwargs') else set()
 
+        # Validate kwargs names
+        for kw_name in provided_kwarg_names:
+            if kw_name not in arg_names:
+                self._error(
+                    f"Unexpected keyword argument '{kw_name}' for function '{expr.name}'",
+                    node=expr,
+                )
+
+        # Check all required args are provided
+        for i, (arg_name, has_default) in enumerate(zip(arg_names, arg_defaults)):
+            if i < provided_positional:
+                # This positional arg is provided - OK
+                continue
+            elif arg_name in provided_kwarg_names:
+                # This kwarg is provided - OK
+                continue
+            elif has_default:
+                # This arg has a default - OK
+                continue
+            else:
+                # Missing required argument
+                self._error(
+                    f"Missing required argument '{arg_name}' for function '{expr.name}'",
+                    node=expr,
+                )
+
+        # Validate positional args types
         for i, (arg_expr, expected_type) in enumerate(zip(expr.args, expected_args)):
             arg_type = self._infer_type(arg_expr)
             bare_arg = self._strip_imut(arg_type) if arg_type else None
@@ -2229,6 +2263,22 @@ class TypeChecker:
                     f"but got '{bare_arg}'.",
                     node=expr,
                 )
+
+        # Validate kwargs types
+        if hasattr(expr, 'kwargs'):
+            for kw_name, kw_expr in expr.kwargs.items():
+                if kw_name in arg_names:
+                    idx = arg_names.index(kw_name)
+                    expected_type = expected_args[idx]
+                    arg_type = self._infer_type(kw_expr)
+                    bare_arg = self._strip_imut(arg_type) if arg_type else None
+                    bare_expected = self._strip_imut(expected_type)
+                    if bare_arg and not self._types_compatible(bare_arg, bare_expected):
+                        self._warn(
+                            f"Argument '{kw_name}' of '{expr.name}' expects '{bare_expected}' "
+                            f"but got '{bare_arg}'.",
+                            node=expr,
+                        )
 
         return return_type
 
@@ -2245,15 +2295,35 @@ class TypeChecker:
                 node=expr,
             )
 
-        expected_args, return_type = sig
+        expected_args, return_type, arg_names, arg_defaults = sig
 
-        if len(expr.args) != len(expected_args):
-            self._error(
-                f"Function '{expr.name}' expects {len(expected_args)} argument(s), "
-                f"but got {len(expr.args)}",
-                node=expr,
-            )
+        # Handle kwargs and defaults
+        provided_positional = len(expr.args)
+        provided_kwarg_names = set(expr.kwargs.keys()) if hasattr(expr, 'kwargs') else set()
 
+        # Validate kwargs names
+        for kw_name in provided_kwarg_names:
+            if kw_name not in arg_names:
+                self._error(
+                    f"Unexpected keyword argument '{kw_name}' for function '{expr.name}'",
+                    node=expr,
+                )
+
+        # Check all required args are provided
+        for i, (arg_name, has_default) in enumerate(zip(arg_names, arg_defaults)):
+            if i < provided_positional:
+                continue
+            elif arg_name in provided_kwarg_names:
+                continue
+            elif has_default:
+                continue
+            else:
+                self._error(
+                    f"Missing required argument '{arg_name}' for function '{expr.name}'",
+                    node=expr,
+                )
+
+        # Validate positional args types
         for i, (arg_expr, expected_type) in enumerate(zip(expr.args, expected_args)):
             arg_type = self._infer_type(arg_expr)
             bare_arg = self._strip_imut(arg_type) if arg_type else None
@@ -2264,6 +2334,22 @@ class TypeChecker:
                     f"but got '{bare_arg}'.",
                     node=expr,
                 )
+
+        # Validate kwargs types
+        if hasattr(expr, 'kwargs'):
+            for kw_name, kw_expr in expr.kwargs.items():
+                if kw_name in arg_names:
+                    idx = arg_names.index(kw_name)
+                    expected_type = expected_args[idx]
+                    arg_type = self._infer_type(kw_expr)
+                    bare_arg = self._strip_imut(arg_type) if arg_type else None
+                    bare_expected = self._strip_imut(expected_type)
+                    if bare_arg and not self._types_compatible(bare_arg, bare_expected):
+                        self._warn(
+                            f"Argument '{kw_name}' of '{expr.name}' expects '{bare_expected}' "
+                            f"but got '{bare_arg}'.",
+                            node=expr,
+                        )
 
         return return_type
 
@@ -2895,13 +2981,24 @@ class TypeChecker:
             # For instance methods, skip the first argument if it's 'this'
             # (built-in types like File include 'this' in args, user-defined classes don't)
             # For static methods, use all arguments
-            if is_static:
-                expected_args = [t for _, t in fnc_node.args]
-            else:
-                if fnc_node.args and fnc_node.args[0][0] == "this":
-                    expected_args = [t for _, t in fnc_node.args[1:]]
+            # Handle both old format (2-tuple) and new format (3-tuple)
+            try:
+                if is_static:
+                    expected_args = [t for _, t, _ in fnc_node.args]
                 else:
+                    if fnc_node.args and fnc_node.args[0][0] == "this":
+                        expected_args = [t for _, t, _ in fnc_node.args[1:]]
+                    else:
+                        expected_args = [t for _, t, _ in fnc_node.args]
+            except ValueError:
+                # Old format: (arg_name, arg_type) - use 2-tuple handling
+                if is_static:
                     expected_args = [t for _, t in fnc_node.args]
+                else:
+                    if fnc_node.args and fnc_node.args[0][0] == "this":
+                        expected_args = [t for _, t in fnc_node.args[1:]]
+                    else:
+                        expected_args = [t for _, t in fnc_node.args]
 
             if len(expr.args) != len(expected_args):
                 raise LeashError(
@@ -2958,9 +3055,9 @@ class TypeChecker:
 
         # Substitute type parameters in the function signature
         new_args = []
-        for arg_name, arg_type in template.args:
+        for arg_name, arg_type, default in template.args:
             new_type = self._substitute_type_params(arg_type, type_param_map)
-            new_args.append((arg_name, new_type))
+            new_args.append((arg_name, new_type, default))
 
         new_return_type = self._substitute_type_params(
             template.return_type, type_param_map
@@ -2973,8 +3070,10 @@ class TypeChecker:
         )
 
         # Register the instantiated function
-        arg_types = [t for _, t in new_args]
-        self.func_types[mangled_name] = (arg_types, new_return_type)
+        arg_types = [t for _, t, _ in new_args]
+        arg_names = [n for n, _, _ in new_args]
+        arg_defaults = [d is not None for _, _, d in new_args]
+        self.func_types[mangled_name] = (arg_types, new_return_type, arg_names, arg_defaults)
         self.instantiated_funcs[key] = mangled_name
 
         # Store the instantiated function node for code generation
@@ -2993,7 +3092,7 @@ class TypeChecker:
 
         # Build a map from type parameter to position in multi-type
         multi_type_params = {}  # param_name -> (arg_index, position_in_multi_type)
-        for arg_idx, (arg_name, arg_type) in enumerate(template.args):
+        for arg_idx, (arg_name, arg_type, _) in enumerate(template.args):
             multi_types = self._parse_multi_type(arg_type)
             if multi_types:
                 for pos, mt in enumerate(multi_types):
@@ -3001,7 +3100,7 @@ class TypeChecker:
                         multi_type_params[mt] = (arg_idx, pos)
 
         # Now map each concrete argument type to its corresponding type parameter
-        for arg_idx, (arg_expr, (arg_name, arg_type)) in enumerate(
+        for arg_idx, (arg_expr, (arg_name, arg_type, _)) in enumerate(
             zip(expr.args, template.args)
         ):
             arg_type_inferred = self._infer_type(arg_expr)
@@ -3038,10 +3137,10 @@ class TypeChecker:
 
         # Create and register the new instantiation with concrete types
         new_args = []
-        for arg_name, arg_type in template.args:
+        for arg_name, arg_type, default in template.args:
             # If arg_type is a multi-type with a single parameter, substitute it
             new_type = self._substitute_type_params(arg_type, type_param_map)
-            new_args.append((arg_name, new_type))
+            new_args.append((arg_name, new_type, default))
 
         new_return_type = self._substitute_type_params(
             template.return_type, type_param_map
@@ -3052,8 +3151,10 @@ class TypeChecker:
         )
 
         # Register the instantiated function
-        arg_types = [t for _, t in new_args]
-        self.func_types[mangled_name] = (arg_types, new_return_type)
+        arg_types = [t for _, t, _ in new_args]
+        arg_names = [n for n, _, _ in new_args]
+        arg_defaults = [d is not None for _, _, d in new_args]
+        self.func_types[mangled_name] = (arg_types, new_return_type, arg_names, arg_defaults)
         self.instantiated_funcs[key] = mangled_name
         TypeChecker.instantiated_func_nodes[mangled_name] = new_func
 
@@ -3142,9 +3243,9 @@ class TypeChecker:
         new_methods = []
         for m in template.methods:
             new_args = []
-            for arg_name, arg_type in m.fnc.args:
+            for arg_name, arg_type, default in m.fnc.args:
                 new_type = self._substitute_type_params(arg_type, type_param_map)
-                new_args.append((arg_name, new_type))
+                new_args.append((arg_name, new_type, default))
             new_return_type = self._substitute_type_params(
                 m.fnc.return_type, type_param_map, class_name_map
             )

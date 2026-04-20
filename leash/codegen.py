@@ -455,6 +455,7 @@ class CodeGen:
         )
 
     def generate_code(self, node):
+        self.program = node
         return self._codegen(node)
 
     def _codegen(self, node):
@@ -771,7 +772,7 @@ class CodeGen:
     def _codegen_NativeImport(self, node):
         """Generate external function declarations for native library imports (first pass)."""
         for name, args, return_type in node.func_declarations:
-            arg_types = [self._get_llvm_type(arg_type) for _, arg_type in args]
+            arg_types = [self._get_llvm_type(arg_type) for _, arg_type, _ in args]
             ret_type = self._get_llvm_type(return_type, is_return=True)
             func_type = ir.FunctionType(ret_type, arg_types)
             func = ir.Function(self.module, func_type, name=name)
@@ -1113,12 +1114,13 @@ class CodeGen:
 
             # If not static, prepend 'this' to args
             if not m.is_static:
-                new_args = [("this", node.name)] + list(m.fnc.args)
+                new_args = [(name, typ, default) for name, typ, default in m.fnc.args]
+                new_args = [("this", node.name, None)] + new_args
                 m.fnc.args = tuple(new_args)
 
             # Determine function type
             ret_type = self._get_llvm_type(m.fnc.return_type, is_return=True)
-            arg_types = [self._get_llvm_type(t, is_return=False) for _, t in m.fnc.args]
+            arg_types = [self._get_llvm_type(t, is_return=False) for _, t, _ in m.fnc.args]
             func_type = ir.FunctionType(ret_type, arg_types)
 
             # Create function declaration (no body yet)
@@ -1313,7 +1315,7 @@ class CodeGen:
 
         # Determine argument types
         arg_types = []
-        for name, typ in node.args:
+        for name, typ, _ in node.args:
             arg_types.append(self._get_llvm_type(typ, is_return=False))
 
         func_type = ir.FunctionType(ret_type, arg_types)
@@ -1387,7 +1389,7 @@ class CodeGen:
             self.builder.store(slice_val, ptr)
             self.var_symtab[leash_arg_name] = (ptr, "string[]")
         else:
-            for i, (arg_name, arg_type_name) in enumerate(node.args):
+            for i, (arg_name, arg_type_name, _) in enumerate(node.args):
                 func.args[i].name = arg_name
                 ptr = self.builder.alloca(func.args[i].type)
                 self.builder.store(func.args[i], ptr)
@@ -5046,10 +5048,71 @@ class CodeGen:
 
             raise LeashError(f"Call to undefined function: '{node.name}'")
 
-        args = []
+        # Get function signature to determine arg names and defaults
+        func_name = node.name
+        func_node = None
+        for item in self.program.items:
+            if hasattr(item, "name") and item.name == func_name:
+                func_node = item
+                break
+
+        # Build final args list: positional + kwargs + defaults
+        final_args = []
+        num_provided = len(node.args)
+        provided_kwarg_names = set(node.kwargs.keys())
+
+        # Determine the mapping: position -> arg_name
+        arg_mapping = []  # list of (position, arg_name, default_expr)
+        if func_node and hasattr(func_node, "args"):
+            for pos, (arg_name, arg_type, default_expr) in enumerate(func_node.args):
+                arg_mapping.append((pos, arg_name, default_expr))
+
+        # First, fill in all positional args
         for i, arg_expr in enumerate(node.args):
-            if i < len(func.args):
-                target_llvm = func.args[i].type
+            final_args.append((i, arg_expr))
+
+        # Then, fill in kwargs by finding their positions
+        for kw_name, kw_expr in node.kwargs.items():
+            found = False
+            for pos, arg_name, _ in arg_mapping:
+                if arg_name == kw_name:
+                    # Replace or add at this position
+                    while len(final_args) <= pos:
+                        final_args.append(None)
+                    final_args[pos] = (pos, kw_expr)
+                    found = True
+                    break
+            if not found:
+                raise LeashError(
+                    f"Unexpected keyword argument '{kw_name}' for function '{func_name}'"
+                )
+
+        # Finally, fill in defaults for missing args
+        num_positional = len(node.args)
+        for pos, arg_name, default_expr in arg_mapping:
+            while len(final_args) <= pos:
+                final_args.append(None)
+            if final_args[pos] is None:
+                if default_expr is not None:
+                    final_args[pos] = (pos, default_expr)
+                elif pos < num_positional:
+                    # This shouldn't happen normally, but just in case
+                    raise LeashError(
+                        f"Missing argument at position {pos} for function '{func_name}'"
+                    )
+                else:
+                    raise LeashError(
+                        f"Missing required argument '{arg_name}' for function '{func_name}'"
+                    )
+
+        # Generate LLVM values
+        args = []
+        for i, arg_entry in enumerate(final_args):
+            if arg_entry is None:
+                continue
+            pos, arg_expr = arg_entry
+            if pos < len(func.args):
+                target_llvm = func.args[pos].type
                 src_type = self._get_leash_type_name(arg_expr)
                 resolved_src = self._resolve_type_name(src_type)
 
@@ -5994,7 +6057,7 @@ class CodeGen:
         ret_type = self._get_llvm_type(node.return_type, is_return=True)
 
         arg_types = []
-        for _, arg_type in node.args:
+        for _, arg_type, _ in node.args:
             arg_types.append(self._get_llvm_type(arg_type, is_return=False))
 
         func_type = ir.FunctionType(ret_type, arg_types)
@@ -6006,11 +6069,11 @@ class CodeGen:
         self.builder = ir.IRBuilder(block)
 
         old_vars = self.var_symtab.copy()
-        for i, (arg_name, _) in enumerate(node.args):
+        for i, (arg_name, arg_type_name, _) in enumerate(node.args):
             func.args[i].name = arg_name
             ptr = self.builder.alloca(func.args[i].type)
             self.builder.store(func.args[i], ptr)
-            self.var_symtab[arg_name] = (ptr, node.args[i][1])
+            self.var_symtab[arg_name] = (ptr, arg_type_name)
 
         for stmt in node.body:
             self._codegen(stmt)
