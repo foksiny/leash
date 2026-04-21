@@ -1,0 +1,4 @@
+
+Runtime error: [ExpectedArguments]: Expected 2 or more arguments but only got only 1.
+  --> examples/errors.lsh:5:8
+--- Executed at 2026-04-20 21:04:24 ---

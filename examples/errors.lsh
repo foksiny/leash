@@ -1,0 +1,14 @@
+error ExpectedArguments(amount int, got int) -> "[" + self + "]: Expected " + tostring(amount) + " or more arguments but only got only " + tostring(got) + ".";
+
+fnc main(args string[]) {
+    if args.size < 2 {
+        throw ExpectedArguments(2, args.size);
+    }
+
+    foreach i, arg in<array> args {
+        if i == 0 {
+            continue;
+        }
+        show(i, ": ", arg);
+    }
+}

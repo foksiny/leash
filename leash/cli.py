@@ -184,6 +184,7 @@ def resolve_imports(program, base_path):
                             StructDef,
                             UnionDef,
                             EnumDef,
+                            ErrorDef,
                             TypeAlias,
                             ClassDef,
                             Function,
@@ -530,7 +531,7 @@ def compile_file(
 
         # 5. Code Generation
         codegen = CodeGen()
-        codegen.generate_code(ast)
+        codegen.generate_code(ast, input_file)
 
         llvm_ir = codegen.get_ir()
 

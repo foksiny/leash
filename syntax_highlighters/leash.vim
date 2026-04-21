@@ -4,12 +4,13 @@ if exists("b:current_syntax")
 endif
 
 " Keywords
-syn keyword leashKeyword fnc def struct union enum class type template return if also else while for do foreach in imut vector vec this pub priv static stop continue use works otherwise switch case default unsafe as inline defer
+syn keyword leashKeyword fnc def struct union enum class type template return if also else while for do foreach in imut vector vec this pub priv static stop continue use works otherwise switch case default unsafe as inline defer error throw self
 syn keyword leashBoolean true false
 syn keyword leashNull null nil
 
 " Special file path literals and built-in variables
 syn keyword leashBuiltin _FILEPATH _FILENAME _PLATFORM
+syn match leashSelf /\<self\(::[a-zA-Z_][a-zA-Z0-9_]*\)\?\>/
 
 " @from native import directive
 syn match leashNativeImport /@from\s*(/me=s+1
@@ -97,6 +98,7 @@ hi def link leashArrayType Type
 hi def link leashFuncPointer Type
 hi def link leashBoolean Boolean
 hi def link leashNull Constant
+hi def link leashSelf Constant
 hi def link leashBuiltin Function
 hi def link leashFunction Function
 hi def link leashMethod Function

@@ -1,0 +1,13 @@
+fnc add(a int, b int) : int {
+    show(self, ": Adding ", a, " + ", b);
+    return a + b;
+}
+
+fnc main() {
+    show(add(10, 20));
+
+    l: fnc() : void = fnc() {
+        show("Lambda: ", self);
+    };
+    l();
+}

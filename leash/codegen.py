@@ -6,12 +6,14 @@ from .ast_nodes import (
     StructDef,
     EnumDef,
     UnionDef,
+    ErrorDef,
     ClassDef,
     Function,
     GenericCall,
     TemplateDef,
     GlobalVarDecl,
     WorksOtherwiseStatement,
+    ThrowStatement,
     NativeImport,
     DeferStatement,
     Lambda,
@@ -43,6 +45,9 @@ class CodeGen:
         self.in_works_block = False  # Track if we're generating code for a works block
         self.works_error_occured = False  # Flag if error occurred in works block
         self.works_error_info = None  # Store error info for otherwise block
+        self.current_error_name = None  # Name of error being defined
+        self.current_func_name = None  # Name of function being defined
+        self.current_class_name = None  # Name of class being defined
 
         # For unsafe functions - skip runtime safety checks
         self.in_unsafe_func = (
@@ -454,8 +459,9 @@ class CodeGen:
             ],
         )
 
-    def generate_code(self, node):
+    def generate_code(self, node, file_path="unknown"):
         self.program = node
+        self.program_file = file_path
         return self._codegen(node)
 
     def _codegen(self, node):
@@ -718,6 +724,8 @@ class CodeGen:
             elif isinstance(item, StructDef):
                 self._codegen(item)
             elif isinstance(item, EnumDef):
+                self._codegen(item)
+            elif isinstance(item, ErrorDef):
                 self._codegen(item)
             elif isinstance(item, UnionDef):
                 self._codegen(item)
@@ -1002,6 +1010,9 @@ class CodeGen:
         self.type_aliases[node.name] = node.target_type
 
     def _codegen_ClassDef(self, node):
+        old_class_name = self.current_class_name
+        self.current_class_name = node.name
+
         # Vtable pointer type (i8*)
         vtable_ptr_type = ir.IntType(8).as_pointer()
 
@@ -1141,6 +1152,7 @@ class CodeGen:
 
         # Update vtable with actual function pointers
         self._update_vtable(node.name)
+        self.current_class_name = old_class_name
 
     def _create_vtable_placeholder(self, class_name):
         """Create a vtable type and placeholder global for the given class.
@@ -1217,6 +1229,38 @@ class CodeGen:
         ptr, type_name = self.var_symtab["this"]
         return self.builder.load(ptr)
 
+    def _codegen_SelfExpr(self, node):
+        if node.member:
+            if node.member == "Parent":
+                if not self.current_class_name:
+                    raise LeashError("'self::Parent' is not available in the current context")
+                parent = self.class_symtab[self.current_class_name].get("parent")
+                if not parent:
+                    raise LeashError(f"Class '{self.current_class_name}' has no parent class")
+                return self._emit_const_str(parent)
+            elif node.member == "Class":
+                if not self.current_class_name:
+                    raise LeashError("'self::Class' is not available in the current context")
+                return self._emit_const_str(self.current_class_name)
+            else:
+                raise LeashError(f"Unknown self member '{node.member}'")
+
+        if self.current_func_name:
+            # For class methods, name is usually Class_Method. 
+            # If the user wants just Method, we might need to strip Class_
+            # but usually self in a method refers to the method name.
+            # Let's check if it's a mangled method name.
+            name = self.current_func_name
+            if self.current_class_name and name.startswith(self.current_class_name + "_"):
+                name = name[len(self.current_class_name) + 1:]
+            return self._emit_const_str(name)
+        if self.current_error_name:
+            return self._emit_const_str(self.current_error_name)
+        if self.current_class_name:
+            return self._emit_const_str(self.current_class_name)
+            
+        raise LeashError("'self' is not available in the current context")
+
     def _codegen_UnionDef(self, node):
         # Compute the max size needed for any variant
         variant_info = {}
@@ -1285,6 +1329,78 @@ class CodeGen:
 
         self.enum_symtab[node.name] = {"members": node.members, "names_arr": g_names}
 
+    def _codegen_ErrorDef(self, node):
+        # Generate a function for this error that returns its formatted message
+        ret_type = ir.IntType(8).as_pointer()
+        arg_types = [self._get_llvm_type(t) for _, t in node.args]
+        func_type = ir.FunctionType(ret_type, arg_types)
+
+        func = ir.Function(self.module, func_type, name=f"_error_{node.name}")
+        self.func_symtab[f"_error_{node.name}"] = func
+
+        # Build the function body
+        block = func.append_basic_block("entry")
+        saved_builder = self.builder
+        self.builder = ir.IRBuilder(block)
+
+        # Register args in symtab
+        saved_vars = self.var_symtab.copy()
+        for i, (arg_name, arg_type) in enumerate(node.args):
+            ptr = self.builder.alloca(func.args[i].type)
+            self.builder.store(func.args[i], ptr)
+            self.var_symtab[arg_name] = (ptr, arg_type)
+
+        saved_error_name = self.current_error_name
+        self.current_error_name = node.name
+
+        # Codegen the message expression
+        msg_val = self._codegen(node.message_expr)
+        self.builder.ret(msg_val)
+
+        # Restore builder and symtab
+        self.builder = saved_builder
+        self.var_symtab = saved_vars
+        self.current_error_name = saved_error_name
+
+    def _codegen_ThrowStatement(self, node):
+        from .ast_nodes import ErrorDef
+
+        # 1. Generate the error message by calling the error function
+        error_func_name = f"_error_{node.error_name}"
+        error_func = self.func_symtab.get(error_func_name)
+        if not error_func:
+            # Maybe it's defined later or in another module (though currently we expect it in func_symtab)
+            # Find the ErrorDef to get its signature if not in func_symtab yet?
+            # Actually, first pass should have registered it.
+            raise LeashError(f"Internal error: could not find codegen for error '{node.error_name}'")
+
+        args = [self._codegen(a) for a in node.args]
+        msg_val = self.builder.call(error_func, args)
+
+        # 2. Print error info: "Runtime error: [msg] at [file]:[line]:[col]"
+        fmt_ptr = self._emit_const_str("\nRuntime error: %s\n  --> %s:%d:%d\n")
+
+        file_name = self.program_file if hasattr(self, "program_file") else "unknown"
+        file_ptr = self._emit_const_str(file_name)
+
+        line_val = ir.Constant(ir.IntType(32), node.line if node.line is not None else 0)
+        col_val = ir.Constant(ir.IntType(32), node.col if node.col is not None else 0)
+
+        self.builder.call(self.printf, [fmt_ptr, msg_val, file_ptr, line_val, col_val])
+
+        # 3. If in works block, we might want to "catch" it?
+        if self.in_works_block:
+            self.works_error_occured = True
+            self.works_error_info = msg_val
+            # The WorksOtherwiseStatement codegen handles the branching if works_error_occured is true.
+            return
+
+        # 4. Exit the program
+        self.builder.call(self.exit_fn, [ir.Constant(ir.IntType(32), 1)])
+        # Use a dummy branch to a new unreachable block to satisfy LLVM if needed,
+        # but ret/unreachable works after exit if it returns void.
+        self.builder.unreachable()
+
     def _type_byte_size(self, llvm_ty):
         """Estimate byte size of an LLVM type."""
         if isinstance(llvm_ty, ir.IntType):
@@ -1347,6 +1463,9 @@ class CodeGen:
         self.builder = ir.IRBuilder(block)
 
         name = node.name
+
+        old_func_name = self.current_func_name
+        self.current_func_name = name
 
         old_unsafe = self.in_unsafe_func
         self.in_unsafe_func = getattr(node, "is_unsafe", False)
@@ -1420,6 +1539,7 @@ class CodeGen:
 
         self.builder = None
         self.in_unsafe_func = old_unsafe
+        self.current_func_name = old_func_name
 
     def _codegen_ReturnStatement(self, node):
         old_target = self.current_target_type
@@ -2560,8 +2680,9 @@ class CodeGen:
         self._codegen(node.init)
         cond_bb = self.builder.function.append_basic_block("for_cond")
         body_bb = self.builder.function.append_basic_block("for_body")
+        step_bb = self.builder.function.append_basic_block("for_step")
         merge_bb = self.builder.function.append_basic_block("for_merge")
-        continue_bb = cond_bb  # continue jumps to condition check (after step)
+        continue_bb = step_bb  # continue jumps to step
         break_bb = merge_bb  # break jumps to merge
 
         # Push loop context for nested stop/continue
@@ -2578,8 +2699,11 @@ class CodeGen:
             if self.builder.block.is_terminated:
                 break
         if not self.builder.block.is_terminated:
-            self._codegen(node.step)
-            self.builder.branch(cond_bb)
+            self.builder.branch(step_bb)
+
+        self.builder.position_at_end(step_bb)
+        self._codegen(node.step)
+        self.builder.branch(cond_bb)
 
         # Pop loop context
         self.loop_stack.pop()
@@ -2677,8 +2801,9 @@ class CodeGen:
 
         cond_bb = self.builder.function.append_basic_block("foreach_cond")
         body_bb = self.builder.function.append_basic_block("foreach_body")
+        inc_bb = self.builder.function.append_basic_block("foreach_inc")
         merge_bb = self.builder.function.append_basic_block("foreach_merge")
-        continue_bb = cond_bb  # continue goes back to condition
+        continue_bb = inc_bb  # continue goes back to increment
         break_bb = merge_bb  # break exits to merge
 
         # Push loop context for nested stop/continue
@@ -2703,9 +2828,12 @@ class CodeGen:
                 break
 
         if not self.builder.block.is_terminated:
-            next_idx = self.builder.add(curr_idx, ir.Constant(ir.IntType(64), 1))
-            self.builder.store(next_idx, idx_ptr)
-            self.builder.branch(cond_bb)
+            self.builder.branch(inc_bb)
+
+        self.builder.position_at_end(inc_bb)
+        next_idx = self.builder.add(curr_idx, ir.Constant(ir.IntType(64), 1))
+        self.builder.store(next_idx, idx_ptr)
+        self.builder.branch(cond_bb)
 
         # Pop loop context
         self.loop_stack.pop()
@@ -2725,8 +2853,9 @@ class CodeGen:
 
         cond_bb = self.builder.function.append_basic_block("foreach_str_cond")
         body_bb = self.builder.function.append_basic_block("foreach_str_body")
+        inc_bb = self.builder.function.append_basic_block("foreach_str_inc")
         merge_bb = self.builder.function.append_basic_block("foreach_str_merge")
-        continue_bb = cond_bb  # continue goes back to condition
+        continue_bb = inc_bb  # continue goes back to increment
         break_bb = merge_bb  # break exits to merge
 
         # Push loop context for nested stop/continue
@@ -2751,9 +2880,12 @@ class CodeGen:
                 break
 
         if not self.builder.block.is_terminated:
-            next_idx = self.builder.add(curr_idx, ir.Constant(ir.IntType(64), 1))
-            self.builder.store(next_idx, idx_ptr)
-            self.builder.branch(cond_bb)
+            self.builder.branch(inc_bb)
+
+        self.builder.position_at_end(inc_bb)
+        next_idx = self.builder.add(curr_idx, ir.Constant(ir.IntType(64), 1))
+        self.builder.store(next_idx, idx_ptr)
+        self.builder.branch(cond_bb)
 
         # Pop loop context
         self.loop_stack.pop()
@@ -2786,8 +2918,9 @@ class CodeGen:
 
         cond_bb = self.builder.function.append_basic_block("foreach_vec_cond")
         body_bb = self.builder.function.append_basic_block("foreach_vec_body")
+        inc_bb = self.builder.function.append_basic_block("foreach_vec_inc")
         merge_bb = self.builder.function.append_basic_block("foreach_vec_merge")
-        continue_bb = cond_bb  # continue goes back to condition
+        continue_bb = inc_bb  # continue goes back to increment
         break_bb = merge_bb  # break exits to merge
 
         # Push loop context for nested stop/continue
@@ -2812,9 +2945,12 @@ class CodeGen:
                 break
 
         if not self.builder.block.is_terminated:
-            next_idx = self.builder.add(curr_idx, ir.Constant(ir.IntType(64), 1))
-            self.builder.store(next_idx, idx_ptr)
-            self.builder.branch(cond_bb)
+            self.builder.branch(inc_bb)
+
+        self.builder.position_at_end(inc_bb)
+        next_idx = self.builder.add(curr_idx, ir.Constant(ir.IntType(64), 1))
+        self.builder.store(next_idx, idx_ptr)
+        self.builder.branch(cond_bb)
 
         # Pop loop context
         self.loop_stack.pop()
@@ -6069,6 +6205,9 @@ class CodeGen:
         self.builder = ir.IRBuilder(block)
 
         old_vars = self.var_symtab.copy()
+        old_func_name = self.current_func_name
+        self.current_func_name = "<lambda>"
+
         for i, (arg_name, arg_type_name, _) in enumerate(node.args):
             func.args[i].name = arg_name
             ptr = self.builder.alloca(func.args[i].type)
@@ -6088,5 +6227,6 @@ class CodeGen:
 
         self.builder = old_builder
         self.var_symtab = old_vars
+        self.current_func_name = old_func_name
 
         return func

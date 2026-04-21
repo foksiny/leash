@@ -20,6 +20,7 @@ Leash is a strongly-typed, modern compiled programming language built on top of 
   - [Branching](#branching)
   - [Loops](#loops)
   - [Switch-Case](#switch-case)
+  - [The `self` Keyword](#the-self-keyword)
 - [Input Handling](#input-handling)
 - [Random Numbers](#random-numbers)
 - [Time and Delays](#time-and-delays)
@@ -1076,6 +1077,57 @@ fnc main() : void {
         } default {
             show("not one or two");
         }
+    }
+}
+```
+
+### The `self` Keyword
+
+The `self` keyword is a special expression that evaluates to the name of the current code context as a `string`. It is highly useful for logging, debugging, and generic error messages.
+
+#### Contextual Behavior
+
+| Context | `self` Value | Example |
+|---------|--------------|---------|
+| **Function** | Function name | `fnc add(a, b) { show(self); }` prints `"add"` |
+| **Class Method** | Method name | `pub fnc greet() { show(self); }` prints `"greet"` |
+| **Lambda** | Literal string | `show(self);` prints `"<lambda>"` |
+| **Error Def** | Error name | `error MyErr() -> self;` returns `"MyErr"` |
+| **Class** | Class name | `def User : class { n: string = self; }` sets `n` to `"User"` |
+
+#### Advanced Metadata (`::` syntax)
+
+When used inside a class or method, `self` supports static member access to retrieve related class names:
+
+- `self::Class`: Always returns the name of the current class.
+- `self::Parent`: Returns the name of the parent class (available only in subclasses).
+
+```leash
+def Animal : class {
+    pub fnc identify() {
+        show("Context: ", self);       // "identify"
+        show("Class:   ", self::Class); // "Animal"
+    }
+}
+
+def Dog : class(Animal) {
+    pub fnc info() {
+        show("Method: ", self);         // "info"
+        show("Class:  ", self::Class);   // "Dog"
+        show("Parent: ", self::Parent); // "Animal"
+    }
+}
+```
+
+#### Why use `self`?
+Instead of hardcoding names in strings (which can break when you rename a function), `self` ensures your logs and error messages always stay in sync with your code:
+
+```leash
+error DatabaseError(msg string) -> "[" + self + "]: " + msg;
+
+fnc connect() {
+    if failed {
+        throw DatabaseError("Connection timeout"); // "[DatabaseError]: Connection timeout"
     }
 }
 ```
@@ -2215,6 +2267,31 @@ This ensures that operations like string concatenation (`a + b`) or vector manip
 ## Error Handling & Safety
 
 Leash prioritizes developer experience with helpful error reporting and safety features:
+
+### Custom Error Definitions
+
+Leash allows you to define custom errors with the `error` keyword. Errors can take arguments and have a message expression that is evaluated when the error is thrown.
+
+```leash
+error ExpectedArguments(amount int, got int) -> "Expected " + tostring(amount) + " or more arguments but only got " + tostring(got) + ".";
+
+fnc main(args string[]) {
+    if args.size < 2 {
+        throw ExpectedArguments(2, args.size);
+    }
+}
+```
+
+When an error is thrown:
+1. The message expression is evaluated.
+2. The error message is printed to the console along with the file, line, and column where it occurred.
+3. The program terminates with exit code 1 (unless caught in a `works` block).
+
+Errors can be marked `pub` (default) or `priv` for module visibility:
+
+```leash
+priv error InternalError(msg string) -> "[INTERNAL]: " + msg;
+```
 
 - **Static Type Checker**: The compiler validates types before generating code, catching undefined variables, incompatible assignments, and member access errors.
 - **Smart Error Tips**: When a syntax error occurs, Leash provides actionable tips (e.g., suggesting a missing semicolon or parenthetical).

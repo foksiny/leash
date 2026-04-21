@@ -41,10 +41,13 @@ from .ast_nodes import (
     FloatLiteral,
     TypeConvExpr,
     ShowStatement,
+    ErrorDef,
+    ThrowStatement,
     ClassDef,
     ClassField,
     ClassMethod,
     ThisExpr,
+    SelfExpr,
     PointerMemberAccess,
     TemplateDef,
     GenericCall,
@@ -416,6 +419,10 @@ class Parser:
                             is_inline=is_inline,
                         )
                     )
+                elif self.peek() and self.peek().type == "ERROR":
+                    visibility = self.current().value.lower()
+                    self.eat(self.current().type)  # eat PUB/PRIV
+                    items.append(self.parse_error_def(visibility=visibility))
                 elif self.peek() and self.peek().type == "USE":
                     # It's a use with visibility
                     visibility = self.current().value.lower()
@@ -426,6 +433,8 @@ class Parser:
                     items.append(self.parse_global_var())
             elif self.current().type == "DEF":
                 items.append(self.parse_def())
+            elif self.current().type == "ERROR":
+                items.append(self.parse_error_def())
             elif self.current().type == "FNC":
                 items.append(
                     self.parse_function(is_unsafe=is_unsafe, is_inline=is_inline)
@@ -621,6 +630,25 @@ class Parser:
             ),
             tok,
         )
+
+    def parse_error_def(self, visibility="pub"):
+        tok = self.eat("ERROR")
+        name = self.eat("IDENT").value
+        self.eat("LPAREN")
+        args = []
+        while self.current().type != "RPAREN":
+            arg_name = self.eat("IDENT").value
+            arg_type = self.parse_type()
+            args.append((arg_name, arg_type))
+            if self.current().type == "COMMA":
+                self.eat("COMMA")
+            else:
+                break
+        self.eat("RPAREN")
+        self.eat("ARROW")
+        message_expr = self.parse_expression()
+        self.eat("SEMI")
+        return self._pos(ErrorDef(name, args, message_expr, visibility), tok)
 
     def parse_conditional_def(self):
         """Parse a top-level conditional: if condition { ... } also ... else ..."""
@@ -1136,6 +1164,20 @@ class Parser:
             self.eat("SEMI")
             return self._pos(DoWhileStatement(cond, body), tok)
 
+        elif current.type == "THROW":
+            tok = self.current()
+            self.eat("THROW")
+            error_name = self.eat("IDENT").value
+            self.eat("LPAREN")
+            args = []
+            while self.current().type != "RPAREN":
+                args.append(self.parse_expression())
+                if self.current().type == "COMMA":
+                    self.eat("COMMA")
+            self.eat("RPAREN")
+            self.eat("SEMI")
+            return self._pos(ThrowStatement(error_name, args), tok)
+
         elif current.type == "FOREACH":
             tok = self.current()
             self.eat("FOREACH")
@@ -1462,6 +1504,14 @@ class Parser:
             tok = self.current()
             self.eat("THIS")
             return self._pos(ThisExpr(), tok)
+        elif self.current().type == "SELF":
+            tok = self.current()
+            self.eat("SELF")
+            member = None
+            if self.current().type == "DCOLON":
+                self.eat("DCOLON")
+                member = self.eat("IDENT").value
+            return self._pos(SelfExpr(member), tok)
         elif self.current().type == "FNC":
             return self._parse_lambda()
         elif self.current().type == "IDENT":

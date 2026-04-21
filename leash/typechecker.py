@@ -26,11 +26,13 @@ class TypeChecker:
         self.struct_types = {}  # name -> {field: type}
         self.union_types = {}  # name -> {variant: type}
         self.enum_types = {}  # name -> list of member names
+        self.error_types = {}  # name -> (args, message_expr, visibility)
         self.type_aliases = {}  # name -> resolved type string
         self.type_alias_vis = {}  # name -> visibility ("pub" or "priv")
         self.struct_types_vis = {}  # name -> visibility ("pub" or "priv")
         self.union_types_vis = {}  # name -> visibility ("pub" or "priv")
         self.enum_types_vis = {}  # name -> visibility ("pub" or "priv")
+        self.error_types_vis = {}  # name -> visibility ("pub" or "priv")
         self.func_signatures = {}  # name -> (arg_types, return_type)
         self.func_signatures_vis = {}  # name -> visibility ("pub" or "priv")
         self.class_types = {}  # name -> {fields: {name: (type, vis)}, methods: {name: (node, vis)}}
@@ -40,6 +42,7 @@ class TypeChecker:
         self.instantiated_funcs = {}  # (name, type_args_tuple) -> mangled_name
         self.instantiated_classes = {}  # (name, type_args_tuple) -> mangled_name
         self.current_class = None  # name of current class being checked
+        self.current_error = None  # name of current error being checked
         self.warnings = []
         self.current_func = None  # name of current function being checked
         self.current_func_node = None  # Function node
@@ -75,6 +78,8 @@ class TypeChecker:
                 self._register_union(item)
             elif isinstance(item, EnumDef):
                 self._register_enum(item)
+            elif isinstance(item, ErrorDef):
+                self._register_error(item)
             elif isinstance(item, TypeAlias):
                 self._register_alias(item)
             elif isinstance(item, ClassDef):
@@ -90,6 +95,8 @@ class TypeChecker:
         for item in program.items:
             if isinstance(item, Function):
                 self._check_function(item)
+            elif isinstance(item, ErrorDef):
+                self._check_error(item)
             elif isinstance(item, ClassDef):
                 self._check_class(item)
             elif isinstance(item, GlobalVarDecl):
@@ -300,6 +307,40 @@ class TypeChecker:
             self._warn(f"Enum '{node.name}' is empty.", node=node)
         self.enum_types[node.name] = node.members
         self.enum_types_vis[node.name] = getattr(node, "visibility", "pub")
+
+    def _register_error(self, node):
+        if node.name in self.error_types:
+            self._error(f"Redefinition of error '{node.name}'", node=node)
+        self.error_types[node.name] = (node.args, node.message_expr, node.visibility)
+        self.error_types_vis[node.name] = node.visibility
+
+    def _check_error(self, node):
+        # Check error message expression in its own scope (with arguments)
+        saved_vars = self.var_types.copy()
+        saved_imut = self.var_immutable.copy()
+        saved_error = self.current_error
+        self.current_error = node.name
+
+        for arg_name, arg_type in node.args:
+            resolved = self._resolve(arg_type)
+            if not self._is_valid_type(resolved):
+                self._error(
+                    f"Error '{node.name}' argument '{arg_name}' has unknown type '{arg_type}'",
+                    node=node,
+                )
+            self.var_types[arg_name] = arg_type
+            self.var_immutable[arg_name] = True
+
+        msg_type = self._infer_type(node.message_expr)
+        if msg_type and self._resolve(msg_type) != "string":
+            self._error(
+                f"Error '{node.name}' message expression must be a string, got '{msg_type}'",
+                node=node.message_expr,
+            )
+
+        self.var_types = saved_vars
+        self.var_immutable = saved_imut
+        self.current_error = saved_error
 
     def _register_alias(self, node):
         self.type_aliases[node.name] = node.target_type
@@ -984,6 +1025,9 @@ class TypeChecker:
         saved_used_vars = self.used_vars.copy()
         saved_used_params = self.used_params.copy()
         saved_params = self.current_func_params.copy()
+        saved_func = self.current_func
+        saved_func_node = self.current_func_node
+        saved_return = self.current_return_type
 
         self.current_func = node.name
         self.current_func_node = node
@@ -1054,9 +1098,9 @@ class TypeChecker:
         self.used_vars = saved_used_vars
         self.used_params = saved_used_params
         self.current_func_params = saved_params
-        self.current_func = None
-        self.current_func_node = None
-        self.current_return_type = None
+        self.current_func = saved_func
+        self.current_func_node = saved_func_node
+        self.current_return_type = saved_return
 
     def _check_class(self, node):
         self.current_class = node.name
@@ -1127,6 +1171,8 @@ class TypeChecker:
             self._check_assignment(stmt)
         elif isinstance(stmt, ReturnStatement):
             self._check_return(stmt)
+        elif isinstance(stmt, ThrowStatement):
+            self._check_throw(stmt)
         elif isinstance(stmt, ShowStatement):
             is_buffer = getattr(stmt, "is_buffer", False)
             for i, arg in enumerate(stmt.args):
@@ -1440,6 +1486,29 @@ class TypeChecker:
                     tip=f"Make sure your return value matches the declared return type.",
                 )
 
+    def _check_throw(self, stmt):
+        if stmt.error_name not in self.error_types:
+            self._error(f"Undefined error '{stmt.error_name}'", node=stmt)
+            return
+
+        error_args, _, _ = self.error_types[stmt.error_name]
+        if len(stmt.args) != len(error_args):
+            self._error(
+                f"Error '{stmt.error_name}' expects {len(error_args)} arguments, but got {len(stmt.args)}",
+                node=stmt,
+            )
+            return
+
+        for i, (arg_expr, (arg_name, arg_type)) in enumerate(
+            zip(stmt.args, error_args)
+        ):
+            val_type = self._infer_type(arg_expr)
+            if val_type and not self._types_compatible(val_type, arg_type):
+                self._error(
+                    f"Argument {i + 1} to throw {stmt.error_name} must be '{arg_type}', but got '{val_type}'",
+                    node=arg_expr,
+                )
+
     def _check_if(self, stmt):
         self._infer_type(stmt.condition)
         if isinstance(stmt.condition, BoolLiteral):
@@ -1561,6 +1630,25 @@ class TypeChecker:
             if not self.current_class:
                 self._error("'this' can only be used inside a class method", node=expr)
             return self.current_class
+        elif isinstance(expr, SelfExpr):
+            if expr.member:
+                if expr.member == "Parent":
+                    if not self.current_class:
+                        self._error("'self::Parent' can only be used inside a class", node=expr)
+                    parent = self.class_types[self.current_class].get("parent")
+                    if not parent:
+                        self._error(f"Class '{self.current_class}' has no parent class", node=expr)
+                    return "string"
+                elif expr.member == "Class":
+                    if not self.current_class:
+                        self._error("'self::Class' can only be used inside a class", node=expr)
+                    return "string"
+                else:
+                    self._error(f"Unknown self member '{expr.member}'", node=expr, tip="Supported members are 'Parent' and 'Class'.")
+            
+            if not self.current_func and not self.current_error and not self.current_class:
+                self._error("'self' can only be used inside a function, error definition, or class", node=expr)
+            return "string"
         elif isinstance(expr, Identifier):
             if expr.name in self.var_types:
                 if expr.name in self.current_func_params:

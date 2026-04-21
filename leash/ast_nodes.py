@@ -167,6 +167,12 @@ class ShowStatement(Statement):
         self.is_buffer = is_buffer
 
 
+class ThrowStatement(Statement):
+    def __init__(self, error_name, args):
+        self.error_name = error_name
+        self.args = args  # list of positional arguments
+
+
 class Expression(ASTNode):
     pass
 
@@ -344,6 +350,11 @@ class ThisExpr(Expression):
         pass
 
 
+class SelfExpr(Expression):
+    def __init__(self, member=None):
+        self.member = member
+
+
 class TypeConvExpr(Expression):
     def __init__(self, name, target_type, expr):
         self.name = name  # 'toint', 'tofloat', etc.
@@ -356,6 +367,14 @@ class TemplateDef(ASTNode):
 
     def __init__(self, name, visibility="pub"):
         self.name = name
+        self.visibility = visibility  # 'pub' or 'priv'
+
+
+class ErrorDef(ASTNode):
+    def __init__(self, name, args, message_expr, visibility="pub"):
+        self.name = name
+        self.args = args  # list of (name, type) tuples
+        self.message_expr = message_expr
         self.visibility = visibility  # 'pub' or 'priv'
 
 

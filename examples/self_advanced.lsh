@@ -1,0 +1,26 @@
+def Animal : class {
+    pub name: string;
+    static pub fnc new(name string) : Animal {
+        return Animal { name: name };
+    }
+    pub fnc identify() {
+        show("I am an ", self::Class);
+    }
+}
+
+def Dog : class(Animal) {
+    static pub fnc new(name string) : Dog(Animal) {
+        return Dog { name: name };
+    }
+    pub fnc info() {
+        show("Method: ", self);
+        show("Class: ", self::Class);
+        show("Parent: ", self::Parent);
+    }
+}
+
+fnc main() {
+    d: Dog = Dog.new("Buddy");
+    d.identify();
+    d.info();
+}

@@ -30,6 +30,7 @@ share/python-wheels/
 
 # Leash generated files
 *.ll
+*.__temp_run*
 examples/*.exe
 examples/*.wasm
 examples/*.wat
@@ -78,12 +79,12 @@ examples/buffershow
 examples/extend
 examples/oneline
 examples/defav
-examples/.__temp_run*
+examples/errors
 
 # Trash
 trash/
 
-# cache
+# Cache
 .ruff_cache/
 
 # IDE
