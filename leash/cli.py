@@ -12,6 +12,7 @@ from .ast_nodes import (
     StructDef,
     UnionDef,
     EnumDef,
+    ErrorDef,
     TypeAlias,
     ClassDef,
     Function,

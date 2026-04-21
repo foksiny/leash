@@ -14,6 +14,7 @@ from .ast_nodes import (
     GlobalVarDecl,
     WorksOtherwiseStatement,
     ThrowStatement,
+    SelfExpr,
     NativeImport,
     DeferStatement,
     Lambda,
@@ -1363,8 +1364,6 @@ class CodeGen:
         self.current_error_name = saved_error_name
 
     def _codegen_ThrowStatement(self, node):
-        from .ast_nodes import ErrorDef
-
         # 1. Generate the error message by calling the error function
         error_func_name = f"_error_{node.error_name}"
         error_func = self.func_symtab.get(error_func_name)
