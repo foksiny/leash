@@ -733,6 +733,75 @@ def _link_native(
     return output_name_final
 
 
+def dump_file(
+    input_file,
+    output_name=None,
+    target_name=None,
+    check_mode=False,
+    warnings_as_errors=False,
+    extra_libs=None,
+):
+    with open(input_file, "r") as f:
+        code = f.read()
+
+    if target_name:
+        target_config = get_target(target_name)
+    else:
+        target_config = get_native_target()
+
+    try:
+        lexer = Lexer(code)
+        tokens = lexer.tokenize()
+
+        parser = Parser(tokens, input_file)
+        ast = parser.parse()
+
+        base_path = os.path.dirname(os.path.abspath(input_file)) or "."
+        ast = resolve_imports(ast, base_path)
+        ast = resolve_conditionals(ast, target_config)
+
+        checker = TypeChecker(check_mode=check_mode)
+        warnings = checker.check(ast)
+        for w in warnings:
+            _print_warning(w, warnings_as_errors=warnings_as_errors)
+        if warnings_as_errors and warnings:
+            sys.exit(1)
+
+        llvm.initialize_all_targets()
+
+        codegen = CodeGen()
+        codegen.generate_code(ast, input_file)
+
+        llvm_ir = codegen.get_ir()
+
+        mod = llvm.parse_assembly(llvm_ir)
+        mod.verify()
+    except LeashError as e:
+        _print_error(e, input_file, code)
+        sys.exit(1)
+    except Exception as e:
+        import traceback
+
+        print(f"error: Internal compiler error: {e}")
+        traceback.print_exc()
+        sys.exit(1)
+
+    if output_name is None:
+        if input_file.endswith(".lsh"):
+            output_name = input_file[:-4]
+        else:
+            output_name = "out"
+
+    if not output_name.endswith(".ll"):
+        output_name = output_name + ".ll"
+
+    with open(output_name, "w") as f:
+        f.write(llvm_ir)
+
+    print(f"Dumped LLVM IR to '{output_name}'")
+    return output_name
+
+
 def run_file(
     input_file,
     args=[],
@@ -821,7 +890,7 @@ def run_file(
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: leash <compile|run|install> ...")
+        print("Usage: leash <compile|run|dump|install> ...")
         print("       leash compile <file.lsh> [to <outname>] [--target <target>]")
         print(
             "       leash compile <file.lsh> to-dynamic [<outname>] [--target <target>]"
@@ -829,6 +898,7 @@ def main():
         print(
             "       leash compile <file.lsh> to-static [<outname>] [--target <target>]"
         )
+        print("       leash dump <file.lsh> [to <outname.ll|outname>] [--target <target>]")
         print("       leash compile <file.lsh> --target <target>")
         print("")
         print("Supported targets:")
@@ -929,6 +999,8 @@ def main():
         print("                            Compile to a shared library (.so)")
         print("  compile <file.lsh> to-static [<outname>] [--target <target>]")
         print("                            Compile to a static library (.a)")
+        print("  dump <file.lsh> [to <outname.ll|outname>] [--target <target>]")
+        print("                            Dump LLVM IR to a .ll file")
         print("  run <file.lsh> [args...] [--target <target>]")
         print("                            Run a Leash file directly")
         print("  check <file.lsh>          Check a file for errors and warnings")
@@ -1001,13 +1073,12 @@ def main():
             sys.exit(1)
 
     cmd = sys.argv[1]
-    if cmd in ("compile", "run"):
+    if cmd in ("compile", "run", "dump"):
         if len(sys.argv) < 3:
             print(f"Usage: leash {cmd} <file.lsh> [to <outname>] [--target <target>]")
             sys.exit(1)
         input_file = sys.argv[2]
 
-        # Parse remaining arguments
         remaining_args = sys.argv[3:]
         target_name = None
         output_name = None
@@ -1048,6 +1119,22 @@ def main():
                 input_file,
                 positional,
                 target_name,
+                check_mode=check_mode,
+                warnings_as_errors=warnings_as_errors,
+                extra_libs=extra_libs,
+            )
+        elif cmd == "dump":
+            if len(positional) >= 1:
+                if positional[0] == "to":
+                    if len(positional) >= 2:
+                        output_name = positional[1]
+                else:
+                    output_name = positional[0]
+
+            dump_file(
+                input_file,
+                output_name,
+                target_name=target_name,
                 check_mode=check_mode,
                 warnings_as_errors=warnings_as_errors,
                 extra_libs=extra_libs,

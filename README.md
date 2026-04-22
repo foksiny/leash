@@ -87,6 +87,18 @@ python3 -m leash.cli compile program.lsh -lm   # links libm.so (math library)
 python3 -m leash.cli run program.lsh -lcurl   # links libcurl.so
 ```
 
+### Dumping LLVM IR
+You can dump the generated LLVM IR to a `.ll` file instead of compiling to an executable. This is useful for debugging or inspecting the generated code.
+
+```bash
+# Dump to a .ll file with the same name as the input (e.g., 'program.ll')
+python3 -m leash.cli dump program.lsh
+
+# Specify a custom output name
+python3 -m leash.cli dump program.lsh to myoutput    # creates myoutput.ll
+python3 -m leash.cli dump program.lsh to myoutput.ll  # creates myoutput.ll
+```
+
 ## Checking for Errors
 
 Leash provides thorough static analysis to catch errors and potential issues before your code runs.
