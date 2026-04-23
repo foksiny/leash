@@ -58,6 +58,7 @@ from .ast_nodes import (
     NativeImport,
     FilePathLiteral,
     BuiltinVarLiteral,
+    SizeofExpr,
     SwitchStatement,
     ConditionalDef,
     DeferStatement,
@@ -381,6 +382,27 @@ class Parser:
                 self.parse_type()
                 # After the type, must be RPAREN
                 if self.current().type == "RPAREN":
+                    return True
+            return False
+        except (LeashError, IndexError):
+            return False
+        finally:
+            self.pos = saved
+
+    def _is_sizeof_type(self):
+        """Look ahead to determine if sizeof(type) pattern."""
+        saved = self.pos
+        try:
+            # We are called when current() is LPAREN (after sizeof)
+            self.eat("LPAREN")
+            tok = self.current()
+            if tok.type in self.TYPE_STARTERS or tok.type in ("MUL", "BIT_AND", "IMUT"):
+                return True
+            if tok.type == "IDENT":
+                # Only treat as type here if it has type-specific markers
+                # Otherwise, parse_expression will handle Identifier.
+                self.eat("IDENT")
+                if self.current().type in ("MUL", "BIT_AND", "LBRACKET", "LT"):
                     return True
             return False
         except (LeashError, IndexError):
@@ -1522,6 +1544,17 @@ class Parser:
                 return self._pos(FilePathLiteral(name, self.source_file), tok)
             if name == "_PLATFORM":
                 return self._pos(BuiltinVarLiteral(name), tok)
+            if name == "sizeof" and self.current().type == "LPAREN":
+                if self._is_sizeof_type():
+                    self.eat("LPAREN")
+                    target = self.parse_type()
+                    self.eat("RPAREN")
+                    return self._pos(SizeofExpr(target), tok)
+                else:
+                    self.eat("LPAREN")
+                    target = self.parse_expression()
+                    self.eat("RPAREN")
+                    return self._pos(SizeofExpr(target), tok)
             if name in ("toint", "tofloat") and self.current().type == "LPAREN":
                 self.eat("LPAREN")
                 target_type = self.parse_type()

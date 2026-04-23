@@ -39,6 +39,7 @@ Leash is a strongly-typed, modern compiled programming language built on top of 
 - [Type Casting](#type-casting)
 - [The `as` Keyword](#the-as-keyword)
 - [Type Conversions](#type-conversions)
+- [The `sizeof()` Operator](#the-sizeof-operator)
 - [Strings](#strings)
 - [Classes](#classes)
   - [Class Inheritance (Subclasses)](#class-inheritance-subclasses)
@@ -200,62 +201,6 @@ def pMath : class {
 ```
 
 > **Warning:** Use `unsafe` only when you truly need to bypass safety checks. Unsafe code can cause undefined behavior, crashes, or memory corruption if used incorrectly.
-
-## Checking for Errors
-
-Leash provides thorough static analysis to catch errors and potential issues before your code runs.
-
-### The `check` Command
-
-Use the `check` command to analyze a file without compiling it. This runs the full type checker with enhanced safety analysis:
-
-```bash
-python3 -m leash.cli check program.lsh
-```
-
-The checker reports:
-- **Type errors** — incompatible assignments, undefined variables, unknown types
-- **Duplicate switch cases** — unreachable case blocks
-- **Shadowed globals** — local variables that hide global ones
-- **Missing switch defaults** — switch statements without a `default` block
-- **Large stack arrays** — arrays over 10,000 elements that risk stack overflow
-- **Self-assignments** — assignments like `x = x` that have no effect
-- **Unused variables and parameters** — declared but never referenced
-- **Empty blocks** — empty if/else/loop/case bodies
-- **Unreachable code** — statements after `return`
-- **Always-true/false conditions** — `if true` or `if false` branches
-- **Redundant operations** — `+ 0`, `* 1`, `x == x`, etc.
-
-### The `--check` Flag
-
-You can also run the same thorough checks during compilation or execution by adding the `--check` flag:
-
-```bash
-# Check while compiling
-python3 -m leash.cli compile program.lsh --check
-
-# Check while running
-python3 -m leash.cli run program.lsh --check
-```
-
-### Warnings as Errors
-
-For strict builds (e.g., CI/CD), treat all warnings as errors:
-
-```bash
-python3 -m leash.cli compile program.lsh --warnings-as-errors
-```
-
-### Runtime Safety
-
-Leash also embeds runtime safety checks into compiled programs:
-
-- **Division by zero** — caught at runtime with a descriptive error message
-- **Vector bounds checking** — `get()`, `set()`, `popb()`, `popf()` validate indices and empty vectors
-- **Null file handle checks** — file operations on unopened or closed files produce clear errors
-- **Union tag mismatch** — accessing the wrong union variant halts with a runtime error
-
-All errors include error codes (e.g., `LEASH-E004`) for easy reference and suppression.
 
 ### Native Library Compilation
 
@@ -628,13 +573,19 @@ l: float = .5;          // 0.5 (leading dot)
 ```
 
 ### Explicit Integer & Float Sizes
-Leash integers and floats can specify an explicit bit width between `<` and `>` brackets to optimize memory and calculations. Maximum size is up to 512 bits:
+Leash integers and floats can specify an explicit bit width between `<` and `>` brackets to optimize memory and calculations. Leash supports arbitrary bit-widths for precise data representation:
+
+- **Integers**: `int<1>` to `int<512>` (and `uint<1>` to `uint<512>`)
+- **Floats**: `float<4>` to `float<512>`
 
 ```leash
-maxInt: int<64> = 10;     // 64-bit integer
-smallFl: float<16> = 1.0; // 16-bit float
-pixel: uint<8> = 255;
+flag: uint<1>;           // 1-bit integer (boolean-like)
+half: float<16> = 1.0;   // 16-bit float
+pixel: uint<8> = 255;    // 8-bit integer
+bigInt: int<512>;        // 512-bit wide integer
 ```
+
+Integers use native LLVM support for arbitrary bit-widths, while floats are intelligently mapped to the closest standard hardware format (e.g., 32-bit or 64-bit) for maximum compatibility and performance.
 
 ## Operators
 
@@ -1877,6 +1828,33 @@ s2: string = tostring(3.14);   // "3.140000"
 ```
 
 Just like `get()`, `tostring()` returns a managed string that will be automatically cleaned up by the GC.
+
+## The `sizeof()` Operator
+
+The built-in `sizeof()` operator returns the size in bytes of a type or the result of an expression. It supports **literally anything** in Leash, from primitives to complex classes.
+
+```leash
+fnc main() {
+    show(sizeof(int));        // 4
+    show(sizeof(float<64>));  // 8
+    
+    a: int<128>;
+    show(sizeof(a));          // 16
+    
+    show(sizeof(string));     // 8 (pointer)
+    
+    // Works with structs and classes
+    show(sizeof(Point));      // 8
+    
+    // Works with functions and lambdas (returns pointer size)
+    show(sizeof(add));        // 8
+    
+    // Works with complex expressions
+    show(sizeof(a + 10));     // 16
+}
+```
+
+`sizeof()` is evaluated at compile time when possible, providing the precise memory footprint of your data structures and types.
 
 ## Strings
 

@@ -362,6 +362,11 @@ class TypeConvExpr(Expression):
         self.expr = expr
 
 
+class SizeofExpr(Expression):
+    def __init__(self, target):
+        self.target = target  # Can be a string (type name) or an Expression node
+
+
 class TemplateDef(ASTNode):
     """Represents a template parameter definition like 'def T1 : template;'"""
 

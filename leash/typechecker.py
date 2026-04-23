@@ -714,6 +714,23 @@ class TypeChecker:
         # Check if it's a template parameter
         if t in self.template_types:
             return True
+
+        # Bit-width validation
+        if t.startswith("int<") or t.startswith("uint<"):
+            try:
+                size = int(t[t.find("<") + 1 : -1])
+                if size < 1 or size > 512:
+                    return False
+            except ValueError:
+                return False
+        elif t.startswith("float<"):
+            try:
+                size = int(t[t.find("<") + 1 : -1])
+                if size < 4 or size > 512:
+                    return False
+            except ValueError:
+                return False
+
         base = self._base_type(t)
         if base in ("int", "uint", "float", "string", "char", "bool", "void", "vec"):
             return True
@@ -1709,11 +1726,39 @@ class TypeChecker:
             return self._check_enum_member_access(expr)
         elif isinstance(expr, TypeConvExpr):
             return self._check_type_conv(expr)
+        elif isinstance(expr, SizeofExpr):
+            return self._check_sizeof(expr)
         elif isinstance(expr, TernaryOp):
             return self._check_ternary_op(expr)
         elif isinstance(expr, Lambda):
             return self._check_lambda(expr)
         return None
+
+    def _check_sizeof(self, expr):
+        if isinstance(expr.target, str):
+            # It's a type name
+            resolved = self._resolve(expr.target)
+            if not self._is_valid_type(resolved):
+                self._error(f"Unknown type '{expr.target}' in sizeof", node=expr)
+        else:
+            # It's an expression
+            # If it's an Identifier, it could be a type name, function name, or class name
+            if isinstance(expr.target, Identifier):
+                name = expr.target.name
+                if name not in self.var_types and name not in self.global_vars:
+                    if (
+                        name in self.func_types
+                        or name in self.class_types
+                        or name in self.struct_types
+                        or name in self.union_types
+                        or name in self.enum_types
+                        or name in self.type_aliases
+                        or name in self.error_types
+                    ):
+                        return "int"
+
+            self._infer_type(expr.target)
+        return "int"
 
     def _check_binary_op(self, expr):
         left_t = self._infer_type(expr.left)

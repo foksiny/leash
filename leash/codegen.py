@@ -18,6 +18,8 @@ from .ast_nodes import (
     NativeImport,
     DeferStatement,
     Lambda,
+    SizeofExpr,
+    Identifier,
 )
 
 
@@ -489,6 +491,14 @@ class CodeGen:
             ThisExpr,
             UnaryOp,
             PointerMemberAccess,
+            SizeofExpr,
+            BinaryOp,
+            StructInit,
+            NumberLiteral,
+            FloatLiteral,
+            StringLiteral,
+            CharLiteral,
+            BoolLiteral,
         )
 
         if isinstance(node, ThisExpr):
@@ -498,6 +508,28 @@ class CodeGen:
         if isinstance(node, Identifier):
             if node.name in self.var_symtab:
                 return self.var_symtab[node.name][1]
+            if node.name in self.global_var_ptrs:
+                return self.global_var_ptrs[node.name][1]
+        elif isinstance(node, BinaryOp):
+            lt = self._get_leash_type_name(node.left)
+            rt = self._get_leash_type_name(node.right)
+            if node.op in ("==", "!=", "<", "<=", ">", ">=", "&&", "||"):
+                return "bool"
+            if lt == "float" or rt == "float":
+                return "float"
+            return lt
+        elif isinstance(node, StructInit):
+            return node.name
+        elif isinstance(node, NumberLiteral):
+            return "int"
+        elif isinstance(node, FloatLiteral):
+            return "float"
+        elif isinstance(node, StringLiteral):
+            return "string"
+        elif isinstance(node, CharLiteral):
+            return "char"
+        elif isinstance(node, BoolLiteral):
+            return "bool"
         elif isinstance(node, MemberAccess):
             base_type = self._get_leash_type_name(node.expr)
             resolved = self._resolve_type_name(base_type)
@@ -549,6 +581,8 @@ class CodeGen:
             return node.target_type
         elif isinstance(node, TypeConvExpr):
             return node.target_type
+        elif isinstance(node, SizeofExpr):
+            return "int"
         elif isinstance(node, Call):
             if node.name == "tostring":
                 return "string"
@@ -968,14 +1002,8 @@ class CodeGen:
             )  # standard float maps to standard float literals size
         elif type_name.startswith("float<"):
             size = int(type_name[6:-1])
-            if size == 16:
-                return ir.HalfType()
-            elif size == 32:
+            if size <= 32:
                 return ir.FloatType()
-            elif size == 64:
-                return ir.DoubleType()
-            elif size == 128:
-                return ir.FP128Type()
             else:
                 return ir.DoubleType()
         elif type_name in self.union_symtab:
@@ -1651,9 +1679,13 @@ class CodeGen:
             union_type = union_info["type"]
             ptr = self.builder.alloca(union_type)
             self.var_symtab[node.name] = (ptr, resolved_type)
-            # Auto-assign the value into the union
-            val = self._codegen(node.value)
-            self._union_auto_store(ptr, val, union_info)
+            # Auto-assign the value into the union if provided
+            if node.value is not None:
+                val = self._codegen(node.value)
+                self._union_auto_store(ptr, val, union_info)
+            else:
+                # Default init to zeros
+                self.builder.store(ir.Constant(union_type, None), ptr)
             return
 
         # Check if we should pass the target type to the expression (useful for ArrayInit)
@@ -6179,6 +6211,51 @@ class CodeGen:
         phi.add_incoming(result, found_bb)
         phi.add_incoming(result_copy, not_found_bb)
         return phi
+
+    def _codegen_SizeofExpr(self, node):
+        llvm_type = None
+        if isinstance(node.target, str):
+            resolved = self._resolve_type_name(node.target)
+            llvm_type = self._get_llvm_type(resolved)
+        else:
+            # It's an expression
+            if isinstance(node.target, Identifier):
+                name = node.target.name
+                if name in self.var_symtab:
+                    _, leash_type = self.var_symtab[name]
+                    llvm_type = self._get_llvm_type(leash_type)
+                elif name in self.global_var_ptrs:
+                    _, leash_type = self.global_var_ptrs[name]
+                    llvm_type = self._get_llvm_type(leash_type)
+                elif name in self.func_symtab:
+                    llvm_type = self.func_symtab[name].function_type.as_pointer()
+                elif f"_error_{name}" in self.func_symtab:
+                    llvm_type = self.func_symtab[f"_error_{name}"].function_type.as_pointer()
+                elif name in self.class_symtab:
+                    llvm_type = self.class_symtab[name]["type"].as_pointer()
+                elif name in self.struct_symtab:
+                    llvm_type = self.struct_symtab[name]["type"]
+                elif name in self.union_symtab:
+                    llvm_type = self.union_symtab[name]["type"]
+                elif name in self.enum_symtab:
+                    llvm_type = ir.IntType(32)
+                elif name in self.type_aliases:
+                    resolved = self._resolve_type_name(name)
+                    llvm_type = self._get_llvm_type(resolved)
+                else:
+                    leash_type = self._get_leash_type_name(node.target)
+                    llvm_type = self._get_llvm_type(leash_type)
+            else:
+                leash_type = self._get_leash_type_name(node.target)
+                llvm_type = self._get_llvm_type(leash_type)
+
+        if llvm_type is None or isinstance(llvm_type, ir.VoidType):
+            return ir.Constant(ir.IntType(32), 0)
+
+        # Calculate size using GEP trick
+        null_ptr = ir.Constant(llvm_type.as_pointer(), None)
+        size_ptr = self.builder.gep(null_ptr, [ir.Constant(ir.IntType(32), 1)])
+        return self.builder.ptrtoint(size_ptr, ir.IntType(32))
 
     def get_ir(self):
         return str(self.module)

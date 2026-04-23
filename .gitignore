@@ -80,6 +80,7 @@ examples/extend
 examples/oneline
 examples/defav
 examples/errors
+examples/sizeof
 
 # Trash
 trash/

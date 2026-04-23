@@ -1,0 +1,16 @@
+fnc add(a int, b int) : int {
+    return a + b;
+}
+
+fnc main() {
+    show(sizeof(int));
+    show(sizeof(int<64>));
+
+    show(sizeof(string));
+
+    a: float = 10.5;
+
+    show(sizeof(a));
+
+    show(sizeof(add));
+}
