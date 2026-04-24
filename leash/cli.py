@@ -172,15 +172,12 @@ def resolve_imports(program, base_path):
                     if isinstance(mod_item, TemplateDef):
                         all_templates[mod_item.name] = mod_item
                 
-                # Build available items - skip private items in public imports
-                # (but always include templates, both pub and priv, for type-checking)
+# Build available items - skip private items in public imports
                 for mod_item in module_ast.items:
                     # Skip private items for public imports (include for private imports)
                     if not is_priv_import and hasattr(mod_item, "visibility") and mod_item.visibility == "priv":
-                        # But always include templates (needed for type-checking)
-                        if not isinstance(mod_item, TemplateDef):
-                            continue
-                    
+                        continue
+
                     if isinstance(mod_item, (StructDef, UnionDef, EnumDef, ErrorDef, TypeAlias, ClassDef, Function, TemplateDef)):
                         available[mod_item.name] = mod_item
                     elif isinstance(mod_item, GlobalVarDecl):
@@ -193,7 +190,9 @@ def resolve_imports(program, base_path):
                         if hasattr(item, 'template_params') and item.template_params:
                             for tp in item.template_params:
                                 if tp in all_templates and tp not in available:
-                                    available[tp] = all_templates[tp]
+                                    tp_node = all_templates[tp]
+                                    if getattr(tp_node, 'visibility', 'pub') == 'pub':
+                                        available[tp] = tp_node
 
                 # If this is a private import, add ALL items for internal type-checking
                 if item.visibility == "priv":
