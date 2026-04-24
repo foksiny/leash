@@ -2540,6 +2540,8 @@ class CodeGen:
 
     def _codegen_IfStatement(self, node):
         cond_val = self._cast_bool(self._codegen(node.condition))
+        if node.invert:
+            cond_val = self.builder.not_(cond_val)
         then_bb = self.builder.function.append_basic_block("then")
 
         also_bbs = []
@@ -2566,10 +2568,12 @@ class CodeGen:
         if not self.builder.block.is_terminated:
             self.builder.branch(merge_bb)
 
-        for i, (also_cond, also_body) in enumerate(node.also_blocks):
+        for i, (also_cond, also_body, also_invert) in enumerate(node.also_blocks):
             cond_bb, body_bb = also_bbs[i]
             self.builder.position_at_end(cond_bb)
             a_cond_val = self._cast_bool(self._codegen(also_cond))
+            if also_invert:
+                a_cond_val = self.builder.not_(a_cond_val)
             next_also = (
                 also_bbs[i + 1][0]
                 if i + 1 < len(also_bbs)

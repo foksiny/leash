@@ -1543,7 +1543,7 @@ class TypeChecker:
         if not stmt.then_block:
             self._warn("Empty `if` then-block.", node=stmt)
         self._check_statements(stmt.then_block)
-        for cond, block in stmt.also_blocks:
+        for cond, block, inverted in stmt.also_blocks:
             self._infer_type(cond)
             self._check_statements(block)
         if stmt.else_block:
@@ -3549,11 +3549,12 @@ class TypeChecker:
                 new_node.condition = substitute_node(node.condition)
                 new_node.then_block = [substitute_node(s) for s in node.then_block]
                 new_node.also_blocks = [
-                    (substitute_node(c), [substitute_node(s) for s in b])
-                    for c, b in node.also_blocks
+                    (substitute_node(c), [substitute_node(s) for s in b], inv)
+                    for c, b, inv in node.also_blocks
                 ]
                 if new_node.else_block:
                     new_node.else_block = [substitute_node(s) for s in node.else_block]
+                new_node.invert = node.invert
             elif isinstance(node, WhileStatement):
                 new_node.condition = substitute_node(node.condition)
                 new_node.body = [substitute_node(s) for s in node.body]

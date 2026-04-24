@@ -1,0 +1,7 @@
+fnc main() {
+    unless 10 != 10 { // also there's is 'alsou', which is also, but the unless variation
+        show("false");
+    } else {
+        show("true");
+    }
+}

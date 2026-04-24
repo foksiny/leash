@@ -82,11 +82,13 @@ class Assignment(Statement):
 
 
 class IfStatement(Statement):
-    def __init__(self, condition, then_block, also_blocks, else_block):
+    def __init__(self, condition, then_block, also_blocks, else_block, invert=False):
         self.condition = condition
         self.then_block = then_block
-        self.also_blocks = also_blocks  # list of (condition, block)
+        # also_blocks is list of (condition, block, inverted) - inverted True means check if false
+        self.also_blocks = also_blocks
         self.else_block = else_block
+        self.invert = invert  # if True, check if condition is false instead of true
 
 
 class WhileStatement(Statement):
@@ -431,11 +433,13 @@ class GenericCall(Expression):
 class ConditionalDef(ASTNode):
     """Represents a top-level conditional definition: if condition { ... } also ... else ..."""
 
-    def __init__(self, condition, then_block, also_blocks=None, else_block=None):
+    def __init__(self, condition, then_block, also_blocks=None, else_block=None, invert=False):
         self.condition = condition  # expression (should be evaluable at compile time)
         self.then_block = then_block  # list of top-level items
-        self.also_blocks = also_blocks or []  # list of (condition, block) tuples
+        # also_blocks is list of (condition, block, inverted) - inverted True means check if false
+        self.also_blocks = also_blocks or []
         self.else_block = else_block  # list of top-level items or None
+        self.invert = invert  # if True, check if condition is false instead of true
 
 
 class WorksOtherwiseStatement(Statement):

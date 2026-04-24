@@ -471,7 +471,7 @@ class Parser:
                 items.append(self.parse_import())
             elif self.current().type == "AT":
                 items.append(self.parse_native_import())
-            elif self.current().type == "IF":
+            elif self.current().type in ("IF", "UNLESS"):
                 items.append(self.parse_conditional_def())
             else:
                 tok = self.current()
@@ -675,7 +675,8 @@ class Parser:
     def parse_conditional_def(self):
         """Parse a top-level conditional: if condition { ... } also ... else ..."""
         tok = self.current()
-        self.eat("IF")
+        invert = tok.type == "UNLESS"
+        self.eat(tok.type)
         cond = self.parse_expression(no_struct_init=True)
         self.eat("LBRACE")
         then_items = []
@@ -684,15 +685,16 @@ class Parser:
         self.eat("RBRACE")
 
         also_branches = []
-        while self.current().type == "ALSO":
-            self.eat("ALSO")
+        while self.current().type in ("ALSO", "ALSOU"):
+            also_invert = self.current().type == "ALSOU"
+            self.eat(self.current().type)
             also_cond = self.parse_expression(no_struct_init=True)
             self.eat("LBRACE")
             also_items = []
             while self.current().type != "RBRACE":
                 also_items.append(self.parse_top_level_item())
             self.eat("RBRACE")
-            also_branches.append((also_cond, also_items))
+            also_branches.append((also_cond, also_items, also_invert))
 
         else_items = None
         if self.current().type == "ELSE":
@@ -704,7 +706,7 @@ class Parser:
             self.eat("RBRACE")
 
         return self._pos(
-            ConditionalDef(cond, then_items, also_branches, else_items), tok
+            ConditionalDef(cond, then_items, also_branches, else_items, invert=invert), tok
         )
 
     def parse_native_decl(self):
@@ -1073,18 +1075,20 @@ class Parser:
         if current.type == "IDENT":
             self._check_keyword_misuse(current)
 
-        if current.type == "IF":
+        if current.type in ("IF", "UNLESS"):
             tok = self.current()
-            self.eat("IF")
+            invert = current.type == "UNLESS"
+            self.eat(current.type)
             cond = self.parse_expression(no_struct_init=True)
             self.eat("LBRACE")
             then_block = self.parse_block()
             also_blocks = []
-            while self.current().type == "ALSO":
-                self.eat("ALSO")
+            while self.current().type in ("ALSO", "ALSOU"):
+                also_invert = self.current().type == "ALSOU"
+                self.eat(self.current().type)
                 also_cond = self.parse_expression(no_struct_init=True)
                 self.eat("LBRACE")
-                also_blocks.append((also_cond, self.parse_block()))
+                also_blocks.append((also_cond, self.parse_block(), also_invert))
             if (
                 self.current().type == "ELSE"
                 and self.peek()
@@ -1105,7 +1109,7 @@ class Parser:
                 self.eat("LBRACE")
                 else_block = self.parse_block()
             return self._pos(
-                IfStatement(cond, then_block, also_blocks, else_block), tok
+                IfStatement(cond, then_block, also_blocks, else_block, invert=invert), tok
             )
 
         elif current.type == "WORKS":

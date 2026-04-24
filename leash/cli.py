@@ -163,47 +163,47 @@ def resolve_imports(program, base_path):
                 module_dir = os.path.dirname(module_file_abs) or "."
                 module_ast = _expand_items(module_ast.items, module_dir)
 
-                # KEY FIX: Keep ALL items in the module for internal type-checking.
-                # Private items are needed by the module's own code (e.g., pMath.fabs uses Memory).
-                # The visibility filtering only affects what's exported to external importers.
-                for mod_item in module_ast.items:
-                    new_items.append(mod_item)
-
                 # Collect which items are publicly accessible (for external importers)
                 is_priv_import = item.visibility == "priv"
                 available = {}
+                # Collect all templates for type-checking
+                all_templates = {}
                 for mod_item in module_ast.items:
-                    # Skip private items for public imports (but include for private imports)
-                    if not is_priv_import and (
-                        hasattr(mod_item, "visibility")
-                        and mod_item.visibility == "priv"
-                    ):
-                        continue
-                    if isinstance(
-                        mod_item,
-                        (
-                            StructDef,
-                            UnionDef,
-                            EnumDef,
-                            ErrorDef,
-                            TypeAlias,
-                            ClassDef,
-                            Function,
-                            TemplateDef,
-                        ),
-                    ):
+                    if isinstance(mod_item, TemplateDef):
+                        all_templates[mod_item.name] = mod_item
+                
+                # Build available items - skip private items in public imports
+                # (but always include templates, both pub and priv, for type-checking)
+                for mod_item in module_ast.items:
+                    # Skip private items for public imports (include for private imports)
+                    if not is_priv_import and hasattr(mod_item, "visibility") and mod_item.visibility == "priv":
+                        # But always include templates (needed for type-checking)
+                        if not isinstance(mod_item, TemplateDef):
+                            continue
+                    
+                    if isinstance(mod_item, (StructDef, UnionDef, EnumDef, ErrorDef, TypeAlias, ClassDef, Function, TemplateDef)):
                         available[mod_item.name] = mod_item
                     elif isinstance(mod_item, GlobalVarDecl):
                         if mod_item.visibility == "pub" or is_priv_import:
                             available[mod_item.name] = mod_item
 
-                # If this is a private import, don't re-export items (they're already added)
+                # For public imports, add templates needed by public classes/functions
+                if not is_priv_import:
+                    for name, item in available.items():
+                        if hasattr(item, 'template_params') and item.template_params:
+                            for tp in item.template_params:
+                                if tp in all_templates and tp not in available:
+                                    available[tp] = all_templates[tp]
+
+                # If this is a private import, add ALL items for internal type-checking
                 if item.visibility == "priv":
+                    for mod_item in module_ast.items:
+                        new_items.append(mod_item)
                     loaded_modules.add(module_file_abs)
                     continue
 
-                # Verify requested items exist
-                if item.imported_items is not None:
+# Verify requested items exist
+                if isinstance(item, ImportStmt) and item.imported_items is not None:
                     for name in item.imported_items:
                         if name not in available:
                             raise LeashError(
@@ -212,8 +212,9 @@ def resolve_imports(program, base_path):
                                 col=item.col,
                             )
 
-                # For public imports, verify that private items aren't leaked to external users
-                # (The items are already in new_items from above)
+                # For public imports, add only available items (private ones filtered out)
+                for name, mod_item in available.items():
+                    new_items.append(mod_item)
                 loaded_modules.add(module_file_abs)
             else:
                 new_items.append(item)
@@ -294,7 +295,10 @@ def _evaluate_conditional(cond_def, platform):
             )
 
     # Then branch
-    if eval_expr(cond_def.condition):
+    cond_result = eval_expr(cond_def.condition)
+    if cond_def.invert:
+        cond_result = not cond_result
+    if cond_result:
         return cond_def.then_block
     # Also branches
     for also_cond, also_block in cond_def.also_blocks:

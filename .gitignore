@@ -81,6 +81,7 @@ examples/oneline
 examples/defav
 examples/errors
 examples/sizeof
+examples/unless
 
 # Trash
 trash/

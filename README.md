@@ -945,6 +945,33 @@ if a < b {
 }
 ```
 
+#### The `unless` Keyword
+
+Leash supports `unless`, which is like `if` but inverts the condition (executes the then-block when the condition is **false** instead of **true**):
+
+```leash
+unless some_error_occurred {
+    show("All is well");
+} else {
+    show("Error happened");
+}
+```
+
+You can also use `alsou` with `unless`:
+
+```leash
+unless result == nil {
+    show("Got a result");
+} alsou is_pending {
+    show("Still waiting...");
+} else {
+    show("No result available");
+}
+```
+
+- `unless` - executes then-block when condition is **false**
+- `alsou` - like `also` but inverts that branch's condition
+
 ### Loops
 
 Leash comes packed with many loops built-in (`for`, `while`, and `do-while`):
