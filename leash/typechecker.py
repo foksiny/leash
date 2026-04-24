@@ -557,7 +557,12 @@ class TypeChecker:
         arg_types = [t for _, t, _ in node.args]
         arg_names = [n for n, _, _ in node.args]
         arg_defaults = [d is not None for _, _, d in node.args]
-        self.func_types[node.name] = (arg_types, node.return_type, arg_names, arg_defaults)
+        self.func_types[node.name] = (
+            arg_types,
+            node.return_type,
+            arg_names,
+            arg_defaults,
+        )
         self.func_signatures_vis[node.name] = getattr(node, "visibility", "pub")
 
     def _is_multi_type(self, type_name):
@@ -1651,20 +1656,38 @@ class TypeChecker:
             if expr.member:
                 if expr.member == "Parent":
                     if not self.current_class:
-                        self._error("'self::Parent' can only be used inside a class", node=expr)
+                        self._error(
+                            "'self::Parent' can only be used inside a class", node=expr
+                        )
                     parent = self.class_types[self.current_class].get("parent")
                     if not parent:
-                        self._error(f"Class '{self.current_class}' has no parent class", node=expr)
+                        self._error(
+                            f"Class '{self.current_class}' has no parent class",
+                            node=expr,
+                        )
                     return "string"
                 elif expr.member == "Class":
                     if not self.current_class:
-                        self._error("'self::Class' can only be used inside a class", node=expr)
+                        self._error(
+                            "'self::Class' can only be used inside a class", node=expr
+                        )
                     return "string"
                 else:
-                    self._error(f"Unknown self member '{expr.member}'", node=expr, tip="Supported members are 'Parent' and 'Class'.")
-            
-            if not self.current_func and not self.current_error and not self.current_class:
-                self._error("'self' can only be used inside a function, error definition, or class", node=expr)
+                    self._error(
+                        f"Unknown self member '{expr.member}'",
+                        node=expr,
+                        tip="Supported members are 'Parent' and 'Class'.",
+                    )
+
+            if (
+                not self.current_func
+                and not self.current_error
+                and not self.current_class
+            ):
+                self._error(
+                    "'self' can only be used inside a function, error definition, or class",
+                    node=expr,
+                )
             return "string"
         elif isinstance(expr, Identifier):
             if expr.name in self.var_types:
@@ -2357,7 +2380,9 @@ class TypeChecker:
 
         # Handle kwargs and defaults
         provided_positional = len(expr.args)
-        provided_kwarg_names = set(expr.kwargs.keys()) if hasattr(expr, 'kwargs') else set()
+        provided_kwarg_names = (
+            set(expr.kwargs.keys()) if hasattr(expr, "kwargs") else set()
+        )
 
         # Validate kwargs names
         for kw_name in provided_kwarg_names:
@@ -2398,7 +2423,7 @@ class TypeChecker:
                 )
 
         # Validate kwargs types
-        if hasattr(expr, 'kwargs'):
+        if hasattr(expr, "kwargs"):
             for kw_name, kw_expr in expr.kwargs.items():
                 if kw_name in arg_names:
                     idx = arg_names.index(kw_name)
@@ -2432,7 +2457,9 @@ class TypeChecker:
 
         # Handle kwargs and defaults
         provided_positional = len(expr.args)
-        provided_kwarg_names = set(expr.kwargs.keys()) if hasattr(expr, 'kwargs') else set()
+        provided_kwarg_names = (
+            set(expr.kwargs.keys()) if hasattr(expr, "kwargs") else set()
+        )
 
         # Validate kwargs names
         for kw_name in provided_kwarg_names:
@@ -2469,7 +2496,7 @@ class TypeChecker:
                 )
 
         # Validate kwargs types
-        if hasattr(expr, 'kwargs'):
+        if hasattr(expr, "kwargs"):
             for kw_name, kw_expr in expr.kwargs.items():
                 if kw_name in arg_names:
                     idx = arg_names.index(kw_name)
@@ -3055,11 +3082,10 @@ class TypeChecker:
 
         if target_cls:
             # Get methods from either regular class or generic class template
-            if target_cls in self.class_types:
-                methods = self.class_types[target_cls]["methods"]
-            elif target_cls in self.generic_classes:
-                # For generic classes, we need to look at the template's methods
-                # For now, instantiate with placeholder types to get the methods
+            # Check generic classes FIRST (since they might also be in class_types for 'this' access)
+            is_generic_class_call = target_cls in self.generic_classes
+            if is_generic_class_call:
+                # For generic classes, instantiate with placeholder types to get the methods
                 generic_cls = self.generic_classes[target_cls]
                 placeholder_types = [f"_{p}" for p in generic_cls.type_params]
                 instantiated_name = self._instantiate_generic_class(
@@ -3071,25 +3097,13 @@ class TypeChecker:
                     raise LeashError(
                         f"Failed to instantiate generic class '{target_cls}'"
                     )
+            elif target_cls in self.class_types:
+                methods = self.class_types[target_cls]["methods"]
             else:
                 raise LeashError(f"Class '{target_cls}' not found")
 
             self._check_visibility(target_cls, expr.method, True, expr)
             if expr.method not in methods:
-                raise LeashError(
-                    f"Class '{target_cls}' has no method named '{expr.method}'",
-                    tip=f"Available methods: {', '.join(methods.keys())}",
-                )
-                print(f"DEBUG: methods={list(methods.keys())}", file=sys.stderr)
-                print(f"DEBUG: is_static={is_static}", file=sys.stderr)
-                print(
-                    f"DEBUG: target_cls in class_types={target_cls in self.class_types}",
-                    file=sys.stderr,
-                )
-                print(
-                    f"DEBUG: target_cls in generic_classes={target_cls in self.generic_classes}",
-                    file=sys.stderr,
-                )
                 raise LeashError(
                     f"Class '{target_cls}' has no method named '{expr.method}'",
                     tip=f"Available methods: {', '.join(methods.keys())}",
@@ -3142,7 +3156,11 @@ class TypeChecker:
                 zip(expr.args, expected_args)
             ):
                 arg_type = self._infer_type(arg_expr)
-                if arg_type and not self._types_compatible(arg_type, expected_type):
+                if (
+                    arg_type
+                    and not is_generic_class_call
+                    and not self._types_compatible(arg_type, expected_type)
+                ):
                     self._warn(
                         f"Argument {i + 1} of method '{expr.method}' expects '{expected_type}' but got '{arg_type}'",
                         node=arg_expr,
@@ -3206,7 +3224,12 @@ class TypeChecker:
         arg_types = [t for _, t, _ in new_args]
         arg_names = [n for n, _, _ in new_args]
         arg_defaults = [d is not None for _, _, d in new_args]
-        self.func_types[mangled_name] = (arg_types, new_return_type, arg_names, arg_defaults)
+        self.func_types[mangled_name] = (
+            arg_types,
+            new_return_type,
+            arg_names,
+            arg_defaults,
+        )
         self.instantiated_funcs[key] = mangled_name
 
         # Store the instantiated function node for code generation
@@ -3287,7 +3310,12 @@ class TypeChecker:
         arg_types = [t for _, t, _ in new_args]
         arg_names = [n for n, _, _ in new_args]
         arg_defaults = [d is not None for _, _, d in new_args]
-        self.func_types[mangled_name] = (arg_types, new_return_type, arg_names, arg_defaults)
+        self.func_types[mangled_name] = (
+            arg_types,
+            new_return_type,
+            arg_names,
+            arg_defaults,
+        )
         self.instantiated_funcs[key] = mangled_name
         TypeChecker.instantiated_func_nodes[mangled_name] = new_func
 

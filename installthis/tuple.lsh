@@ -4,7 +4,7 @@ pub def Tuple : class<T> {
     priv vals: vec<T>;
     pub size: int;
 
-    static pub fnc new(vals T[]) : Tuple {
+    static pub fnc new(vals T[]) : imut Tuple {
         return Tuple {vals: (vec<T>)vals, size: vals.size};
     }
 
