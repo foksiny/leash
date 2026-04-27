@@ -63,6 +63,7 @@ from .ast_nodes import (
     ConditionalDef,
     DeferStatement,
     Lambda,
+    MacroDef,
 )
 from .errors import LeashError
 
@@ -813,13 +814,15 @@ class Parser:
             return self._parse_class_body(name, visibility)
         elif self.current().type == "TEMPLATE":
             return self._parse_template_body(name, visibility)
+        elif self.current().type == "MACRO":
+            return self._parse_macro_body(name, visibility)
         else:
             tok = self.current()
             raise LeashError(
-                f"Expected 'struct', 'union', 'enum', 'class', 'type' or 'template' after 'def {name} :', but found {tok.type} ('{tok.value}')",
-                tok.line,
-                tok.column,
-                tip="Use `def Name : class { ... };`, `def Name : struct { ... };`, `def Name : enum { ... };`, or `def T : template;`",
+            f"Expected 'struct', 'union', 'enum', 'class', 'type', 'template' or 'macro' after 'def {name} :', but found {tok.type} ('{tok.value}')",
+            tok.line,
+            tok.column,
+            tip="Use `def Name : class { ... };`, `def Name : struct { ... };`, `def Name : enum { ... };`, `def T : template;`, or `def Name : macro(params) |> expr;`",
             )
 
     def _parse_struct_body(self, name, visibility="pub"):
@@ -879,6 +882,23 @@ class Parser:
         self.eat("TEMPLATE")
         self.eat("SEMI")
         return TemplateDef(name, visibility)
+
+    def _parse_macro_body(self, name, visibility="pub"):
+        self.eat("MACRO")
+        self.eat("LPAREN")
+        params = []
+        while self.current().type != "RPAREN":
+            params.append(self.eat("IDENT").value)
+            if self.current().type == "COMMA":
+                self.eat("COMMA")
+        self.eat("RPAREN")
+        if self.current().type == "PIPE":
+            self.eat("PIPE")
+            body = [self.parse_statement()]
+        else:
+            self.eat("LBRACE")
+            body = self.parse_block()
+        return MacroDef(name, params, body, visibility)
 
     def parse_global_var(self):
         """Parse a global variable declaration with optional visibility."""

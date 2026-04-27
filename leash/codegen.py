@@ -20,6 +20,7 @@ from .ast_nodes import (
     Lambda,
     SizeofExpr,
     Identifier,
+    MacroDef,
 )
 
 

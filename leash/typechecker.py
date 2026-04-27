@@ -72,6 +72,8 @@ class TypeChecker:
         for item in program.items:
             if isinstance(item, TemplateDef):
                 self._register_template(item)
+            elif isinstance(item, MacroDef):
+                pass  # Macros are expanded before type checking
             elif isinstance(item, StructDef):
                 self._register_struct(item)
             elif isinstance(item, UnionDef):

@@ -67,10 +67,11 @@ class Lexer:
         "as",
         "inline",
         "defer",
-        "error",
-        "throw",
-        "self",
-    }
+    "error",
+    "throw",
+    "self",
+    "macro",
+}
 
     # regexes
     TOKEN_SPECIFICATION = [

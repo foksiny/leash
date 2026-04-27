@@ -495,3 +495,11 @@ class NativeImport(ASTNode):
         self.typedef_declarations = (
             typedef_declarations  # list of ("typedef", name, target_type) tuples
         )
+
+
+class MacroDef(ASTNode):
+    def __init__(self, name, params, body, visibility="pub"):
+        self.name = name
+        self.params = params  # list of parameter names
+        self.body = body  # list of statements (Block) or single expression
+        self.visibility = visibility  # 'pub' or 'priv'

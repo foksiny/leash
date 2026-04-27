@@ -34,6 +34,7 @@ Leash is a strongly-typed, modern compiled programming language built on top of 
 - [Unions](#unions)
 - [Enums](#enums)
 - [Type Aliases](#type-aliases)
+- [Macros](#macros)
 - [Generic Types](#generic-types)
 - [Multi-Type Functions](#multi-type-functions)
 - [Type Casting](#type-casting)
@@ -1655,6 +1656,68 @@ def Pixel : type uint<8>;
 a: MyInt = 10;
 p: Pixel = 255;
 ```
+
+## Macros
+
+Macros allow you to define reusable code snippets that are expanded at compile time through textual substitution. They are useful for creating concise, readable abbreviations for commonly used expressions.
+
+### Defining Macros
+
+Macros are defined using the `def` keyword with the `macro` keyword, followed by a parameter list and a body:
+
+```leash
+def MAX : macro(a, b) |> a < b ? b : a;
+```
+
+The body can use the pipe operator (`|>`) for a single-expression macro, or curly braces (`{ }`) for multi-line macros:
+
+```leash
+// Single-line macro using |>
+def MAX : macro(a, b) |> a < b ? b : a;
+
+// Multi-line macro using { }
+def CLAMP : macro(val, lo, hi) {
+    if val < lo { return lo; }
+    if val > hi { return hi; }
+    return val;
+};
+```
+
+### Using Macros
+
+Macro calls look like regular function calls. The compiler expands them inline at compile time by substituting the arguments into the body:
+
+```leash
+def MAX : macro(a, b) |> a < b ? b : a;
+
+fnc main() : void {
+    show(MAX(10, 20));   // Expanded to: 10 < 20 ? 20 : 10 → 20
+    show(MAX(34, 1));    // Expanded to: 34 < 1 ? 1 : 34 → 34
+}
+```
+
+### How Macros Work
+
+Macros perform **textual substitution** at compile time. When the compiler encounters a macro call, it replaces the call with the macro's body, substituting each argument for the corresponding parameter. This means:
+
+- **No function call overhead** — the expression is inlined directly at the call site
+- **Arguments are evaluated per-use** — if an argument appears multiple times in the body, it is re-evaluated each time
+- **No type constraints** — macro parameters can accept any expression type
+
+### Visibility
+
+Macros support `pub` (default) and `priv` visibility modifiers:
+
+```leash
+pub def MAX : macro(a, b) |> a < b ? b : a;     // Accessible from other modules
+priv def INTERNAL : macro(x) |> x * 2;           // Only accessible within this module
+```
+
+### Tips
+
+- Use `|>` for single-expression macros to keep them concise.
+- Use `{ }` for multi-statement macros that need more complex logic.
+- Macro parameter names are plain identifiers (no types), since they are substituted textually.
 
 ## Generic Types
 

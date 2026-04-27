@@ -25,6 +25,8 @@ from .ast_nodes import (
     BoolLiteral,
     BinaryOp,
     UnaryOp,
+    MacroDef,
+    Call
 )
 from .targets import get_target, get_native_target, list_targets, TargetConfig
 import llvmlite.binding as llvm
@@ -178,7 +180,7 @@ def resolve_imports(program, base_path):
                     if not is_priv_import and hasattr(mod_item, "visibility") and mod_item.visibility == "priv":
                         continue
 
-                    if isinstance(mod_item, (StructDef, UnionDef, EnumDef, ErrorDef, TypeAlias, ClassDef, Function, TemplateDef)):
+                    if isinstance(mod_item, (StructDef, UnionDef, EnumDef, ErrorDef, TypeAlias, ClassDef, Function, TemplateDef, MacroDef)):
                         available[mod_item.name] = mod_item
                     elif isinstance(mod_item, GlobalVarDecl):
                         if mod_item.visibility == "pub" or is_priv_import:
@@ -220,6 +222,129 @@ def resolve_imports(program, base_path):
         return Program(new_items)
 
     return _expand_items(program.items, base_path)
+
+
+def expand_macros(program):
+    """Expand macro definitions and calls in the program AST.
+
+    Macros are textual substitution: a call like MAX(10, 20) where
+    MAX is defined as 'def MAX : macro(a, b) |> a < b ? b : a;'
+    is replaced by the expression '10 < 20 ? 20 : 10'.
+
+    Returns a new Program with macros removed and calls expanded.
+    """
+    from .ast_nodes import Identifier, ExpressionStatement, ReturnStatement
+
+    macros = {}
+    for item in program.items:
+        if isinstance(item, MacroDef):
+            macros[item.name] = item
+
+    if not macros:
+        return program
+
+    import copy
+
+    def substitute(node, param_map):
+        """Recursively substitute Identifier nodes that match macro params."""
+        if node is None or isinstance(node, (str, int, float, bool)):
+            return node
+
+        if isinstance(node, Identifier) and node.name in param_map:
+            return copy.deepcopy(param_map[node.name])
+
+        if isinstance(node, list):
+            return [substitute(item, param_map) for item in node]
+
+        if not hasattr(node, '__dict__'):
+            return node
+
+        for attr_name in list(vars(node)):
+            if attr_name.startswith('_'):
+                continue
+            attr_val = getattr(node, attr_name)
+            if attr_val is None:
+                continue
+            if isinstance(attr_val, list):
+                setattr(node, attr_name, [substitute(item, param_map) for item in attr_val])
+            elif hasattr(attr_val, '__dict__') and not isinstance(attr_val, str):
+                setattr(node, attr_name, substitute(attr_val, param_map))
+
+        return node
+
+    def expand_expr(node):
+        """Expand macro calls within an expression tree."""
+        if node is None or isinstance(node, (str, int, float, bool)):
+            return node
+
+        if not hasattr(node, '__dict__'):
+            return node
+
+        if isinstance(node, Call) and node.name in macros:
+            macro_def = macros[node.name]
+            if len(node.args) != len(macro_def.params):
+                raise LeashError(
+                    f"Macro '{node.name}' expects {len(macro_def.params)} argument(s), but got {len(node.args)}",
+                    line=getattr(node, 'line', None),
+                    col=getattr(node, 'col', None),
+                )
+            param_map = {}
+            for param_name, arg_expr in zip(macro_def.params, node.args):
+                param_map[param_name] = expand_expr(arg_expr)
+            if len(macro_def.body) == 1:
+                stmt = macro_def.body[0]
+                if isinstance(stmt, ExpressionStatement):
+                    return substitute(copy.deepcopy(stmt.expr), param_map)
+                elif isinstance(stmt, ReturnStatement):
+                    return substitute(copy.deepcopy(stmt.value), param_map)
+                else:
+                    return substitute(copy.deepcopy(stmt), param_map)
+            else:
+                return substitute(copy.deepcopy(macro_def.body), param_map)
+
+        for attr_name in list(vars(node)):
+            if attr_name.startswith('_'):
+                continue
+            attr_val = getattr(node, attr_name)
+            if attr_val is None:
+                continue
+            if isinstance(attr_val, list):
+                setattr(node, attr_name, [expand_expr(item) for item in attr_val])
+            elif hasattr(attr_val, '__dict__') and not isinstance(attr_val, str):
+                setattr(node, attr_name, expand_expr(attr_val))
+
+        return node
+
+    def expand_stmts(statements):
+        result = []
+        for stmt in statements:
+            expanded = expand_expr(stmt)
+            if isinstance(expanded, list):
+                result.extend(expanded)
+            else:
+                result.append(expanded)
+        return result
+
+    new_items = []
+    for item in program.items:
+        if isinstance(item, MacroDef):
+            continue
+        if isinstance(item, Function):
+            item.body = expand_stmts(item.body)
+            new_items.append(item)
+        elif isinstance(item, ClassDef):
+            for m in item.methods:
+                m.fnc.body = expand_stmts(m.fnc.body)
+            new_items.append(item)
+        elif isinstance(item, ConditionalDef):
+            item.then_block = expand_stmts(item.then_block) if item.then_block else None
+            item.also_blocks = [(c, expand_stmts(b), inv) for c, b, inv in item.also_blocks]
+            item.else_block = expand_stmts(item.else_block) if item.else_block else None
+            new_items.append(item)
+        else:
+            new_items.append(item)
+
+    return Program(new_items)
 
 
 def resolve_conditionals(program, target_config):
@@ -458,6 +583,7 @@ def check_file(input_file, verbose=False):
         # Resolve conditionals using native target
         target_config = get_native_target()
         ast = resolve_conditionals(ast, target_config)
+        ast = expand_macros(ast)
     except LeashError as e:
         _print_error(e, input_file, code)
         errors.append(e)
@@ -520,6 +646,8 @@ def compile_file(
         ast = resolve_imports(ast, base_path)
         # 2.75. Resolve top-level conditionals based on target
         ast = resolve_conditionals(ast, target_config)
+        # 2.8. Expand macros
+        ast = expand_macros(ast)
 
         # 3. Static Type Checking
         checker = TypeChecker(check_mode=check_mode)
@@ -762,6 +890,7 @@ def dump_file(
         base_path = os.path.dirname(os.path.abspath(input_file)) or "."
         ast = resolve_imports(ast, base_path)
         ast = resolve_conditionals(ast, target_config)
+        ast = expand_macros(ast)
 
         checker = TypeChecker(check_mode=check_mode)
         warnings = checker.check(ast)

@@ -1,0 +1,6 @@
+def MAX : macro(a, b) |> a < b ? b : a; // use {} for multiple lines.
+
+fnc main() {
+    show(MAX(10, 20));
+    show(MAX(34, 1));
+}
