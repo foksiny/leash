@@ -1,0 +1,51 @@
+priv def T : template;
+
+pub def VecMath : class<T> {
+    static pub fnc new() : VecMath {
+        return VecMath {};
+    }
+
+    pub fnc sum(a vec<T>, b vec<T>) : vec<T> {
+        if a.size != b.size {
+            return nil;
+        }
+
+        foreach i, v in<vector> a {
+            a.set(i, v + b.get(i));
+        }
+        return a;
+    }
+
+    pub fnc sub(a vec<T>, b vec<T>) : vec<T> {
+        if a.size != b.size {
+            return nil;
+        }
+
+        foreach i, v in<vector> a {
+            a.set(i, v - b.get(i));
+        }
+        return a;
+    }
+
+    pub fnc mul(a vec<T>, b vec<T>) : vec<T> {
+        if a.size != b.size {
+            return nil;
+        }
+
+        foreach i, v in<vector> a {
+            a.set(i, v * b.get(i));
+        }
+        return a;
+    }
+
+    pub fnc div(a vec<T>, b vec<T>) : vec<T> {
+        if a.size != b.size {
+            return nil;
+        }
+
+        foreach i, v in<vector> a {
+            a.set(i, v / b.get(i));
+        }
+        return a;
+    }
+}

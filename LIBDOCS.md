@@ -201,3 +201,30 @@ use utils::math::Math;
 | `log10` | `Math.log10(x double) : double` | Base-10 logarithm, `log(x) / LN10`. Returns `nil` for non-positive input. |
 | `log2` | `Math.log2(x double) : double` | Base-2 logarithm, `log(x) / LN2`. Returns `nil` for non-positive input. |
 | `fabs` | `Math.fabs(x double) : double` | **unsafe** — Absolute value via bit manipulation (clears sign bit of IEEE 754 double). |
+
+---
+
+## `utils/vecmath.lsh` — VecMath
+
+Generic vector math operations (element-wise).
+
+```lsh
+use utils::vecmath::VecMath;
+```
+
+### Class: `VecMath<T>`
+
+#### Static Methods
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `new` | `VecMath.new() : VecMath` | Creates a new VecMath instance. |
+
+#### Instance Methods
+
+| Method | Signature | Description |
+|--------|-----------|-------------|
+| `sum` | `sum(a vec<T>, b vec<T>) : vec<T>` | Element-wise addition. Returns `nil` if sizes don't match. |
+| `sub` | `sub(a vec<T>, b vec<T>) : vec<T>` | Element-wise subtraction. Returns `nil` if sizes don't match. |
+| `mul` | `mul(a vec<T>, b vec<T>) : vec<T>` | Element-wise multiplication. Returns `nil` if sizes don't match. |
+| `div` | `div(a vec<T>, b vec<T>) : vec<T>` | Element-wise division. Returns `nil` if sizes don't match. |
