@@ -369,6 +369,13 @@ class SizeofExpr(Expression):
         self.target = target  # Can be a string (type name) or an Expression node
 
 
+class ByteConvExpr(Expression):
+    def __init__(self, name, size_expr, value_expr):
+        self.name = name  # 'inttobytes', 'bytestoint', 'floattobytes', 'bytestofloat'
+        self.size_expr = size_expr  # sizeof(type) expression
+        self.value_expr = value_expr  # the value to convert
+
+
 class TemplateDef(ASTNode):
     """Represents a template parameter definition like 'def T1 : template;'"""
 

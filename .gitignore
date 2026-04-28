@@ -83,6 +83,7 @@ examples/errors
 examples/sizeof
 examples/unless
 examples/macros
+examples/bytetotype
 
 # Trash
 trash/

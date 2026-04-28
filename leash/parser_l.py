@@ -59,6 +59,7 @@ from .ast_nodes import (
     FilePathLiteral,
     BuiltinVarLiteral,
     SizeofExpr,
+    ByteConvExpr,
     SwitchStatement,
     ConditionalDef,
     DeferStatement,
@@ -1586,6 +1587,13 @@ class Parser:
                 value = self.parse_expression()
                 self.eat("RPAREN")
                 return self._pos(TypeConvExpr(name, target_type, value), tok)
+            if name in ("inttobytes", "bytestoint", "floattobytes", "bytestofloat") and self.current().type == "LPAREN":
+                self.eat("LPAREN")
+                size_expr = self.parse_expression()
+                self.eat("COMMA")
+                value_expr = self.parse_expression()
+                self.eat("RPAREN")
+                return self._pos(ByteConvExpr(name, size_expr, value_expr), tok)
 
             # Check for generic function call: name<T>(args)
             if self.current().type == "LT":

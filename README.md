@@ -1919,6 +1919,33 @@ s2: string = tostring(3.14);   // "3.140000"
 
 Just like `get()`, `tostring()` returns a managed string that will be automatically cleaned up by the GC.
 
+### Byte Conversions
+
+Leash provides functions to convert between integers/floats and their byte representations. These are useful for binary data manipulation, serialization, and FFI operations.
+
+- `inttobytes(size, value)` - Convert an integer to a byte array (`char[]`)
+- `bytestoint(size, bytes)` - Convert a byte array back to an integer
+- `floattobytes(size, value)` - Convert a float to a byte array (`char[]`)
+- `bytestofloat(size, bytes)` - Convert a byte array back to a float
+
+```leash
+fnc main() {
+    // Integer to bytes and back
+    n: int<64> = 1982;
+    bytes: char[8] = inttobytes(sizeof(int<64>), n);
+    restored: int<64> = bytestoint(sizeof(int<64>), bytes);
+    show("Restored int: ", restored);  // 1982
+
+    // Float to bytes and back
+    f: float<64> = 3.14;
+    fbytes: char[8] = floattobytes(sizeof(float<64>), f);
+    restored_f: float<64> = bytestofloat(sizeof(float<64>), fbytes);
+    show("Restored float: ", restored_f);  // 3.140000
+}
+```
+
+The `size` argument is typically `sizeof(type)` to ensure the correct byte count. For `inttobytes`/`bytestoint`, the size determines the integer bit width (e.g., `sizeof(int<64>)` = 8 bytes). For `floattobytes`/`bytestofloat`, Leash's default float is 64-bit (`float<64>`).
+
 ## The `sizeof()` Operator
 
 The built-in `sizeof()` operator returns the size in bytes of a type or the result of an expression. It supports **literally anything** in Leash, from primitives to complex classes.

@@ -493,6 +493,7 @@ class CodeGen:
             UnaryOp,
             PointerMemberAccess,
             SizeofExpr,
+            ByteConvExpr,
             BinaryOp,
             StructInit,
             NumberLiteral,
@@ -582,6 +583,11 @@ class CodeGen:
             return node.target_type
         elif isinstance(node, TypeConvExpr):
             return node.target_type
+        elif isinstance(node, ByteConvExpr):
+            if node.name in ("inttobytes", "floattobytes"):
+                return "char[]"
+            else:
+                return self._get_leash_type_name(node.value_expr)
         elif isinstance(node, SizeofExpr):
             return "int"
         elif isinstance(node, Call):
@@ -5916,6 +5922,71 @@ class CodeGen:
             else:
                 return self._emit_cast(val, dst_type)
         return val
+
+    def _codegen_ByteConvExpr(self, node):
+        size_val = self._codegen(node.size_expr)
+
+        if isinstance(size_val, ir.Constant):
+            size = size_val.constant
+        else:
+            size = self.builder.zext(size_val, ir.IntType(64))
+            size = self.builder.trunc(size, ir.IntType(32))
+
+        if isinstance(size, int):
+            size_int = size
+            size_ir = ir.Constant(ir.IntType(64), size)
+        else:
+            size_int = 4
+            size_ir = self.builder.zext(size, ir.IntType(64))
+
+        value_val = self._codegen(node.value_expr)
+
+        if node.name == "inttobytes":
+            mem = self.builder.call(self.malloc, [size_ir])
+            val_ptr = self.builder.alloca(value_val.type)
+            self.builder.store(value_val, val_ptr)
+            self.builder.call(
+                self.memmove,
+                [mem, self.builder.bitcast(val_ptr, ir.IntType(8).as_pointer()), size_ir],
+            )
+            slice_type = ir.LiteralStructType([ir.IntType(64), ir.IntType(8).as_pointer()])
+            slice_val = ir.Constant(slice_type, ir.Undefined)
+            slice_val = self.builder.insert_value(slice_val, ir.Constant(ir.IntType(64), size_int), 0)
+            slice_val = self.builder.insert_value(slice_val, mem, 1)
+            return slice_val
+        elif node.name == "bytestoint":
+            ptr = self.builder.extract_value(value_val, 1)
+            int_type = ir.IntType(size_int * 8)
+            result_ptr = self.builder.alloca(int_type)
+            self.builder.call(
+                self.memmove,
+                [self.builder.bitcast(result_ptr, ir.IntType(8).as_pointer()), ptr, size_ir],
+            )
+            return self.builder.load(result_ptr)
+        elif node.name == "floattobytes":
+            mem = self.builder.call(self.malloc, [size_ir])
+            val_ptr = self.builder.alloca(value_val.type)
+            self.builder.store(value_val, val_ptr)
+            self.builder.call(
+                self.memmove,
+                [mem, self.builder.bitcast(val_ptr, ir.IntType(8).as_pointer()), size_ir],
+            )
+            slice_type = ir.LiteralStructType([ir.IntType(64), ir.IntType(8).as_pointer()])
+            slice_val = ir.Constant(slice_type, ir.Undefined)
+            slice_val = self.builder.insert_value(slice_val, ir.Constant(ir.IntType(64), size_int), 0)
+            slice_val = self.builder.insert_value(slice_val, mem, 1)
+            return slice_val
+        elif node.name == "bytestofloat":
+            slice_len = self.builder.extract_value(value_val, 0)
+            ptr = self.builder.extract_value(value_val, 1)
+            result_type = ir.DoubleType()
+            result_ptr = self.builder.alloca(result_type)
+            self.builder.call(
+                self.memmove,
+                [self.builder.bitcast(result_ptr, ir.IntType(8).as_pointer()), ptr, size_ir],
+            )
+            return self.builder.load(result_ptr)
+        return value_val
 
     def _codegen_CastExpr(self, node):
         from .ast_nodes import ThisExpr

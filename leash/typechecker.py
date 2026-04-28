@@ -802,6 +802,48 @@ class TypeChecker:
             return dst_t
         return dst_t
 
+    def _check_byte_conv(self, expr):
+        size_type = self._infer_type(expr.size_expr)
+        if not self._is_int_family(size_type):
+            self._error(
+                f"{expr.name} requires an integer size (from sizeof), got '{size_type}'",
+                node=expr,
+            )
+
+        if expr.name in ("inttobytes", "bytestoint"):
+            value_type = self._infer_type(expr.value_expr)
+            if expr.name == "inttobytes":
+                if not self._is_int_family(value_type):
+                    self._error(
+                        f"{expr.name} requires an integer value, got '{value_type}'",
+                        node=expr,
+                    )
+                return f"char[{size_type}]"
+            else:
+                if not (value_type.startswith("char[") or self._is_int_family(value_type)):
+                    self._error(
+                        f"{expr.name} requires a byte array (char[]) or integer, got '{value_type}'",
+                        node=expr,
+                    )
+                return "int"
+        elif expr.name in ("floattobytes", "bytestofloat"):
+            value_type = self._infer_type(expr.value_expr)
+            if expr.name == "floattobytes":
+                if not self._is_float_family(value_type):
+                    self._error(
+                        f"{expr.name} requires a float value, got '{value_type}'",
+                        node=expr,
+                    )
+                return f"char[{size_type}]"
+            else:
+                if not (value_type.startswith("char[") or self._is_float_family(value_type)):
+                    self._error(
+                        f"{expr.name} requires a byte array (char[]) or float, got '{value_type}'",
+                        node=expr,
+                    )
+                return "float"
+        return "int"
+
     def _is_int_family(self, type_name):
         b = self._base_type(type_name)
         return b in ("int", "uint", "char", "bool")
@@ -1751,6 +1793,8 @@ class TypeChecker:
             return self._check_enum_member_access(expr)
         elif isinstance(expr, TypeConvExpr):
             return self._check_type_conv(expr)
+        elif isinstance(expr, ByteConvExpr):
+            return self._check_byte_conv(expr)
         elif isinstance(expr, SizeofExpr):
             return self._check_sizeof(expr)
         elif isinstance(expr, TernaryOp):

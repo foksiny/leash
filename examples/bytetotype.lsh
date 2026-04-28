@@ -1,0 +1,25 @@
+fnc print_bytes(bytes char[]) {
+  foreach i, n in<array> bytes {
+    show(i, ": ", (int)n);
+  }
+}
+
+fnc main() {
+  n: int = 10;
+
+  nb: char[4] = inttobytes(sizeof(int), n);
+  nb2: char[8] = inttobytes(sizeof(int<64>), 1982);
+
+  print_bytes(nb);
+  print_bytes(nb2);
+
+  restored: int<64> = bytestoint(sizeof(int<64>), nb2);
+  show("Restored int: ", restored);
+
+  f: float<64> = 3.14;
+  fb: char[8] = floattobytes(sizeof(float<64>), f);
+  print_bytes(fb);
+
+  restored_f: float<64> = bytestofloat(sizeof(float<64>), fb);
+  show("Restored float: ", restored_f);
+}
