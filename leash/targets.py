@@ -27,7 +27,9 @@ class TargetConfig:
 
     def get_output_name(self, base_name):
         """Get the output filename for this target."""
-        return base_name + self.output_extension
+        if self.output_extension and not base_name.endswith(self.output_extension):
+            return base_name + self.output_extension
+        return base_name
 
     def get_linker_cmd(self, obj_file, output_file, native_libs=None):
         """Get the linker command for this target."""
@@ -48,6 +50,9 @@ class TargetConfig:
 
     def detect_cross_linker(self):
         """Try to detect an appropriate cross-compiler for this target."""
+        if self.name == "win64" and os.name == "nt":
+            return None
+
         cross_compilers = {
             "win64": ["x86_64-w64-mingw32-gcc", "x86_64-w64-mingw32-clang"],
             "linux32": ["i686-linux-gnu-gcc", "i686-pc-linux-gnu-gcc"],
@@ -90,7 +95,7 @@ TARGETS = {
         name="win64",
         llvm_triple="x86_64-pc-windows-msvc",
         output_extension=".exe",
-        linker_flags=[],  # No libgc for Windows cross-compilation
+        linker_flags=["-no-pie", "-fno-pie"],
         platform_name="Windows",
         description="Windows x86_64",
     ),

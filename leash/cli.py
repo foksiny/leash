@@ -686,7 +686,9 @@ def compile_file(
     except Exception:
         target = llvm.Target.from_default_triple()
 
-    target_machine = target.create_target_machine()
+    # Use static reloc model to avoid PIC/GOT references on Windows
+    reloc_model = "static" if target_config.name == "win64" and os.name == "nt" else "default"
+    target_machine = target.create_target_machine(reloc=reloc_model)
 
     # Optional Output name
     if output_name is None:
@@ -757,12 +759,12 @@ def _link_native(
     # Platform-specific compiler detection
     if cc is None and os.name == "nt":
         try:
-            subprocess.run(["clang", "--version"], capture_output=True, check=True)
-            cc = "clang"
+            subprocess.run(["gcc", "--version"], capture_output=True, check=True)
+            cc = "gcc"
         except (FileNotFoundError, subprocess.CalledProcessError):
             try:
-                subprocess.run(["gcc", "--version"], capture_output=True, check=True)
-                cc = "gcc"
+                subprocess.run(["clang", "--version"], capture_output=True, check=True)
+                cc = "clang"
             except (FileNotFoundError, subprocess.CalledProcessError):
                 print("Error: No C compiler found on Windows.")
                 try:
@@ -801,9 +803,17 @@ def _link_native(
     # Add built-in stubs (GC, clock, stdout helpers)
     cross_stubs = []
     stubs_obj = None
+    
     stubs_path = os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "cross_compile_stubs.c"
     )
+    
+    # On native Windows, use windows_stubs.c instead
+    if os.name == "nt" and target_config.name == "win64":
+        stubs_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "windows_stubs.c"
+        )
+    
     if os.path.exists(stubs_path):
         # Compile stubs to unique object file to avoid race conditions
         stubs_obj = f"{obj_name}_stubs.o"

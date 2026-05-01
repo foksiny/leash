@@ -7,13 +7,14 @@ import platform as pyplatform
 from pathlib import Path
 
 # Paths to important directories
-WORKSPACE_DIR = Path("/home/jose/projects/leash")
+WORKSPACE_DIR = Path(__file__).resolve().parent.parent
 EXAMPLES_DIR = WORKSPACE_DIR / "examples"
 EXPECTED_DIR = WORKSPACE_DIR / "tests" / "expected"
 
 # Command to run leash
-LEASH_RUN_CMD = ["python3", "-m", "leash.cli", "run"]
-LEASH_COMPILE_CMD = ["python3", "-m", "leash.cli", "compile"]
+python_cmd = "python" if sys.platform == "win32" else "python3"
+LEASH_RUN_CMD = [python_cmd, "-m", "leash.cli", "run"]
+LEASH_COMPILE_CMD = [python_cmd, "-m", "leash.cli", "compile"]
 
 # Pattern to match pointer values (e.g., 0x7ffe417814fc)
 POINTER_PATTERN = re.compile(r"0x[0-9a-fA-F]+")

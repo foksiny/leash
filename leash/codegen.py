@@ -6263,15 +6263,18 @@ class CodeGen:
         result = self.builder.call(self.malloc, [result_len_plus_1])
         self._track_alloc(result)
 
+        # Copy prefix
         self.builder.call(self.strncpy, [result, str_val, prefix_len])
 
-        result_after_prefix = self.builder.gep(result, [prefix_len], inbounds=True)
-        self.builder.call(self.strcat, [result_after_prefix, new_str])
+        # Null-terminate after prefix so strcat works
+        terminator_ptr = self.builder.gep(result, [prefix_len], inbounds=True)
+        self.builder.store(ir.Constant(ir.IntType(8), 0), terminator_ptr)
 
-        result_after_new = self.builder.gep(
-            result_after_prefix, [new_len], inbounds=True
-        )
-        self.builder.call(self.strcat, [result_after_new, suffix_start])
+        # Append new string
+        self.builder.call(self.strcat, [result, new_str])
+
+        # Append suffix
+        self.builder.call(self.strcat, [result, suffix_start])
 
         self.builder.branch(merge_bb)
 
