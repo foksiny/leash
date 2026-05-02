@@ -188,13 +188,14 @@ def resolve_imports(program, base_path):
 
                 # For public imports, add templates needed by public classes/functions
                 if not is_priv_import:
+                    templates_to_add = {}
                     for name, item in available.items():
-                        if hasattr(item, 'template_params') and item.template_params:
-                            for tp in item.template_params:
+                        if hasattr(item, 'type_params') and item.type_params:
+                            for tp in item.type_params:
                                 if tp in all_templates and tp not in available:
                                     tp_node = all_templates[tp]
-                                    if getattr(tp_node, 'visibility', 'pub') == 'pub':
-                                        available[tp] = tp_node
+                                    templates_to_add[tp] = tp_node
+                    available.update(templates_to_add)
 
                 # If this is a private import, add ALL items for internal type-checking
                 if item.visibility == "priv":
@@ -662,7 +663,7 @@ def compile_file(
         llvm.initialize_native_asmprinter()
 
         # 5. Code Generation
-        codegen = CodeGen()
+        codegen = CodeGen(target_platform=target_config.name)
         codegen.generate_code(ast, input_file)
 
         llvm_ir = codegen.get_ir()
@@ -911,7 +912,7 @@ def dump_file(
 
         llvm.initialize_all_targets()
 
-        codegen = CodeGen()
+        codegen = CodeGen(target_platform=target_config.name)
         codegen.generate_code(ast, input_file)
 
         llvm_ir = codegen.get_ir()

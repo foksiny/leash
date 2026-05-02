@@ -25,7 +25,7 @@ from .ast_nodes import (
 
 
 class CodeGen:
-    def __init__(self):
+    def __init__(self, target_platform=None):
         self.module = ir.Module(name="leash_module")
         self.builder = None
         self.func_symtab = {}
@@ -42,6 +42,7 @@ class CodeGen:
         )
         self.printf = None
         self.current_target_type = None
+        self.target_platform = target_platform  # Store target platform (e.g., "win64", "linux64")
         self.loop_stack = []  # Stack of (break_bb, continue_bb) for nested loops
         self.seed_called = False  # Track if seed() was explicitly called
 
@@ -3640,6 +3641,7 @@ class CodeGen:
             raise LeashError("exec requires at least 1 argument (command)", node=node)
 
         command_val = self._codegen(node.args[0])
+        original_command_val = command_val  # Keep original for "code" mode
 
         mode = None
         if len(node.args) >= 2:
@@ -3655,7 +3657,13 @@ class CodeGen:
                 mode = None
 
         if mode == "code":
-            redirect_cmd = self._emit_const_str("sh -c '(%s) >/dev/null 2>&1; echo $?'")
+            # Use platform-appropriate shell command
+            if self.target_platform == "win64":
+                # Windows: use cmd /v:on for delayed expansion of errorlevel
+                redirect_cmd = self._emit_const_str("cmd /v:on /c \"%s >nul 2>&1 & echo !errorlevel!\"")
+            else:
+                # Unix: use sh -c
+                redirect_cmd = self._emit_const_str("sh -c '(%s) >/dev/null 2>&1; echo $?'")
             cmd_buf = self.builder.call(
                 self.malloc_fn, [ir.Constant(ir.IntType(64), 256)]
             )
@@ -3674,8 +3682,19 @@ class CodeGen:
 
             return line
         elif mode == "silent" or mode == "wait":
+            # On Windows, use cmd /c prefix for popen
+            if self.target_platform == "win64":
+                cmd_val = original_command_val
+                cmd_prefix_fmt = self._emit_const_str("cmd /c %s")
+                new_cmd_buf = self.builder.call(
+                    self.malloc_fn, [ir.Constant(ir.IntType(64), 1024)]
+                )
+                self.builder.call(self.sprintf_fn, [new_cmd_buf, cmd_prefix_fmt, cmd_val])
+                popen_cmd = new_cmd_buf
+            else:
+                popen_cmd = command_val
             popen_mode = self._emit_const_str("r")
-            pipe = self.builder.call(self.popen_fn, [command_val, popen_mode])
+            pipe = self.builder.call(self.popen_fn, [popen_cmd, popen_mode])
 
             read_buffer = self.builder.call(
                 self.malloc_fn, [ir.Constant(ir.IntType(64), 4096)]
@@ -3760,7 +3779,12 @@ class CodeGen:
 
             return final_result_ptr
         else:
-            self.builder.call(self.system_fn, [command_val])
+            # On Windows, system() works with cmd, but let's use prefixed command if needed
+            if self.target_platform == "win64":
+                # Use original command for system() - it goes through cmd.exe on Windows
+                self.builder.call(self.system_fn, [original_command_val])
+            else:
+                self.builder.call(self.system_fn, [command_val])
             return self._emit_const_str("")
 
     def _codegen_MethodCall(self, node):

@@ -77,6 +77,12 @@ def normalize_pointers(text):
     # Normalize file path differences
     text = re.sub(r"/home/jose/projects/leash/", "", text)
     text = re.sub(r"Z:\\home\\jose\\projects\\leash\\", "", text)
+    # Normalize workspace directory to relative path
+    workspace_str = str(WORKSPACE_DIR)
+    text = text.replace(workspace_str + "\\", "")
+    text = text.replace(workspace_str + "/", "")
+    # Normalize backslashes to forward slashes
+    text = text.replace("\\", "/")
     # Normalize Windows executable extensions
     text = re.sub(r"\.exe\b", "", text)
 
