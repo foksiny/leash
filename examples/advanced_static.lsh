@@ -1,0 +1,12 @@
+def Math : class {
+    static priv pi: float<64> = 3.1415926535;
+
+    pub static fnc PI() : float<64> {
+        return this.pi;
+    }
+}
+
+fnc main() {
+    pi: float<64> = Math.PI();
+    show(pi);
+}

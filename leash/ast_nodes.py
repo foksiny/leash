@@ -510,3 +510,18 @@ class MacroDef(ASTNode):
         self.params = params  # list of parameter names
         self.body = body  # list of statements (Block) or single expression
         self.visibility = visibility  # 'pub' or 'priv'
+
+
+class CreateExpr(Expression):
+    """Represents a class instance creation: create ClassName(args)"""
+
+    def __init__(self, class_name, args):
+        self.class_name = class_name  # string: name of the class to create
+        self.args = args  # list of positional arguments
+
+
+class DelStatement(Statement):
+    """Represents a delete statement: del variable;"""
+
+    def __init__(self, target):
+        self.target = target  # Identifier or MemberAccess node

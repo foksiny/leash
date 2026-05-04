@@ -5,6 +5,9 @@ priv def Memory : union {
     d: double;
 };
 
+pub def max : macro(a, b) |> a < b ? b : a;
+pub def min : macro(a, b) |> a > b ? b : a;
+
 pub def Math : class {
     static pub PI: double = 3.14159265358979323846;
     static pub E: double = 2.71828182845904523536;
@@ -12,8 +15,8 @@ pub def Math : class {
     static pub LN10: double = 2.30258509299404568402;
     static pub LN2: double = 0.69314718055994530942;
 
-    static pub fnc new() : pMath {
-        return pMath {};
+    static pub fnc new() : Math {
+        return Math {};
     }
 
     static pub fnc floor(x double) : double {
@@ -34,7 +37,7 @@ pub def Math : class {
 
     static pub fnc fmod(x double, y double) : double {
         if y == 0.0 { return 0.0; }
-        quotient: double = pMath.floor(x / y);
+        quotient: double = Math.floor(x / y);
         return x - (y * quotient);
     }
 
@@ -52,7 +55,7 @@ pub def Math : class {
 
     static pub fnc exp(x double) : double {
         if x < 0.0 {
-            return 1.0 / pMath.exp(-x);
+            return 1.0 / Math.exp(-x);
         }
 
         sum: double = 1.0;
@@ -76,7 +79,7 @@ pub def Math : class {
         guess: double = 1.0;
 
         for i: int = 0; i < 15; i = i + 1 {
-            e_guess: double = pMath.exp(guess);
+            e_guess: double = Math.exp(guess);
             guess = guess - ((e_guess - x) / e_guess);
         }
 
@@ -84,9 +87,9 @@ pub def Math : class {
     }
 
     static pub fnc sin(x double) : double {
-        x = pMath.fmod(x, 2.0 * pMath.PI);
-        if x < 0.0 { x = x + 2.0 * pMath.PI; }
-        x = x - pMath.PI;
+        x = Math.fmod(x, 2.0 * Math.PI);
+        if x < 0.0 { x = x + 2.0 * Math.PI; }
+        x = x - Math.PI;
 
         sum: double = 0.0;
         term: double = x;
@@ -101,11 +104,11 @@ pub def Math : class {
     }
     
     static pub fnc cos(x double) : double {
-        return pMath.sin(x + pMath.PI / 2.0);
+        return Math.sin(x + Math.PI / 2.0);
     }
 
     static pub fnc tan(x double) : double {
-        return pMath.sin(x) / pMath.cos(x);
+        return Math.sin(x) / Math.cos(x);
     }
 
     static pub fnc pow(base double, exponent double) : double {
@@ -113,7 +116,7 @@ pub def Math : class {
         if base == 0.0 { return 0.0; }
         if exponent == 0.0 { return 1.0; }
 
-        if exponent == pMath.floor(exponent) && exponent > 0.0 {
+        if exponent == Math.floor(exponent) && exponent > 0.0 {
             result: double = 1.0;
             exp_int: int64 = toint(int64, exponent);
             current_base: double = base;
@@ -128,7 +131,7 @@ pub def Math : class {
         }
 
         if base > 0.0 {
-            return pMath.exp(exponent * pMath.log(base));
+            return Math.exp(exponent * Math.log(base));
         }
 
         return nil;
@@ -138,8 +141,8 @@ pub def Math : class {
         guess: double = x;
 
         for i: int = 0; i < 8; i = i + 1 {
-            mycurrent_sin: double = pMath.sin(guess);
-            mycurrent_cos: double = pMath.cos(guess);
+            mycurrent_sin: double = Math.sin(guess);
+            mycurrent_cos: double = Math.cos(guess);
 
             guess = guess - ((mycurrent_sin - x) / mycurrent_cos);
         }
@@ -150,28 +153,28 @@ pub def Math : class {
     static pub fnc asin(x double) : double {
         if x < -1.0 || x > 1.0 { return nil; }
 
-        if x < 0.0 { return -pMath.asin(-x); }
+        if x < 0.0 { return -Math.asin(-x); }
 
         if x > .85 {
-            new_x: double = pMath.sqrt((1.0 - x) / 2.0);
-            return pMath.HALF_PI - 2.0 * pMath.newton_asin(new_x);
+            new_x: double = Math.sqrt((1.0 - x) / 2.0);
+            return Math.HALF_PI - 2.0 * Math.newton_asin(new_x);
         }
 
-        return pMath.newton_asin(x);
+        return Math.newton_asin(x);
     }
 
     static pub fnc acos(x double) : double {
         if x < -1.0 || x > 1.0 { return nil; }
-        return pMath.HALF_PI - pMath.asin(x);
+        return Math.HALF_PI - Math.asin(x);
     }
 
     static pub fnc atan(x double) : double {
-        hypotenuse: double = pMath.sqrt(1.0 + x * x);
-        return pMath.asin(x / hypotenuse);
+        hypotenuse: double = Math.sqrt(1.0 + x * x);
+        return Math.asin(x / hypotenuse);
     }
 
     static pub fnc cosh(x double) : double {
-        return (pMath.exp(x) + pMath.exp(-x)) / 2.0;
+        return (Math.exp(x) + Math.exp(-x)) / 2.0;
     }
 
     static pub fnc squared(x double) : double {
@@ -182,7 +185,7 @@ pub def Math : class {
         if x > -1.0 && x < 1.0 {
             sum: double = x;
             term: double = x;
-            x_squared: double = pMath.squared(x);
+            x_squared: double = Math.squared(x);
 
             for i: int = 1; i < 8; i = i + 1 {
                 term = term * x_squared / tofloat(double, ((2 * i) * (2 * i + 1)));
@@ -192,17 +195,17 @@ pub def Math : class {
             return sum;
         }
 
-        return (pMath.exp(x) - pMath.exp(-x)) / 2.0;
+        return (Math.exp(x) - Math.exp(-x)) / 2.0;
     }
 
     static pub fnc log10(x double) : double {
         if x <= 0.0 { return nil; }
-        return pMath.log(x) / pMath.LN10;
+        return Math.log(x) / Math.LN10;
     }
 
     static pub fnc log2(x double) : double {
         if x <= 0.0 { return nil; }
-        return pMath.log(x) / pMath.LN2;
+        return Math.log(x) / Math.LN2;
     }
 
     static pub unsafe fnc fabs(x double) : double {

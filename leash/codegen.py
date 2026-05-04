@@ -21,12 +21,25 @@ from .ast_nodes import (
     SizeofExpr,
     Identifier,
     MacroDef,
+    CreateExpr,
+    DelStatement,
 )
 
 
 class CodeGen:
     def __init__(self, target_platform=None):
         self.module = ir.Module(name="leash_module")
+        # Initialize data layout for type size calculations
+        try:
+            llvm.initialize()
+            llvm.initialize_native_target()
+            llvm.initialize_native_asmprinter()
+            target = llvm.get_default_target_triple()
+            target_machine = llvm.create_target_machine(target)
+            self.module.data_layout = target_machine.target_data
+        except:
+            # Fallback if LLVM binding fails
+            pass
         self.builder = None
         self.func_symtab = {}
         self.var_symtab = {}
@@ -1027,6 +1040,26 @@ class CodeGen:
             return ir.IntType(8).as_pointer()  # FILE* is i8*
         return ir.IntType(32)  # default fallback
 
+    def _get_type_size(self, llvm_type):
+        """Get the size of an LLVM type in bytes."""
+        # Use the target data layout to get the size
+        if hasattr(self.module, 'data_layout') and self.module.data_layout:
+            return self.module.data_layout.get_abi_size(llvm_type)
+        # Fallback: manual calculation for common types
+        if isinstance(llvm_type, ir.IntType):
+            return (llvm_type.width + 7) // 8
+        elif isinstance(llvm_type, (ir.FloatType, ir.DoubleType)):
+            return 4 if isinstance(llvm_type, ir.FloatType) else 8
+        elif isinstance(llvm_type, ir.PointerType):
+            return 8  # Pointer size on 64-bit
+        elif isinstance(llvm_type, ir.LiteralStructType):
+            # Sum up field sizes (simplified - doesn't account for padding)
+            total = 0
+            for elem in llvm_type.elements:
+                total += self._get_type_size(elem)
+            return total
+        return 8  # Default fallback
+
     def _codegen_StructDef(self, node):
         llvm_types = []
         fields = {}
@@ -1086,7 +1119,7 @@ class CodeGen:
                 # Static field - generate a global variable
                 static_llvm_type = self._get_llvm_type(f.var_type)
                 static_gv = ir.GlobalVariable(
-                    self.module, static_llvm_type, name=f"{node.name}_{f.name}"
+                    self.module, static_llvm_type, name=f"{node.name}_static_{f.name}"
                 )
                 static_gv.linkage = "internal"
                 static_fields[f.name] = {
@@ -1893,6 +1926,14 @@ class CodeGen:
                     [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), idx)],
                 ), field_type_name
             elif resolved in self.class_symtab:
+                if instance_ptr is None:
+                    # Static field access (e.g., ClassName.field or this.field in static method)
+                    cls_info = self.class_symtab[resolved]
+                    if "static_fields" in cls_info and node.member in cls_info["static_fields"]:
+                        static_info = cls_info["static_fields"][node.member]
+                        return static_info["global"], static_info["type"]
+                    raise LeashError(f"Class '{resolved}' has no static field named '{node.member}'")
+
                 # Classes are reference types (pointers). LOAD the pointer first.
                 instance_ptr = self.builder.load(instance_ptr)
                 cls_info = self.class_symtab[resolved]
@@ -1978,6 +2019,9 @@ class CodeGen:
             return (ptr, elem_type_name)
         elif isinstance(node, ThisExpr):
             if "this" not in self.var_symtab:
+                if self.current_class_name:
+                    # In a static method, 'this' refers to the class itself (no instance pointer)
+                    return None, self.current_class_name
                 raise LeashError("'this' is not available in the current context")
             return self.var_symtab["this"]
         elif isinstance(node, MethodCall):
@@ -3791,18 +3835,28 @@ class CodeGen:
         from .ast_nodes import Identifier
 
         # Handle static method calls on class names (e.g., pMath.exp(x))
+        from .ast_nodes import ThisExpr
+        is_static_call = False
+        target_cls = None
         if isinstance(node.expr, Identifier) and node.expr.name in self.class_symtab:
-            cls_info = self.class_symtab[node.expr.name]
+            is_static_call = True
+            target_cls = node.expr.name
+        elif isinstance(node.expr, ThisExpr) and "this" not in self.var_symtab and self.current_class_name:
+            is_static_call = True
+            target_cls = self.current_class_name
+
+        if is_static_call:
+            cls_info = self.class_symtab[target_cls]
             func = cls_info["methods"].get(node.method)
             if not func:
                 raise LeashError(
-                    f"Class '{node.expr.name}' has no method named '{node.method}'"
+                    f"Class '{target_cls}' has no method named '{node.method}'"
                 )
 
             is_m_static = cls_info["method_static"].get(node.method, False)
             if not is_m_static:
                 raise LeashError(
-                    f"Cannot call instance method '{node.method}' on class name '{node.expr.name}'"
+                    f"Cannot call instance method '{node.method}' on class name '{target_cls}'"
                 )
 
             # Prepare arguments for static method
@@ -5482,9 +5536,19 @@ class CodeGen:
     def _codegen_MemberAccess(self, node):
         from .ast_nodes import Identifier
 
-        # Handle static class field access (e.g., idkMath.PI)
+        # Handle static class field access (e.g., idkMath.PI or this.PI in static method)
+        from .ast_nodes import ThisExpr
+        is_static_base = False
+        target_cls = None
         if isinstance(node.expr, Identifier) and node.expr.name in self.class_symtab:
-            cls_info = self.class_symtab[node.expr.name]
+            is_static_base = True
+            target_cls = node.expr.name
+        elif isinstance(node.expr, ThisExpr) and "this" not in self.var_symtab and self.current_class_name:
+            is_static_base = True
+            target_cls = self.current_class_name
+
+        if is_static_base:
+            cls_info = self.class_symtab[target_cls]
             # Check static fields first
             if "static_fields" in cls_info and node.member in cls_info["static_fields"]:
                 static_info = cls_info["static_fields"][node.member]
@@ -6409,3 +6473,81 @@ class CodeGen:
         self.current_func_name = old_func_name
 
         return func
+
+    def _codegen_CreateExpr(self, node):
+        """Generate code for 'create ClassName(args)' expression."""
+        class_name = node.class_name
+
+        # Get the class info
+        if class_name not in self.class_symtab:
+            raise LeashError(f"Unknown class '{class_name}' in create expression")
+
+        cls_info = self.class_symtab[class_name]
+        class_type = cls_info["type"]
+
+        # Allocate memory for the class instance using GC_malloc
+        # The type is a pointer to the struct
+        instance_ptr_type = class_type.as_pointer()
+        size = self._get_type_size(class_type)
+        size_val = ir.Constant(ir.IntType(64), size)
+        malloc_ptr = self.builder.call(self.malloc, [size_val])
+        instance_ptr = self.builder.bitcast(malloc_ptr, instance_ptr_type)
+
+        # Set up vtable pointer if the class has virtual methods
+        if cls_info.get("vtable_global") is not None:
+            # Store vtable pointer as the first field (index 0)
+            vtable_ptr = self.builder.gep(
+                instance_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)]
+            )
+            # Bitcast vtable_global to i8* for storage
+            vtable_value = self.builder.bitcast(cls_info["vtable_global"], ir.IntType(8).as_pointer())
+            self.builder.store(vtable_value, vtable_ptr)
+
+        # Call the constructor if it exists
+        constructor_name = f"{class_name}_{class_name}"
+        if constructor_name in self.func_symtab:
+            constructor = self.func_symtab[constructor_name]
+            # Prepare arguments: 'this' (instance pointer) + user arguments
+            args = [instance_ptr]
+            for arg_expr in node.args:
+                arg_val = self._codegen(arg_expr)
+                args.append(arg_val)
+            self.builder.call(constructor, args)
+
+        return instance_ptr
+
+    def _codegen_DelStatement(self, node):
+        """Generate code for 'del target;' statement."""
+        # Get the target type
+        target_type = self._get_leash_type_name(node.target)
+        resolved = self._resolve_type_name(target_type)
+
+        if resolved not in self.class_symtab:
+            raise LeashError(f"Cannot delete non-class type '{target_type}'")
+
+        cls_info = self.class_symtab[resolved]
+
+        # Get the pointer to the instance
+        target_ptr = self._codegen(node.target)
+
+        # Call the destructor if it exists (DEL_ClassName)
+        destructor_name = f"{resolved}_DEL_{resolved}"
+        # Check common destructor naming patterns
+        destructor = None
+        for func_name, func in self.func_symtab.items():
+            if func_name.startswith(f"{resolved}_DEL_"):
+                destructor = func
+                break
+
+        if destructor is None:
+            # Try another naming pattern
+            destructor_name = f"DEL_{resolved}"
+            if destructor_name in self.func_symtab:
+                destructor = self.func_symtab[destructor_name]
+
+        if destructor:
+            # Call destructor with 'this' (instance pointer)
+            self.builder.call(destructor, [target_ptr])
+
+        # Note: Memory is managed by Boehm GC, so no explicit free is needed
+        # The GC will collect the object when no more references exist

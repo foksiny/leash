@@ -65,6 +65,8 @@ from .ast_nodes import (
     DeferStatement,
     Lambda,
     MacroDef,
+    CreateExpr,
+    DelStatement,
 )
 from .errors import LeashError
 
@@ -959,6 +961,66 @@ class Parser:
                 methods.append(
                     ClassMethod(fnc, member_visibility, is_static, is_imut, is_unsafe)
                 )
+            elif (
+                self.current().type == "IDENT"
+                and self.peek()
+                and self.peek().type == "LPAREN"
+            ):
+                # Method without fnc keyword (e.g., constructor: Math())
+                # Save current state
+                old_pos = self.pos
+                old_visibility = member_visibility
+                old_is_static = is_static
+                old_is_imut = is_imut
+                old_is_unsafe = is_unsafe
+
+                # Parse as function but without fnc keyword
+                fnc_name = self.eat("IDENT").value
+                self.eat("LPAREN")
+                args = []
+                has_default = False
+                while self.current().type != "RPAREN":
+                    arg_name = self.eat("IDENT").value
+                    arg_type = self.parse_type()
+                    default_value = None
+                    if self.current().type == "ASSIGN":
+                        self.eat("ASSIGN")
+                        default_value = self.parse_expression()
+                        has_default = True
+                    elif has_default:
+                        raise LeashError(
+                            f"Cannot have argument without default value after argument with default value",
+                            self.current().line,
+                            self.current().column,
+                        )
+                    args.append((arg_name, arg_type, default_value))
+                    if self.current().type == "COMMA":
+                        self.eat("COMMA")
+                self.eat("RPAREN")
+                return_type = "void"
+                if self.current().type == "COLON":
+                    self.eat("COLON")
+                    return_type = self.parse_type()
+
+                if self.current().type == "PIPE":
+                    self.eat("PIPE")
+                    statements = [self.parse_statement()]
+                else:
+                    self.eat("LBRACE")
+                    statements = self.parse_block()
+
+                fnc = Function(
+                    fnc_name,
+                    tuple(args),
+                    return_type,
+                    statements,
+                    visibility=member_visibility,
+                    is_unsafe=is_unsafe,
+                    is_inline=False,
+                )
+                methods.append(
+                    ClassMethod(fnc, member_visibility, is_static, is_imut, is_unsafe)
+                )
             else:
                 field_name = self.eat("IDENT").value
                 self.eat("COLON")
@@ -1294,6 +1356,32 @@ class Parser:
             self.eat("CONTINUE")
             self.eat("SEMI")
             return self._pos(ContinueStatement(), tok)
+
+        elif current.type == "DEL":
+            tok = self.current()
+            self.eat("DEL")
+            # Parse the target (could be identifier or member access)
+            if self.current().type == "IDENT":
+                target = Identifier(self.eat("IDENT").value)
+                # Check for member access after identifier
+                while self.current().type in ("DOT", "ARROW"):
+                    if self.current().type == "DOT":
+                        self.eat("DOT")
+                        member = self.eat("IDENT").value
+                        target = MemberAccess(target, member)
+                    elif self.current().type == "ARROW":
+                        self.eat("ARROW")
+                        member = self.eat("IDENT").value
+                        target = PointerMemberAccess(target, member)
+            else:
+                raise LeashError(
+                    "Expected identifier after 'del'",
+                    tok.line,
+                    tok.column,
+                    tip="The 'del' keyword is used to delete variables. Example: `del myVar;`",
+                )
+            self.eat("SEMI")
+            return self._pos(DelStatement(target), tok)
 
         elif self.current().type in ("IDENT", "THIS", "MUL", "BIT_AND"):
             # Could be assignment or function call or show
@@ -1680,6 +1768,20 @@ class Parser:
                 return self._pos(EnumMemberAccess(name, member), tok)
 
             return self._pos(Identifier(name), tok)
+
+        elif self.current().type == "CREATE":
+            tok = self.current()
+            self.eat("CREATE")
+            class_name = self.eat("IDENT").value
+            args = []
+            if self.current().type == "LPAREN":
+                self.eat("LPAREN")
+                while self.current().type != "RPAREN":
+                    args.append(self.parse_expression())
+                    if self.current().type == "COMMA":
+                        self.eat("COMMA")
+                self.eat("RPAREN")
+            return self._pos(CreateExpr(class_name, args), tok)
         elif self.current().type == "LPAREN":
             # Check if this is a cast: (type)expr
             # We look ahead to see if there's a type name followed by RPAREN

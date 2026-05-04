@@ -2184,7 +2184,7 @@ fnc main() : void {
 - **Downcasting**: Explicit cast from parent to child using `(ChildType)expr`
 - **Dynamic Dispatch**: Method calls use vtables for runtime polymorphism
 
-### Preventing Method Overriding with `imut`
+ ### Preventing Method Overriding with `imut`
 
 If you want to make a method non-modifiable by subclasses, use `imut` before `fnc`:
 
@@ -2211,6 +2211,83 @@ def Dog : class(Animal) {
 ```
 
 This is useful when you want to ensure certain methods always behave the same way across all subclasses, maintaining consistent behavior for critical operations.
+
+### Creating Class Instances with `create`
+
+Leash provides the `create` keyword to instantiate classes. When you use `create`, the compiler automatically calls the class constructor (a method with the same name as the class).
+
+```leash
+def Math : class {
+    pub Math() {
+        show("Hello! I've been created :)");
+    }
+
+    pub fnc sum(a int, b int) : int {
+        return a + b;
+    }
+
+    pub fnc sub(a int, b int) : int {
+        return a - b;
+    }
+}
+
+fnc main() : void {
+    // Create an instance using 'create'
+    m: Math = create Math();
+
+    show(m.sum(10, 20));  // 30
+    show(m.sub(20, 5));   // 15
+}
+```
+
+#### Constructor Syntax
+
+Constructors are methods with the same name as the class. They can have parameters:
+
+```leash
+def Point : class {
+    pub Point(x int, y int) {
+        this.x = x;
+        this.y = y;
+        show("Point created at (", x, ", ", y, ")");
+    }
+
+    priv x: int;
+    priv y: int;
+}
+
+fnc main() : void {
+    p: Point = create Point(10, 20);
+}
+```
+
+### Deleting Class Instances with `del`
+
+The `del` keyword deletes a class instance and frees its memory. When you use `del`, the compiler calls the destructor (a method named `DEL_ClassName`).
+
+```leash
+def Math : class {
+    pub Math() {
+        show("Hello! I've been created :)");
+    }
+
+    priv DEL_Math() {
+        show("Oh no! I'm dead :(");
+    }
+}
+
+fnc main() : void {
+    m: Math = create Math();
+
+    del m;  // Calls DEL_Math() and frees the instance
+}
+```
+
+#### Destructor Syntax
+
+Destructors are methods named `DEL_ClassName` (with `DEL_` prefix followed by the class name). They are called automatically when:
+- The `del` keyword is used on a variable
+- The instance is no longer referenced and GC collects it (though `del` provides explicit control)
 
 ## File I/O
 

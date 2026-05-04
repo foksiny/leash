@@ -166,6 +166,13 @@ Mathematical constants and functions (all static). Depends on `types::*`.
 use utils::math::Math;
 ```
 
+### Macros
+
+| Macro | Signature | Description |
+|-------|-----------|-------------|
+| `max` | `max(a, b)` | Returns the larger of two values. Implemented as `a < b ? b : a`. |
+| `min` | `min(a, b)` | Returns the smaller of two values. Implemented as `a > b ? b : a`. |
+
 ### Class: `Math`
 
 #### Constants

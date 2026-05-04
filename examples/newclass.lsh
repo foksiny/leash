@@ -1,0 +1,33 @@
+def Math : class {
+    pub Math() {
+        show("Hello! I've been created :)");
+    }
+
+    priv DEL_Math() { // for when it gets deleted from memory with 'del' or anything else.
+        show("Oh no! I'm dead :(");
+    }
+
+    pub fnc sum(a int, b int) : int {
+        return a + b;
+    }
+
+    pub fnc sub(a int, b int) : int {
+        return a - b;
+    }
+
+    pub fnc mul(a int, b int) : int {
+        return a * b;
+    }
+
+    pub fnc div(a int, b int) : int {
+        return a / b;
+    }
+}
+
+fnc main() {
+    m: Math = create Math();
+
+    show(m.sum(10, 20));
+
+    del m; // del deletes anything, freeing it from memory too.
+}

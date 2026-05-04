@@ -84,6 +84,8 @@ examples/sizeof
 examples/unless
 examples/macros
 examples/bytetotype
+examples/newclass
+examples/advanced_static
 
 # Trash
 trash/

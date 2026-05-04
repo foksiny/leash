@@ -174,10 +174,14 @@ def resolve_imports(program, base_path):
                     if isinstance(mod_item, TemplateDef):
                         all_templates[mod_item.name] = mod_item
                 
-# Build available items - skip private items in public imports
+                # Build available items - skip private items in public imports
+                internal_types = {}  # Private type definitions needed for type checking
                 for mod_item in module_ast.items:
                     # Skip private items for public imports (include for private imports)
                     if not is_priv_import and hasattr(mod_item, "visibility") and mod_item.visibility == "priv":
+                        # Keep private type definitions for type checking
+                        if isinstance(mod_item, (StructDef, UnionDef, EnumDef, ClassDef, TypeAlias, ErrorDef)):
+                            internal_types[mod_item.name] = mod_item
                         continue
 
                     if isinstance(mod_item, (StructDef, UnionDef, EnumDef, ErrorDef, TypeAlias, ClassDef, Function, TemplateDef, MacroDef)):
@@ -204,7 +208,7 @@ def resolve_imports(program, base_path):
                     loaded_modules.add(module_file_abs)
                     continue
 
-# Verify requested items exist
+                # Verify requested items exist
                 if isinstance(item, ImportStmt) and item.imported_items is not None:
                     for name in item.imported_items:
                         if name not in available:
@@ -214,8 +218,11 @@ def resolve_imports(program, base_path):
                                 col=item.col,
                             )
 
-                # For public imports, add only available items (private ones filtered out)
+                # For public imports, add available items (public items)
                 for name, mod_item in available.items():
+                    new_items.append(mod_item)
+                # Also add internal types (needed for type checking but not importable)
+                for name, mod_item in internal_types.items():
                     new_items.append(mod_item)
                 loaded_modules.add(module_file_abs)
             else:

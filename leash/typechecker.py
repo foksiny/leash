@@ -62,6 +62,7 @@ class TypeChecker:
         self.defined_vars = {}  # name -> (line, col) for tracking declaration order
         self.shadows = []  # list of shadowing warnings
         self.in_unsafe_func = False  # Track if we're inside an unsafe function
+        self.current_method_static = False  # Track if current class method is static
 
         # Register built-in classes
         self._register_builtin_classes()
@@ -681,6 +682,29 @@ class TypeChecker:
 
         return stripped
 
+    def _normalize_type(self, type_name):
+        """
+        Normalize a type string into a canonical representation.
+        Handles imut, aliases, and bit-width defaults (int -> int<32>, etc).
+        """
+        if not isinstance(type_name, str):
+            return type_name
+
+        t = " ".join(type_name.split())
+        is_imut = t.startswith("imut ")
+        if is_imut:
+            t = t[5:].strip()
+
+        t = self._resolve(t)
+
+        if t == "int": t = "int<32>"
+        elif t == "uint": t = "uint<32>"
+        elif t == "float": t = "float<64>"
+
+        if is_imut:
+            return f"imut {t}"
+        return t
+
     def _base_type(self, type_name):
         """Get the base type category (strip bit-widths, array brackets, imut)."""
         t = self._resolve(type_name)
@@ -856,26 +880,34 @@ class TypeChecker:
         """Create a LeashError with position info from an AST node."""
         line = getattr(node, "line", None) if node else None
         col = getattr(node, "col", None) if node else None
+        # Use source_file from node, or fall back to current function's source_file
+        file = getattr(node, "source_file", None)
+        if file is None and self.current_func_node:
+            file = getattr(self.current_func_node, "source_file", None)
         if self.in_works_block and self.error_collecting:
             self.collected_errors.append(
-                {"msg": msg, "line": line, "col": col, "tip": tip, "code": code}
+                {"msg": msg, "line": line, "col": col, "tip": tip, "code": code, "file": file}
             )
             self.works_error_occured = True
         else:
-            raise LeashError(msg, line=line, col=col, tip=tip, code=code)
+            raise LeashError(msg, line=line, col=col, tip=tip, code=code, file=file)
 
     def _warn(self, msg, node=None, tip=None, code=None):
         """Add a warning with position info."""
         line = getattr(node, "line", None) if node else None
         col = getattr(node, "col", None) if node else None
+        # Use source_file from node, or fall back to current function's source_file
+        file = getattr(node, "source_file", None)
+        if file is None and self.current_func_node:
+            file = getattr(self.current_func_node, "source_file", None)
         self.warnings.append(
-            {"msg": msg, "line": line, "col": col, "tip": tip, "code": code}
+            {"msg": msg, "line": line, "col": col, "tip": tip, "code": code, "file": file}
         )
 
     def _types_compatible(self, src, dst):
         """Check if src type can be assigned into dst type."""
-        src_r = self._resolve(src)
-        dst_r = self._resolve(dst)
+        src_r = self._normalize_type(src)
+        dst_r = self._normalize_type(dst)
 
         if src_r == dst_r:
             return True
@@ -1197,14 +1229,18 @@ class TypeChecker:
                         )
 
         for m in node.methods:
-            # Add 'this' to scope for instance methods
-            if not m.is_static:
-                self.var_types["this"] = node.name
-                self.var_immutable["this"] = True
+            # Always add 'this' to scope, even for static methods (to allow class-level access)
+            self.var_types["this"] = node.name
+            self.var_immutable["this"] = True
+
+            old_static = self.current_method_static
+            self.current_method_static = m.is_static
 
             self._check_function(m.fnc)
 
-            if not m.is_static:
+            self.current_method_static = old_static
+
+            if "this" in self.var_types:
                 del self.var_types["this"]
                 del self.var_immutable["this"]
 
@@ -1375,6 +1411,20 @@ class TypeChecker:
             self._check_switch(stmt)
         elif isinstance(stmt, DeferStatement):
             self._check_defer(stmt)
+        elif isinstance(stmt, DelStatement):
+            self._check_del(stmt)
+
+    def _check_del(self, stmt):
+        """Type check a del statement - verify the target is a valid class instance."""
+        target_type = self._infer_type(stmt.target)
+        if target_type:
+            resolved = self._resolve(target_type)
+            if resolved not in self.class_types:
+                self._error(
+                    f"Cannot use 'del' on '{target_type}': not a class instance",
+                    node=stmt,
+                    tip="The 'del' keyword can only be used to delete class instances.",
+                )
 
     def _check_var_decl(self, stmt):
         if stmt.name in self.var_types:
@@ -1801,6 +1851,8 @@ class TypeChecker:
             return self._check_ternary_op(expr)
         elif isinstance(expr, Lambda):
             return self._check_lambda(expr)
+        elif isinstance(expr, CreateExpr):
+            return self._check_create(expr)
         return None
 
     def _check_sizeof(self, expr):
@@ -2151,6 +2203,62 @@ class TypeChecker:
 
         param_types = ", ".join(arg[1] for arg in expr.args)
         return f"fnc({param_types}) : {expr.return_type}"
+
+    def _check_create(self, expr):
+        """Type check a create expression - verify class exists and constructor is valid."""
+        class_name = expr.class_name
+
+        # Check if it's a generic class
+        if class_name in self.generic_classes:
+            # For generic classes, return the class name as type
+            # The actual instantiation will be handled by codegen
+            return class_name
+
+        # Check if class exists
+        if class_name not in self.class_types:
+            self._error(
+                f"Cannot create instance of unknown class '{class_name}'",
+                node=expr,
+                tip="Make sure the class is defined before using 'create'.",
+            )
+            return None
+
+        # Check for constructor (function named after the class)
+        class_info = self.class_types[class_name]
+        constructor_name = class_name
+
+        # Check if constructor exists in methods
+        if constructor_name in class_info.get("methods", {}):
+            # Get the constructor function node
+            method_info = class_info["methods"][constructor_name]
+            if method_info:
+                func_node = method_info[0] if isinstance(method_info, tuple) else method_info
+                if hasattr(func_node, 'args'):
+                    # Check argument count
+                    # First arg is 'this' for non-static methods, so subtract 1
+                    expected_args = len(func_node.args) - 1 if func_node.args and func_node.args[0][0] == 'this' else len(func_node.args)
+                    actual_args = len(expr.args)
+                    if expected_args != actual_args:
+                        self._error(
+                            f"Constructor '{constructor_name}' expects {expected_args} arguments, but {actual_args} were given",
+                            node=expr,
+                            tip=f"Check the constructor definition for class '{class_name}'.",
+                        )
+                    # Check argument types
+                    for i, arg in enumerate(expr.args):
+                        arg_type = self._infer_type(arg)
+                        if arg_type and i + 1 <= len(func_node.args):
+                            # Skip 'this' parameter
+                            idx = i + 1 if func_node.args and func_node.args[0][0] == 'this' else i
+                            if idx < len(func_node.args):
+                                expected_type = func_node.args[idx][1]
+                                if not self._types_compatible(arg_type, expected_type):
+                                    self._error(
+                                        f"Argument {i + 1} of constructor has type '{arg_type}', but expected '{expected_type}'",
+                                        node=arg,
+                                    )
+
+        return class_name
 
     def _check_defer(self, stmt):
         from .ast_nodes import Call, MethodCall
@@ -2628,12 +2736,38 @@ class TypeChecker:
         if resolved in self.class_types:
             self._check_visibility(resolved, expr.member, False, expr)
             fields = self.class_types[resolved]["fields"]
+            
             if expr.member not in fields:
                 raise LeashError(
                     f"Class '{resolved}' has no field named '{expr.member}'",
                     tip=f"Available fields: {', '.join(fields.keys())}",
                 )
-            return fields[expr.member][0]
+            
+            field_info = fields[expr.member]
+            # field_info is (type, visibility, is_static)
+            f_is_static = field_info[2] if len(field_info) > 2 else False
+            
+            # Determine if this is a static access
+            from .ast_nodes import Identifier, ThisExpr
+            is_static_access = False
+            if isinstance(expr.expr, Identifier) and expr.expr.name in self.class_types:
+                is_static_access = True
+            elif isinstance(expr.expr, ThisExpr) and self.current_method_static:
+                is_static_access = True
+            
+            if is_static_access and not f_is_static:
+                self._error(
+                    f"Cannot access instance field '{expr.member}' statically on class '{resolved}'",
+                    node=expr,
+                    tip="Instance fields require an object. Use 'this' inside an instance method, or create an instance.",
+                )
+            elif not is_static_access and f_is_static:
+                # Leash allows accessing static fields on instances, but maybe we should warn?
+                # For now, let's allow it as it's common in many languages, or follow Leash's style.
+                # Actually, the user specifically asked for 'this' in static methods, which we now treat as static access.
+                pass
+                
+            return field_info[0]
 
         return None
 
@@ -3156,20 +3290,30 @@ class TypeChecker:
                 )
 
             fnc_node, _, m_is_static, _ = methods[expr.method]
+            
+            from .ast_nodes import ThisExpr
+            if isinstance(expr.expr, ThisExpr) and self.current_method_static:
+                is_static = True
 
             # Static/Instance check
             if is_static and not m_is_static:
                 self._error(
                     f"Cannot call instance method '{expr.method}' statically on class '{target_cls}'",
                     node=expr,
-                    tip=f"Instance methods require an object. Call it on an instance variable: `let p = {target_cls}.new(...); p.{expr.method}(...);` ",
+                    tip=f"Instance methods require an object. Call it on an instance variable, or use 'this' in an instance method.",
                 )
             elif not is_static and m_is_static:
-                self._error(
-                    f"Cannot call static method '{expr.method}' on an instance of class '{target_cls}'",
-                    node=expr,
-                    tip=f"Static methods should be called on the class name: `{target_cls}.{expr.method}(...)` ",
-                )
+                # We generally allow calling static methods on instances, but we can warn or restrict it.
+                # However, the current code emits an error. Let's keep it consistent or relax if it was 'this'.
+                if isinstance(expr.expr, ThisExpr):
+                     # 'this' on a static method in an instance method context - usually allowed.
+                     pass
+                else:
+                    self._error(
+                        f"Cannot call static method '{expr.method}' on an instance of class '{target_cls}'",
+                        node=expr,
+                        tip=f"Static methods should be called on the class name: `{target_cls}.{expr.method}(...)` ",
+                    )
 
             # For instance methods, skip the first argument if it's 'this'
             # (built-in types like File include 'this' in args, user-defined classes don't)

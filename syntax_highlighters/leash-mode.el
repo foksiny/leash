@@ -25,8 +25,8 @@
 (add-to-list 'auto-mode-alist '("\\.lsh\\'" . leash-mode))
 
 (defconst leash-font-lock-keywords
-  (list
-   '("\\b\\(fnc\\|def\\|struct\\|union\\|enum\\|class\\|type\\|template\\|macro\\|return\\|if\\|also\\|else\\|unless\\|while\\|for\\|do\\|foreach\\|in\\|imut\\|vec\\|vector\\|this\\|pub\\|priv\\|static\\|stop\\|continue\\|use\\|works\\|otherwise\\|switch\\|case\\|default\\|unsafe\\|as\\|inline\\|defer\\|error\\|throw\\|self\\|alsou\\)\\b" . font-lock-keyword-face)
+   (list
+    '("\\b\\(fnc\\|def\\|struct\\|union\\|enum\\|class\\|type\\|template\\|macro\\|return\\|if\\|also\\|else\\|unless\\|while\\|for\\|do\\|foreach\\|in\\|imut\\|vec\\|vector\\|this\\|pub\\|priv\\|static\\|stop\\|continue\\|use\\|works\\|otherwise\\|switch\\|case\\|default\\|unsafe\\|as\\|inline\\|defer\\|error\\|throw\\|self\\|alsou\\|create\\|del\\)\\b" . font-lock-keyword-face)
    '("\\b\\(int\\|uint\\|float\\|bool\\|string\\|char\\|void\\|array\\|vec\\)\\b\\(?:<[0-9]+>\\)?" . font-lock-type-face)
    ;; Array types with sizes: int[5], char[n], int[x + y]
    '("\\b\\(int\\|uint\\|float\\|bool\\|string\\|char\\)\\[[^\\]]+\\]" . font-lock-type-face)
