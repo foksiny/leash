@@ -486,6 +486,28 @@ a: int = 10;
 b: string = "Hello World";
 ```
 
+### Auto-Type Inference (`:=`)
+
+Leash supports automatic type inference using the `:=` operator. Instead of explicitly declaring the type, the compiler automatically infers the type from the value on the right-hand side:
+
+```leash
+fnc main() : void {
+    a := 10;           // infers type 'int'
+    b := 20;           // infers type 'int'
+    name := "Leash";    // infers type 'string'
+    
+    show(a, " ", b, " ", name);  // 10 20 Leash
+}
+```
+
+The `:=` syntax is syntactic sugar that enables the compiler to automatically determine the variable's type based on its initializer value. This is useful for:
+
+- **Conciseness**: Less boilerplate when the type is obvious
+- **Flexibility**: The type automatically matches the value's type
+- **Readability**: Avoids repeating type names when they're clear from context
+
+> **Note:** Using `:=` requires an initializer expression. The type cannot be inferred without a value.
+
 ### Default Initialization
 
 If you declare a variable without an assignment, Leash automatically initializes it to a default value (zero for numbers, empty strings, and empty vectors/arrays):

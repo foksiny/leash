@@ -86,6 +86,7 @@ examples/macros
 examples/bytetotype
 examples/newclass
 examples/advanced_static
+examples/auto
 
 # Trash
 trash/

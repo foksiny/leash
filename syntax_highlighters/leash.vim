@@ -55,6 +55,9 @@ syn match leashOperator /|>\?\|&&\|||\|<<\|>>\|[+\-*/%&|^~!<>=]=\?/
 " Ternary operator
 syn match leashTernary "?"
 
+" Auto-type declaration operator (:=)
+syn match leashAutoDeclare ":="
+
 " Pointer operators
 syn match leashPointerOperator "[*&]\|->"
 
@@ -104,6 +107,7 @@ hi def link leashFunction Function
 hi def link leashMethod Function
 hi def link leashOperator Operator
 hi def link leashTernary Operator
+hi def link leashAutoDeclare Operator
 hi def link leashPointerOperator Operator
 hi def link leashNamespace Special
 hi def link leashMLString String

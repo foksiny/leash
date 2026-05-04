@@ -43,6 +43,7 @@
    '("\\b\\(replace\\)\\b" . font-lock-builtin-face)
      '("|>\\|&&\\|||\\|<<\\|>>\\|<>\\|[+\\-*/%&|^~!<>=]=?" . font-lock-variable-name-face)
     '("\\?" . font-lock-variable-name-face)
+    '(":=" . font-lock-variable-name-face)
    '("\\(&\\|\\*\\|->\\)" . font-lock-type-face)
     '("::" . font-lock-special-form-face)
     ;; Hexadecimal: 0xFF, 0xDEADBEEF, 0x1.5p3

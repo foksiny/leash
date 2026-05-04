@@ -1411,6 +1411,17 @@ class Parser:
                 return self._pos(ShowStatement(args, is_buffer=True), tok)
             elif (
                 self.pos + 1 < len(self.tokens)
+                and self.tokens[self.pos + 1].type == "COLON_ASSIGN"
+            ):
+                # Auto-type variable declaration: name := expr ;
+                tok = self.current()
+                name = self.eat("IDENT").value
+                self.eat("COLON_ASSIGN")
+                expr = self.parse_expression()
+                self.eat("SEMI")
+                return self._pos(VariableDecl(name, None, expr), tok)
+            elif (
+                self.pos + 1 < len(self.tokens)
                 and self.tokens[self.pos + 1].type == "COLON"
             ):
                 # Variable declaration: name : type = expr ;

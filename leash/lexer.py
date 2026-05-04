@@ -124,6 +124,7 @@ class Lexer:
         ("LBRACKET", r"\["),  # Left bracket
         ("RBRACKET", r"\]"),  # Right bracket
         ("DCOLON", r"::"),  # Double colon
+        ("COLON_ASSIGN", r":="),  # Auto-type declaration
         ("QUESTION", r"\?"),  # Ternary operator
         ("COLON", r":"),  # Colon
         ("COMMA", r","),  # Comma

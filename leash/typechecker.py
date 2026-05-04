@@ -1445,7 +1445,26 @@ class TypeChecker:
                 code="LEASH-W001",
             )
 
-        decl_type = stmt.var_type
+        # Handle auto-type inference (:= syntax)
+        if stmt.var_type is None:
+            if stmt.value is None:
+                self._error(
+                    f"Cannot use ':=' without an initializer expression",
+                    node=stmt,
+                    tip="Use ':=' when the type should be inferred from the value, e.g., `a := 10;`",
+                    code="LEASH-E004",
+                )
+            inferred_type = self._infer_type(stmt.value)
+            if inferred_type is None:
+                self._error(
+                    f"Cannot infer type for variable '{stmt.name}' from its initializer",
+                    node=stmt,
+                    code="LEASH-E005",
+                )
+            decl_type = inferred_type
+            stmt.var_type = inferred_type  # Store for codegen
+        else:
+            decl_type = stmt.var_type
         is_imut = self._is_imut(decl_type)
         bare_decl_type = self._strip_imut(decl_type)
         resolved = self._resolve(bare_decl_type)

@@ -1,0 +1,7 @@
+fnc main() {
+    a := 10;
+    b := 20;
+    name := "AAAAH";
+
+    show(tostring(a) + " " + tostring(b) + " " + name);
+}
