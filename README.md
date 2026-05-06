@@ -101,6 +101,205 @@ python3 -m leash.cli dump program.lsh to myoutput    # creates myoutput.ll
 python3 -m leash.cli dump program.lsh to myoutput.ll  # creates myoutput.ll
 ```
 
+### Optimization Levels
+
+Leash supports LLVM optimization levels via the `--opt` (or `-O`) flag. Use it with `compile`, `run`, or `dump` to control the aggressiveness of the optimization pipeline.
+
+```bash
+# No optimization (default)
+python3 -m leash.cli compile program.lsh --opt 0
+
+# Basic optimizations
+python3 -m leash.cli compile program.lsh --opt 1
+
+# Standard optimizations
+python3 -m leash.cli compile program.lsh --opt 2
+
+# Aggressive optimizations
+python3 -m leash.cli run program.lsh --opt 3
+
+# Optimize for size
+python3 -m leash.cli compile program.lsh --opt s
+```
+
+#### Optimization Passes by Level
+
+| Level | Description | Key Passes |
+|-------|-------------|------------|
+| **`-O0`** (default) | No optimization | Fastest compilation, unoptimized output |
+| **`-O1`** | Basic | Instruction combining, dead code elimination, simplify CFG |
+| **`-O2`** | Standard | Above + SROA, jump threading, reassociation, global opt, loop simplification |
+| **`-O3`** | Aggressive | Above + loop unrolling, loop strength reduction, always inline, merge functions, aggressive DCE, argument promotion, IPSCCP |
+| **`-Os`** | Size | `-O2` + global dead code elimination + extra CFG simplification |
+
+> **Note:** Optimization occurs on the generated LLVM IR just before emitting the object file, ensuring maximum effect across all target platforms.
+
+---
+
+## Optimization Techniques in Depth
+
+Beyond the `-O` flag, Leash leverages a deep, multi-layered optimization stack that spans the **frontend (Leash source code)**, **middle-end (LLVM IR)**, and **link-time (LTO)**. Each layer has a specific purpose and synergizes with the others to produce fast, compact binaries.
+
+### Optimization Landscape
+
+| Level | Stage | Scope | Latency Impact | Use Case |
+|-------|-------|-------|----------------|----------|
+| **Source-Level** | Leash → AST | Entire file | Compile time | Constant folding, inlining decisions |
+| **Module-Level (IR)** | LLVM IR → LLVM IR | Single module | Compile time | Dead code, loops unrolling, vectorization |
+| **Link-Time (LTO)** | Object → Native | Whole program | Link time | Dead stripping, IPO, devirtualization |
+
+### 1. Constant Folding & Propagation
+Replaces expressions with known constant results at compile time:
+
+```leash
+fnc main() : void {
+    a: int = 2 + 3;        // folded to a = 5
+    b: int = a * 4;        // folded to b = 20
+    show(b);               // no runtime math
+}
+```
+
+### 2. Dead Code Elimination (DCE)
+Removes unused functions, variables, and basic blocks. In Leash, the compiler also detects:
+
+- **Unreachable code** after `return`, `exit()`, or `throw`
+- **Unreferenced global variables** (when possible)
+- **Dead branches** of `if`/`switch` with constant conditions
+
+### 3. Inline Expansion
+Leash supports both automatic and explicit inlining. The `inline` keyword provides a strong hint:
+
+```leash
+inline fnc add(a int, b int) : int {
+    return a + b;
+}
+
+fnc main() : void {
+    show(add(10, 20));  // body may be inserted directly here
+}
+```
+
+At `-O3`, the optimizer performs **aggressive inlining** of small functions even without the `inline` keyword.
+
+### 4. Loop Optimizations
+
+| Technique | Effect | Trigger |
+|-----------|--------|---------|
+| **Loop unrolling** | Reduces loop overhead, enables better scheduling | `-O3` |
+| **Strength reduction** | Replaces expensive ops (mul, div) with adds/shifts | `-O3` |
+| **Loop invariant code motion (LICM)** | Hoists invariant calculations out of the loop | `-O2+` |
+| **Loop deletion** | Removes empty or side-effect-free loops | `-O2+` |
+
+```leash
+fnc sum(n int) : int {
+    total: int = 0;
+    // At -O3, this loop may be fully unrolled for small constant n
+    for i: int = 0; i < n; i = i + 1 {
+        total = total + i;
+    }
+    return total;
+}
+```
+
+### 5. Scalar Replacement of Aggregates (SROA)
+Breaks up `struct` / `class` stack allocations into individual scalar variables when possible, eliminating `alloca` and `memcpy` calls:
+
+```leash
+def Point : struct { x: int; y: int; };
+
+fnc move(p Point) : Point {
+    return Point { x: p.x + 1, y: p.y + 2 };
+    // SROA may replace the struct with two scalar SSA values
+}
+```
+
+### 6. Link-Time Optimization (LTO)
+LTO enables whole-program analysis after linking, enabling optimizations across module boundaries:
+
+```bash
+# IR-based LTO (ThinLTO) – best balance of speed and optimization
+python3 -m leash.cli compile program.lsh --opt 2 --lto thin
+
+# Full LTO – maximum cross-module optimization at link time
+python3 -m leash.cli compile program.lsh --opt 3 --lto full
+```
+
+#### LTO Benefits
+- **Dead function elimination** across modules
+- **Cross-module inlining** (e.g., library functions)
+- **Devirtualization** of virtual calls when the target is known
+- **Constant propagation** across translation units
+
+### 7. Profile-Guided Optimization (PGO)
+PGO uses runtime profiling data to optimize hot paths:
+
+```bash
+# Step 1: Compile with instrumentation
+python3 -m leash.cli compile program.lsh --opt 2 --pgo-generate
+
+# Step 2: Run to collect profile data
+./program
+
+# Step 3: Recompile with profile data
+python3 -m leash.cli compile program.lsh --opt 3 --pgo-use
+```
+
+PGO enables:
+- **Hot/cold code splitting** – frequently-executed code is packed together
+- **Accurate branch prediction** – branches weighted by actual execution frequency
+- **Inlining decisions** – functions in hot paths are inlined first
+- **Loop unrolling** – unroll only hot loops based on trip counts
+
+### 8. Auto-Vectorization
+At `-O2` and above, the LLVM vectorizer automatically converts scalar loops into SIMD operations:
+
+```leash
+fnc dot_product(a float[1024], b float[1024]) : float {
+    sum: float = 0.0;
+    for i: int = 0; i < 1024; i = i + 1 {
+        sum = sum + a[i] * b[i];
+    }
+    return sum;
+    // Auto-vectorized to AVX2 or AVX-512 by LLVM at -O2+
+}
+```
+
+Use `-O3` or the `-ffast-math` equivalent (future flag) to enable relaxed floating-point rules and broader vectorization opportunities.
+
+### 9. Tail Call Optimization (TCO)
+At `-O2` and above, the optimizer converts tail-recursive calls into simple `jmp` instructions, turning recursion into looping:
+
+```leash
+fnc factorial(n int, acc int = 1) : int {
+    if n <= 1 { return acc; }
+    return factorial(n - 1, n * acc);  // tail position
+}
+```
+
+### 10. Memory Prefetching
+For predictable memory access patterns, LLVM inserts prefetch hints at `-O3`, which can significantly improve cache performance for large array/vector workloads.
+
+### 11. Defer Optimization
+The `defer` statement is inlined during codegen, and the optimizer can eliminate deferred calls when it proves they have no side effects or when the path is unreachable.
+
+### Putting It All Together
+
+```bash
+# Maximum optimization for production builds
+python3 -m leash.cli compile program.lsh --opt 3 --lto thin
+
+# Lowest binary size
+python3 -m leash.cli compile program.lsh --opt s --lto full
+
+# Development build with checks but no optimization
+python3 -m leash.cli compile program.lsh --check --opt 0
+
+# Profile-guided optimization workflow
+python3 -m leash.cli compile program.lsh --opt 2 --pgo-generate
+./program
+python3 -m leash.cli compile program.lsh --opt 3 --pgo-use
+```
+
 ## Checking for Errors
 
 Leash provides thorough static analysis to catch errors and potential issues before your code runs.
@@ -1645,6 +1844,8 @@ fnc main() : void {
 
 Enums allow you to define a set of named constants. In Leash, enums are represented as integers under the hood but provide a `.name` property to access their string representation.
 
+### Basic Enums
+
 ```leash
 def Color : enum {
     RED,
@@ -1666,6 +1867,54 @@ fnc main() : void {
     }
 }
 ```
+
+### Enums with Custom Values
+
+Leash supports enums with custom values. Each member can have a type annotation and a custom value. This allows enums to carry rich data types like strings, specific integers, floats, and booleans.
+
+```leash
+// Enum with string values
+def Names : enum {
+    PERSON1: string = "John Doe",
+    PERSON2: string = "Jane Doe",
+    UNKNOWN: string = "Unknown"
+};
+
+// Enum with numeric values
+def ErrorCodes : enum {
+    OK: int = 0,
+    NOT_FOUND: int = 404,
+    SERVER_ERROR: int = 500
+};
+
+// Enum with float values
+def Constants : enum {
+    PI: float = 3.14159,
+    E: float = 2.71828
+};
+
+fnc main() : void {
+    // Access enum members with custom values
+    // Use the member's type (not the enum type) for variables
+    name: string = Names::PERSON1;
+    show(name);  // Prints: John Doe
+    
+    // Numeric values work too
+    code: int = ErrorCodes::NOT_FOUND;
+    show(code);  // Prints: 404
+    
+    // Direct access
+    show(Names::UNKNOWN);        // Prints: Unknown
+    show(ErrorCodes::SERVER_ERROR); // Prints: 500
+    show(Constants::PI);           // Prints: 3.14159
+}
+```
+
+**Key Points:**
+- When accessing enum members with custom values, use the member's type (e.g., `string`) not the enum type (e.g., `Names`) for variable declarations
+- Supported value types: `string`, `int`, `uint`, `float`, `bool`, and explicit bit-width types (e.g., `int<64>`)
+- Members without custom values default to sequential integer values (0, 1, 2, ...)
+- Custom values are evaluated at compile time for literal values
 
 ## Type Aliases
 
@@ -2462,13 +2711,67 @@ fnc main() : void {
 
 ## Memory Management
 
-Leash uses a high-performance **Boehm Garbage Collector** to manage memory automatically. This means you can allocate objects (strings, vectors, arrays, etc.) without worrying about manual `free()` calls or scope limitations.
+Leash uses a **custom garbage collector** built specifically for the language. This mark-and-sweep GC with conservative root finding manages memory automatically - you never need to call `free()` or worry about memory leaks.
 
-When you create a `vec<string>`, both the vector's internal buffer and the strings themselves are managed by the GC. When they are no longer reachable by your program, the memory is automatically reclaimed.
+### How It Works
 
-This ensures that operations like string concatenation (`a + b`) or vector manipulation do not leak memory, even when performed inside complex loops or returned across many function calls.
+The custom GC uses a **mark-and-sweep algorithm**:
 
-*Note: Leash links against `libgc` at compile-time.*
+1. **Mark Phase**: Starting from "root" pointers (global variables, local variables on the stack, etc.), the GC traces all reachable objects
+2. **Sweep Phase**: Any object not marked as reachable is freed automatically
+
+### Features
+
+- **Conservative Root Finding**: The GC can identify pointers to managed objects even without explicit registration
+- **Explicit Root Management**: Use `leash_gc_register_root()` and `leash_gc_unregister_root()` for tricky cases
+- **Automatic Collection**: Garbage collection triggers automatically when memory usage exceeds a threshold
+- **Type-Aware**: Properly handles all Leash types:
+  - Strings (allocated with atomic flag - no internal pointers)
+  - Vectors (dynamic arrays with tracked data pointers)
+  - Arrays and slices
+  - Structs and classes (with inheritance/vtable support)
+  - Unions (with active variant tracking)
+- **Statistics**: Built-in GC stats available via `leash_gc_print_stats()`
+
+### Memory Lifecycle
+
+```leash
+fnc main() : void {
+    // Strings are GC-managed
+    name : string = "Leash";
+    
+    // Vectors grow dynamically, GC handles reallocation
+    v : vec<int>;
+    for i : int = 0; i < 1000; i = i + 1 {
+        v.pushb(i);  // GC manages vector buffer
+    }
+    
+    // When variables go out of scope or become unreachable,
+    // memory is automatically reclaimed on next GC cycle
+}
+```
+
+### GC Integration
+
+- The GC is **automatically initialized** when your program starts (in the `main()` function)
+- All memory allocation in Leash goes through the custom GC (`leash_gc_malloc`, `leash_gc_realloc`)
+- The GC runtime is compiled and linked with every Leash program automatically
+- No external GC library (like Boehm) is needed
+
+### Manual Collection (Advanced)
+
+While the GC runs automatically, you can trigger collection manually:
+
+```leash
+// In rare cases, you might want to force collection
+// (Normally not needed - the GC handles this automatically)
+extern fnc leash_gc_collect() : void;  // Declare if using FFI
+
+// Then call it
+// leash_gc_collect();  // Not normally needed!
+```
+
+*Note: The custom GC is implemented in `leash/gc.c` and `leash/gc.h`.*
 
 ## Error Handling & Safety
 

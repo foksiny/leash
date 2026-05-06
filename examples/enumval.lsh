@@ -1,0 +1,26 @@
+// Enum with custom values support
+// Each member can have a type and a custom value
+
+def Names : enum {
+    // Members with string values
+    PERSON1: string = "John Doe",
+    PERSON2: string = "Jane Doe",
+    
+    // Members with numeric values
+    MAX_SIZE: int = 100,
+    DEFAULT_PORT: int = 8080
+};
+
+fnc main() {
+    // Access enum members with custom values
+    // Use the member's type (string) for the variable
+    name: string = Names::PERSON1;
+    show(name);  // Prints: John Doe
+    
+    // Or use directly
+    show(Names::PERSON2);  // Prints: Jane Doe
+    
+    // Numeric values work too
+    port: int = Names::DEFAULT_PORT;
+    show(port);  // Prints: 8080
+}

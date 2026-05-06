@@ -7,6 +7,10 @@ pub def Reloader : class {
         return Reloader { filename: name };
     }
 
+    pub Reloader(name string) {
+        this.filename = name;
+    }
+
     pub fnc start() : void {
         if !Str.ends(this.filename, _FILENAME) {
             show("Hot Reloader Error: You can't hot reload the hot reloader");

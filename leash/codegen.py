@@ -23,6 +23,11 @@ from .ast_nodes import (
     MacroDef,
     CreateExpr,
     DelStatement,
+    StringLiteral,
+    NumberLiteral,
+    FloatLiteral,
+    BoolLiteral,
+    CharLiteral,
 )
 
 
@@ -163,17 +168,29 @@ class CodeGen:
         )
         self.fprintf = ir.Function(self.module, fprintf_ty, name="fprintf")
 
-        # Boehm GC functions
+        # Custom Leash GC functions
         gc_init_ty = ir.FunctionType(ir.VoidType(), [])
-        self.gc_init = ir.Function(self.module, gc_init_ty, name="GC_init")
+        self.gc_init = ir.Function(self.module, gc_init_ty, name="leash_gc_init")
 
         gc_malloc_ty = ir.FunctionType(ir.IntType(8).as_pointer(), [ir.IntType(64)])
-        self.malloc = ir.Function(self.module, gc_malloc_ty, name="GC_malloc")
+        self.malloc = ir.Function(self.module, gc_malloc_ty, name="leash_gc_malloc")
 
         gc_realloc_ty = ir.FunctionType(
             ir.IntType(8).as_pointer(), [ir.IntType(8).as_pointer(), ir.IntType(64)]
         )
-        self.realloc = ir.Function(self.module, gc_realloc_ty, name="GC_realloc")
+        self.realloc = ir.Function(self.module, gc_realloc_ty, name="leash_gc_realloc")
+
+        # String allocation helper
+        gc_alloc_string_ty = ir.FunctionType(ir.IntType(8).as_pointer(), [ir.IntType(64)])
+        self.gc_alloc_string = ir.Function(
+            self.module, gc_alloc_string_ty, name="leash_gc_alloc_string"
+        )
+
+        # GC collect function
+        gc_collect_ty = ir.FunctionType(ir.VoidType(), [])
+        self.gc_collect = ir.Function(
+            self.module, gc_collect_ty, name="leash_gc_collect"
+        )
 
         # Free is still declared just in case, but GC_malloc doesn't need it.
         free_ty = ir.FunctionType(ir.VoidType(), [ir.IntType(8).as_pointer()])
@@ -590,6 +607,14 @@ class CodeGen:
             if "[" in base_type:
                 return base_type.split("[")[0]
         elif isinstance(node, EnumMemberAccess):
+            # Check if enum member has a custom type
+            enum_info = self.enum_symtab.get(node.enum_name)
+            if enum_info:
+                member_dict = enum_info.get("member_dict", {})
+                if node.member_name in member_dict:
+                    mtype, _ = member_dict[node.member_name]
+                    if mtype is not None:
+                        return mtype
             return node.enum_name
         elif isinstance(node, CastExpr):
             return node.target_type
@@ -1366,7 +1391,18 @@ class CodeGen:
     def _codegen_EnumDef(self, node):
         # Create a global array of strings for member names
         names = []
-        for mname in node.members:
+        members_info = []  # (name, type, value_ptr or None)
+        custom_values = {}  # member_name -> (llvm_type, llvm_value) for literals
+        
+        for member in node.members:
+            if isinstance(member, tuple):
+                mname, mtype, mvalue = member
+            else:
+                # Backward compatibility
+                mname = member
+                mtype = None
+                mvalue = None
+            
             # Create a global string for this member name
             s = bytearray(mname.encode("utf8") + b"\0")
             c_str = ir.Constant(ir.ArrayType(ir.IntType(8), len(s)), s)
@@ -1384,6 +1420,39 @@ class CodeGen:
                 if self.builder
                 else g.bitcast(ir.IntType(8).as_pointer())
             )
+            
+            # Handle custom value if present
+            value_ptr = None
+            if mvalue is not None:
+                # Generate the value based on the type
+                if isinstance(mvalue, StringLiteral):
+                    val_bytes = bytearray(mvalue.value.encode("utf8") + b"\0")
+                    val_cstr = ir.Constant(ir.ArrayType(ir.IntType(8), len(val_bytes)), val_bytes)
+                    val_g = ir.GlobalVariable(
+                        self.module,
+                        val_cstr.type,
+                        name=self.module.get_unique_name(f"enum_val_{node.name}_{mname}"),
+                    )
+                    val_g.linkage = "internal"
+                    val_g.global_constant = True
+                    val_g.initializer = val_cstr
+                    value_ptr = val_g.bitcast(ir.IntType(8).as_pointer())
+                    custom_values[mname] = ("string", value_ptr)
+                elif isinstance(mvalue, NumberLiteral):
+                    llvm_type = ir.IntType(32)
+                    llvm_val = ir.Constant(llvm_type, mvalue.value)
+                    custom_values[mname] = ("int", llvm_val)
+                elif isinstance(mvalue, FloatLiteral):
+                    llvm_type = ir.DoubleType()
+                    llvm_val = ir.Constant(llvm_type, mvalue.value)
+                    custom_values[mname] = ("float", llvm_val)
+                elif isinstance(mvalue, BoolLiteral):
+                    llvm_type = ir.IntType(1)
+                    llvm_val = ir.Constant(llvm_type, 1 if mvalue.value else 0)
+                    custom_values[mname] = ("bool", llvm_val)
+                # TODO: Handle other constant types
+            
+            members_info.append((mname, mtype, value_ptr))
 
         # Now create an array of these pointers
         ptr_type = ir.IntType(8).as_pointer()
@@ -1397,7 +1466,12 @@ class CodeGen:
         g_names.global_constant = True
         g_names.initializer = c_names_arr
 
-        self.enum_symtab[node.name] = {"members": node.members, "names_arr": g_names}
+        self.enum_symtab[node.name] = {
+            "members": members_info, 
+            "names_arr": g_names,
+            "member_dict": {m[0]: (m[1], m[2]) for m in members_info},
+            "custom_values": custom_values,
+        }
 
     def _codegen_ErrorDef(self, node):
         # Generate a function for this error that returns its formatted message
@@ -5973,9 +6047,29 @@ class CodeGen:
         if not enum_info:
             raise LeashError(f"Undefined enum: '{node.enum_name}'")
 
-        try:
-            idx = enum_info["members"].index(node.member_name)
-        except ValueError:
+        # Check for custom value in custom_values dict
+        custom_values = enum_info.get("custom_values", {})
+        if node.member_name in custom_values:
+            _, llvm_val = custom_values[node.member_name]
+            return llvm_val
+        
+        # Look up the member in member_dict for string values
+        member_dict = enum_info.get("member_dict", {})
+        if node.member_name in member_dict:
+            mtype, value_ptr = member_dict[node.member_name]
+            # If custom value exists (string), return it
+            if value_ptr is not None:
+                return value_ptr
+        
+        # Otherwise, find the index (for traditional enum access)
+        members = enum_info["members"]
+        idx = None
+        for i, (mname, _, _) in enumerate(members):
+            if mname == node.member_name:
+                idx = i
+                break
+        
+        if idx is None:
             raise LeashError(
                 f"Enum '{node.enum_name}' has no member named '{node.member_name}'"
             )

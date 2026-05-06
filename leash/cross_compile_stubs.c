@@ -1,7 +1,10 @@
 /*
  * Stub implementations for cross-compilation targets.
- * Provides minimal implementations of GC and clock functions
+ * Provides minimal implementations of clock functions
  * so that Leash can be cross-compiled to non-Linux targets.
+ * 
+ * Note: The Leash custom GC (gc.c) is linked separately,
+ * so these stubs don't need to provide GC functions.
  */
 
 #include <stdlib.h>
@@ -16,27 +19,6 @@ FILE* _leash_get_stdout(void) {
 }
 
 #ifndef __linux__
-/* GC stubs - just use regular malloc/free for non-Linux targets */
-void GC_init(void) {
-    /* No-op */
-}
-
-void* GC_malloc(size_t size) {
-    void* ptr = malloc(size);
-    /* Zero-initialize like GC_malloc does */
-    if (ptr) {
-        char* p = (char*)ptr;
-        for (size_t i = 0; i < size; i++) {
-            p[i] = 0;
-        }
-    }
-    return ptr;
-}
-
-void* GC_realloc(void* ptr, size_t size) {
-    return realloc(ptr, size);
-}
-
 /* clock_gettime stub - use regular time functions */
 int clock_gettime(int clk_id, struct timespec* tp) {
     struct timeval tv;

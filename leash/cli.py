@@ -29,8 +29,57 @@ from .ast_nodes import (
     Call
 )
 from .targets import get_target, get_native_target, list_targets, TargetConfig
+from .optimize import optimize_module, parse_opt_level
 import llvmlite.binding as llvm
 
+
+def file_hash(filepath):
+    """Calculate MD5 hash of a file."""
+    import hashlib
+    h = hashlib.md5()
+    try:
+        with open(filepath, 'rb') as f:
+            for chunk in iter(lambda: f.read(8192), b''):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return None
+
+def sync_directory(src_root, dest_root):
+    """Recursively sync files from src_root to dest_root, only updating changed files."""
+    copied_count = 0
+    updated_count = 0
+    skipped_count = 0
+
+    for root, dirs, files in os.walk(src_root):
+        # Calculate relative path from src_root
+        rel_path = os.path.relpath(root, src_root)
+        if rel_path == '.':
+            rel_path = ''
+
+        # Create corresponding destination directory
+        dest_dir = os.path.join(dest_root, rel_path) if rel_path else dest_root
+        if not os.path.exists(dest_dir):
+            os.makedirs(dest_dir, exist_ok=True)
+
+        # Sync files in current directory
+        for file in files:
+            src_file = os.path.join(root, file)
+            dest_file = os.path.join(dest_dir, file)
+
+            if os.path.exists(dest_file):
+                src_hash = file_hash(src_file)
+                dest_hash = file_hash(dest_file)
+                if src_hash == dest_hash:
+                    skipped_count += 1
+                else:
+                    shutil.copy2(src_file, dest_file)
+                    updated_count += 1
+            else:
+                shutil.copy2(src_file, dest_file)
+                copied_count += 1
+
+    return copied_count, updated_count, skipped_count
 
 def install_libraries(paths):
     """Install library files or directories into the global libs directory (~/.leash/libs)."""
@@ -51,33 +100,30 @@ def install_libraries(paths):
         if os.path.isfile(abs_path):
             dest = os.path.join(libs_root, os.path.basename(abs_path))
             if os.path.exists(dest):
-                print(
-                    f"Error: A file with the name '{os.path.basename(abs_path)} already exists in the libs directory."
-                )
-                sys.exit(1)
-            try:
-                shutil.copyfile(abs_path, dest)
-                print(f"Installed library: {abs_path} -> {dest}")
-            except Exception as e:
-                print(f"Error copying file {abs_path}: {e}")
-                sys.exit(1)
+                src_hash = file_hash(abs_path)
+                dest_hash = file_hash(dest)
+                if src_hash == dest_hash:
+                    print(f"Skipped (unchanged): {os.path.basename(abs_path)}")
+                else:
+                    try:
+                        shutil.copyfile(abs_path, dest)
+                        print(f"Updated library: {abs_path} -> {dest}")
+                    except Exception as e:
+                        print(f"Error copying file {abs_path}: {e}")
+                        sys.exit(1)
+            else:
+                try:
+                    shutil.copyfile(abs_path, dest)
+                    print(f"Installed library: {abs_path} -> {dest}")
+                except Exception as e:
+                    print(f"Error copying file {abs_path}: {e}")
+                    sys.exit(1)
         elif os.path.isdir(abs_path):
             # Copy contents of the directory into libs_root, not the directory itself
             try:
-                copied_count = 0
-                for item in os.listdir(abs_path):
-                    src = os.path.join(abs_path, item)
-                    dest = os.path.join(libs_root, item)
-                    if os.path.exists(dest):
-                        print(f"Error: '{item}' already exists in the libs directory.")
-                        sys.exit(1)
-                    if os.path.isdir(src):
-                        shutil.copytree(src, dest)
-                    else:
-                        shutil.copy2(src, dest)
-                    copied_count += 1
+                copied_count, updated_count, skipped_count = sync_directory(abs_path, libs_root)
                 print(
-                    f"Installed {copied_count} item(s) from {abs_path} -> {libs_root}"
+                    f"Installed {copied_count}, updated {updated_count}, skipped {skipped_count} item(s) from {abs_path} -> {libs_root}"
                 )
             except Exception as e:
                 print(f"Error copying directory contents from {abs_path}: {e}")
@@ -630,6 +676,7 @@ def compile_file(
     check_mode=False,
     warnings_as_errors=False,
     extra_libs=None,
+    opt_level=None,
 ):
     with open(input_file, "r") as f:
         code = f.read()
@@ -696,7 +743,10 @@ def compile_file(
 
     # Use static reloc model to avoid PIC/GOT references on Windows
     reloc_model = "static" if target_config.name == "win64" and os.name == "nt" else "default"
-    target_machine = target.create_target_machine(reloc=reloc_model)
+
+    # Parse optimization level
+    parsed_opt, size_opt = parse_opt_level(opt_level)
+    target_machine = target.create_target_machine(reloc=reloc_model, opt=parsed_opt)
 
     # Optional Output name
     if output_name is None:
@@ -706,6 +756,10 @@ def compile_file(
             output_name = "out"
 
     obj_name = output_name + ".o"
+
+    # Run optimization pipeline on the module before emission
+    if parsed_opt > 0 or size_opt:
+        optimize_module(mod, opt_level=parsed_opt, size_opt=size_opt, target_machine=target_machine)
 
     # Compile to object file
     with open(obj_name, "wb") as f:
@@ -811,6 +865,20 @@ def _link_native(
     # Add built-in stubs (GC, clock, stdout helpers)
     cross_stubs = []
     stubs_obj = None
+    gc_obj = None
+    
+    # Compile the custom GC runtime
+    gc_path = os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "gc.c"
+    )
+    if os.path.exists(gc_path):
+        gc_obj = f"{obj_name}_gc.o"
+        try:
+            compile_cmd = [cc, "-c", gc_path, "-o", gc_obj]
+            subprocess.run(compile_cmd, check=True, capture_output=True)
+            cross_stubs.append(gc_obj)
+        except subprocess.CalledProcessError as e:
+            print(f"warning: Failed to compile GC runtime: {e}")
     
     stubs_path = os.path.join(
         os.path.dirname(os.path.abspath(__file__)), "cross_compile_stubs.c"
@@ -828,7 +896,7 @@ def _link_native(
         try:
             compile_cmd = [cc, "-c", stubs_path, "-o", stubs_obj]
             subprocess.run(compile_cmd, check=True, capture_output=True)
-            cross_stubs = [stubs_obj]
+            cross_stubs.append(stubs_obj)
         except subprocess.CalledProcessError as e:
             print(f"warning: Failed to compile built-in stubs: {e}")
     else:
@@ -876,6 +944,8 @@ def _link_native(
         os.remove(obj_name)
     if stubs_obj and os.path.exists(stubs_obj):
         os.remove(stubs_obj)
+    if gc_obj and os.path.exists(gc_obj):
+        os.remove(gc_obj)
 
     if not is_run_mode:
         print(f"Successfully compiled to '{output_name_final}'")
@@ -889,6 +959,7 @@ def dump_file(
     check_mode=False,
     warnings_as_errors=False,
     extra_libs=None,
+    opt_level=None,
 ):
     with open(input_file, "r") as f:
         code = f.read()
@@ -936,6 +1007,11 @@ def dump_file(
         traceback.print_exc()
         sys.exit(1)
 
+    # Run optimization pipeline on the module before dumping
+    parsed_opt, size_opt = parse_opt_level(opt_level)
+    if parsed_opt > 0 or size_opt:
+        optimize_module(mod, opt_level=parsed_opt, size_opt=size_opt)
+
     if output_name is None:
         if input_file.endswith(".lsh"):
             output_name = input_file[:-4]
@@ -945,8 +1021,9 @@ def dump_file(
     if not output_name.endswith(".ll"):
         output_name = output_name + ".ll"
 
+    # Dump the (potentially optimized) IR
     with open(output_name, "w") as f:
-        f.write(llvm_ir)
+        f.write(str(mod))
 
     print(f"Dumped LLVM IR to '{output_name}'")
     return output_name
@@ -959,14 +1036,18 @@ def run_file(
     check_mode=False,
     warnings_as_errors=False,
     extra_libs=None,
+    opt_level=None,
 ):
     from .targets import get_target, get_native_target
     import platform
 
     target_config = get_target(target_name) if target_name else get_native_target()
 
-    # Use a fixed name for the temporary executable
-    temp_name = ".__temp_run_leash_exe"
+    # Use a unique name for the temporary executable to avoid Windows file locking
+    import time
+    import uuid
+    unique_suffix = f"{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
+    temp_name = f".__temp_run_leash_exe_{unique_suffix}"
 
     output_name = compile_file(
         input_file,
@@ -976,6 +1057,7 @@ def run_file(
         check_mode=check_mode,
         warnings_as_errors=warnings_as_errors,
         extra_libs=extra_libs,
+        opt_level=opt_level,
     )
 
     # Check if this is a cross-compiled target that can't run natively
@@ -1064,32 +1146,34 @@ def main():
         print("Usage: leash <command> [options]")
         print("")
         print("Commands:")
-        print("  compile <file.lsh> [to <outname>] [--target <target>]")
+        print("  compile <file.lsh> [to <outname>] [options]")
         print("                            Compile a Leash file to an executable")
-        print("  compile <file.lsh> to-dynamic [<outname>] [--target <target>]")
+        print("  compile <file.lsh> to-dynamic [<outname>] [options]")
         print("                            Compile to a shared library (.so)")
-        print("  compile <file.lsh> to-static [<outname>] [--target <target>]")
+        print("  compile <file.lsh> to-static [<outname>] [options]")
         print("                            Compile to a static library (.a)")
-        print("  run <file.lsh> [args...] [--target <target>]")
+        print("  run <file.lsh> [args...] [options]")
         print("                            Run a Leash file directly")
         print("  check <file.lsh>          Check a file for errors and warnings")
-        print("                            (more verbose, includes safety analysis)")
+        print("                            (includes safety analysis)")
         print("  install <path> [<path> ...]")
-        print(
-            "                            Install libraries to the global libs directory"
-        )
+        print("                            Install libraries to ~/.leash/libs")
         print("")
-        print("Options:")
-        print(
-            "  --target <target>         Specify compilation target (win64, macos, etc.)"
-        )
-        print("  --list-targets            List all supported compilation targets")
-        print(
-            "  --check                   Run thorough safety checks while compiling/running"
-        )
-        print("  --warnings-as-errors      Treat all warnings as errors")
-        print("  --help, -h                Show this help message")
-        print("  --version, -v             Show version information")
+        print("Input/Output:")
+        print("  compile <file.lsh> to <outname>  Specify output filename")
+        print("")
+        print("Compilation Options:")
+        print("  --target <target>        Specify target platform (win64, linux64, macos, etc.)")
+        print("  --list-targets        List all available targets")
+        print("  --check            Enable thorough safety checks")
+        print("  --warnings-as-errors  Treat warnings as compilation errors")
+        print("  --opt <level>, -O<level>")
+        print("                       Optimization level: 0, 1, 2, 3, or s (size)")
+        print("  -l<name>           Link with system library (e.g., -lm for libm)")
+        print("")
+        print("Other Options:")
+        print("  --help, -h         Show this help message")
+        print("  --version, -v       Show version information")
         print("")
         print("Supported targets:")
         for name, desc in list_targets():
@@ -1143,37 +1227,36 @@ def main():
         print("Usage: leash <command> [options]")
         print("")
         print("Commands:")
-        print("  compile <file.lsh> [to <outname>] [--target <target>]")
+        print("  compile <file.lsh> [to <outname>] [options]")
         print("                            Compile a Leash file to an executable")
-        print("  compile <file.lsh> to-dynamic [<outname>] [--target <target>]")
+        print("  compile <file.lsh> to-dynamic [<outname>] [options]")
         print("                            Compile to a shared library (.so)")
-        print("  compile <file.lsh> to-static [<outname>] [--target <target>]")
+        print("  compile <file.lsh> to-static [<outname>] [options]")
         print("                            Compile to a static library (.a)")
-        print("  dump <file.lsh> [to <outname.ll|outname>] [--target <target>]")
+        print("  dump <file.lsh> [to <outname.ll|outname>] [options]")
         print("                            Dump LLVM IR to a .ll file")
-        print("  run <file.lsh> [args...] [--target <target>]")
+        print("  run <file.lsh> [args...] [options]")
         print("                            Run a Leash file directly")
-        print("  check <file.lsh>          Check a file for errors and warnings")
-        print("                            (more verbose, includes safety analysis)")
+        print("  check <file.lsh>         Check a file for errors and warnings")
+        print("                            (includes safety analysis)")
         print("  install <path> [<path> ...]")
-        print(
-            "                            Install libraries to the global libs directory"
-        )
+        print("                            Install libraries to ~/.leash/libs")
         print("")
-        print("Options:")
-        print(
-            "  --target <target>         Specify compilation target (win64, macos, etc.)"
-        )
-        print("  --list-targets            List all supported compilation targets")
-        print(
-            "  --check                   Run thorough safety checks while compiling/running"
-        )
-        print("  --warnings-as-errors      Treat all warnings as errors")
-        print(
-            "  -l<name>                 Link with system library (e.g., -lm for libm)"
-        )
-        print("  --help, -h                Show this help message")
-        print("  --version, -v             Show version information")
+        print("Input/Output:")
+        print("  compile <file.lsh> to <outname>   Specify output filename")
+        print("")
+        print("Compilation Options:")
+        print("  --target <target>     Specify target platform (win64, linux64, macos, etc.)")
+        print("  --list-targets       List all available targets")
+        print("  --check            Enable thorough safety checks")
+        print("  --warnings-as-errors  Treat warnings as compilation errors")
+        print("  --opt <level>, -O<level>")
+        print("                     Optimization level: 0, 1, 2, 3, or s (size)")
+        print("  -l<name>          Link with system library (e.g., -lm for libm)")
+        print("")
+        print("Other Options:")
+        print("  --help, -h         Show this help message")
+        print("  --version, -v       Show version information")
         print("")
         print("Supported targets:")
         for name, desc in list_targets():
@@ -1225,8 +1308,27 @@ def main():
     cmd = sys.argv[1]
     if cmd in ("compile", "run", "dump"):
         if len(sys.argv) < 3:
-            print(f"Usage: leash {cmd} <file.lsh> [to <outname>] [--target <target>]")
+            print(f"Usage: leash {cmd} <file.lsh> [to <outname>] [options]")
+            print(f"Run 'leash --help' for full options list.")
             sys.exit(1)
+        
+        # Check for help flag before anything else
+        if len(sys.argv) >= 3 and sys.argv[2] in ("--help", "-h"):
+            print(f"Usage: leash {cmd} <file.lsh> [args...] [options]")
+            print("")
+            print(f"Options for '{cmd}' command:")
+            print("  --target <target>     Specify target platform")
+            print("  --check            Enable safety checks")
+            print("  --warnings-as-errors  Treat warnings as errors")
+            print("  --opt <level>       Optimization level (0, 1, 2, 3, s)")
+            print("  -l<name>           Link with library (e.g., -lm)")
+            if cmd == "compile":
+                print("  to <name>          Specify output filename")
+                print("  to-dynamic         Compile to shared library")
+                print("  to-static          Compile to static library")
+            print("Run 'leash --help' for full options list.")
+            sys.exit(0)
+        
         input_file = sys.argv[2]
 
         remaining_args = sys.argv[3:]
@@ -1236,6 +1338,7 @@ def main():
         check_mode = False
         warnings_as_errors = False
         extra_libs = []
+        opt_level = None
 
         i = 0
         positional = []
@@ -1257,6 +1360,13 @@ def main():
             elif remaining_args[i] == "--warnings-as-errors":
                 warnings_as_errors = True
                 i += 1
+            elif remaining_args[i] == "--opt" or remaining_args[i] == "-O":
+                if i + 1 < len(remaining_args):
+                    opt_level = remaining_args[i + 1]
+                    i += 2
+                else:
+                    print("error: --opt requires a value (0, 1, 2, 3, s)")
+                    sys.exit(1)
             elif remaining_args[i].startswith("-l"):
                 extra_libs.append(remaining_args[i][2:])
                 i += 1
@@ -1272,6 +1382,7 @@ def main():
                 check_mode=check_mode,
                 warnings_as_errors=warnings_as_errors,
                 extra_libs=extra_libs,
+                opt_level=opt_level,
             )
         elif cmd == "dump":
             if len(positional) >= 1:
@@ -1288,6 +1399,7 @@ def main():
                 check_mode=check_mode,
                 warnings_as_errors=warnings_as_errors,
                 extra_libs=extra_libs,
+                opt_level=opt_level,
             )
         else:
             if len(positional) >= 1:
@@ -1313,6 +1425,7 @@ def main():
                 check_mode=check_mode,
                 warnings_as_errors=warnings_as_errors,
                 extra_libs=extra_libs,
+                opt_level=opt_level,
             )
     elif cmd == "install":
         if len(sys.argv) < 3:

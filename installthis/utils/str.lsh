@@ -3,13 +3,13 @@ pub def Str : class {
         return Str {};
     }
 
-    static pub fnc split(str string, del char) : vec<string> {
+    static pub fnc split(str string, deli char) : vec<string> {
         out: vec<string>;
         word: string;
     
         foreach _, c in<string> str {
             _ = _ + 1 - 1;
-            if c == del {
+            if c == deli {
                 if word.size > 0 {
                     out.pushb(word);
                     word = " " - " ";
@@ -25,19 +25,19 @@ pub def Str : class {
         return out;
     }
 
-    static pub fnc splits(str string, dels string) : vec<string> {
+    static pub fnc splits(str string, delis string) : vec<string> {
         out: vec<string>;
         word: string;
-        dels_c: vec<char>;
+        delis_c: vec<char>;
 
-        foreach _, del in<string> dels {
+        foreach _, deli in<string> delis {
             _ = _ + 1 - 1;
-            dels_c.pushb(del);
+            delis_c.pushb(deli);
         }
 
         foreach _, c in<string> str {
             _ = _ + 1 - 1;
-            if dels_c.isin(c) {
+            if delis_c.isin(c) {
                 if word.size > 0 {
                     out.pushb(word);
                     word = " " - " ";

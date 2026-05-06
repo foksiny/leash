@@ -72,6 +72,8 @@ def normalize_pointers(text):
     # Normalize args.lsh output pattern for all platforms
     text = re.sub(r"0: Z:.*", "0: ./.__temp_run_leash_exe", text)
     text = re.sub(r"0: .*\.__temp_run_leash_exe", "0: ./.__temp_run_leash_exe", text)
+    # Handle new unique filename format with timestamp and UUID suffix
+    text = re.sub(r"0: \.\S+\.exe", "0: ./.__temp_run_leash_exe", text)
     text = re.sub(r"\d+\n0: .+\n1: .+", "1\n0: ./.__temp_run_leash_exe", text)
 
     # Normalize file path differences

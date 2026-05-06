@@ -865,11 +865,19 @@ class Parser:
         members = []
         while self.current().type != "RBRACE":
             member_name = self.eat("IDENT").value
-            members.append(member_name)
+            member_type = None
+            member_value = None
+            # Check for optional type annotation and value assignment
+            if self.current().type == "COLON":
+                self.eat("COLON")
+                member_type = self.parse_type()
+                if self.current().type == "ASSIGN":
+                    self.eat("ASSIGN")
+                    member_value = self.parse_expression()
+            members.append((member_name, member_type, member_value))
             if self.current().type == "COMMA":
                 self.eat("COMMA")
             elif self.current().type == "SEMI":
-                # Accept semicolons too if user prefers
                 self.eat("SEMI")
         self.eat("RBRACE")
         self.eat("SEMI")

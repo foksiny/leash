@@ -33,7 +33,7 @@ class UnionDef(ASTNode):
 class EnumDef(ASTNode):
     def __init__(self, name, members, visibility="pub"):
         self.name = name
-        self.members = members  # list of member names
+        self.members = members  # list of (name, type, value) tuples; type and value can be None
         self.visibility = visibility  # 'pub' or 'priv'
 
 

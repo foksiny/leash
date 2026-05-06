@@ -299,16 +299,25 @@ class TypeChecker:
 
     def _register_enum(self, node):
         seen = set()
+        members_info = {}  # name -> (type, value_expr)
         for member in node.members:
-            if member in seen:
+            if isinstance(member, tuple):
+                member_name, member_type, member_value = member
+            else:
+                # Backward compatibility for simple member names
+                member_name = member
+                member_type = None
+                member_value = None
+            if member_name in seen:
                 raise LeashError(
-                    f"Duplicate member '{member}' in enum '{node.name}'",
+                    f"Duplicate member '{member_name}' in enum '{node.name}'",
                     tip=f"Enum members must have unique names within the same enum definition.",
                 )
-            seen.add(member)
+            seen.add(member_name)
+            members_info[member_name] = (member_type, member_value)
         if not node.members:
             self._warn(f"Enum '{node.name}' is empty.", node=node)
-        self.enum_types[node.name] = node.members
+        self.enum_types[node.name] = members_info
         self.enum_types_vis[node.name] = getattr(node, "visibility", "pub")
 
     def _register_error(self, node):
@@ -1004,10 +1013,38 @@ class TypeChecker:
                 )
             return True
 
+        # Handle enums with custom values
+        # If src is an enum member access with custom type, check compatibility with dst
+        if src_r in self.enum_types:
+            members = self.enum_types[src_r]
+            # Check if any member has a custom type compatible with dst
+            for mname, (mtype, mvalue) in members.items():
+                if mtype is not None and self._types_compatible(mtype, dst_r):
+                    return True
+        
+        # If dst is an enum with custom values, check if src is compatible with any member type
+        if dst_r in self.enum_types:
+            members = self.enum_types[dst_r]
+            # Check if src is compatible with any member's custom type
+            for mname, (mtype, mvalue) in members.items():
+                if mtype is not None and self._types_compatible(src_r, mtype):
+                    return True
+            # For traditional enums (no custom types), allow int
+            if not any(m[0] is not None for m in members.values()):
+                if src_b == "int":
+                    return True
+        
+        # Traditional enum compatibility with int
         if src_r in self.enum_types and dst_b == "int":
-            return True
+            # Only allow if no custom types (traditional enum)
+            members = self.enum_types[src_r]
+            if not any(m[0] is not None for m in members.values()):
+                return True
         if dst_r in self.enum_types and src_b == "int":
-            return True
+            # Only allow if no custom types (traditional enum)
+            members = self.enum_types[dst_r]
+            if not any(m[0] is not None for m in members.values()):
+                return True
 
         # Class compatibility
         if src_r in self.class_types and dst_r in self.class_types:
@@ -3043,9 +3080,13 @@ class TypeChecker:
         if expr.member_name not in members:
             raise LeashError(
                 f"Enum '{expr.enum_name}' has no member named '{expr.member_name}'",
-                tip=f"Available members: {', '.join(members)}",
+                tip=f"Available members: {', '.join(members.keys())}",
             )
 
+        # Check if member has a custom type
+        member_type, member_value = members[expr.member_name]
+        if member_type is not None:
+            return member_type
         return expr.enum_name
 
     def _check_method_call(self, expr):

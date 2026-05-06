@@ -5,6 +5,9 @@ endif
 
 " Keywords
 syn keyword leashKeyword fnc def struct union enum class type template macro return if also else unless while for do foreach in imut vector vec this pub priv static stop continue use works otherwise switch case default unsafe as inline defer error throw self alsou create del
+
+" Enum member with custom value: MEMBER: type = value
+syn match leashEnumMember /^\s*\zs[a-zA-Z_][a-zA-Z0-9_]*\ze\s*:/
 syn keyword leashBoolean true false
 syn keyword leashNull null nil
 

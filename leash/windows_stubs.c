@@ -1,21 +1,13 @@
 /*
  * Minimal stub implementations for native Windows compilation.
- * Provides basic GC and I/O stubs using MSVC runtime.
+ * Provides Leash I/O stubs using MSVC runtime.
+ * 
+ * Note: The Leash custom GC (gc.c) is linked separately,
+ * so these stubs don't need to provide GC functions.
  */
 
 #include <stdlib.h>
 #include <stdio.h>
-
-void GC_init(void) {
-}
-
-void* GC_malloc(unsigned long size) {
-    return malloc(size);
-}
-
-void* GC_realloc(void* ptr, unsigned long size) {
-    return realloc(ptr, size);
-}
 
 FILE* _leash_get_stdout(void) {
     return stdout;
