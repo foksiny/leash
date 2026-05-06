@@ -97,3 +97,9 @@ trash/
 # IDE
 .idea/
 .vscode/
+
+# VS Code Extension
+syntax_highlighters/vscode/node_modules/
+syntax_highlighters/vscode/out/
+syntax_highlighters/vscode/*.vsix
+syntax_highlighters/vscode/.vscode-test/

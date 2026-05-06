@@ -2900,6 +2900,44 @@ Leash provides native syntax highlighting for popular editors. You can find the 
    au BufRead,BufNewFile *.lsh set filetype=leash
    ```
 
+### VS Code (with LSP Support)
+
+The VS Code extension provides syntax highlighting, real-time diagnostics, hover tooltips, go-to-definition, and auto-completion. It features a self-contained Node.js Language Server that uses the Leash compiler for diagnostics.
+
+#### Prerequisites
+- **Node.js** (for the extension itself)
+- **Leash** compiler installed and in your PATH.
+
+#### Method 1: Manual Installation (Ready to use)
+1. Copy the `syntax_highlighters/vscode` directory to your VS Code extensions folder:
+   - **Windows**: `%USERPROFILE%\.vscode\extensions\leash`
+   - **macOS/Linux**: `~/.vscode/extensions/leash`
+2. Restart VS Code.
+
+#### Method 2: Development / From Source
+1. Navigate to the extension directory:
+   ```bash
+   cd syntax_highlighters/vscode
+   ```
+2. Install Node.js dependencies and compile the extension:
+   ```bash
+   npm install
+   npm run compile
+   ```
+3. Copy the compiled directory to your extensions folder (as described in Method 1).
+
+#### Method 3: VSIX Package (Standard)
+1. Install `vsce` globally:
+   ```bash
+   npm install -g @vscode/vsce
+   ```
+2. Build the package:
+   ```bash
+   cd syntax_highlighters/vscode
+   npm run package
+   ```
+3. Install the generated `leash-0.1.0.vsix` in VS Code (Extensions view -> `...` -> `Install from VSIX...`).
+
 ### Emacs
 
 1. Move `leash-mode.el` to your load path (e.g., `~/.emacs.d/lisp/`):
