@@ -1,8 +1,4 @@
 pub def Str : class {
-    static pub fnc new() : Str {
-        return Str {};
-    }
-
     static pub fnc split(str string, deli char) : vec<string> {
         out: vec<string>;
         word: string;

@@ -1,3 +1,4 @@
+import sys
 from .ast_nodes import *
 from .errors import LeashError
 
@@ -884,6 +885,18 @@ class TypeChecker:
     def _is_float_family(self, type_name):
         b = self._base_type(type_name)
         return b == "float"
+
+    def _is_type_param(self, type_name):
+        """Check if type_name is a type parameter (template parameter)."""
+        if not type_name:
+            return False
+        # Type parameters are single uppercase letters like T, T1, T2
+        if type_name.upper() == type_name and len(type_name) <= 2:
+            return True
+        # Also check for more complex patterns like T1, T2 in generic context
+        if type_name.startswith("T") and len(type_name) <= 3:
+            return type_name[1:].isdigit() or type_name[1:] == ""
+        return False
 
     def _error(self, msg, node=None, tip=None, code=None):
         """Create a LeashError with position info from an AST node."""
@@ -1874,6 +1887,11 @@ class TypeChecker:
             return self._check_generic_call(expr)
         elif isinstance(expr, MethodCall):
             return self._check_method_call(expr)
+        elif isinstance(expr, GenericTypeExpr):
+            # For GenericTypeExpr like VecMath<int>, instantiate and return the class name
+            if expr.name in self.generic_classes:
+                return self._instantiate_generic_class(expr.name, expr.type_args, expr)
+            return None
         elif isinstance(expr, MemberAccess):
             return self._check_member_access(expr)
         elif isinstance(expr, PointerMemberAccess):
@@ -2055,6 +2073,9 @@ class TypeChecker:
 
             # Bitwise and Modulo operations
             if expr.op in ("&", "|", "^", "<<", ">>", "%"):
+                # Skip validation for type parameters - they will be checked when instantiated
+                if self._is_type_param(left_t) or self._is_type_param(right_t):
+                    return left_t
                 if self._is_int_family(left_t) and self._is_int_family(right_t):
                     # Shift limit check
                     if expr.op in ("<<", ">>") and isinstance(
@@ -2266,9 +2287,11 @@ class TypeChecker:
 
         # Check if it's a generic class
         if class_name in self.generic_classes:
-            # For generic classes, return the class name as type
-            # The actual instantiation will be handled by codegen
-            return class_name
+            self._error(
+                f"Cannot use 'create' with generic class '{class_name}'. Use the static method syntax instead, e.g., '{class_name}<Type1, Type2>.new()'",
+                node=expr,
+            )
+            return None
 
         # Check if class exists
         if class_name not in self.class_types:
@@ -3306,6 +3329,16 @@ class TypeChecker:
             elif expr.expr.name in self.generic_classes:
                 is_static = True
                 target_cls = expr.expr.name
+
+        # Check if this is a static call on a generic class with type args: Class<T>.method(...)
+        from .ast_nodes import GenericTypeExpr
+        if isinstance(expr.expr, GenericTypeExpr):
+            if expr.expr.name in self.generic_classes:
+                is_static = True
+                # Instantiate the generic class with the provided type arguments
+                target_cls = self._instantiate_generic_class(
+                    expr.expr.name, expr.expr.type_args, expr
+                )
 
         # If not a static call, check if base_t is or resolves to a class
         if target_cls is None:

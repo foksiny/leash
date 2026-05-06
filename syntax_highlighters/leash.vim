@@ -43,6 +43,9 @@ syn match leashMultiType /\[\s*[a-z_][a-zA-Z0-9_]*\s*\(,\s*[a-z_][a-zA-Z0-9_]*\s
 " Function pointer types: fnc(int, int) : int
 syn match leashFuncPointer /fnc\s*(\s*[^)]*\s*)\s*:\s*[a-z_][a-zA-Z0-9_]*\s*\(\s*<\s*[0-9, ]\+\s*>\s*\)\?/
 
+" Generic type instantiation for static method calls: VecMath<int>.sum(a, b)
+syn match leashGenericMethodCall /\u[a-zA-Z0-9_]*<\([^>]\+\)>\.\zs[a-zA-Z_][a-zA-Z0-9_]*\ze\s*(/
+
 " Builtin functions and properties
 syn keyword leashBuiltin show showb get set toint tofloat tostring cstr lstr size cur name pushb popb pushf popf insert clear remove extend extendv isin rand randf seed choose wait timepass exit exec inttobytes bytestoint floattobytes bytestofloat
 
@@ -125,5 +128,6 @@ hi def link leashBinary Number
 hi def link leashOctal Number
 hi def link leashScientific Float
 hi def link leashNativeImport Special
+hi def link leashGenericMethodCall Function
 
 let b:current_syntax = "leash"

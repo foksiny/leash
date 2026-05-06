@@ -2051,6 +2051,41 @@ fnc main() : void {
 }
 ```
 
+### Calling Static Methods on Generic Classes
+
+You can call static methods on generic classes by specifying the type arguments directly after the class name:
+
+```leash
+def T : template;
+
+def VecMath : class<T> {
+    static pub fnc sum(a vec<T>, b vec<T>) : vec<T> {
+        if a.size != b.size {
+            return nil;
+        }
+        result: vec<T>;
+        foreach i, v in<vector> a {
+            result.pushb(v + b.get(i));
+        }
+        return result;
+    }
+}
+
+fnc main() : void {
+    a: vec<int>;
+    b: vec<int>;
+    a.extend({10, 20, 30});
+    b.extend({1, 2, 3});
+
+    c: vec<int> = VecMath<int>.sum(a, b);
+    show(c.get(0));  // 11
+    show(c.get(1));  // 22
+    show(c.get(2));  // 33
+}
+```
+
+The syntax `ClassName<Type>.method(args)` instantiates the generic class with the specified type and calls the static method.
+
 ### Using `nil` with Generic Types
 
 The `nil` value can be used with any type, including generic type parameters. This is useful for optional return values:

@@ -1,6 +1,6 @@
-priv def T : template;
+def T : template;
 
-pub def VecMath : class<T> {
+def VecMath : class<T> {
     static pub fnc sum(a vec<T>, b vec<T>) : vec<T> {
         if a.size != b.size {
             return nil;
@@ -54,5 +54,18 @@ pub def VecMath : class<T> {
             a.set(i, v % b.get(i));
         }
         return a;
+    }
+}
+
+fnc main() {
+    a: vec<int>;
+    b: vec<int>;
+    a.extend({10, 20, 30, 40, 50});
+    b.extend({20, 40, 60, 80, 100});
+
+    c: vec<int> = VecMath<int>.sum(a, b);
+
+    foreach i, v in<vector> c {
+        show(i, ": ", v);
     }
 }

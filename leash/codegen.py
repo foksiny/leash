@@ -1,3 +1,4 @@
+import sys
 import llvmlite.ir as ir
 import llvmlite.binding as llvm
 from .errors import LeashError
@@ -680,7 +681,15 @@ class CodeGen:
                 if resolved == "string" and node.method == "replace":
                     return "string"
             # Handle File static methods
-            from .ast_nodes import Identifier
+            from .ast_nodes import Identifier, GenericTypeExpr
+
+            # Handle static method calls on generic classes (e.g., VecMath<int>.sum(...))
+            if isinstance(node.expr, GenericTypeExpr):
+                type_args_str = "_".join(
+                    t.replace("<", "_").replace(">", "_").replace(",", "_").replace(" ", "")
+                    for t in node.expr.type_args
+                )
+                resolved = f"{node.expr.name}_{type_args_str}"
 
             if isinstance(node.expr, Identifier) and node.expr.name == "File":
                 if node.method == "open":
@@ -3909,12 +3918,20 @@ class CodeGen:
         from .ast_nodes import Identifier
 
         # Handle static method calls on class names (e.g., pMath.exp(x))
-        from .ast_nodes import ThisExpr
+        from .ast_nodes import ThisExpr, GenericTypeExpr
         is_static_call = False
         target_cls = None
         if isinstance(node.expr, Identifier) and node.expr.name in self.class_symtab:
             is_static_call = True
             target_cls = node.expr.name
+        elif isinstance(node.expr, GenericTypeExpr):
+            is_static_call = True
+            # Compute the mangled class name (same logic as typechecker)
+            type_args_str = "_".join(
+                t.replace("<", "_").replace(">", "_").replace(",", "_").replace(" ", "")
+                for t in node.expr.type_args
+            )
+            target_cls = f"{node.expr.name}_{type_args_str}"
         elif isinstance(node.expr, ThisExpr) and "this" not in self.var_symtab and self.current_class_name:
             is_static_call = True
             target_cls = self.current_class_name

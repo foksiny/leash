@@ -36,9 +36,11 @@
    '("@from\\s*(" . font-lock-preprocessor-face)
    ;; Multi-type syntax: [int, float]
    '("\\[[ \t]*\\(int\\|uint\\|float\\|bool\\|string\\|char\\|void\\)[ \t]*\\(,[ \t]*\\(int\\|uint\\|float\\|bool\\|string\\|char\\|void\\)[ \t]*\\)*\\]" . font-lock-type-face)
-   ;; Function pointer types: fnc(int, int) : int
-   '("fnc[ \t]*([^) ]*)" . font-lock-type-face)
-   '("\\b\\(true\\|false\\|null\\|nil\\)\\b" . font-lock-constant-face)
+;; Function pointer types: fnc(int, int) : int
+    '("fnc[ \t]*([^) ]*)" . font-lock-type-face)
+    ;; Generic type instantiation for static method calls: VecMath<int>.sum(a, b)
+    '("\\([A-Z][a-zA-Z0-9_]*\\)<[^>]+>\\." 1 font-lock-function-name-face)
+    '("\\b\\(true\\|false\\|null\\|nil\\)\\b" . font-lock-constant-face)
    '("\\b\\_FILEPATH\\_\\|\\_FILENAME\\_\\|\\_PLATFORM\\_\\b" . font-lock-constant-face)
    '("self\\(::[a-zA-Z_][a-zA-Z0-9_]*\\)?" . font-lock-constant-face)
     '("\\b\\(show\\|showb\\|get\\|set\\|toint\\|tofloat\\|tostring\\|cstr\\|lstr\\|size\\|cur\\|name\\|pushb\\|popb\\|pushf\\|popf\\|insert\\|clear\\|remove\\|extend\\|extendv\\|isin\\|rand\\|randf\\|seed\\|choose\\|wait\\|timepass\\|exit\\|exec\\|File\\|open\\|close\\|read\\|write\\|readln\\|readb\\|writeb\\|readlnb\\|replaceall\\|rewind\\|rename\\|delete\\|inttobytes\\|bytestoint\\|floattobytes\\|bytestofloat\\)\\b" . font-lock-builtin-face)

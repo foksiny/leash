@@ -376,6 +376,14 @@ class ByteConvExpr(Expression):
         self.value_expr = value_expr  # the value to convert
 
 
+class GenericTypeExpr(Expression):
+    """Represents a generic type expression like 'VecMath<int>' in the context of a method call."""
+
+    def __init__(self, name, type_args):
+        self.name = name  # string: class name
+        self.type_args = type_args  # list of type strings
+
+
 class TemplateDef(ASTNode):
     """Represents a template parameter definition like 'def T1 : template;'"""
 

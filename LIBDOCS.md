@@ -54,6 +54,7 @@ use hotreload::Reloader;
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `new` | `Reloader.new(name string) : Reloader` | Creates a reloader watching the given file path. |
+| `create` | `create Reloader(name string)` | Creates a reloader watching the given file path. |
 
 #### Instance Methods
 
@@ -225,13 +226,25 @@ use utils::vecmath::VecMath;
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
-| `new` | `VecMath.new() : VecMath` | Creates a new VecMath instance. |
+| `sum` | `VecMath<T>.sum(a vec<T>, b vec<T>) : vec<T>` | Element-wise addition. Returns `nil` if sizes don't match. |
+| `sub` | `VecMath<T>.sub(a vec<T>, b vec<T>) : vec<T>` | Element-wise subtraction. Returns `nil` if sizes don't match. |
+| `mul` | `VecMath<T>.mul(a vec<T>, b vec<T>) : vec<T>` | Element-wise multiplication. Returns `nil` if sizes don't match. |
+| `div` | `VecMath<T>.div(a vec<T>, b vec<T>) : vec<T>` | Element-wise division. Returns `nil` if sizes don't match. |
 
-#### Instance Methods
+### Usage Example
 
-| Method | Signature | Description |
-|--------|-----------|-------------|
-| `sum` | `sum(a vec<T>, b vec<T>) : vec<T>` | Element-wise addition. Returns `nil` if sizes don't match. |
-| `sub` | `sub(a vec<T>, b vec<T>) : vec<T>` | Element-wise subtraction. Returns `nil` if sizes don't match. |
-| `mul` | `mul(a vec<T>, b vec<T>) : vec<T>` | Element-wise multiplication. Returns `nil` if sizes don't match. |
-| `div` | `div(a vec<T>, b vec<T>) : vec<T>` | Element-wise division. Returns `nil` if sizes don't match. |
+```lsh
+use utils::vecmath::VecMath;
+
+fnc main() : void {
+    a: vec<int>;
+    b: vec<int>;
+    a.extend({10, 20, 30});
+    b.extend({1, 2, 3});
+
+    c: vec<int> = VecMath<int>.sum(a, b);
+    d: vec<int> = VecMath<int>.sub(a, b);
+    e: vec<int> = VecMath<int>.mul(a, b);
+    f: vec<int> = VecMath<int>.div(a, b);
+}
+``` |

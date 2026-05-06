@@ -15,10 +15,6 @@ pub def Math : class {
     static pub LN10: double = 2.30258509299404568402;
     static pub LN2: double = 0.69314718055994530942;
 
-    static pub fnc new() : Math {
-        return Math {};
-    }
-
     static pub fnc floor(x double) : double {
         i: int64 = toint(int64, x);
         if x < 0.0 && x != tofloat(double, i) {

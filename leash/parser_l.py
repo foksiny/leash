@@ -51,6 +51,7 @@ from .ast_nodes import (
     PointerMemberAccess,
     TemplateDef,
     GenericCall,
+    GenericTypeExpr,
     GlobalVarDecl,
     ImportStmt,
     TernaryOp,
@@ -1751,6 +1752,36 @@ class Parser:
                             self.pos = saved_pos
                 except LeashError:
                     # Not a generic call, restore position
+                    self.pos = saved_pos
+
+            # Check for generic type expression: Class<T> (used for static method calls like VecMath<int>.sum(...))
+            if self.current().type == "LT":
+                saved_pos = self.pos
+                try:
+                    self.eat("LT")
+                    type_args = []
+                    while self.current().type != "GT":
+                        if self.current().type in (
+                            "IDENT",
+                            "VEC",
+                            "INT",
+                            "UINT",
+                            "FLOAT",
+                            "STRING",
+                            "CHAR",
+                            "BOOL",
+                        ):
+                            type_args.append(self.parse_type())
+                        else:
+                            self.pos = saved_pos
+                            break
+                        if self.current().type == "COMMA":
+                            self.eat("COMMA")
+                    else:
+                        self.eat("GT")
+                        # This is a generic type expression - return it and let parse_postfix handle the method call
+                        return self._pos(GenericTypeExpr(name, type_args), tok)
+                except LeashError:
                     self.pos = saved_pos
 
             if self.current().type == "LPAREN":
