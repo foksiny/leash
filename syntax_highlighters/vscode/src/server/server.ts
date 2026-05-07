@@ -424,5 +424,18 @@ connection.onCompletion((_textDocumentPosition: TextDocumentPositionParams): Com
     };
 });
 
+connection.onCompletionResolve((item: CompletionItem): CompletionItem => {
+    const keyword = item.data as string;
+    if (BUILTIN_DOCS[keyword]) {
+        const doc = BUILTIN_DOCS[keyword];
+        item.documentation = {
+            kind: MarkupKind.Markdown,
+            value: `**${doc.sig}**\n\n${doc.desc}`
+        };
+        item.detail = doc.sig;
+    }
+    return item;
+});
+
 documents.listen(connection);
 connection.listen();

@@ -335,7 +335,15 @@ def compile_file(input_file, output_name=None, output_type="executable", is_run_
 def _link_native(obj_name, output_name, target_config, is_run_mode, output_type, codegen, base_path, extra_libs=None):
     nlib_args = [os.path.join(base_path, l[0]) if l[0].startswith(".") else l[0] for l in codegen.native_libs]
     if extra_libs: nlib_args.extend([f"-l{l}" for l in extra_libs])
-    cc = os.environ.get("CC") or target_config.detect_cross_linker() or ("gcc" if os.name != "nt" else "clang")
+    cc = os.environ.get("CC") or target_config.detect_cross_linker()
+    if not cc:
+        if os.name == "nt":
+            # On Windows, prefer gcc (MinGW) over clang since clang often
+            # requires a Visual Studio installation for linking.
+            import shutil
+            cc = "gcc" if shutil.which("gcc") else "clang"
+        else:
+            cc = "gcc"
     stubs = []
     for sfile in ["gc.c", "cross_compile_stubs.c" if not (os.name == "nt" and target_config.name == "win64") else "windows_stubs.c"]:
         spath = os.path.join(os.path.dirname(os.path.abspath(__file__)), sfile)

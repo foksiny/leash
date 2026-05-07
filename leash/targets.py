@@ -95,7 +95,7 @@ TARGETS = {
         name="win64",
         llvm_triple="x86_64-pc-windows-msvc",
         output_extension=".exe",
-        linker_flags=["-no-pie", "-fno-pie"],
+        linker_flags=[],
         platform_name="Windows",
         description="Windows x86_64",
     ),
