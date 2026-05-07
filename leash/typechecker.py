@@ -1923,6 +1923,33 @@ class TypeChecker:
             return self._check_sizeof(expr)
         elif isinstance(expr, TernaryOp):
             return self._check_ternary_op(expr)
+        elif isinstance(expr, IsExpr):
+            # 'is' and 'isnt' always return bool
+            if expr.is_type_check:
+                # Type check: verify the type is valid
+                if not self._is_valid_type(expr.right):
+                    self._error(
+                        f"Invalid type '{expr.right}' in '{expr.op}' check",
+                        node=expr,
+                        tip="Make sure the type exists and is properly defined.",
+                    )
+                # Check if the left side's type is compatible with the right type
+                left_type = self._infer_type(expr.left)
+                if left_type and not self._types_compatible(left_type, expr.right):
+                    # This is not necessarily an error - it could be a runtime check
+                    # For example, checking if a union is a specific variant
+                    pass
+            else:
+                # Value comparison: check that types are comparable
+                left_type = self._infer_type(expr.left)
+                right_type = self._infer_type(expr.right)
+                if left_type and right_type:
+                    if not self._types_compatible(left_type, right_type):
+                        self._warn(
+                            f"Comparing values of different types: '{left_type}' and '{right_type}'",
+                            node=expr,
+                        )
+            return "bool"
         elif isinstance(expr, Lambda):
             return self._check_lambda(expr)
         elif isinstance(expr, CreateExpr):

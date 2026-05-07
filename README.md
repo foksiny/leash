@@ -840,15 +840,15 @@ The `<>` operator checks if a value exists within an array. It returns `true` if
 ```leash
 fnc main() : void {
     nums: int[5] = {1, 2, 3, 4, 5};
-    
+
     if 3 <> nums {
         show("3 is in the array");
     }
-    
+
     if 10 <> nums == false {
         show("10 is not in the array");
     }
-    
+
     // Works with strings too
     words: string[3] = {"hello", "world", "leash"};
     if "world" <> words {
@@ -858,6 +858,89 @@ fnc main() : void {
 ```
 
 For vectors, use the `.isin()` method instead (see [Vectors](#vectors)).
+
+### `is` and `isnt` Operators
+
+Leash supports `is` and `isnt` operators for checking both **types** and **values**. These operators provide a powerful way to perform runtime type checks and value comparisons.
+
+#### Type Checking
+
+Use `is` to check if a variable is of a specific type at runtime:
+
+```leash
+fnc main() : void {
+    a: int = 10;
+    p: Person = Person { name: "John Doe", age: 23 };
+
+    if a is int {
+        show("It's int!");
+    }
+
+    if p is Person {
+        show(p.name, " ", p.age);
+    }
+}
+```
+
+The `isnt` operator performs the negated type check:
+
+```leash
+if myvar isnt string {
+    show("myvar is NOT a string");
+}
+```
+
+#### Value Comparisons
+
+Both `is` and `isnt` also work with **values**, including:
+
+- **Primitive values**: integers, floats, booleans, characters
+- **Strings**: compared by content (not pointer)
+- **Arrays**: deep comparison of array contents
+- **Vectors**: deep comparison of vector elements
+
+```leash
+fnc main() : void {
+    mylist: int[5] = {1, 2, 3, 4, 5};
+
+    // Compare with array literal
+    if mylist is {1, 2, 3, 4, 5} {
+        foreach i, v in<array> mylist {
+            show("ARRAY ", i, ": ", v);
+        }
+    }
+
+    // Compare with another variable
+    mv2: vec<int> = (vec<int>){1, 2, 3, 4, 5};
+    myvec: vec<int> = (vec<int>){1, 2, 3, 4, 5};
+
+    if myvec is mv2 {
+        foreach i, v in<vector> myvec {
+            show("VEC ", i, ": ", v);
+        }
+    }
+
+    // Use 'isnt' for negated comparisons
+    if mylist isnt {1, 2, 3, 4, 5, 6, 7, 8, 9, 10} {
+        show("mylist isn't '{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}'");
+    }
+}
+```
+
+#### Supported Comparisons
+
+| Type | `is`/`isnt` Support | Notes |
+|------|----------------------|-------|
+| **Primitive types** (`int`, `float`, `bool`, `char`) | ✓ | Type checks and value comparisons |
+| **Strings** (`string`) | ✓ | Deep comparison (content-based) |
+| **Arrays** (`type[size]`) | ✓ | Deep comparison of all elements |
+| **Vectors** (`vec<T>`) | ✓ | Deep comparison of all elements |
+| **Structs** | ✓ (type only) | Type checking only |
+| **Unions** | ✓ (type only) | Type checking only |
+| **Enums** | ✓ (type only) | Type checking only |
+| **Classes** | ✓ (type only) | Type checking with inheritance support |
+
+> **Note:** Value comparisons for arrays and vectors perform **deep comparison** (checking each element), not just pointer equality. This makes `is` very powerful for comparing complex data structures.
 
 ### Bitwise Operators
 | Operator | Description | Example |

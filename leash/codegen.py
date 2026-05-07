@@ -29,6 +29,7 @@ from .ast_nodes import (
     FloatLiteral,
     BoolLiteral,
     CharLiteral,
+    IsExpr,
 )
 
 
@@ -221,6 +222,12 @@ class CodeGen:
             [ir.IntType(8).as_pointer(), ir.IntType(8).as_pointer(), ir.IntType(64)],
         )
         self.memmove = ir.Function(self.module, memmove_ty, name="memmove")
+
+        memcmp_ty = ir.FunctionType(
+            ir.IntType(32),
+            [ir.IntType(8).as_pointer(), ir.IntType(8).as_pointer(), ir.IntType(64)],
+        )
+        self.memcmp = ir.Function(self.module, memcmp_ty, name="memcmp")
 
         # Random functions
         rand_ty = ir.FunctionType(ir.IntType(32), [])
@@ -621,6 +628,9 @@ class CodeGen:
             return node.target_type
         elif isinstance(node, AsExpr):
             return node.target_type
+        elif isinstance(node, IsExpr):
+            # 'is' and 'isnt' always return bool
+            return "bool"
         elif isinstance(node, TypeConvExpr):
             return node.target_type
         elif isinstance(node, ByteConvExpr):
@@ -6248,6 +6258,99 @@ class CodeGen:
         val = self._codegen(node.expr)
         target_type = self._get_llvm_type(node.target_type)
         return self._emit_cast(val, target_type)
+
+    def _codegen_IsExpr(self, node):
+        """Generate code for 'is' and 'isnt' expressions."""
+        if node.is_type_check:
+            # Type check - compile-time check, return constant
+            return ir.Constant(ir.IntType(1), 1 if node.op == "is" else 0)
+        else:
+            # Value comparison
+            left_val = self._codegen(node.left)
+            right_val = self._codegen(node.right)
+
+            left_llvm_type = left_val.type
+            right_llvm_type = right_val.type
+
+            # Handle integer comparisons
+            if isinstance(left_llvm_type, ir.IntType) and isinstance(right_llvm_type, ir.IntType):
+                if left_llvm_type.width == 1:  # bool
+                    result = self.builder.icmp_unsigned("==", left_val, right_val)
+                else:
+                    result = self.builder.icmp_signed("==", left_val, right_val)
+            # Handle float comparisons
+            elif isinstance(left_llvm_type, (ir.FloatType, ir.DoubleType)) or \
+                 isinstance(right_llvm_type, (ir.FloatType, ir.DoubleType)):
+                result = self.builder.fcmp_ordered("==", left_val, right_val)
+            # Handle pointer comparisons (strings)
+            elif isinstance(left_llvm_type, ir.PointerType) and isinstance(right_llvm_type, ir.PointerType):
+                left_type_name = self._get_leash_type_name(node.left)
+                right_type_name = self._get_leash_type_name(node.right)
+
+                if left_type_name == "string" or right_type_name == "string":
+                    # Compare strings using strcmp
+                    strcmp_result = self.builder.call(self.strcmp, [left_val, right_val])
+                    result = self.builder.icmp_signed("==", strcmp_result, ir.Constant(ir.IntType(32), 0))
+                else:
+                    result = self.builder.icmp_unsigned("==", left_val, right_val)
+            # Handle slice/array/vector comparisons - use memcmp for deep comparison
+            elif isinstance(left_llvm_type, ir.LiteralStructType) and \
+                 isinstance(right_llvm_type, ir.LiteralStructType) and \
+                 len(left_llvm_type.elements) in (2, 3) and \
+                 len(right_llvm_type.elements) in (2, 3):
+                # Determine if it's a slice {length, pointer} or vector {pointer, capacity, size}
+                is_vector = len(left_llvm_type.elements) == 3
+
+                if is_vector:
+                    # Vector: {pointer, capacity, size}
+                    left_size = self.builder.extract_value(left_val, 2)  # size element
+                    right_size = self.builder.extract_value(right_val, 2)
+                    left_ptr = self.builder.extract_value(left_val, 0)  # data pointer
+                    right_ptr = self.builder.extract_value(right_val, 0)
+                    # Get element type from pointer (elements[0] is pointer)
+                    elem_type = left_llvm_type.elements[0].pointee
+                else:
+                    # Slice: {length, pointer}
+                    left_size = self.builder.extract_value(left_val, 0)
+                    right_size = self.builder.extract_value(right_val, 0)
+                    left_ptr = self.builder.extract_value(left_val, 1)
+                    right_ptr = self.builder.extract_value(right_val, 1)
+                    # Get element type from pointer (elements[1] is pointer)
+                    elem_type = left_llvm_type.elements[1].pointee
+
+                # Compare sizes first
+                size_eq = self.builder.icmp_signed("==", left_size, right_size)
+
+                # Compare pointers (quick path - same object)
+                ptr_eq = self.builder.icmp_unsigned("==", left_ptr, right_ptr)
+
+                # Calculate element size from elem_type
+                elem_size = self._get_type_size(elem_type)
+
+                # Calculate total size = size * elem_size
+                total_size = self.builder.mul(left_size, ir.Constant(ir.IntType(64), elem_size))
+
+                # Cast pointers to i8* for memcmp
+                left_i8ptr = self.builder.bitcast(left_ptr, ir.IntType(8).as_pointer())
+                right_i8ptr = self.builder.bitcast(right_ptr, ir.IntType(8).as_pointer())
+
+                # Call memcmp
+                memcmp_result = self.builder.call(
+                    self.memcmp, [left_i8ptr, right_i8ptr, total_size]
+                )
+                content_eq = self.builder.icmp_signed("==", memcmp_result, ir.Constant(ir.IntType(32), 0))
+
+                # Result is true if sizes equal and (pointers equal OR contents equal)
+                result = self.builder.and_(size_eq, self.builder.or_(ptr_eq, content_eq))
+            else:
+                # For other types, return false
+                result = ir.Constant(ir.IntType(1), 0)
+
+            # Handle 'isnt' (negation)
+            if node.op == "isnt":
+                result = self.builder.not_(result)
+
+            return result
 
     def _emit_cast(self, val, target_type):
         """Cast a value to the target LLVM type."""

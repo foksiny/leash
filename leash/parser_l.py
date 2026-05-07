@@ -68,6 +68,7 @@ from .ast_nodes import (
     MacroDef,
     CreateExpr,
     DelStatement,
+    IsExpr,
 )
 from .errors import LeashError
 
@@ -1555,12 +1556,59 @@ class Parser:
 
     def parse_comparison(self, no_struct_init=False):
         node = self.parse_shift(no_struct_init)
-        while self.current().type in ("EQ", "NEQ", "LT", "LTE", "GT", "GTE", "ISIN"):
+        while self.current().type in ("EQ", "NEQ", "LT", "LTE", "GT", "GTE", "ISIN", "IS", "ISNT"):
             op = self.current()
             self.eat(op.type)
-            right = self.parse_shift(no_struct_init)
-            node = BinaryOp(left=node, op=op.value, right=right)
+            if op.type in ("IS", "ISNT"):
+                # For 'is' and 'isnt', determine if right side is a type or value
+                if self._is_type_check():
+                    # Parse as type check: expr is Type
+                    right = self.parse_type()
+                    node = self._pos(IsExpr(left=node, op=op.value, right=right, is_type_check=True), op)
+                else:
+                    # Parse as value comparison: expr is value
+                    right = self.parse_shift(no_struct_init)
+                    node = self._pos(IsExpr(left=node, op=op.value, right=right, is_type_check=False), op)
+            else:
+                right = self.parse_shift(no_struct_init)
+                node = BinaryOp(left=node, op=op.value, right=right)
         return node
+
+    def _is_type_check(self):
+        """Determine if the current token starts a type (for 'is'/'isnt' parsing).
+        Uses heuristics: primitive types, generics, or uppercase identifiers (type names)."""
+        tok = self.current()
+        pos = self.pos
+
+        # Primitive type keywords
+        if tok.type in ("INT", "UINT", "FLOAT", "STRING", "CHAR", "BOOL", "VOID", "VEC"):
+            return True
+
+        # Identifiers - could be type names or variables
+        if tok.type == "IDENT":
+            name = tok.value
+            next_tok = self.peek()
+
+            # If followed by '<' (generic type like vec<int>) or '[' (array type)
+            if next_tok and next_tok.type in ("LT", "LBRACKET"):
+                return True
+
+            # Heuristic: type names typically start with uppercase
+            if name and name[0].isupper():
+                return True
+
+            # Not likely a type
+            return False
+
+        # Pointer types
+        if tok.type in ("MUL", "BIT_AND", "IMUT"):
+            return True
+
+        # Generic type starting with <
+        if tok.type == "LT":
+            return True
+
+        return False
 
     def parse_shift(self, no_struct_init=False):
         node = self.parse_term(no_struct_init)

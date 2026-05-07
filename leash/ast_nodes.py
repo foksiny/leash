@@ -533,3 +533,13 @@ class DelStatement(Statement):
 
     def __init__(self, target):
         self.target = target  # Identifier or MemberAccess node
+
+
+class IsExpr(Expression):
+    """Represents an 'is' or 'isnt' expression for type/value checking."""
+
+    def __init__(self, left, op, right, is_type_check=False):
+        self.left = left
+        self.op = op  # "is" or "isnt"
+        self.right = right  # Can be a type name (string) or an expression
+        self.is_type_check = is_type_check  # True if checking against a type

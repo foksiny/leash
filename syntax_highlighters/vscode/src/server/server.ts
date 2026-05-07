@@ -298,7 +298,9 @@ connection.onHover((params: TextDocumentPositionParams): Hover | null => {
         'pub': 'Public visibility. Item is accessible from other modules.',
         'priv': 'Private visibility. Item is only accessible within the current module.',
         'static': 'Belongs to the class itself rather than instances.',
-        'self': 'Contextual name string. Evaluates to function or class name.',
+        'self': 'Contextual name string. Evaluates to function, method, or class name.',
+        'is': 'Type/value check operator. Checks if a value is of a specific type or equals another value.',
+        'isnt': 'Negated type/value check operator. Checks if a value is NOT of a specific type or does NOT equal another value.',
         'this': 'Reference to the current class instance.',
         'works': 'Error handling block. If code inside fails, control jumps to `otherwise`.',
         'otherwise': 'Executes if the preceding `works` block encountered an error.',
@@ -413,7 +415,7 @@ function getWordAt(text: string, offset: number): string {
 }
 
 connection.onCompletion((_textDocumentPosition: TextDocumentPositionParams): CompletionList => {
-    const keywords = ["fnc", "return", "int", "void", "def", "struct", "true", "false", "null", "string", "char", "bool", "float", "uint", "if", "else", "while", "for", "foreach", "in", "class", "this", "pub", "priv", "static", "stop", "continue", "use", "switch", "case", "default", "unsafe", "as", "inline", "defer", "self", "create", "del"];
+    const keywords = ["fnc", "return", "int", "void", "def", "struct", "true", "false", "null", "string", "char", "bool", "float", "uint", "if", "also", "else", "unless", "while", "for", "do", "foreach", "in", "class", "this", "pub", "priv", "static", "stop", "continue", "use", "switch", "case", "default", "pubif", "unsafe", "as", "inline", "defer", "error", "throw", "self", "macro", "create", "del", "is", "isnt"];
     return {
         isIncomplete: false,
         items: keywords.map(kw => ({

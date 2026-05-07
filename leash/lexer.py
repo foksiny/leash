@@ -70,10 +70,12 @@ class Lexer:
         "error",
         "throw",
         "self",
-        "macro",
-        "create",
-        "del",
-    }
+    "macro",
+    "create",
+    "del",
+    "is",
+    "isnt",
+}
 
     # regexes
     TOKEN_SPECIFICATION = [

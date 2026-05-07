@@ -72,10 +72,10 @@
                     "name": "keyword.declaration.leash",
                     "match": "\\b(fnc|def|struct|union|enum|class|type|template|macro|use|pub|priv|static|pubif|unsafe|as|inline|imut|create|del)\\b"
                 },
-                {
-                    "name": "keyword.other.leash",
-                    "match": "\\b(this|self|also|alsou|works|otherwise)\\b"
-                }
+                 {
+                     "name": "keyword.other.leash",
+                     "match": "\\b(this|self|also|alsou|works|otherwise|is|isnt)\\b"
+                 }
             ]
         },
         "constants": {
