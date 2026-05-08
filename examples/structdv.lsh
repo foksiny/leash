@@ -1,0 +1,15 @@
+def Person : struct {
+    name: string = "John Doe";
+    age:  int    = 23;
+};
+
+fnc main() : void {
+    p1: Person = Person {};
+    show(p1.name, " ", p1.age);
+
+    p2: Person = Person { name: "Jane" };
+    show(p2.name, " ", p2.age);
+
+    p3: Person = Person { name: "Bob", age: 30 };
+    show(p3.name, " ", p3.age);
+}

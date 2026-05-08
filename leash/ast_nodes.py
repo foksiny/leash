@@ -12,7 +12,7 @@ class Program(ASTNode):
 class StructDef(ASTNode):
     def __init__(self, name, fields, visibility="pub"):
         self.name = name
-        self.fields = fields  # list of (name, type) tuples
+        self.fields = fields  # list of (name, type, default) tuples - default can be None
         self.visibility = visibility  # 'pub' or 'priv'
 
 

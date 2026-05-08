@@ -256,7 +256,7 @@ class TypeChecker:
 
     def _register_struct(self, node):
         fields = {}
-        for fname, ftype in node.fields:
+        for fname, ftype, fdefault in node.fields:
             if fname in fields:
                 self._error(
                     f"Duplicate field '{fname}' in struct '{node.name}'",

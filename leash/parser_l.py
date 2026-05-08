@@ -838,8 +838,12 @@ class Parser:
             field_name = self.eat("IDENT").value
             self.eat("COLON")
             field_type = self.parse_type()
+            field_default = None
+            if self.current().type == "ASSIGN":
+                self.eat("ASSIGN")
+                field_default = self.parse_expression()
             self.eat("SEMI")
-            fields.append((field_name, field_type))
+            fields.append((field_name, field_type, field_default))
         self.eat("RBRACE")
         self.eat("SEMI")
         return StructDef(name, fields, visibility)

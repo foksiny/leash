@@ -196,6 +196,8 @@ function findSymbol(text: string, name: string): LeashSymbol | null {
         { regex: new RegExp(`def\\s+(${name})\\s*<.*?>?\\s*:\\s*(struct|union|enum|class|type)\\b`, 'g'), type: 'Type Definition' },
         // Class fields
         { regex: new RegExp(`\\b(pub|priv|static)?\\s*(${name})\\s*:\\s*([a-zA-Z0-9_<>\\[\\]&\\*\\s]+)?\\s*(=|;)`, 'g'), type: 'Field' },
+        // Struct fields (with optional default value)
+        { regex: new RegExp(`\\b(${name})\\s*:\\s*([a-zA-Z0-9_<>\\[\\]&\\*\\s]+)?\\s*(?:=\\s*[^;]+)?\\s*;`, 'g'), type: 'Struct Field' },
         // Native imports (@from)
         { regex: new RegExp(`@from\\s*\\(.*?\\)\\s*\\{[^}]*?(?:fnc|def)?\\s+(${name})\\s*\\((.*?)\\)\\s*:\\s*(.*?)\\s*;`, 'gs'), type: 'Native Function' },
         { regex: new RegExp(`@from\\s*\\(.*?\\)\\s*\\{[^}]*?(${name})\\s*:\\s*(.*?)\\s*;`, 'gs'), type: 'Native Variable' },
@@ -384,7 +386,9 @@ connection.onDocumentSymbol((params: DocumentSymbolParams): DocumentSymbol[] => 
     const patterns = [
         { regex: /fnc\s+([a-zA-Z_]\w*)/g, kind: SymbolKind.Function },
         { regex: /def\s+([a-zA-Z_]\w*)\s*:\s*(struct|union|enum|class)/g, kind: SymbolKind.Class },
-        { regex: /([a-zA-Z_]\w*)\s*:\s*(?:imut\s+)?([a-zA-Z0-9_<>\\[\\]&\\*]+)\s*=/g, kind: SymbolKind.Variable }
+        { regex: /([a-zA-Z_]\w*)\s*:\s*(?:imut\s+)?([a-zA-Z0-9_<>\\[\\]&\\*]+)\s*=/g, kind: SymbolKind.Variable },
+        // Struct fields (with optional default value)
+        { regex: /^\s*([a-zA-Z_]\w*)\s*:\s*([a-zA-Z0-9_<>\\[\\]&\\*]+)(?:\s*=\s*[^;]+)?\s*;/g, kind: SymbolKind.Field }
     ];
 
     for (const p of patterns) {

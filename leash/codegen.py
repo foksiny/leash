@@ -1108,9 +1108,12 @@ class CodeGen:
         llvm_types = []
         fields = {}
         field_types = {}
-        for idx, (fname, ftype) in enumerate(node.fields):
+        field_defaults = {}
+        for idx, (fname, ftype, fdefault) in enumerate(node.fields):
             fields[fname] = idx
             field_types[fname] = ftype
+            if fdefault is not None:
+                field_defaults[fname] = fdefault
             llvm_types.append(self._get_llvm_type(ftype))
 
         struct_type = ir.LiteralStructType(llvm_types)
@@ -1118,6 +1121,7 @@ class CodeGen:
             "type": struct_type,
             "fields": fields,
             "field_types": field_types,
+            "field_defaults": field_defaults,
         }
 
     def _codegen_TypeAlias(self, node):
@@ -5596,6 +5600,23 @@ class CodeGen:
             return ptr
         else:
             val = ir.Constant(struct_type, None)  # Zero-initialize the struct constant
+
+            # Initialize fields with default values
+            if "field_defaults" in struct_info:
+                for fname, default_expr in struct_info["field_defaults"].items():
+                    # Skip if it's provided in kwargs
+                    if any(k == fname for k, _ in node.kwargs):
+                        continue
+                    idx = struct_info["fields"][fname]
+                    field_val = self._codegen(default_expr)
+                    # Ensure type match
+                    expected_type_str = struct_info["field_types"][fname]
+                    expected_llvm_type = self._get_llvm_type(expected_type_str)
+                    if field_val.type != expected_llvm_type:
+                        field_val = self._emit_cast(field_val, expected_llvm_type)
+                    val = self.builder.insert_value(val, field_val, idx)
+
+            # Initialize other fields from kwargs
             for key, expr in node.kwargs:
                 idx = struct_info["fields"].get(key)
                 if idx is None:

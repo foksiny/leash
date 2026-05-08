@@ -1772,6 +1772,36 @@ fnc main() : void {
 }
 ```
 
+### Struct Field Default Values
+
+Struct fields can have default values that are used when the struct is created without specifying all fields:
+
+```leash
+def Person : struct {
+    name: string = "John Doe";
+    age:  int    = 23;
+};
+
+fnc main() : void {
+    // Uses default values
+    p1: Person = Person {};
+    show(p1.name, " ", p1.age);  // John Doe 23
+
+    // Override specific fields
+    p2: Person = Person { name: "Jane" };
+    show(p2.name, " ", p2.age);  // Jane 23
+
+    // Override all fields
+    p3: Person = Person { name: "Bob", age: 30 };
+    show(p3.name, " ", p3.age);  // Bob 30
+}
+```
+
+When creating a struct instance, you can:
+- Use `{}` to use all default values
+- Use `{ field: value }` to specify specific fields (using `:` not `=`)
+- Omitted fields use their default values
+
 ## Pointers
 
 Leash supports pointers for low-level memory operations and efficient parameter passing. Pointers use the `*` prefix for raw pointers and `&` for safe references.

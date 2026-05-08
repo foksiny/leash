@@ -435,7 +435,7 @@ def main():
         if sys.argv[2] in ("--help", "-h"):
             print(f"Options for {cmd}:\n  --target <target>\n  --check\n  --warnings-as-errors\n  --opt <0,1,2,3,s>\n  -l<lib>")
             sys.exit(0)
-        infile = sys.argv[2]; target, outname, outtype, check, warnerr, elibs, opt = None, None, "executable", False, False, [], None
+        infile = sys.argv[2]; target, outname, outtype, check, warnerr, elibs, opt = None, None, "executable", False, False, [], "2"
         i = 3
         while i < len(sys.argv):
             if sys.argv[i] == "--target" and i+1 < len(sys.argv): target = sys.argv[i+1]; i += 2
