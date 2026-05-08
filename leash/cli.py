@@ -152,7 +152,7 @@ def resolve_imports(program, base_path):
                     if isinstance(mod_item, (StructDef, UnionDef, EnumDef, ErrorDef, TypeAlias, ClassDef, Function, TemplateDef, MacroDef)): available[mod_item.name] = mod_item
                     elif isinstance(mod_item, GlobalVarDecl) and (mod_item.visibility == "pub" or is_priv_import): available[mod_item.name] = mod_item
                 if not is_priv_import:
-                    for name, it in available.items():
+                    for name, it in list(available.items()):
                         if hasattr(it, 'type_params') and it.type_params:
                             for tp in it.type_params:
                                 if tp in all_templates and tp not in available: available[tp] = all_templates[tp]
