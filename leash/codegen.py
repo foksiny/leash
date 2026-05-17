@@ -1354,7 +1354,8 @@ class CodeGen:
     def _codegen_ThisExpr(self, node):
         if "this" not in self.var_symtab:
             raise LeashError("'this' is not available in the current context")
-        ptr, type_name = self.var_symtab["this"]
+        var_info = self.var_symtab["this"]
+        ptr = var_info[0]
         return self.builder.load(ptr)
 
     def _codegen_SelfExpr(self, node):
@@ -1826,7 +1827,7 @@ class CodeGen:
             union_info = self.union_symtab[resolved_type]
             union_type = union_info["type"]
             ptr = self.builder.alloca(union_type)
-            self.var_symtab[node.name] = (ptr, resolved_type)
+            self.var_symtab[node.name] = (ptr, resolved_type, None)
             # Auto-assign the value into the union if provided
             if node.value is not None:
                 val = self._codegen(node.value)
@@ -1908,7 +1909,11 @@ class CodeGen:
         if isinstance(node.target, MemberAccess):
             try:
                 # Get the base (the union itself)
-                base_ptr, type_name = self._codegen_lvalue(node.target.expr)
+                lvalue_result = self._codegen_lvalue(node.target.expr)
+                if len(lvalue_result) == 3:
+                    base_ptr, type_name, _ = lvalue_result
+                else:
+                    base_ptr, type_name = lvalue_result
                 resolved = self._resolve_type_name(type_name)
 
                 if resolved in self.union_symtab:
@@ -1955,7 +1960,11 @@ class CodeGen:
                 pass  # Fallback to standard assignment
 
         # 2. General Assignment (handles Identifiers, IndexAccess, and Struct Members)
-        ptr, target_type_name = self._codegen_lvalue(node.target)
+        lvalue_result = self._codegen_lvalue(node.target)
+        if len(lvalue_result) == 3:
+            ptr, target_type_name, _ = lvalue_result
+        else:
+            ptr, target_type_name = lvalue_result
         resolved_target_type = self._resolve_type_name(target_type_name)
 
         # 3. Auto-detect Union variant if target is a union (e.g., f = 10, s.y = 3.14)
@@ -1988,21 +1997,21 @@ class CodeGen:
         if isinstance(node, Identifier):
             if node.name not in self.var_symtab:
                 if node.name in self.class_symtab:
-                    return None, node.name  # Static access
+                    return None, node.name, None  # Static access
                 # Special handling for File class (built-in)
                 if node.name == "File":
-                    return None, "File"  # Static access to File class
+                    return None, "File", None  # Static access to File class
                 # Check if this is a generic class name that needs instantiation
                 from .typechecker import TypeChecker
 
                 # Find a concrete instantiation (prefer one without placeholder types)
                 for inst_name in TypeChecker.instantiated_class_nodes:
                     if inst_name.startswith(node.name + "_") and "_T" not in inst_name:
-                        return None, inst_name
+                        return None, inst_name, None
                 # Fallback to any instantiation
                 for inst_name in TypeChecker.instantiated_class_nodes:
                     if inst_name.startswith(node.name + "_"):
-                        return None, inst_name
+                        return None, inst_name, None
 
                 if self.in_works_block:
                     self.works_error_occured = True
@@ -2010,7 +2019,7 @@ class CodeGen:
                     err_ptr = self.builder.alloca(ir.IntType(8).as_pointer())
                     err_str = self._emit_const_str(f"Undefined variable: '{node.name}'")
                     self.builder.store(err_str, err_ptr)
-                    return err_ptr, "string"
+                    return err_ptr, "string", None
                 else:
                     raise LeashError(f"Undefined variable: '{node.name}'")
             var_info = self.var_symtab[node.name]
@@ -2025,7 +2034,11 @@ class CodeGen:
             
             return ptr, resolved, extra_data
         elif isinstance(node, MemberAccess):
-            base_ptr, type_name = self._codegen_lvalue(node.expr)
+            lvalue_result = self._codegen_lvalue(node.expr)
+            if len(lvalue_result) == 3:
+                base_ptr, type_name, _ = lvalue_result
+            else:
+                base_ptr, type_name = lvalue_result
             resolved = self._resolve_type_name(type_name)
 
             instance_ptr = base_ptr
@@ -2041,14 +2054,14 @@ class CodeGen:
                 return self.builder.gep(
                     instance_ptr,
                     [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), idx)],
-                ), field_type_name
+                ), field_type_name, None
             elif resolved in self.class_symtab:
                 if instance_ptr is None:
                     # Static field access (e.g., ClassName.field or this.field in static method)
                     cls_info = self.class_symtab[resolved]
                     if "static_fields" in cls_info and node.member in cls_info["static_fields"]:
                         static_info = cls_info["static_fields"][node.member]
-                        return static_info["global"], static_info["type"]
+                        return static_info["global"], static_info["type"], None
                     raise LeashError(f"Class '{resolved}' has no static field named '{node.member}'")
 
                 # Classes are reference types (pointers). LOAD the pointer first.
@@ -2064,7 +2077,7 @@ class CodeGen:
                 return self.builder.gep(
                     instance_ptr,
                     [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), idx)],
-                ), field_type_name
+                ), field_type_name, None
             elif resolved in self.union_symtab:
                 union_info = self.union_symtab[resolved]
                 if node.member in union_info["variants"]:
@@ -2080,7 +2093,7 @@ class CodeGen:
                     typed_ptr = self.builder.bitcast(
                         data_ptr, vdata["llvm_type"].as_pointer()
                     )
-                    return typed_ptr, vdata["type_name"]
+                    return typed_ptr, vdata["type_name"], None
                 elif node.member == "cur":
                     raise LeashError(
                         "Cannot use '.cur' as an l-value. Assign directly to the union or a specific variant member."
@@ -2105,20 +2118,20 @@ class CodeGen:
                 return self.builder.gep(
                     ptr,
                     [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), idx)],
-                ), struct_info["field_types"][node.member]
+                ), struct_info["field_types"][node.member], None
             elif underlying in self.class_symtab:
                 cls_info = self.class_symtab[underlying]
                 idx = cls_info["fields"][node.member]
                 return self.builder.gep(
                     ptr,
                     [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), idx)],
-                ), cls_info["field_types"][node.member]
+                ), cls_info["field_types"][node.member], None
             raise LeashError(f"Type '{underlying}' is not a struct or class")
         elif isinstance(node, UnaryOp) and node.op == "*":
             ptr = self._codegen(node.expr)
             type_name = self._get_leash_type_name(node.expr)
             resolved = self._resolve_type_name(type_name)
-            return ptr, resolved[1:]
+            return ptr, resolved[1:], None
         elif isinstance(node, IndexAccess):
             lvalue_result = self._codegen_lvalue(node.expr)
             if len(lvalue_result) == 3:
@@ -2131,7 +2144,7 @@ class CodeGen:
                 str_ptr = self.builder.load(slice_ptr)
                 idx_val = self._codegen(node.index)
                 ptr = self.builder.gep(str_ptr, [idx_val], inbounds=True)
-                return (ptr, "char")
+                return (ptr, "char", None)
             
             resolved = self._resolve_type_name(slice_type_name)
             
@@ -2172,7 +2185,7 @@ class CodeGen:
                         stored_value = self.builder.load(v_ptr)
                         self.builder.store(stored_value, result_ptr)
                 
-                return (result_ptr, value_type)
+                return (result_ptr, value_type, None)
             
             # Array/slice index access
             slice_val = self.builder.load(slice_ptr)
@@ -2182,14 +2195,18 @@ class CodeGen:
             elem_type_name = (
                 slice_type_name.split("[")[0] if "[" in slice_type_name else "int"
             )
-            return (ptr, elem_type_name)
+            return (ptr, elem_type_name, None)
         elif isinstance(node, ThisExpr):
             if "this" not in self.var_symtab:
                 if self.current_class_name:
                     # In a static method, 'this' refers to the class itself (no instance pointer)
-                    return None, self.current_class_name
+                    return None, self.current_class_name, None
                 raise LeashError("'this' is not available in the current context")
-            return self.var_symtab["this"]
+            var_info = self.var_symtab["this"]
+            ptr = var_info[0]
+            type_name = var_info[1]
+            extra_data = var_info[2] if len(var_info) > 2 else None
+            return ptr, type_name, extra_data
         elif isinstance(node, MethodCall):
             # Handle method call as l-value (e.g., for h.get("Joe").age)
             # Call the method and store result in a temporary, then return pointer to it
@@ -2303,13 +2320,13 @@ class CodeGen:
 
             # Get the union pointer
             if isinstance(arg_node, Identifier):
-                ptr, _ = self.var_symtab[arg_node.name]
+                ptr = self.var_symtab[arg_node.name][0]
             elif (
                 isinstance(arg_node, MemberAccess)
                 and arg_node.member == "cur"
                 and isinstance(arg_node.expr, Identifier)
             ):
-                ptr, _ = self.var_symtab[arg_node.expr.name]
+                ptr = self.var_symtab[arg_node.expr.name][0]
             else:
                 # fallback
                 self._show_standard([arg_node], newline=False)
@@ -2348,7 +2365,8 @@ class CodeGen:
 
         if isinstance(arg_node, Identifier):
             if arg_node.name in self.var_symtab:
-                _, type_name = self.var_symtab[arg_node.name]
+                var_info = self.var_symtab[arg_node.name]
+                type_name = var_info[1]
                 resolved = self._resolve_type_name(type_name)
                 if resolved in self.union_symtab:
                     return resolved
@@ -2357,7 +2375,8 @@ class CodeGen:
                 isinstance(arg_node.expr, Identifier)
                 and arg_node.expr.name in self.var_symtab
             ):
-                _, type_name = self.var_symtab[arg_node.expr.name]
+                var_info = self.var_symtab[arg_node.expr.name]
+                type_name = var_info[1]
                 resolved = self._resolve_type_name(type_name)
                 if resolved in self.union_symtab:
                     return resolved
@@ -2991,7 +3010,11 @@ class CodeGen:
         self.builder.position_at_end(merge_bb)
 
     def _codegen_ForeachStructStatement(self, node):
-        struct_ptr, struct_type_name = self._codegen_lvalue(node.struct_expr)
+        lvalue_result = self._codegen_lvalue(node.struct_expr)
+        if len(lvalue_result) == 3:
+            struct_ptr, struct_type_name, _ = lvalue_result
+        else:
+            struct_ptr, struct_type_name = lvalue_result
         struct_ir_type = struct_ptr.type.pointee
 
         struct_meta = None
@@ -3031,13 +3054,18 @@ class CodeGen:
                     break
 
     def _codegen_ForeachArrayStatement(self, node):
+        elem_type_name = "int"
         try:
-            _, full_type_name = self._codegen_lvalue(node.array_expr)
+            lvalue_result = self._codegen_lvalue(node.array_expr)
+            if len(lvalue_result) == 3:
+                _, full_type_name, _ = lvalue_result
+            else:
+                _, full_type_name = lvalue_result
             elem_type_name = (
                 full_type_name.split("[")[0] if "[" in full_type_name else "int"
             )
         except:
-            elem_type_name = "int"
+            pass
 
         slice_val = self._codegen(node.array_expr)
 
@@ -3046,11 +3074,11 @@ class CodeGen:
 
         idx_ptr = self.builder.alloca(ir.IntType(64), name=node.index_var)
         self.builder.store(ir.Constant(ir.IntType(64), 0), idx_ptr)
-        self.var_symtab[node.index_var] = (idx_ptr, "int<64>")
+        self.var_symtab[node.index_var] = (idx_ptr, "int<64>", None)
 
         elem_type = data_ptr.type.pointee
         val_ptr = self.builder.alloca(elem_type, name=node.value_var)
-        self.var_symtab[node.value_var] = (val_ptr, elem_type_name)
+        self.var_symtab[node.value_var] = (val_ptr, elem_type_name, None)
 
         cond_bb = self.builder.function.append_basic_block("foreach_cond")
         body_bb = self.builder.function.append_basic_block("foreach_body")
@@ -3734,7 +3762,11 @@ class CodeGen:
                 func = self.func_symtab[node.expr.name]
                 return func
             # For variables, return pointer to variable
-            ptr, _ = self._codegen_lvalue(node.expr)
+            lvalue_result = self._codegen_lvalue(node.expr)
+            if len(lvalue_result) == 3:
+                ptr, _, _ = lvalue_result
+            else:
+                ptr, _ = lvalue_result
             return ptr
 
         val = self._codegen(node.expr)
@@ -5569,7 +5601,8 @@ class CodeGen:
             # Check if it's a function pointer variable being called
             var_info = self.var_symtab.get(node.name)
             if var_info:
-                ptr, var_type = var_info
+                ptr = var_info[0]
+                var_type = var_info[1]
                 # Resolve type aliases
                 resolved_type = self._resolve_type_name(var_type)
                 if self._is_function_pointer_type(resolved_type):
@@ -5670,15 +5703,16 @@ class CodeGen:
                     )
                 ):
                     try:
-                        v, _ = self._codegen_lvalue(arg_expr)
+                        v, _, _ = self._codegen_lvalue(arg_expr)
                     except:
                         v = self._codegen(arg_expr)
                 else:
                     v = self._codegen(arg_expr)
                 v = self._emit_cast(v, target_llvm)
+                args.append(v)
             else:
                 v = self._codegen(arg_expr)
-            args.append(v)
+                args.append(v)
 
         return self.builder.call(func, args)
 
@@ -5811,7 +5845,13 @@ class CodeGen:
             return val
 
     def _codegen_Identifier(self, node):
-        ptr, type_name = self.var_symtab.get(node.name, (None, None))
+        var_info = self.var_symtab.get(node.name)
+        if var_info:
+            ptr = var_info[0]
+            type_name = var_info[1]
+        else:
+            ptr, type_name = None, None
+        
         if not ptr:
             # Check global variables (including those from @from)
             gv_info = self.global_var_ptrs.get(node.name)
@@ -5929,7 +5969,11 @@ class CodeGen:
 
         # 3. Handle Union variants and .cur
         if resolved in self.union_symtab:
-            ptr, _ = self._codegen_lvalue(node.expr)
+            lvalue_result = self._codegen_lvalue(node.expr)
+            if len(lvalue_result) == 3:
+                ptr, _, _ = lvalue_result
+            else:
+                ptr, _ = lvalue_result
 
             union_info = self.union_symtab[resolved]
             data_ptr = self.builder.gep(
@@ -5963,7 +6007,11 @@ class CodeGen:
                 return self.builder.load(typed_ptr)
 
         # 4. Standard Struct access or other l-values
-        ptr, _ = self._codegen_lvalue(node)
+        lvalue_result = self._codegen_lvalue(node)
+        if len(lvalue_result) == 3:
+            ptr, _, _ = lvalue_result
+        else:
+            ptr, _ = lvalue_result
         return self.builder.load(ptr)
 
     def _emit_union_tag_check(self, tag_val, expected_idx, member_name, union_name):
@@ -6369,7 +6417,11 @@ class CodeGen:
         return ir.Constant(ir.IntType(32), idx)
 
     def _codegen_IndexAccess(self, node):
-        ptr, _ = self._codegen_lvalue(node)
+        lvalue_result = self._codegen_lvalue(node)
+        if len(lvalue_result) == 3:
+            ptr, _, _ = lvalue_result
+        else:
+            ptr, _ = lvalue_result
         return self.builder.load(ptr)
 
     def _codegen_TypeConvExpr(self, node):
@@ -6868,7 +6920,8 @@ class CodeGen:
             if isinstance(node.target, Identifier):
                 name = node.target.name
                 if name in self.var_symtab:
-                    _, leash_type = self.var_symtab[name]
+                    var_info = self.var_symtab[name]
+                    leash_type = var_info[1]
                     llvm_type = self._get_llvm_type(leash_type)
                 elif name in self.global_var_ptrs:
                     _, leash_type = self.global_var_ptrs[name]
