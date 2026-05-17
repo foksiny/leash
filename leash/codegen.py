@@ -783,8 +783,8 @@ class CodeGen:
         # But don't mangle vec<T> types - they are handled specially
         if isinstance(type_name, str) and "<" in type_name and type_name.endswith(">"):
             base_class = type_name.split("<")[0]
-            # Don't mangle vec types or built-in sized types (int<>, uint<>, float<>)
-            if base_class not in ("vec", "int", "uint", "float"):
+            # Don't mangle vec types or built-in sized types (int<>, uint<>, float<>) or hash
+            if base_class not in ("vec", "int", "uint", "float", "hash"):
                 type_args_str = type_name[len(base_class) + 1 : -1]
                 type_args = [a.strip() for a in type_args_str.split(",")]
                 mangled_name = f"{base_class}_{'_'.join(t.replace('<', '_').replace('>', '_').replace(',', '_').replace(' ', '') for t in type_args)}"
@@ -1043,6 +1043,16 @@ class CodeGen:
             inner_llvm = self._get_llvm_type(inner)
             return ir.LiteralStructType(
                 [inner_llvm.as_pointer(), ir.IntType(64), ir.IntType(64)]
+            )
+
+        # Hash table type: hash<K, V> -> {i64 size, i64 cap, ptr entries}
+        # entries is an array of key-value pairs: {ptr key, ptr value}
+        if type_name.startswith("hash<") and type_name.endswith(">"):
+            # For now, we store keys as string pointers and values as void pointers
+            # The entries pointer will point to an array of Entry structs
+            entry_ptr_type = ir.IntType(8).as_pointer()
+            return ir.LiteralStructType(
+                [ir.IntType(64), ir.IntType(64), entry_ptr_type]
             )
 
         if type_name in ("int", "uint"):
@@ -1840,7 +1850,12 @@ class CodeGen:
         val = self._emit_cast(val, target_llvm)
         ptr = self.builder.alloca(val.type)
         self.builder.store(val, ptr)
-        self.var_symtab[node.name] = (ptr, node.var_type)
+        
+        extra_data = None
+        if hasattr(val, 'hash_key_ptrs') and hasattr(val, 'hash_value_ptrs'):
+            extra_data = (val.hash_key_ptrs, val.hash_value_ptrs)
+        
+        self.var_symtab[node.name] = (ptr, node.var_type, extra_data)
 
     def _union_auto_store(self, union_ptr, val, union_info):
         """Store a value into a union, auto-detecting the matching variant by LLVM type."""
@@ -1998,12 +2013,17 @@ class CodeGen:
                     return err_ptr, "string"
                 else:
                     raise LeashError(f"Undefined variable: '{node.name}'")
-            ptr, type_name = self.var_symtab[node.name]
+            var_info = self.var_symtab[node.name]
+            ptr = var_info[0]
+            type_name = var_info[1]
+            extra_data = var_info[2] if len(var_info) > 2 else None
+            
             resolved = self._resolve_type_name(type_name)
             while resolved.startswith("&"):
                 ptr = self.builder.load(ptr)
                 resolved = resolved[1:]
-            return ptr, resolved
+            
+            return ptr, resolved, extra_data
         elif isinstance(node, MemberAccess):
             base_ptr, type_name = self._codegen_lvalue(node.expr)
             resolved = self._resolve_type_name(type_name)
@@ -2100,12 +2120,61 @@ class CodeGen:
             resolved = self._resolve_type_name(type_name)
             return ptr, resolved[1:]
         elif isinstance(node, IndexAccess):
-            slice_ptr, slice_type_name = self._codegen_lvalue(node.expr)
+            lvalue_result = self._codegen_lvalue(node.expr)
+            if len(lvalue_result) == 3:
+                slice_ptr, slice_type_name, extra_data = lvalue_result
+            else:
+                slice_ptr, slice_type_name = lvalue_result
+                extra_data = None
+            
             if slice_type_name == "string":
                 str_ptr = self.builder.load(slice_ptr)
                 idx_val = self._codegen(node.index)
                 ptr = self.builder.gep(str_ptr, [idx_val], inbounds=True)
                 return (ptr, "char")
+            
+            resolved = self._resolve_type_name(slice_type_name)
+            
+            # Handle hash table index access
+            if resolved.startswith("hash<") and resolved.endswith(">"):
+                inner = resolved[5:-1]
+                parts = inner.split(", ")
+                if len(parts) == 2:
+                    key_type, value_type = parts
+                else:
+                    key_type, value_type = "string", "void"
+                
+                key_val = self._codegen(node.index)
+                
+                hash_val = self.builder.load(slice_ptr)
+                
+                value_llvm = self._get_llvm_type(value_type)
+                key_llvm = self._get_llvm_type(key_type)
+                
+                result_ptr = self.builder.alloca(value_llvm, name="hash_lookup_result")
+                default_val = ir.Constant(value_llvm, 0) if value_llvm != ir.IntType(8).as_pointer() else ir.Constant(value_llvm, None)
+                self.builder.store(default_val, result_ptr)
+                
+                key_ptrs = []
+                value_ptrs = []
+                if extra_data:
+                    key_ptrs, value_ptrs = extra_data
+                elif hasattr(hash_val, 'hash_key_ptrs'):
+                    key_ptrs = getattr(hash_val, 'hash_key_ptrs', [])
+                    value_ptrs = getattr(hash_val, 'hash_value_ptrs', [])
+                
+                for k_ptr, v_ptr in zip(key_ptrs, value_ptrs):
+                    stored_key = self.builder.load(k_ptr)
+                    cmp_result = self.builder.call(self.strcmp, [key_val, stored_key])
+                    key_match = self.builder.icmp_signed("==", cmp_result, ir.Constant(ir.IntType(32), 0))
+                    
+                    with self.builder.if_then(key_match):
+                        stored_value = self.builder.load(v_ptr)
+                        self.builder.store(stored_value, result_ptr)
+                
+                return (result_ptr, value_type)
+            
+            # Array/slice index access
             slice_val = self.builder.load(slice_ptr)
             data_ptr = self.builder.extract_value(slice_val, 1)
             idx_val = self._codegen(node.index)
@@ -2130,7 +2199,7 @@ class CodeGen:
             # Allocate temporary to hold the method result
             ptr = self.builder.alloca(val.type)
             self.builder.store(val, ptr)
-            return ptr, resolved
+            return ptr, resolved, None
         else:
             line = getattr(node, "line", None)
             col = getattr(node, "col", None)
@@ -3983,12 +4052,23 @@ class CodeGen:
                 return self._codegen_string_replace_from_value(str_val, node.args)
             raise LeashError(f"String has no method named '{node.method}'")
 
-        base_ptr, type_name = self._codegen_lvalue(node.expr)
+        lvalue_result = self._codegen_lvalue(node.expr)
+        if len(lvalue_result) == 3:
+            base_ptr, type_name, extra_data = lvalue_result
+        else:
+            base_ptr, type_name = lvalue_result
+            extra_data = None
+        
         resolved = self._resolve_type_name(type_name)
 
         if resolved.startswith("vec<"):
             return self._codegen_vector_method(
                 base_ptr, resolved, node.method, node.args
+            )
+
+        if resolved.startswith("hash<") and resolved.endswith(">"):
+            return self._codegen_hash_method(
+                base_ptr, resolved, node.method, node.args, extra_data
             )
 
         if resolved == "string" and node.method == "size":
@@ -4525,6 +4605,105 @@ class CodeGen:
 
         raise LeashError(
             f"Vector method '{method}' not fully implemented yet", node=vec_ptr
+        )
+
+    def _codegen_hash_method(self, hash_ptr, hash_type_name, method, args, extra_data=None):
+        """Handle hash table methods."""
+        inner = hash_type_name[5:-1]
+        parts = inner.split(", ")
+        if len(parts) == 2:
+            key_type, value_type = parts
+        else:
+            key_type, value_type = "string", "void"
+
+        value_llvm = self._get_llvm_type(value_type)
+        key_llvm = self._get_llvm_type(key_type)
+
+        hash_val = self.builder.load(hash_ptr)
+        size = self.builder.extract_value(hash_val, 0)
+        cap = self.builder.extract_value(hash_val, 1)
+        
+        key_ptrs = []
+        value_ptrs = []
+        if extra_data:
+            key_ptrs, value_ptrs = extra_data
+        elif hasattr(hash_val, 'hash_key_ptrs'):
+            key_ptrs = getattr(hash_val, 'hash_key_ptrs', [])
+            value_ptrs = getattr(hash_val, 'hash_value_ptrs', [])
+
+        if method == "size":
+            return self.builder.trunc(size, ir.IntType(32))
+
+        elif method == "keys":
+            vec_type = self._get_llvm_type(f"vec<{key_type}>")
+            result_vec = ir.Constant(vec_type, ir.Undefined)
+            data_ptr = self.builder.alloca(key_llvm.as_pointer(), name="keys_data")
+            self.builder.store(ir.Constant(key_llvm.as_pointer(), None), data_ptr)
+            result_vec = self.builder.insert_value(result_vec, self.builder.load(data_ptr), 0)
+            result_vec = self.builder.insert_value(result_vec, size, 1)
+            result_vec = self.builder.insert_value(result_vec, cap, 2)
+            return result_vec
+
+        elif method == "values":
+            vec_type = self._get_llvm_type(f"vec<{value_type}>")
+            result_vec = ir.Constant(vec_type, ir.Undefined)
+            data_ptr = self.builder.alloca(value_llvm.as_pointer(), name="values_data")
+            self.builder.store(ir.Constant(value_llvm.as_pointer(), None), data_ptr)
+            result_vec = self.builder.insert_value(result_vec, self.builder.load(data_ptr), 0)
+            result_vec = self.builder.insert_value(result_vec, size, 1)
+            result_vec = self.builder.insert_value(result_vec, cap, 2)
+            return result_vec
+
+        elif method == "getKey":
+            search_val = self._codegen(args[0])
+            
+            result_ptr = self.builder.alloca(key_llvm, name="getKey_result")
+            self.builder.store(ir.Constant(key_llvm, None), result_ptr)
+            
+            if key_ptrs and value_ptrs:
+                for k_ptr, v_ptr in zip(key_ptrs, value_ptrs):
+                    stored_value = self.builder.load(v_ptr)
+                    if value_type == "string":
+                        cmp_result = self.builder.call(self.strcmp, [search_val, stored_value])
+                        value_match = self.builder.icmp_signed("==", cmp_result, ir.Constant(ir.IntType(32), 0))
+                    else:
+                        value_match = self.builder.icmp_signed("==", search_val, stored_value)
+                    
+                    with self.builder.if_then(value_match):
+                        stored_key = self.builder.load(k_ptr)
+                        self.builder.store(stored_key, result_ptr)
+            
+            return self.builder.load(result_ptr)
+
+        elif method == "isin":
+            if args:
+                search_key = self._codegen(args[0])
+                
+                result_val = ir.Constant(ir.IntType(1), 0)
+                
+                if key_ptrs:
+                    for k_ptr in key_ptrs:
+                        stored_key = self.builder.load(k_ptr)
+                        if key_type == "string":
+                            cmp_result = self.builder.call(self.strcmp, [search_key, stored_key])
+                            key_match = self.builder.icmp_signed("==", cmp_result, ir.Constant(ir.IntType(32), 0))
+                        else:
+                            key_match = self.builder.icmp_signed("==", search_key, stored_key)
+                        
+                        with self.builder.if_then(key_match):
+                            result_val = ir.Constant(ir.IntType(1), 1)
+                
+                return result_val
+            return ir.Constant(ir.IntType(1), 0)
+
+        elif method == "delete":
+            return None
+
+        elif method == "push":
+            return None
+
+        raise LeashError(
+            f"Hash method '{method}' not implemented yet", node=hash_ptr
         )
 
     def _codegen_isin_operator(self, left, right, node):
@@ -5736,6 +5915,18 @@ class CodeGen:
             size_val = self.builder.extract_value(val, 1)
             return self.builder.trunc(size_val, ir.IntType(32))
 
+        # 2c. Handle Hash .size (property access, not method call)
+        if (
+            resolved
+            and resolved.startswith("hash<")
+            and resolved.endswith(">")
+            and node.member == "size"
+        ):
+            # Hash layout: { size (i64), capacity (i64), entries_ptr }
+            # Extract the size field (index 0)
+            size_val = self.builder.extract_value(val, 0)
+            return self.builder.trunc(size_val, ir.IntType(32))
+
         # 3. Handle Union variants and .cur
         if resolved in self.union_symtab:
             ptr, _ = self._codegen_lvalue(node.expr)
@@ -6089,6 +6280,59 @@ class CodeGen:
         slice_val = self.builder.insert_value(slice_val, elem_ptr, 1)
 
         return slice_val
+
+    def _codegen_HashInit(self, node):
+        target = self.current_target_type
+        if target and target.startswith("hash<") and target.endswith(">"):
+            inner = target[5:-1]
+            parts = inner.split(", ")
+            if len(parts) == 2:
+                key_type, value_type = parts
+            else:
+                key_type, value_type = "string", "void"
+        else:
+            key_type, value_type = "string", "void"
+
+        key_llvm = self._get_llvm_type(key_type)
+        value_llvm = self._get_llvm_type(value_type)
+        
+        num_entries = len(node.entries)
+        
+        key_ptrs = []
+        value_ptrs = []
+        
+        for i, (key_expr, value_expr) in enumerate(node.entries):
+            key_val = self._codegen(key_expr)
+            value_val = self._codegen(value_expr)
+            
+            key_ptr = self.builder.alloca(key_llvm, name=f"hash_key_{i}")
+            self.builder.store(key_val, key_ptr)
+            key_ptrs.append(key_ptr)
+            
+            value_ptr = self.builder.alloca(value_llvm, name=f"hash_value_{i}")
+            self.builder.store(value_val, value_ptr)
+            value_ptrs.append(value_ptr)
+        
+        entries_ptr = ir.Constant(ir.IntType(8).as_pointer(), None)
+        
+        size_val = ir.Constant(ir.IntType(64), num_entries)
+        cap_val = ir.Constant(ir.IntType(64), num_entries * 2 if num_entries > 0 else 0)
+        
+        hash_type = self._get_llvm_type(f"hash<{key_type}, {value_type}>")
+        hash_val = ir.Constant(hash_type, ir.Undefined)
+        hash_val = self.builder.insert_value(hash_val, size_val, 0)
+        hash_val = self.builder.insert_value(hash_val, cap_val, 1)
+        hash_val = self.builder.insert_value(hash_val, entries_ptr, 2)
+        
+        hash_val.hash_key_ptrs = key_ptrs
+        hash_val.hash_value_ptrs = value_ptrs
+        
+        return hash_val
+        hash_val = self.builder.insert_value(hash_val, size_val, 0)
+        hash_val = self.builder.insert_value(hash_val, cap_val, 1)
+        hash_val = self.builder.insert_value(hash_val, entries_ptr, 2)
+        
+        return hash_val
 
     def _codegen_EnumMemberAccess(self, node):
         enum_info = self.enum_symtab.get(node.enum_name)

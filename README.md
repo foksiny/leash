@@ -28,6 +28,7 @@ Leash is a strongly-typed, modern compiled programming language built on top of 
 - [Conditional Compilation (Top-Level If)](#conditional-compilation-top-level-if)
 - [Executing Shell Commands](#executing-shell-commands)
 - [Arrays](#arrays)
+- [Hash Tables](#hash-tables)
 - [Structs](#structs)
 - [Pointers](#pointers)
   - [Function Pointers](#function-pointers)
@@ -1748,6 +1749,70 @@ show(v.size); // 6
 | `.extendv(other)`| Append all elements from another vector to this vector |
 | `.clear()` | Remove all elements from the vector |
 | `.isin(val)` | Return `true` if the value exists in the vector, `false` otherwise |
+
+## Hash Tables
+
+Hash tables are key-value data structures that provide efficient lookup by key. They are declared using the `hash<K, V>` syntax where `K` is the key type and `V` is the value type.
+
+```leash
+fnc main() : void {
+    // Create a hash table with string keys and integer values
+    persons: hash<string, int> = {"John Doe": 23, "Jane Doe": 24};
+
+    // Access values by key using bracket notation
+    show(persons["John Doe"]);  // 23
+
+    // Get the key associated with a value
+    key: string = persons.getKey(23);
+    show(key);  // "John Doe"
+
+    // Check if a key exists
+    if persons.isin("John Doe") {
+        show("John exists!");
+    }
+
+    // Get all keys
+    keys: vec<string> = persons.keys();
+
+    // Get all values
+    values: vec<int> = persons.values();
+
+    // Get the number of entries
+    show("Size: ", persons.size);
+
+    // Add or update entries
+    persons.push("Bob Smith", 25);
+
+    // Delete an entry
+    persons.delete("Jane Doe");
+}
+```
+
+### Hash Table Methods
+
+| Method | Description | Returns |
+|--------|-------------|---------|
+| `getKey(value)` | Returns the key associated with the given value | `K` |
+| `keys()` | Returns a vector of all keys | `vec<K>` |
+| `values()` | Returns a vector of all values | `vec<V>` |
+| `isin(key)` | Returns `true` if the key exists, `false` otherwise | `bool` |
+| `delete(key)` | Removes the key-value pair from the hash table | `void` |
+| `push(key, value)` | Adds a new key-value pair or updates an existing key | `void` |
+
+### Hash Table Properties
+
+| Property | Description | Returns |
+|----------|-------------|---------|
+| `size` | Returns the number of key-value pairs | `int` |
+
+### Hash Table Operators
+
+| Operator | Description | Example |
+|----------|-------------|---------|
+| `hash[key]` | Returns the value for the given key | `persons["John Doe"]` |
+| `hash[key] = value` | Updates the value for the given key | `persons["John Doe"] = 30` |
+
+Hash tables support any value types, including pointers, classes, structs, unions, and even other hash tables.
 
 ## Structs
 

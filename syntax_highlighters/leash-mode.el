@@ -29,7 +29,9 @@
      '("\\b\\(fnc\\|def\\|struct\\|union\\|enum\\|class\\|type\\|template\\|macro\\|return\\|if\\|also\\|else\\|unless\\|while\\|for\\|do\\|foreach\\|in\\|imut\\|vec\\|vector\\|this\\|pub\\|priv\\|static\\|stop\\|continue\\|use\\|works\\|otherwise\\|switch\\|case\\|default\\|unsafe\\|as\\|inline\\|defer\\|error\\|throw\\|self\\|alsou\\|create\\|del\\|is\\|isnt\\)\\b" . font-lock-keyword-face)
     ;; Enum member with custom value: MEMBER: type = value
     '("^[ \t]*\\([a-zA-Z_][a-zA-Z0-9_]*\\)[ \t]*:" . (1 font-lock-variable-name-face))
-   '("\\b\\(int\\|uint\\|float\\|bool\\|string\\|char\\|void\\|array\\|vec\\)\\b\\(?:<[0-9]+>\\)?" . font-lock-type-face)
+   '("\\b\\(int\\|uint\\|float\\|bool\\|string\\|char\\|void\\|array\\|vec\\|hash\\)\\b\\(?:<[0-9]+>\\)?" . font-lock-type-face)
+   ;; Hash table type: hash<K, V>
+   '("\\bhash<[^>]+>" . font-lock-type-face)
    ;; Array types with sizes: int[5], char[n], int[x + y]
    '("\\b\\(int\\|uint\\|float\\|bool\\|string\\|char\\)\\[[^\\]]+\\]" . font-lock-type-face)
    ;; @from native import directive
@@ -43,7 +45,7 @@
     '("\\b\\(true\\|false\\|null\\|nil\\)\\b" . font-lock-constant-face)
    '("\\b\\_FILEPATH\\_\\|\\_FILENAME\\_\\|\\_PLATFORM\\_\\b" . font-lock-constant-face)
    '("self\\(::[a-zA-Z_][a-zA-Z0-9_]*\\)?" . font-lock-constant-face)
-    '("\\b\\(show\\|showb\\|get\\|set\\|toint\\|tofloat\\|tostring\\|cstr\\|lstr\\|size\\|cur\\|name\\|pushb\\|popb\\|pushf\\|popf\\|insert\\|clear\\|remove\\|extend\\|extendv\\|isin\\|rand\\|randf\\|seed\\|choose\\|wait\\|timepass\\|exit\\|exec\\|File\\|open\\|close\\|read\\|write\\|readln\\|readb\\|writeb\\|readlnb\\|replaceall\\|rewind\\|rename\\|delete\\|inttobytes\\|bytestoint\\|floattobytes\\|bytestofloat\\)\\b" . font-lock-builtin-face)
+    '("\\b\\(show\\|showb\\|get\\|set\\|toint\\|tofloat\\|tostring\\|cstr\\|lstr\\|size\\|cur\\|name\\|pushb\\|popb\\|pushf\\|popf\\|insert\\|clear\\|remove\\|extend\\|extendv\\|isin\\|rand\\|randf\\|seed\\|choose\\|wait\\|timepass\\|exit\\|exec\\|File\\|open\\|close\\|read\\|write\\|readln\\|readb\\|writeb\\|readlnb\\|replaceall\\|rewind\\|rename\\|delete\\|inttobytes\\|bytestoint\\|floattobytes\\|bytestofloat\\|getKey\\|keys\\|values\\|push\\)\\b" . font-lock-builtin-face)
    '("\\b\\(replace\\)\\b" . font-lock-builtin-face)
      '("|>\\|&&\\|||\\|<<\\|>>\\|<>\\|[+\\-*/%&|^~!<>=]=?" . font-lock-variable-name-face)
     '("\\?" . font-lock-variable-name-face)

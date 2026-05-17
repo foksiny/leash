@@ -270,6 +270,13 @@ class ArrayInit(Expression):
         self.elements = elements
 
 
+class HashInit(Expression):
+    """Represents a hash table literal: {"key1": value1, "key2": value2}"""
+
+    def __init__(self, entries):
+        self.entries = entries  # list of (key, value) tuples where key is string
+
+
 class NumberLiteral(Expression):
     def __init__(self, value):
         self.value = value

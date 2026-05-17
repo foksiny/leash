@@ -4,41 +4,6 @@ Documentation for the libraries shipped in `installthis/`.
 
 ---
 
-## `hash.lsh` — Hash
-
-A generic key-value map backed by parallel vectors.
-
-```lsh
-use hash::Hash;
-```
-
-### Class: `Hash<T1, T2>`
-
-| Member | Type | Description |
-|--------|------|-------------|
-| `size` | `pub int` | Number of entries |
-
-#### Static Methods
-
-| Method | Signature | Description |
-|--------|-----------|-------------|
-| `new` | `Hash.new() : Hash` | Creates an empty hash |
-
-#### Instance Methods
-
-| Method | Signature | Description |
-|--------|-----------|-------------|
-| `add` | `add(name T1, value T2) : int` | Inserts a key-value pair. Returns `1` on success, `0` if the key already exists (and prints a warning). |
-| `get` | `get(name T1) : T2` | Returns the value for the given key, or `nil` if not found. |
-| `remove` | `remove(name T1) : T2` | Removes a key-value pair and returns the value, or `nil` if not found. |
-| `geti` | `geti(idx int) : T2` | Returns the value at the given index, or `nil` if out of bounds. |
-| `set` | `set(nm T1, val T2) : void` | Updates the value of an existing key. No-op if the key doesn't exist. |
-| `seti` | `seti(idx int, val T2) : void` | Updates the value at the given index. No-op if out of bounds. |
-| `items` | `items() : vec<T2>` | Returns the internal values vector. |
-| `fields` | `fields() : vec<T1>` | Returns the internal keys vector. |
-
----
-
 ## `hotreload.lsh` — Reloader
 
 A file watcher that re-executes a Leash script when it changes on disk.

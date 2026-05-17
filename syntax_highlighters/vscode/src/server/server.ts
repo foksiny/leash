@@ -176,7 +176,13 @@ const BUILTIN_DOCS: Record<string, { sig: string, desc: string, detail?: string 
     'bool': { sig: 'bool', desc: 'Boolean type (true or false).' },
     'char': { sig: 'char', desc: 'Character type (single byte).' },
     'string': { sig: 'string', desc: 'Immutable, managed string type.' },
-    'void': { sig: 'void', desc: 'Represents the absence of a value.' }
+    'void': { sig: 'void', desc: 'Represents the absence of a value.' },
+    'hash': { sig: 'hash<K, V>', desc: 'Key-value hash table type. Keys are strings, values can be any type.' },
+    'getKey': { sig: 'getKey(value: V) : K', desc: 'Returns the key associated with the given value in a hash table.' },
+    'keys': { sig: 'keys() : vec<K>', desc: 'Returns a vector of all keys in a hash table.' },
+    'values': { sig: 'values() : vec<V>', desc: 'Returns a vector of all values in a hash table.' },
+    'delete': { sig: 'delete(key: K)', desc: 'Removes the key-value pair from a hash table.' },
+    'push': { sig: 'push(key: K, value: V)', desc: 'Adds or updates a key-value pair in a hash table.' }
 };
 
 interface LeashSymbol {

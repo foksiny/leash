@@ -122,7 +122,11 @@
             "patterns": [
                 {
                     "name": "storage.type.primitive.leash",
-                    "match": "\\b(int|uint|float|bool|string|char|void|array|vec|vector)\\b"
+                    "match": "\\b(int|uint|float|bool|string|char|void|array|vec|vector|hash)\\b"
+                },
+                {
+                    "name": "storage.type.generic.leash",
+                    "match": "hash<[^>]+>"
                 },
                 {
                     "name": "entity.name.type.leash",
@@ -134,7 +138,7 @@
             "patterns": [
                 {
                     "name": "support.function.builtin.leash",
-                    "match": "\\b(show|showb|get|set|toint|tofloat|tostring|cstr|lstr|size|cur|name|pushb|popb|pushf|popf|insert|clear|remove|extend|extendv|isin|rand|randf|seed|choose|wait|timepass|exit|exec|inttobytes|bytestoint|floattobytes|bytestofloat|open|close|read|write|readln|readb|writeb|readlnb|replaceall|rewind|rename|delete|replace)\\b"
+                    "match": "\\b(show|showb|get|set|toint|tofloat|tostring|cstr|lstr|size|cur|name|pushb|popb|pushf|popf|insert|clear|remove|extend|extendv|isin|rand|randf|seed|choose|wait|timepass|exit|exec|inttobytes|bytestoint|floattobytes|bytestofloat|open|close|read|write|readln|readb|writeb|readlnb|replaceall|rewind|rename|delete|replace|getKey|keys|values|push)\\b"
                 },
                 {
                     "name": "entity.name.function.leash",

@@ -23,7 +23,10 @@ syn match leashFunction /\<fnc\s\+\zs[a-zA-Z_][a-zA-Z0-9_]*\ze\s*(/
 syn match leashMethod /\.\zs[a-zA-Z_][a-zA-Z0-9_]*\ze\s*(/
 
 " Types with optional bitwidths
-syn match leashType /\<\(int\|uint\|float\|bool\|string\|char\|void\|array\|vec\)\>\(<\d\+>\)\?/
+syn match leashType /\<\(int\|uint\|float\|bool\|string\|char\|void\|array\|vec\|hash\)\>\(<\d\+>\)\?/
+
+" Hash table type with generic parameters: hash<K, V>
+syn match leashType /\<hash<[^>]*>/
 
 " Array types with fixed sizes: int[5], char[10], int[n], char[str.size], int[x + y]
 syn match leashArrayType /\<\(int\|uint\|float\|bool\|string\|char\|void\)\[[^\]]*\]/
@@ -47,7 +50,7 @@ syn match leashFuncPointer /fnc\s*(\s*[^)]*\s*)\s*:\s*[a-z_][a-zA-Z0-9_]*\s*\(\s
 syn match leashGenericMethodCall /\u[a-zA-Z0-9_]*<\([^>]\+\)>\.\zs[a-zA-Z_][a-zA-Z0-9_]*\ze\s*(/
 
 " Builtin functions and properties
-syn keyword leashBuiltin show showb get set toint tofloat tostring cstr lstr size cur name pushb popb pushf popf insert clear remove extend extendv isin rand randf seed choose wait timepass exit exec inttobytes bytestoint floattobytes bytestofloat
+syn keyword leashBuiltin show showb get set toint tofloat tostring cstr lstr size cur name pushb popb pushf popf insert clear remove extend extendv isin rand randf seed choose wait timepass exit exec inttobytes bytestoint floattobytes bytestofloat getKey keys values delete push
 
 " Built-in File class and methods
 syn keyword leashBuiltin File open close read write readln readb writeb readlnb replaceall rewind rename delete

@@ -1,0 +1,20 @@
+fnc main() {
+    persons: hash<string, int> = {"Jhon Doe": 23, "Jane Doe": 24};
+
+    show(persons.getKey(23), " is ", persons["Jhon Doe"], " years old!"); // output: John Doe is 23 years old!
+}
+
+// hash table methods:
+// getKey(value): returns the key associated with the given value
+// keys(): returns a list of all keys in the hash table (can be used in a foreach loop in array mode)
+// values(): returns a list of all values in the hash table (can be used in a foreach loop in array mode)
+// isin(key): returns true if the given key exists in the hash table, false otherwise
+// delete(key): removes the key-value pair associated with the given key from the hash table
+// push(key, value): adds a new key-value pair to the hash table
+// hash table operators:
+// hash[key]: returns the value associated with the given key
+// hash[key] = value: updates the value associated with the given key
+// hash table iteration:
+// foreach key in hash.keys(): iterates over all keys in the hash table
+// hash table properties:
+// size: returns the number of key-value pairs in the hash table

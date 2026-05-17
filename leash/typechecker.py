@@ -732,6 +732,8 @@ class TypeChecker:
             return "float"
         if t.startswith("vec<") and t.endswith(">"):
             return "vec"
+        if t.startswith("hash<") and t.endswith(">"):
+            return "hash"
         if t in self.class_types:
             return "class"
         # Check for instantiated generic class
@@ -773,7 +775,7 @@ class TypeChecker:
                 return False
 
         base = self._base_type(t)
-        if base in ("int", "uint", "float", "string", "char", "bool", "void", "vec"):
+        if base in ("int", "uint", "float", "string", "char", "bool", "void", "vec", "hash"):
             return True
         if (
             t in self.struct_types
@@ -1913,6 +1915,8 @@ class TypeChecker:
             return self._check_struct_init(expr)
         elif isinstance(expr, ArrayInit):
             return self._check_array_init(expr)
+        elif isinstance(expr, HashInit):
+            return self._check_hash_init(expr)
         elif isinstance(expr, EnumMemberAccess):
             return self._check_enum_member_access(expr)
         elif isinstance(expr, TypeConvExpr):
@@ -2806,6 +2810,15 @@ class TypeChecker:
         ):
             return "int"
 
+        # Hash .size property
+        if (
+            resolved
+            and resolved.startswith("hash<")
+            and resolved.endswith(">")
+            and expr.member == "size"
+        ):
+            return "int"
+
         # Struct member
         if resolved in self.struct_types:
             fields = self.struct_types[resolved]
@@ -2916,6 +2929,24 @@ class TypeChecker:
         base_type = self._infer_type(expr.expr)
         idx_type = self._infer_type(expr.index)
 
+        if base_type:
+            resolved = self._resolve(base_type)
+            # Handle hash table index access
+            if resolved.startswith("hash<") and resolved.endswith(">"):
+                # Hash tables use string keys
+                if idx_type and not self._types_compatible(idx_type, "string"):
+                    raise LeashError(
+                        f"Hash index must be a string, but got '{idx_type}'",
+                        tip="Use a string expression as the hash key.",
+                    )
+                # Extract value type from hash<K, V>
+                inner = resolved[5:-1]
+                parts = inner.split(", ")
+                if len(parts) == 2:
+                    return parts[1]  # Return value type
+                return "void"
+
+        # For arrays and strings, index must be integer
         if idx_type and not self._is_int_family(idx_type):
             raise LeashError(
                 f"Array/string index must be an integer, but got '{idx_type}'",
@@ -3117,6 +3148,22 @@ class TypeChecker:
                 )
         base = first_type or "int"
         return f"{base}[]"
+
+    def _check_hash_init(self, expr):
+        if not expr.entries:
+            return "hash<void, void>"
+        first_key, first_val = expr.entries[0]
+        key_type = "string"  # Keys are always strings
+        value_type = self._infer_type(first_val)
+        for key, val in expr.entries[1:]:
+            val_type = self._infer_type(val)
+            if value_type and val_type and not self._types_compatible(val_type, value_type):
+                self._warn(
+                    f"Hash contains mixed value types: '{value_type}' and '{val_type}'.",
+                    node=expr,
+                )
+        value_type = value_type or "void"
+        return f"hash<{key_type}, {value_type}>"
 
     def _check_enum_member_access(self, expr):
         if expr.enum_name not in self.enum_types:
@@ -3338,6 +3385,109 @@ class TypeChecker:
         # Array methods?
         if base_b == "array" and expr.method == "size":
             return "int"
+
+        # Hash methods
+        if base_b == "hash":
+            inner_t = base_t[5:-1]  # Extract inner types from hash<K,V>
+            parts = inner_t.split(", ")
+            if len(parts) != 2:
+                raise LeashError(
+                    f"Invalid hash type '{base_t}'. Expected hash<K, V>",
+                    node=expr,
+                )
+            key_t, value_t = parts
+
+            if expr.method == "size":
+                if len(expr.args) != 0:
+                    self._error(
+                        f"Hash method '{expr.method}' expects 0 arguments, got {len(expr.args)}",
+                        node=expr,
+                    )
+                return "int"
+            elif expr.method == "keys":
+                if len(expr.args) != 0:
+                    self._error(
+                        f"Hash method '{expr.method}' expects 0 arguments, got {len(expr.args)}",
+                        node=expr,
+                    )
+                return f"vec<{key_t}>"
+            elif expr.method == "values":
+                if len(expr.args) != 0:
+                    self._error(
+                        f"Hash method '{expr.method}' expects 0 arguments, got {len(expr.args)}",
+                        node=expr,
+                    )
+                return f"vec<{value_t}>"
+            elif expr.method == "getKey":
+                # getKey(value) - returns key associated with value
+                if len(expr.args) != 1:
+                    self._error(
+                        f"Hash method '{expr.method}' expects 1 argument, got {len(expr.args)}",
+                        node=expr,
+                    )
+                else:
+                    arg_type = self._infer_type(expr.args[0])
+                    if arg_type and not self._types_compatible(arg_type, value_t):
+                        self._warn(
+                            f"Hash method '{expr.method}' expects argument of type '{value_t}' but got '{arg_type}'",
+                            node=expr.args[0],
+                        )
+                return key_t
+            elif expr.method == "isin":
+                # isin(key) - check if key exists
+                if len(expr.args) != 1:
+                    self._error(
+                        f"Hash method '{expr.method}' expects 1 argument, got {len(expr.args)}",
+                        node=expr,
+                    )
+                else:
+                    arg_type = self._infer_type(expr.args[0])
+                    if arg_type and not self._types_compatible(arg_type, key_t):
+                        self._warn(
+                            f"Hash method '{expr.method}' expects argument of type '{key_t}' but got '{arg_type}'",
+                            node=expr.args[0],
+                        )
+                return "bool"
+            elif expr.method == "delete":
+                # delete(key) - remove key-value pair
+                if len(expr.args) != 1:
+                    self._error(
+                        f"Hash method '{expr.method}' expects 1 argument, got {len(expr.args)}",
+                        node=expr,
+                    )
+                else:
+                    arg_type = self._infer_type(expr.args[0])
+                    if arg_type and not self._types_compatible(arg_type, key_t):
+                        self._warn(
+                            f"Hash method '{expr.method}' expects argument of type '{key_t}' but got '{arg_type}'",
+                            node=expr.args[0],
+                        )
+                return "void"
+            elif expr.method == "push":
+                # push(key, value) - add new key-value pair
+                if len(expr.args) != 2:
+                    self._error(
+                        f"Hash method '{expr.method}' expects 2 arguments, got {len(expr.args)}",
+                        node=expr,
+                    )
+                else:
+                    arg1_type = self._infer_type(expr.args[0])
+                    if arg1_type and not self._types_compatible(arg1_type, key_t):
+                        self._warn(
+                            f"Hash method '{expr.method}' expects first argument of type '{key_t}' but got '{arg1_type}'",
+                            node=expr.args[0],
+                        )
+                    arg2_type = self._infer_type(expr.args[1])
+                    if arg2_type and not self._types_compatible(arg2_type, value_t):
+                        self._warn(
+                            f"Hash method '{expr.method}' expects second argument of type '{value_t}' but got '{arg2_type}'",
+                            node=expr.args[1],
+                        )
+                return "void"
+            else:
+                raise LeashError(
+                    f"Hash has no method named '{expr.method}'", node=expr
+                )
 
         # Class method / Static call
         # If expr.expr is an Identifier and it's a class name, it's a static call?

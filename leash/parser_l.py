@@ -26,6 +26,7 @@ from .ast_nodes import (
     TypeAlias,
     StructInit,
     ArrayInit,
+    HashInit,
     IndexAccess,
     CharLiteral,
     NullLiteral,
@@ -1898,14 +1899,40 @@ class Parser:
             self.eat("RPAREN")
             return expr
         elif self.current().type == "LBRACE":
+            tok = self.current()
             self.eat("LBRACE")
-            elements = []
-            while self.current().type != "RBRACE":
-                elements.append(self.parse_expression())
-                if self.current().type == "COMMA":
-                    self.eat("COMMA")
-            self.eat("RBRACE")
-            return ArrayInit(elements)
+            # Check if it's a hash literal: first entry is "key": value
+            is_hash = False
+            if self.current().type == "STRING":
+                # Look ahead to see if there's a COLON after the string
+                saved_pos = self.pos
+                self.eat("STRING")  # consume the string temporarily
+                if self.current().type == "COLON":
+                    is_hash = True
+                self.pos = saved_pos  # restore position
+
+            if is_hash:
+                # Parse hash literal: {"key": value, ...}
+                entries = []
+                while self.current().type != "RBRACE":
+                    key_tok = self.eat("STRING")
+                    key_expr = self._pos(StringLiteral(key_tok.value), key_tok)
+                    self.eat("COLON")
+                    value = self.parse_expression()
+                    entries.append((key_expr, value))
+                    if self.current().type == "COMMA":
+                        self.eat("COMMA")
+                self.eat("RBRACE")
+                return self._pos(HashInit(entries), tok)
+            else:
+                # Parse array literal: {expr1, expr2, ...}
+                elements = []
+                while self.current().type != "RBRACE":
+                    elements.append(self.parse_expression())
+                    if self.current().type == "COMMA":
+                        self.eat("COMMA")
+                self.eat("RBRACE")
+                return ArrayInit(elements)
         else:
             tok = self.current()
             raise LeashError(
