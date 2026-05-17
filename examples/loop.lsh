@@ -1,0 +1,12 @@
+fnc main() {
+    i: int = 1;
+
+    loop {
+        show(i); // output: 1, 2, 3, 4, ...
+        i = i + 1;
+
+        if i > 10 {
+            stop; // exit the loop when i is greater than 10
+        }
+    }
+}

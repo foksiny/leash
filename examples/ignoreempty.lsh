@@ -1,0 +1,18 @@
+fnc emptyBody() {
+    empty; // can be used anywhere, such as ifs, loops, functions, etc.
+}
+
+fnc ignoreTest(a int) {
+    if a > 0 {
+        ignore; // ignore will ignore the rest of the function and return immediately,
+                // making it return immediately with the default value of the return type (void in this case, so it will return nothing)
+    } else {
+        show("a is not greater than 0");
+    }
+}
+
+fnc main() {
+    emptyBody(); // does nothing
+    ignoreTest(5); // calls the function that will ignore the rest of the function and return immediately, showing nothing because a is greater than 0
+    ignoreTest(-1); // calls the function but with a value not greater than 0, showing "a is not greater than 0"
+}

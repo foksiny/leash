@@ -97,6 +97,11 @@ class WhileStatement(Statement):
         self.body = body
 
 
+class LoopStatement(Statement):
+    def __init__(self, body):
+        self.body = body
+
+
 class ForStatement(Statement):
     def __init__(self, init, condition, step, body):
         self.init = init
@@ -154,6 +159,20 @@ class StopStatement(Statement):
 
 
 class ContinueStatement(Statement):
+    def __init__(self):
+        pass
+
+
+class EmptyStatement(Statement):
+    """Represents an empty statement that does nothing."""
+
+    def __init__(self):
+        pass
+
+
+class IgnoreStatement(Statement):
+    """Represents an ignore statement that exits the function early with default return value."""
+
     def __init__(self):
         pass
 

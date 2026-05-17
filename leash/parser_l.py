@@ -9,9 +9,12 @@ from .ast_nodes import (
     IfStatement,
     WhileStatement,
     ForStatement,
+    LoopStatement,
     ReturnStatement,
     StopStatement,
     ContinueStatement,
+    EmptyStatement,
+    IgnoreStatement,
     ExpressionStatement,
     BinaryOp,
     UnaryOp,
@@ -1258,6 +1261,13 @@ class Parser:
             body = self.parse_block()
             return self._pos(WhileStatement(cond, body), tok)
 
+        elif current.type == "LOOP":
+            tok = self.current()
+            self.eat("LOOP")
+            self.eat("LBRACE")
+            body = self.parse_block()
+            return self._pos(LoopStatement(body), tok)
+
         elif current.type == "FOR":
             tok = self.current()
             self.eat("FOR")
@@ -1371,6 +1381,18 @@ class Parser:
             self.eat("CONTINUE")
             self.eat("SEMI")
             return self._pos(ContinueStatement(), tok)
+
+        elif current.type in ("EMPTY",):
+            tok = self.current()
+            self.eat("EMPTY")
+            self.eat("SEMI")
+            return self._pos(EmptyStatement(), tok)
+
+        elif current.type in ("IGNORE",):
+            tok = self.current()
+            self.eat("IGNORE")
+            self.eat("SEMI")
+            return self._pos(IgnoreStatement(), tok)
 
         elif current.type == "DEL":
             tok = self.current()

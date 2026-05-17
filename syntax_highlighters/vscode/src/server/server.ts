@@ -425,7 +425,7 @@ function getWordAt(text: string, offset: number): string {
 }
 
 connection.onCompletion((_textDocumentPosition: TextDocumentPositionParams): CompletionList => {
-    const keywords = ["fnc", "return", "int", "void", "def", "struct", "true", "false", "null", "string", "char", "bool", "float", "uint", "if", "also", "else", "unless", "while", "for", "do", "foreach", "in", "class", "this", "pub", "priv", "static", "stop", "continue", "use", "switch", "case", "default", "pubif", "unsafe", "as", "inline", "defer", "error", "throw", "self", "macro", "create", "del", "is", "isnt"];
+    const keywords = ["fnc", "return", "int", "void", "def", "struct", "true", "false", "null", "string", "char", "bool", "float", "uint", "if", "also", "else", "unless", "while", "for", "do", "foreach", "loop", "in", "class", "this", "pub", "priv", "static", "stop", "continue", "empty", "ignore", "use", "switch", "case", "default", "pubif", "unsafe", "as", "inline", "defer", "error", "throw", "self", "macro", "create", "del", "is", "isnt"];
     return {
         isIncomplete: false,
         items: keywords.map(kw => ({

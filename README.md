@@ -1280,7 +1280,7 @@ unless result == nil {
 
 ### Loops
 
-Leash comes packed with many loops built-in (`for`, `while`, and `do-while`):
+Leash comes packed with many loops built-in (`for`, `while`, `do-while`, and `loop`):
 
 ```leash
 // while
@@ -1299,7 +1299,27 @@ k: int = 0;
 do {
     k = k + 1;
 } while k < 10;
+
+#### Infinite Loop (`loop`)
+
+Leash provides an infinite `loop` keyword that runs forever until `stop` is used:
+
+```leash
+fnc main() : void {
+    i: int = 1;
+
+    loop {
+        show(i); // outputs: 1, 2, 3, 4, ...
+        i = i + 1;
+
+        if i > 10 {
+            stop; // exit the loop when i is greater than 10
+        }
+    }
+}
 ```
+
+The `loop` keyword creates an infinite loop that runs until a `stop` statement exits it. It's useful when you need a loop with a condition that's checked in the middle or at the end of the loop body rather than at the beginning.
 
 #### `stop` and `continue`
 
@@ -1322,7 +1342,45 @@ fnc main() : void {
 - `stop;` terminates the innermost loop and transfers control to the code after the loop.
 - `continue;` skips the remaining statements in the current iteration and jumps to the loop's continuation point (the condition check for `while`/`do-while`, or the update step for `for`).
 
-Both `stop` and `continue` can be used in `while`, `for`, `do-while`, and `foreach` loops (including `foreach` over arrays, strings, and vectors). They are not supported in `foreach` over structs because that loop is unrolled at compile time.
+Both `stop` and `continue` can be used in `while`, `for`, `do-while`, `loop`, and `foreach` loops (including `foreach` over arrays, strings, and vectors). They are not supported in `foreach` over structs because that loop is unrolled at compile time.
+
+#### `empty`
+
+The `empty` statement is a no-op that does nothing. It can be used anywhere a statement is expected, such as in if bodies, loops, or as a placeholder:
+
+```leash
+fnc example() {
+    if some_condition {
+        empty; // does nothing, but explicitly shows intent
+    }
+    while true {
+        empty; // placeholder for future implementation
+    }
+}
+```
+
+#### `ignore`
+
+The `ignore` statement immediately exits the current function and returns the default value for the function's return type. In `void` functions, it returns nothing. In functions with a return type, it returns zero (for numeric types), null (for pointers), or an empty value.
+
+```leash
+fnc earlyExit() {
+    if some_error_condition {
+        ignore; // exit immediately, returning default value
+    }
+    // This code is skipped if ignore was executed
+    show("This won't show");
+}
+
+fnc getValue() int {
+    if not_ready {
+        ignore; // returns 0 for int
+    }
+    return 42;
+}
+```
+
+Note: `ignore` executes any deferred calls (`defer`) before returning, just like a regular `return` statement.
 
 ### Switch-Case
 

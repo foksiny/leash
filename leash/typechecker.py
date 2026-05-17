@@ -1382,6 +1382,12 @@ class TypeChecker:
             self._check_statements(stmt.body)
             self._infer_type(stmt.condition)
             self.loop_depth -= 1
+        elif isinstance(stmt, LoopStatement):
+            self.loop_depth += 1
+            if not stmt.body:
+                self._warn("Empty `loop` body.", node=stmt, code="LEASH-W003")
+            self._check_statements(stmt.body)
+            self.loop_depth -= 1
         elif isinstance(stmt, ForeachStructStatement):
             # Note: foreach over structs is unrolled and does not support stop/continue at runtime
             self._infer_type(stmt.struct_expr)
@@ -1429,6 +1435,10 @@ class TypeChecker:
                     node=stmt,
                     tip="`continue` skips to the next iteration of a loop. It can only be used within `while`, `for`, `do-while`, or `foreach` loops.",
                 )
+        elif isinstance(stmt, EmptyStatement):
+            pass
+        elif isinstance(stmt, IgnoreStatement):
+            pass
         elif isinstance(stmt, WorksOtherwiseStatement):
             self.in_works_block = True
             self.works_error_occured = False

@@ -30,6 +30,7 @@ from .ast_nodes import (
     BoolLiteral,
     CharLiteral,
     IsExpr,
+    LoopStatement,
 )
 
 
@@ -1769,6 +1770,35 @@ class CodeGen:
         _, continue_bb = self.loop_stack[-1]
         self.builder.branch(continue_bb)
 
+    def _codegen_EmptyStatement(self, node):
+        pass
+
+    def _codegen_IgnoreStatement(self, node):
+        ret_type = self.builder.function.type.pointee.return_type
+        while self.defer_stack and self.defer_stack[-1]:
+            deferred_call = self.defer_stack[-1].pop()
+            self._codegen(deferred_call)
+        self._emit_cleanup()
+        if isinstance(ret_type, ir.VoidType):
+            self.builder.ret_void()
+        else:
+            default_val = self._get_default_value_for_type(ret_type)
+            self.builder.ret(default_val)
+
+    def _get_default_value_for_type(self, ty):
+        if isinstance(ty, ir.IntType):
+            return ir.Constant(ty, 0)
+        elif isinstance(ty, ir.FloatType):
+            return ir.Constant(ty, 0.0)
+        elif isinstance(ty, ir.PointerType):
+            return ir.Constant(ty, None)
+        elif isinstance(ty, ir.ArrayType):
+            return ir.Constant(ty, 0)
+        elif isinstance(ty, ir.StructType):
+            return ir.Constant(ty, None)
+        else:
+            return ir.Constant(ty, 0)
+
     def _codegen_WorksOtherwiseStatement(self, node):
         works_bb = self.builder.function.append_basic_block("works_body")
         otherwise_bb = self.builder.function.append_basic_block("otherwise_body")
@@ -2942,6 +2972,30 @@ class CodeGen:
                 break
         if not self.builder.block.is_terminated:
             self.builder.branch(cond_bb)
+
+        # Pop loop context
+        self.loop_stack.pop()
+
+        self.builder.position_at_end(merge_bb)
+
+    def _codegen_LoopStatement(self, node):
+        body_bb = self.builder.function.append_basic_block("loop_body")
+        merge_bb = self.builder.function.append_basic_block("loop_merge")
+        continue_bb = body_bb  # continue jumps to body (infinite loop)
+        break_bb = merge_bb  # break jumps to merge
+
+        # Push loop context for nested stop/continue
+        self.loop_stack.append((break_bb, continue_bb))
+
+        self.builder.branch(body_bb)
+        self.builder.position_at_end(body_bb)
+
+        for stmt in node.body:
+            self._codegen(stmt)
+            if self.builder.block.is_terminated:
+                break
+        if not self.builder.block.is_terminated:
+            self.builder.branch(body_bb)
 
         # Pop loop context
         self.loop_stack.pop()

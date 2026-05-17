@@ -66,7 +66,7 @@
             "patterns": [
                 {
                     "name": "keyword.control.leash",
-                    "match": "\\b(return|if|else|unless|while|for|do|foreach|in|stop|continue|switch|case|default|defer|throw|try|catch)\\b"
+                    "match": "\\b(return|if|else|unless|while|for|do|foreach|loop|in|stop|continue|empty|ignore|switch|case|default|defer|throw|try|catch)\\b"
                 },
                 {
                     "name": "keyword.declaration.leash",

@@ -73,9 +73,12 @@ class Lexer:
     "macro",
     "create",
     "del",
-    "is",
-    "isnt",
-}
+"is",
+        "isnt",
+        "loop",
+        "empty",
+        "ignore",
+    }
 
     # regexes
     TOKEN_SPECIFICATION = [
