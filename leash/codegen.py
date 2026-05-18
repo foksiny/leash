@@ -6633,8 +6633,39 @@ class CodeGen:
     def _codegen_IsExpr(self, node):
         """Generate code for 'is' and 'isnt' expressions."""
         if node.is_type_check:
-            # Type check - compile-time check, return constant
-            return ir.Constant(ir.IntType(1), 1 if node.op == "is" else 0)
+            # Type check - compare the actual type of the left expression with the right type
+            left_type = self._get_leash_type_name(node.left)
+            right_type = node.right
+            
+            # Resolve type aliases for comparison
+            left_resolved = self._resolve_type_name(left_type) if left_type else None
+            right_resolved = self._resolve_type_name(right_type) if right_type else None
+            
+            # Compare types (allow loose matching, e.g., "int" matches "int<32>")
+            def _types_match(lt, rt):
+                if lt == rt:
+                    return True
+                if lt and rt:
+                    # Handle int special cases
+                    if lt == "int" and rt.startswith("int"):
+                        return True
+                    if lt.startswith("int") and rt == "int":
+                        return True
+                    # Handle uint special cases
+                    if lt == "uint" and rt.startswith("uint"):
+                        return True
+                    if lt.startswith("uint") and rt == "uint":
+                        return True
+                    # Handle float special cases
+                    if lt == "float" and rt.startswith("float"):
+                        return True
+                    if lt.startswith("float") and rt == "float":
+                        return True
+                return False
+            
+            types_match = _types_match(left_resolved, right_resolved)
+            result = types_match if node.op == "is" else not types_match
+            return ir.Constant(ir.IntType(1), 1 if result else 0)
         else:
             # Value comparison
             left_val = self._codegen(node.left)
