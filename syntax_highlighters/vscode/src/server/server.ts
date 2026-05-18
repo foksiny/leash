@@ -287,13 +287,30 @@ connection.onHover((params: TextDocumentPositionParams): Hover | null => {
         }
     }
 
-    // 3. Global Index Intelligence
+    // 3. Enhanced Global Index Intelligence with more details
     const symbol = findSymbol(text, word);
     if (symbol) {
+        let detail = `**${symbol.type}**: \`${symbol.signature}\``;
+        
+        // Add more context for certain symbol types
+        if (symbol.type === 'Function' || symbol.type === 'Native Function') {
+            // Try to get more context about the function
+            const funcDetails = getFunctionDetails(text, symbol.name);
+            if (funcDetails) {
+                detail += `\n\n${funcDetails}`;
+            }
+        } else if (symbol.type === 'Type Definition' || symbol.type === 'Class' || symbol.type === 'Struct') {
+            // Try to get class/struct members
+            const typeDetails = getTypeDetails(text, symbol.name);
+            if (typeDetails) {
+                detail += `\n\n${typeDetails}`;
+            }
+        }
+        
         return {
             contents: {
                 kind: 'markdown',
-                value: `**${symbol.type}**: \`${symbol.signature}\``
+                value: detail
             }
         };
     }
@@ -333,6 +350,91 @@ connection.onHover((params: TextDocumentPositionParams): Hover | null => {
 
     return null;
 });
+
+// Helper function to get more detailed function information
+function getFunctionDetails(text: string, funcName: string): string | null {
+    // Look for the function definition to extract more details
+    const funcPattern = new RegExp(`(?:fnc|def)\\s+${funcName}\\s*<.*?>?\\s*\\((.*?)\\)\\s*(?::\\s*(.*?))?\\s*[{|>]`, 'g');
+    let match;
+    while ((match = funcPattern.exec(text)) !== null) {
+        const params = match[2];
+        const returnType = match[3];
+        let details = `**Parameters**: ${params || 'none'}\n**Returns**: ${returnType || 'void'}`;
+        
+        // Try to find the function body to extract local variables
+        const funcStartMatch = /(?:fnc|def)\s+${funcName}\s*<.*?>?\s*\(.*?\)\s*(?::\s*[^{|>]*)?\s*[{|>]/g;
+        funcStartMatch.lastIndex = match.index;
+        const startMatch = funcStartMatch.exec(text);
+        if (startMatch) {
+            const startPos = startMatch.index + startMatch[0].length;
+            // Find matching closing brace
+            let braceCount = 1;
+            let i = startPos;
+            while (i < text.length && braceCount > 0) {
+                if (text[i] === '{') braceCount++;
+                else if (text[i] === '}') braceCount--;
+                i++;
+            }
+            if (braceCount === 0) {
+                const funcBody = text.substring(startPos, i - 1);
+                // Extract local variable declarations
+                const varMatches = funcBody.matchAll(/([a-zA-Z_]\w*)\s*:\s*([a-zA-Z0-9_<>\\[\\]&\\*\\s]+)\s*=/g);
+                const locals = Array.from(varMatches, m => `${m[1]} : ${m[2].trim()}`);
+                if (locals.length > 0) {
+                    details += `\n**Local Variables**: ${locals.join(', ')}`;
+                }
+            }
+        }
+        return details;
+    }
+    return null;
+}
+
+// Helper function to get more detailed type information
+function getTypeDetails(text: string, typeName: string): string | null {
+    // Look for the type definition to extract more details
+    // For structs/classes, look for field definitions
+    const typePattern = new RegExp(`def\\s+${typeName}\\s*<.*?>?\\s*:\\s*(struct|class|union|enum|type)\\b(?:\\s*[^{]*)?[{]([^}]*)[}]`, 'g');
+    let match;
+    while ((match = typePattern.exec(text)) !== null) {
+        const typeKind = match[1];
+        const typeBody = match[2];
+        
+        let details = '';
+        if (typeKind === 'struct' || typeKind === 'class') {
+            // Extract field definitions
+            const fieldMatches = typeBody.matchAll(/([a-zA-Z_]\w*)\s*:\s*([a-zA-Z0-9_<>\\[\\]&\\*\\s]+)(?:\s*=\s*[^;]+)?\s*;/g);
+            const fields = Array.from(fieldMatches, m => `${m[1]} : ${m[2].trim()}`);
+            if (fields.length > 0) {
+                details += `**Fields**: ${fields.join(', ')}`;
+            }
+            
+             // For classes, also look for methods
+             if (typeKind === 'class') {
+                 const methodMatches = typeBody.matchAll(/(?:fnc|def)\s+([a-zA-Z_]\w*)\s*<.*?>?\s*\((.*?)\)\s*(?::\s*(.*?))?\s*[{|>]/g);
+                 const methods = Array.from(methodMatches, m => {
+                     const params = m[2] || '';
+                     const returnType = m[3] || 'void';
+                     return `${m[1]}(${params}) : ${returnType}`;
+                 });
+                 if (methods.length > 0) {
+                     if (details) details += '\n';
+                     details += `**Methods**: ${methods.join(', ')}`;
+                 }
+             }
+        } else if (typeKind === 'enum') {
+            // Extract enum members
+            const enumMatches = typeBody.matchAll(/([a-zA-Z_]\w*)\s*(?::\s*\w+)?\s*(?:=.*?)?\s*(?:,|\n|})/g);
+            const members = Array.from(enumMatches, m => m[1]);
+            if (members.length > 0) {
+                details += `**Members**: ${members.join(', ')}`;
+            }
+        }
+        
+        return details || null;
+    }
+    return null;
+}
 
 function findEnclosingFunction(text: string, offset: number): { name: string, params: string, body: string } | null {
     // Basic scanner to find the containing fnc block
@@ -424,15 +526,174 @@ function getWordAt(text: string, offset: number): string {
     return (left ? left[0] : "") + (right ? right[0] : "");
 }
 
-connection.onCompletion((_textDocumentPosition: TextDocumentPositionParams): CompletionList => {
+connection.onCompletion((params: TextDocumentPositionParams): CompletionList => {
+    const document = documents.get(params.textDocument.uri);
+    if (!document) {
+        return {
+            isIncomplete: false,
+            items: []
+        };
+    }
+    
+    const text = document.getText();
+    const position = params.position;
+    const offset = document.offsetAt(position);
+    
+    // Get current word for filtering
+    const currentWord = getWordAt(text, offset);
+    
+    // Collect all symbols from the document
+    const symbols: CompletionItem[] = [];
+    
+    // Add keywords
     const keywords = ["fnc", "return", "int", "void", "def", "struct", "true", "false", "null", "string", "char", "bool", "float", "uint", "if", "also", "else", "unless", "while", "for", "do", "foreach", "loop", "in", "class", "this", "pub", "priv", "static", "stop", "continue", "empty", "ignore", "use", "switch", "case", "default", "pubif", "unsafe", "as", "inline", "defer", "error", "throw", "self", "macro", "create", "del", "is", "isnt"];
+    
+    keywords.forEach(kw => {
+        if (!currentWord || kw.startsWith(currentWord)) {
+            symbols.push({
+                label: kw,
+                kind: CompletionItemKind.Keyword,
+                data: kw
+            });
+        }
+    });
+    
+    // Find all symbols in document for completion
+    const findAllSymbols = (text: string): LeashSymbol[] => {
+        const foundSymbols: LeashSymbol[] = [];
+        const patterns = [
+            // Function definitions
+            { regex: /(?:fnc|def)\s+([a-zA-Z_]\w*)\s*<.*?>?\s*\((.*?)\)\s*(?::\s*(.*?))?\s*[{|>]/g, type: 'Function' },
+            // Struct/Class/Enum/Union definitions
+            { regex: /def\s+([a-zA-Z_]\w*)\s*<.*?>?\s*:\s*(struct|union|enum|class|type)\b/g, type: 'Type Definition' },
+            // Class fields
+            { regex: /\b(pub|priv|static)?\s*([a-zA-Z_]\w*)\s*:\s*([a-zA-Z0-9_<>\\[\\]&\\*\\s]+)?\s*(=|;)/g, type: 'Field' },
+            // Struct fields (with optional default value)
+            { regex: /\b([a-zA-Z_]\w*)\s*:\s*([a-zA-Z0-9_<>\\[\\]&\\*\\s]+)?\s*(?:=\s*[^;]+)?\s*;/g, type: 'Struct Field' },
+            // Native imports (@from)
+            { regex: /@from\s*\(.*?\)\s*\{[^}]*?(?:fnc|def)?\s+([a-zA-Z_]\w*)\s*\((.*?)\)\s*:\s*(.*?)\s*;/g, type: 'Native Function' },
+            { regex: /@from\s*\(.*?\)\s*\{[^}]*?([a-zA-Z_]\w*)\s*:\s*(.*?)\s*;/g, type: 'Native Variable' },
+            // Global variables
+            { regex: /^([a-zA-Z_]\w*)\s*:\s*([a-zA-Z0-9_<>\\[\\]&\\*\\s]+)?\s*=/gm, type: 'Global Variable' },
+            // Local Variables
+            { regex: /\b([a-zA-Z_]\w*)\s*:\s*([a-zA-Z0-9_<>\\[\\]&\\*\\s]+)?\s*=/g, type: 'Variable' },
+            { regex: /\b([a-zA-Z_]\w*)\s*:=/g, type: 'Inferred Variable' },
+            // Enum members
+            { regex: /\b([a-zA-Z_]\w*)\s*(?::\s*\w+)?\s*(?:=.*?)?\s*(?:,|\n|\})/g, type: 'Enum Member' }
+        ];
+        
+        for (const p of patterns) {
+            p.regex.lastIndex = 0;
+            let match;
+            while ((match = p.regex.exec(text)) !== null) {
+                const name = match[1];
+                if (!name) continue;
+                
+                // Skip if it's the current word we're completing against (to avoid self-suggestions in some cases)
+                // Actually, we want to include it for case like completing a function name within itself
+                
+                const index = match.index;
+                const lines = text.substring(0, index).split('\n');
+                const line = lines.length - 1;
+                const col = lines[lines.length - 1].length;
+                
+                let signature = match[0].trim().split('\n')[0];
+                 let kind: CompletionItemKind = CompletionItemKind.Text;
+                
+                // Map symbol types to completion item kinds
+                switch (p.type) {
+                    case 'Function':
+                    case 'Native Function':
+                        kind = CompletionItemKind.Function;
+                        if (p.type === 'Function') {
+                            signature = `fnc ${name}(${match[2]})` + (match[3] ? ` : ${match[3]}` : '');
+                        } else {
+                            signature = `[Native] fnc ${name}(${match[2]}) : ${match[3]}`;
+                        }
+                        break;
+                    case 'Type Definition':
+                        kind = CompletionItemKind.Class;
+                        signature = `def ${name} : ${match[2]}`;
+                        break;
+                    case 'Field':
+                    case 'Struct Field':
+                        kind = CompletionItemKind.Field;
+                        signature = `${name} : ${match[2] ? match[2].trim() : 'unknown'}`;
+                        break;
+                    case 'Native Variable':
+                        kind = CompletionItemKind.Variable;
+                        signature = `[Native] ${name} : ${match[2]}`;
+                        break;
+                    case 'Global Variable':
+                    case 'Variable':
+                    case 'Inferred Variable':
+                        kind = CompletionItemKind.Variable;
+                        if (p.type === 'Variable' || p.type === 'Global Variable') {
+                            signature = `${name} : ${match[2] ? match[2].trim() : 'unknown'}`;
+                        } else {
+                            signature = `${name} := inferred`;
+                        }
+                        break;
+                    case 'Enum Member':
+                        kind = CompletionItemKind.EnumMember;
+                        signature = `${name}`;
+                        break;
+                }
+                
+                // Only add if matches current word filter or no filter
+                if (!currentWord || name.startsWith(currentWord)) {
+                    // Avoid duplicates
+                    if (!foundSymbols.some(s => s.name === name && s.line === line && s.col === col)) {
+                        foundSymbols.push({ name, type: p.type, signature, line, col, endCol: col + name.length });
+                    }
+                }
+            }
+        }
+        
+        return foundSymbols;
+    };
+    
+    const documentSymbols = findAllSymbols(text);
+    
+    documentSymbols.forEach(symbol => {
+         let kind: CompletionItemKind = CompletionItemKind.Text;
+        switch (symbol.type) {
+            case 'Function':
+            case 'Native Function':
+                kind = CompletionItemKind.Function;
+                break;
+            case 'Type Definition':
+                kind = CompletionItemKind.Class;
+                break;
+            case 'Field':
+            case 'Struct Field':
+                kind = CompletionItemKind.Field;
+                break;
+            case 'Native Variable':
+            case 'Global Variable':
+            case 'Variable':
+            case 'Inferred Variable':
+                kind = CompletionItemKind.Variable;
+                break;
+            case 'Enum Member':
+                kind = CompletionItemKind.EnumMember;
+                break;
+        }
+        
+        symbols.push({
+            label: symbol.name,
+            kind: kind,
+            detail: symbol.signature,
+            documentation: {
+                kind: MarkupKind.Markdown,
+                value: `**${symbol.type}**\n\n\`${symbol.signature}\``
+            }
+        });
+    });
+    
     return {
         isIncomplete: false,
-        items: keywords.map(kw => ({
-            label: kw,
-            kind: CompletionItemKind.Keyword,
-            data: kw
-        }))
+        items: symbols
     };
 });
 
