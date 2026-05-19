@@ -57,6 +57,45 @@ Leash is a strongly-typed, modern compiled programming language built on top of 
 - [Program Termination](#program-termination)
 - [Library Installation](#library-installation)
 - [Syntax Highlighting](#syntax-highlighting)
+- [Unleashing IDE](#unleashing-ide)
+
+## Unleashing IDE
+
+**Unleashing IDE** is the official desktop IDE for the Leash programming language. Built on Electron and powered by the Monaco Editor (the same editor behind VS Code), it provides a fast, modern development experience tailored specifically for Leash.
+
+![Unleashing IDE](unleashing/icon.png)
+
+### Features
+
+- **Full Language Support** — Syntax highlighting, auto-completion, hover diagnostics, and real-time error checking via an integrated LSP-like language server.
+- **Monaco Code Editor** — The same powerful editor that powers VS Code, with multi-cursor support, minimap, and more.
+- **File Explorer** — Tree view with create, rename, delete, and context menu support for files and folders.
+- **Run & Build** — Run scripts (F5), compile executables (Ctrl+B), dump LLVM IR, and check syntax — all from within the IDE. Configure optimization levels (O0–O3, Os), compilation targets (linux64, win64, macos), and extra compiler flags.
+- **Integrated Terminal** — A persistent PowerShell (Windows) or Bash (Linux/macOS) shell built right in.
+- **Output Console** — Real-time stdout/stderr streaming from running Leash programs, plus a Problems tab for errors and warnings.
+- **Command Palette** — Quick-access overlay (Ctrl+Shift+P) for commands and file navigation.
+- **12 Color Themes** — 6 dark themes (Neon, Deep Crimson, Cyberpunk Purple, Emerald Forest, Monokai, Midnight Solarized) and 6 light themes.
+- **Customizable Settings** — Font family/size, tab size, auto-save, minimap, auto-check interval, auto-fix imports, and rebindable keyboard shortcuts.
+- **Frameless Window** — Custom title bar with dropdown menus (File, Selection, Run, Help) and window controls.
+
+### Running the IDE
+
+```bash
+cd unleashing
+npm install
+npm start
+```
+
+### Project Structure
+
+| File | Description |
+|------|-------------|
+| `main.js` | Electron main process — window management, file system operations, compiler process spawning |
+| `renderer.js` | UI renderer — Monaco editor, file explorer, tabs, command palette, settings, themes |
+| `leash-language.js` | Monaco language support — tokenizer, completions, hovers, diagnostics |
+| `index.html` | IDE layout — title bar, sidebar, panels, editor, console, palette, status bar |
+| `index.css` | All IDE styling |
+| `icons.js` | SVG icon definitions |
 
 ## Running Leash
 

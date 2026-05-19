@@ -395,6 +395,12 @@ class CodeGen:
             self.module, get_stdout_ty, name="_leash_get_stdout"
         )
 
+        # setbuf
+        setbuf_ty = ir.FunctionType(
+            ir.VoidType(), [ir.IntType(8).as_pointer(), ir.IntType(8).as_pointer()]
+        )
+        self.setbuf_fn = ir.Function(self.module, setbuf_ty, name="setbuf")
+
     def _emit_const_str(self, string_val):
         """Create a global string constant and return a pointer to it (i8*)."""
         # Search for existing constant
@@ -1659,6 +1665,11 @@ class CodeGen:
 
         if name == "main":
             self.builder.call(self.gc_init, [])
+            # Set stdout to unbuffered so that interactive prompts and prints are flushed in real time
+            stdout_ptr = self.builder.call(self.get_stdout_fn, [])
+            null_ptr = ir.Constant(ir.IntType(8).as_pointer(), None)
+            self.builder.call(self.setbuf_fn, [stdout_ptr, null_ptr])
+
             # Call global initializer if any globals need runtime init
             if self.init_func:
                 self.builder.call(self.init_func, [])

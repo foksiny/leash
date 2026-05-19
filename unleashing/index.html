@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Unleashing IDE</title>
+  <link rel="stylesheet" href="index.css">
+  <!-- Load Google Fonts for beautiful UI and coding aesthetics -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@300;400;500;700&family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <!-- Custom Frameless Title Bar -->
+  <header id="titlebar">
+    <div class="titlebar-left">
+      <span id="app-icon"></span>
+      <span class="app-title">Unleashing IDE</span>
+      <div class="menu-bar">
+        <div class="menu-container">
+          <div class="menu-item" id="menu-file">File</div>
+          <div class="dropdown-menu" id="dropdown-file">
+            <div class="dropdown-option" id="opt-file-newfile">New File <span class="shortcut">Ctrl+N</span></div>
+            <div class="dropdown-option" id="opt-file-newfolder">New Folder <span class="shortcut">Ctrl+Shift+N</span></div>
+            <div class="dropdown-option" id="opt-file-open">Open Folder... <span class="shortcut">Ctrl+O</span></div>
+            <hr class="menu-sep">
+            <div class="dropdown-option" id="opt-file-save">Save File <span class="shortcut">Ctrl+S</span></div>
+            <div class="dropdown-option" id="opt-file-close">Close Folder <span class="shortcut">Ctrl+W</span></div>
+            <hr class="menu-sep">
+            <div class="dropdown-option ctx-danger" id="opt-file-exit">Exit IDE <span class="shortcut">Alt+F4</span></div>
+          </div>
+        </div>
+        <div class="menu-container">
+          <div class="menu-item" id="menu-selection">Selection</div>
+          <div class="dropdown-menu" id="dropdown-selection">
+            <div class="dropdown-option" id="opt-sel-all">Select All <span class="shortcut">Ctrl+A</span></div>
+            <div class="dropdown-option" id="opt-sel-copy">Copy <span class="shortcut">Ctrl+C</span></div>
+            <div class="dropdown-option" id="opt-sel-paste">Paste <span class="shortcut">Ctrl+V</span></div>
+            <div class="dropdown-option" id="opt-sel-cut">Cut <span class="shortcut">Ctrl+X</span></div>
+          </div>
+        </div>
+        <div class="menu-container">
+          <div class="menu-item" id="menu-run">Run</div>
+          <div class="dropdown-menu" id="dropdown-run">
+            <div class="dropdown-option" id="opt-run-start">Run Script <span class="shortcut">F5</span></div>
+            <div class="dropdown-option" id="opt-run-compile">Compile Executable <span class="shortcut">Ctrl+B</span></div>
+            <div class="dropdown-option" id="opt-run-dump">Dump LLVM IR</div>
+            <div class="dropdown-option" id="opt-run-check">Check Syntax (LSP)</div>
+          </div>
+        </div>
+        <div class="menu-container">
+          <div class="menu-item" id="menu-help">Help</div>
+          <div class="dropdown-menu" id="dropdown-help">
+            <div class="dropdown-option" id="opt-help-about">About Unleashing IDE</div>
+            <div class="dropdown-option" id="opt-help-shortcuts">Keyboard Shortcuts</div>
+            <div class="dropdown-option" id="opt-help-docs">Leash Documentation</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="titlebar-center" id="workspace-title">No Folder Opened</div>
+    <div class="titlebar-right">
+      <button class="win-btn" id="win-min">&#9472;</button>
+      <button class="win-btn" id="win-max">&#9633;</button>
+      <button class="win-btn win-close" id="win-close">&times;</button>
+    </div>
+  </header>
+
+  <!-- Main Grid Layout -->
+  <main id="app-container">
+    <!-- Sidebar Navigation -->
+    <nav id="sidebar">
+      <div class="sidebar-top">
+        <button class="sidebar-btn active" id="btn-explorer" title="Explorer (Ctrl+Shift+E)"></button>
+        <button class="sidebar-btn" id="btn-debug" title="Run & Debug (Ctrl+Shift+D)"></button>
+        <button class="sidebar-btn" id="btn-settings" title="Settings (Ctrl+Shift+S)"></button>
+      </div>
+      <div class="sidebar-bottom">
+        <button class="sidebar-btn" id="btn-palette" title="Command Palette (Ctrl+Shift+P)"></button>
+      </div>
+    </nav>
+
+    <!-- Side Panel Drawers -->
+    <aside id="side-panel">
+      <!-- Drawer 1: File Explorer -->
+      <section class="drawer active" id="drawer-explorer">
+        <div class="drawer-header">
+          <h3>EXPLORER</h3>
+          <div class="drawer-actions">
+            <button class="action-btn" id="action-new-file" title="New File"></button>
+            <button class="action-btn" id="action-new-folder" title="New Folder"></button>
+            <button class="action-btn" id="action-refresh" title="Refresh Tree"></button>
+            <button class="action-btn" id="action-close-folder" title="Close Workspace"></button>
+          </div>
+        </div>
+        <div class="drawer-content">
+          <div id="no-workspace-view">
+            <p>You have not yet opened a leash workspace folder.</p>
+            <button class="premium-btn" id="btn-open-workspace">Open Folder</button>
+          </div>
+          <div id="file-tree" class="file-tree-container"></div>
+        </div>
+      </section>
+
+      <!-- Drawer 2: Run & Debug -->
+      <section class="drawer" id="drawer-debug">
+        <div class="drawer-header">
+          <h3>RUN &amp; BUILD</h3>
+        </div>
+        <div class="drawer-content scrollable">
+          <div class="panel-section">
+            <label class="section-label">Active Script</label>
+            <div class="section-value" id="debug-active-file">None Selected</div>
+          </div>
+
+          <div class="panel-section">
+            <label class="section-label">Breakpoints</label>
+            <div id="breakpoints-list" class="breakpoints-container">
+              <div class="no-breakpoints-msg">No breakpoints set. Click on a line number in the editor to add a breakpoint.</div>
+            </div>
+          </div>
+
+          <div class="panel-section">
+            <label class="section-label">Compilation Target</label>
+            <select class="premium-select" id="compiler-target">
+              <option value="">Native Target (Default)</option>
+              <option value="linux64">Linux 64-bit</option>
+              <option value="win64">Windows 64-bit</option>
+              <option value="macos">macOS</option>
+            </select>
+          </div>
+
+          <div class="panel-section">
+            <label class="section-label">Optimization Level</label>
+            <select class="premium-select" id="compiler-opt">
+              <option value="0">O0 - No Optimization (Fast Compile)</option>
+              <option value="1">O1 - Basic Optimizations</option>
+              <option value="2" selected>O2 - Standard Optimizations</option>
+              <option value="3">O3 - Aggressive Optimizations</option>
+              <option value="s">Os - Optimize for Binary Size</option>
+            </select>
+          </div>
+
+          <div class="panel-section">
+            <label class="section-label">Extra Compiler Flags</label>
+            <input type="text" class="premium-input" id="compiler-flags" placeholder="e.g. to-dynamic, -lcurl">
+            <small class="hint-text">Separate with commas</small>
+          </div>
+
+          <div class="panel-section">
+            <label class="section-label">Program Arguments</label>
+            <input type="text" class="premium-input" id="program-args" placeholder="e.g. arg1 arg2">
+            <small class="hint-text">Space-separated arguments passed to program</small>
+          </div>
+
+          <div class="panel-controls">
+            <button class="premium-btn run-btn" id="btn-run-script">
+              <span class="btn-icon" id="icon-run-play"></span> Run Script
+            </button>
+            <button class="premium-btn build-btn" id="btn-compile-script">
+              <span class="btn-icon" id="icon-run-build"></span> Compile Executable
+            </button>
+            <button class="premium-btn dump-btn" id="btn-dump-ir">
+              <span class="btn-icon" id="icon-run-dump"></span> Dump LLVM IR
+            </button>
+            <button class="premium-btn stop-btn hidden" id="btn-stop-execution">
+              <span class="btn-icon" id="icon-run-stop"></span> Stop Running
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <!-- Drawer 3: Settings -->
+      <section class="drawer" id="drawer-settings">
+        <div class="drawer-header">
+          <h3>SETTINGS</h3>
+        </div>
+        <div class="drawer-content scrollable">
+          <div class="panel-section">
+            <label class="section-label">Font Family</label>
+            <select class="premium-select" id="settings-font-family">
+              <option value="'Fira Code', monospace">Fira Code (Bundled)</option>
+              <option value="'Courier New', monospace">Courier New</option>
+              <option value="Consolas, monospace">Consolas</option>
+              <option value="'Cascadia Code', monospace">Cascadia Code</option>
+              <option value="custom">Custom Font...</option>
+            </select>
+          </div>
+
+          <div class="panel-section id-custom-font hidden" id="sec-custom-font">
+            <label class="section-label">Custom Font Name</label>
+            <input type="text" class="premium-input" id="settings-font-custom" placeholder="e.g. JetBrains Mono">
+            <small class="hint-text">Must be installed on your operating system</small>
+          </div>
+
+          <div class="panel-section">
+            <label class="section-label">Font Size (px)</label>
+            <input type="number" class="premium-input" id="settings-font-size" value="14" min="10" max="30">
+          </div>
+
+          <div class="panel-section">
+            <label class="section-label">Tab Size</label>
+            <select class="premium-select" id="settings-tab-size">
+              <option value="2">2 Spaces</option>
+              <option value="4" selected>4 Spaces</option>
+              <option value="8">8 Spaces</option>
+            </select>
+          </div>
+
+          <div class="panel-section">
+            <label class="section-checkbox-label">
+              <input type="checkbox" id="settings-autosave" checked> Auto-save on delay
+            </label>
+          </div>
+
+          <div class="panel-section">
+            <label class="section-checkbox-label">
+              <input type="checkbox" id="settings-minimap" checked> Show Editor Minimap
+            </label>
+          </div>
+
+          <div class="panel-section">
+            <label class="section-label">Auto-check Interval (ms)</label>
+            <select class="premium-select" id="settings-autocheck-interval">
+              <option value="500">500ms (Fast)</option>
+              <option value="1000" selected>1000ms (1 second)</option>
+              <option value="1500">1500ms</option>
+              <option value="2000">2000ms (2 seconds)</option>
+              <option value="3000">3000ms (3 seconds)</option>
+              <option value="0">Disabled</option>
+            </select>
+            <small class="hint-text">Time between automatic error/warning checks while typing</small>
+          </div>
+
+          <div class="panel-section">
+            <label class="section-checkbox-label">
+              <input type="checkbox" id="settings-auto-fix" checked> Auto-fix import issues while typing
+            </label>
+            <small class="hint-text">Automatically add missing imports when possible</small>
+          </div>
+
+          <div class="panel-section">
+            <label class="section-label">Color Theme</label>
+            <select class="premium-select" id="settings-theme">
+              <option value="leash-neon">Unleashing Neon Default (Dark)</option>
+              <option value="unleashing-light">Unleashing Default (Light)</option>
+              <option value="electric-light">Electric Light (Light)</option>
+              <option value="cyan-mint">Cyan Mint (Light)</option>
+              <option value="soft-sepia">Soft Sepia (Light)</option>
+              <option value="solarized-light">Solarized Light (Light)</option>
+              <option value="dark-silver-light">Dark-Silver Light (Light)</option>
+              <option value="deep-crimson">Deep Crimson (Dark)</option>
+              <option value="cyberpunk-purple">Cyberpunk Purple (Dark)</option>
+              <option value="emerald-forest">Emerald Forest (Dark)</option>
+              <option value="monokai-dark">Monokai Dark (Dark)</option>
+              <option value="midnight-solarized">Midnight Solarized (Dark)</option>
+            </select>
+          </div>
+
+          <div class="panel-section">
+            <label class="section-label">Keyboard Shortcuts</label>
+            <div class="keybinds-list">
+              <div class="keybind-row">
+                <span class="keybind-action">Run Script</span>
+                <button class="keybind-btn" id="key-run-script" data-action="runScript">F5</button>
+              </div>
+              <div class="keybind-row">
+                <span class="keybind-action">Compile Script</span>
+                <button class="keybind-btn" id="key-compile-script" data-action="compileScript">Ctrl+B</button>
+              </div>
+              <div class="keybind-row">
+                <span class="keybind-action">Save Active File</span>
+                <button class="keybind-btn" id="key-save-file" data-action="saveFile">Ctrl+S</button>
+              </div>
+              <div class="keybind-row">
+                <span class="keybind-action">Command Palette</span>
+                <button class="keybind-btn" id="key-palette" data-action="palette">Ctrl+P</button>
+              </div>
+              <div class="keybind-row">
+                <span class="keybind-action">Toggle Terminal</span>
+                <button class="keybind-btn" id="key-terminal" data-action="terminal">Ctrl+T</button>
+              </div>
+            </div>
+            <small class="hint-text">Click a shortcut button, then press any key or combination to rebind it.</small>
+          </div>
+        </div>
+      </section>
+    </aside>
+
+    <!-- Editor & Console Viewport -->
+    <article id="editor-viewport">
+      <!-- Tabs Bar -->
+      <nav id="tabs-bar">
+        <div id="tabs-container"></div>
+      </nav>
+
+      <!-- Monaco Editor Container -->
+      <div id="editor-container">
+        <!-- Welcoming splash when no file is open -->
+        <div id="editor-splash">
+          <div class="splash-content">
+            <div id="splash-logo"></div>
+            <h2>Unleashing IDE</h2>
+            <p>Fast, robust IDE for the Leash programming language</p>
+            <div class="splash-shortcuts">
+              <div class="shortcut-row"><span>Open Folder</span><kbd>Ctrl + O</kbd></div>
+              <div class="shortcut-row"><span>Command Palette</span><kbd>Ctrl + Shift + P</kbd></div>
+              <div class="shortcut-row"><span>Run Code</span><kbd>F5</kbd></div>
+              <div class="shortcut-row"><span>Typecheck File</span><kbd>Ctrl + B</kbd></div>
+            </div>
+          </div>
+        </div>
+        <div id="monaco-editor-instance" style="width: 100%; height: 100%; display: none;"></div>
+      </div>
+
+      <!-- Resizable Lower Console panel -->
+      <footer id="console-panel">
+        <div id="console-header">
+          <div class="console-tabs">
+            <button class="console-tab active" id="tab-output">Output Log</button>
+            <button class="console-tab" id="tab-problems">Problems <span id="problems-badge">0</span></button>
+            <button class="console-tab" id="tab-terminal">Terminal</button>
+          </div>
+          <div class="console-actions">
+            <button class="console-action-btn" id="action-clear-console" title="Clear Terminal"></button>
+            <button class="console-action-btn" id="action-toggle-console" title="Minimize Panel"></button>
+          </div>
+        </div>
+        
+        <div class="console-body active" id="body-output" style="position: relative; overflow: hidden;">
+          <pre id="output-terminal-text" style="flex: 1; overflow-y: auto; margin: 0; padding: 10px; font-family: inherit; white-space: pre-wrap; word-break: break-all; cursor: text;"><span id="output-history"></span><span id="output-line-draft" style="color: var(--text-primary); position: relative;"></span><span id="output-terminal-cursor" class="terminal-cursor hidden" style="display: inline-block; width: 8px; height: 15px; background-color: var(--text-cyan); margin-left: 2px; vertical-align: middle; animation: terminal-blink 1s step-end infinite;"></span></pre>
+          <input type="text" id="output-hidden-input" autocomplete="off" style="position: absolute; left: -9999px; top: 0; width: 1px; height: 1px; opacity: 0;">
+        </div>
+        
+        <div class="console-body" id="body-problems">
+          <div id="problems-list">
+            <div class="no-problems-msg">No issues found in your Leash workspace!</div>
+          </div>
+        </div>
+ 
+        <div class="console-body" id="body-terminal" style="position: relative; overflow: hidden;">
+          <pre id="terminal-text" style="flex: 1; overflow-y: auto; margin: 0; padding: 10px; font-family: inherit; white-space: pre-wrap; word-break: break-all; cursor: text;"><span id="terminal-history">Unleashing IDE Shell Terminal [Screen Cleared]
+</span><span id="terminal-line-draft" style="color: var(--text-primary); position: relative;"></span><span class="terminal-cursor" style="display: inline-block; width: 8px; height: 15px; background-color: var(--text-cyan); margin-left: 2px; vertical-align: middle; animation: terminal-blink 1s step-end infinite;"></span></pre>
+          <input type="text" id="terminal-hidden-input" autocomplete="off" style="position: absolute; left: -9999px; top: 0; width: 1px; height: 1px; opacity: 0;">
+        </div>
+      </footer>
+    </article>
+  </main>
+
+  <!-- Interactive Command Palette Overlay -->
+  <dialog id="command-palette">
+    <div class="palette-wrapper">
+      <input type="text" id="palette-search" placeholder="Type a command or file path..." autocomplete="off">
+      <div id="palette-results"></div>
+    </div>
+  </dialog>
+
+  <!-- Premium Custom Modal for New File/Folder Prompts -->
+  <dialog id="custom-prompt-modal" style="background: transparent; border: none; margin: 15% auto auto auto; width: 400px; outline: none; z-index: 2500;">
+    <div class="palette-wrapper">
+      <div class="prompt-header" style="padding: 12px 16px; border-bottom: 1px solid var(--border-dark); font-size: 13px; font-weight: 600; color: var(--text-cyan);">
+        Create New <span id="prompt-type-label">File</span>
+      </div>
+      <div style="padding: 16px; display: flex; flex-direction: column; gap: 12px;">
+        <input type="text" id="prompt-input-field" class="premium-input" placeholder="Enter name..." autocomplete="off">
+        <div style="display: flex; justify-content: flex-end; gap: 8px;">
+          <button class="premium-btn" id="prompt-cancel-btn" style="background: rgba(255,255,255,0.03); border-color: var(--border-dark); color: var(--text-secondary);">Cancel</button>
+          <button class="premium-btn" id="prompt-confirm-btn">Create</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Context Menu for File tree -->
+  <div id="tree-context-menu" class="context-menu hidden">
+    <div class="menu-option" id="ctx-new-file">New File</div>
+    <div class="menu-option" id="ctx-new-folder">New Folder</div>
+    <div class="menu-option" id="ctx-rename">Rename</div>
+    <div class="menu-option ctx-danger" id="ctx-delete">Delete</div>
+  </div>
+
+  <!-- Status Bar at the very bottom -->
+  <footer id="statusbar">
+    <div class="statusbar-left">
+      <span class="status-indicator status-ok" id="status-checker-glow"></span>
+      <span id="status-checker-text">Leash Ready</span>
+    </div>
+    <div class="statusbar-center" id="status-file-info">No Active File</div>
+    <div class="statusbar-right">
+      <span id="status-target-info">Native</span>
+      <span id="status-opt-info">O2</span>
+      <span id="status-cursor-pos">Ln 1, Col 1</span>
+    </div>
+  </footer>
+
+  <!-- Scripts -->
+  <!-- Load Local Monaco Editor Loader -->
+  <script>
+    // Safeguard Node's require/modules against Monaco's loader hijacking
+    window.nodeRequire = require;
+    delete window.require;
+    delete window.exports;
+    delete window.module;
+  </script>
+  <script src="node_modules/monaco-editor/min/vs/loader.js"></script>
+  <script src="icons.js"></script>
+  <script src="leash-language.js"></script>
+  <script src="renderer.js"></script>
+</body>
+</html>

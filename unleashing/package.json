@@ -1,0 +1,23 @@
+{
+  "name": "leash-ide",
+  "version": "1.0.0",
+  "description": "A high-performance, beautiful IDE for the Leash programming language",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "keywords": [
+    "leash",
+    "ide",
+    "editor",
+    "compiler"
+  ],
+  "author": "Antigravity",
+  "license": "MIT",
+  "dependencies": {
+    "monaco-editor": "^0.45.0"
+  },
+  "devDependencies": {
+    "electron": "^28.2.0"
+  }
+}
