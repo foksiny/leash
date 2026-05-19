@@ -758,6 +758,12 @@ class TypeChecker:
         if t in self.template_types:
             return True
 
+        # Handle multi-return type: (type1, type2, ...)
+        if t.startswith("(") and t.endswith(")"):
+            inner = t[1:-1]
+            elem_types = [et.strip() for et in inner.split(",")]
+            return all(self._is_valid_type(et) for et in elem_types)
+
         # Bit-width validation
         if t.startswith("int<") or t.startswith("uint<"):
             try:
@@ -935,6 +941,16 @@ class TypeChecker:
 
         if src_r == dst_r:
             return True
+
+        # Handle multi-return types: (int, float) == (int, float)
+        if src_r.startswith("(") and src_r.endswith(")") and dst_r.startswith("(") and dst_r.endswith(")"):
+            src_inner = src_r[1:-1]
+            dst_inner = dst_r[1:-1]
+            src_elems = [t.strip() for t in src_inner.split(",")]
+            dst_elems = [t.strip() for t in dst_inner.split(",")]
+            if len(src_elems) != len(dst_elems):
+                return False
+            return all(self._types_compatible(s, d) for s, d in zip(src_elems, dst_elems))
 
         # Handle function pointer types
         if self._is_function_pointer_type(src_r) and self._is_function_pointer_type(
@@ -1312,7 +1328,7 @@ class TypeChecker:
 
             self._check_stmt(stmt)
 
-            if isinstance(stmt, ReturnStatement):
+            if isinstance(stmt, (ReturnStatement, MultiReturnStatement)):
                 was_returned = True
         return was_returned
 
@@ -1475,6 +1491,12 @@ class TypeChecker:
             self._check_defer(stmt)
         elif isinstance(stmt, DelStatement):
             self._check_del(stmt)
+        elif isinstance(stmt, MultiReturnStatement):
+            self._check_multi_return(stmt)
+        elif isinstance(stmt, MultiVariableDecl):
+            self._check_multi_var_decl(stmt)
+        elif isinstance(stmt, MultiAssign):
+            self._check_multi_assign(stmt)
 
     def _check_del(self, stmt):
         """Type check a del statement - verify the target is a valid class instance."""
@@ -1682,6 +1704,174 @@ class TypeChecker:
                     node=stmt,
                     tip=f"Make sure your return value matches the declared return type.",
                 )
+
+    def _check_multi_return(self, stmt):
+        """Type check a multi-return statement: return expr1, expr2, ..."""
+        # Check that the function has a multi-return type
+        bare_ret = (
+            self._strip_imut(self.current_return_type)
+            if self.current_return_type
+            else "void"
+        )
+
+        # Parse the expected return types from the multi-return type string
+        # Format: (type1, type2, ...)
+        if not (bare_ret.startswith("(") and bare_ret.endswith(")")):
+            self._error(
+                f"Function '{self.current_func}' does not have a multi-return type, "
+                f"but multiple values were returned.",
+                node=stmt,
+                tip="To return multiple values, declare the return type as (type1, type2, ...).",
+            )
+            return
+
+        # Extract individual return types
+        inner = bare_ret[1:-1]
+        expected_types = [t.strip() for t in inner.split(",")]
+
+        if len(stmt.values) != len(expected_types):
+            self._error(
+                f"Function '{self.current_func}' expects {len(expected_types)} return values, "
+                f"but got {len(stmt.values)}.",
+                node=stmt,
+            )
+            return
+
+        # Check each return value against the expected type
+        for i, (val_expr, expected_type) in enumerate(zip(stmt.values, expected_types)):
+            val_type = self._infer_type(val_expr)
+            bare_val = self._strip_imut(val_type) if val_type else None
+            bare_expected = self._strip_imut(expected_type)
+            if bare_val and not self._types_compatible(bare_val, bare_expected):
+                self._error(
+                    f"Return value {i + 1} of function '{self.current_func}' "
+                    f"should be '{bare_expected}' but got '{bare_val}'.",
+                    node=stmt,
+                )
+
+    def _check_multi_var_decl(self, stmt):
+        """Type check a multi-variable declaration: a, b : int, int = expr"""
+        # Infer the type of the value expression
+        val_type = self._infer_type(stmt.value)
+
+        # The value should be a call to a function with multi-return type
+        # or an expression that evaluates to a struct/tuple
+        if val_type is None:
+            # Can't infer type, skip detailed checks
+            # Still register the variables
+            for name, var_type in zip(stmt.names, stmt.var_types):
+                if name in self.var_types:
+                    self._error(
+                        f"Redefinition of variable '{name}' in the same function",
+                        node=stmt,
+                    )
+                resolved = self._resolve(var_type)
+                if not self._is_valid_type(resolved):
+                    self._error(
+                        f"Variable '{name}' declared with unknown type '{var_type}'",
+                        node=stmt,
+                    )
+                self.var_types[name] = var_type
+                self.var_immutable[name] = False
+            return
+
+        # If val_type is a multi-return type string like (int, int), match against declared types
+        bare_val = self._strip_imut(val_type) if val_type else None
+        if bare_val and bare_val.startswith("(") and bare_val.endswith(")"):
+            inner = bare_val[1:-1]
+            actual_types = [t.strip() for t in inner.split(",")]
+        else:
+            actual_types = [bare_val]
+
+        if len(stmt.names) != len(stmt.var_types):
+            self._error(
+                f"Multi-variable declaration has {len(stmt.names)} names but {len(stmt.var_types)} types.",
+                node=stmt,
+            )
+            return
+
+        if len(stmt.names) != len(actual_types):
+            self._error(
+                f"Multi-variable declaration expects {len(actual_types)} values "
+                f"but got {len(stmt.names)} variable names.",
+                node=stmt,
+            )
+            return
+
+        # Check each variable type against the actual return type
+        for name, declared_type, actual_type in zip(stmt.names, stmt.var_types, actual_types):
+            if name in self.var_types:
+                self._error(
+                    f"Redefinition of variable '{name}' in the same function",
+                    node=stmt,
+                )
+            resolved_decl = self._resolve(declared_type)
+            if not self._is_valid_type(resolved_decl):
+                self._error(
+                    f"Variable '{name}' declared with unknown type '{declared_type}'",
+                    node=stmt,
+                )
+            if actual_type and not self._types_compatible(actual_type, declared_type):
+                self._error(
+                    f"Variable '{name}' declared as '{declared_type}' "
+                    f"but the value has type '{actual_type}'.",
+                    node=stmt,
+                )
+            self.var_types[name] = declared_type
+            self.var_immutable[name] = False
+
+    def _check_multi_assign(self, stmt):
+        """Type check a multi-assignment: a, b = expr"""
+        # Infer the type of the value expression
+        val_type = self._infer_type(stmt.value)
+
+        if val_type is None:
+            return
+
+        bare_val = self._strip_imut(val_type) if val_type else None
+        if bare_val and bare_val.startswith("(") and bare_val.endswith(")"):
+            inner = bare_val[1:-1]
+            actual_types = [t.strip() for t in inner.split(",")]
+        else:
+            actual_types = [bare_val]
+
+        if len(stmt.targets) != len(actual_types):
+            self._error(
+                f"Multi-assignment expects {len(actual_types)} values "
+                f"but got {len(stmt.targets)} targets.",
+                node=stmt,
+            )
+            return
+
+        # Check each target variable exists and types are compatible
+        for target, actual_type in zip(stmt.targets, actual_types):
+            from .ast_nodes import Identifier
+            if isinstance(target, Identifier):
+                if target.name not in self.var_types:
+                    self._error(
+                        f"Undefined variable '{target.name}'",
+                        node=stmt,
+                    )
+                    continue
+                if self.var_immutable.get(target.name, False):
+                    self._error(
+                        f"Cannot assign to immutable variable '{target.name}'",
+                        node=stmt,
+                    )
+                target_type = self.var_types[target.name]
+                if actual_type and not self._types_compatible(actual_type, target_type):
+                    self._error(
+                        f"Cannot assign '{actual_type}' to variable '{target.name}' of type '{target_type}'.",
+                        node=stmt,
+                    )
+            else:
+                # For non-identifier targets (member access, index access, etc.)
+                target_type = self._infer_type(target)
+                if target_type and actual_type and not self._types_compatible(actual_type, target_type):
+                    self._error(
+                        f"Cannot assign '{actual_type}' to target of type '{target_type}'.",
+                        node=stmt,
+                    )
 
     def _check_throw(self, stmt):
         if stmt.error_name not in self.error_types:

@@ -11,6 +11,9 @@ from .ast_nodes import (
     ForStatement,
     LoopStatement,
     ReturnStatement,
+    MultiReturnStatement,
+    MultiVariableDecl,
+    MultiAssign,
     StopStatement,
     ContinueStatement,
     EmptyStatement,
@@ -227,6 +230,32 @@ class Parser:
             if is_imut:
                 return f"imut {fnc_type}"
             return fnc_type
+
+        # Handle multi-return type syntax: (int, float, ...)
+        if self.current().type == "LPAREN":
+            # Look ahead to distinguish from a cast expression or grouping paren
+            # A multi-return type looks like: (type, type, ...)
+            saved = self.pos
+            self.eat("LPAREN")
+            types = []
+            # Try to parse at least two types separated by commas
+            try:
+                types.append(self.parse_type())
+                if self.current().type == "COMMA":
+                    # This looks like a multi-return type
+                    while self.current().type == "COMMA":
+                        self.eat("COMMA")
+                        types.append(self.parse_type())
+                    self.eat("RPAREN")
+                    result = f"({', '.join(types)})"
+                    if is_imut:
+                        return f"imut {result}"
+                    return result
+                else:
+                    # Not a multi-return type, restore
+                    self.pos = saved
+            except (LeashError, IndexError):
+                self.pos = saved
 
         # Handle multi-type syntax: [int, float, ...]
         if self.current().type == "LBRACKET":
@@ -1359,9 +1388,15 @@ class Parser:
         elif current.type in ("RETURN",):
             tok = self.current()
             self.eat("RETURN")
-            expr = self.parse_expression()
+            # Check for multi-return: return expr1, expr2, ...
+            values = [self.parse_expression()]
+            while self.current().type == "COMMA":
+                self.eat("COMMA")
+                values.append(self.parse_expression())
             self.eat("SEMI")
-            return self._pos(ReturnStatement(expr), tok)
+            if len(values) > 1:
+                return self._pos(MultiReturnStatement(values), tok)
+            return self._pos(ReturnStatement(values[0]), tok)
 
         elif current.type == "DEFER":
             tok = self.current()
@@ -1457,6 +1492,85 @@ class Parser:
                 expr = self.parse_expression()
                 self.eat("SEMI")
                 return self._pos(VariableDecl(name, None, expr), tok)
+            elif (
+                self.pos + 1 < len(self.tokens)
+                and self.tokens[self.pos + 1].type == "COMMA"
+            ):
+                # Could be multi-variable decl (a, b, c : int, int, int = expr)
+                # or multi-assignment (a, b, c = expr)
+                # Look ahead: collect all consecutive IDENT,COMMA pairs and check what follows
+                saved = self.pos
+                tok = self.current()
+                # Count how many IDENTs are in the comma-separated sequence
+                # We know current is IDENT and next is COMMA, so at least 2
+                num_names = 1
+                scan_pos = self.pos
+                while (
+                    scan_pos + 1 < len(self.tokens)
+                    and self.tokens[scan_pos].type == "IDENT"
+                    and self.tokens[scan_pos + 1].type == "COMMA"
+                ):
+                    num_names += 1
+                    scan_pos += 2
+                    # After the last COMMA, there should be another IDENT
+                    if (
+                        scan_pos < len(self.tokens)
+                        and self.tokens[scan_pos].type == "IDENT"
+                    ):
+                        continue
+                    else:
+                        break
+                # Now check what follows the last IDENT
+                # scan_pos points to the last IDENT in the sequence
+                if (
+                    scan_pos + 1 < len(self.tokens)
+                    and self.tokens[scan_pos + 1].type == "COLON"
+                ):
+                    # Multi-variable declaration: a, b, c : type1, type2, type3 = expr
+                    self.pos = saved
+                    names = []
+                    names.append(self.eat("IDENT").value)
+                    while self.current().type == "COMMA":
+                        self.eat("COMMA")
+                        names.append(self.eat("IDENT").value)
+                    self.eat("COLON")
+                    var_types = [self.parse_type()]
+                    while self.current().type == "COMMA":
+                        self.eat("COMMA")
+                        var_types.append(self.parse_type())
+                    expr = None
+                    if self.current().type == "ASSIGN":
+                        self.eat("ASSIGN")
+                        expr = self.parse_expression()
+                    self.eat("SEMI")
+                    return self._pos(MultiVariableDecl(names, var_types, expr), tok)
+                elif (
+                    scan_pos + 1 < len(self.tokens)
+                    and self.tokens[scan_pos + 1].type == "ASSIGN"
+                ):
+                    # Multi-assignment: a, b, c = expr
+                    self.pos = saved
+                    targets = []
+                    targets.append(Identifier(self.eat("IDENT").value))
+                    while self.current().type == "COMMA":
+                        self.eat("COMMA")
+                        targets.append(Identifier(self.eat("IDENT").value))
+                    self.eat("ASSIGN")
+                    expr = self.parse_expression()
+                    self.eat("SEMI")
+                    return self._pos(MultiAssign(targets, expr), tok)
+                else:
+                    # Not a multi-decl or multi-assign, restore and fall through
+                    self.pos = saved
+                    tok = self.current()
+                    expr = self.parse_expression()
+                    if self.current().type == "ASSIGN":
+                        self.eat("ASSIGN")
+                        val = self.parse_expression()
+                        self.eat("SEMI")
+                        return self._pos(Assignment(expr, val), tok)
+                    self.eat("SEMI")
+                    return self._pos(ExpressionStatement(expr), tok)
             elif (
                 self.pos + 1 < len(self.tokens)
                 and self.tokens[self.pos + 1].type == "COLON"

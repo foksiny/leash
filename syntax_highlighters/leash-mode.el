@@ -37,6 +37,8 @@
    ;; @from native import directive
    '("@from\\s*(" . font-lock-preprocessor-face)
    ;; Multi-type syntax: [int, float]
+   ;; Multi-return type syntax: (int, float)
+   '("([ \t]*\(int\|uint\|float\|bool\|string\|char\|void\)[ \t]*\(,[ \t]*\(int\|uint\|float\|bool\|string\|char\|void\)[ \t]*\)*)" . font-lock-type-face)
    '("\\[[ \t]*\\(int\\|uint\\|float\\|bool\\|string\\|char\\|void\\)[ \t]*\\(,[ \t]*\\(int\\|uint\\|float\\|bool\\|string\\|char\\|void\\)[ \t]*\\)*\\]" . font-lock-type-face)
 ;; Function pointer types: fnc(int, int) : int
     '("fnc[ \t]*([^) ]*)" . font-lock-type-face)

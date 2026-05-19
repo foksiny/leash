@@ -73,6 +73,7 @@ class VariableDecl(Statement):
         self.name = name
         self.var_type = var_type
         self.value = value
+        self.is_multi = False  # True if part of a multi-variable decl (for codegen)
 
 
 class Assignment(Statement):
@@ -151,6 +152,27 @@ class ForeachVectorStatement(Statement):
 class ReturnStatement(Statement):
     def __init__(self, value):
         self.value = value
+
+
+class MultiReturnStatement(Statement):
+    """Represents returning multiple values: return expr1, expr2, ..."""
+    def __init__(self, values):
+        self.values = values  # list of expressions
+
+
+class MultiVariableDecl(Statement):
+    """Represents declaring multiple variables from a multi-return call: a, b : int, int = func()"""
+    def __init__(self, names, var_types, value):
+        self.names = names  # list of variable names
+        self.var_types = var_types  # list of type strings
+        self.value = value  # expression (typically a Call)
+
+
+class MultiAssign(Statement):
+    """Represents assigning to multiple variables from a multi-return call: a, b = func()"""
+    def __init__(self, targets, value):
+        self.targets = targets  # list of lvalue expressions (typically Identifiers)
+        self.value = value  # expression (typically a Call)
 
 
 class StopStatement(Statement):

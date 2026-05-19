@@ -408,7 +408,13 @@ def run_file(input_file, args=[], target_name=None, check_mode=False, warnings_a
         if res.returncode != 0: sys.exit(res.returncode)
     except: sys.exit(1)
     finally:
-        if os.path.exists(out): os.remove(out)
+        if os.path.exists(out):
+            for _ in range(10):
+                try:
+                    os.remove(out)
+                    break
+                except OSError:
+                    time.sleep(0.1)
 
 def main():
     if len(sys.argv) < 2:

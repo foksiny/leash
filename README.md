@@ -38,6 +38,7 @@ Leash is a strongly-typed, modern compiled programming language built on top of 
 - [Macros](#macros)
 - [Generic Types](#generic-types)
 - [Multi-Type Functions](#multi-type-functions)
+- [Multi-Return Functions](#multi-return-functions)
 - [Type Casting](#type-casting)
 - [The `as` Keyword](#the-as-keyword)
 - [Type Conversions](#type-conversions)
@@ -2375,6 +2376,134 @@ Multi-type functions are useful when:
 - You need the compiler to automatically generate the right function based on usage
 
 This is similar to how C++ templates work, but with Leash's type checker automatically handling the specialization.
+
+## Multi-Return Functions
+
+Leash supports functions that return multiple values using **multi-return syntax**. This allows a function to return a tuple of values without needing to define a struct.
+
+### Syntax
+
+Use parenthesized type lists `(type1, type2, ...)` in the function signature and comma-separated expressions in the `return` statement:
+
+```leash
+fnc add_sub(a int, b int) : (int, int) {
+    return a + b, a - b;
+}
+
+fnc main() : void {
+    sum, diff: int, int = add_sub(10, 4);
+    show(sum);   // 14
+    show(diff);  // 6
+}
+```
+
+### How It Works
+
+Under the hood, multi-return values are passed as an LLVM struct. The compiler automatically:
+
+1. Constructs a struct from the returned values
+2. Extracts each element when assigning to variables
+3. Type-checks that the number and types of values match the declaration
+
+### Multi-Variable Declaration
+
+Use `name1, name2 : type1, type2 = expr` to declare multiple variables from a multi-return call:
+
+```leash
+fnc divmod(a int, b int) : (int, int) {
+    return a / b, a % b;
+}
+
+fnc main() : void {
+    quotient, remainder: int, int = divmod(17, 5);
+    show(quotient);   // 3
+    show(remainder);  // 2
+}
+```
+
+### Multi-Assignment
+
+Use `name1, name2 = expr` to assign to existing variables:
+
+```leash
+fnc swap(a int, b int) : (int, int) {
+    return b, a;
+}
+
+fnc main() : void {
+    x: int = 10;
+    y: int = 20;
+    x, y = swap(x, y);
+    show(x);  // 20
+    show(y);  // 10
+}
+```
+
+### Three or More Return Values
+
+Multi-return works with any number of values:
+
+```leash
+fnc stats(a int, b int, c int) : (int, int, int) {
+    return a + b + c, a * b * c, a - b - c;
+}
+
+fnc main() : void {
+    sum, prod, diff: int, int, int = stats(2, 3, 4);
+    show(sum);   // 9
+    show(prod);  // 24
+    show(diff);  // -5
+}
+```
+
+### Mixed Types
+
+Each return position can have a different type:
+
+```leash
+fnc compute(x int, y float) : (int, float) {
+    return x * 2, y + 1.5;
+}
+
+fnc main() : void {
+    i, f: int, float = compute(5, 3.14);
+    show(i);  // 10
+    show(f);  // 4.64
+}
+```
+
+### Type Safety
+
+The compiler enforces that:
+
+- The number of return values matches the declared return type
+- Each return value's type is compatible with the corresponding declared type
+- Multi-variable declarations have matching names and types
+- Multi-assignment targets existing, mutable variables with compatible types
+
+```leash
+// Error: function expects 3 return values but got 2
+fnc bad() : (int, int, int) {
+    return 1, 2;  // compile error
+}
+
+// Error: type mismatch
+fnc main() : void {
+    a, b: string, int = add_sub(10, 4);  // 'string' vs 'int' error
+}
+```
+
+### Works with `defer`
+
+Deferred calls execute before the multi-return value is returned, ensuring proper cleanup:
+
+```leash
+fnc process(f File) : (int, string) {
+    defer f.close();
+    data: string = f.read();
+    return data.size, data;
+}
+```
 
 ## Type Casting
 

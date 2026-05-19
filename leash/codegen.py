@@ -1026,6 +1026,16 @@ class CodeGen:
                 return fn_type.as_pointer()
             return self._get_llvm_type(inner_type).as_pointer()
 
+        # Handle multi-return type: (int, float, ...) -> struct { int, float, ... }
+        # Must come after function pointer check (fnc(...) starts with fnc not just ()
+        if type_name.startswith("(") and type_name.endswith(")") and not type_name.startswith("fnc("):
+            inner = type_name[1:-1]
+            elem_types_str = [t.strip() for t in inner.split(",")]
+            llvm_elem_types = []
+            for et in elem_types_str:
+                llvm_elem_types.append(self._get_llvm_type(et, is_return=is_return))
+            return ir.LiteralStructType(llvm_elem_types)
+
         # Handle function pointer types: fnc(param_types) : return_type
         if self._is_function_pointer_type(type_name):
             param_types, return_type = self._get_function_pointer_signature(type_name)
@@ -1711,6 +1721,10 @@ class CodeGen:
                 self.builder.ret(ir.Constant(ir.IntType(32), 0))
             elif node.return_type == "void":
                 self.builder.ret_void()
+            elif node.return_type and node.return_type.startswith("("):
+                # Multi-return type: return a zero-initialized struct
+                default_val = self._emit_default_value(node.return_type)
+                self.builder.ret(default_val)
             else:
                 self.builder.unreachable()
 
@@ -1739,6 +1753,79 @@ class CodeGen:
             self.builder.ret_void()
         else:
             self.builder.ret(val)
+
+    def _codegen_MultiReturnStatement(self, node):
+        """Generate code for multi-return: return expr1, expr2, ..."""
+        ret_type = self.builder.function.type.pointee.return_type
+
+        # Build a struct value with all the return values
+        if isinstance(ret_type, ir.LiteralStructType):
+            # Multi-return: create a struct and insert each value
+            val = ir.Constant(ret_type, ir.Undefined)
+            for i, expr in enumerate(node.values):
+                elem_val = self._codegen(expr)
+                # Cast to the expected element type if needed
+                expected_elem_type = ret_type.elements[i]
+                elem_val = self._emit_cast(elem_val, expected_elem_type)
+                val = self.builder.insert_value(val, elem_val, i)
+        else:
+            # Single return value (shouldn't happen, but handle gracefully)
+            val = self._codegen(node.values[0])
+            val = self._emit_cast(val, ret_type)
+
+        # Execute deferred calls before returning
+        while self.defer_stack and self.defer_stack[-1]:
+            deferred_call = self.defer_stack[-1].pop()
+            self._codegen(deferred_call)
+
+        self._emit_cleanup(ret_val=val)
+        if isinstance(ret_type, ir.VoidType):
+            self.builder.ret_void()
+        else:
+            self.builder.ret(val)
+
+    def _codegen_MultiVariableDecl(self, node):
+        """Generate code for multi-variable declaration: a, b : int, int = call()"""
+        # Generate the call expression which returns a struct
+        call_val = self._codegen(node.value)
+
+        # Extract each element from the struct and create variables
+        for i, (name, var_type) in enumerate(zip(node.names, node.var_types)):
+            elem_val = self.builder.extract_value(call_val, i)
+            target_llvm = self._get_llvm_type(var_type)
+            elem_val = self._emit_cast(elem_val, target_llvm)
+            ptr = self.builder.alloca(elem_val.type)
+            self.builder.store(elem_val, ptr)
+            self.var_symtab[name] = (ptr, var_type)
+
+    def _codegen_MultiAssign(self, node):
+        """Generate code for multi-assignment: a, b = call()"""
+        # Generate the call expression which returns a struct
+        call_val = self._codegen(node.value)
+
+        # Extract each element and assign to the target variable
+        for i, target in enumerate(node.targets):
+            elem_val = self.builder.extract_value(call_val, i)
+            # Get the target lvalue
+            if isinstance(target, Identifier):
+                var_info = self.var_symtab.get(target.name)
+                if var_info:
+                    ptr = var_info[0]
+                    target_type = var_info[1]
+                    target_llvm = self._get_llvm_type(target_type)
+                    elem_val = self._emit_cast(elem_val, target_llvm)
+                    self.builder.store(elem_val, ptr)
+            else:
+                # Handle member access, index access, etc.
+                lvalue_result = self._codegen_lvalue(target)
+                if lvalue_result:
+                    if len(lvalue_result) == 3:
+                        ptr, type_name, _ = lvalue_result
+                    else:
+                        ptr, type_name = lvalue_result
+                    target_llvm = self._get_llvm_type(type_name)
+                    elem_val = self._emit_cast(elem_val, target_llvm)
+                    self.builder.store(elem_val, ptr)
 
     def _codegen_StopStatement(self, node):
         # stop (break) - jump to the loop's merge block

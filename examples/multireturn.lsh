@@ -1,0 +1,9 @@
+fnc add_sub(a int, b int) : (int, int) {
+    return a + b, a - b;
+}
+
+fnc main() {
+    a, b: int, int = add_sub(10, 4);
+    show(a); // Should print 14
+    show(b); // Should print 6
+}

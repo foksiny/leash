@@ -43,6 +43,9 @@ syn match leashGenericParam /,\s*\zs[A-Z][a-zA-Z0-9_]*\ze/
 " Multi-type syntax: [int, float]
 syn match leashMultiType /\[\s*[a-z_][a-zA-Z0-9_]*\s*\(,\s*[a-z_][a-zA-Z0-9_]*\s*\)*\]/
 
+" Multi-return type syntax: (int, float)
+syn match leashMultiReturn /(\s*[a-zA-Z_][a-zA-Z0-9_<>\[\]&\*\s]*\s*\(,\s*[a-zA-Z_][a-zA-Z0-9_<>\[\]&\*\s]*\s*\)*)/
+
 " Function pointer types: fnc(int, int) : int
 syn match leashFuncPointer /fnc\s*(\s*[^)]*\s*)\s*:\s*[a-z_][a-zA-Z0-9_]*\s*\(\s*<\s*[0-9, ]\+\s*>\s*\)\?/
 
@@ -106,6 +109,7 @@ hi def link leashClassInheritance Type
 hi def link leashTypeAnnotation Type
 hi def link leashGenericParam Type
 hi def link leashMultiType Type
+hi def link leashMultiReturn Type
 hi def link leashArrayType Type
 hi def link leashFuncPointer Type
 hi def link leashBoolean Boolean
