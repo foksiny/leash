@@ -487,6 +487,95 @@ monaco.languages.registerCodeActionProvider('leash', {
   }
 });
 
+// 5c. MARKDOWN LANGUAGE SUPPORT
+function registerMarkdownLanguage() {
+  if (typeof monaco === 'undefined') return;
+
+  monaco.languages.register({ id: 'markdown' });
+
+  monaco.languages.setMonarchTokensProvider('markdown', {
+    defaultToken: '',
+    tokenPostfix: '.md',
+
+    tokenizer: {
+      root: [
+        // Headings
+        [/^#{6}\s+.*$/, 'keyword'],
+        [/^#{5}\s+.*$/, 'keyword'],
+        [/^#{4}\s+.*$/, 'keyword'],
+        [/^#{3}\s+.*$/, 'keyword'],
+        [/^#{2}\s+.*$/, 'keyword'],
+        [/^#{1}\s+.*$/, 'keyword'],
+
+        // Bold + Italic
+        [/(\*\*|__)(.*?)\1/, 'keyword'],
+        [/(\*|_)(.*?)\1/, 'string'],
+
+        // Inline code
+        [/`[^`]+`/, 'variable.source'],
+
+        // Code blocks
+        [/^```\w*$/, 'delimiter.html', '@codeBlock'],
+
+        // Links
+        [/\[[^\]]*\]\([^)]*\)/, 'string.link'],
+        [/\[[^\]]*\]\[[^\]]*\]/, 'string.link'],
+
+        // Images
+        [/\!\[[^\]]*\]\([^)]*\)/, 'string.link'],
+
+        // Blockquotes
+        [/^>\s+.*$/, 'comment'],
+
+        // Horizontal rules
+        [/^(\s*[-*_]\s*){3,}\s*$/, 'delimiter.html'],
+
+        // Lists
+        [/^\s*[-*+]\s+/, 'keyword'],
+        [/^\s*\d+\.\s+/, 'keyword'],
+
+        // Strikethrough
+        [/~~[^~]+~~/, 'invalid'],
+
+        // HTML tags
+        [/<\/?[a-zA-Z][^>]*>/, 'delimiter.html'],
+      ],
+
+      codeBlock: [
+        [/^```\s*$/, 'delimiter.html', '@pop'],
+        [/.*$/, 'variable.source'],
+      ]
+    }
+  });
+
+  monaco.languages.setLanguageConfiguration('markdown', {
+    comments: {
+      blockComment: ['<!--', '-->'],
+    },
+    brackets: [
+      ['{', '}'],
+      ['[', ']'],
+      ['(', ')'],
+    ],
+    autoClosingPairs: [
+      { open: '{', close: '}' },
+      { open: '[', close: ']' },
+      { open: '(', close: ')' },
+      { open: '`', close: '`', notIn: ['string'] },
+      { open: '*', close: '*', notIn: ['string'] },
+      { open: '_', close: '_', notIn: ['string'] },
+      { open: '~~', close: '~~', notIn: ['string'] },
+    ],
+    surroundingPairs: [
+      { open: '[', close: ']' },
+      { open: '(', close: ')' },
+      { open: '*', close: '*' },
+      { open: '_', close: '_' },
+      { open: '`', close: '`' },
+    ]
+  });
+}
+
 // 6. LSP BACKGROUND DIAGNOSTICS PARSER
 function parseTypecheckerOutput(stdoutText, activeFilePath) {
   const markers = [];

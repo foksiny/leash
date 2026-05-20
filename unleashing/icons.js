@@ -102,7 +102,53 @@ const Icons = {
   warn: `<svg viewBox="0 0 24 24" fill="#ffd000"><path d="M1 21h22L12 2 1 21zm12-3h-2v-2h2v2zm0-4h-2v-4h2v4z"/></svg>`,
 
   // Problem Error Icon
-  error: `<svg viewBox="0 0 24 24" fill="#ff5c6c"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>`
+  error: `<svg viewBox="0 0 24 24" fill="#ff5c6c"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>`,
+
+  // Extensions Icon (Puzzle Piece)
+  extensions: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M19.5 12c-1.38 0-2.5-1.12-2.5-2.5S18.12 7 19.5 7v0A2.5 2.5 0 0 0 17 4.5h0C17 5.88 15.88 7 14.5 7S12 5.88 12 4.5v0A2.5 2.5 0 0 0 9.5 7h0C8.12 7 7 5.88 7 4.5v0A2.5 2.5 0 0 0 4.5 7v10A2.5 2.5 0 0 0 7 19.5h10A2.5 2.5 0 0 0 19.5 17V12z"/>
+    <path d="M9.5 17c0-1.38 1.12-2.5 2.5-2.5s2.5 1.12 2.5 2.5"/>
+  </svg>`,
+
+  // Image File Icon
+  imageFile: `<svg viewBox="0 0 24 24" fill="none" stroke="#c084fc" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+    <circle cx="8.5" cy="8.5" r="1.5" fill="#c084fc" stroke="none"/>
+    <polyline points="21 15 16 10 5 21"/>
+  </svg>`,
+
+  // Markdown File Icon
+  markdownFile: `<svg viewBox="0 0 24 24" fill="none" stroke="#00f0ff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+    <polyline points="14 2 14 8 20 8"/>
+    <line x1="10" y1="13" x2="16" y2="13"/>
+    <line x1="12" y1="11" x2="12" y2="15"/>
+    <polyline points="10 17 12 15 14 17"/>
+  </svg>`,
+
+  // UIE Packed Extension Icon
+  uieFile: `<svg viewBox="0 0 24 24" fill="none" stroke="#ffd000" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+    <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
+    <line x1="12" y1="22.08" x2="12" y2="12"/>
+  </svg>`,
+
+  // Move/Drag indicator icon
+  moveIcon: `<svg viewBox="0 0 24 24" fill="currentColor"><path d="M11 18c0 1.1-.9 2-2 2s-2-.9-2-2 .9-2 2-2 2 .9 2 2zm-2-8c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0-6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm6 4c1.1 0 2-.9 2-2s-.9-2-2-2-2 .9-2 2 .9 2 2 2zm0 2c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm0 6c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"/></svg>`,
+
+  // Eye/Preview icon
+  eyeIcon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+    <circle cx="12" cy="12" r="3"/>
+  </svg>`,
+
+  // Package icon for compact
+  packageIcon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <line x1="16.5" y1="9.4" x2="7.5" y2="4.21"/>
+    <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+    <polyline points="3.27 6.96 12 12.01 20.73 6.96"/>
+    <line x1="12" y1="22.08" x2="12" y2="12"/>
+  </svg>`
 };
 
 // Bind icons to document loads
@@ -118,6 +164,7 @@ document.addEventListener("DOMContentLoaded", () => {
   };
 
   injectSidebarIcon("btn-explorer", "explorer");
+  injectSidebarIcon("btn-extensions", "extensions");
   injectSidebarIcon("btn-debug", "debug");
   injectSidebarIcon("btn-settings", "settings");
   injectSidebarIcon("btn-palette", "palette");
@@ -131,6 +178,7 @@ document.addEventListener("DOMContentLoaded", () => {
   injectActionIcon("action-new-file", "newFile");
   injectActionIcon("action-new-folder", "newFolder");
   injectActionIcon("action-refresh", "refresh");
+  injectActionIcon("action-refresh-extensions", "refresh");
   injectActionIcon("action-close-folder", "closeFolder");
   injectActionIcon("action-clear-console", "clear");
   injectActionIcon("action-toggle-console", "minimizePanel");

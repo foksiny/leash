@@ -21,8 +21,16 @@
           <div class="dropdown-menu" id="dropdown-file">
             <div class="dropdown-option" id="opt-file-newfile">New File <span class="shortcut">Ctrl+N</span></div>
             <div class="dropdown-option" id="opt-file-newfolder">New Folder <span class="shortcut">Ctrl+Shift+N</span></div>
+            <hr class="menu-sep">
+            <div class="dropdown-option" id="opt-file-newproject">New Project...</div>
+            <div class="dropdown-option" id="opt-file-openproject">Open Project...</div>
             <div class="dropdown-option" id="opt-file-open">Open Folder... <span class="shortcut">Ctrl+O</span></div>
             <hr class="menu-sep">
+            <div class="dropdown-option hidden" id="opt-file-configure">Configure UI Project Settings</div>
+            <div class="dropdown-option hidden" id="opt-file-install-ext">Install Extension</div>
+            <div class="dropdown-option" id="opt-file-compact-ext">Compact Extension Project...</div>
+            <div class="dropdown-option" id="opt-file-install-uie">Install .zip Extension...</div>
+            <hr class="menu-sep" id="opt-file-ext-sep" style="display:none;">
             <div class="dropdown-option" id="opt-file-save">Save File <span class="shortcut">Ctrl+S</span></div>
             <div class="dropdown-option" id="opt-file-close">Close Folder <span class="shortcut">Ctrl+W</span></div>
             <hr class="menu-sep">
@@ -71,6 +79,7 @@
     <nav id="sidebar">
       <div class="sidebar-top">
         <button class="sidebar-btn active" id="btn-explorer" title="Explorer (Ctrl+Shift+E)"></button>
+        <button class="sidebar-btn" id="btn-extensions" title="Extensions (Ctrl+Shift+X)"></button>
         <button class="sidebar-btn" id="btn-debug" title="Run & Debug (Ctrl+Shift+D)"></button>
         <button class="sidebar-btn" id="btn-settings" title="Settings (Ctrl+Shift+S)"></button>
       </div>
@@ -98,6 +107,21 @@
             <button class="premium-btn" id="btn-open-workspace">Open Folder</button>
           </div>
           <div id="file-tree" class="file-tree-container"></div>
+        </div>
+      </section>
+
+      <!-- Drawer 1.5: Extensions -->
+      <section class="drawer" id="drawer-extensions">
+        <div class="drawer-header">
+          <h3>EXTENSIONS</h3>
+          <div class="drawer-actions">
+            <button class="action-btn" id="action-refresh-extensions" title="Refresh Extensions"></button>
+          </div>
+        </div>
+        <div class="drawer-content scrollable">
+          <div id="extensions-list">
+            <p style="padding: 10px; color: var(--text-secondary); text-align: center;">Active extensions will appear here.</p>
+          </div>
         </div>
       </section>
 
@@ -310,6 +334,23 @@
           </div>
         </div>
         <div id="monaco-editor-instance" style="width: 100%; height: 100%; display: none;"></div>
+
+        <!-- Image Preview Container -->
+        <div id="image-preview-container" style="display: none; width: 100%; height: 100%; align-items: center; justify-content: center; background: var(--bg-darkest); overflow: auto; position: relative;">
+          <div id="image-preview-toolbar" style="position: absolute; top: 8px; right: 8px; display: flex; gap: 6px; z-index: 10;">
+            <button class="console-action-btn" id="image-preview-open-external" title="Open in default app">
+              <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+            </button>
+          </div>
+          <div id="image-preview-info" style="position: absolute; bottom: 8px; left: 8px; font-size: 11px; color: var(--text-muted); background: rgba(0,0,0,0.6); padding: 4px 8px; border-radius: 4px; z-index: 10;"></div>
+          <img id="image-preview-img" src="" alt="Preview" style="max-width: 100%; max-height: 100%; object-fit: contain;" />
+        </div>
+
+        <!-- Markdown Preview Split Container -->
+        <div id="markdown-preview-container" style="display: none; width: 100%; height: 100%; flex-direction: row;">
+          <div id="markdown-editor-pane" style="flex: 1; height: 100%; border-right: 1px solid var(--border-dark); overflow: hidden;"></div>
+          <div id="markdown-preview-pane" style="flex: 1; height: 100%; overflow-y: auto; padding: 24px; background: var(--bg-darkest);"></div>
+        </div>
       </div>
 
       <!-- Resizable Lower Console panel -->
@@ -354,11 +395,11 @@
     </div>
   </dialog>
 
-  <!-- Premium Custom Modal for New File/Folder Prompts -->
+  <!-- Premium Custom Modal for New File/Folder/Rename Prompts -->
   <dialog id="custom-prompt-modal" style="background: transparent; border: none; margin: 15% auto auto auto; width: 400px; outline: none; z-index: 2500;">
     <div class="palette-wrapper">
       <div class="prompt-header" style="padding: 12px 16px; border-bottom: 1px solid var(--border-dark); font-size: 13px; font-weight: 600; color: var(--text-cyan);">
-        Create New <span id="prompt-type-label">File</span>
+        <span id="prompt-title-label">Create New File</span>
       </div>
       <div style="padding: 16px; display: flex; flex-direction: column; gap: 12px;">
         <input type="text" id="prompt-input-field" class="premium-input" placeholder="Enter name..." autocomplete="off">
@@ -370,11 +411,69 @@
     </div>
   </dialog>
 
+  <!-- Project Creation Modal -->
+  <dialog id="project-modal" style="background: transparent; border: none; margin: 15% auto auto auto; width: 400px; outline: none; z-index: 2500;">
+    <div class="palette-wrapper">
+      <div class="prompt-header" style="padding: 12px 16px; border-bottom: 1px solid var(--border-dark); font-size: 13px; font-weight: 600; color: var(--text-cyan);">
+        Create New Project
+      </div>
+      <div style="padding: 16px; display: flex; flex-direction: column; gap: 12px;">
+        <label style="color: var(--text-secondary); font-size: 12px;">Project Type</label>
+        <select id="project-type-select" class="premium-select">
+          <option value="leash">Leash Application</option>
+          <option value="extension">Unleashing IDE Extension</option>
+        </select>
+        <label style="color: var(--text-secondary); font-size: 12px;">Project Name</label>
+        <input type="text" id="project-name-input" class="premium-input" placeholder="e.g. MyAwesomeProject" autocomplete="off">
+        <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px;">
+          <button class="premium-btn" id="project-cancel-btn" style="background: rgba(255,255,255,0.03); border-color: var(--border-dark); color: var(--text-secondary);">Cancel</button>
+          <button class="premium-btn" id="project-confirm-btn">Create</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Configure Project Modal -->
+  <dialog id="config-project-modal" style="background: transparent; border: none; margin: 15% auto auto auto; width: 400px; outline: none; z-index: 2500;">
+    <div class="palette-wrapper">
+      <div class="prompt-header" style="padding: 12px 16px; border-bottom: 1px solid var(--border-dark); font-size: 13px; font-weight: 600; color: var(--text-cyan);">
+        Configure Project Type
+      </div>
+      <div style="padding: 16px; display: flex; flex-direction: column; gap: 12px;">
+        <label style="color: var(--text-secondary); font-size: 12px;">Select project type:</label>
+        <select id="config-project-type" class="premium-select">
+          <option value="Leash Project">Leash Project</option>
+          <option value="Unleashing IDE Extension">Unleashing IDE Extension</option>
+          <option value="Unknown">Unknown / Other</option>
+        </select>
+        <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px;">
+          <button class="premium-btn" id="config-project-cancel" style="background: rgba(255,255,255,0.03); border-color: var(--border-dark); color: var(--text-secondary);">Cancel</button>
+          <button class="premium-btn" id="config-project-confirm">Save</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Open Project Modal -->
+  <dialog id="open-project-modal" style="background: transparent; border: none; margin: 10% auto auto auto; width: 500px; outline: none; z-index: 2500;">
+    <div class="palette-wrapper">
+      <div class="prompt-header" style="padding: 12px 16px; border-bottom: 1px solid var(--border-dark); font-size: 13px; font-weight: 600; color: var(--text-cyan); display: flex; justify-content: space-between;">
+        <span>Open Project</span>
+        <button id="open-project-close-btn" style="background: none; border: none; color: var(--text-secondary); cursor: pointer; font-size: 16px;">&times;</button>
+      </div>
+      <div id="open-project-list" style="max-height: 400px; overflow-y: auto; padding: 8px;">
+        <!-- Projects will be populated here -->
+      </div>
+    </div>
+  </dialog>
+
+
   <!-- Context Menu for File tree -->
   <div id="tree-context-menu" class="context-menu hidden">
     <div class="menu-option" id="ctx-new-file">New File</div>
     <div class="menu-option" id="ctx-new-folder">New Folder</div>
     <div class="menu-option" id="ctx-rename">Rename</div>
+    <div class="menu-option" id="ctx-move">Move to Folder...</div>
     <div class="menu-option ctx-danger" id="ctx-delete">Delete</div>
   </div>
 

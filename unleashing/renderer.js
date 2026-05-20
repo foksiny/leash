@@ -4,6 +4,13 @@
 const { ipcRenderer } = window.nodeRequire('electron');
 const path = window.nodeRequire('path');
 const fs = window.nodeRequire('fs');
+const os = window.nodeRequire('os');
+const { UnleashingAPI } = window.nodeRequire(path.join(__dirname, 'api.js'));
+const { ExtensionLoader } = window.nodeRequire(path.join(__dirname, 'extensionLoader.js'));
+
+let unleashingAPI;
+let extensionLoader;
+
 
 // --- THEME REGISTRY (12 CUSTOM ACCENT PALETTES) ---
 const THEME_REGISTRY = {
@@ -489,6 +496,71 @@ const THEME_REGISTRY = {
   }
 };
 
+// --- SUPPORTED FILE TYPES ---
+const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico', '.tiff', '.tif', '.avif']);
+const MARKDOWN_EXTENSIONS = new Set(['.md', '.markdown', '.mdown', '.mkd', '.mkdn']);
+
+// Extension to Monaco language ID mapping — add new languages here
+const EXTENSION_TO_LANG = {
+  '.lsh': 'leash',
+  '.leash': 'leash',
+  '.json': 'json',
+  '.js': 'javascript',
+  '.ts': 'typescript',
+  '.tsx': 'typescript',
+  '.jsx': 'javascript',
+  '.html': 'html',
+  '.htm': 'html',
+  '.css': 'css',
+  '.scss': 'scss',
+  '.less': 'less',
+  '.xml': 'xml',
+  '.svg': 'xml',
+  '.py': 'python',
+  '.rb': 'ruby',
+  '.go': 'go',
+  '.rs': 'rust',
+  '.c': 'c',
+  '.cpp': 'cpp',
+  '.h': 'c',
+  '.hpp': 'cpp',
+  '.java': 'java',
+  '.kt': 'kotlin',
+  '.swift': 'swift',
+  '.sh': 'shell',
+  '.bash': 'shell',
+  '.zsh': 'shell',
+  '.ps1': 'powershell',
+  '.sql': 'sql',
+  '.yaml': 'yaml',
+  '.yml': 'yaml',
+  '.toml': 'toml',
+  '.ini': 'ini',
+  '.cfg': 'ini',
+  '.bat': 'bat',
+  '.cmd': 'bat',
+  '.dockerfile': 'dockerfile',
+  '.makefile': 'makefile',
+  '.lua': 'lua',
+  '.php': 'php',
+  '.r': 'r',
+  '.dart': 'dart',
+  '.scala': 'scala',
+  '.vue': 'html',
+  '.svelte': 'html',
+};
+
+// Markdown extensions
+Object.entries({
+  '.md': 'markdown', '.markdown': 'markdown', '.mdown': 'markdown',
+  '.mkd': 'markdown', '.mkdn': 'markdown',
+}).forEach(([ext, lang]) => EXTENSION_TO_LANG[ext] = lang);
+
+function getLanguageForFile(fileName) {
+  const ext = path.extname(fileName).toLowerCase();
+  return EXTENSION_TO_LANG[ext] || 'plaintext';
+}
+
 // --- STATE MANAGEMENT ---
 let activeTheme = 'leash-neon';
 let isRecordingKeybind = null; // Stores action name if recording hotkey
@@ -519,6 +591,9 @@ let isAutoFixEnabled = true;
 
 // Breakpoints state - stores { filePath: [lineNumbers] }
 let breakpoints = {};
+
+// Drag and Drop State
+let draggedNode = null;
 
 // Context Menu Target State
 let contextMenuTarget = null;
@@ -556,6 +631,9 @@ document.addEventListener("DOMContentLoaded", () => {
     // Register Leash Language
     registerLeashLanguage();
     
+    // Register Markdown Language
+    registerMarkdownLanguage();
+    
     // Register all 12 themes in Monaco
     for (let themeName in THEME_REGISTRY) {
       const tData = THEME_REGISTRY[themeName];
@@ -581,6 +659,20 @@ document.addEventListener("DOMContentLoaded", () => {
       cursorBlinking: 'smooth',
       cursorSmoothCaretAnimation: 'on'
     });
+
+    // Initialize extensions
+    unleashingAPI = new UnleashingAPI({
+      getEditorInstance: () => editorInstance,
+      registerCustomTheme: (name) => { /* Placeholder */ },
+      setTabOverride: (handler) => { /* Placeholder */ }
+    });
+    extensionLoader = new ExtensionLoader(unleashingAPI);
+    
+    ipcRenderer.invoke('get-home-dir').then(home => {
+      const extPath = path.join(home, '.UnleashingExtensions');
+      extensionLoader.loadExtensions(extPath);
+    });
+
 
     // Handle Editor Content Changes (autosave and real-time syntax checking)
     editorInstance.onDidChangeModelContent((e) => {
@@ -1148,6 +1240,35 @@ async function openWorkspace(folderPath) {
   document.getElementById('no-workspace-view').classList.add('hidden');
   document.getElementById('workspace-title').innerText = path.basename(folderPath);
 
+  // Check for .uide project info
+  const uidePath = path.join(folderPath, '.uide', 'project.json');
+  const configureBtn = document.getElementById('opt-file-configure');
+  const installExtBtn = document.getElementById('opt-file-install-ext');
+  const compactExtBtn = document.getElementById('opt-file-compact-ext');
+  const extSep = document.getElementById('opt-file-ext-sep');
+
+  configureBtn.classList.remove('hidden'); // Always allow config for active workspace
+  extSep.style.display = 'block';
+
+  if (fs.existsSync(uidePath)) {
+    try {
+      const data = JSON.parse(fs.readFileSync(uidePath, 'utf-8'));
+      if (data.type === 'Unleashing IDE Extension') {
+        installExtBtn.classList.remove('hidden');
+        compactExtBtn.classList.remove('hidden');
+      } else {
+        installExtBtn.classList.add('hidden');
+        compactExtBtn.classList.add('hidden');
+      }
+    } catch(e) {
+      installExtBtn.classList.add('hidden');
+      compactExtBtn.classList.add('hidden');
+    }
+  } else {
+    installExtBtn.classList.add('hidden');
+    compactExtBtn.classList.add('hidden');
+  }
+
   // Spawn background interactive PowerShell terminal in workspace folder
   ipcRenderer.send('spawn-terminal', { cwd: folderPath });
 
@@ -1206,15 +1327,22 @@ function renderFileTree(nodes, parentEl, level = 0) {
     }
     itemEl.appendChild(arrowEl);
 
-    // Node icon (closed folder, leash, json, or text file)
+    // Node icon (closed folder, leash, json, image, markdown, zip, or text file)
     const iconEl = document.createElement('span');
     iconEl.className = 'node-icon';
+    const ext = path.extname(node.name).toLowerCase();
     if (node.isDirectory) {
       iconEl.innerHTML = Icons.folder;
     } else if (node.name.endsWith('.lsh')) {
       iconEl.innerHTML = Icons.leashFile;
     } else if (node.name.endsWith('.json')) {
       iconEl.innerHTML = Icons.jsonFile;
+    } else if (IMAGE_EXTENSIONS.has(ext)) {
+      iconEl.innerHTML = Icons.imageFile;
+    } else if (MARKDOWN_EXTENSIONS.has(ext)) {
+      iconEl.innerHTML = Icons.markdownFile;
+    } else if (ext === '.zip') {
+      iconEl.innerHTML = Icons.uieFile;
     } else {
       iconEl.innerHTML = Icons.textFile;
     }
@@ -1251,12 +1379,35 @@ function renderFileTree(nodes, parentEl, level = 0) {
         }
         selectTreeNode(itemEl);
       });
+
+      // Drag and drop: allow dropping into folders
+      setupDragDropForNode(itemEl, node, childrenContainer);
     } else {
-      // File Click: open file in tabs
+      // File Click: open file in tabs (or preview for images)
       itemEl.addEventListener('click', (e) => {
         e.stopPropagation();
         selectTreeNode(itemEl);
-        openFileInEditor(node.path, node.name);
+        const ext = path.extname(node.name).toLowerCase();
+        if (IMAGE_EXTENSIONS.has(ext)) {
+          openImagePreview(node.path, node.name);
+        } else {
+          openFileInEditor(node.path, node.name);
+        }
+      });
+
+      // Drag source for files
+      itemEl.setAttribute('draggable', 'true');
+      itemEl.addEventListener('dragstart', (e) => {
+        e.stopPropagation();
+        draggedNode = node;
+        itemEl.classList.add('dragging');
+        e.dataTransfer.effectAllowed = 'move';
+        e.dataTransfer.setData('text/plain', node.path);
+      });
+      itemEl.addEventListener('dragend', (e) => {
+        e.stopPropagation();
+        itemEl.classList.remove('dragging');
+        clearAllDragIndicators();
       });
     }
 
@@ -1294,14 +1445,21 @@ function setupFileTreeActions() {
   document.getElementById('ctx-new-folder').addEventListener('click', () => createNodePrompt('folder'));
   document.getElementById('action-new-folder').addEventListener('click', () => createNodePrompt('folder'));
 
+  // Action: Move
+  document.getElementById('ctx-move').addEventListener('click', async () => {
+    if (!contextMenuTarget) return;
+    const selectedFolder = await ipcRenderer.invoke('select-folder');
+    if (!selectedFolder) return;
+    const sourcePath = contextMenuTarget.path;
+    const sourceName = contextMenuTarget.name;
+    const destPath = path.join(selectedFolder, sourceName);
+    performMove(sourcePath, destPath, selectedFolder);
+  });
+
   // Action: Rename
   document.getElementById('ctx-rename').addEventListener('click', () => {
     if (!contextMenuTarget) return;
-    const oldName = contextMenuTarget.name;
-    const newName = prompt(`Rename '${oldName}' to:`, oldName);
-    if (newName && newName !== oldName) {
-      renameNode(contextMenuTarget.path, newName);
-    }
+    openRenamePrompt(contextMenuTarget);
   });
 
   // Action: Delete
@@ -1317,6 +1475,15 @@ function setupFileTreeActions() {
     refreshFileTree();
   });
 
+  // Refresh extensions
+  const refreshExtBtn = document.getElementById('action-refresh-extensions');
+  if (refreshExtBtn) {
+    refreshExtBtn.addEventListener('click', () => {
+      // Reload IDE to load extensions
+      window.location.reload();
+    });
+  }
+
   // Close workspace
   document.getElementById('action-close-folder').addEventListener('click', () => {
     closeActiveWorkspace();
@@ -1331,6 +1498,18 @@ function setupFileTreeActions() {
   const executeCreation = () => {
     const name = promptInput.value.trim();
     if (!name) {
+      promptModal.close();
+      return;
+    }
+
+    if (currentPromptType === 'rename') {
+      const oldPath = currentPromptTargetFolder;
+      const oldName = path.basename(oldPath);
+      if (name === oldName) {
+        promptModal.close();
+        return;
+      }
+      renameNode(oldPath, name);
       promptModal.close();
       return;
     }
@@ -1396,10 +1575,12 @@ function createNodePrompt(type) {
   currentPromptTargetFolder = targetFolder;
 
   const modal = document.getElementById('custom-prompt-modal');
-  const label = document.getElementById('prompt-type-label');
+  const titleLabel = document.getElementById('prompt-title-label');
+  const confirmBtn = document.getElementById('prompt-confirm-btn');
   const input = document.getElementById('prompt-input-field');
 
-  label.innerText = type === 'file' ? 'File' : 'Folder';
+  titleLabel.innerText = 'Create New ' + (type === 'file' ? 'File' : 'Folder');
+  confirmBtn.innerText = 'Create';
   input.placeholder = type === 'file' ? 'Enter file name (e.g. main.lsh)...' : 'Enter folder name...';
   input.value = '';
 
@@ -1407,7 +1588,39 @@ function createNodePrompt(type) {
   setTimeout(() => input.focus(), 50);
 }
 
+function openRenamePrompt(node) {
+  const modal = document.getElementById('custom-prompt-modal');
+  const titleLabel = document.getElementById('prompt-title-label');
+  const confirmBtn = document.getElementById('prompt-confirm-btn');
+  const input = document.getElementById('prompt-input-field');
+
+  currentPromptType = 'rename';
+  currentPromptTargetFolder = node.path;
+
+  titleLabel.innerText = 'Rename ' + (node.isDirectory ? 'Folder' : 'File');
+  confirmBtn.innerText = 'Rename';
+  input.placeholder = 'Enter new name...';
+  input.value = node.name;
+
+  modal.showModal();
+  setTimeout(() => {
+    input.focus();
+    // Select the filename without extension for convenience
+    const dotIdx = node.name.lastIndexOf('.');
+    if (dotIdx > 0 && !node.isDirectory) {
+      input.setSelectionRange(0, dotIdx);
+    } else {
+      input.select();
+    }
+  }, 50);
+}
+
 function renameNode(oldPath, newName) {
+  const oldName = path.basename(oldPath);
+  const oldExt = path.extname(oldName).toLowerCase();
+  const newExt = path.extname(newName).toLowerCase();
+  const extensionChanged = oldExt !== newExt;
+
   ipcRenderer.invoke('rename-path', { oldPath, newName })
     .then(res => {
       if (res.success) {
@@ -1416,6 +1629,40 @@ function renameNode(oldPath, newName) {
         if (tab) {
           tab.name = newName;
           tab.filePath = res.newPath;
+
+          // If the extension changed, update the model's language
+          if (extensionChanged && tab.model) {
+            const newLang = getLanguageForFile(newName);
+            const oldLang = tab.model.getLanguageId();
+            if (newLang !== oldLang) {
+              monaco.editor.setModelLanguage(tab.model, newLang);
+
+              // If it was a markdown preview tab, close preview and reopen as editor
+              if (tab.isMarkdown && !MARKDOWN_EXTENSIONS.has(newExt)) {
+                tab.isMarkdown = false;
+                // Reopen as a regular editor tab
+                ipcRenderer.invoke('read-file', res.newPath).then(readRes => {
+                  if (readRes.success) {
+                    const model = monaco.editor.createModel(readRes.content, newLang, monaco.Uri.file(res.newPath));
+                    tab.model = model;
+                    model.onDidChangeContent(() => {
+                      if (!tab.isModified) {
+                        tab.isModified = true;
+                        updateTabsUI();
+                      }
+                    });
+                    // Switch to editor view if this tab is active
+                    if (openTabs[activeTabIndex] === tab) {
+                      document.getElementById('monaco-editor-instance').style.display = 'block';
+                      document.getElementById('markdown-preview-container').style.display = 'none';
+                      document.getElementById('image-preview-container').style.display = 'none';
+                      editorInstance.setModel(model);
+                    }
+                  }
+                });
+              }
+            }
+          }
         }
         refreshFileTree();
         updateTabsUI();
@@ -1448,6 +1695,12 @@ function closeActiveWorkspace() {
   document.getElementById('workspace-title').innerText = 'No Folder Opened';
   document.getElementById('no-workspace-view').classList.remove('hidden');
 
+  // Hide extension-specific menu items
+  document.getElementById('opt-file-install-ext').classList.add('hidden');
+  document.getElementById('opt-file-compact-ext').classList.add('hidden');
+  document.getElementById('opt-file-configure').classList.add('hidden');
+  document.getElementById('opt-file-ext-sep').style.display = 'none';
+
   // Clear session so old files won't be restored when opening a new workspace
   localStorage.removeItem('unleashing-session-tabs');
   localStorage.removeItem('unleashing-session-active');
@@ -1456,6 +1709,259 @@ function closeActiveWorkspace() {
   while (openTabs.length > 0) {
     closeTab(0);
   }
+}
+
+// --- DRAG AND DROP FILE TREE HELPERS ---
+function setupDragDropForNode(element, node, childrenContainer) {
+  element.setAttribute('draggable', 'true');
+
+  element.addEventListener('dragstart', (e) => {
+    e.stopPropagation();
+    draggedNode = node;
+    element.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', node.path);
+  });
+
+  element.addEventListener('dragend', (e) => {
+    e.stopPropagation();
+    element.classList.remove('dragging');
+    clearAllDragIndicators();
+  });
+
+  element.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!draggedNode || draggedNode.path === node.path) return;
+    // Prevent dropping a parent into its own child
+    if (draggedNode.path.startsWith(node.path + path.sep)) return;
+    e.dataTransfer.dropEffect = 'move';
+    element.classList.add('drag-over', 'drag-over-folder');
+  });
+
+  element.addEventListener('dragleave', (e) => {
+    e.stopPropagation();
+    element.classList.remove('drag-over', 'drag-over-folder');
+  });
+
+  element.addEventListener('drop', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    element.classList.remove('drag-over', 'drag-over-folder');
+    if (!draggedNode || draggedNode.path === node.path) return;
+    if (draggedNode.path.startsWith(node.path + path.sep)) return;
+
+    const sourcePath = draggedNode.path;
+    const sourceName = draggedNode.name;
+    const destPath = path.join(node.path, sourceName);
+
+    performMove(sourcePath, destPath, node.path);
+  });
+}
+
+function clearAllDragIndicators() {
+  document.querySelectorAll('.drag-over, .drag-over-folder, .dragging').forEach(el => {
+    el.classList.remove('drag-over', 'drag-over-folder', 'dragging');
+  });
+  document.querySelectorAll('.drop-indicator').forEach(el => el.remove());
+}
+
+async function performMove(sourcePath, destPath, destFolderPath) {
+  if (sourcePath === destPath) return;
+  if (destPath.startsWith(sourcePath + path.sep)) return; // prevent moving into self
+
+  const res = await ipcRenderer.invoke('move-path', { sourcePath, destPath });
+  if (res.success) {
+    // Update open tabs if the moved file is open
+    openTabs.forEach(tab => {
+      if (tab.filePath === sourcePath) {
+        tab.filePath = res.newPath;
+        tab.name = path.basename(res.newPath);
+      } else if (tab.filePath.startsWith(sourcePath + path.sep)) {
+        tab.filePath = tab.filePath.replace(sourcePath, res.newPath);
+      }
+    });
+    updateTabsUI();
+    await refreshFileTree();
+  } else {
+    alert(`Move failed: ${res.error}`);
+  }
+}
+
+// --- IMAGE PREVIEW ---
+function openImagePreview(filePath, fileName) {
+  const container = document.getElementById('image-preview-container');
+  const img = document.getElementById('image-preview-img');
+  const info = document.getElementById('image-preview-info');
+  const editorInstance = document.getElementById('monaco-editor-instance');
+  const splash = document.getElementById('editor-splash');
+  const mdContainer = document.getElementById('markdown-preview-container');
+
+  // Hide other views
+  splash.classList.add('hidden');
+  editorInstance.style.display = 'none';
+  mdContainer.style.display = 'none';
+  container.style.display = 'flex';
+
+  // Read file as base64 for display
+  try {
+    const ext = path.extname(filePath).toLowerCase();
+    const buffer = fs.readFileSync(filePath);
+    const base64 = buffer.toString('base64');
+    let mimeType = 'image/png';
+    if (ext === '.jpg' || ext === '.jpeg') mimeType = 'image/jpeg';
+    else if (ext === '.gif') mimeType = 'image/gif';
+    else if (ext === '.webp') mimeType = 'image/webp';
+    else if (ext === '.svg') mimeType = 'image/svg+xml';
+    else if (ext === '.bmp') mimeType = 'image/bmp';
+    else if (ext === '.ico') mimeType = 'image/x-icon';
+    else if (ext === '.avif') mimeType = 'image/avif';
+
+    img.src = `data:${mimeType};base64,${base64}`;
+
+    // Show file info
+    const sizeKB = (buffer.length / 1024).toFixed(1);
+    info.textContent = `${fileName} · ${sizeKB} KB · ${mimeType}`;
+  } catch (err) {
+    info.textContent = `Error loading image: ${err.message}`;
+  }
+
+  // Open external button
+  document.getElementById('image-preview-open-external').onclick = () => {
+    window.nodeRequire('electron').shell.openPath(filePath);
+  };
+}
+
+// --- MARKDOWN PREVIEW ---
+let markdownEditorInstance = null;
+let markdownPreviewTimeout = null;
+
+function openMarkdownPreview(filePath, content) {
+  const container = document.getElementById('markdown-preview-container');
+  const editorPane = document.getElementById('markdown-editor-pane');
+  const previewPane = document.getElementById('markdown-preview-pane');
+  const editorInstance = document.getElementById('monaco-editor-instance');
+  const splash = document.getElementById('editor-splash');
+  const imgContainer = document.getElementById('image-preview-container');
+
+  // Hide other views
+  splash.classList.add('hidden');
+  editorInstance.style.display = 'none';
+  imgContainer.style.display = 'none';
+  container.style.display = 'flex';
+
+  // Create or update the markdown editor in the left pane
+  if (!markdownEditorInstance) {
+    markdownEditorInstance = monaco.editor.create(editorPane, {
+      theme: activeTheme + '-theme',
+      automaticLayout: true,
+      fontFamily: activeFontFamily,
+      fontSize: activeFontSize,
+      tabSize: activeTabSize,
+      minimap: { enabled: false },
+      scrollBeyondLastLine: false,
+      renderWhitespace: 'selection',
+      cursorBlinking: 'smooth',
+      cursorSmoothCaretAnimation: 'on',
+      wordWrap: 'on'
+    });
+
+    // Listen for changes to update preview
+    markdownEditorInstance.onDidChangeModelContent(() => {
+      if (markdownPreviewTimeout) clearTimeout(markdownPreviewTimeout);
+      markdownPreviewTimeout = setTimeout(() => {
+        const text = markdownEditorInstance.getValue();
+        updateMarkdownPreview(text, previewPane);
+      }, 300);
+    });
+  }
+
+  // Set the model
+  const model = monaco.editor.createModel(content, 'markdown', monaco.Uri.file(filePath));
+  markdownEditorInstance.setModel(model);
+
+  // Initial render
+  updateMarkdownPreview(content, previewPane);
+}
+
+function updateMarkdownPreview(markdownText, previewPane) {
+  // Simple markdown to HTML converter (no external dependency)
+  let html = markdownText;
+
+  // Escape HTML first
+  html = html.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+  // Code blocks (must be before inline code)
+  html = html.replace(/```(\w*)\n([\s\S]*?)```/g, function(match, lang, code) {
+    return `<pre><code class="language-${lang}">${code.trim()}</code></pre>`;
+  });
+
+  // Inline code
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+  // Headings
+  html = html.replace(/^######\s+(.+)$/gm, '<h6>$1</h6>');
+  html = html.replace(/^#####\s+(.+)$/gm, '<h5>$1</h5>');
+  html = html.replace(/^####\s+(.+)$/gm, '<h4>$1</h4>');
+  html = html.replace(/^###\s+(.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^##\s+(.+)$/gm, '<h2>$1</h2>');
+  html = html.replace(/^#\s+(.+)$/gm, '<h1>$1</h1>');
+
+  // Horizontal rules
+  html = html.replace(/^(\s*[-*_]\s*){3,}\s*$/gm, '<hr>');
+
+  // Bold + Italic
+  html = html.replace(/\*\*\*([^*]+)\*\*\*/g, '<strong><em>$1</em></strong>');
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+  html = html.replace(/___([^_]+)___/g, '<strong><em>$1</em></strong>');
+  html = html.replace(/__([^_]+)__/g, '<strong>$1</strong>');
+  html = html.replace(/_([^_]+)_/g, '<em>$1</em>');
+
+  // Strikethrough
+  html = html.replace(/~~([^~]+)~~/g, '<del>$1</del>');
+
+  // Images
+  html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, '<img src="$2" alt="$1" />');
+
+  // Links
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+
+  // Blockquotes
+  html = html.replace(/^>\s+(.+)$/gm, '<blockquote>$1</blockquote>');
+
+  // Unordered lists
+  html = html.replace(/^(\s*)[-*+]\s+(.+)$/gm, '<li>$2</li>');
+  html = html.replace(/(<li>.*<\/li>\n?)+/g, function(match) {
+    return '<ul>' + match + '</ul>';
+  });
+
+  // Ordered lists
+  html = html.replace(/^(\s*)\d+\.\s+(.+)$/gm, '<oli>$2</oli>');
+  html = html.replace(/(<oli>.*<\/oli>\n?)+/g, function(match) {
+    return '<ol>' + match.replace(/<\/?oli>/g, (m) => m === '<oli>' ? '<li>' : '</li>') + '</ol>';
+  });
+
+  // Tables
+  html = html.replace(/^\|(.+)\|\n\|[-:\s|]+\|\n((?:\|.+\|\n?)*)/gm, function(match, header, body) {
+    const headers = header.split('|').filter(c => c.trim()).map(c => `<th>${c.trim()}</th>`).join('');
+    const rows = body.trim().split('\n').map(row => {
+      const cells = row.split('|').filter(c => c.trim()).map(c => `<td>${c.trim()}</td>`).join('');
+      return `<tr>${cells}</tr>`;
+    }).join('');
+    return `<table><thead><tr>${headers}</tr></thead><tbody>${rows}</tbody></table>`;
+  });
+
+  // Paragraphs - wrap consecutive non-tag lines
+  html = html.replace(/^(?!<[a-z/])((?!\s*$).+)$/gm, '<p>$1</p>');
+
+  // Clean up empty paragraphs
+  html = html.replace(/<p>\s*<\/p>/g, '');
+
+  // Line breaks
+  html = html.replace(/\n/g, '');
+
+  previewPane.innerHTML = html;
 }
 
 // --- FILE TAB MANAGEMENT ---
@@ -1470,10 +1976,25 @@ async function openFileInEditor(filePath, name) {
   // Read file from disk
   const res = await ipcRenderer.invoke('read-file', filePath);
   if (res.success) {
-    // Determine language from extension
-    let lang = 'plaintext';
-    if (name.endsWith('.lsh')) lang = 'leash';
-    else if (name.endsWith('.json')) lang = 'json';
+    const ext = path.extname(name).toLowerCase();
+    
+    // Handle markdown with preview
+    if (MARKDOWN_EXTENSIONS.has(ext)) {
+      openMarkdownPreview(filePath, res.content);
+      // Still add to tabs for tracking
+      openTabs.push({
+        name: name,
+        filePath: filePath,
+        model: null,
+        isModified: false,
+        isMarkdown: true
+      });
+      setActiveTab(openTabs.length - 1);
+      return;
+    }
+    
+    // Determine language from extension dynamically
+    const lang = getLanguageForFile(name);
     
     // Create new Monaco model
     const model = monaco.editor.createModel(res.content, lang, monaco.Uri.file(filePath));
@@ -1506,6 +2027,8 @@ function setActiveTab(index) {
     activeTabIndex = -1;
     document.getElementById('editor-splash').classList.remove('hidden');
     document.getElementById('monaco-editor-instance').style.display = 'none';
+    document.getElementById('image-preview-container').style.display = 'none';
+    document.getElementById('markdown-preview-container').style.display = 'none';
     document.getElementById('status-file-info').innerText = 'No Active File';
     document.getElementById('debug-active-file').innerText = 'None Selected';
     updateTabsUI();
@@ -1516,12 +2039,26 @@ function setActiveTab(index) {
   activeTabIndex = index;
   const tab = openTabs[index];
   
-  // Hide splash, show editor
+  // Hide splash
   document.getElementById('editor-splash').classList.add('hidden');
-  document.getElementById('monaco-editor-instance').style.display = 'block';
 
-  // Apply model to editor
-  editorInstance.setModel(tab.model);
+  // Handle markdown preview tabs
+  if (tab.isMarkdown) {
+    document.getElementById('monaco-editor-instance').style.display = 'none';
+    document.getElementById('image-preview-container').style.display = 'none';
+    // Read current content for markdown preview
+    ipcRenderer.invoke('read-file', tab.filePath).then(res => {
+      if (res.success) openMarkdownPreview(tab.filePath, res.content);
+    });
+  } else {
+    // Regular code editor tab
+    document.getElementById('monaco-editor-instance').style.display = 'block';
+    document.getElementById('image-preview-container').style.display = 'none';
+    document.getElementById('markdown-preview-container').style.display = 'none';
+
+    // Apply model to editor
+    editorInstance.setModel(tab.model);
+  }
   
   // Update statusbar and Run panel script labels
   document.getElementById('status-file-info').innerText = `${tab.name} (${tab.model.getLanguageId()})`;
@@ -1547,10 +2084,17 @@ function updateTabsUI() {
     
     const iconEl = document.createElement('span');
     iconEl.className = 'tab-icon';
+    const tabExt = path.extname(tab.name).toLowerCase();
     if (tab.name.endsWith('.lsh')) {
       iconEl.innerHTML = Icons.leashFile;
     } else if (tab.name.endsWith('.json')) {
       iconEl.innerHTML = Icons.jsonFile;
+    } else if (IMAGE_EXTENSIONS.has(tabExt)) {
+      iconEl.innerHTML = Icons.imageFile;
+    } else if (MARKDOWN_EXTENSIONS.has(tabExt)) {
+      iconEl.innerHTML = Icons.markdownFile;
+    } else if (tabExt === '.zip') {
+      iconEl.innerHTML = Icons.uieFile;
     } else {
       iconEl.innerHTML = Icons.textFile;
     }
@@ -2137,7 +2681,10 @@ let paletteItems = [
   { text: 'Decrease Editor Font Size', action: () => adjustFontSize(-1) },
   { text: 'Open Settings Panel', action: () => document.getElementById('btn-settings').click(), shortcut: 'Ctrl + Shift + S' },
   { text: 'Close Active File', action: () => { if (activeTabIndex !== -1) closeTab(activeTabIndex); } },
-  { text: 'Close Active Folder Workspace', action: () => closeActiveWorkspace() }
+  { text: 'Close Active Folder Workspace', action: () => closeActiveWorkspace() },
+  { text: 'Install .zip Extension Package...', action: () => document.getElementById('opt-file-install-uie').click() },
+  { text: 'Compact Extension Project to .zip', action: () => document.getElementById('opt-file-compact-ext').click() },
+  { text: 'Reload Window', action: () => window.location.reload() }
 ];
 
 let selectedPaletteIndex = 0;
@@ -2447,13 +2994,170 @@ function setupDropdownMenus() {
   // File Dropdown
   document.getElementById('opt-file-newfile').addEventListener('click', () => createNodePrompt('file'));
   document.getElementById('opt-file-newfolder').addEventListener('click', () => createNodePrompt('folder'));
+  document.getElementById('opt-file-newproject').addEventListener('click', () => {
+    document.getElementById('project-modal').showModal();
+  });
+  document.getElementById('opt-file-openproject').addEventListener('click', async () => {
+    const modal = document.getElementById('open-project-modal');
+    const listEl = document.getElementById('open-project-list');
+    listEl.innerHTML = '<p style="color:var(--text-secondary); text-align:center;">Loading projects...</p>';
+    modal.showModal();
+
+    const projects = await ipcRenderer.invoke('get-projects');
+    listEl.innerHTML = '';
+    
+    if (projects.length === 0) {
+      listEl.innerHTML = '<p style="color:var(--text-secondary); text-align:center;">No projects found in ~/UnleashingProjects</p>';
+    } else {
+      projects.forEach(p => {
+        const item = document.createElement('div');
+        item.style.padding = '10px';
+        item.style.borderBottom = '1px solid var(--border-dark)';
+        item.style.cursor = 'pointer';
+        item.innerHTML = `
+          <div style="font-weight: 600; color: var(--text-cyan);">${p.name}</div>
+          <div style="font-size: 12px; color: var(--text-secondary);">${p.type}</div>
+        `;
+        item.addEventListener('mouseover', () => item.style.backgroundColor = 'rgba(255,255,255,0.05)');
+        item.addEventListener('mouseout', () => item.style.backgroundColor = 'transparent');
+        item.addEventListener('click', () => {
+          modal.close();
+          openWorkspace(p.path);
+        });
+        listEl.appendChild(item);
+      });
+    }
+  });
+
+  document.getElementById('open-project-close-btn').addEventListener('click', () => {
+    document.getElementById('open-project-modal').close();
+  });
+
   document.getElementById('opt-file-open').addEventListener('click', () => {
     const btn = document.getElementById('btn-open-workspace');
     if (btn) btn.click();
   });
+  document.getElementById('opt-file-configure').addEventListener('click', () => {
+    if (!activeWorkspacePath) return;
+    
+    // Attempt to read current type to pre-select it
+    const uidePath = path.join(activeWorkspacePath, '.uide', 'project.json');
+    let currentType = "Unknown";
+    if (fs.existsSync(uidePath)) {
+      try {
+        const data = JSON.parse(fs.readFileSync(uidePath, 'utf-8'));
+        if (data.type) currentType = data.type;
+      } catch(e) {}
+    }
+    
+    const selectEl = document.getElementById('config-project-type');
+    if (currentType === 'Leash Project' || currentType === 'Unleashing IDE Extension') {
+      selectEl.value = currentType;
+    } else {
+      selectEl.value = 'Unknown';
+    }
+    
+    document.getElementById('config-project-modal').showModal();
+  });
+
+  document.getElementById('config-project-cancel').addEventListener('click', () => {
+    document.getElementById('config-project-modal').close();
+  });
+
+  document.getElementById('config-project-confirm').addEventListener('click', () => {
+    document.getElementById('config-project-modal').close();
+    if (!activeWorkspacePath) return;
+
+    const type = document.getElementById('config-project-type').value;
+    const uideDir = path.join(activeWorkspacePath, '.uide');
+    const uidePath = path.join(uideDir, 'project.json');
+    
+    if (!fs.existsSync(uideDir)) {
+      fs.mkdirSync(uideDir, { recursive: true });
+    }
+    fs.writeFileSync(uidePath, JSON.stringify({ name: path.basename(activeWorkspacePath), type: type }, null, 2), 'utf-8');
+    
+    // Toggle extension button visibility
+    const installExtBtn = document.getElementById('opt-file-install-ext');
+    const compactExtBtn = document.getElementById('opt-file-compact-ext');
+    if (type === 'Unleashing IDE Extension') {
+      installExtBtn.classList.remove('hidden');
+      compactExtBtn.classList.remove('hidden');
+    } else {
+      installExtBtn.classList.add('hidden');
+      compactExtBtn.classList.add('hidden');
+    }
+
+    openFileInEditor(uidePath, 'project.json');
+  });
+
+  document.getElementById('opt-file-install-ext').addEventListener('click', async () => {
+    if (!activeWorkspacePath) return;
+    const res = await ipcRenderer.invoke('install-extension', activeWorkspacePath);
+    if (res.success) {
+      alert("Extension installed successfully! Please refresh the extensions in the sidebar.");
+    } else {
+      alert("Failed to install extension: " + res.error);
+    }
+  });
+
+  // Install .zip extension
+  document.getElementById('opt-file-install-uie').addEventListener('click', async () => {
+    const { dialog } = window.nodeRequire('electron').remote || {};
+    // Use ipc to open file dialog
+    const result = await ipcRenderer.invoke('select-uie-file');
+    if (!result) return;
+
+    const zipPath = result;
+    const zipName = path.basename(zipPath, '.zip');
+    const destFolder = path.join(os.homedir(), '.UnleashingExtensions', zipName);
+
+    // Extract the .zip file
+    const extractRes = await ipcRenderer.invoke('extract-uie', { uieFilePath: zipPath, destFolder });
+    if (extractRes.success) {
+      alert(`Extension "${zipName}" installed successfully from .zip package!\nLocation: ${destFolder}\n\nRefresh extensions to activate.`);
+    } else {
+      alert(`Failed to install .zip: ${extractRes.error}`);
+    }
+  });
+
+  // Compact Extension Project to .zip
+  document.getElementById('opt-file-compact-ext').addEventListener('click', async () => {
+    if (!activeWorkspacePath) {
+      alert('Please open a workspace folder first.');
+      return;
+    }
+    const result = await ipcRenderer.invoke('save-uie-dialog');
+    if (!result) return;
+    const res = await ipcRenderer.invoke('pack-uie', { sourceFolder: activeWorkspacePath, outputPath: result });
+    if (res.success) {
+      alert(`Extension project compacted successfully!\nSaved to: ${res.outputPath}`);
+    } else {
+      alert(`Failed to compact: ${res.error}`);
+    }
+  });
   document.getElementById('opt-file-save').addEventListener('click', () => saveActiveFile());
   document.getElementById('opt-file-close').addEventListener('click', () => closeActiveWorkspace());
   document.getElementById('opt-file-exit').addEventListener('click', () => ipcRenderer.send('window-close'));
+
+  // Setup Project Modal handlers
+  const projectModal = document.getElementById('project-modal');
+  document.getElementById('project-cancel-btn').addEventListener('click', () => {
+    projectModal.close();
+  });
+  document.getElementById('project-confirm-btn').addEventListener('click', async () => {
+    const pType = document.getElementById('project-type-select').value;
+    const pName = document.getElementById('project-name-input').value.trim();
+    if (!pName) return;
+
+    const res = await ipcRenderer.invoke('create-project', { projectType: pType, projectName: pName });
+    if (res.success) {
+      projectModal.close();
+      openWorkspace(res.projectPath);
+    } else {
+      alert("Failed to create project: " + res.error);
+    }
+  });
   
   // Selection Dropdown
   document.getElementById('opt-sel-all').addEventListener('click', () => {

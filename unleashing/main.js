@@ -6,6 +6,20 @@ const { spawn } = require('child_process');
 let mainWindow;
 let runningProcesses = new Map(); // Store active run/compile processes to allow stopping them
 
+function killAllProcesses() {
+  // Terminate any running leash compile/run processes
+  for (let [id, proc] of runningProcesses.entries()) {
+    try { proc.kill('SIGKILL'); } catch(e) {}
+  }
+  runningProcesses.clear();
+
+  // Terminate the interactive terminal shell
+  if (terminalShell) {
+    try { terminalShell.kill('SIGKILL'); } catch(e) {}
+    terminalShell = null;
+  }
+}
+
 function createWindow() {
   // Look for icon file (supports .png, .ico on Windows)
   const iconPath = path.join(__dirname, 'icon.png');
@@ -38,6 +52,11 @@ function createWindow() {
   // Open devtools in development if needed
   // mainWindow.webContents.openDevTools();
 
+  mainWindow.on('close', function (e) {
+    // Kill all child processes when the window is closing
+    killAllProcesses();
+  });
+
   mainWindow.on('closed', function () {
     mainWindow = null;
   });
@@ -47,11 +66,18 @@ app.on('ready', () => {
   createWindow();
 });
 
-app.on('window-all-closed', function () {
-  // Terminate any leftover processes
-  for (let [id, proc] of runningProcesses.entries()) {
-    try { proc.kill(); } catch(e) {}
+app.on('before-quit', (event) => {
+  // Prevent default quit to allow async cleanup
+  if (runningProcesses.size > 0 || terminalShell) {
+    event.preventDefault();
+    killAllProcesses();
+    // Now actually quit after cleanup
+    app.quit();
   }
+});
+
+app.on('window-all-closed', function () {
+  killAllProcesses();
   if (process.platform !== 'darwin') {
     app.quit();
   }
@@ -391,5 +417,198 @@ ipcMain.on('process-input', (event, { commandId, input }) => {
     } catch(e) {
       console.error("Failed to write to process stdin:", e);
     }
+  }
+});
+
+// --- PROJECT CREATION ---
+const os = require('os');
+
+ipcMain.handle('get-home-dir', () => {
+  return os.homedir();
+});
+
+ipcMain.handle('select-uie-file', async () => {
+  const result = dialog.showOpenDialogSync(mainWindow, {
+    properties: ['openFile'],
+    filters: [
+      { name: 'ZIP Archive', extensions: ['zip'] },
+      { name: 'All Files', extensions: ['*'] }
+    ]
+  });
+  if (result && result.length > 0) {
+    return result[0];
+  }
+  return null;
+});
+
+ipcMain.handle('save-uie-dialog', async () => {
+  const result = dialog.showSaveDialogSync(mainWindow, {
+    filters: [
+      { name: 'ZIP Archive', extensions: ['zip'] }
+    ],
+    defaultPath: path.join(os.homedir(), 'UnleashingProjects', 'extension.zip')
+  });
+  return result || null;
+});
+
+ipcMain.handle('create-project', async (event, { projectType, projectName }) => {
+  try {
+    const projectsDir = path.join(os.homedir(), 'UnleashingProjects');
+    if (!fs.existsSync(projectsDir)) {
+      fs.mkdirSync(projectsDir, { recursive: true });
+    }
+
+    const projectPath = path.join(projectsDir, projectName);
+    if (fs.existsSync(projectPath)) {
+      return { success: false, error: 'Project folder already exists' };
+    }
+
+    fs.mkdirSync(projectPath, { recursive: true });
+    fs.mkdirSync(path.join(projectPath, 'src'), { recursive: true });
+    
+    // Create .uide configuration
+    fs.mkdirSync(path.join(projectPath, '.uide'), { recursive: true });
+    const uideType = projectType === 'leash' ? 'Leash Project' : 'Unleashing IDE Extension';
+    fs.writeFileSync(path.join(projectPath, '.uide', 'project.json'), JSON.stringify({
+      name: projectName,
+      type: uideType
+    }, null, 2), 'utf-8');
+
+    if (projectType === 'leash') {
+      fs.writeFileSync(path.join(projectPath, 'src', 'main.lsh'), 'fnc main() {\n    show("Hello, world!\n");\n}\n', 'utf-8');
+      fs.writeFileSync(path.join(projectPath, 'project.json'), JSON.stringify({
+        name: projectName,
+        type: "executable",
+        version: "1.0.0"
+      }, null, 2), 'utf-8');
+    } else if (projectType === 'extension') {
+      fs.mkdirSync(path.join(projectPath, 'assets'), { recursive: true });
+      fs.writeFileSync(path.join(projectPath, 'src', 'main.js'), `module.exports = {
+  activate: (api) => {
+    console.log("Extension activated!");
+    // Example: api.ui.addButton('tabs-bar', '<button>Hello</button>');
+  }
+};
+`, 'utf-8');
+      fs.writeFileSync(path.join(projectPath, 'package.json'), JSON.stringify({
+        name: projectName,
+        version: "1.0.0",
+        description: "An Unleashing IDE extension"
+      }, null, 2), 'utf-8');
+      fs.writeFileSync(path.join(projectPath, 'README.md'), `# ${projectName}\n\nA new Unleashing IDE extension.`, 'utf-8');
+      fs.writeFileSync(path.join(projectPath, '.gitignore'), `node_modules/\n`, 'utf-8');
+    } else {
+      return { success: false, error: 'Unknown project type' };
+    }
+
+    return { success: true, projectPath };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('get-projects', async () => {
+  try {
+    const projectsDir = path.join(os.homedir(), 'UnleashingProjects');
+    if (!fs.existsSync(projectsDir)) {
+      return [];
+    }
+
+    const folders = fs.readdirSync(projectsDir);
+    const projects = [];
+
+    for (const folder of folders) {
+      const pPath = path.join(projectsDir, folder);
+      try {
+        if (!fs.statSync(pPath).isDirectory()) continue;
+        
+        const uidePath = path.join(pPath, '.uide', 'project.json');
+        let type = "Unknown";
+        if (fs.existsSync(uidePath)) {
+          try {
+            const data = JSON.parse(fs.readFileSync(uidePath, 'utf-8'));
+            if (data.type) type = data.type;
+          } catch(e) {}
+        }
+        projects.push({ name: folder, path: pPath, type });
+      } catch(e) {}
+    }
+    return projects;
+  } catch (err) {
+    console.error(err);
+    return [];
+  }
+});
+
+ipcMain.handle('install-extension', async (event, sourceFolder) => {
+  try {
+    const extName = path.basename(sourceFolder);
+    const destFolder = path.join(os.homedir(), '.UnleashingExtensions', extName);
+    
+    if (!fs.existsSync(path.join(os.homedir(), '.UnleashingExtensions'))) {
+      fs.mkdirSync(path.join(os.homedir(), '.UnleashingExtensions'), { recursive: true });
+    }
+
+    // copy folder over
+    fs.cpSync(sourceFolder, destFolder, { recursive: true, force: true });
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('move-path', async (event, { sourcePath, destPath }) => {
+  try {
+    if (fs.existsSync(destPath)) {
+      return { success: false, error: 'Target path already exists' };
+    }
+    const destDir = path.dirname(destPath);
+    if (!fs.existsSync(destDir)) {
+      fs.mkdirSync(destDir, { recursive: true });
+    }
+    fs.renameSync(sourcePath, destPath);
+    return { success: true, newPath: destPath };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+const { execSync } = require('child_process');
+
+ipcMain.handle('extract-uie', async (event, { uieFilePath, destFolder }) => {
+  try {
+    if (!fs.existsSync(destFolder)) {
+      fs.mkdirSync(destFolder, { recursive: true });
+    }
+
+    // Use PowerShell's Expand-Archive on Windows, unzip on other platforms
+    if (process.platform === 'win32') {
+      execSync(`powershell -Command "Expand-Archive -Path '${uieFilePath.replace(/'/g, "''")}' -DestinationPath '${destFolder.replace(/'/g, "''")}' -Force"`, {
+        stdio: 'pipe'
+      });
+    } else {
+      execSync(`unzip -o '${uieFilePath}' -d '${destFolder}'`, { stdio: 'pipe' });
+    }
+
+    return { success: true, destFolder };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+});
+
+ipcMain.handle('pack-uie', async (event, { sourceFolder, outputPath }) => {
+  try {
+    // Use PowerShell's Compress-Archive on Windows, zip on other platforms
+    if (process.platform === 'win32') {
+      execSync(`powershell -Command "Compress-Archive -Path '${(path.join(sourceFolder, '*')).replace(/'/g, "''")}' -DestinationPath '${outputPath.replace(/'/g, "''")}' -Force"`, {
+        stdio: 'pipe'
+      });
+    } else {
+      execSync(`cd '${sourceFolder}' && zip -r '${outputPath}' .`, { stdio: 'pipe' });
+    }
+
+    return { success: true, outputPath };
+  } catch (err) {
+    return { success: false, error: err.message };
   }
 });
