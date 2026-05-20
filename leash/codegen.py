@@ -4709,12 +4709,18 @@ class CodeGen:
                 eq = self.builder.icmp_signed("==", elem_val, val)
             elif isinstance(inner_llvm, (ir.FloatType, ir.DoubleType)):
                 eq = self.builder.fcmp_ordered("==", elem_val, val)
+            elif isinstance(inner_llvm, ir.LiteralStructType):
+                # For structs, compare by pointer address
+                elem_ptr_int = self.builder.ptrtoint(elem_ptr, ir.IntType(64))
+                val_ptr = self.builder.alloca(inner_llvm)
+                self.builder.store(val, val_ptr)
+                val_ptr_int = self.builder.ptrtoint(val_ptr, ir.IntType(64))
+                eq = self.builder.icmp_signed("==", elem_ptr_int, val_ptr_int)
             else:
-                eq = self.builder.icmp_signed(
-                    "==",
-                    self.builder.ptrtoint(elem_val, ir.IntType(64)),
-                    self.builder.ptrtoint(val, ir.IntType(64)),
-                )
+                # For pointers and other types, compare by pointer address
+                elem_ptr_int = self.builder.ptrtoint(elem_ptr, ir.IntType(64))
+                val_int = self.builder.ptrtoint(val, ir.IntType(64))
+                eq = self.builder.icmp_signed("==", elem_ptr_int, val_int)
 
             next_i = self.builder.add(cur_i, ir.Constant(ir.IntType(64), 1))
             self.builder.store(next_i, i)
@@ -6466,13 +6472,25 @@ class CodeGen:
         target = self.current_target_type
         elem_type = None
         elem_type_name = None
+        inferred_from_elements = False
+
         if target and "[" in target:
             elem_type_name = target.split("[")[0]
             elem_type = self._get_llvm_type(elem_type_name)
+            # If elem_type is i32 (default fallback), it means the type wasn't resolved (e.g., generic T)
+            # In this case, we'll need to infer from elements
+            if elem_type == ir.IntType(32) and elem_type_name not in ("int", "uint"):
+                elem_type = None
+                inferred_from_elements = True
 
         old_target = self.current_target_type
         if target and "[" in target:
-            self.current_target_type = target.split("[")[0]
+            base_type = target.split("[")[0]
+            # Only set target to base type if it was successfully resolved
+            if not inferred_from_elements:
+                self.current_target_type = base_type
+            else:
+                self.current_target_type = None
         else:
             self.current_target_type = None
 
@@ -6488,6 +6506,9 @@ class CodeGen:
         length = len(vals)
         if not elem_type:
             elem_type = ir.IntType(32) if not vals else vals[0].type
+            # Update elem_type_name for slice type creation
+            if inferred_from_elements:
+                elem_type_name = None
 
         arr_type = ir.ArrayType(elem_type, length)
 
@@ -6511,9 +6532,8 @@ class CodeGen:
                 )
                 self.builder.store(v, ptr)
 
-        slice_type = self._get_llvm_type(
-            f"{elem_type_name}[]" if elem_type_name else "int[]"
-        )
+        # Build slice type from the actual element type
+        slice_type = ir.LiteralStructType([ir.IntType(64), elem_type.as_pointer()])
         slice_val = ir.Constant(slice_type, ir.Undefined)
 
         slice_val = self.builder.insert_value(
