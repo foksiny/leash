@@ -1594,6 +1594,47 @@ class Parser:
                     val = self.parse_expression()
                     self.eat("SEMI")
                     return self._pos(Assignment(expr, val), tok)
+                elif self.current().type in (
+                    "PLUS_ASSIGN",
+                    "MINUS_ASSIGN",
+                    "MUL_ASSIGN",
+                    "DIV_ASSIGN",
+                    "MOD_ASSIGN",
+                    "SHL_ASSIGN",
+                    "SHR_ASSIGN",
+                    "BIT_AND_ASSIGN",
+                    "BIT_OR_ASSIGN",
+                    "BIT_XOR_ASSIGN",
+                ):
+                    assign_tok = self.current()
+                    op_map = {
+                        "PLUS_ASSIGN": "+",
+                        "MINUS_ASSIGN": "-",
+                        "MUL_ASSIGN": "*",
+                        "DIV_ASSIGN": "/",
+                        "MOD_ASSIGN": "%",
+                        "SHL_ASSIGN": "<<",
+                        "SHR_ASSIGN": ">>",
+                        "BIT_AND_ASSIGN": "&",
+                        "BIT_OR_ASSIGN": "|",
+                        "BIT_XOR_ASSIGN": "^",
+                    }
+                    op = op_map[assign_tok.type]
+                    self.eat(assign_tok.type)
+                    val = self.parse_expression()
+                    self.eat("SEMI")
+                    binary_expr = BinaryOp(expr, op, val)
+                    return self._pos(Assignment(expr, binary_expr), tok)
+                elif self.current().type in ("INC", "DEC"):
+                    inc_dec_tok = self.current()
+                    op = "++" if inc_dec_tok.type == "INC" else "--"
+                    self.eat(inc_dec_tok.type)
+                    self.eat("SEMI")
+                    one = NumberLiteral(1)
+                    one.line = inc_dec_tok.line
+                    one.col = inc_dec_tok.column
+                    binary_expr = BinaryOp(expr, op, one)
+                    return self._pos(Assignment(expr, binary_expr), tok)
                 self.eat("SEMI")
                 return self._pos(ExpressionStatement(expr), tok)
         else:
@@ -1793,7 +1834,7 @@ class Parser:
 
     def parse_postfix(self, no_struct_init=False):
         expr = self.parse_primary(no_struct_init)
-        while self.current().type in ("DOT", "LBRACKET", "ARROW"):
+        while self.current().type in ("DOT", "LBRACKET", "ARROW", "INC", "DEC"):
             if self.current().type == "DOT":
                 self.eat("DOT")
                 member = self.eat("IDENT").value
@@ -1817,6 +1858,9 @@ class Parser:
                 index = self.parse_expression()
                 self.eat("RBRACKET")
                 expr = IndexAccess(expr, index)
+            elif self.current().type in ("INC", "DEC"):
+                inc_dec_tok = self.current()
+                self.eat(inc_dec_tok.type)
         return expr
 
     def parse_primary(self, no_struct_init=False):

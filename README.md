@@ -863,6 +863,28 @@ Leash supports a full suite of arithmetic, comparison, bitwise, and logical oper
 | `/` | Division | `a / b` |
 | `%` | Modulo | `a % b` |
 
+### Compound Assignment Operators
+| Operator | Description | Equivalent To |
+|----------|-------------|---------------|
+| `+=` | Add and assign | `a = a + b` |
+| `-=` | Subtract and assign | `a = a - b` |
+| `*=` | Multiply and assign | `a = a * b` |
+| `/=` | Divide and assign | `a = a / b` |
+| `%=` | Modulo and assign | `a = a % b` |
+| `<<=` | Left shift and assign | `a = a << b` |
+| `>>=` | Right shift and assign | `a = a >> b` |
+| `&=` | Bitwise AND and assign | `a = a & b` |
+| `|=` | Bitwise OR and assign | `a = a | b` |
+| `^=` | Bitwise XOR and assign | `a = a ^ b` |
+
+### Increment and Decrement Operators
+| Operator | Description | Example |
+|----------|-------------|---------|
+| `++` | Increment by 1 | `a++` or `++a` |
+| `--` | Decrement by 1 | `a--` or `--a` |
+
+Both prefix (`++a`) and postfix (`a++`) forms are supported. They are syntactic sugar that expands to `a = a + 1` or `a = a - 1`.
+
 ### Comparison Operators
 | Operator | Description | Example |
 |----------|-------------|---------|

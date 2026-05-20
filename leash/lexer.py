@@ -99,25 +99,37 @@ class Lexer:
             r"(?:0[xX][0-9a-fA-F]+(?:\.[0-9a-fA-F]*)?(?:[pP][+-]?\d+)?|0[bB][01]+|0[oO][0-7]+|\d+(?:\.\d*)?(?:[eE][+-]?\d+)?|\.\d+(?:[eE][+-]?\d+)?)",
         ),  # Integer, float, hex, binary, octal, scientific
         ("IDENT", r"[A-Za-z_][A-Za-z0-9_]*"),  # Identifiers
+        ("INC", r"\+\+"),  # Increment
+        ("PLUS_ASSIGN", r"\+="),  # Plus-equals
         ("PLUS", r"\+"),  # Addition operator
+        ("DEC", r"--"),  # Decrement
+        ("MINUS_ASSIGN", r"-="),  # Minus-equals
         ("ARROW", r"->"),  # Pointer member access
         ("MINUS", r"-"),  # Subtraction operator
+        ("MUL_ASSIGN", r"\*="),  # Multiply-equals
         ("MUL", r"\*"),  # Multiplication operator
         ("COMMENT", r"//.*"),  # Comments
         ("MLCOMMENT", r"/\*[\s\S]*?\*/"),  # Multi-line comments
+        ("DIV_ASSIGN", r"/="),  # Divide-equals
         ("DIV", r"/"),  # Division operator
+        ("MOD_ASSIGN", r"%="),  # Modulo-equals
         ("MOD", r"%"),  # Modulo operator
         ("EQ", r"=="),  # Equal to
         ("NEQ", r"!="),  # Not equal to
         ("LTE", r"<="),  # Less than or equal
         ("GTE", r">="),  # Greater than or equal
+        ("SHL_ASSIGN", r"<<="),  # Shift-left-equals
         ("SHL", r"<<"),  # Shift left
+        ("SHR_ASSIGN", r">>="),  # Shift-right-equals
         ("SHR", r">>"),  # Shift right
         ("L_AND", r"&&"),  # Logical AND
         ("L_OR", r"\|\|"),  # Logical OR
+        ("BIT_AND_ASSIGN", r"&="),  # Bitwise AND-equals
         ("BIT_AND", r"&"),  # Bitwise AND
         ("PIPE", r"\|>"),  # Pipe operator
+        ("BIT_OR_ASSIGN", r"\|="),  # Bitwise OR-equals
         ("BIT_OR", r"\|"),  # Bitwise OR
+        ("BIT_XOR_ASSIGN", r"\^="),  # Bitwise XOR-equals
         ("BIT_XOR", r"\^"),  # Bitwise XOR
         ("BIT_NOT", r"~"),  # Bitwise NOT/Tilde
         ("NOT", r"!"),  # Logical NOT/Bang

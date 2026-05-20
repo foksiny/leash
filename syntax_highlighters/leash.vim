@@ -62,7 +62,7 @@ syn keyword leashBuiltin File open close read write readln readb writeb readlnb 
 syn keyword leashBuiltin replace
 
 " Operators
-syn match leashOperator /|>\?\|&&\|||\|<<\|>>\|[+\-*/%&|^~!<>=]=\?/
+syn match leashOperator /|>\?\|&&\|||\|<<\|>>\|\+\+\|--\|[+\-*/%&|^~!<>=]=\?\|<<=\|>>=\|&=\||=\|\^=/
 
 " Ternary operator
 syn match leashTernary "?"
