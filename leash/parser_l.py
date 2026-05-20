@@ -1830,6 +1830,12 @@ class Parser:
             op = self.eat(self.current().type)
             expr = self.parse_unary(no_struct_init)
             return UnaryOp(op.value, expr)
+        if self.current().type in ("INC", "DEC"):
+            inc_dec_tok = self.current()
+            op = "++" if inc_dec_tok.type == "INC" else "--"
+            self.eat(inc_dec_tok.type)
+            expr = self.parse_unary(no_struct_init)
+            return UnaryOp(op + "p", expr)
         return self.parse_postfix(no_struct_init)
 
     def parse_postfix(self, no_struct_init=False):
@@ -1860,7 +1866,9 @@ class Parser:
                 expr = IndexAccess(expr, index)
             elif self.current().type in ("INC", "DEC"):
                 inc_dec_tok = self.current()
+                op = "++" if inc_dec_tok.type == "INC" else "--"
                 self.eat(inc_dec_tok.type)
+                expr = UnaryOp(op, expr)
         return expr
 
     def parse_primary(self, no_struct_init=False):

@@ -3932,6 +3932,50 @@ class CodeGen:
             return self.builder.not_(bool_val)
         elif node.op == "~":
             return self.builder.not_(val)
+        elif node.op == "++p":
+            lvalue_result = self._codegen_lvalue(node.expr)
+            if len(lvalue_result) == 3:
+                ptr, _, _ = lvalue_result
+            else:
+                ptr, _ = lvalue_result
+            current = self.builder.load(ptr)
+            one = ir.Constant(current.type, 1)
+            incremented = self.builder.add(current, one)
+            self.builder.store(incremented, ptr)
+            return incremented
+        elif node.op == "--p":
+            lvalue_result = self._codegen_lvalue(node.expr)
+            if len(lvalue_result) == 3:
+                ptr, _, _ = lvalue_result
+            else:
+                ptr, _ = lvalue_result
+            current = self.builder.load(ptr)
+            one = ir.Constant(current.type, 1)
+            decremented = self.builder.sub(current, one)
+            self.builder.store(decremented, ptr)
+            return decremented
+        elif node.op == "++":
+            lvalue_result = self._codegen_lvalue(node.expr)
+            if len(lvalue_result) == 3:
+                ptr, _, _ = lvalue_result
+            else:
+                ptr, _ = lvalue_result
+            current = self.builder.load(ptr)
+            one = ir.Constant(current.type, 1)
+            incremented = self.builder.add(current, one)
+            self.builder.store(incremented, ptr)
+            return current
+        elif node.op == "--":
+            lvalue_result = self._codegen_lvalue(node.expr)
+            if len(lvalue_result) == 3:
+                ptr, _, _ = lvalue_result
+            else:
+                ptr, _ = lvalue_result
+            current = self.builder.load(ptr)
+            one = ir.Constant(current.type, 1)
+            decremented = self.builder.sub(current, one)
+            self.builder.store(decremented, ptr)
+            return current
 
         raise LeashError(f"Unknown unary operator: '{node.op}'")
 
