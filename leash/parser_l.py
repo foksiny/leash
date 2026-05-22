@@ -1854,7 +1854,7 @@ class Parser:
                     self.eat("RPAREN")
                     expr = MethodCall(expr, member, args)
                 else:
-                    expr = MemberAccess(expr, member)
+                    expr = self._pos(MemberAccess(expr, member))
             elif self.current().type == "ARROW":
                 self.eat("ARROW")
                 member = self.eat("IDENT").value

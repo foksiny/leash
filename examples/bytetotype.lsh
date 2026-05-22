@@ -4,7 +4,7 @@ fnc print_bytes(bytes char[]) {
   }
 }
 
-fnc main() {
+unsafe fnc main() {
   n: int = 10;
 
   nb: char[4] = inttobytes(sizeof(int), n);

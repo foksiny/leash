@@ -10,7 +10,7 @@ fnc print_value(v value) : void {
     show(v.cur);
 }
 
-fnc main() : void {
+unsafe fnc main() : void {
     a: uint8 = 65;
     show("a = ", a);
     
