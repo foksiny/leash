@@ -6,6 +6,7 @@ from .lexer import Lexer
 from .parser_l import Parser
 from .codegen import CodeGen
 from .typechecker import TypeChecker
+from .lowlevel_checker import LowLevelChecker
 from .errors import LeashError
 from .ast_nodes import (
     Program,
@@ -262,8 +263,11 @@ def _evaluate_conditional(cond_def, platform):
     return cond_def.else_block
 
 def _print_error(e, input_file, code):
-    print(f"error: {e.msg}", file=sys.stderr)
     f = e.file or input_file
+    loc = f"{f}:{e.line}:{e.col or 0}" if e.line else f
+    code_str = f" [{e.code}]" if e.code else ""
+    print(f"error{code_str}: {e.msg}", file=sys.stderr)
+    print(f"  --> {loc}", file=sys.stderr)
     if e.line:
         c = code
         if e.file and e.file != input_file:
@@ -271,11 +275,12 @@ def _print_error(e, input_file, code):
                 with open(e.file, "r") as fh: c = f.read()
             except: c = code
         lines = c.splitlines(); idx = e.line - 1
-        print(f"  --> {f}:{e.line}:{e.col or 0}{' ['+e.code+']' if e.code else ''}", file=sys.stderr)
         if 0 <= idx < len(lines):
             p = " " * (len(str(e.line)) + 1)
-            print(f"{p}|", file=sys.stderr); print(f"{e.line} | {lines[idx]}", file=sys.stderr)
-            if e.col is not None: print(f"{p}| {' '*e.col}^", file=sys.stderr)
+            print(f"{p}|", file=sys.stderr)
+            print(f"{e.line} | {lines[idx]}", file=sys.stderr)
+            if e.col is not None:
+                print(f"{p}| {' '*e.col}^", file=sys.stderr)
             print(f"{p}|", file=sys.stderr)
     if e.tip: print(f"tip: {e.tip}", file=sys.stderr)
 
@@ -299,6 +304,11 @@ def check_file(input_file, verbose=False):
         return errors, warnings
     try:
         warnings = TypeChecker(check_mode=True).check(ast)
+        ll_errors = LowLevelChecker().check(ast)
+        if ll_errors:
+            for err in ll_errors:
+                if verbose: _print_error(err, input_file, code)
+            errors.extend(ll_errors)
     except LeashError as e:
         if verbose: _print_error(e, input_file, code)
         errors.append(e)
@@ -316,6 +326,10 @@ def compile_file(input_file, output_name=None, output_type="executable", is_run_
         warnings = TypeChecker(check_mode=check_mode).check(ast)
         for w in warnings: _print_warning(w, warnings_as_errors)
         if warnings_as_errors and warnings: sys.exit(1)
+        ll_errors = LowLevelChecker().check(ast)
+        if ll_errors:
+            for err in ll_errors: _print_error(err, input_file, code)
+            sys.exit(1)
         llvm.initialize_native_target(); llvm.initialize_native_asmprinter()
         codegen = CodeGen(target_platform=target_config.name); codegen.generate_code(ast, input_file)
         mod = llvm.parse_assembly(codegen.get_ir()); mod.verify()
@@ -378,6 +392,10 @@ def dump_file(input_file, output_name=None, target_name=None, check_mode=False, 
         warnings = TypeChecker(check_mode=check_mode).check(ast)
         for w in warnings: _print_warning(w, warnings_as_errors)
         if warnings_as_errors and warnings: sys.exit(1)
+        ll_errors = LowLevelChecker().check(ast)
+        if ll_errors:
+            for err in ll_errors: _print_error(err, input_file, code)
+            sys.exit(1)
         llvm.initialize_all_targets()
         codegen = CodeGen(target_platform=target_config.name); codegen.generate_code(ast, input_file)
         mod = llvm.parse_assembly(codegen.get_ir()); mod.verify()

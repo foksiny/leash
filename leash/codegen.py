@@ -494,6 +494,21 @@ class CodeGen:
                     ir.Constant(ir.IntType(64), 0),
                 ],
             )
+        if resolved.startswith("hash<") and resolved.endswith(">"):
+            # Empty hash: { 0, 0, null } with empty key/value ptr lists
+            ptr_ty = ir.IntType(8).as_pointer()
+            result = ir.Constant(
+                llvm_type,
+                [
+                    ir.Constant(ir.IntType(64), 0),
+                    ir.Constant(ir.IntType(64), 0),
+                    ir.Constant(ptr_ty, None),
+                ],
+            )
+            result.hash_key_ptrs = []
+            result.hash_value_ptrs = []
+            return result
+
         if resolved.endswith("]") and "[" in resolved:
             # Empty array/slice: { 0, null }
             ptr_ty = llvm_type.elements[1]
@@ -2293,7 +2308,7 @@ class CodeGen:
                 key_llvm = self._get_llvm_type(key_type)
                 
                 result_ptr = self.builder.alloca(value_llvm, name="hash_lookup_result")
-                default_val = ir.Constant(value_llvm, 0) if value_llvm != ir.IntType(8).as_pointer() else ir.Constant(value_llvm, None)
+                default_val = self._emit_default_value(value_type)
                 self.builder.store(default_val, result_ptr)
                 
                 key_ptrs = []
@@ -2306,8 +2321,11 @@ class CodeGen:
                 
                 for k_ptr, v_ptr in zip(key_ptrs, value_ptrs):
                     stored_key = self.builder.load(k_ptr)
-                    cmp_result = self.builder.call(self.strcmp, [key_val, stored_key])
-                    key_match = self.builder.icmp_signed("==", cmp_result, ir.Constant(ir.IntType(32), 0))
+                    if key_type == "string":
+                        cmp_result = self.builder.call(self.strcmp, [key_val, stored_key])
+                        key_match = self.builder.icmp_signed("==", cmp_result, ir.Constant(ir.IntType(32), 0))
+                    else:
+                        key_match = self.builder.icmp_signed("==", key_val, stored_key)
                     
                     with self.builder.if_then(key_match):
                         stored_value = self.builder.load(v_ptr)
@@ -4934,6 +4952,23 @@ class CodeGen:
             return None
 
         elif method == "push":
+            if len(args) == 2:
+                key_val = self._codegen(args[0])
+                value_val = self._codegen(args[1])
+                key_val = self._emit_cast(key_val, key_llvm)
+                value_val = self._emit_cast(value_val, value_llvm)
+
+                new_key_ptr = self.builder.alloca(key_llvm, name="hash_push_key")
+                self.builder.store(key_val, new_key_ptr)
+                new_value_ptr = self.builder.alloca(value_llvm, name="hash_push_value")
+                self.builder.store(value_val, new_value_ptr)
+
+                key_ptrs.append(new_key_ptr)
+                value_ptrs.append(new_value_ptr)
+
+                new_size = self.builder.add(size, ir.Constant(ir.IntType(64), 1))
+                hash_val = self.builder.insert_value(hash_val, new_size, 0)
+                self.builder.store(hash_val, hash_ptr)
             return None
 
         raise LeashError(

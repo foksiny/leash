@@ -4,15 +4,15 @@ def Point : struct {
 };
 
 // we recommend you use & instead of * for more safety and also smart compiler help
-fnc inc(v &int) : void {
+fnc inc(v &int) : void { // unsafe is not needed here because we are using safe pointers
     v = v + 1;
 }
 
-fnc dec(v *int) : void {
+unsafe fnc dec(v *int) : void {
     *v = *v - 1;
 }
 
-fnc show_person(p *Point) : void {
+unsafe fnc show_person(p *Point) : void {
     show("p.x: ", p->x);
     show("p.y: ", p->y);
 }
@@ -22,7 +22,7 @@ fnc show_person_smart(p &Point) : void {
     show("p.y: ", p.y);
 }
 
-fnc main() : void {
+unsafe fnc main() : void {
     a: int = 10;
     p: *int = &a;
     show("p: ", p);

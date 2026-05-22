@@ -332,22 +332,24 @@ ipcMain.on('execute-leash', (event, { commandId, action, filePath, args, optLeve
 
   // Send stdout/stderr to the renderer in real time
   child.stdout.on('data', (data) => {
-    event.sender.send(`proc-stdout-${commandId}`, data.toString());
+    if (!event.sender.isDestroyed()) event.sender.send(`proc-stdout-${commandId}`, data.toString());
   });
 
   child.stderr.on('data', (data) => {
-    event.sender.send(`proc-stderr-${commandId}`, data.toString());
+    if (!event.sender.isDestroyed()) event.sender.send(`proc-stderr-${commandId}`, data.toString());
   });
 
   child.on('close', (code) => {
     runningProcesses.delete(commandId);
-    event.sender.send(`proc-close-${commandId}`, code);
+    if (!event.sender.isDestroyed()) event.sender.send(`proc-close-${commandId}`, code);
   });
 
   child.on('error', (err) => {
     runningProcesses.delete(commandId);
-    event.sender.send(`proc-stderr-${commandId}`, `Failed to start compiler: ${err.message}\nEnsure Python is installed and the 'leash' module is in python path.`);
-    event.sender.send(`proc-close-${commandId}`, -1);
+    if (!event.sender.isDestroyed()) {
+      event.sender.send(`proc-stderr-${commandId}`, `Failed to start compiler: ${err.message}\nEnsure Python is installed and the 'leash' module is in python path.`);
+      event.sender.send(`proc-close-${commandId}`, -1);
+    }
   });
 });
 
@@ -357,8 +359,10 @@ ipcMain.on('kill-process', (event, commandId) => {
     try {
       child.kill();
       runningProcesses.delete(commandId);
-      event.sender.send(`proc-stderr-${commandId}`, `\n[Process terminated by user]\n`);
-      event.sender.send(`proc-close-${commandId}`, -2);
+      if (!event.sender.isDestroyed()) {
+        event.sender.send(`proc-stderr-${commandId}`, `\n[Process terminated by user]\n`);
+        event.sender.send(`proc-close-${commandId}`, -2);
+      }
     } catch (e) {
       console.error("Failed to kill process:", e);
     }
@@ -386,15 +390,15 @@ ipcMain.on('spawn-terminal', (event, { cwd }) => {
   });
 
   terminalShell.stdout.on('data', (data) => {
-    event.sender.send('terminal-output', data.toString());
+    if (!event.sender.isDestroyed()) event.sender.send('terminal-output', data.toString());
   });
 
   terminalShell.stderr.on('data', (data) => {
-    event.sender.send('terminal-output', data.toString());
+    if (!event.sender.isDestroyed()) event.sender.send('terminal-output', data.toString());
   });
 
   terminalShell.on('close', (code) => {
-    event.sender.send('terminal-output', `\n[Terminal exited with code ${code}]\n`);
+    if (!event.sender.isDestroyed()) event.sender.send('terminal-output', `\n[Terminal exited with code ${code}]\n`);
     terminalShell = null;
   });
 });

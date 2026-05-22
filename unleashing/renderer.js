@@ -3556,3 +3556,65 @@ function applyTheme(themeName) {
   
   localStorage.setItem('unleashing-theme', themeName);
 }
+
+// --- RESIZER LOGIC ---
+document.addEventListener("DOMContentLoaded", () => {
+  const sidebarResizer = document.getElementById('sidebar-resizer');
+  const sidePanel = document.getElementById('side-panel');
+  let isResizingSidebar = false;
+
+  if (sidebarResizer && sidePanel) {
+    sidebarResizer.addEventListener('mousedown', (e) => {
+      isResizingSidebar = true;
+      sidebarResizer.classList.add('active');
+      document.body.style.cursor = 'ew-resize';
+    });
+  }
+
+  const consoleResizer = document.getElementById('console-resizer');
+  const consolePanel = document.getElementById('console-panel');
+  let isResizingConsole = false;
+
+  if (consoleResizer && consolePanel) {
+    consoleResizer.addEventListener('mousedown', (e) => {
+      isResizingConsole = true;
+      consoleResizer.classList.add('active');
+      document.body.style.cursor = 'ns-resize';
+    });
+  }
+
+  document.addEventListener('mousemove', (e) => {
+    if (isResizingSidebar && sidePanel) {
+      const newWidth = e.clientX - 50; // 50px is the sidebar nav width
+      if (newWidth > 150 && newWidth < window.innerWidth - 200) {
+        sidePanel.style.width = `${newWidth}px`;
+        if (typeof editorInstance !== 'undefined' && editorInstance) {
+          editorInstance.layout();
+        }
+      }
+    }
+    if (isResizingConsole && consolePanel) {
+      const newHeight = window.innerHeight - e.clientY - 22; // 22 is status bar height
+      if (newHeight > 30 && newHeight < window.innerHeight - 100) {
+        consolePanel.style.height = `${newHeight}px`;
+        consolePanel.style.flex = `0 0 ${newHeight}px`;
+        if (typeof editorInstance !== 'undefined' && editorInstance) {
+          editorInstance.layout();
+        }
+      }
+    }
+  });
+
+  document.addEventListener('mouseup', () => {
+    if (isResizingSidebar) {
+      isResizingSidebar = false;
+      if (sidebarResizer) sidebarResizer.classList.remove('active');
+      document.body.style.cursor = '';
+    }
+    if (isResizingConsole) {
+      isResizingConsole = false;
+      if (consoleResizer) consoleResizer.classList.remove('active');
+      document.body.style.cursor = '';
+    }
+  });
+});

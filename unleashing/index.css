@@ -1548,3 +1548,30 @@ body {
   display: inline-block;
   margin-left: 4px;
 }
+
+/* --- RESIZERS --- */
+.resizer-h {
+  width: 4px;
+  background-color: var(--border-dark);
+  cursor: ew-resize;
+  z-index: 100;
+  transition: background-color 0.2s ease;
+}
+
+.resizer-h:hover, .resizer-h.active {
+  background-color: var(--border-cyan);
+  box-shadow: var(--glow-cyan);
+}
+
+.resizer-v {
+  height: 4px;
+  background-color: var(--border-dark);
+  cursor: ns-resize;
+  z-index: 100;
+  transition: background-color 0.2s ease;
+}
+
+.resizer-v:hover, .resizer-v.active {
+  background-color: var(--border-cyan);
+  box-shadow: var(--glow-cyan);
+}

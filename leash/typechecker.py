@@ -3133,17 +3133,22 @@ class TypeChecker:
             resolved = self._resolve(base_type)
             # Handle hash table index access
             if resolved.startswith("hash<") and resolved.endswith(">"):
-                # Hash tables use string keys
-                if idx_type and not self._types_compatible(idx_type, "string"):
-                    raise LeashError(
-                        f"Hash index must be a string, but got '{idx_type}'",
-                        tip="Use a string expression as the hash key.",
-                    )
-                # Extract value type from hash<K, V>
+                # Extract key and value types from hash<K, V>
                 inner = resolved[5:-1]
                 parts = inner.split(", ")
                 if len(parts) == 2:
-                    return parts[1]  # Return value type
+                    key_t, value_t = parts
+                    if idx_type and not self._types_compatible(idx_type, key_t):
+                        raise LeashError(
+                            f"Hash index must be of type '{key_t}', but got '{idx_type}'",
+                            tip="Use a compatible expression as the hash key.",
+                        )
+                    return value_t
+                if idx_type and not self._types_compatible(idx_type, "string"):
+                    raise LeashError(
+                        f"Hash index must be of type 'string', but got '{idx_type}'",
+                        tip="Use a string expression as the hash key.",
+                    )
                 return "void"
 
         # For arrays and strings, index must be integer
@@ -3353,16 +3358,21 @@ class TypeChecker:
         if not expr.entries:
             return "hash<void, void>"
         first_key, first_val = expr.entries[0]
-        key_type = "string"  # Keys are always strings
-        value_type = self._infer_type(first_val)
+        key_type = self._infer_type(first_key) or "void"
+        value_type = self._infer_type(first_val) or "void"
         for key, val in expr.entries[1:]:
+            k_type = self._infer_type(key)
+            if k_type and key_type and not self._types_compatible(k_type, key_type):
+                self._warn(
+                    f"Hash contains mixed key types: '{key_type}' and '{k_type}'.",
+                    node=expr,
+                )
             val_type = self._infer_type(val)
             if value_type and val_type and not self._types_compatible(val_type, value_type):
                 self._warn(
                     f"Hash contains mixed value types: '{value_type}' and '{val_type}'.",
                     node=expr,
                 )
-        value_type = value_type or "void"
         return f"hash<{key_type}, {value_type}>"
 
     def _check_enum_member_access(self, expr):

@@ -1,6 +1,6 @@
 fnc print_bytes(bytes char[]) {
   foreach i, n in<array> bytes {
-    show(i, ": ", (int)n);
+    show(i, ": ", toint(int, n));
   }
 }
 

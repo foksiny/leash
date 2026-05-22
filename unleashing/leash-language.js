@@ -586,18 +586,28 @@ function parseTypecheckerOutput(stdoutText, activeFilePath) {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     
-    // Check for error header
-    if (line.startsWith('error: ')) {
+    // Check for error header (format: "error" or "error [...]: ...")
+    if (/^error(\s*\[[^\]]*\])?\s*:\s/.test(line)) {
       if (currentIssue) {
         markers.push(currentIssue);
       }
+      // Extract optional code from brackets, then message after colon
+      let code = '';
+      let msg = line;
+      const codeMatch = msg.match(/^error\s*\[([^\]]+)\]\s*:\s?(.*)/);
+      if (codeMatch) {
+        code = codeMatch[1];
+        msg = codeMatch[2];
+      } else {
+        msg = msg.replace(/^error:\s?/, '');
+      }
       currentIssue = {
         severity: monaco.MarkerSeverity.Error,
-        message: line.substring(7).trim(),
+        message: msg.trim(),
         file: null,
         line: 1,
         col: 1,
-        code: '',
+        code: code,
         tip: ''
       };
       continue;

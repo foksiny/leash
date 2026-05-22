@@ -1829,13 +1829,13 @@ class Parser:
         if self.current().type in ("NOT", "BIT_NOT", "MINUS", "MUL", "BIT_AND"):
             op = self.eat(self.current().type)
             expr = self.parse_unary(no_struct_init)
-            return UnaryOp(op.value, expr)
+            return self._pos(UnaryOp(op.value, expr), op)
         if self.current().type in ("INC", "DEC"):
             inc_dec_tok = self.current()
             op = "++" if inc_dec_tok.type == "INC" else "--"
             self.eat(inc_dec_tok.type)
             expr = self.parse_unary(no_struct_init)
-            return UnaryOp(op + "p", expr)
+            return self._pos(UnaryOp(op + "p", expr), inc_dec_tok)
         return self.parse_postfix(no_struct_init)
 
     def parse_postfix(self, no_struct_init=False):
@@ -1858,7 +1858,7 @@ class Parser:
             elif self.current().type == "ARROW":
                 self.eat("ARROW")
                 member = self.eat("IDENT").value
-                expr = PointerMemberAccess(expr, member)
+                expr = self._pos(PointerMemberAccess(expr, member))
             elif self.current().type == "LBRACKET":
                 self.eat("LBRACKET")
                 index = self.parse_expression()
@@ -1868,7 +1868,7 @@ class Parser:
                 inc_dec_tok = self.current()
                 op = "++" if inc_dec_tok.type == "INC" else "--"
                 self.eat(inc_dec_tok.type)
-                expr = UnaryOp(op, expr)
+                expr = self._pos(UnaryOp(op, expr), inc_dec_tok)
         return expr
 
     def parse_primary(self, no_struct_init=False):
@@ -2081,7 +2081,7 @@ class Parser:
                 cast_type = self.parse_type()
                 self.eat("RPAREN")
                 expr = self.parse_postfix(no_struct_init)
-                return CastExpr(cast_type, expr)
+                return self._pos(CastExpr(cast_type, expr))
             self.eat("LPAREN")
             expr = self.parse_expression()
             self.eat("RPAREN")
