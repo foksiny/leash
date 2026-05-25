@@ -1,0 +1,43 @@
+error VectorSizeMismatch() -> "Vectors must be of the same size for addition.";
+
+opdef string.join(a string, b string) : string {
+    return a + b;
+}
+
+opdef string.repeat(s string, n int) : string {
+    result: string = "";
+    for i: int = 0; i < n; i = i + 1 {
+        result = result + s;
+    }
+    return result;
+}
+
+opdef vec+(vec1 vec, vec2 vec) : vec {
+    result: vec<thisop.typ>;
+    if vec1.size != vec2.size {
+        throw VectorSizeMismatch();
+    }
+    foreach i, v in<vector> vec1 {
+        result.pushb(v + vec2.get(i));
+    }
+    return result;
+}
+
+fnc main() {
+    str1: string = "Hello, ";
+    str2: string = "world!";
+    show(str1.join(str2));
+    show("Hey".repeat(3));
+    show(str2.repeat(4));
+    vec1: vec<int> = (vec<int>){1, 2, 3};
+    vec2: vec<int> = (vec<int>){4, 5, 6};
+    vec3: vec<int> = vec1 + vec2;
+    foreach i, v in<vector> vec3 {
+        show(i,": ", v);
+    }
+}
+
+// if using opdef type[], the function signature would be:
+// opdef type[](name type, index int) : type {
+//     // implementation
+// }

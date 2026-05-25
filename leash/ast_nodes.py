@@ -591,3 +591,28 @@ class IsExpr(Expression):
         self.op = op  # "is" or "isnt"
         self.right = right  # Can be a type name (string) or an expression
         self.is_type_check = is_type_check  # True if checking against a type
+
+
+class OpDef(ASTNode):
+    """Represents an operator definition (opdef) for extending types.
+
+    opdef type.method(args) : return_type { body }     # extension method
+    opdef type+(args) : return_type { body }           # operator overload
+    opdef type[](args) : return_type { body }           # index operator
+    """
+
+    def __init__(self, type_name, op_name, args, return_type, body):
+        self.type_name = type_name  # string: the type being extended
+        self.op_name = op_name  # string: method name, operator char, or "[]"
+        self.args = args  # list of (name, type, default) tuples
+        self.return_type = return_type
+        self.body = body  # list of statements (Block)
+
+
+class ThisOpTypeExpr(Expression):
+    """Represents 'thisop.typ' inside an opdef body.
+    Resolves to the inner type parameter of the container type in the current opdef context.
+    """
+
+    def __init__(self):
+        pass

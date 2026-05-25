@@ -65,6 +65,12 @@ class TypeChecker:
         self.in_unsafe_func = False  # Track if we're inside an unsafe function
         self.current_method_static = False  # Track if current class method is static
 
+        # OpDef (operator definition) support
+        self.opdef_extensions = {}  # type_name -> {method_name: OpDef node}
+        self.opdef_operators = {}  # (type_name, op) -> OpDef node
+        self.current_opdef_type = None  # Type being extended in current opdef
+        self.current_opdef_inner_type = None  # Inner type param name (e.g. __T_OPDEF__)
+
         # Register built-in classes
         self._register_builtin_classes()
 
@@ -94,6 +100,8 @@ class TypeChecker:
                 self._register_global_var(item)
             elif isinstance(item, NativeImport):
                 self._register_native_import(item)
+            elif isinstance(item, OpDef):
+                self._register_opdef(item)
 
         # Second pass: check function bodies and global var initializers
         for item in program.items:
@@ -105,6 +113,8 @@ class TypeChecker:
                 self._check_class(item)
             elif isinstance(item, GlobalVarDecl):
                 self._check_global_var(item)
+            elif isinstance(item, OpDef):
+                self._check_opdef(item)
 
         return self.warnings
 
@@ -125,6 +135,196 @@ class TypeChecker:
             self.enum_types[name] = members
         for _, name, target_type in node.typedef_declarations:
             self.type_aliases[name] = target_type
+
+    def _opdef_mangle_name(self, type_name, op_name, type_args=None):
+        """Mangle an opdef name into a function name.
+        Non-generic: _opdef_<type>_<op>
+        Generic: _opdef_<type>_<op>_<type_arg1>_<type_arg2>...
+        """
+        base = f"_opdef_{type_name}_{op_name}"
+        if type_args:
+            args_str = "_".join(str(a).replace("<", "_").replace(">", "_").replace(",", "_") for a in type_args)
+            return f"{base}_{args_str}"
+        return base
+
+    def _get_opdef_inner_types(self, type_name):
+        """Get the inner type parameter names for a generic type used in opdef."""
+        base = self._base_type(type_name)
+        if base == "vec":
+            return ["__T_OPDEF__"]
+        if base == "hash":
+            return ["__T_OPDEF_K__", "__T_OPDEF_V__"]
+        # Check user-defined generic classes
+        if type_name in self.generic_classes:
+            return [f"__T_OPDEF_{p}__" for p in self.generic_classes[type_name].type_params]
+        return None
+
+    def _extract_inner_type(self, concrete_type, base_type_name):
+        """Extract the inner type from a concrete generic type like vec<int> -> int."""
+        if not concrete_type:
+            return None
+        base = self._base_type(concrete_type)
+        if base == "vec" and concrete_type.startswith("vec<") and concrete_type.endswith(">"):
+            return concrete_type[4:-1]
+        if base == "hash" and concrete_type.startswith("hash<") and concrete_type.endswith(">"):
+            inner = concrete_type[5:-1]
+            return inner.split(",")[0].strip()  # return first type param
+        # Check for user-defined generic class instantiation
+        if "<" in concrete_type and concrete_type.endswith(">"):
+            base_class = concrete_type.split("<")[0]
+            inner = concrete_type[len(base_class) + 1:-1]
+            if base_class in self.generic_classes or base_class in self.class_types:
+                return inner.split(",")[0].strip()
+        return None
+
+    def _register_opdef(self, node):
+        """Register an opdef definition in the type system."""
+        type_name = node.type_name
+        op_name = node.op_name
+
+        # Check for duplicate opdef
+        is_method = isinstance(op_name, str) and not op_name[0] in "+-*/%=!<>&|^[]"
+        if is_method:
+            ext_map = self.opdef_extensions.setdefault(type_name, {})
+            if op_name in ext_map:
+                self._error(f"Duplicate opdef extension method '{type_name}.{op_name}'", node=node)
+            ext_map[op_name] = node
+        else:
+            key = (type_name, op_name)
+            if key in self.opdef_operators:
+                self._error(f"Duplicate opdef operator '{type_name}{op_name}'", node=node)
+            self.opdef_operators[key] = node
+
+        # Determine if the target type is generic (has type parameters)
+        inner_types = self._get_opdef_inner_types(type_name)
+
+        if inner_types:
+            # Generic opdef - register as a generic function template
+            # Register implicit template types first
+            for it in inner_types:
+                self.template_types[it] = True
+
+            # Build substituted args with generic type params
+            new_args = []
+            for arg_name, arg_type, default in node.args:
+                new_type = self._substitute_opdef_type(arg_type, type_name, inner_types)
+                new_args.append((arg_name, new_type, default))
+
+            new_return_type = self._substitute_opdef_type(node.return_type, type_name, inner_types)
+
+            # Build mangled template name
+            mangled_name = self._opdef_mangle_name(type_name, op_name)
+
+            # Create function for generic registration
+            template_func = Function(
+                mangled_name, tuple(new_args), new_return_type, node.body, []
+            )
+            # Set type params so it registers as generic
+            template_func.type_params = inner_types
+
+            # Register the function template (will go into generic_funcs)
+            self._register_function_sig(template_func)
+            self.generic_funcs[mangled_name] = template_func
+        else:
+            # Non-generic opdef - register as a regular function
+            mangled_name = self._opdef_mangle_name(type_name, op_name)
+            node._opdef_mangled_name = mangled_name
+            arg_types = [t for _, t, _ in node.args]
+            arg_names = [n for n, _, _ in node.args]
+            arg_defaults = [False for _ in node.args]
+            self.func_types[mangled_name] = (arg_types, node.return_type, arg_names, arg_defaults)
+
+    def _substitute_opdef_type(self, type_str, container_type, inner_types):
+        """Substitute bare generic type references like 'vec' with 'vec<__T_OPDEF__>'."""
+        if not type_str:
+            return type_str
+        # Handle thisop.typ -> first inner type arg
+        if type_str == "thisop.typ":
+            return inner_types[0] if inner_types else type_str
+
+        # Handle imut prefix
+        if type_str.startswith("imut "):
+            return "imut " + self._substitute_opdef_type(type_str[5:], container_type, inner_types)
+
+        # Handle pointer/reference
+        if type_str.startswith("*") or type_str.startswith("&"):
+            return type_str[0] + self._substitute_opdef_type(type_str[1:], container_type, inner_types)
+
+        # Handle vec<T> -> check if the base matches the container
+        if type_str.startswith("vec<") and type_str.endswith(">"):
+            inner = type_str[4:-1]
+            new_inner = self._substitute_opdef_type(inner, container_type, inner_types)
+            return f"vec<{new_inner}>"
+
+        # Array type
+        if type_str.endswith("]") and "[" in type_str:
+            base = type_str.split("[")[0]
+            bracket_part = type_str[len(base):]
+            new_base = self._substitute_opdef_type(base, container_type, inner_types)
+            return new_base + bracket_part
+
+        # If the type is exactly the container type with no type args, add the generic params
+        if type_str == container_type:
+            if inner_types:
+                return f"{type_str}<{', '.join(inner_types)}>"
+
+        return type_str
+
+    def _check_opdef(self, node):
+        """Type-check an opdef body."""
+        type_name = node.type_name
+        op_name = node.op_name
+        is_method = isinstance(op_name, str) and not op_name[0] in "+-*/%=!<>&|^[]"
+
+        # Determine if generic
+        inner_types = self._get_opdef_inner_types(type_name)
+
+        if inner_types:
+            # For generic opdefs, the body is already registered as a generic function
+            # and will be type-checked when instantiated.
+            # Register implicit template types
+            for it in inner_types:
+                self.template_types[it] = True
+
+            # Check the body with the template types in scope
+            mangled_name = self._opdef_mangle_name(type_name, op_name)
+
+            # Build substituted args/return type with template params
+            new_args = []
+            for arg_name, arg_type, default in node.args:
+                new_type = self._substitute_opdef_type(arg_type, type_name, inner_types)
+                new_args.append((arg_name, new_type, default))
+            new_return_type = self._substitute_opdef_type(node.return_type, type_name, inner_types)
+
+            # Check the body in the context of the generic function
+            saved_opdef_type = self.current_opdef_type
+            saved_opdef_inner = self.current_opdef_inner_type
+            self.current_opdef_type = type_name
+            self.current_opdef_inner_type = inner_types[0] if inner_types else None
+
+            # Create a temporary Function node for checking
+            temp_func = Function(
+                mangled_name, tuple(new_args), new_return_type, node.body, inner_types
+            )
+            self._check_function(temp_func)
+
+            self.current_opdef_type = saved_opdef_type
+            self.current_opdef_inner_type = saved_opdef_inner
+        else:
+            # Non-generic opdef - check the body directly as a function
+            saved_opdef_type = self.current_opdef_type
+            saved_opdef_inner = self.current_opdef_inner_type
+            self.current_opdef_type = type_name
+            self.current_opdef_inner_type = None
+
+            mangled_name = self._opdef_mangle_name(type_name, op_name)
+            temp_func = Function(
+                mangled_name, node.args, node.return_type, node.body, []
+            )
+            self._check_function(temp_func)
+
+            self.current_opdef_type = saved_opdef_type
+            self.current_opdef_inner_type = saved_opdef_inner
 
     def _register_builtin_classes(self):
         """Register built-in classes like File."""
@@ -673,6 +873,15 @@ class TypeChecker:
 
     def _resolve(self, type_name):
         """Resolve type aliases (strips imut first, then re-applies if needed)."""
+        # Handle thisop.typ in opdef context
+        if "thisop.typ" in (type_name or ""):
+            if self.current_opdef_inner_type:
+                type_name = type_name.replace("thisop.typ", self.current_opdef_inner_type)
+            else:
+                # During generic instantiation, thisop.typ should be in the param map
+                # Return as-is and let the caller handle it
+                return type_name
+
         stripped = self._strip_imut(type_name)
         visited = set()
         while stripped in self.type_aliases and stripped not in visited:
@@ -2158,6 +2367,15 @@ class TypeChecker:
             return self._check_lambda(expr)
         elif isinstance(expr, CreateExpr):
             return self._check_create(expr)
+        elif isinstance(expr, ThisOpTypeExpr):
+            # In opdef context, resolve to the inner type of the container
+            if self.current_opdef_inner_type:
+                # Resolve the template type name
+                resolved = self._resolve(self.current_opdef_inner_type)
+                if resolved and resolved != self.current_opdef_inner_type:
+                    return resolved
+                return self.current_opdef_inner_type
+            return None
         return None
 
     def _check_sizeof(self, expr):
@@ -2362,6 +2580,38 @@ class TypeChecker:
                     )
 
                 return "int"
+
+            # OpDef operator overload lookup
+            if left_b == right_b:
+                opdef_key = (left_b, expr.op)
+                if opdef_key in self.opdef_operators:
+                    opdef_node = self.opdef_operators[opdef_key]
+                    mangled_name = self._opdef_mangle_name(left_b, expr.op)
+
+                    # Check if this is a generic opdef (target type has inner types)
+                    inner_types = self._get_opdef_inner_types(left_b)
+                    if inner_types:
+                        # Extract inner type from concrete type
+                        inner_t = self._extract_inner_type(left_t, left_b)
+                        if inner_t:
+                            # Instantiate the generic function
+                            type_args = [inner_t]
+                            instantiated_name = self._instantiate_generic_func(
+                                mangled_name, type_args, expr
+                            )
+                            # Store the function name on the node for codegen
+                            expr.opdef_func_name = instantiated_name
+                            # Infer return type from the instantiated function
+                            if instantiated_name in self.func_types:
+                                sig = self.func_types[instantiated_name]
+                                return sig[1]  # return type
+                            return left_t
+                    else:
+                        # Non-generic opdef
+                        # Store the function name for codegen
+                        expr.opdef_func_name = mangled_name
+                        # Return type from opdef
+                        return opdef_node.return_type
 
             # Mixed string + non-string
             if (left_b == "string") or (right_b == "string"):
@@ -3838,6 +4088,61 @@ class TypeChecker:
 
             return fnc_node.return_type
 
+        # Check opdef extension methods
+        if base_t in self.opdef_extensions and expr.method in self.opdef_extensions[base_t]:
+            opdef_node = self.opdef_extensions[base_t][expr.method]
+            mangled_name = self._opdef_mangle_name(base_t, expr.method)
+
+            # Check if generic opdef
+            inner_types = self._get_opdef_inner_types(base_t)
+            if inner_types:
+                inner_t = self._extract_inner_type(base_t, base_t)
+                if inner_t:
+                    type_args = [inner_t]
+                    instantiated_name = self._instantiate_generic_func(
+                        mangled_name, type_args, expr
+                    )
+                    # Convert MethodCall to Call for codegen
+                    from .ast_nodes import Call
+                    new_call = Call(instantiated_name, [expr.expr] + expr.args)
+                    new_call.line = expr.line
+                    new_call.col = expr.col
+                    # Replace expr in place
+                    expr.__class__ = Call
+                    expr.name = instantiated_name
+                    expr.args = [expr.expr] + expr.args
+                    expr.kwargs = {}
+                    if instantiated_name in self.func_types:
+                        sig = self.func_types[instantiated_name]
+                        return sig[1]
+                    return opdef_node.return_type
+            else:
+                # Non-generic opdef
+                from .ast_nodes import Call
+                expr.__class__ = Call
+                expr.name = mangled_name
+                expr.args = [expr.expr] + expr.args
+                expr.kwargs = {}
+                if mangled_name in self.func_types:
+                    sig = self.func_types[mangled_name]
+                    return sig[1]
+                return opdef_node.return_type
+
+        # Also try opdef extension methods on the resolved base type
+        resolved_base = self._resolve(base_t)
+        if resolved_base in self.opdef_extensions and expr.method in self.opdef_extensions[resolved_base]:
+            opdef_node = self.opdef_extensions[resolved_base][expr.method]
+            mangled_name = self._opdef_mangle_name(resolved_base, expr.method)
+            from .ast_nodes import Call
+            expr.__class__ = Call
+            expr.name = mangled_name
+            expr.args = [expr.expr] + expr.args
+            expr.kwargs = {}
+            if mangled_name in self.func_types:
+                sig = self.func_types[mangled_name]
+                return sig[1]
+            return opdef_node.return_type
+
         self._error(
             f"Type '{base_t}' has no method named '{expr.method}'",
             node=expr,
@@ -3870,6 +4175,11 @@ class TypeChecker:
         for i, param_name in enumerate(template.type_params):
             if i < len(type_args):
                 type_param_map[param_name] = type_args[i]
+
+        # Map thisop.typ to first type arg for opdef generic functions
+        if type_param_map and any(k.startswith("__T_OPDEF") for k in type_param_map):
+            first_val = list(type_param_map.values())[0]
+            type_param_map["thisop.typ"] = first_val
 
         # Mangle the name
         mangled_name = self._mangle_generic_name(name, type_args)
@@ -4195,6 +4505,16 @@ class TypeChecker:
         # Check class name map (for class names like Box -> Box_int)
         if class_name_map and type_name in class_name_map:
             return class_name_map[type_name]
+
+        # Handle thisop.typ placeholder
+        if type_name == "thisop.typ":
+            if type_name in type_param_map:
+                return type_param_map[type_name]
+            # Fallback: look for __T_OPDEF__ type params
+            for k, v in type_param_map.items():
+                if k.startswith("__T_OPDEF"):
+                    return v
+            return type_name
 
         # Direct type parameter substitution
         if type_name in type_param_map:

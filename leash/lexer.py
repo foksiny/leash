@@ -78,6 +78,8 @@ class Lexer:
         "loop",
         "empty",
         "ignore",
+        "opdef",
+        "thisop",
     }
 
     # regexes

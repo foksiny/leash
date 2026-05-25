@@ -16,8 +16,8 @@ function registerLeashLanguage() {
       'return', 'if', 'else', 'unless', 'while', 'for', 'do', 'foreach', 'loop', 'in', 
       'stop', 'continue', 'empty', 'ignore', 'switch', 'case', 'default', 'defer', 
       'throw', 'try', 'catch', 'fnc', 'def', 'struct', 'union', 'enum', 'class', 
-      'type', 'template', 'macro', 'use', 'pub', 'priv', 'static', 'pubif', 'unsafe', 
-      'as', 'inline', 'imut', 'create', 'del', 'this', 'self', 'also', 'alsou', 
+      'type', 'template', 'macro', 'opdef', 'use', 'pub', 'priv', 'static', 'pubif', 'unsafe', 
+      'as', 'inline', 'imut', 'create', 'del', 'this', 'thisop', 'self', 'also', 'alsou', 
       'works', 'otherwise', 'is', 'isnt'
     ],
 
@@ -57,6 +57,9 @@ function registerLeashLanguage() {
             '@default': 'identifier'
           }
         }],
+
+        // thisop.typ (operator definition type placeholder)
+        [/\bthisop\.typ\b/, 'keyword.other'],
 
         // Class type references (Capitalized names)
         [/[A-Z][a-zA-Z0-9_]*/, 'type.identifier'],
@@ -199,8 +202,8 @@ function registerLeashLanguage() {
         'return', 'if', 'else', 'unless', 'while', 'for', 'do', 'foreach', 'loop', 'in', 
         'stop', 'continue', 'empty', 'ignore', 'switch', 'case', 'default', 'defer', 
         'throw', 'try', 'catch', 'fnc', 'def', 'struct', 'union', 'enum', 'class', 
-        'type', 'template', 'macro', 'use', 'pub', 'priv', 'static', 'pubif', 'unsafe', 
-        'as', 'inline', 'imut', 'create', 'del', 'this', 'self', 'also', 'alsou', 
+        'type', 'template', 'macro', 'opdef', 'use', 'pub', 'priv', 'static', 'pubif', 'unsafe', 
+        'as', 'inline', 'imut', 'create', 'del', 'this', 'thisop', 'self', 'also', 'alsou', 
         'works', 'otherwise', 'is', 'isnt'
       ];
       keywords.forEach(kw => {

@@ -4,7 +4,7 @@ if exists("b:current_syntax")
 endif
 
 " Keywords
- syn keyword leashKeyword fnc def struct union enum class type template macro return if also else unless while for do foreach loop in imut vector vec this pub priv static stop continue empty ignore use works otherwise switch case default unsafe as inline defer error throw self alsou create del is isnt
+ syn keyword leashKeyword fnc def struct union enum class type template macro opdef return if also else unless while for do foreach loop in imut vector vec this thisop pub priv static stop continue empty ignore use works otherwise switch case default unsafe as inline defer error throw self alsou create del is isnt
 
 " Enum member with custom value: MEMBER: type = value
 syn match leashEnumMember /^\s*\zs[a-zA-Z_][a-zA-Z0-9_]*\ze\s*:/
@@ -14,6 +14,7 @@ syn keyword leashNull null nil
 " Special file path literals and built-in variables
 syn keyword leashBuiltin _FILEPATH _FILENAME _PLATFORM
 syn match leashSelf /\<self\(::[a-zA-Z_][a-zA-Z0-9_]*\)\?\>/
+syn match leashThisOpType /\<thisop\.typ\>/
 
 " @from native import directive
 syn match leashNativeImport /@from\s*(/me=s+1
@@ -115,6 +116,7 @@ hi def link leashFuncPointer Type
 hi def link leashBoolean Boolean
 hi def link leashNull Constant
 hi def link leashSelf Constant
+hi def link leashThisOpType Special
 hi def link leashBuiltin Function
 hi def link leashFunction Function
 hi def link leashMethod Function

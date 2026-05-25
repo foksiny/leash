@@ -38,6 +38,7 @@ Leash is a strongly-typed, modern compiled programming language built on top of 
 - [Macros](#macros)
 - [Generic Types](#generic-types)
 - [Multi-Type Functions](#multi-type-functions)
+- [Operator Definitions (`opdef`)](#operator-definitions-opdef)
 - [Multi-Return Functions](#multi-return-functions)
 - [Type Casting](#type-casting)
 - [The `as` Keyword](#the-as-keyword)
@@ -1254,6 +1255,66 @@ fnc main() : void {
 ```
 
 Lambda type syntax is `fnc(param_types) : return_type`. Lambdas can be stored in variables of function pointer type and called like regular functions.
+
+## Operator Definitions (`opdef`)
+
+Operator Definitions let you extend existing types with new methods and overload operators. They are defined using the `opdef` keyword and work with built-in types (`string`, `vec`, etc.) and user-defined types (classes, structs) alike.
+
+### Extension Methods
+
+```leash
+opdef string.join(a string, b string) : string {
+    return a + b;
+}
+
+opdef string.repeat(s string, n int) : string {
+    result: string = "";
+    for i: int = 0; i < n; i = i + 1 {
+        result = result + s;
+    }
+    return result;
+}
+
+fnc main() {
+    show("Hello, ".join("world!"));  // Hello, world!
+    show("Hey".repeat(3));           // HeyHeyHey
+}
+```
+
+### Operator Overloads
+
+For generic types like `vec<T>`, use `thisop.typ` to refer to the inner type parameter in the body:
+
+```leash
+opdef vec+(vec1 vec, vec2 vec) : vec {
+    result: vec<thisop.typ>;
+    foreach _, v in<vector> vec1 {
+        result.pushb(v);
+    }
+    foreach _, v in<vector> vec2 {
+        result.pushb(v);
+    }
+    return result;
+}
+
+fnc main() {
+    vec1: vec<int> = (vec<int>){1, 2, 3};
+    vec2: vec<int> = (vec<int>){4, 5, 6};
+    result: vec<int> = vec1 + vec2;  // (5, 7, 9) — correctly typed per element
+}
+```
+
+### Syntax
+
+```
+opdef <type>.<method>(<args>) : <return_type> { <body> }
+opdef <type><operator>(<args>) : <return_type> { <body> }
+```
+
+- `<type>` — the type being extended (`string`, `vec`, or a user-defined type)
+- `<method>` — name for an extension method call (e.g., `.join(...)`)
+- `<operator>` — symbol for an operator overload (`+`, `-`, `*`, `/`, `%`, etc.)
+- `thisop.typ` — resolves to the inner type parameter of a generic type (e.g., inside a `vec` opdef, `thisop.typ` is `int` when the operand is `vec<int>`)
 
 ## Global Variables
 

@@ -31,6 +31,8 @@ from .ast_nodes import (
     CharLiteral,
     IsExpr,
     LoopStatement,
+    ThisOpTypeExpr,
+    OpDef,
 )
 
 
@@ -530,6 +532,13 @@ class CodeGen:
         return self._codegen(node)
 
     def _codegen(self, node):
+        # ThisOpTypeExpr should not appear at codegen time (resolved during typechecking)
+        if isinstance(node, ThisOpTypeExpr):
+            raise LeashError(
+                "Internal: thisop.typ not resolved at codegen time",
+                line=getattr(node, "line", None), col=getattr(node, "col", None)
+            )
+
         method_name = f"_codegen_{type(node).__name__}"
         method = getattr(self, method_name, None)
         if method:
@@ -879,9 +888,18 @@ class CodeGen:
         if self.global_init_list:
             self._codegen_global_init_function()
 
-        # Sixth pass: generate functions
+        # Sixth pass: pre-declare all functions (including opdefs) so they're in func_symtab
         for item in node.items:
             if isinstance(item, Function):
+                self._codegen_predeclare_function(item)
+            elif isinstance(item, OpDef):
+                self._codegen_predeclare_opdef(item)
+
+        # Seventh pass: generate function bodies
+        for item in node.items:
+            if isinstance(item, Function):
+                self._codegen(item)
+            elif isinstance(item, OpDef):
                 self._codegen(item)
 
     def _codegen_GlobalVarDecl(self, node):
@@ -1627,6 +1645,51 @@ class CodeGen:
             return self._type_byte_size(llvm_ty.element) * llvm_ty.count
         return 8  # assume pointer size as fallback
 
+    def _codegen_predeclare_function(self, node):
+        """Pre-declare a function so it's available in func_symtab before body codegen."""
+        if node.name in self.func_symtab:
+            return
+        if node.name == "main":
+            return
+        arg_types = []
+        for arg_name, arg_type, default in node.args:
+            llvm_arg_type = self._get_llvm_type(arg_type)
+            arg_types.append(llvm_arg_type)
+        ret_type = self._get_llvm_type(node.return_type, is_return=True)
+        func_type = ir.FunctionType(ret_type, arg_types)
+        func = ir.Function(self.module, func_type, name=node.name)
+        self.func_symtab[node.name] = func
+
+    def _codegen_predeclare_opdef(self, node):
+        """Pre-declare a non-generic opdef function."""
+        if getattr(node, '_opdef_is_generic', False):
+            return
+        mangled_name = getattr(node, '_opdef_mangled_name', None)
+        if not mangled_name:
+            return
+        if mangled_name in self.func_symtab:
+            return
+        arg_types = []
+        for arg_name, arg_type, default in node.args:
+            llvm_arg_type = self._get_llvm_type(arg_type)
+            arg_types.append(llvm_arg_type)
+        ret_type = self._get_llvm_type(node.return_type, is_return=True)
+        func_type = ir.FunctionType(ret_type, arg_types)
+        func = ir.Function(self.module, func_type, name=mangled_name)
+        self.func_symtab[mangled_name] = func
+
+    def _codegen_OpDef(self, node):
+        if getattr(node, '_opdef_is_generic', False):
+            return
+        mangled_name = getattr(node, '_opdef_mangled_name', None)
+        if not mangled_name:
+            return
+        func_node = Function(
+            mangled_name, tuple((n, t, d) for n, t, d in node.args),
+            node.return_type, node.body, []
+        )
+        self._codegen_Function(func_node)
+
     def _codegen_Function(self, node):
         # Start with globals in scope (they can be shadowed by locals)
         self.var_symtab = (
@@ -1658,8 +1721,10 @@ class CodeGen:
 
             func_type = ir.FunctionType(ret_type, arg_types)
 
-        func = ir.Function(self.module, func_type, name=name)
-        self.func_symtab[name] = func
+        func = self.func_symtab.get(name)
+        if func is None:
+            func = ir.Function(self.module, func_type, name=name)
+            self.func_symtab[name] = func
 
         self._codegen_Function_body(node, func, is_main_with_args=is_main_with_args)
 
@@ -3443,6 +3508,21 @@ class CodeGen:
 
     def _codegen_BinaryOp(self, node):
         left = self._codegen(node.left)
+
+        # OpDef operator overload
+        opdef_func_name = getattr(node, "opdef_func_name", None)
+        if opdef_func_name:
+            right = self._codegen(node.right)
+            func = self.func_symtab.get(opdef_func_name)
+            if not func:
+                raise LeashError(f"Call to undefined opdef function: '{opdef_func_name}'")
+            args = []
+            for i, arg_val in enumerate([left, right]):
+                if i < len(func.args):
+                    target_llvm = func.args[i].type
+                    arg_val = self._emit_cast(arg_val, target_llvm)
+                args.append(arg_val)
+            return self.builder.call(func, args)
 
         # Logical operations (short-circuiting)
         if node.op == "&&":

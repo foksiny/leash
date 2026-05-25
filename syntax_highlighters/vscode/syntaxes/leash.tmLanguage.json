@@ -70,11 +70,11 @@
                 },
                 {
                     "name": "keyword.declaration.leash",
-                    "match": "\\b(fnc|def|struct|union|enum|class|type|template|macro|use|pub|priv|static|pubif|unsafe|as|inline|imut|create|del)\\b"
+                    "match": "\\b(fnc|def|struct|union|enum|class|type|template|macro|opdef|error|use|pub|priv|static|pubif|unsafe|as|inline|imut|create|del)\\b"
                 },
                  {
                      "name": "keyword.other.leash",
-                     "match": "\\b(this|self|also|alsou|works|otherwise|is|isnt)\\b"
+                     "match": "\\b(this|thisop|self|also|alsou|works|otherwise|is|isnt)\\b"
                  }
             ]
         },
@@ -120,6 +120,10 @@
         },
         "types": {
             "patterns": [
+                {
+                    "name": "keyword.other.leash",
+                    "match": "\\bthisop\\.typ\\b"
+                },
                 {
                     "name": "storage.type.primitive.leash",
                     "match": "\\b(int|uint|float|bool|string|char|void|array|vec|vector|hash)\\b"

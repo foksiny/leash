@@ -76,6 +76,8 @@ from .ast_nodes import (
     CreateExpr,
     DelStatement,
     IsExpr,
+    OpDef,
+    ThisOpTypeExpr,
 )
 from .errors import LeashError
 
@@ -278,6 +280,13 @@ class Parser:
                 return f"imut {result}"
             return result
 
+        # Handle thisop.typ in type context
+        if self.current().type == "THISOP":
+            self.eat("THISOP")
+            self.eat("DOT")
+            self.eat("IDENT")  # "typ"
+            return "thisop.typ"
+
         tok = self.current()
         if tok.type in (
             "INT",
@@ -407,6 +416,7 @@ class Parser:
         "IMUT",
         "VEC",
         "FNC",
+        "THISOP",
     }
 
     def _is_cast(self):
@@ -508,6 +518,8 @@ class Parser:
                 items.append(self.parse_global_var())
             elif self.current().type == "USE":
                 items.append(self.parse_import())
+            elif self.current().type == "OPDEF":
+                items.append(self.parse_opdef())
             elif self.current().type == "AT":
                 items.append(self.parse_native_import())
             elif self.current().type in ("IF", "UNLESS"):
@@ -631,6 +643,8 @@ class Parser:
             return self.parse_global_var()
         elif self.current().type == "USE":
             return self.parse_import()
+        elif self.current().type == "OPDEF":
+            return self.parse_opdef()
         elif self.current().type == "AT":
             return self.parse_native_import()
         elif self.current().type == "IF":
@@ -1148,6 +1162,91 @@ class Parser:
             is_unsafe,
             is_inline,
         )
+
+    def parse_opdef(self):
+        """Parse an operator definition: opdef Type.method(args) : ret { body } or opdef TypeOp(args) : ret { body }"""
+        tok = self.current()
+        self.eat("OPDEF")
+
+        # Read the type name
+        type_tok = self.current()
+        target_type = None
+        if type_tok.type in ("INT", "VOID", "IDENT", "STRING", "CHAR", "BOOL", "FLOAT", "UINT", "VEC"):
+            target_type = self.eat(type_tok.type).value
+            if type_tok.type not in ("IDENT", "VEC"):
+                target_type = type_tok.type.lower()
+        else:
+            raise LeashError(
+                f"Expected a type name after 'opdef', but found {type_tok.type} ('{type_tok.value}')",
+                type_tok.line, type_tok.column,
+                tip="Use 'opdef TypeName.method(args) : return_type { body }' or 'opdef TypeOp(args) : return_type { body }' syntax."
+            )
+
+        # Determine the operator/method name
+        operator_map = {
+            "PLUS": "+", "MINUS": "-", "MUL": "*", "DIV": "/", "MOD": "%",
+            "EQ": "==", "NEQ": "!=", "LT": "<", "GT": ">", "LTE": "<=", "GTE": ">=",
+            "BIT_AND": "&", "BIT_OR": "|", "BIT_XOR": "^", "SHL": "<<", "SHR": ">>",
+            "ISIN": "<>",
+        }
+
+        op_name = None
+        if self.current().type == "DOT":
+            self.eat("DOT")
+            op_name = self.eat("IDENT").value
+        elif self.current().type == "LBRACKET":
+            self.eat("LBRACKET")
+            self.eat("RBRACKET")
+            op_name = "[]"
+        elif self.current().type in operator_map:
+            op_name = operator_map[self.current().type]
+            self.eat(self.current().type)
+        else:
+            raise LeashError(
+                f"Expected '.method', operator, or '[]' after type name in opdef, but found {self.current().type} ('{self.current().value}')",
+                self.current().line, self.current().column,
+            )
+
+        # Parse arguments
+        self.eat("LPAREN")
+        args = []
+        has_default = False
+        while self.current().type != "RPAREN":
+            arg_name = self.eat("IDENT").value
+            arg_type = self.parse_type()
+            default_value = None
+            if self.current().type == "ASSIGN":
+                self.eat("ASSIGN")
+                default_value = self.parse_expression()
+                has_default = True
+            elif has_default:
+                raise LeashError(
+                    "Cannot have argument without default value after argument with default value",
+                    self.current().line, self.current().column,
+                    tip="Move required arguments before optional ones with default values",
+                )
+            args.append((arg_name, arg_type, default_value))
+            if self.current().type == "COMMA":
+                self.eat("COMMA")
+        self.eat("RPAREN")
+
+        # Parse optional return type
+        return_type = "void"
+        if self.current().type == "COLON":
+            self.eat("COLON")
+            return_type = self.parse_type()
+
+        # Parse body
+        if self.current().type == "PIPE":
+            self.eat("PIPE")
+            statements = [self.parse_statement()]
+        else:
+            self.eat("LBRACE")
+            from .ast_nodes import Block
+            statements = self.parse_block()
+
+        node = OpDef(target_type, op_name, tuple(args), return_type, statements)
+        return self._pos(node, tok)
 
     def parse_block(self):
         statements = []
@@ -1900,6 +1999,12 @@ class Parser:
             tok = self.current()
             self.eat("THIS")
             return self._pos(ThisExpr(), tok)
+        elif self.current().type == "THISOP":
+            tok = self.current()
+            self.eat("THISOP")
+            self.eat("DOT")
+            member = self.eat("IDENT").value
+            return self._pos(ThisOpTypeExpr(), tok)
         elif self.current().type == "SELF":
             tok = self.current()
             self.eat("SELF")
