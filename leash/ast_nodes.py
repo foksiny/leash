@@ -48,6 +48,7 @@ class Function(ASTNode):
         visibility="pub",
         is_unsafe=False,
         is_inline=False,
+        struct_type=None,
     ):
         self.name = name
         self.args = args  # list of (name, type, default) tuples - default can be None
@@ -57,6 +58,7 @@ class Function(ASTNode):
         self.visibility = visibility  # 'pub' or 'priv'
         self.is_unsafe = is_unsafe
         self.is_inline = is_inline
+        self.struct_type = struct_type  # For struct functions: which struct this function belongs to
 
 
 class Block(ASTNode):

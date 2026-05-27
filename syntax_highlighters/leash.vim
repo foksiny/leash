@@ -40,6 +40,7 @@ syn match leashTypeAnnotation /:\s*[A-Z][a-zA-Z0-9_]*\s*(\s*[A-Z][a-zA-Z0-9_]*\s
 " Generic type parameters
 syn match leashGenericParam /<\s*\zs[A-Z][a-zA-Z0-9_]*\ze/
 syn match leashGenericParam /,\s*\zs[A-Z][a-zA-Z0-9_]*\ze/
+syn match leashStructType /->\s*\zs[A-Z][a-zA-Z0-9_]*\ze/
 
 " Multi-type syntax: [int, float]
 syn match leashMultiType /\[\s*[a-z_][a-zA-Z0-9_]*\s*\(,\s*[a-z_][a-zA-Z0-9_]*\s*\)*\]/
@@ -109,6 +110,7 @@ hi def link leashType Type
 hi def link leashClassInheritance Type
 hi def link leashTypeAnnotation Type
 hi def link leashGenericParam Type
+hi def link leashStructType Type
 hi def link leashMultiType Type
 hi def link leashMultiReturn Type
 hi def link leashArrayType Type

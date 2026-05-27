@@ -36,6 +36,7 @@ class TypeChecker:
         self.error_types_vis = {}  # name -> visibility ("pub" or "priv")
         self.func_signatures = {}  # name -> (arg_types, return_type)
         self.func_signatures_vis = {}  # name -> visibility ("pub" or "priv")
+        self.struct_methods = {}  # struct_name -> {method_name: (node, visibility)}
         self.class_types = {}  # name -> {fields: {name: (type, vis)}, methods: {name: (node, vis)}}
         self.template_types = {}  # name -> True (tracks template parameters like T1, T2)
         self.generic_funcs = {}  # name -> Function node (for generic function templates)
@@ -770,13 +771,22 @@ class TypeChecker:
         arg_types = [t for _, t, _ in node.args]
         arg_names = [n for n, _, _ in node.args]
         arg_defaults = [d is not None for _, _, d in node.args]
-        self.func_types[node.name] = (
-            arg_types,
-            node.return_type,
-            arg_names,
-            arg_defaults,
-        )
-        self.func_signatures_vis[node.name] = getattr(node, "visibility", "pub")
+        
+        # Register struct functions separately
+        if hasattr(node, 'struct_type') and node.struct_type:
+            struct_name = node.struct_type
+            if struct_name not in self.struct_methods:
+                self.struct_methods[struct_name] = {}
+            self.struct_methods[struct_name][node.name] = (node, getattr(node, "visibility", "pub"))
+        else:
+            # Regular function registration
+            self.func_types[node.name] = (
+                arg_types,
+                node.return_type,
+                arg_names,
+                arg_defaults,
+            )
+            self.func_signatures_vis[node.name] = getattr(node, "visibility", "pub")
 
     def _is_multi_type(self, type_name):
         """Check if a type name has multi-type syntax like [int, float]."""
@@ -1434,6 +1444,11 @@ class TypeChecker:
             self.var_immutable[arg_name] = is_imut
             self.current_func_params.add(arg_name)
 
+        # Register 'this' for struct functions
+        if getattr(node, 'struct_type', None):
+            self.var_types["this"] = node.struct_type
+            self.var_immutable["this"] = True
+
         last_was_return = self._check_statements(node.body)
 
         bare_ret = self._strip_imut(node.return_type) if node.return_type else "void"
@@ -1451,7 +1466,7 @@ class TypeChecker:
                     var_name not in self.used_vars
                     and var_name not in self.current_func_params
                 ):
-                    if var_name != "args" and not var_name.startswith("_"):
+                    if var_name != "args" and var_name != "this" and not var_name.startswith("_"):
                         self._warn(
                             f"Unused local variable '{var_name}' in function '{node.name}'",
                             tip=f"If you don't need this variable, consider removing it.",
@@ -2223,9 +2238,11 @@ class TypeChecker:
         elif isinstance(expr, BuiltinVarLiteral):
             return "string"
         elif isinstance(expr, ThisExpr):
-            if not self.current_class:
-                self._error("'this' can only be used inside a class method", node=expr)
-            return self.current_class
+            if self.current_class:
+                return self.current_class
+            if self.current_func_node and getattr(self.current_func_node, 'struct_type', None):
+                return self.current_func_node.struct_type
+            self._error("'this' can only be used inside a class method or struct function", node=expr)
         elif isinstance(expr, SelfExpr):
             if expr.member:
                 if expr.member == "Parent":
@@ -4087,6 +4104,53 @@ class TypeChecker:
                     )
 
             return fnc_node.return_type
+
+        # Check struct method calls (instance methods on structs)
+        # Resolve the base type - if it's a struct, look for struct methods
+        target_struct = None
+        
+        # Check if base_t resolves to a struct type
+        resolved_base = self._resolve(base_t)
+        if resolved_base in self.struct_types:
+            target_struct = resolved_base
+        
+        if target_struct:
+            # Get struct methods
+            if target_struct in self.struct_methods and expr.method in self.struct_methods[target_struct]:
+                fnc_node, visibility = self.struct_methods[target_struct][expr.method]
+                
+                # Check visibility
+                self._check_visibility(target_struct, expr.method, False, expr)  # False = not static
+                
+                # Struct functions don't include 'this' in their declared args
+                expected_args = [t for _, t, _ in fnc_node.args]
+                
+                if len(expr.args) != len(expected_args):
+                    raise LeashError(
+                        f"Struct method '{expr.method}' of struct '{target_struct}' expects {len(expected_args)} arguments, but got {len(expr.args)}"
+                    )
+                
+                # Check argument types
+                for i, (arg_expr, expected_type) in enumerate(
+                    zip(expr.args, expected_args)
+                ):
+                    arg_type = self._infer_type(arg_expr)
+                    if (
+                        arg_type
+                        and not self._types_compatible(arg_type, expected_type)
+                    ):
+                        self._warn(
+                            f"Argument {i + 1} of struct method '{expr.method}' expects '{expected_type}' but got '{arg_type}'",
+                            node=arg_expr,
+                        )
+                
+                return fnc_node.return_type
+            else:
+                self._error(
+                    f"Struct '{target_struct}' has no method named '{expr.method}'",
+                    node=expr,
+                    tip=f"Available methods: {', '.join(self.struct_methods.get(target_struct, {}).keys())}",
+                )
 
         # Check opdef extension methods
         if base_t in self.opdef_extensions and expr.method in self.opdef_extensions[base_t]:

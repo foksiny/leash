@@ -2048,6 +2048,32 @@ When creating a struct instance, you can:
 - Use `{ field: value }` to specify specific fields (using `:` not `=`)
 - Omitted fields use their default values
 
+### Struct Functions
+
+Structs can also have functions attached to them using `fnc ... -> StructType` syntax. The function receives an implicit `this` pointer to the struct instance — no heap allocation or vtable dispatch is involved.
+
+```leash
+def Person : struct {
+    name: string;
+    age: int;
+};
+
+fnc getName() : string -> Person {
+    return this.name;
+}
+
+fnc getAge() : int -> Person {
+    return this.age;
+}
+
+fnc main() {
+    p: Person = Person { name: "John Doe", age: 23 };
+    show(p.getName(), " ", p.getAge());  // John Doe 23
+}
+```
+
+Struct functions are called on a variable instance (e.g., `p.getName()`) and can access fields and other struct functions via `this`.
+
 ## Pointers
 
 Leash supports pointers for low-level memory operations and efficient parameter passing. Pointers use the `*` prefix for raw pointers and `&` for safe references.

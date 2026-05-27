@@ -1,0 +1,18 @@
+def Person : struct {
+    name: string;
+    age: int;
+};
+
+fnc getName() : string -> Person {
+    return this.name;
+}
+
+fnc getAge() : int -> Person {
+    return this.age;
+}
+
+fnc main() {
+    p1: Person = Person { name: "John Doe", age: 23 };
+
+    show("Hello, my name is ", p1.getName(), " and I am ", p1.getAge(), " years old.");
+}

@@ -1141,9 +1141,14 @@ class Parser:
                 self.eat("COMMA")
         self.eat("RPAREN")
         return_type = "void"
+        struct_type = None
         if self.current().type == "COLON":
             self.eat("COLON")
             return_type = self.parse_type()
+            # Check for struct function syntax: -> StructType
+            if self.current().type == "ARROW":
+                self.eat("ARROW")
+                struct_type = self.eat("IDENT").value
 
         if self.current().type == "PIPE":
             self.eat("PIPE")
@@ -1161,6 +1166,7 @@ class Parser:
             visibility,
             is_unsafe,
             is_inline,
+            struct_type=struct_type,
         )
 
     def parse_opdef(self):

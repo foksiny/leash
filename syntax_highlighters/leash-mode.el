@@ -71,7 +71,7 @@
    '("\\bclass\\s*(\\s*\\([A-Z][a-zA-Z0-9_]*\\)\\s*)" . font-lock-type-face)
    ;; Type annotation with parent: : Type(Parent)
    '(":\\s*\\([A-Z][a-zA-Z0-9_]*\\)\\s*(\\s*\\([A-Z][a-zA-Z0-9_]*\\)\\s*)" . font-lock-type-face)
-   '("\\(?:<\\|,\\)[ \t]*\\([A-Z][a-zA-Z0-9_]*\\)" . (1 font-lock-type-face))
+   '("\\(?:<\\|,\\|->\\)[ \t]*\\([A-Z][a-zA-Z0-9_]*\\)" . (1 font-lock-type-face))
    ;; Function declarations
    '("\\bfnc\\s-+\\([a-zA-Z_][a-zA-Z0-9_]*\\)" 1 font-lock-function-name-face)
    ;; Method calls

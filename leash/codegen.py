@@ -956,6 +956,7 @@ class CodeGen:
                 "type": struct_type,
                 "fields": {fname: idx for idx, (fname, _) in enumerate(fields)},
                 "field_types": {fname: ftype for fname, ftype in fields},
+                "methods": {},
             }
         for _, name, variants in node.union_declarations:
             variant_info = {}
@@ -1182,6 +1183,7 @@ class CodeGen:
             "fields": fields,
             "field_types": field_types,
             "field_defaults": field_defaults,
+            "methods": {},
         }
 
     def _codegen_TypeAlias(self, node):
@@ -1652,6 +1654,10 @@ class CodeGen:
         if node.name == "main":
             return
         arg_types = []
+        struct_type_name = getattr(node, 'struct_type', None)
+        if struct_type_name:
+            this_ptr_type = self._get_llvm_type(struct_type_name).as_pointer()
+            arg_types.append(this_ptr_type)
         for arg_name, arg_type, default in node.args:
             llvm_arg_type = self._get_llvm_type(arg_type)
             arg_types.append(llvm_arg_type)
@@ -1659,6 +1665,8 @@ class CodeGen:
         func_type = ir.FunctionType(ret_type, arg_types)
         func = ir.Function(self.module, func_type, name=node.name)
         self.func_symtab[node.name] = func
+        if struct_type_name and struct_type_name in self.struct_symtab:
+            self.struct_symtab[struct_type_name]["methods"][node.name] = func
 
     def _codegen_predeclare_opdef(self, node):
         """Pre-declare a non-generic opdef function."""
@@ -1766,9 +1774,18 @@ class CodeGen:
                 self.builder.call(self.srand, [seed_val])
 
         # Allocate args
+        struct_type_name = getattr(node, 'struct_type', None)
+        arg_offset = 0
+        if struct_type_name:
+            func.args[0].name = "this_ptr"
+            this_ptr = self.builder.alloca(func.args[0].type)
+            self.builder.store(func.args[0], this_ptr)
+            self.var_symtab["this"] = (this_ptr, struct_type_name)
+            arg_offset = 1
+
         if is_main_with_args and len(node.args) == 1 and node.args[0][1] == "string[]":
-            argc_val = func.args[0]
-            argv_val = func.args[1]
+            argc_val = func.args[arg_offset]
+            argv_val = func.args[arg_offset + 1]
             argc_val.name = "argc"
             argv_val.name = "argv"
 
@@ -1787,9 +1804,9 @@ class CodeGen:
             self.var_symtab[leash_arg_name] = (ptr, "string[]")
         else:
             for i, (arg_name, arg_type_name, _) in enumerate(node.args):
-                func.args[i].name = arg_name
-                ptr = self.builder.alloca(func.args[i].type)
-                self.builder.store(func.args[i], ptr)
+                func.args[i + arg_offset].name = arg_name
+                ptr = self.builder.alloca(func.args[i + arg_offset].type)
+                self.builder.store(func.args[i + arg_offset], ptr)
                 self.var_symtab[arg_name] = (ptr, arg_type_name)
 
         self.defer_stack.append([])  # Push new defer stack frame for this function
@@ -2417,6 +2434,12 @@ class CodeGen:
             ptr = var_info[0]
             type_name = var_info[1]
             extra_data = var_info[2] if len(var_info) > 2 else None
+            # For struct types (in struct functions), the this pointer is stored in an alloca.
+            # Load the actual struct pointer from the alloca so GEP works correctly.
+            resolved = self._resolve_type_name(type_name)
+            if resolved in self.struct_symtab:
+                loaded = self.builder.load(ptr)
+                return loaded, type_name, extra_data
             return ptr, type_name, extra_data
         elif isinstance(node, MethodCall):
             # Handle method call as l-value (e.g., for h.get("Joe").age)
@@ -4409,6 +4432,28 @@ class CodeGen:
             val = self.builder.load(base_ptr)
             length = self.builder.extract_value(val, 0)
             return self.builder.trunc(length, ir.IntType(32))
+
+        # Handle struct method calls (e.g., p.getName())
+        if resolved in self.struct_symtab:
+            struct_info = self.struct_symtab[resolved]
+            func = struct_info["methods"].get(node.method)
+            if not func:
+                raise LeashError(
+                    f"Struct '{resolved}' has no method named '{node.method}'"
+                )
+
+            # Prepare arguments: instance pointer + method arguments
+            args = []
+            # Add the instance pointer as first argument (this)
+            args.append(base_ptr)
+            for i, arg_node in enumerate(node.args):
+                args.append(self._codegen(arg_node))
+
+            casted_args = []
+            for arg_val, expected_type in zip(args, func.args):
+                casted_args.append(self._emit_cast(arg_val, expected_type.type))
+
+            return self.builder.call(func, casted_args)
 
         # Handle static File methods (File.open, File.rename, File.delete)
         from .ast_nodes import Identifier
