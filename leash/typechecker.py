@@ -3489,8 +3489,13 @@ class TypeChecker:
                 ) or self._is_subclass_of(dst_resolved, src_resolved):
                     return dst_type
 
-            # Disallow clearly incompatible casts
-            if src_b == "string" or dst_b == "string":
+        # Disallow clearly incompatible casts
+        # But allow char -> string (safe conversion)
+        if src_b == "string" or dst_b == "string":
+            # Allow char to string conversion
+            if src_b == "char" and dst_b == "string":
+                pass  # Allow this specific case
+            else:
                 raise LeashError(
                     f"Cannot cast from '{src_type}' to '{dst_type}'",
                     tip="Casting between strings and other types is not supported.",
