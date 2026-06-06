@@ -1794,11 +1794,13 @@ class Parser:
     def parse_ternary(self, no_struct_init=False):
         node = self.parse_logical_or(no_struct_init)
         if self.current().type == "QUESTION":
+            q_tok = self.current()
             self.eat("QUESTION")
             true_expr = self.parse_expression(no_struct_init)
             self.eat("COLON")
             false_expr = self.parse_expression(no_struct_init)
             node = TernaryOp(condition=node, true_expr=true_expr, false_expr=false_expr)
+            self._pos(node, q_tok)
         return node
 
     def parse_logical_or(self, no_struct_init=False):
@@ -1806,7 +1808,7 @@ class Parser:
         while self.current().type == "L_OR":
             op = self.eat("L_OR")
             right = self.parse_logical_and(no_struct_init)
-            node = BinaryOp(left=node, op=op.value, right=right)
+            node = self._pos(BinaryOp(left=node, op=op.value, right=right), op)
         return node
 
     def parse_logical_and(self, no_struct_init=False):
@@ -1814,7 +1816,7 @@ class Parser:
         while self.current().type == "L_AND":
             op = self.eat("L_AND")
             right = self.parse_bitwise_or(no_struct_init)
-            node = BinaryOp(left=node, op=op.value, right=right)
+            node = self._pos(BinaryOp(left=node, op=op.value, right=right), op)
         return node
 
     def parse_bitwise_or(self, no_struct_init=False):
@@ -1822,7 +1824,7 @@ class Parser:
         while self.current().type == "BIT_OR":
             op = self.eat("BIT_OR")
             right = self.parse_bitwise_xor(no_struct_init)
-            node = BinaryOp(left=node, op=op.value, right=right)
+            node = self._pos(BinaryOp(left=node, op=op.value, right=right), op)
         return node
 
     def parse_bitwise_xor(self, no_struct_init=False):
@@ -1830,7 +1832,7 @@ class Parser:
         while self.current().type == "BIT_XOR":
             op = self.eat("BIT_XOR")
             right = self.parse_bitwise_and(no_struct_init)
-            node = BinaryOp(left=node, op=op.value, right=right)
+            node = self._pos(BinaryOp(left=node, op=op.value, right=right), op)
         return node
 
     def parse_bitwise_and(self, no_struct_init=False):
@@ -1838,7 +1840,7 @@ class Parser:
         while self.current().type == "BIT_AND":
             op = self.eat("BIT_AND")
             right = self.parse_comparison(no_struct_init)
-            node = BinaryOp(left=node, op=op.value, right=right)
+            node = self._pos(BinaryOp(left=node, op=op.value, right=right), op)
         return node
 
     def parse_comparison(self, no_struct_init=False):
@@ -1858,7 +1860,7 @@ class Parser:
                     node = self._pos(IsExpr(left=node, op=op.value, right=right, is_type_check=False), op)
             else:
                 right = self.parse_shift(no_struct_init)
-                node = BinaryOp(left=node, op=op.value, right=right)
+                node = self._pos(BinaryOp(left=node, op=op.value, right=right), op)
         return node
 
     def _is_type_check(self):
@@ -1903,23 +1905,23 @@ class Parser:
             op = self.current()
             self.eat(op.type)
             right = self.parse_term(no_struct_init)
-            node = BinaryOp(left=node, op=op.value, right=right)
+            node = self._pos(BinaryOp(left=node, op=op.value, right=right), op)
         return node
 
     def parse_term(self, no_struct_init=False):
         left = self.parse_factor(no_struct_init)
         while self.current().type in ("PLUS", "MINUS"):
-            op = self.eat(self.current().type).value
+            op_tok = self.eat(self.current().type)
             right = self.parse_factor(no_struct_init)
-            left = BinaryOp(left, op, right)
+            left = self._pos(BinaryOp(left, op_tok.value, right), op_tok)
         return left
 
     def parse_factor(self, no_struct_init=False):
         left = self.parse_as(no_struct_init)
         while self.current().type in ("MUL", "DIV", "MOD"):
-            op = self.eat(self.current().type).value
+            op_tok = self.eat(self.current().type)
             right = self.parse_as(no_struct_init)
-            left = BinaryOp(left, op, right)
+            left = self._pos(BinaryOp(left, op_tok.value, right), op_tok)
         return left
 
     def parse_as(self, no_struct_init=False):

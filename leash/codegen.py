@@ -3446,7 +3446,11 @@ class CodeGen:
 
         # Get element type name for symtab
         try:
-            _, full_type_name = self._codegen_lvalue(node.vector_expr)
+            lvalue_result = self._codegen_lvalue(node.vector_expr)
+            if len(lvalue_result) == 3:
+                _, full_type_name, _ = lvalue_result
+            else:
+                _, full_type_name = lvalue_result
             elem_type_name = (
                 full_type_name[4:-1] if full_type_name.startswith("vec<") else "int"
             )
@@ -7140,6 +7144,14 @@ class CodeGen:
             return self.builder.ptrtoint(val, dst)
         # int -> ptr (inttoptr)
         elif src_is_int and dst_is_ptr:
+            # char (i8) -> string (i8*): allocate 2 bytes, store char + null terminator
+            if src.width == 8 and isinstance(dst.pointee, ir.IntType) and dst.pointee.width == 8:
+                ptr = self.builder.call(self.malloc, [ir.Constant(ir.IntType(64), 2)])
+                self._track_alloc(ptr)
+                self.builder.store(val, ptr)
+                null_ptr = self.builder.gep(ptr, [ir.Constant(ir.IntType(64), 1)])
+                self.builder.store(ir.Constant(ir.IntType(8), 0), null_ptr)
+                return ptr
             return self.builder.inttoptr(val, dst)
 
         # Slice to pointer (e.g., char[] to *char)
