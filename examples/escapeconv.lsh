@@ -1,0 +1,6 @@
+fnc main {
+    s: string = "Hello, world!\\n haha \\\\";
+    show(normescape(s));
+    /* output: Hello, world!
+ haha \*/
+}

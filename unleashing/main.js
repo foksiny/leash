@@ -479,7 +479,7 @@ ipcMain.handle('create-project', async (event, { projectType, projectName }) => 
     }, null, 2), 'utf-8');
 
     if (projectType === 'leash') {
-      fs.writeFileSync(path.join(projectPath, 'src', 'main.lsh'), 'fnc main() {\n    show("Hello, world!\n");\n}\n', 'utf-8');
+      fs.writeFileSync(path.join(projectPath, 'src', 'main.lsh'), 'fnc main {\n    show("Hello, world!\\n");\n}\n', 'utf-8');
       fs.writeFileSync(path.join(projectPath, 'project.json'), JSON.stringify({
         name: projectName,
         type: "executable",

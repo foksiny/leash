@@ -150,11 +150,15 @@
             "patterns": [
                 {
                     "name": "support.function.builtin.leash",
-                    "match": "\\b(show|showb|get|keyget|set|toint|tofloat|tostring|cstr|lstr|size|cur|name|pushb|popb|pushf|popf|insert|clear|remove|extend|extendv|isin|rand|randf|seed|choose|wait|timepass|exit|exec|inttobytes|bytestoint|floattobytes|bytestofloat|open|close|read|write|readln|readb|writeb|readlnb|replaceall|rewind|rename|delete|replace|getKey|keys|values|push)\\b"
+                    "match": "\\b(show|showb|get|keyget|set|toint|tofloat|tostring|cstr|lstr|normescape|size|cur|name|pushb|popb|pushf|popf|insert|clear|remove|extend|extendv|isin|rand|randf|seed|choose|wait|timepass|exit|exec|inttobytes|bytestoint|floattobytes|bytestofloat|open|close|read|write|readln|readb|writeb|readlnb|replaceall|rewind|rename|delete|replace|getKey|keys|values|push)\\b"
                 },
                 {
                     "name": "entity.name.function.leash",
                     "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*(?=\\s*\\()"
+                },
+                {
+                    "name": "entity.name.function.leash",
+                    "match": "(?<=\\bfnc\\s+)[a-zA-Z_][a-zA-Z0-9_]*"
                 }
             ]
         },

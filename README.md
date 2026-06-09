@@ -13,6 +13,7 @@ Leash is a strongly-typed, modern compiled programming language built on top of 
 - [Operators](#operators)
   - [Is-In Operator](#is-in-operator-)
 - [Functions](#functions)
+  - [Optional Parentheses](#optional-parentheses)
   - [Default Arguments](#default-arguments)
   - [Named Arguments](#named-arguments)
 - [Global Variables](#global-variables)
@@ -1082,6 +1083,33 @@ fnc main() : void {
     result: int = add(10, 20);
     show("Result: ", result);
     greet("Leash");
+}
+```
+
+### Optional Parentheses
+
+When a function takes no arguments, the parentheses `()` can be omitted in both definitions and calls:
+
+```leash
+// Definition without parentheses
+fnc greet {
+    show("Hello!");
+}
+
+fnc getValue : int {
+    return 42;
+}
+
+fnc main {
+    // Call without parentheses
+    greet;
+
+    // Also works with return values
+    x: int = getValue;
+    show(x);
+
+    // Parentheses are still valid too
+    show(getValue());
 }
 ```
 
@@ -2924,6 +2952,39 @@ s = s + '!';            // concatenate with character
 s = s + cstr(" :D");    // concatenate with char[]
 show(s);
 ```
+
+### Escape Normalization (`normescape`)
+
+The built-in `normescape()` converts escape sequences in a string to their actual character values. This is useful when you have a string literal containing escape sequences like `\n` and want them interpreted as the real characters (newline, tab, etc.).
+
+```leash
+fnc main {
+    s: string = "Hello, world!\n haha \\";
+    show(normescape(s));
+    /* Output:
+Hello, world!
+ haha \ */
+}
+```
+
+Supported escape conversions:
+
+| Source | Result |
+|--------|--------|
+| `\n` | Newline (`0x0A`) |
+| `\t` | Horizontal tab (`0x09`) |
+| `\r` | Carriage return (`0x0D`) |
+| `\0` | Null character (`0x00`) |
+| `\a` | Bell/alert (`0x07`) |
+| `\b` | Backspace (`0x08`) |
+| `\f` | Form feed (`0x0C`) |
+| `\v` | Vertical tab (`0x0B`) |
+| `\\` | Backslash (`\`) |
+| `\"` | Double quote (`"`) |
+| `\'` | Single quote (`'`) |
+| `\?` | Question mark (`?`) |
+| `\xNN` | Byte from hex digits `NN` (1-2 hex digits, e.g., `\x1B` → escape, `\x41` → `A`) |
+| Any other `\X` | The character `X` itself (e.g., `\q` becomes `q`) |
 
 ## Classes
 

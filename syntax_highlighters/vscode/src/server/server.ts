@@ -197,7 +197,7 @@ interface LeashSymbol {
 function findSymbol(text: string, name: string): LeashSymbol | null {
     const patterns = [
         // Function definitions
-        { regex: new RegExp(`(?:fnc|def)\\s+(${name})\\s*<.*?>?\\s*\\((.*?)\\)\\s*(?::\\s*(.*?))?\\s*[{|>]`, 'g'), type: 'Function' },
+        { regex: new RegExp(`(?:fnc|def)\\s+(${name})\\s*<.*?>?(?:\\s*\\((.*?)\\))?\\s*(?::\\s*(.*?))?\\s*[{|>]`, 'g'), type: 'Function' },
         // Struct/Class/Enum/Union definitions
         { regex: new RegExp(`def\\s+(${name})\\s*<.*?>?\\s*:\\s*(struct|union|enum|class|type)\\b`, 'g'), type: 'Type Definition' },
         // Class fields
@@ -354,7 +354,7 @@ connection.onHover((params: TextDocumentPositionParams): Hover | null => {
 // Helper function to get more detailed function information
 function getFunctionDetails(text: string, funcName: string): string | null {
     // Look for the function definition to extract more details
-    const funcPattern = new RegExp(`(?:fnc|def)\\s+${funcName}\\s*<.*?>?\\s*\\((.*?)\\)\\s*(?::\\s*(.*?))?\\s*[{|>]`, 'g');
+    const funcPattern = new RegExp(`(?:fnc|def)\\s+${funcName}\\s*<.*?>?(?:\\s*\\((.*?)\\))?\\s*(?::\\s*(.*?))?\\s*[{|>]`, 'g');
     let match;
     while ((match = funcPattern.exec(text)) !== null) {
         const params = match[2];
@@ -362,7 +362,7 @@ function getFunctionDetails(text: string, funcName: string): string | null {
         let details = `**Parameters**: ${params || 'none'}\n**Returns**: ${returnType || 'void'}`;
         
         // Try to find the function body to extract local variables
-        const funcStartMatch = /(?:fnc|def)\s+${funcName}\s*<.*?>?\s*\(.*?\)\s*(?::\s*[^{|>]*)?\s*[{|>]/g;
+        const funcStartMatch = new RegExp(`(?:fnc|def)\\s+${funcName}\\s*<.*?>?(?:\\s*\\(.*?\\))?\\s*(?::\\s*[^{|>]*)?\\s*[{|>]`, 'g');
         funcStartMatch.lastIndex = match.index;
         const startMatch = funcStartMatch.exec(text);
         if (startMatch) {
@@ -442,7 +442,7 @@ function findEnclosingFunction(text: string, offset: number): { name: string, pa
     if (fncIndex === -1) return null;
 
     const remaining = text.substring(fncIndex);
-    const headMatch = /^fnc\s+([a-zA-Z_]\w*)\s*<.*?>?\s*\((.*?)\)\s*(?::\s*[^{|>]*)?/.exec(remaining);
+    const headMatch = new RegExp(`^fnc\\s+([a-zA-Z_]\\w*)\\s*<.*?>?(?:\\s*\\((.*?)\\))?\\s*(?::\\s*[^{|>]*)?`).exec(remaining);
     if (!headMatch) return null;
 
     const name = headMatch[1];
@@ -563,7 +563,7 @@ connection.onCompletion((params: TextDocumentPositionParams): CompletionList => 
         const foundSymbols: LeashSymbol[] = [];
         const patterns = [
             // Function definitions
-            { regex: /(?:fnc|def)\s+([a-zA-Z_]\w*)\s*<.*?>?\s*\((.*?)\)\s*(?::\s*(.*?))?\s*[{|>]/g, type: 'Function' },
+            { regex: /(?:fnc|def)\s+([a-zA-Z_]\w*)\s*<.*?>?(?:\s*\((.*?)\))?\s*(?::\s*(.*?))?\s*[{|>]/g, type: 'Function' },
             // Struct/Class/Enum/Union definitions
             { regex: /def\s+([a-zA-Z_]\w*)\s*<.*?>?\s*:\s*(struct|union|enum|class|type)\b/g, type: 'Type Definition' },
             // Class fields

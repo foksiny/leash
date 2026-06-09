@@ -1118,28 +1118,29 @@ class Parser:
                 if self.current().type == "COMMA":
                     self.eat("COMMA")
             self.eat("GT")
-        self.eat("LPAREN")
         args = []
-        has_default = False
-        while self.current().type != "RPAREN":
-            arg_name = self.eat("IDENT").value
-            arg_type = self.parse_type()
-            default_value = None
-            if self.current().type == "ASSIGN":
-                self.eat("ASSIGN")
-                default_value = self.parse_expression()
-                has_default = True
-            elif has_default:
-                raise LeashError(
-                    f"Cannot have argument without default value after argument with default value",
-                    self.current().line,
-                    self.current().column,
-                    tip="Move required arguments before optional ones with default values",
-                )
-            args.append((arg_name, arg_type, default_value))
-            if self.current().type == "COMMA":
-                self.eat("COMMA")
-        self.eat("RPAREN")
+        if self.current().type == "LPAREN":
+            self.eat("LPAREN")
+            has_default = False
+            while self.current().type != "RPAREN":
+                arg_name = self.eat("IDENT").value
+                arg_type = self.parse_type()
+                default_value = None
+                if self.current().type == "ASSIGN":
+                    self.eat("ASSIGN")
+                    default_value = self.parse_expression()
+                    has_default = True
+                elif has_default:
+                    raise LeashError(
+                        f"Cannot have argument without default value after argument with default value",
+                        self.current().line,
+                        self.current().column,
+                        tip="Move required arguments before optional ones with default values",
+                    )
+                args.append((arg_name, arg_type, default_value))
+                if self.current().type == "COMMA":
+                    self.eat("COMMA")
+            self.eat("RPAREN")
         return_type = "void"
         struct_type = None
         if self.current().type == "COLON":

@@ -693,6 +693,8 @@ class CodeGen:
                 return "void"
             if node.name == "timepass":
                 return "float"
+            if node.name == "normescape":
+                return "string"
             if node.name in self.func_symtab:
                 # We don't store return types in func_symtab currently...
                 pass
@@ -5947,6 +5949,246 @@ class CodeGen:
             result = self.builder.fadd(sec_dbl, nsec_sec)
             return result
 
+        if node.name == "normescape":
+            if len(node.args) != 1:
+                self._error(
+                    f"Function 'normescape' expects 1 argument, but got {len(node.args)}",
+                    node=node,
+                )
+            input_str = self._codegen(node.args[0])
+
+            i64 = ir.IntType(64)
+            i8 = ir.IntType(8)
+            i8_ptr = ir.PointerType(i8)
+
+            null_ptr = ir.Constant(i8_ptr, None)
+            is_null = self.builder.icmp_unsigned("==", input_str, null_ptr)
+
+            null_bb = self.builder.function.append_basic_block("nescape_null")
+            nonnull_bb = self.builder.function.append_basic_block("nescape_nonnull")
+            merge_bb = self.builder.function.append_basic_block("nescape_merge")
+
+            self.builder.cbranch(is_null, null_bb, nonnull_bb)
+
+            self.builder.position_at_end(null_bb)
+            null_buf = self.builder.call(self.malloc, [ir.Constant(i64, 1)])
+            self.builder.store(ir.Constant(i8, 0), null_buf)
+            self.builder.branch(merge_bb)
+
+            self.builder.position_at_end(nonnull_bb)
+            input_len = self.builder.call(self.strlen, [input_str])
+            alloc_size = self.builder.add(input_len, ir.Constant(i64, 1))
+            output_buf = self.builder.call(self.malloc, [alloc_size])
+
+            i_ptr = self.builder.alloca(i64)
+            j_ptr = self.builder.alloca(i64)
+            self.builder.store(ir.Constant(i64, 0), i_ptr)
+            self.builder.store(ir.Constant(i64, 0), j_ptr)
+
+            loop_cond_bb = self.builder.function.append_basic_block("nescape_cond")
+            self.builder.branch(loop_cond_bb)
+
+            self.builder.position_at_end(loop_cond_bb)
+            i = self.builder.load(i_ptr)
+            cond = self.builder.icmp_unsigned("<", i, input_len)
+            loop_body_bb = self.builder.function.append_basic_block("nescape_body")
+            loop_end_bb = self.builder.function.append_basic_block("nescape_loop_end")
+            self.builder.cbranch(cond, loop_body_bb, loop_end_bb)
+
+            self.builder.position_at_end(loop_body_bb)
+            i = self.builder.load(i_ptr)
+            ch = self.builder.load(self.builder.gep(input_str, [i], inbounds=True))
+            is_escape = self.builder.icmp_unsigned("==", ch, ir.Constant(i8, ord("\\")))
+
+            copy_char_bb = self.builder.function.append_basic_block("nescape_copy")
+            handle_escape_bb = self.builder.function.append_basic_block("nescape_handle")
+            self.builder.cbranch(is_escape, handle_escape_bb, copy_char_bb)
+
+            self.builder.position_at_end(copy_char_bb)
+            i = self.builder.load(i_ptr)
+            j = self.builder.load(j_ptr)
+            ch = self.builder.load(self.builder.gep(input_str, [i], inbounds=True))
+            self.builder.store(ch, self.builder.gep(output_buf, [j], inbounds=True))
+            self.builder.store(self.builder.add(i, ir.Constant(i64, 1)), i_ptr)
+            self.builder.store(self.builder.add(j, ir.Constant(i64, 1)), j_ptr)
+            self.builder.branch(loop_cond_bb)
+
+            self.builder.position_at_end(handle_escape_bb)
+            i = self.builder.load(i_ptr)
+            j = self.builder.load(j_ptr)
+            next_i = self.builder.add(i, ir.Constant(i64, 1))
+            has_next = self.builder.icmp_unsigned("<", next_i, input_len)
+
+            escape_copy_bb = self.builder.function.append_basic_block("nescape_esc_copy")
+            escape_conv_bb = self.builder.function.append_basic_block("nescape_esc_conv")
+            self.builder.cbranch(has_next, escape_conv_bb, escape_copy_bb)
+
+            self.builder.position_at_end(escape_copy_bb)
+            self.builder.store(ir.Constant(i8, ord("\\")), self.builder.gep(output_buf, [j], inbounds=True))
+            self.builder.store(self.builder.add(i, ir.Constant(i64, 1)), i_ptr)
+            self.builder.store(self.builder.add(j, ir.Constant(i64, 1)), j_ptr)
+            self.builder.branch(loop_cond_bb)
+
+            self.builder.position_at_end(escape_conv_bb)
+            next_ch = self.builder.load(self.builder.gep(input_str, [next_i], inbounds=True))
+
+            # Check for hex escape \x
+            is_hex = self.builder.icmp_unsigned("==", next_ch, ir.Constant(i8, ord("x")))
+            hex_esc_bb = self.builder.function.append_basic_block("nescape_hex_esc")
+            norm_esc_bb = self.builder.function.append_basic_block("nescape_norm_esc")
+            self.builder.cbranch(is_hex, hex_esc_bb, norm_esc_bb)
+
+            # Normal escape mapping (single-char escapes)
+            self.builder.position_at_end(norm_esc_bb)
+            conv_char = next_ch  # default: copy the escape char itself
+            # \n -> newline
+            conv_char = self.builder.select(
+                self.builder.icmp_unsigned("==", next_ch, ir.Constant(i8, ord("n"))),
+                ir.Constant(i8, 0x0A), conv_char,
+            )
+            # \t -> tab
+            conv_char = self.builder.select(
+                self.builder.icmp_unsigned("==", next_ch, ir.Constant(i8, ord("t"))),
+                ir.Constant(i8, 0x09), conv_char,
+            )
+            # \r -> carriage return
+            conv_char = self.builder.select(
+                self.builder.icmp_unsigned("==", next_ch, ir.Constant(i8, ord("r"))),
+                ir.Constant(i8, 0x0D), conv_char,
+            )
+            # \0 -> null
+            conv_char = self.builder.select(
+                self.builder.icmp_unsigned("==", next_ch, ir.Constant(i8, ord("0"))),
+                ir.Constant(i8, 0x00), conv_char,
+            )
+            # \a -> bell/alert
+            conv_char = self.builder.select(
+                self.builder.icmp_unsigned("==", next_ch, ir.Constant(i8, ord("a"))),
+                ir.Constant(i8, 0x07), conv_char,
+            )
+            # \b -> backspace
+            conv_char = self.builder.select(
+                self.builder.icmp_unsigned("==", next_ch, ir.Constant(i8, ord("b"))),
+                ir.Constant(i8, 0x08), conv_char,
+            )
+            # \f -> form feed
+            conv_char = self.builder.select(
+                self.builder.icmp_unsigned("==", next_ch, ir.Constant(i8, ord("f"))),
+                ir.Constant(i8, 0x0C), conv_char,
+            )
+            # \v -> vertical tab
+            conv_char = self.builder.select(
+                self.builder.icmp_unsigned("==", next_ch, ir.Constant(i8, ord("v"))),
+                ir.Constant(i8, 0x0B), conv_char,
+            )
+            i_plus_2 = self.builder.add(i, ir.Constant(i64, 2))
+            self.builder.store(conv_char, self.builder.gep(output_buf, [j], inbounds=True))
+            self.builder.store(i_plus_2, i_ptr)
+            self.builder.store(self.builder.add(j, ir.Constant(i64, 1)), j_ptr)
+            self.builder.branch(loop_cond_bb)
+
+            # Hex escape \xNN
+            self.builder.position_at_end(hex_esc_bb)
+            i_plus_2 = self.builder.add(i, ir.Constant(i64, 2))
+            has_d1 = self.builder.icmp_unsigned("<", i_plus_2, input_len)
+
+            hex_try_d1_bb = self.builder.function.append_basic_block("nescape_hex_try_d1")
+            hex_inv_bb = self.builder.function.append_basic_block("nescape_hex_inv")
+            self.builder.cbranch(has_d1, hex_try_d1_bb, hex_inv_bb)
+
+            # No hex digit after \x: output 'x', skip \x
+            self.builder.position_at_end(hex_inv_bb)
+            self.builder.store(ir.Constant(i8, ord("x")), self.builder.gep(output_buf, [j], inbounds=True))
+            self.builder.store(i_plus_2, i_ptr)
+            self.builder.store(self.builder.add(j, ir.Constant(i64, 1)), j_ptr)
+            self.builder.branch(loop_cond_bb)
+
+            # Try first hex digit
+            self.builder.position_at_end(hex_try_d1_bb)
+            ch1 = self.builder.load(self.builder.gep(input_str, [i_plus_2], inbounds=True))
+
+            ge_0 = self.builder.icmp_unsigned(">=", ch1, ir.Constant(i8, ord("0")))
+            le_9 = self.builder.icmp_unsigned("<=", ch1, ir.Constant(i8, ord("9")))
+            is_dec = self.builder.and_(ge_0, le_9)
+            d1_dec = self.builder.sub(ch1, ir.Constant(i8, ord("0")))
+            d1 = self.builder.select(is_dec, d1_dec, ir.Constant(i8, 255))
+
+            ge_a = self.builder.icmp_unsigned(">=", ch1, ir.Constant(i8, ord("a")))
+            le_f = self.builder.icmp_unsigned("<=", ch1, ir.Constant(i8, ord("f")))
+            is_lower = self.builder.and_(ge_a, le_f)
+            d1_lower = self.builder.sub(ch1, ir.Constant(i8, ord("a") - 10))
+            d1 = self.builder.select(is_lower, d1_lower, d1)
+
+            ge_A = self.builder.icmp_unsigned(">=", ch1, ir.Constant(i8, ord("A")))
+            le_F = self.builder.icmp_unsigned("<=", ch1, ir.Constant(i8, ord("F")))
+            is_upper = self.builder.and_(ge_A, le_F)
+            d1_upper = self.builder.sub(ch1, ir.Constant(i8, ord("A") - 10))
+            d1 = self.builder.select(is_upper, d1_upper, d1)
+
+            d1_valid = self.builder.icmp_unsigned("<", d1, ir.Constant(i8, 16))
+
+            hex_try_d2_bb = self.builder.function.append_basic_block("nescape_hex_try_d2")
+            self.builder.cbranch(d1_valid, hex_try_d2_bb, hex_inv_bb)
+
+            # Try second hex digit
+            self.builder.position_at_end(hex_try_d2_bb)
+            i_plus_3 = self.builder.add(i, ir.Constant(i64, 3))
+            has_d2 = self.builder.icmp_unsigned("<", i_plus_3, input_len)
+
+            hex_1d_bb = self.builder.function.append_basic_block("nescape_hex_1d")
+            hex_2d_bb = self.builder.function.append_basic_block("nescape_hex_2d")
+            self.builder.cbranch(has_d2, hex_2d_bb, hex_1d_bb)
+
+            # Only one hex digit: skip \x + 1 digit (total +3)
+            self.builder.position_at_end(hex_1d_bb)
+            self.builder.store(d1, self.builder.gep(output_buf, [j], inbounds=True))
+            self.builder.store(i_plus_3, i_ptr)
+            self.builder.store(self.builder.add(j, ir.Constant(i64, 1)), j_ptr)
+            self.builder.branch(loop_cond_bb)
+
+            # Two hex digits
+            self.builder.position_at_end(hex_2d_bb)
+            ch2 = self.builder.load(self.builder.gep(input_str, [i_plus_3], inbounds=True))
+
+            ge_0 = self.builder.icmp_unsigned(">=", ch2, ir.Constant(i8, ord("0")))
+            le_9 = self.builder.icmp_unsigned("<=", ch2, ir.Constant(i8, ord("9")))
+            is_dec = self.builder.and_(ge_0, le_9)
+            d2 = self.builder.select(is_dec, self.builder.sub(ch2, ir.Constant(i8, ord("0"))), ir.Constant(i8, 255))
+
+            ge_a = self.builder.icmp_unsigned(">=", ch2, ir.Constant(i8, ord("a")))
+            le_f = self.builder.icmp_unsigned("<=", ch2, ir.Constant(i8, ord("f")))
+            is_lower = self.builder.and_(ge_a, le_f)
+            d2 = self.builder.select(is_lower, self.builder.sub(ch2, ir.Constant(i8, ord("a") - 10)), d2)
+
+            ge_A = self.builder.icmp_unsigned(">=", ch2, ir.Constant(i8, ord("A")))
+            le_F = self.builder.icmp_unsigned("<=", ch2, ir.Constant(i8, ord("F")))
+            is_upper = self.builder.and_(ge_A, le_F)
+            d2 = self.builder.select(is_upper, self.builder.sub(ch2, ir.Constant(i8, ord("A") - 10)), d2)
+
+            d2_valid = self.builder.icmp_unsigned("<", d2, ir.Constant(i8, 16))
+
+            hex_store_bb = self.builder.function.append_basic_block("nescape_hex_store")
+            self.builder.cbranch(d2_valid, hex_store_bb, hex_1d_bb)
+
+            self.builder.position_at_end(hex_store_bb)
+            d1_16 = self.builder.mul(d1, ir.Constant(i8, 16))
+            val = self.builder.add(d1_16, d2)
+            self.builder.store(val, self.builder.gep(output_buf, [j], inbounds=True))
+            self.builder.store(self.builder.add(i, ir.Constant(i64, 4)), i_ptr)
+            self.builder.store(self.builder.add(j, ir.Constant(i64, 1)), j_ptr)
+            self.builder.branch(loop_cond_bb)
+
+            self.builder.position_at_end(loop_end_bb)
+            j = self.builder.load(j_ptr)
+            self.builder.store(ir.Constant(i8, 0), self.builder.gep(output_buf, [j], inbounds=True))
+            self.builder.branch(merge_bb)
+
+            self.builder.position_at_end(merge_bb)
+            phi = self.builder.phi(i8_ptr, "nescape_result")
+            phi.add_incoming(null_buf, null_bb)
+            phi.add_incoming(output_buf, loop_end_bb)
+            return phi
+
         if node.name == "keyget":
             # keyget() - reads a single key without waiting for Enter
             char_val = self.builder.call(self.keyget, [])
@@ -6236,6 +6478,11 @@ class CodeGen:
             if gv_info:
                 ptr, type_name = gv_info
         if not ptr:
+            # Check if it's a function with no arguments
+            func = self.func_symtab.get(node.name)
+            if func and not func.args:
+                return self.builder.call(func, [])
+
             if self.in_works_block:
                 self.works_error_occured = True
                 self.works_error_info = f"Undefined variable: '{node.name}'"

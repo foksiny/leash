@@ -22,7 +22,7 @@ function registerLeashLanguage() {
     ],
 
     builtins: [
-      'show', 'showb', 'get', 'keyget', 'set', 'toint', 'tofloat', 'tostring', 'cstr', 'lstr', 
+      'show', 'showb', 'get', 'keyget', 'set', 'toint', 'tofloat', 'tostring', 'cstr', 'lstr', 'normescape',
       'size', 'cur', 'name', 'pushb', 'popb', 'pushf', 'popf', 'insert', 'clear', 
       'remove', 'extend', 'extendv', 'isin', 'rand', 'randf', 'seed', 'choose', 
       'wait', 'timepass', 'exit', 'exec', 'inttobytes', 'bytestoint', 'floattobytes', 
@@ -48,6 +48,9 @@ function registerLeashLanguage() {
 
     tokenizer: {
       root: [
+        // Function definitions: fnc name (with or without parentheses)
+        [/\bfnc\s+([a-zA-Z_][a-zA-Z0-9_]*)/, ['keyword', 'function.name']],
+
         // Identifiers and keywords
         [/[a-zA-Z_][a-zA-Z0-9_]*/, {
           cases: {
@@ -236,6 +239,7 @@ function registerLeashLanguage() {
         { name: 'toint', sig: 'toint(val: any) : int' },
         { name: 'tofloat', sig: 'tofloat(val: any) : float' },
         { name: 'tostring', sig: 'tostring(val: any) : string' },
+        { name: 'normescape', sig: 'normescape(s: string) : string' },
         { name: 'size', sig: 'size() : int' },
         { name: 'pushb', sig: 'pushb(val: T)' },
         { name: 'popb', sig: 'popb() : T' },
@@ -266,18 +270,18 @@ function registerLeashLanguage() {
       try {
         const fullText = model.getValue();
         
-        // 1. Functions matching: fnc name(args)
-        const fncRegex = /fnc\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(([^)]*)\)/g;
+        // 1. Functions matching: fnc name(args) or fnc name (no parens)
+        const fncRegex = /fnc\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:\(([^)]*)\))?/g;
         let match;
         while ((match = fncRegex.exec(fullText)) !== null) {
           const fncName = match[1];
-          const fncArgs = match[2];
+          const fncArgs = match[2] || '';
           // Skip if already in list
           if (!suggestions.some(s => s.label === fncName)) {
             suggestions.push({
               label: fncName,
               kind: monaco.languages.CompletionItemKind.Method,
-              insertText: fncName + '($1)',
+              insertText: fncArgs ? (fncName + '($1)') : fncName,
               insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
               detail: `fnc ${fncName}(${fncArgs})`,
               range: range
@@ -405,6 +409,10 @@ function registerLeashLanguage() {
           title: 'tostring(val) : string',
           desc: 'Converts any data type (integers, floats, classes) to its string representation.'
         },
+        normescape: {
+          title: 'normescape(s) : string',
+          desc: 'Converts escape sequences in a string to their actual character values (e.g., \\\\n becomes newline, \\\\t becomes tab, \\\\x41 becomes A).'
+        },
         open: {
           title: 'File.open(filename: string, mode: string) : File',
           desc: 'Attempts to open the specified file with the given access mode (`"r"`, `"w"`, `"a"`, `"r+"`, etc) and returns an active File instance. Raises error if failed.'
@@ -426,12 +434,12 @@ function registerLeashLanguage() {
       try {
         const fullText = model.getValue();
         
-        // Check if function
-        const fncRegex = new RegExp(`fnc\\s+(${hoveredWord})\\s*\\(([^)]*)\\)\\s*(:\\s*([a-zA-Z0-9_<>\\[\\]&\\*\\s()]+))?`, 'g');
+        // Check if function (with or without parentheses)
+        const fncRegex = new RegExp(`fnc\\s+(${hoveredWord})\\s*(?:\\(([^)]*)\\))?\\s*(:\\s*([a-zA-Z0-9_<>\\[\\]&\\*\\s()]+))?`, 'g');
         let match = fncRegex.exec(fullText);
         if (match) {
-          const args = match[2].trim();
-          const ret = match[4] ? match[4].trim() : 'void';
+          const args = match[2] ? match[2].trim() : '';
+          const ret = match[3] ? match[3].trim() : 'void';
           return {
             range: new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn),
             contents: [

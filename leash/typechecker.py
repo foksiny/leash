@@ -2300,6 +2300,13 @@ class TypeChecker:
             if expr.name in self.generic_classes:
                 return expr.name
 
+            # If not a variable, check if it's a function with no arguments
+            sig = self.func_types.get(expr.name)
+            if sig is not None:
+                expected_args, return_type, arg_names, arg_defaults = sig
+                if not expected_args:
+                    return return_type
+
             self._error(
                 f"Undefined variable: '{expr.name}'",
                 node=expr,
@@ -3067,6 +3074,20 @@ class TypeChecker:
                     node=expr.args[0],
                 )
             return "void"
+
+        if expr.name == "normescape":
+            if len(expr.args) != 1:
+                self._error(
+                    f"Function 'normescape' expects 1 argument, but got {len(expr.args)}",
+                    node=expr,
+                )
+            arg_t = self._infer_type(expr.args[0])
+            if arg_t and self._resolve(arg_t) != "string":
+                self._error(
+                    f"Argument 1 of 'normescape' must be 'string', got '{arg_t}'",
+                    node=expr.args[0],
+                )
+            return "string"
 
         sig = self.func_types.get(expr.name)
         if sig is None:
