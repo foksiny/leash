@@ -204,6 +204,9 @@ class CodeGen:
         getchar_ty = ir.FunctionType(ir.IntType(32), [])
         self.getchar = ir.Function(self.module, getchar_ty, name="getchar")
 
+        keyget_ty = ir.FunctionType(ir.IntType(32), [])
+        self.keyget = ir.Function(self.module, keyget_ty, name="leash_keyget")
+
         putchar_ty = ir.FunctionType(ir.IntType(32), [ir.IntType(32)])
         self.putchar = ir.Function(self.module, putchar_ty, name="putchar")
 
@@ -676,6 +679,8 @@ class CodeGen:
                 return "string"
             if node.name == "get":
                 return "string"
+            if node.name == "keyget":
+                return "char"
             if node.name == "rand":
                 return "int"
             if node.name == "randf":
@@ -2522,9 +2527,11 @@ class CodeGen:
             if union_name:
                 union_arg_indices.add(i)
 
+        end = getattr(node, "end", "\n")
+
         if not union_arg_indices:
             # No union args: standard show path
-            self._show_standard(node.args)
+            self._show_standard(node.args, end=end)
             return
 
         # For simplicity, handle the common case: all non-union args come before or after union args
@@ -2540,7 +2547,7 @@ class CodeGen:
             prefix_args.append(arg_node)
 
         if prefix_args:
-            self._show_standard(prefix_args, newline=False)
+            self._show_standard(prefix_args, end="")
 
         # Now handle each union arg
         for i, arg_node in enumerate(node.args):
@@ -2563,7 +2570,7 @@ class CodeGen:
                 ptr = self.var_symtab[arg_node.expr.name][0]
             else:
                 # fallback
-                self._show_standard([arg_node], newline=False)
+                self._show_standard([arg_node], end="")
                 continue
 
             tag_ptr = self.builder.gep(
@@ -2588,10 +2595,9 @@ class CodeGen:
                 suffix_args.append(node.args[i])
 
         if suffix_args:
-            self._show_standard(suffix_args, newline=True)
-        else:
-            # Print newline
-            self._print_raw("\n")
+            self._show_standard(suffix_args, end=end)
+        elif end:
+            self._print_raw(end)
 
     def _get_union_type_for_node(self, arg_node):
         """Check if an AST node refers to a union variable or union.cur."""
@@ -2694,7 +2700,7 @@ class CodeGen:
             return ("%s", val)
         return ("%s", val)
 
-    def _show_standard(self, arg_nodes, newline=True):
+    def _show_standard(self, arg_nodes, end="\n"):
         """Standard show() implementation for non-union args."""
         format_str = ""
         args = []
@@ -2750,8 +2756,8 @@ class CodeGen:
                 format_str += "%s"  # fallback
             args.append(val)
 
-        if newline:
-            format_str += "\n"
+        if end:
+            format_str += end
 
         # Create global string for format
         fmt_bytes = bytearray(format_str.encode("utf8") + b"\0")
@@ -5939,6 +5945,12 @@ class CodeGen:
             one_billion_dbl = ir.Constant(ir.DoubleType(), 1000000000.0)
             nsec_sec = self.builder.fdiv(nsec_dbl, one_billion_dbl)
             result = self.builder.fadd(sec_dbl, nsec_sec)
+            return result
+
+        if node.name == "keyget":
+            # keyget() - reads a single key without waiting for Enter
+            char_val = self.builder.call(self.keyget, [])
+            result = self.builder.trunc(char_val, ir.IntType(8))
             return result
 
         if node.name == "exit":

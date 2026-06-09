@@ -354,17 +354,23 @@ def _link_native(obj_name, output_name, target_config, is_run_mode, output_type,
         if os.name == "nt":
             # On Windows, prefer gcc (MinGW) over clang since clang often
             # requires a Visual Studio installation for linking.
-            import shutil
             cc = "gcc" if shutil.which("gcc") else "clang"
         else:
-            cc = "gcc"
+            cc = shutil.which("gcc") or shutil.which("clang")
+            if not cc:
+                print("error: No C compiler found (install gcc or clang, or set CC env var)", file=sys.stderr)
+                sys.exit(1)
     stubs = []
     for sfile in ["gc.c", "cross_compile_stubs.c" if not (os.name == "nt" and target_config.name == "win64") else "windows_stubs.c"]:
         spath = os.path.join(os.path.dirname(os.path.abspath(__file__)), sfile)
         if os.path.exists(spath):
             oname = f"{obj_name}_{sfile}.o"
-            try: subprocess.run([cc, "-c", spath, "-o", oname], check=True, capture_output=True); stubs.append(oname)
-            except: pass
+            res = subprocess.run([cc, "-c", spath, "-o", oname], stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+            if res.returncode != 0:
+                err = res.stderr.decode("utf-8", errors="replace").strip()
+                print(f"warning: failed to compile {sfile}: {err}", file=sys.stderr)
+            else:
+                stubs.append(oname)
     try:
         if output_type == "executable":
             out = target_config.get_output_name(output_name)
@@ -375,7 +381,16 @@ def _link_native(obj_name, output_name, target_config, is_run_mode, output_type,
         elif output_type == "static":
             out = output_name + (".lib" if os.name == "nt" else ".a")
             subprocess.run(["ar", "rcs", out, obj_name], check=True)
-    except: sys.exit(1)
+    except subprocess.CalledProcessError as e:
+        if e.stderr:
+            err = e.stderr.decode("utf-8", errors="replace").strip()
+            print(f"error: Linker failed: {err}", file=sys.stderr)
+        else:
+            print(f"error: Linker failed with exit code {e.returncode}", file=sys.stderr)
+        sys.exit(1)
+    except FileNotFoundError:
+        print(f"error: C compiler '{cc}' not found", file=sys.stderr)
+        sys.exit(1)
     finally:
         for f in [obj_name] + stubs:
             if os.path.exists(f): os.remove(f)
@@ -409,27 +424,51 @@ def dump_file(input_file, output_name=None, target_name=None, check_mode=False, 
     print(f"Dumped LLVM IR to '{output_name}'"); return output_name
 
 def run_file(input_file, args=[], target_name=None, check_mode=False, warnings_as_errors=False, extra_libs=None, opt_level=None):
-    import platform, time, uuid
+    import platform, time, uuid, stat
     tcfg = get_target(target_name) if target_name else get_native_target()
     tmp = f".__temp_run_leash_exe_{uuid.uuid4().hex}"
     out = compile_file(input_file, output_name=tmp, is_run_mode=True, target_name=target_name, check_mode=check_mode, warnings_as_errors=warnings_as_errors, extra_libs=extra_libs, opt_level=opt_level)
+    # Use absolute path to avoid working directory issues
+    out_abs = os.path.abspath(out)
+    # Ensure binary is executable (important on filesystems like WSL DrvFs)
+    try: os.chmod(out_abs, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
+    except: pass
     sys_name = platform.system().lower()
-    cmd = [out] + args
+    cmd = [out_abs] + args
     if tcfg.name == "win64" and sys_name != "windows":
-        try: subprocess.run(["wine", "--version"], check=True, capture_output=True); cmd = ["wine", out] + args
-        except: print("error: Cannot run Win64 binary on non-Windows without wine"); sys.exit(1)
+        res = subprocess.run(["wine", "--version"], stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+        if res.returncode != 0:
+            print("error: Cannot run Win64 binary on non-Windows without wine"); sys.exit(1)
+        cmd = ["wine", out] + args
     elif tcfg.name in ("macos", "macos-arm") and sys_name != "darwin":
         print("error: Cannot run macOS binary on non-macOS"); sys.exit(1)
     try:
         print(f"--- Executed at {time.strftime('%Y-%m-%d %H:%M:%S')} ---")
         res = subprocess.run(cmd)
         if res.returncode != 0: sys.exit(res.returncode)
-    except: sys.exit(1)
+    except FileNotFoundError:
+        exists = os.path.exists(out_abs)
+        print(f"error: Could not execute '{out_abs}'", file=sys.stderr)
+        if not exists:
+            print(f"  -> file does not exist", file=sys.stderr)
+        else:
+            try:
+                perms = oct(os.stat(out_abs).st_mode & 0o777)
+                print(f"  -> exists, permissions: {perms}", file=sys.stderr)
+                import subprocess as _sp
+                res2 = _sp.run(["file", out_abs], stdout=_sp.PIPE, stderr=_sp.PIPE)
+                print(f"  -> type: {res2.stdout.decode('utf-8', errors='replace').strip()}", file=sys.stderr)
+            except Exception as _e:
+                print(f"  -> diagnostic error: {_e}", file=sys.stderr)
+        sys.exit(1)
+    except OSError as e:
+        print(f"error: Could not execute '{out_abs}': {e}", file=sys.stderr)
+        sys.exit(1)
     finally:
-        if os.path.exists(out):
+        if os.path.exists(out_abs):
             for _ in range(10):
                 try:
-                    os.remove(out)
+                    os.remove(out_abs)
                     break
                 except OSError:
                     time.sleep(0.1)

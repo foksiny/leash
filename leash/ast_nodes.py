@@ -207,9 +207,10 @@ class ExpressionStatement(Statement):
 
 
 class ShowStatement(Statement):
-    def __init__(self, args, is_buffer=False):
+    def __init__(self, args, is_buffer=False, end="\n"):
         self.args = args
         self.is_buffer = is_buffer
+        self.end = end
 
 
 class ThrowStatement(Statement):

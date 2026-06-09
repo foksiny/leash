@@ -12,6 +12,8 @@
 #include <stdint.h>
 #include <sys/time.h>
 #include <stdio.h>
+#include <termios.h>
+#include <unistd.h>
 
 /* Helper to get stdout portably */
 FILE* _leash_get_stdout(void) {
@@ -37,3 +39,15 @@ void __chkstk(void) {
     /* No-op */
 }
 #endif
+
+/* Read a single key without waiting for Enter */
+int leash_keyget(void) {
+    struct termios oldt, newt;
+    tcgetattr(STDIN_FILENO, &oldt);
+    newt = oldt;
+    newt.c_lflag &= ~(ICANON | ECHO);
+    tcsetattr(STDIN_FILENO, TCSANOW, &newt);
+    int c = getchar();
+    tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
+    return c;
+}

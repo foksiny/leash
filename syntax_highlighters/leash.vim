@@ -55,7 +55,7 @@ syn match leashFuncPointer /fnc\s*(\s*[^)]*\s*)\s*:\s*[a-z_][a-zA-Z0-9_]*\s*\(\s
 syn match leashGenericMethodCall /\u[a-zA-Z0-9_]*<\([^>]\+\)>\.\zs[a-zA-Z_][a-zA-Z0-9_]*\ze\s*(/
 
 " Builtin functions and properties
-syn keyword leashBuiltin show showb get set toint tofloat tostring cstr lstr size cur name pushb popb pushf popf insert clear remove extend extendv isin rand randf seed choose wait timepass exit exec inttobytes bytestoint floattobytes bytestofloat getKey keys values delete push
+syn keyword leashBuiltin show showb get keyget set toint tofloat tostring cstr lstr size cur name pushb popb pushf popf insert clear remove extend extendv isin rand randf seed choose wait timepass exit exec inttobytes bytestoint floattobytes bytestofloat getKey keys values delete push
 
 " Built-in File class and methods
 syn keyword leashBuiltin File open close read write readln readb writeb readlnb replaceall rewind rename delete

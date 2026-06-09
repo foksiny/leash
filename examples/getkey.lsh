@@ -1,0 +1,7 @@
+fnc main() {
+    show("Press a key: ", end="");
+    key: char = keyget();
+    show(key);
+
+    show("Key pressed: '", key, "'");
+}

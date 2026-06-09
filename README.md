@@ -1166,6 +1166,21 @@ fnc main(args string[]) : void {
 
 *Note: The `show()` function is built-in and makes printing multiple values to console very easy!*
 
+#### The `end` Parameter
+
+By default, `show()` appends a newline (`\n`) after printing all arguments. You can override this with the `end` keyword argument:
+
+```leash
+fnc main() : void {
+    show("Hello", end="");      // No trailing newline
+    show("World", end=", ");    // Trailing comma+space instead of newline
+    show("Done");               // Still appends a newline by default
+}
+// Output: HelloWorld, Done
+```
+
+This is especially useful for building output incrementally without unwanted newlines.
+
 ### Buffered Output (`showb`)
 
 Leash also provides a `showb()` (show buffer) function for more precise control over console output. Unlike `show()`, which automatically adds a newline and spaces between arguments, `showb()` prints its arguments exactly as they are, without any automatic separators or trailing newlines.
@@ -1611,7 +1626,11 @@ fnc connect() {
 
 ## Input Handling
 
-Leash provides a built-in `get()` function to read interactive user input from the console.
+Leash provides two built-in functions for reading user input from the console.
+
+### Reading a Line (`get()`)
+
+The `get()` function reads an entire line of text (until Enter is pressed) and returns it as a `string`.
 
 ```leash
 fnc main() : void {
@@ -1627,6 +1646,26 @@ fnc main() : void {
 ```
 
 The `get()` function automatically allocates memory for the input string and ensures it is managed properly, so you don't have to worry about buffer overflows or manual `free()` calls.
+
+### Reading a Single Key (`keyget()`)
+
+The `keyget()` function reads a single key press **immediately** without waiting for the Enter key. It returns the pressed key as a `char`.
+
+```leash
+fnc main() : void {
+    show("Press any key to continue...", end="");
+    key: char = keyget();
+
+    show("Key pressed: '", key, "'");
+}
+```
+
+This is useful for:
+- **Menu-driven applications** where users press a single key to select an option
+- **Game controls** requiring immediate input without pressing Enter
+- **Prompt-and-continue** patterns ("Press any key to continue...")
+
+Like `get()`, `keyget()` works on all supported platforms (Windows, Linux, macOS).
 
 ## Random Numbers
 

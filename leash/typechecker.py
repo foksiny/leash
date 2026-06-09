@@ -3046,6 +3046,14 @@ class TypeChecker:
                 )
             return "float"
 
+        if expr.name == "keyget":
+            if len(expr.args) != 0:
+                self._error(
+                    f"Function 'keyget' expects 0 arguments, but got {len(expr.args)}",
+                    node=expr,
+                )
+            return "char"
+
         if expr.name == "exit":
             if len(expr.args) != 1:
                 self._error(

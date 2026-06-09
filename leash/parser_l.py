@@ -1567,13 +1567,37 @@ class Parser:
                 self.eat("IDENT")
                 self.eat("LPAREN")
                 args = []
+                end = "\n"
                 while self.current().type != "RPAREN":
-                    args.append(self.parse_expression())
+                    if (
+                        self.current().type == "IDENT"
+                        and self.peek()
+                        and self.peek().type == "ASSIGN"
+                    ):
+                        kw_key = self.eat("IDENT").value
+                        self.eat("ASSIGN")
+                        kw_val = self.parse_expression()
+                        if kw_key == "end":
+                            from .ast_nodes import StringLiteral
+                            if isinstance(kw_val, StringLiteral):
+                                end = kw_val.value
+                            else:
+                                raise LeashError(
+                                    "'end' argument of show() must be a string literal",
+                                    self.current().line, self.current().column,
+                                )
+                        else:
+                            raise LeashError(
+                                f"Unexpected keyword argument '{kw_key}' for show()",
+                                self.current().line, self.current().column,
+                            )
+                    else:
+                        args.append(self.parse_expression())
                     if self.current().type == "COMMA":
                         self.eat("COMMA")
                 self.eat("RPAREN")
                 self.eat("SEMI")
-                return self._pos(ShowStatement(args), tok)
+                return self._pos(ShowStatement(args, end=end), tok)
             elif self.current().type == "IDENT" and self.current().value == "showb":
                 tok = self.current()
                 self.eat("IDENT")

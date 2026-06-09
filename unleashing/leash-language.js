@@ -22,7 +22,7 @@ function registerLeashLanguage() {
     ],
 
     builtins: [
-      'show', 'showb', 'get', 'set', 'toint', 'tofloat', 'tostring', 'cstr', 'lstr', 
+      'show', 'showb', 'get', 'keyget', 'set', 'toint', 'tofloat', 'tostring', 'cstr', 'lstr', 
       'size', 'cur', 'name', 'pushb', 'popb', 'pushf', 'popf', 'insert', 'clear', 
       'remove', 'extend', 'extendv', 'isin', 'rand', 'randf', 'seed', 'choose', 
       'wait', 'timepass', 'exit', 'exec', 'inttobytes', 'bytestoint', 'floattobytes', 
@@ -230,7 +230,8 @@ function registerLeashLanguage() {
       const builtins = [
         { name: 'show', sig: 'show(args...)' },
         { name: 'showb', sig: 'showb(args...)' },
-        { name: 'get', sig: 'get(index: int)' },
+        { name: 'get', sig: 'get(prompt?: string) : string' },
+        { name: 'keyget', sig: 'keyget() : char' },
         { name: 'set', sig: 'set(index: int, val: T)' },
         { name: 'toint', sig: 'toint(val: any) : int' },
         { name: 'tofloat', sig: 'tofloat(val: any) : float' },
@@ -346,7 +347,11 @@ function registerLeashLanguage() {
       const builtinsHovers = {
         show: {
           title: 'show(args...) : void',
-          desc: 'Prints one or more values or variables directly to the standard output console. Automatically adds spacing between values and prints a trailing newline.'
+          desc: 'Prints one or more values or variables directly to the standard output console. Automatically adds spacing between values and prints a trailing newline. Use `end=""` to suppress the newline or `end="..."` for custom trailing text.'
+        },
+        keyget: {
+          title: 'keyget() : char',
+          desc: 'Reads a single key press immediately without waiting for the Enter key. Returns the pressed key as a `char`. Useful for menu-driven apps, game controls, and "Press any key" prompts.'
         },
         showb: {
           title: 'showb(args...) : void',
