@@ -76,6 +76,54 @@ documents.onDidChangeContent(change => {
 // Cache for diagnostics to prevent flickering and redundant runs
 const diagnosticCache = new Map<string, Diagnostic[]>();
 
+function findProjectRoot(filePath: string): string | null {
+    let dir = path.dirname(filePath);
+    while (true) {
+        if (fs.existsSync(path.join(dir, 'config.lshc'))) {
+            return dir;
+        }
+        const uidePath = path.join(dir, '.uide', 'project.json');
+        if (fs.existsSync(uidePath)) {
+            try {
+                const data = JSON.parse(fs.readFileSync(uidePath, 'utf-8'));
+                if (data.type === 'Leash Project') {
+                    return dir;
+                }
+            } catch (e) {}
+        }
+        const parent = path.dirname(dir);
+        if (parent === dir) break;
+        dir = parent;
+    }
+    return null;
+}
+
+function readProjectConfig(projectRoot: string): { imports?: string } | null {
+    const configPath = path.join(projectRoot, 'config.lshc');
+    if (!fs.existsSync(configPath)) return null;
+    try {
+        const content = fs.readFileSync(configPath, 'utf-8');
+        const config: { imports?: string } = {};
+        for (const line of content.split('\n')) {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith('#')) continue;
+            const commentIdx = trimmed.indexOf(' #');
+            const clean = commentIdx >= 0 ? trimmed.slice(0, commentIdx).trim() : trimmed;
+            const colonIdx = clean.indexOf(':');
+            if (colonIdx === -1) continue;
+            const key = clean.slice(0, colonIdx).trim();
+            let val = clean.slice(colonIdx + 1).trim();
+            if (val.startsWith('"') && val.endsWith('"')) val = val.slice(1, -1);
+            if (key === 'imports') {
+                config.imports = val;
+            }
+        }
+        return Object.keys(config).length > 0 ? config : null;
+    } catch (e) {
+        return null;
+    }
+}
+
 async function validateTextDocument(textDocument: TextDocument): Promise<void> {
     const text = textDocument.getText();
     const uri = textDocument.uri;
@@ -85,15 +133,28 @@ async function validateTextDocument(textDocument: TextDocument): Promise<void> {
     if (!fs.existsSync(tempDir)) fs.mkdirSync(tempDir, { recursive: true });
     
     // We use a specific filename to help the compiler resolve relative imports if possible
-    const fileName = path.basename(URI.parse(uri).fsPath);
+    const filePath = URI.parse(uri).fsPath;
+    const fileName = path.basename(filePath);
     const tempFile = path.join(tempDir, fileName);
     fs.writeFileSync(tempFile, text);
 
-    // Run 'leash check' - this is the source of truth for all errors and warnings
-    // (Type errors, syntax errors, unused variables, shadowed globals, etc.)
-    const checkCmd = `leash check "${tempFile}"`;
+    // Detect project context for --other-imports resolution
+    const projectRoot = findProjectRoot(filePath);
+    let checkCmd = `leash check "${tempFile}"`;
+    let cwd = path.dirname(filePath);
     
-    exec(checkCmd, { cwd: path.dirname(URI.parse(uri).fsPath) }, (error, stdout, stderr) => {
+    if (projectRoot) {
+        const projectConfig = readProjectConfig(projectRoot);
+        if (projectConfig && projectConfig.imports) {
+            const importsPath = path.resolve(projectRoot, projectConfig.imports);
+            if (fs.existsSync(importsPath)) {
+                checkCmd = `leash check --other-imports "${importsPath}" "${tempFile}"`;
+            }
+        }
+        cwd = projectRoot;
+    }
+    
+    exec(checkCmd, { cwd }, (error, stdout, stderr) => {
         const diagnostics: Diagnostic[] = [];
         const output = stdout + stderr;
         

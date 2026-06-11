@@ -101,7 +101,7 @@ npm start
 
 ## Running Leash
 
-You can run leash files (`.lsh`) directly using the `run` command, or compile them to an executable using the `compile` command.
+You can run leash files (`.lsh`) directly using the `run` command, or compile them to an executable using the `compile` command. Leash also supports project-level workflows with `init`, `build`, and `runp`.
 
 ### Running Directly
 To execute a Leash program without creating an output binary executable (and optionally pass command line arguments):
@@ -144,7 +144,95 @@ python3 -m leash.cli dump program.lsh to myoutput    # creates myoutput.ll
 python3 -m leash.cli dump program.lsh to myoutput.ll  # creates myoutput.ll
 ```
 
-### Optimization Levels
+### Project Init (`init`)
+
+The `init` command scaffolds a new Leash project with the standard directory structure:
+
+```bash
+# Initialize in current directory
+leash init
+
+# Initialize in a specific directory
+leash init my_project
+```
+
+This creates:
+
+```
+my_project/
+├── src/
+│   └── main.lsh          # Entry point
+├── imports/               # Local import directory
+├── out/                   # Compiled output directory
+└── config.lshc            # Project configuration
+```
+
+The generated `main.lsh`:
+```leash
+fnc main |> show("Hello, World!");
+```
+
+The generated `config.lshc`:
+```leashconfig
+main: "src/main.lsh"
+clibs: {}
+imports: "imports/"
+opt_level: "O3"
+```
+
+### Project Build (`build`)
+
+The `build` command reads `config.lshc` from the current directory and compiles the project:
+
+```bash
+leash build
+```
+
+This uses the project configuration to:
+- Find the main entry file (`main` key)
+- Resolve the imports directory (`imports` key)
+- Link C libraries (`clibs` key)
+- Apply the optimization level (`opt_level` key)
+
+Additional import directories can be specified:
+
+```bash
+leash build --other-imports path/to/imports
+leash build -oi path/to/imports
+```
+
+### Project Run (`runp`)
+
+The `runp` command compiles and runs a project in one step, using `config.lshc`:
+
+```bash
+# Compile and run
+leash runp
+
+# Pass arguments to the program (after --)
+leash runp -- arg1 arg2 arg3
+
+# With additional import directories
+leash runp --other-imports path/to/imports -- arg1 arg2
+```
+
+The output binary is temporary and cleaned up after execution, similar to `leash run`.
+
+### Additional Import Directories (`--other-imports / -oi`)
+
+The `--other-imports` (or `-oi`) flag adds extra directories to the module search path for `use ...;` statements. This is available on `compile`, `run`, `dump`, `build`, and `runp`:
+
+```bash
+# Compile with additional import paths
+leash compile program.lsh --other-imports mylibs/
+leash run program.lsh -oi mylibs/ -oi other_libs/
+
+# These directories are searched before ~/.leash/libs/
+```
+
+This is useful when working outside a project setup or when you need to import from non-standard locations.
+
+## Optimization Levels
 
 Leash supports LLVM optimization levels via the `--opt` (or `-O`) flag. Use it with `compile`, `run`, or `dump` to control the aggressiveness of the optimization pipeline.
 

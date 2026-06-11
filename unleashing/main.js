@@ -126,7 +126,7 @@ function scanDirectory(dirPath, rootPath) {
     const files = fs.readdirSync(dirPath);
     for (const file of files) {
       // Ignore compiled binaries, caches, and dependency folders to minimize lag
-      if (file === '.git' || file === 'node_modules' || file === '__pycache__' || file.startsWith('.__temp_run_leash_exe_')) {
+      if (file === '.git' || file === 'node_modules' || file === '__pycache__' || file === 'out' || file.startsWith('.__temp_run_leash_exe_')) {
         continue;
       }
       
@@ -252,79 +252,112 @@ ipcMain.handle('rename-path', async (event, { oldPath, newName }) => {
 });
 
 // --- LEASH PROCESS EXECUTION (RUN/COMPILE/CHECK) ---
-ipcMain.on('execute-leash', (event, { commandId, action, filePath, args, optLevel, targetName, extraFlags }) => {
-  const workspaceRoot = path.dirname(filePath);
+function detectLeashProject(workspacePath) {
+  const uidePath = path.join(workspacePath, '.uide', 'project.json');
+  if (!fs.existsSync(uidePath)) return null;
+  try {
+    const data = JSON.parse(fs.readFileSync(uidePath, 'utf-8'));
+    if (data.type === 'Leash Project') {
+      const configPath = path.join(workspacePath, 'config.lshc');
+      if (fs.existsSync(configPath)) {
+        const config = {};
+        const content = fs.readFileSync(configPath, 'utf-8');
+        for (const line of content.split('\n')) {
+          const trimmed = line.trim();
+          if (!trimmed || trimmed.startsWith('#')) continue;
+          const commentIdx = trimmed.indexOf(' #');
+          const clean = commentIdx >= 0 ? trimmed.slice(0, commentIdx).trim() : trimmed;
+          const colonIdx = clean.indexOf(':');
+          if (colonIdx === -1) continue;
+          const key = clean.slice(0, colonIdx).trim();
+          let val = clean.slice(colonIdx + 1).trim();
+          if (val.startsWith('"') && val.endsWith('"')) val = val.slice(1, -1);
+          config[key] = val;
+        }
+        return config;
+      }
+      return {};
+    }
+  } catch (e) {}
+  return null;
+}
+
+ipcMain.on('execute-leash', (event, { commandId, action, filePath, args, optLevel, targetName, extraFlags, workspacePath }) => {
+  const fileDir = path.dirname(filePath);
+  const workspaceRoot = workspacePath || fileDir;
   
   // Choose standard python executable
   let pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
-  
   let cmdArgs = ['-m', 'leash.cli'];
+  let cwd = fileDir;
   
-  if (action === 'check') {
-    cmdArgs.push('check', filePath);
-  } else if (action === 'run') {
-    cmdArgs.push('run', filePath);
-    if (checkLeashCliFlags(extraFlags, '--check')) cmdArgs.push('--check');
-    if (checkLeashCliFlags(extraFlags, '--warnings-as-errors')) cmdArgs.push('--warnings-as-errors');
-    if (optLevel) cmdArgs.push('--opt', optLevel);
-    if (targetName) cmdArgs.push('--target', targetName);
-    
-    // Append program arguments
-    if (args && args.length > 0) {
-      cmdArgs.push(...args);
+  // Detect leash project context
+  const projectConfig = detectLeashProject(workspaceRoot);
+  const isLeashProject = projectConfig !== null;
+  
+  if (isLeashProject && (action === 'run' || action === 'compile')) {
+    // Project-level commands
+    cwd = workspaceRoot;
+    cmdArgs.push(action === 'run' ? 'runp' : 'build');
+    if (args && args.length > 0 && action === 'run') {
+      cmdArgs.push('--', ...args);
     }
-  } else if (action === 'compile') {
-    cmdArgs.push('compile', filePath);
-    
-    // Extract output compile flags
-    let outputType = 'executable';
-    let outputName = null;
-    
-    if (extraFlags) {
-      if (extraFlags.includes('to-dynamic')) outputType = 'dynamic';
-      else if (extraFlags.includes('to-static')) outputType = 'static';
-      
-      const toIndex = extraFlags.indexOf('to');
-      if (toIndex !== -1 && toIndex + 1 < extraFlags.length) {
-        outputName = extraFlags[toIndex + 1];
+  } else {
+    // File-level commands (existing behavior)
+    if (action === 'check') {
+      cmdArgs.push('check', filePath);
+    } else if (action === 'run') {
+      cmdArgs.push('run', filePath);
+      if (checkLeashCliFlags(extraFlags, '--check')) cmdArgs.push('--check');
+      if (checkLeashCliFlags(extraFlags, '--warnings-as-errors')) cmdArgs.push('--warnings-as-errors');
+      if (optLevel) cmdArgs.push('--opt', optLevel);
+      if (targetName) cmdArgs.push('--target', targetName);
+      if (args && args.length > 0) cmdArgs.push(...args);
+    } else if (action === 'compile') {
+      cmdArgs.push('compile', filePath);
+      let outputType = 'executable';
+      let outputName = null;
+      if (extraFlags) {
+        if (extraFlags.includes('to-dynamic')) outputType = 'dynamic';
+        else if (extraFlags.includes('to-static')) outputType = 'static';
+        const toIndex = extraFlags.indexOf('to');
+        if (toIndex !== -1 && toIndex + 1 < extraFlags.length) outputName = extraFlags[toIndex + 1];
+      }
+      if (outputType === 'dynamic') cmdArgs.push('to-dynamic');
+      else if (outputType === 'static') cmdArgs.push('to-static');
+      if (outputName) cmdArgs.push('to', outputName);
+      if (checkLeashCliFlags(extraFlags, '--check')) cmdArgs.push('--check');
+      if (checkLeashCliFlags(extraFlags, '--warnings-as-errors')) cmdArgs.push('--warnings-as-errors');
+      if (optLevel) cmdArgs.push('--opt', optLevel);
+      if (targetName) cmdArgs.push('--target', targetName);
+    } else if (action === 'dump') {
+      cmdArgs.push('dump', filePath);
+      let outputName = null;
+      if (extraFlags) {
+        const toIndex = extraFlags.indexOf('to');
+        if (toIndex !== -1 && toIndex + 1 < extraFlags.length) outputName = extraFlags[toIndex + 1];
+      }
+      if (outputName) cmdArgs.push('to', outputName);
+      if (checkLeashCliFlags(extraFlags, '--check')) cmdArgs.push('--check');
+      if (checkLeashCliFlags(extraFlags, '--warnings-as-errors')) cmdArgs.push('--warnings-as-errors');
+      if (optLevel) cmdArgs.push('--opt', optLevel);
+      if (targetName) cmdArgs.push('--target', targetName);
+    }
+  }
+
+  // Add project import paths for file-level commands in a project context
+  if (isLeashProject && action !== 'run' && action !== 'compile') {
+    if (projectConfig && projectConfig.imports) {
+      const importsPath = path.resolve(workspaceRoot, projectConfig.imports);
+      if (fs.existsSync(importsPath)) {
+        cmdArgs.push('--other-imports', importsPath);
       }
     }
-    
-    if (outputType === 'dynamic') cmdArgs.push('to-dynamic');
-    else if (outputType === 'static') cmdArgs.push('to-static');
-    
-    if (outputName) {
-      cmdArgs.push('to', outputName);
-    }
-    
-    if (checkLeashCliFlags(extraFlags, '--check')) cmdArgs.push('--check');
-    if (checkLeashCliFlags(extraFlags, '--warnings-as-errors')) cmdArgs.push('--warnings-as-errors');
-    if (optLevel) cmdArgs.push('--opt', optLevel);
-    if (targetName) cmdArgs.push('--target', targetName);
-  } else if (action === 'dump') {
-    cmdArgs.push('dump', filePath);
-    
-    let outputName = null;
-    if (extraFlags) {
-      const toIndex = extraFlags.indexOf('to');
-      if (toIndex !== -1 && toIndex + 1 < extraFlags.length) {
-        outputName = extraFlags[toIndex + 1];
-      }
-    }
-    
-    if (outputName) {
-      cmdArgs.push('to', outputName);
-    }
-    
-    if (checkLeashCliFlags(extraFlags, '--check')) cmdArgs.push('--check');
-    if (checkLeashCliFlags(extraFlags, '--warnings-as-errors')) cmdArgs.push('--warnings-as-errors');
-    if (optLevel) cmdArgs.push('--opt', optLevel);
-    if (targetName) cmdArgs.push('--target', targetName);
   }
 
   // Spawn the child process
   const child = spawn(pythonCmd, cmdArgs, {
-    cwd: workspaceRoot,
+    cwd: cwd,
     env: { ...process.env, PYTHONUNBUFFERED: '1' }
   });
   
@@ -479,7 +512,17 @@ ipcMain.handle('create-project', async (event, { projectType, projectName }) => 
     }, null, 2), 'utf-8');
 
     if (projectType === 'leash') {
-      fs.writeFileSync(path.join(projectPath, 'src', 'main.lsh'), 'fnc main {\n    show("Hello, world!\\n");\n}\n', 'utf-8');
+      fs.mkdirSync(path.join(projectPath, 'imports'), { recursive: true });
+      fs.mkdirSync(path.join(projectPath, 'out'), { recursive: true });
+      fs.writeFileSync(path.join(projectPath, 'src', 'main.lsh'), 'fnc main |> show("Hello, World!");\n', 'utf-8');
+      fs.writeFileSync(path.join(projectPath, 'config.lshc'), [
+        'main: "src/main.lsh"',
+        'clibs: {}',
+        'imports: "imports/"',
+        'opt_level: "O3"',
+        `out_name: "${projectName}"`,
+        ''
+      ].join('\n'), 'utf-8');
       fs.writeFileSync(path.join(projectPath, 'project.json'), JSON.stringify({
         name: projectName,
         type: "executable",

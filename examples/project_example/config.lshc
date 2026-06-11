@@ -1,0 +1,5 @@
+main: "src/main.lsh"
+clibs: {}
+imports: "imports/"
+opt_level: "O3"
+out_name: "main"

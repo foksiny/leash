@@ -2602,6 +2602,7 @@ function executeActiveScript(action) {
     commandId: currentRunningCommandId,
     action: action,
     filePath: activeTab.filePath,
+    workspacePath: activeWorkspacePath,
     args: programArgs,
     optLevel: opt,
     targetName: target || null,

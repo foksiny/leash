@@ -87,6 +87,7 @@ examples/bytetotype
 examples/newclass
 examples/advanced_static
 examples/auto
+**/*.exe
 
 # Trash
 trash/

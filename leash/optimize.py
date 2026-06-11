@@ -92,7 +92,6 @@ def _add_module_level_passes(pm, opt_level, size_opt=False):
 
     if opt_level >= 3:
         pm.add_dead_store_elimination_pass()         # remove dead stores
-        pm.add_internalize_pass()                    # internalize linkage
         pm.add_break_critical_edges_pass()             # break crit edges before more opts
 
 

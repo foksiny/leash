@@ -107,14 +107,93 @@ def install_libraries(paths):
             print(f"Error: Unsupported path type: {abs_path}")
             sys.exit(1)
 
-def resolve_imports(program, base_path):
+def parse_lshc_config(path):
+    """Parse a .lshc config file. Returns a dict of key-value pairs.
+
+    Format:
+      key: value  # optional comment
+    Supports strings (double-quoted), dicts ({}), and lists ({} like sets).
+    """
+    config = {}
+    with open(path, "r") as f:
+        for line in f:
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            comment_idx = stripped.find(" #")
+            if comment_idx >= 0:
+                stripped = stripped[:comment_idx].strip()
+            if ":" not in stripped:
+                continue
+            key, _, val = stripped.partition(":")
+            key = key.strip()
+            val = val.strip()
+            if not key:
+                continue
+            if val.startswith('"') and val.endswith('"'):
+                val = val[1:-1]
+            elif val == "{}":
+                val = {}
+            elif val.startswith("{") and val.endswith("}"):
+                inner = val[1:-1].strip()
+                items = {}
+                if inner:
+                    for part in inner.split(","):
+                        part = part.strip()
+                        if not part:
+                            continue
+                        v = [x.strip().strip('"') for x in part.split(":")]
+                        if len(v) == 1:
+                            items[v[0]] = None
+                        elif len(v) == 2:
+                            items[v[0]] = v[1]
+                val = items
+            config[key] = val
+    return config
+
+
+def init_project(project_dir):
+    """Scaffold a new leash project in the given directory."""
+    project_dir = os.path.abspath(project_dir)
+    if os.path.exists(project_dir) and os.listdir(project_dir):
+        print(f"error: Directory '{project_dir}' is not empty", file=sys.stderr)
+        sys.exit(1)
+    os.makedirs(project_dir, exist_ok=True)
+    src_dir = os.path.join(project_dir, "src")
+    imports_dir = os.path.join(project_dir, "imports")
+    out_dir = os.path.join(project_dir, "out")
+    for d in [src_dir, imports_dir, out_dir]:
+        os.makedirs(d, exist_ok=True)
+    main_lsh = os.path.join(src_dir, "main.lsh")
+    with open(main_lsh, "w") as f:
+        f.write('fnc main |> show("Hello, World!");\n')
+    config_path = os.path.join(project_dir, "config.lshc")
+    default_out_name = os.path.basename(project_dir)
+    with open(config_path, "w") as f:
+        f.write('main: "src/main.lsh"\n')
+        f.write("clibs: {}\n")
+        f.write('imports: "imports/"\n')
+        f.write('opt_level: "O3"\n')
+        f.write(f'out_name: "{default_out_name}"\n')
+    print(f"Initialized leash project in '{project_dir}'")
+    print(f"  {main_lsh}")
+    print(f"  {config_path}")
+    print(f"  {imports_dir}/")
+    print(f"  {out_dir}/")
+
+
+def resolve_imports(program, base_path, extra_import_dirs=None):
     loaded_modules = set()
     global_libs_dir = os.path.expanduser("~/.leash/libs")
+    extra_dirs = extra_import_dirs or []
     def find_module_file(module_path, search_path):
         path_str = os.path.join(*module_path)
         module_name = module_path[-1]
-        direct = os.path.join(search_path, f"{path_str}.lsh")
-        if os.path.exists(direct): return direct
+        search_dirs = [search_path] + [d for d in extra_dirs if os.path.isdir(d)]
+        for sd in search_dirs:
+            direct = os.path.join(sd, f"{path_str}.lsh")
+            if os.path.exists(direct):
+                return direct
         global_path = os.path.join(global_libs_dir, f"{path_str}.lsh")
         if os.path.exists(global_path): return global_path
         if os.path.isdir(global_libs_dir):
@@ -289,12 +368,12 @@ def _print_warning(w, warnings_as_errors=False):
     if w.get("line"): print(f"  --> {w.get('file','unknown')}:{w['line']}:{w.get('col',0)}{' ['+w['code']+']' if w.get('code') else ''}", file=sys.stderr)
     if w.get("tip"): print(f"tip: {w['tip']}", file=sys.stderr)
 
-def check_file(input_file, verbose=False):
+def check_file(input_file, verbose=False, extra_import_dirs=None):
     with open(input_file, "r") as f: code = f.read()
     errors, warnings = [], []
     try:
         lexer = Lexer(code); tokens = lexer.tokenize(); parser = Parser(tokens, input_file); ast = parser.parse()
-        ast = resolve_imports(ast, os.path.dirname(os.path.abspath(input_file)) or ".")
+        ast = resolve_imports(ast, os.path.dirname(os.path.abspath(input_file)) or ".", extra_import_dirs=extra_import_dirs or [])
         ast = resolve_conditionals(ast, get_native_target()); ast = expand_macros(ast)
     except LeashError as e:
         if verbose: _print_error(e, input_file, code)
@@ -316,12 +395,12 @@ def check_file(input_file, verbose=False):
         if verbose: import traceback; print(f"error: Internal: {e}", file=sys.stderr); traceback.print_exc()
     return errors, warnings
 
-def compile_file(input_file, output_name=None, output_type="executable", is_run_mode=False, target_name=None, check_mode=False, warnings_as_errors=False, extra_libs=None, opt_level=None):
+def compile_file(input_file, output_name=None, output_type="executable", is_run_mode=False, target_name=None, check_mode=False, warnings_as_errors=False, extra_libs=None, opt_level=None, extra_import_dirs=None):
     with open(input_file, "r") as f: code = f.read()
     target_config = get_target(target_name) if target_name else get_native_target()
     try:
         lexer = Lexer(code); tokens = lexer.tokenize(); parser = Parser(tokens, input_file); ast = parser.parse()
-        ast = resolve_imports(ast, os.path.dirname(os.path.abspath(input_file)) or ".")
+        ast = resolve_imports(ast, os.path.dirname(os.path.abspath(input_file)) or ".", extra_import_dirs=extra_import_dirs)
         ast = resolve_conditionals(ast, target_config); ast = expand_macros(ast)
         warnings = TypeChecker(check_mode=check_mode).check(ast)
         for w in warnings: _print_warning(w, warnings_as_errors)
@@ -397,12 +476,12 @@ def _link_native(obj_name, output_name, target_config, is_run_mode, output_type,
     if not is_run_mode: print(f"Successfully compiled to '{out}'")
     return out
 
-def dump_file(input_file, output_name=None, target_name=None, check_mode=False, warnings_as_errors=False, extra_libs=None, opt_level=None):
+def dump_file(input_file, output_name=None, target_name=None, check_mode=False, warnings_as_errors=False, extra_libs=None, opt_level=None, extra_import_dirs=None):
     with open(input_file, "r") as f: code = f.read()
     target_config = get_target(target_name) if target_name else get_native_target()
     try:
         lexer = Lexer(code); tokens = lexer.tokenize(); parser = Parser(tokens, input_file); ast = parser.parse()
-        ast = resolve_imports(ast, os.path.dirname(os.path.abspath(input_file)) or ".")
+        ast = resolve_imports(ast, os.path.dirname(os.path.abspath(input_file)) or ".", extra_import_dirs=extra_import_dirs)
         ast = resolve_conditionals(ast, target_config); ast = expand_macros(ast)
         warnings = TypeChecker(check_mode=check_mode).check(ast)
         for w in warnings: _print_warning(w, warnings_as_errors)
@@ -423,11 +502,11 @@ def dump_file(input_file, output_name=None, target_name=None, check_mode=False, 
     with open(output_name, "w") as f: f.write(str(mod))
     print(f"Dumped LLVM IR to '{output_name}'"); return output_name
 
-def run_file(input_file, args=[], target_name=None, check_mode=False, warnings_as_errors=False, extra_libs=None, opt_level=None):
+def run_file(input_file, args=[], target_name=None, check_mode=False, warnings_as_errors=False, extra_libs=None, opt_level=None, extra_import_dirs=None):
     import platform, time, uuid, stat
     tcfg = get_target(target_name) if target_name else get_native_target()
     tmp = f".__temp_run_leash_exe_{uuid.uuid4().hex}"
-    out = compile_file(input_file, output_name=tmp, is_run_mode=True, target_name=target_name, check_mode=check_mode, warnings_as_errors=warnings_as_errors, extra_libs=extra_libs, opt_level=opt_level)
+    out = compile_file(input_file, output_name=tmp, is_run_mode=True, target_name=target_name, check_mode=check_mode, warnings_as_errors=warnings_as_errors, extra_libs=extra_libs, opt_level=opt_level, extra_import_dirs=extra_import_dirs)
     # Use absolute path to avoid working directory issues
     out_abs = os.path.abspath(out)
     # Ensure binary is executable (important on filesystems like WSL DrvFs)
@@ -473,49 +552,225 @@ def run_file(input_file, args=[], target_name=None, check_mode=False, warnings_a
                 except OSError:
                     time.sleep(0.1)
 
+def read_project_config(project_dir):
+    """Read config.lshc and return (config, project_dir)."""
+    config_path = os.path.join(project_dir, "config.lshc")
+    if not os.path.exists(config_path):
+        print(f"error: No config.lshc found in '{project_dir}'", file=sys.stderr)
+        print("  Run 'leash init' to create a project", file=sys.stderr)
+        sys.exit(1)
+    config = parse_lshc_config(config_path)
+    main_file = config.get("main")
+    if not main_file:
+        print("error: 'main' not set in config.lshc", file=sys.stderr)
+        sys.exit(1)
+    main_path = os.path.join(project_dir, main_file)
+    if not os.path.exists(main_path):
+        print(f"error: Main file '{main_path}' not found", file=sys.stderr)
+        sys.exit(1)
+    return config, project_dir, main_path
+
+
+def resolve_project_deps(config, project_dir, extra_import_dirs=None):
+    """Resolve imports dir and clibs from config."""
+    imports_dir = config.get("imports")
+    all_extra_dirs = list(extra_import_dirs or [])
+    if imports_dir:
+        abs_imports = os.path.join(project_dir, imports_dir)
+        if os.path.isdir(abs_imports):
+            all_extra_dirs.append(abs_imports)
+    clibs = config.get("clibs", {})
+    extra_libs = list(clibs.keys()) if isinstance(clibs, dict) else []
+    opt_level = config.get("opt_level", "2")
+    if opt_level.startswith("O"):
+        opt_level = opt_level[1:]
+    return all_extra_dirs, extra_libs, opt_level
+
+
+def build_project(extra_import_dirs=None):
+    """Build the project using config.lshc in the current directory."""
+    project_dir = os.getcwd()
+    config, project_dir, main_path = read_project_config(project_dir)
+    all_extra_dirs, extra_libs, opt_level = resolve_project_deps(config, project_dir, extra_import_dirs)
+    out_basename = config.get("out_name") or os.path.basename(project_dir)
+    out_name = os.path.join(project_dir, "out", out_basename)
+    compile_file(main_path, output_name=out_name, extra_import_dirs=all_extra_dirs, extra_libs=extra_libs, opt_level=opt_level)
+
+
+def run_project(prog_args=None, extra_import_dirs=None):
+    """Build and run the project using config.lshc in the current directory."""
+    import platform, time, uuid, stat
+    project_dir = os.getcwd()
+    config, project_dir, main_path = read_project_config(project_dir)
+    all_extra_dirs, extra_libs, opt_level = resolve_project_deps(config, project_dir, extra_import_dirs)
+    tmp = f".__temp_run_leash_exe_{uuid.uuid4().hex}"
+    out = compile_file(main_path, output_name=tmp, is_run_mode=True, extra_import_dirs=all_extra_dirs, extra_libs=extra_libs, opt_level=opt_level)
+    out_abs = os.path.abspath(out)
+    try:
+        os.chmod(out_abs, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
+    except:
+        pass
+    sys_name = platform.system().lower()
+    target_config = get_native_target()
+    cmd = [out_abs] + (prog_args or [])
+    if target_config.name == "win64" and sys_name != "windows":
+        res = subprocess.run(["wine", "--version"], stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+        if res.returncode != 0:
+            print("error: Cannot run Win64 binary on non-Windows without wine")
+            sys.exit(1)
+        cmd = ["wine", out] + (prog_args or [])
+    elif target_config.name in ("macos", "macos-arm") and sys_name != "darwin":
+        print("error: Cannot run macOS binary on non-macOS")
+        sys.exit(1)
+    try:
+        print(f"--- Executed at {time.strftime('%Y-%m-%d %H:%M:%S')} ---")
+        res = subprocess.run(cmd)
+        if res.returncode != 0:
+            sys.exit(res.returncode)
+    except FileNotFoundError:
+        print(f"error: Could not execute '{out_abs}'", file=sys.stderr)
+        sys.exit(1)
+    except OSError as e:
+        print(f"error: Could not execute '{out_abs}': {e}", file=sys.stderr)
+        sys.exit(1)
+    finally:
+        if os.path.exists(out_abs):
+            for _ in range(10):
+                try:
+                    os.remove(out_abs)
+                    break
+                except OSError:
+                    time.sleep(0.1)
+
+
 def main():
     if len(sys.argv) < 2:
-        print("Usage: leash <compile|run|dump|check|install> ...")
+        print("Usage: leash <compile|run|dump|check|install|init|build|runp> ...")
         sys.exit(1)
     cmd = sys.argv[1]
     if cmd in ("--help", "-h"):
-        print("Leash v1.0\nUsage: leash <command> [options]\nCommands: compile, run, dump, check, install\nRun 'leash <command> --help' for details.")
+        print("Leash v1.0\nUsage: leash <command> [options]\nCommands: compile, run, dump, check, install, init, build, runp\nRun 'leash <command> --help' for details.")
         sys.exit(0)
     if cmd in ("--version", "-v"):
         print("Leash v1.0\nBuilt on LLVM with custom GC"); sys.exit(0)
     if cmd == "check":
-        if len(sys.argv) < 3: print("Usage: leash check <file.lsh>"); sys.exit(1)
-        if not os.path.exists(sys.argv[2]): print(f"error: Not found: {sys.argv[2]}", file=sys.stderr); sys.exit(1)
-        print(f"Checking '{sys.argv[2]}'...\n")
-        errs, warns = check_file(sys.argv[2], verbose=True)
-        if warns:
-            print(f"Found {len(warns)} warning(s):\n")
-            for w in warns: _print_warning(w); print()
-        if not errs: print("No issues found." if not warns else f"Summary: 0 errors, {len(warns)} warnings."); sys.exit(0)
-        print(f"Summary: {len(errs)} errors, {len(warns)} warnings."); sys.exit(1)
-    if cmd in ("compile", "run", "dump"):
-        if len(sys.argv) < 3: print(f"Usage: leash {cmd} <file.lsh> [options]"); sys.exit(1)
+        if len(sys.argv) < 3:
+            print("Usage: leash check <file.lsh> [options]")
+            sys.exit(1)
         if sys.argv[2] in ("--help", "-h"):
-            print(f"Options for {cmd}:\n  --target <target>\n  --check\n  --warnings-as-errors\n  --opt <0,1,2,3,s>\n  -l<lib>")
+            print("Options for check:\n  --other-imports/-oi <folder>")
             sys.exit(0)
-        infile = sys.argv[2]; target, outname, outtype, check, warnerr, elibs, opt = None, None, "executable", False, False, [], "2"
+        if not os.path.exists(sys.argv[2]):
+            print(f"error: Not found: {sys.argv[2]}", file=sys.stderr)
+            sys.exit(1)
+        extra_import_dirs = []
         i = 3
         while i < len(sys.argv):
-            if sys.argv[i] == "--target" and i+1 < len(sys.argv): target = sys.argv[i+1]; i += 2
-            elif sys.argv[i] == "--check": check = True; i += 1
-            elif sys.argv[i] == "--warnings-as-errors": warnerr = True; i += 1
-            elif (sys.argv[i] == "--opt" or sys.argv[i] == "-O") and i+1 < len(sys.argv): opt = sys.argv[i+1]; i += 2
-            elif sys.argv[i].startswith("-l"): elibs.append(sys.argv[i][2:]); i += 1
-            elif sys.argv[i] == "to" and i+1 < len(sys.argv): outname = sys.argv[i+1]; i += 2
-            elif sys.argv[i] == "to-dynamic": outtype = "dynamic"; i += 1
-            elif sys.argv[i] == "to-static": outtype = "static"; i += 1
-            else: i += 1
-        if cmd == "run": run_file(infile, sys.argv[i:], target, check, warnerr, elibs, opt)
-        elif cmd == "dump": dump_file(infile, outname, target, check, warnerr, elibs, opt)
-        else: compile_file(infile, outname, outtype, False, target, check, warnerr, elibs, opt)
+            if sys.argv[i] in ("--other-imports", "-oi") and i + 1 < len(sys.argv):
+                extra_import_dirs.append(os.path.abspath(sys.argv[i + 1]))
+                i += 2
+            else:
+                i += 1
+        print(f"Checking '{sys.argv[2]}'...\n")
+        errs, warns = check_file(sys.argv[2], verbose=True, extra_import_dirs=extra_import_dirs)
+        if warns:
+            print(f"Found {len(warns)} warning(s):\n")
+            for w in warns:
+                _print_warning(w)
+                print()
+        if not errs:
+            print("No issues found." if not warns else f"Summary: 0 errors, {len(warns)} warnings.")
+            sys.exit(0)
+        print(f"Summary: {len(errs)} errors, {len(warns)} warnings.")
+        sys.exit(1)
+    if cmd == "init":
+        project_dir = sys.argv[2] if len(sys.argv) > 2 else "."
+        init_project(project_dir)
+        sys.exit(0)
+    if cmd == "build":
+        extra_import_dirs = []
+        i = 2
+        while i < len(sys.argv):
+            if sys.argv[i] in ("--other-imports", "-oi") and i + 1 < len(sys.argv):
+                extra_import_dirs.append(os.path.abspath(sys.argv[i + 1]))
+                i += 2
+            else:
+                i += 1
+        build_project(extra_import_dirs)
+        sys.exit(0)
+    if cmd == "runp":
+        extra_import_dirs = []
+        prog_args = []
+        i = 2
+        found_sep = False
+        while i < len(sys.argv):
+            if sys.argv[i] == "--":
+                found_sep = True
+                i += 1
+                break
+            if sys.argv[i] in ("--other-imports", "-oi") and i + 1 < len(sys.argv):
+                extra_import_dirs.append(os.path.abspath(sys.argv[i + 1]))
+                i += 2
+            else:
+                i += 1
+        if found_sep:
+            prog_args = sys.argv[i:]
+        run_project(prog_args, extra_import_dirs)
+        sys.exit(0)
+    if cmd in ("compile", "run", "dump"):
+        if len(sys.argv) < 3:
+            print(f"Usage: leash {cmd} <file.lsh> [options]")
+            sys.exit(1)
+        if sys.argv[2] in ("--help", "-h"):
+            print(f"Options for {cmd}:\n  --target <target>\n  --check\n  --warnings-as-errors\n  --opt <0,1,2,3,s>\n  -l<lib>\n  --other-imports/-oi <folder>")
+            sys.exit(0)
+        infile = sys.argv[2]
+        target, outname, outtype, check, warnerr, elibs, opt = None, None, "executable", False, False, [], "2"
+        extra_import_dirs = []
+        i = 3
+        while i < len(sys.argv):
+            if sys.argv[i] == "--target" and i + 1 < len(sys.argv):
+                target = sys.argv[i + 1]
+                i += 2
+            elif sys.argv[i] == "--check":
+                check = True
+                i += 1
+            elif sys.argv[i] == "--warnings-as-errors":
+                warnerr = True
+                i += 1
+            elif (sys.argv[i] == "--opt" or sys.argv[i] == "-O") and i + 1 < len(sys.argv):
+                opt = sys.argv[i + 1]
+                i += 2
+            elif sys.argv[i].startswith("-l"):
+                elibs.append(sys.argv[i][2:])
+                i += 1
+            elif sys.argv[i] == "to" and i + 1 < len(sys.argv):
+                outname = sys.argv[i + 1]
+                i += 2
+            elif sys.argv[i] == "to-dynamic":
+                outtype = "dynamic"
+                i += 1
+            elif sys.argv[i] == "to-static":
+                outtype = "static"
+                i += 1
+            elif sys.argv[i] in ("--other-imports", "-oi") and i + 1 < len(sys.argv):
+                extra_import_dirs.append(os.path.abspath(sys.argv[i + 1]))
+                i += 2
+            else:
+                i += 1
+        if cmd == "run":
+            run_file(infile, sys.argv[i:], target, check, warnerr, elibs, opt, extra_import_dirs=extra_import_dirs)
+        elif cmd == "dump":
+            dump_file(infile, outname, target, check, warnerr, elibs, opt, extra_import_dirs=extra_import_dirs)
+        else:
+            compile_file(infile, outname, outtype, False, target, check, warnerr, elibs, opt, extra_import_dirs=extra_import_dirs)
     elif cmd == "install":
-        if len(sys.argv) < 3: print("Usage: leash install <path> ..."); sys.exit(1)
+        if len(sys.argv) < 3:
+            print("Usage: leash install <path> ...")
+            sys.exit(1)
         install_libraries(sys.argv[2:])
-    else: print(f"Unknown command: {cmd}"); sys.exit(1)
+    else:
+        print(f"Unknown command: {cmd}")
+        sys.exit(1)
 
 if __name__ == "__main__": main()
