@@ -1412,7 +1412,7 @@ class CodeGen:
 
     def _codegen_ThisExpr(self, node):
         if "this" not in self.var_symtab:
-            raise LeashError("'this' is not available in the current context")
+            raise LeashError("'this' is not available in the current context", node=node)
         var_info = self.var_symtab["this"]
         ptr = var_info[0]
         return self.builder.load(ptr)
@@ -1421,17 +1421,17 @@ class CodeGen:
         if node.member:
             if node.member == "Parent":
                 if not self.current_class_name:
-                    raise LeashError("'self::Parent' is not available in the current context")
+                    raise LeashError("'self::Parent' is not available in the current context", node=node)
                 parent = self.class_symtab[self.current_class_name].get("parent")
                 if not parent:
-                    raise LeashError(f"Class '{self.current_class_name}' has no parent class")
+                    raise LeashError(f"Class '{self.current_class_name}' has no parent class", node=node)
                 return self._emit_const_str(parent)
             elif node.member == "Class":
                 if not self.current_class_name:
-                    raise LeashError("'self::Class' is not available in the current context")
+                    raise LeashError("'self::Class' is not available in the current context", node=node)
                 return self._emit_const_str(self.current_class_name)
             else:
-                raise LeashError(f"Unknown self member '{node.member}'")
+                raise LeashError(f"Unknown self member '{node.member}'", node=node)
 
         if self.current_func_name:
             # For class methods, name is usually Class_Method. 
@@ -1447,7 +1447,7 @@ class CodeGen:
         if self.current_class_name:
             return self._emit_const_str(self.current_class_name)
             
-        raise LeashError("'self' is not available in the current context")
+        raise LeashError("'self' is not available in the current context", node=node)
 
     def _codegen_UnionDef(self, node):
         # Compute the max size needed for any variant
@@ -1607,7 +1607,7 @@ class CodeGen:
             # Maybe it's defined later or in another module (though currently we expect it in func_symtab)
             # Find the ErrorDef to get its signature if not in func_symtab yet?
             # Actually, first pass should have registered it.
-            raise LeashError(f"Internal error: could not find codegen for error '{node.error_name}'")
+            raise LeashError(f"Internal error: could not find codegen for error '{node.error_name}'", node=node)
 
         args = [self._codegen(a) for a in node.args]
         msg_val = self.builder.call(error_func, args)
@@ -2186,7 +2186,8 @@ class CodeGen:
                         return
                     elif member == "cur":
                         raise LeashError(
-                            "Cannot assign to '.cur'. Assign to a specific union variant or directly to the union."
+                            "Cannot assign to '.cur'. Assign to a specific union variant or directly to the union.",
+                            node=node,
                         )
             except LeashError:
                 pass  # Fallback to standard assignment
@@ -2253,7 +2254,7 @@ class CodeGen:
                     self.builder.store(err_str, err_ptr)
                     return err_ptr, "string", None
                 else:
-                    raise LeashError(f"Undefined variable: '{node.name}'")
+                    raise LeashError(f"Undefined variable: '{node.name}'", node=node)
             var_info = self.var_symtab[node.name]
             ptr = var_info[0]
             type_name = var_info[1]
@@ -2280,7 +2281,8 @@ class CodeGen:
                 idx = struct_info["fields"].get(node.member)
                 if idx is None:
                     raise LeashError(
-                        f"Struct '{resolved}' has no member named '{node.member}'"
+                        f"Struct '{resolved}' has no member named '{node.member}'",
+                        node=node
                     )
                 field_type_name = struct_info["field_types"][node.member]
                 return self.builder.gep(
@@ -2294,7 +2296,7 @@ class CodeGen:
                     if "static_fields" in cls_info and node.member in cls_info["static_fields"]:
                         static_info = cls_info["static_fields"][node.member]
                         return static_info["global"], static_info["type"], None
-                    raise LeashError(f"Class '{resolved}' has no static field named '{node.member}'")
+                    raise LeashError(f"Class '{resolved}' has no static field named '{node.member}'", node=node)
 
                 # Classes are reference types (pointers). LOAD the pointer first.
                 instance_ptr = self.builder.load(instance_ptr)
@@ -2302,7 +2304,8 @@ class CodeGen:
                 idx = cls_info["fields"].get(node.member)
                 if idx is None:
                     raise LeashError(
-                        f"Class '{resolved}' has no field named '{node.member}'"
+                        f"Class '{resolved}' has no field named '{node.member}'",
+                        node=node
                     )
 
                 field_type_name = cls_info["field_types"][node.member]
@@ -2328,15 +2331,18 @@ class CodeGen:
                     return typed_ptr, vdata["type_name"], None
                 elif node.member == "cur":
                     raise LeashError(
-                        "Cannot use '.cur' as an l-value. Assign directly to the union or a specific variant member."
+                        "Cannot use '.cur' as an l-value. Assign directly to the union or a specific variant member.",
+                        node=node
                     )
                 else:
                     raise LeashError(
-                        f"Union '{resolved}' has no variant named '{node.member}'"
+                        f"Union '{resolved}' has no variant named '{node.member}'",
+                        node=node
                     )
             else:
                 raise LeashError(
-                    f"Cannot access member '{node.member}': '{type_name}' is not a struct or union"
+                    f"Cannot access member '{node.member}': '{type_name}' is not a struct or union",
+                    node=node
                 )
         elif isinstance(node, PointerMemberAccess):
             ptr = self._codegen(node.expr)
@@ -2358,7 +2364,7 @@ class CodeGen:
                     ptr,
                     [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), idx)],
                 ), cls_info["field_types"][node.member], None
-            raise LeashError(f"Type '{underlying}' is not a struct or class")
+            raise LeashError(f"Type '{underlying}' is not a struct or class", node=node)
         elif isinstance(node, UnaryOp) and node.op == "*":
             ptr = self._codegen(node.expr)
             type_name = self._get_leash_type_name(node.expr)
@@ -2436,7 +2442,7 @@ class CodeGen:
                 if self.current_class_name:
                     # In a static method, 'this' refers to the class itself (no instance pointer)
                     return None, self.current_class_name, None
-                raise LeashError("'this' is not available in the current context")
+                raise LeashError("'this' is not available in the current context", node=node)
             var_info = self.var_symtab["this"]
             ptr = var_info[0]
             type_name = var_info[1]
@@ -2484,7 +2490,8 @@ class CodeGen:
             idx = struct_info["fields"].get(node.member)
             if idx is None:
                 raise LeashError(
-                    f"Struct '{underlying}' has no member named '{node.member}'"
+                    f"Struct '{underlying}' has no member named '{node.member}'",
+                    node=node
                 )
             res_ptr = self.builder.gep(
                 ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), idx)]
@@ -2495,7 +2502,8 @@ class CodeGen:
             idx = cls_info["fields"].get(node.member)
             if idx is None:
                 raise LeashError(
-                    f"Class '{underlying}' has no field named '{node.member}'"
+                    f"Class '{underlying}' has no field named '{node.member}'",
+                    node=node
                 )
             res_ptr = self.builder.gep(
                 ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), idx)]
@@ -3291,7 +3299,8 @@ class CodeGen:
 
         if not struct_meta:
             raise LeashError(
-                "Cannot use 'foreach' with 'in<struct>' on a non-struct type"
+                "Cannot use 'foreach' with 'in<struct>' on a non-struct type",
+                node=node
             )
 
         from .ast_nodes import StringLiteral
@@ -3550,7 +3559,7 @@ class CodeGen:
             right = self._codegen(node.right)
             func = self.func_symtab.get(opdef_func_name)
             if not func:
-                raise LeashError(f"Call to undefined opdef function: '{opdef_func_name}'")
+                raise LeashError(f"Call to undefined opdef function: '{opdef_func_name}'", node=node)
             args = []
             for i, arg_val in enumerate([left, right]):
                 if i < len(func.args):
@@ -4032,7 +4041,7 @@ class CodeGen:
         elif node.op == "<>":
             return self._codegen_isin_operator(left, right, node)
 
-        raise LeashError(f"Unknown binary operator: '{node.op}'")
+        raise LeashError(f"Unknown binary operator: '{node.op}'", node=node)
 
     def _codegen_UnaryOp(self, node):
         from .ast_nodes import Identifier
@@ -4110,7 +4119,7 @@ class CodeGen:
             self.builder.store(decremented, ptr)
             return current
 
-        raise LeashError(f"Unknown unary operator: '{node.op}'")
+        raise LeashError(f"Unknown unary operator: '{node.op}'", node=node)
 
     def _emit_get_input(self, node):
         """Implement the 'get' builtin for interactive input."""
@@ -4385,13 +4394,15 @@ class CodeGen:
             func = cls_info["methods"].get(node.method)
             if not func:
                 raise LeashError(
-                    f"Class '{target_cls}' has no method named '{node.method}'"
+                    f"Class '{target_cls}' has no method named '{node.method}'",
+                    node=node
                 )
 
             is_m_static = cls_info["method_static"].get(node.method, False)
             if not is_m_static:
                 raise LeashError(
-                    f"Cannot call instance method '{node.method}' on class name '{target_cls}'"
+                    f"Cannot call instance method '{node.method}' on class name '{target_cls}'",
+                    node=node
                 )
 
             # Prepare arguments for static method
@@ -4411,7 +4422,7 @@ class CodeGen:
             str_val = self._codegen(node.expr)
             if node.method == "replace":
                 return self._codegen_string_replace_from_value(str_val, node.args)
-            raise LeashError(f"String has no method named '{node.method}'")
+            raise LeashError(f"String has no method named '{node.method}'", node=node)
 
         lvalue_result = self._codegen_lvalue(node.expr)
         if len(lvalue_result) == 3:
@@ -4451,7 +4462,8 @@ class CodeGen:
             func = struct_info["methods"].get(node.method)
             if not func:
                 raise LeashError(
-                    f"Struct '{resolved}' has no method named '{node.method}'"
+                    f"Struct '{resolved}' has no method named '{node.method}'",
+                    node=node
                 )
 
             # Prepare arguments: instance pointer + method arguments
@@ -4482,7 +4494,8 @@ class CodeGen:
             func = cls_info["methods"].get(node.method)
             if not func:
                 raise LeashError(
-                    f"Class '{resolved}' has no method named '{node.method}'"
+                    f"Class '{resolved}' has no method named '{node.method}'",
+                    node=node
                 )
                 print(
                     f"DEBUG CODEGEN: class_symtab keys={list(self.class_symtab.keys())}",
@@ -4494,7 +4507,8 @@ class CodeGen:
                         file=sys.stderr,
                     )
                 raise LeashError(
-                    f"Class '{resolved}' has no method named '{node.method}'"
+                    f"Class '{resolved}' has no method named '{node.method}'",
+                    node=node
                 )
 
             # Prepare arguments
@@ -4507,7 +4521,8 @@ class CodeGen:
             if not is_m_static:
                 if base_ptr is None:
                     raise LeashError(
-                        f"Method '{node.method}' of class '{resolved}' is an instance method and requires an instance."
+                        f"Method '{node.method}' of class '{resolved}' is an instance method and requires an instance.",
+                        node=node
                     )
                 # Get the 'this' pointer
                 if not resolved.startswith("&"):
@@ -5445,7 +5460,7 @@ class CodeGen:
             )
             return None
 
-        raise LeashError(f"File method '{method}' not implemented")
+        raise LeashError(f"File method '{method}' not implemented", line=getattr(node, "line", None), col=getattr(node, "col", None))
 
     def _codegen_file_static_method(self, method, args):
         """Handle File static methods: open, rename, delete."""
@@ -5479,7 +5494,7 @@ class CodeGen:
             result = self.builder.call(self.remove_fn, [filename])
             return self.builder.trunc(result, ir.IntType(32))
 
-        raise LeashError(f"File static method '{method}' not implemented")
+        raise LeashError(f"File static method '{method}' not implemented", line=getattr(node, "line", None), col=getattr(node, "col", None))
 
     def _file_replace(self, file_ptr, file_handle, old_str, new_str, replace_all):
         """Implement file replace/replaceall functionality."""
@@ -5685,7 +5700,8 @@ class CodeGen:
         func = self.func_symtab.get(mangled_name)
         if not func:
             raise LeashError(
-                f"Call to undefined generic function: '{node.name}' with types {node.type_args}"
+                f"Call to undefined generic function: '{node.name}' with types {node.type_args}",
+                node=node
             )
 
         # Generate arguments
@@ -6239,7 +6255,7 @@ class CodeGen:
                     # Call through the function pointer
                     return self.builder.call(fn_ptr, args)
 
-            raise LeashError(f"Call to undefined function: '{node.name}'")
+            raise LeashError(f"Call to undefined function: '{node.name}'", node=node)
 
         # Get function signature to determine arg names and defaults
         func_name = node.name
@@ -6277,7 +6293,8 @@ class CodeGen:
                     break
             if not found:
                 raise LeashError(
-                    f"Unexpected keyword argument '{kw_name}' for function '{func_name}'"
+                    f"Unexpected keyword argument '{kw_name}' for function '{func_name}'",
+                    node=node
                 )
 
         # Finally, fill in defaults for missing args
@@ -6291,11 +6308,13 @@ class CodeGen:
                 elif pos < num_positional:
                     # This shouldn't happen normally, but just in case
                     raise LeashError(
-                        f"Missing argument at position {pos} for function '{func_name}'"
+                        f"Missing argument at position {pos} for function '{func_name}'",
+                        node=node
                     )
                 else:
                     raise LeashError(
-                        f"Missing required argument '{arg_name}' for function '{func_name}'"
+                        f"Missing required argument '{arg_name}' for function '{func_name}'",
+                        node=node
                     )
 
         # Generate LLVM values
@@ -6343,7 +6362,7 @@ class CodeGen:
             struct_info = self.class_symtab.get(node.name)
             is_class = True
         if not struct_info:
-            raise LeashError(f"Undefined struct or class: '{node.name}'")
+            raise LeashError(f"Undefined struct or class: '{node.name}'", node=node)
         struct_type = struct_info["type"]
 
         if is_class:
@@ -6416,7 +6435,7 @@ class CodeGen:
             for key, expr in node.kwargs:
                 idx = struct_info["fields"].get(key)
                 if idx is None:
-                    raise LeashError(f"Class '{node.name}' has no field named '{key}'")
+                    raise LeashError(f"Class '{node.name}' has no field named '{key}'", node=node)
                 field_val = self._codegen(expr)
                 # Convert field_val to the expected field type if needed
                 expected_type_str = struct_info["field_types"].get(key)
@@ -6453,7 +6472,7 @@ class CodeGen:
             for key, expr in node.kwargs:
                 idx = struct_info["fields"].get(key)
                 if idx is None:
-                    raise LeashError(f"Struct '{node.name}' has no member named '{key}'")
+                    raise LeashError(f"Struct '{node.name}' has no member named '{key}'", node=node)
                 field_val = self._codegen(expr)
                 # Convert field_val to the expected field type if needed
                 expected_type_str = struct_info["field_types"].get(key)
@@ -6491,7 +6510,7 @@ class CodeGen:
                 self.builder.store(err_str, err_ptr)
                 return err_ptr
             else:
-                raise LeashError(f"Undefined variable: '{node.name}'")
+                raise LeashError(f"Undefined variable: '{node.name}'", node=node)
         val = self.builder.load(ptr)
         resolved = self._resolve_type_name(type_name)
         while resolved.startswith("&"):
@@ -6524,10 +6543,12 @@ class CodeGen:
             if node.member in cls_info["fields"]:
                 # Static field access on instance field is an error
                 raise LeashError(
-                    f"Instance field '{node.member}' cannot be accessed without an instance"
+                    f"Instance field '{node.member}' cannot be accessed without an instance",
+                    node=node
                 )
             raise LeashError(
-                f"Class '{node.expr.name}' has no field named '{node.member}'"
+                f"Class '{node.expr.name}' has no field named '{node.member}'",
+                node=node
             )
 
         # Get the leash type name of the base expression
@@ -7024,7 +7045,7 @@ class CodeGen:
     def _codegen_EnumMemberAccess(self, node):
         enum_info = self.enum_symtab.get(node.enum_name)
         if not enum_info:
-            raise LeashError(f"Undefined enum: '{node.enum_name}'")
+            raise LeashError(f"Undefined enum: '{node.enum_name}'", node=node)
 
         # Check for custom value in custom_values dict
         custom_values = enum_info.get("custom_values", {})
@@ -7050,7 +7071,8 @@ class CodeGen:
         
         if idx is None:
             raise LeashError(
-                f"Enum '{node.enum_name}' has no member named '{node.member_name}'"
+                f"Enum '{node.enum_name}' has no member named '{node.member_name}'",
+                node=node
             )
 
         return ir.Constant(ir.IntType(32), idx)
@@ -7482,13 +7504,15 @@ class CodeGen:
             src_bits = sum(field.width for field in src.elements)
             if src_bits != dst.width:
                 raise LeashError(
-                    f"Cannot convert struct of size {src_bits} bits to integer of {dst.width} bits"
+                    f"Cannot convert struct of size {src_bits} bits to integer of {dst.width} bits",
+                    node=node
                 )
             # Ensure all fields are integers
             for field in src.elements:
                 if not isinstance(field, ir.IntType):
                     raise LeashError(
-                        f"Cannot convert struct with non-integer field to integer"
+                        f"Cannot convert struct with non-integer field to integer",
+                        node=node
                     )
             # Build integer from fields (little-endian: first field is least significant bits)
             result = ir.Constant(dst, 0)
@@ -7690,7 +7714,7 @@ class CodeGen:
 
         # Get the class info
         if class_name not in self.class_symtab:
-            raise LeashError(f"Unknown class '{class_name}' in create expression")
+            raise LeashError(f"Unknown class '{class_name}' in create expression", node=node)
 
         cls_info = self.class_symtab[class_name]
         class_type = cls_info["type"]
@@ -7733,7 +7757,7 @@ class CodeGen:
         resolved = self._resolve_type_name(target_type)
 
         if resolved not in self.class_symtab:
-            raise LeashError(f"Cannot delete non-class type '{target_type}'")
+            raise LeashError(f"Cannot delete non-class type '{target_type}'", node=node)
 
         cls_info = self.class_symtab[resolved]
 

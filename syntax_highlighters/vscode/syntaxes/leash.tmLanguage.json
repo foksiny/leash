@@ -6,11 +6,13 @@
         { "include": "#comments" },
         { "include": "#strings" },
         { "include": "#keywords" },
+        { "include": "#types" },
+        { "include": "#builtins" },
         { "include": "#constants" },
         { "include": "#numbers" },
-        { "include": "#types" },
-        { "include": "#functions" },
-        { "include": "#operators" }
+        { "include": "#attributes" },
+        { "include": "#operators" },
+        { "include": "#function-call" }
     ],
     "repository": {
         "comments": {
@@ -45,7 +47,15 @@
                     "patterns": [
                         {
                             "name": "constant.character.escape.leash",
-                            "match": "\\\\."
+                            "match": "\\\\[0tnr\"'\\\\]"
+                        },
+                        {
+                            "name": "constant.character.escape.hex.leash",
+                            "match": "\\\\x[0-9a-fA-F]{2}"
+                        },
+                        {
+                            "name": "constant.character.escape.unicode.leash",
+                            "match": "\\\\u[0-9a-fA-F]{4}"
                         }
                     ]
                 },
@@ -56,7 +66,15 @@
                     "patterns": [
                         {
                             "name": "constant.character.escape.leash",
-                            "match": "\\\\."
+                            "match": "\\\\[0tnr\"'\\\\]"
+                        },
+                        {
+                            "name": "constant.character.escape.hex.leash",
+                            "match": "\\\\x[0-9a-fA-F]{2}"
+                        },
+                        {
+                            "name": "constant.character.escape.unicode.leash",
+                            "match": "\\\\u[0-9a-fA-F]{4}"
                         }
                     ]
                 }
@@ -66,16 +84,48 @@
             "patterns": [
                 {
                     "name": "keyword.control.leash",
-                    "match": "\\b(return|if|else|unless|while|for|do|foreach|loop|in|stop|continue|empty|ignore|switch|case|default|defer|throw|try|catch)\\b"
+                    "match": "\\b(return|if|else|unless|also|alsou|while|for|do|foreach|loop|in|stop|break|continue|empty|ignore|switch|case|default|defer|throw|catch|try|works|otherwise)\\b"
                 },
                 {
                     "name": "keyword.declaration.leash",
-                    "match": "\\b(fnc|def|struct|union|enum|class|type|template|macro|opdef|error|use|pub|priv|static|pubif|unsafe|as|inline|imut|create|del)\\b"
+                    "match": "\\b(fnc|def|struct|union|enum|class|type|template|macro|opdef|error|pub|priv|static|pubif|unsafe|as|inline|imut|create|del|extern|use)\\b"
                 },
-                 {
-                     "name": "keyword.other.leash",
-                     "match": "\\b(this|thisop|self|also|alsou|works|otherwise|is|isnt)\\b"
-                 }
+                {
+                    "name": "keyword.other.leash",
+                    "match": "\\b(this|thisop|self|is|isnt|end)\\b"
+                }
+            ]
+        },
+        "types": {
+            "patterns": [
+                {
+                    "name": "support.type.leash",
+                    "match": "\\b(int|uint|float|bool|string|char|void|array|vec|vector|hash)\\b(?=\\s*[<(]|[^a-zA-Z0-9_])"
+                },
+                {
+                    "name": "support.type.generic.leash",
+                    "match": "\\b(vec|vector|hash|int|uint|float)<\\d+>"
+                },
+                {
+                    "name": "support.type.bitwidth.leash",
+                    "match": "\\b(int|uint|float)<\\d+>"
+                },
+                {
+                    "name": "entity.name.type.leash",
+                    "match": "\\b[A-Z][a-zA-Z0-9_]*\\b"
+                },
+                {
+                    "name": "keyword.operator.pointer.leash",
+                    "match": "[*&](?=[a-zA-Z_])"
+                }
+            ]
+        },
+        "builtins": {
+            "patterns": [
+                {
+                    "name": "support.function.builtin.leash",
+                    "match": "\\b(show|showb|get|keyget|set|toint|tofloat|tostring|cstr|lstr|normescape|sizeof|size|cur|name|pushb|popb|pushf|popf|insert|clear|remove|extend|extendv|isin|rand|randf|seed|choose|wait|timepass|exit|exec|inttobytes|bytestoint|floattobytes|bytestofloat|open|close|read|write|readln|readb|writeb|readlnb|replaceall|rewind|rename|delete|replace|getKey|getkey|keys|values|push|pop|front|back)\\b"
+                }
             ]
         },
         "constants": {
@@ -90,7 +140,7 @@
                 },
                 {
                     "name": "variable.language.builtin.leash",
-                    "match": "\\b(_FILEPATH|_FILENAME|_PLATFORM)\\b"
+                    "match": "\\b(_FILEPATH|_FILENAME|_PLATFORM|_ARGS)\\b"
                 }
             ]
         },
@@ -110,55 +160,23 @@
                 },
                 {
                     "name": "constant.numeric.float.leash",
-                    "match": "\\b\\d+(\\.\\d+)?([eE][+-]?\\d+)?\\b"
+                    "match": "\\b\\d+\\.\\d+([eE][+-]?\\d+)?\\b"
                 },
                 {
                     "name": "constant.numeric.decimal.leash",
-                    "match": "\\b\\d+\\b"
+                    "match": "\\b\\d+\\b(?!\\s*[.<(])"
                 }
             ]
         },
-        "types": {
+        "attributes": {
             "patterns": [
                 {
-                    "name": "keyword.other.leash",
-                    "match": "\\bthisop\\.typ\\b"
-                },
-                {
-                    "name": "storage.type.primitive.leash",
-                    "match": "\\b(int|uint|float|bool|string|char|void|array|vec|vector|hash)\\b"
-                },
-                {
-                    "name": "storage.type.generic.leash",
-                    "match": "hash<[^>]+>"
-                },
-                {
-                    "name": "storage.type.multireturn.leash",
-                    "match": "\\([ \\t]*[a-zA-Z_][a-zA-Z0-9_<>\\[\\]&\\*\\s]*[ \\t]*(?:,[ \\t]*[a-zA-Z_][a-zA-Z0-9_<>\\[\\]&\\*\\s]*[ \\t]*)*\\)"
-                },
-                {
-                    "name": "storage.type.multitype.leash",
-                    "match": "\\[[ \\t]*[a-zA-Z_][a-zA-Z0-9_<>\\[\\]&\\*\\s]*[ \\t]*(?:,[ \\t]*[a-zA-Z_][a-zA-Z0-9_<>\\[\\]&\\*\\s]*[ \\t]*)*\\]"
-                },
-                {
-                    "name": "entity.name.type.leash",
-                    "match": "\\b[A-Z][a-zA-Z0-9_]*\\b"
-                }
-            ]
-        },
-        "functions": {
-            "patterns": [
-                {
-                    "name": "support.function.builtin.leash",
-                    "match": "\\b(show|showb|get|keyget|set|toint|tofloat|tostring|cstr|lstr|normescape|size|cur|name|pushb|popb|pushf|popf|insert|clear|remove|extend|extendv|isin|rand|randf|seed|choose|wait|timepass|exit|exec|inttobytes|bytestoint|floattobytes|bytestofloat|open|close|read|write|readln|readb|writeb|readlnb|replaceall|rewind|rename|delete|replace|getKey|keys|values|push)\\b"
-                },
-                {
-                    "name": "entity.name.function.leash",
-                    "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*(?=\\s*\\()"
-                },
-                {
-                    "name": "entity.name.function.leash",
-                    "match": "(?<=\\bfnc\\s+)[a-zA-Z_][a-zA-Z0-9_]*"
+                    "name": "meta.annotation.leash",
+                    "begin": "@from\\s*\\(",
+                    "end": "\\)",
+                    "patterns": [
+                        { "include": "#strings" }
+                    ]
                 }
             ]
         },
@@ -179,6 +197,22 @@
                 {
                     "name": "keyword.operator.pointer.leash",
                     "match": "->"
+                },
+                {
+                    "name": "keyword.operator.in.leash",
+                    "match": "<>"
+                }
+            ]
+        },
+        "function-call": {
+            "patterns": [
+                {
+                    "name": "entity.name.function.leash",
+                    "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*(?=\\s*\\()"
+                },
+                {
+                    "name": "entity.name.function.definition.leash",
+                    "match": "(?<=\\bfnc\\s+)[a-zA-Z_][a-zA-Z0-9_]*"
                 }
             ]
         }

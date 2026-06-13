@@ -270,7 +270,7 @@ def expand_macros(program):
         if node is None or isinstance(node, (str, int, float, bool)) or not hasattr(node, '__dict__'): return node
         if isinstance(node, Call) and node.name in macros:
             m = macros[node.name]
-            if len(node.args) != len(m.params): raise LeashError(f"Macro '{node.name}' expects {len(m.params)} args, got {len(node.args)}")
+            if len(node.args) != len(m.params): raise LeashError(f"Macro '{node.name}' expects {len(m.params)} args, got {len(node.args)}", node=node)
             pmap = {name: expand_expr(arg) for name, arg in zip(m.params, node.args)}
             if len(m.body) == 1:
                 s = m.body[0]

@@ -467,7 +467,8 @@ class TypeChecker:
             resolved = self._resolve(ftype)
             if not self._is_valid_type(resolved):
                 raise LeashError(
-                    f"Struct '{node.name}' field '{fname}' has unknown type '{ftype}'"
+                    f"Struct '{node.name}' field '{fname}' has unknown type '{ftype}'",
+                    node=node
                 )
             fields[fname] = ftype
         if not fields:
@@ -491,7 +492,8 @@ class TypeChecker:
             resolved = self._resolve(vtype)
             if not self._is_valid_type(resolved):
                 raise LeashError(
-                    f"Union '{node.name}' variant '{vname}' has unknown type '{vtype}'"
+                    f"Union '{node.name}' variant '{vname}' has unknown type '{vtype}'",
+                    node=node
                 )
             variants[vname] = vtype
         if not variants:
@@ -513,6 +515,7 @@ class TypeChecker:
             if member_name in seen:
                 raise LeashError(
                     f"Duplicate member '{member_name}' in enum '{node.name}'",
+                    node=node,
                     tip=f"Enum members must have unique names within the same enum definition.",
                 )
             seen.add(member_name)
@@ -1259,6 +1262,7 @@ class TypeChecker:
             if src_r != dst_r:
                 raise LeashError(
                     f"Cannot compare or assign different enum types: '{src_r}' and '{dst_r}'",
+                    node=expr,
                     tip="To compare different enums, cast one to int: `(int)Enum::Member == (int)OtherEnum::OtherMember`",
                 )
             return True
@@ -2507,6 +2511,7 @@ class TypeChecker:
                 else:
                     raise LeashError(
                         f"Operator '{expr.op}' is not supported for strings",
+                        node=expr,
                         tip="Strings support: + (concatenation), - (removal), == and != (comparison).",
                     )
 
@@ -2523,6 +2528,7 @@ class TypeChecker:
                 else:
                     raise LeashError(
                         f"Operator '<>' is only supported for array types, got '{right_t}'",
+                        node=expr,
                         tip="Use 'value <> array' to check if a value exists in an array.",
                     )
             # Mixed string concatenations
@@ -2571,6 +2577,7 @@ class TypeChecker:
                 else:
                     raise LeashError(
                         f"Operator '{expr.op}' is only supported for integer types",
+                        node=expr,
                         tip=f"Operands are '{left_t}' and '{right_t}'.",
                     )
 
@@ -2600,6 +2607,7 @@ class TypeChecker:
                 ):
                     raise LeashError(
                         f"{'Division' if expr.op == '/' else 'Modulo'} by zero detected statically!",
+                        node=expr,
                         tip="Make sure you aren't dividing by zero, as it will crash your program at runtime.",
                     )
 
@@ -2661,6 +2669,7 @@ class TypeChecker:
                 else:
                     raise LeashError(
                         f"Cannot use operator '{expr.op}' between '{left_t}' and '{right_t}'",
+                        node=expr,
                         tip="Leash supports '+' for concatenating strings with numbers, but other operators like '-', '*', '/' are not supported for mixed types.",
                     )
 
@@ -2697,6 +2706,7 @@ class TypeChecker:
                 if val_b not in ("bool", "int", "uint"):
                     raise LeashError(
                         f"Operator '!' is not supported for type '{val_t}'",
+                        node=expr,
                         tip="Logical NOT is supported for bool and integer types.",
                     )
                 return "bool"
@@ -2704,6 +2714,7 @@ class TypeChecker:
                 if val_b not in ("int", "uint"):
                     raise LeashError(
                         f"Operator '~' is not supported for type '{val_t}'",
+                        node=expr,
                         tip="Bitwise NOT is supported for integer types.",
                     )
                 return val_t
@@ -2711,6 +2722,7 @@ class TypeChecker:
                 if val_b not in ("int", "uint", "float"):
                     raise LeashError(
                         f"Unary minus is not supported for type '{val_t}'",
+                        node=expr,
                         tip="Unary minus is supported for numeric types.",
                     )
                 return val_t
@@ -3321,6 +3333,7 @@ class TypeChecker:
             if expr.member not in fields:
                 raise LeashError(
                     f"Struct '{resolved}' has no member named '{expr.member}'",
+                    node=expr,
                     tip=f"Available members: {', '.join(fields.keys())}",
                 )
             return fields[expr.member]
@@ -3332,6 +3345,7 @@ class TypeChecker:
             else:
                 raise LeashError(
                     f"Enum '{resolved}' has no property named '{expr.member}'",
+                    node=expr,
                     tip="Enums only have a `.name` property which returns the member name as a string.",
                 )
 
@@ -3343,6 +3357,7 @@ class TypeChecker:
             if expr.member not in variants:
                 raise LeashError(
                     f"Union '{resolved}' has no variant named '{expr.member}'",
+                    node=expr,
                     tip=f"Available variants: {', '.join(variants.keys())}",
                 )
             return variants[expr.member]
@@ -3355,6 +3370,7 @@ class TypeChecker:
             if expr.member not in fields:
                 raise LeashError(
                     f"Class '{resolved}' has no field named '{expr.member}'",
+                    node=expr,
                     tip=f"Available fields: {', '.join(fields.keys())}",
                 )
             
@@ -3404,6 +3420,7 @@ class TypeChecker:
             if expr.member not in fields:
                 raise LeashError(
                     f"Struct '{underlying}' has no member named '{expr.member}'",
+                    node=expr,
                     tip=f"Available members: {', '.join(fields.keys())}",
                 )
             return fields[expr.member]
@@ -3415,6 +3432,7 @@ class TypeChecker:
             if expr.member not in fields:
                 raise LeashError(
                     f"Class '{underlying}' has no field named '{expr.member}'",
+                    node=expr,
                     tip=f"Available fields: {', '.join(fields.keys())}",
                 )
             return fields[expr.member][0]
@@ -3437,12 +3455,14 @@ class TypeChecker:
                     if idx_type and not self._types_compatible(idx_type, key_t):
                         raise LeashError(
                             f"Hash index must be of type '{key_t}', but got '{idx_type}'",
+                            node=expr,
                             tip="Use a compatible expression as the hash key.",
                         )
                     return value_t
                 if idx_type and not self._types_compatible(idx_type, "string"):
                     raise LeashError(
                         f"Hash index must be of type 'string', but got '{idx_type}'",
+                        node=expr,
                         tip="Use a string expression as the hash key.",
                     )
                 return "void"
@@ -3451,6 +3471,7 @@ class TypeChecker:
         if idx_type and not self._is_int_family(idx_type):
             raise LeashError(
                 f"Array/string index must be an integer, but got '{idx_type}'",
+                node=expr,
                 tip="Use an integer expression as the index.",
             )
 
@@ -3476,6 +3497,7 @@ class TypeChecker:
                                 if not self.in_unsafe_func:
                                     raise LeashError(
                                         f"Array index {idx} is out of bounds for '{resolved}'",
+                                        node=expr,
                                         tip=f"This array only has {size} elements. Remember that Leash uses 0-based indexing (0 to {size - 1}).",
                                     )
                 except (ValueError, IndexError):
@@ -3495,6 +3517,7 @@ class TypeChecker:
         if not self._is_valid_type(self._resolve(dst_type)):
             raise LeashError(
                 f"Cannot cast to unknown type '{dst_type}'",
+                node=expr,
                 tip="Make sure the target type is defined before casting.",
             )
 
@@ -3527,6 +3550,7 @@ class TypeChecker:
             else:
                 raise LeashError(
                     f"Cannot cast from '{src_type}' to '{dst_type}'",
+                    node=expr,
                     tip="Casting between strings and other types is not supported.",
                 )
 
@@ -3539,6 +3563,7 @@ class TypeChecker:
         if not self._is_valid_type(self._resolve(dst_type)):
             raise LeashError(
                 f"Cannot convert to unknown type '{dst_type}'",
+                node=expr,
                 tip="Make sure the target type is defined before using 'as'.",
             )
 
@@ -3575,6 +3600,7 @@ class TypeChecker:
             if src_b == "string" or dst_b == "string":
                 raise LeashError(
                     f"Cannot convert from '{src_type}' to '{dst_type}' using 'as'",
+                    node=expr,
                     tip="Converting between strings and other types is not supported with 'as'. Use 'toint' or 'tofloat' instead.",
                 )
 
@@ -3582,13 +3608,14 @@ class TypeChecker:
 
     def _check_struct_init(self, expr):
         if expr.name not in self.struct_types:
-            raise LeashError(f"Undefined struct: '{expr.name}'")
+            raise LeashError(f"Undefined struct: '{expr.name}'", node=expr)
 
         fields = self.struct_types[expr.name]
         for key, val_expr in expr.kwargs:
             if key not in fields:
                 raise LeashError(
                     f"Struct '{expr.name}' has no member named '{key}'",
+                    node=val_expr,
                     tip=f"Available members: {', '.join(fields.keys())}",
                 )
             expected = fields[key]
@@ -3614,7 +3641,7 @@ class TypeChecker:
                     expr.name, placeholder_types, expr
                 )
             else:
-                raise LeashError(f"Undefined class: '{expr.name}'")
+                raise LeashError(f"Undefined class: '{expr.name}'", node=expr)
 
         cls = self.class_types[resolved_name]
         fields = cls["fields"]
@@ -3622,6 +3649,7 @@ class TypeChecker:
             if key not in fields:
                 raise LeashError(
                     f"Class '{expr.name}' has no field named '{key}'",
+                    node=val_expr,
                     tip=f"Available fields: {', '.join(fields.keys())}",
                 )
 
@@ -3681,6 +3709,7 @@ class TypeChecker:
             # Maybe it's not an enum, but someone used :: anyway
             raise LeashError(
                 f"Undefined enum: '{expr.enum_name}'",
+                node=expr,
                 tip=f"Did you forget to define it? `def {expr.enum_name} : enum {{ ... }};` ",
             )
 
@@ -3688,6 +3717,7 @@ class TypeChecker:
         if expr.member_name not in members:
             raise LeashError(
                 f"Enum '{expr.enum_name}' has no member named '{expr.member_name}'",
+                node=expr,
                 tip=f"Available members: {', '.join(members.keys())}",
             )
 
@@ -4056,17 +4086,19 @@ class TypeChecker:
                     methods = self.class_types[instantiated_name]["methods"]
                 else:
                     raise LeashError(
-                        f"Failed to instantiate generic class '{target_cls}'"
+                        f"Failed to instantiate generic class '{target_cls}'",
+                        node=expr,
                     )
             elif target_cls in self.class_types:
                 methods = self.class_types[target_cls]["methods"]
             else:
-                raise LeashError(f"Class '{target_cls}' not found")
+                raise LeashError(f"Class '{target_cls}' not found", node=expr)
 
             self._check_visibility(target_cls, expr.method, True, expr)
             if expr.method not in methods:
                 raise LeashError(
                     f"Class '{target_cls}' has no method named '{expr.method}'",
+                    node=expr,
                     tip=f"Available methods: {', '.join(methods.keys())}",
                 )
 
@@ -4120,7 +4152,8 @@ class TypeChecker:
 
             if len(expr.args) != len(expected_args):
                 raise LeashError(
-                    f"Method '{expr.method}' of class '{target_cls}' expects {len(expected_args)} arguments, but got {len(expr.args)}"
+                    f"Method '{expr.method}' of class '{target_cls}' expects {len(expected_args)} arguments, but got {len(expr.args)}",
+                    node=expr,
                 )
 
             for i, (arg_expr, expected_type) in enumerate(
@@ -4161,7 +4194,8 @@ class TypeChecker:
                 
                 if len(expr.args) != len(expected_args):
                     raise LeashError(
-                        f"Struct method '{expr.method}' of struct '{target_struct}' expects {len(expected_args)} arguments, but got {len(expr.args)}"
+                        f"Struct method '{expr.method}' of struct '{target_struct}' expects {len(expected_args)} arguments, but got {len(expr.args)}",
+                        node=expr,
                     )
                 
                 # Check argument types

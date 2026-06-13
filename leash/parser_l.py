@@ -267,6 +267,8 @@ class Parser:
                 if self.current().type == "EOF":
                     raise LeashError(
                         "Unexpected end of file while parsing multi-type. Expected ']'.",
+                        self.current().line,
+                        self.current().column,
                         tip="Multi-type syntax requires a closing bracket: `[int, float]`",
                     )
                 types.append(self.parse_type())
@@ -1261,6 +1263,8 @@ class Parser:
             if self.current().type == "EOF":
                 raise LeashError(
                     "Unexpected end of file. Expected closing '}'.",
+                    self.current().line,
+                    self.current().column,
                     tip="Make sure every opening brace '{' has a matching closing brace '}'.",
                 )
             statements.append(self.parse_statement())
