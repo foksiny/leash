@@ -5,6 +5,7 @@ Leash is a strongly-typed, modern compiled programming language built on top of 
 ## Table of Contents
 - [Running Leash](#running-leash)
 - [Checking for Errors](#checking-for-errors)
+  - [Verbose Diagnostics (`--verbose` / `-vb`)](#verbose-diagnostics---verbose---vb)
 - [Compilation Targets](#compilation-targets)
   - [Native Targets (linux64, win64, macos)](#native-targets-linux64-win64-macos)
 - [Defining Variables](#defining-variables)
@@ -474,6 +475,19 @@ For strict builds (e.g., CI/CD), treat all warnings as errors:
 
 ```bash
 python3 -m leash.cli compile program.lsh --warnings-as-errors
+```
+
+### Verbose Diagnostics (`--verbose` / `-vb`)
+
+For in-depth educational guidance, append the `--verbose` or `-vb` flag to any Leash command. This prompts the compiler to print highly detailed, step-by-step masterclass explanations, diagnostics, and fully validated Leash code tips for any encountered errors or warnings.
+
+```bash
+# Get masterclass explanations during static analysis
+python3 -m leash.cli check program.lsh --verbose
+
+# Get masterclass explanations during compilation or execution
+python3 -m leash.cli compile program.lsh --verbose
+python3 -m leash.cli run program.lsh -vb
 ```
 
 ### Runtime Safety

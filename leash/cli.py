@@ -34,6 +34,295 @@ from .optimize import optimize_module, parse_opt_level
 import llvmlite.binding as llvm
 
 
+VERBOSE_MODE = False
+
+
+def get_verbose_explanation(msg, code=None):
+    c = str(code).upper() if code else ""
+    m = msg.lower()
+
+    # LEASH-E001: Redefinition of variable
+    if c == "LEASH-E001" or "redefinition of variable" in m:
+        return """
+=========================================
+Leash Masterclass: Redefinition of Variable
+=========================================
+In Leash, you cannot redeclare a variable with the same name in the same scope. 
+This prevents accidental shadowing or re-declaration bugs.
+
+If you want to modify a variable's value, simply assign to it using '=' 
+without repeating the type declaration or using the ':=' operator.
+
+[CORRECT EXAMPLES]:
+fnc main() : void {
+    x: int = 10;
+    x = 20; // Reassign, do not redeclare
+    show(x);
+}
+"""
+
+    # LEASH-E002: void variable declaration
+    elif c == "LEASH-E002" or "type 'void'" in m or "void variable" in m:
+        return """
+=========================================
+Leash Masterclass: Void Variable Declaration
+=========================================
+In Leash, the 'void' type represents the absence of a value. 
+It is exclusively used as a function return type to indicate the function 
+does not return anything. You cannot declare a variable of type 'void'.
+
+If you need a variable, declare it with a concrete type (like int, float, bool, or string).
+
+[CORRECT EXAMPLES]:
+fnc main() : void {
+    x: int = 0; // Use a concrete type
+    show(x);
+}
+"""
+
+    # LEASH-E003: Unknown type
+    elif c == "LEASH-E003" or "unknown type" in m or ("type" in m and "not been defined" in m):
+        return """
+=========================================
+Leash Masterclass: Unknown Type
+=========================================
+In Leash, all custom types (structs, classes, unions, aliases, enums) 
+must be declared using the 'def' keyword before they can be referenced in your code.
+
+Double-check for typos or ensure you have defined the type.
+
+[CORRECT EXAMPLES]:
+def MyFloat : type float; // Define type alias
+fnc main() : void {
+    val: MyFloat = 3.14;
+    show(val);
+}
+"""
+
+    # LEASH-E004: := without initializer
+    elif c == "LEASH-E004" or "without an initializer" in m:
+        return """
+=========================================
+Leash Masterclass: Type Inference (:=)
+=========================================
+The type inference operator ':=' tells the Leash compiler to determine 
+the variable's type based on its initial value. Because of this, 
+you must provide a value on the right-hand side.
+
+[CORRECT EXAMPLES]:
+fnc main() : void {
+    x := 42; // compiler infers x is int
+    name := "Leash"; // compiler infers name is string
+    show(x, " ", name);
+}
+"""
+
+    # LEASH-E005: Immutable assignment / reassignment
+    elif c == "LEASH-E005" or "cannot assign to immutable variable" in m:
+        return """
+=========================================
+Leash Masterclass: Immutability (imut)
+=========================================
+Variables in Leash can be declared immutable using the 'imut' modifier. 
+Additionally, if a variable receives a value from a function returning an 'imut' type, 
+that variable automatically becomes immutable!
+
+Once a variable is immutable, you cannot reassign a new value to it. 
+To modify its value, remove the 'imut' keyword from its declaration and ensure 
+functions returning values to it return standard, mutable types.
+
+[CORRECT EXAMPLES]:
+fnc main() : void {
+    x: int = 10; // Declare without 'imut'
+    x = 20; // Safe to modify
+    show(x);
+}
+"""
+
+    # LEASH-E006: Type mismatch in assignment
+    elif c == "LEASH-E006" or ("cannot assign" in m and "to a variable of type" in m):
+        return """
+=========================================
+Leash Masterclass: Type Mismatch & Casting
+=========================================
+Leash is a strongly and statically typed language. It does not perform implicit 
+conversions between mismatched types. To assign a value of one type to a variable 
+of a different type, you must use an explicit type cast.
+
+Type cast syntax: (TargetType)value
+
+[CORRECT EXAMPLES]:
+fnc main() : void {
+    x: int = 10;
+    f: float = (float)x; // Explicit cast from int to float
+    show(f);
+}
+"""
+
+    # LEASH-E007: Case type mismatch
+    elif c == "LEASH-E007" or ("case type" in m and "does not match" in m):
+        return """
+=========================================
+Leash Masterclass: Switch Case Types
+=========================================
+In Leash switch-case statements, every 'case' expression must evaluate to 
+the exact same type as the main 'switch' expression.
+
+[CORRECT EXAMPLES]:
+fnc main() : void {
+    val: int = 2;
+    switch val {
+        case 1 { show("one"); }
+        case 2 { show("two"); }
+        default { show("default"); }
+    }
+}
+"""
+
+    # LEASH-E008: Duplicate case
+    elif c == "LEASH-E008" or "duplicate case value" in m:
+        return """
+=========================================
+Leash Masterclass: Duplicate Switch Case
+=========================================
+Each case value in a switch statement must be unique. Duplicate cases 
+are redundant, unreachable, and will cause compiler errors.
+
+[CORRECT EXAMPLES]:
+fnc main() : void {
+    val: int = 1;
+    switch val {
+        case 1 { show("One"); }
+        case 2 { show("Two"); } // Unique case value
+        default { show("Other"); }
+    }
+}
+"""
+
+    # LEASH-E009: Method not found / Type has no method named
+    elif c == "LEASH-E009" or "has no method named" in m:
+        return """
+=========================================
+Leash Masterclass: Member & Method Resolution
+=========================================
+You are calling a method that is not defined on the target struct, union, or class. 
+Verify the spelling of the method name, class definition, or parameters.
+
+[CORRECT EXAMPLES]:
+def Calculator : class {
+    pub name: string;
+    pub fnc add(a int, b int) : int {
+        return a + b;
+    }
+}
+fnc main() : void {
+    calc: Calculator = Calculator { name: "calc" };
+    show(calc.add(5, 5));
+}
+"""
+
+    # Undefined variable
+    elif "undefined variable" in m:
+        return """
+=========================================
+Leash Masterclass: Undefined Variable
+=========================================
+All variables in Leash must be defined before they are used. You can define a variable 
+either explicitly by specifying its type (e.g., 'x: int = 10;') or implicitly 
+via type inference (e.g., 'x := 10;').
+
+[CORRECT EXAMPLES]:
+fnc main() : void {
+    x: int = 5; // Define x first
+    show(x);
+}
+"""
+
+    # Shadowing warning (LEASH-W001)
+    elif c == "LEASH-W001" or "shadows a global variable" in m:
+        return """
+=========================================
+Leash Masterclass: Variable Shadowing
+=========================================
+Shadowing happens when a local variable has the exact same name as a global variable. 
+This is a warning because it can lead to subtle bugs where you modify the local variable 
+while intending to modify the global one.
+
+Consider renaming the local variable or the global variable to keep them distinct.
+
+[CORRECT EXAMPLES]:
+global_counter: int = 100;
+fnc main() : void {
+    local_counter: int = 200; // Distinct names prevent confusion
+    show(global_counter + local_counter);
+}
+"""
+
+    # Self-assignment warning (LEASH-W003)
+    elif c == "LEASH-W003" or "self-assignment" in m:
+        return """
+=========================================
+Leash Masterclass: Self Assignment
+=========================================
+Assigning a variable to itself (e.g., `x = x;`) has no functional effect. 
+The compiler issues a warning to alert you of potential copy-paste or logic errors.
+
+[CORRECT EXAMPLES]:
+fnc main() : void {
+    x: int = 10;
+    x = 20; // Assign a new value instead
+    show(x);
+}
+"""
+
+    # Function body warning
+    elif "empty body" in m and "function" in m:
+        return """
+=========================================
+Leash Masterclass: Empty Function Body
+=========================================
+Defining a function with an empty body is allowed but generates a warning 
+to ensure it wasn't left unimplemented by mistake. 
+
+If you want a no-op function, add a simple return statement or comments inside.
+
+[CORRECT EXAMPLES]:
+fnc do_nothing() : void {
+    // Explicitly empty
+    ignore;
+}
+fnc main() : void {
+    do_nothing();
+}
+"""
+
+    # Function parameters warning
+    elif ("parameters" in m and "has too many" in m) or "consider grouping" in m:
+        return """
+=========================================
+Leash Masterclass: Parameter Grouping
+=========================================
+Functions with a high number of parameters (e.g., more than 8) are hard to read, 
+test, and maintain. In Leash, it is recommended to group related parameters 
+into a 'struct' and pass the struct instance instead.
+
+[CORRECT EXAMPLES]:
+def Config : struct {
+    a: int; b: int; c: int; d: int;
+    e: int; f: int; g: int; h: int; i: int;
+};
+fnc configure(cfg Config) : void {
+    show(cfg.a);
+}
+fnc main() : void {
+    c: Config = Config {a:1, b:2, c:3, d:4, e:5, f:6, g:7, h:8, i:9};
+    configure(c);
+}
+"""
+
+    return None
+
+
 def file_hash(filepath):
     """Calculate MD5 hash of a file."""
     import hashlib
@@ -362,11 +651,19 @@ def _print_error(e, input_file, code):
                 print(f"{p}| {' '*e.col}^", file=sys.stderr)
             print(f"{p}|", file=sys.stderr)
     if e.tip: print(f"tip: {e.tip}", file=sys.stderr)
+    if VERBOSE_MODE:
+        explanation = get_verbose_explanation(e.msg, e.code)
+        if explanation:
+            print(explanation, file=sys.stderr)
 
 def _print_warning(w, warnings_as_errors=False):
     print(f"{'error:' if warnings_as_errors else 'warning:'} {w['msg']}", file=sys.stderr)
     if w.get("line"): print(f"  --> {w.get('file','unknown')}:{w['line']}:{w.get('col',0)}{' ['+w['code']+']' if w.get('code') else ''}", file=sys.stderr)
     if w.get("tip"): print(f"tip: {w['tip']}", file=sys.stderr)
+    if VERBOSE_MODE:
+        explanation = get_verbose_explanation(w['msg'], w.get('code'))
+        if explanation:
+            print(explanation, file=sys.stderr)
 
 def check_file(input_file, verbose=False, extra_import_dirs=None):
     with open(input_file, "r") as f: code = f.read()
@@ -644,12 +941,25 @@ def run_project(prog_args=None, extra_import_dirs=None):
 
 
 def main():
+    global VERBOSE_MODE
+    VERBOSE_MODE = False
+    
+    # Extract --verbose / -vb globally and remove from sys.argv
+    for arg in list(sys.argv):
+        if arg in ("--verbose", "-vb"):
+            VERBOSE_MODE = True
+            try:
+                sys.argv.remove(arg)
+            except ValueError:
+                pass
+
     if len(sys.argv) < 2:
-        print("Usage: leash <compile|run|dump|check|install|init|build|runp> ...")
+        print("Usage: leash <compile|run|dump|check|install|init|build|runp> ... [options]")
+        print("Global Options:\n  --verbose/-vb        Enable highly detailed masterclass error and warning explanations.")
         sys.exit(1)
     cmd = sys.argv[1]
     if cmd in ("--help", "-h"):
-        print("Leash v1.0\nUsage: leash <command> [options]\nCommands: compile, run, dump, check, install, init, build, runp\nRun 'leash <command> --help' for details.")
+        print("Leash v1.0\nUsage: leash <command> [options]\nCommands: compile, run, dump, check, install, init, build, runp\nRun 'leash <command> --help' for details.\n\nGlobal Options:\n  --verbose/-vb        Enable highly detailed masterclass error and warning explanations.")
         sys.exit(0)
     if cmd in ("--version", "-v"):
         print("Leash v1.0\nBuilt on LLVM with custom GC"); sys.exit(0)
@@ -658,7 +968,7 @@ def main():
             print("Usage: leash check <file.lsh> [options]")
             sys.exit(1)
         if sys.argv[2] in ("--help", "-h"):
-            print("Options for check:\n  --other-imports/-oi <folder>")
+            print("Options for check:\n  --other-imports/-oi <folder>\n  --verbose/-vb        Enable highly detailed masterclass error and warning explanations.")
             sys.exit(0)
         if not os.path.exists(sys.argv[2]):
             print(f"error: Not found: {sys.argv[2]}", file=sys.stderr)
@@ -722,7 +1032,7 @@ def main():
             print(f"Usage: leash {cmd} <file.lsh> [options]")
             sys.exit(1)
         if sys.argv[2] in ("--help", "-h"):
-            print(f"Options for {cmd}:\n  --target <target>\n  --check\n  --warnings-as-errors\n  --opt <0,1,2,3,s>\n  -l<lib>\n  --other-imports/-oi <folder>")
+            print(f"Options for {cmd}:\n  --target <target>\n  --check\n  --warnings-as-errors\n  --opt <0,1,2,3,s>\n  -l<lib>\n  --other-imports/-oi <folder>\n  --verbose/-vb        Enable highly detailed masterclass error and warning explanations.")
             sys.exit(0)
         infile = sys.argv[2]
         target, outname, outtype, check, warnerr, elibs, opt = None, None, "executable", False, False, [], "2"

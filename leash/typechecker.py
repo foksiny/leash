@@ -2079,12 +2079,15 @@ class TypeChecker:
                     self._error(
                         f"Undefined variable '{target.name}'",
                         node=stmt,
+                        tip=f"Variable '{target.name}' has not been declared. Define it first using the type syntax or ':=', e.g., '{target.name} := 10;'",
                     )
                     continue
                 if self.var_immutable.get(target.name, False):
                     self._error(
                         f"Cannot assign to immutable variable '{target.name}'",
                         node=stmt,
+                        tip=f"Variable '{target.name}' was declared as `imut` or received an immutable value from a function. It cannot be reassigned.",
+                        code="LEASH-E005",
                     )
                 target_type = self.var_types[target.name]
                 if actual_type and not self._types_compatible(actual_type, target_type):

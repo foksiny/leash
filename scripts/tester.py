@@ -137,6 +137,21 @@ def run_leash(file_path, target=None):
         return f"ERROR: Running leash failed: {e}", 1
 
 
+def is_manual_input_test(file_path):
+    """Check if the leash file requires manual user interaction."""
+    if file_path.name in ("input.lsh", "getkey.lsh"):
+        return True
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as fh:
+            content = fh.read()
+        import re
+        if re.search(r'(?<!\.)\bget\s*\(', content) or re.search(r'\bkeyget\s*\(', content):
+            return True
+    except:
+        pass
+    return False
+
+
 def record_outputs(files, target=None):
     """Record current outputs as the expected baseline."""
     os.makedirs(EXPECTED_DIR, exist_ok=True)
@@ -145,6 +160,9 @@ def record_outputs(files, target=None):
     print(f"--- Recording expected outputs for {len(files)} files{target_label} ---")
 
     for f in files:
+        if is_manual_input_test(f):
+            print(f"[SKIP]  {f.name} (Requires manual input)")
+            continue
         output, _ = run_leash(f, target)
         out_file = EXPECTED_DIR / (f.name + ".out")
         with open(out_file, "w") as out:
@@ -162,6 +180,11 @@ def test_files(files, target=None):
     print(f"--- Testing {len(files)} files{target_label} ---")
 
     for f in files:
+        if is_manual_input_test(f):
+            print(f"[SKIP]  {f.name} (Requires manual input)")
+            ignored += 1
+            continue
+
         expected_file = EXPECTED_DIR / (f.name + ".out")
         if not expected_file.exists():
             print(f"[SKIP]  {f.name} (No expected output recorded)")
