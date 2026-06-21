@@ -23,7 +23,7 @@ function registerLeashLanguage() {
 
     builtins: [
       'show', 'showb', 'get', 'keyget', 'set', 'toint', 'tofloat', 'tostring', 'cstr', 'lstr', 'normescape',
-      'size', 'cur', 'name', 'pushb', 'popb', 'pushf', 'popf', 'insert', 'clear', 
+      'size', 'cur', 'name', 'pushb', 'popb', 'pushf', 'popf', 'insert', 'insertv', 'inserta', 'clear', 
       'remove', 'extend', 'extendv', 'isin', 'rand', 'randf', 'seed', 'choose', 
       'wait', 'timepass', 'exit', 'exec', 'inttobytes', 'bytestoint', 'floattobytes', 
       'bytestofloat', 'open', 'close', 'read', 'write', 'readln', 'readb', 'writeb', 
@@ -246,6 +246,8 @@ function registerLeashLanguage() {
         { name: 'pushf', sig: 'pushf(val: T)' },
         { name: 'popf', sig: 'popf() : T' },
         { name: 'insert', sig: 'insert(index: int, val: T)' },
+        { name: 'insertv', sig: 'insertv(pos: int, other: vec<T>)' },
+        { name: 'inserta', sig: 'inserta(pos: int, arr: T[])' },
         { name: 'clear', sig: 'clear()' },
         { name: 'remove', sig: 'remove(index: int)' },
         { name: 'isin', sig: 'isin(item: T) : bool' },
@@ -396,6 +398,14 @@ function registerLeashLanguage() {
         pushf: {
           title: 'pushf(value: T) : void',
           desc: 'Inserts an element at the front of a vector, shifting all subsequent elements right.'
+        },
+        insertv: {
+          title: 'insertv(pos: int, other: vec<T>) : void',
+          desc: 'Inserts all elements from another vector at position `pos`, shifting existing elements right.'
+        },
+        inserta: {
+          title: 'inserta(pos: int, arr: T[]) : void',
+          desc: 'Inserts all elements from an array or slice at position `pos`, shifting existing elements right.'
         },
         popf: {
           title: 'popf() : T',

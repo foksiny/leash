@@ -215,6 +215,8 @@ const BUILTIN_DOCS: Record<string, { sig: string, desc: string, detail?: string 
     'pushf': { sig: 'pushf(val: T)', desc: 'Appends an element to the front of a vector.' },
     'popf': { sig: 'popf() : T', desc: 'Removes and returns the first element of a vector.' },
     'insert': { sig: 'insert(idx: int, val: T)', desc: 'Inserts an element at a specific index, shifting subsequent elements.' },
+    'insertv': { sig: 'insertv(pos: int, other: vec<T>)', desc: 'Inserts all elements from another vector at position `pos`, shifting existing elements right.' },
+    'inserta': { sig: 'inserta(pos: int, arr: T[])', desc: 'Inserts all elements from an array or slice at position `pos`, shifting existing elements right.' },
     'clear': { sig: 'clear()', desc: 'Removes all elements from a vector or hash table.' },
     'remove': { sig: 'remove(idx: int)', desc: 'Removes an element at a specific index, shifting subsequent elements.' },
     'isin': { sig: 'isin(val: T) : bool', desc: 'Checks if a value exists in a vector or key in a hash table.' },
@@ -652,7 +654,7 @@ connection.onCompletion((params: TextDocumentPositionParams): CompletionList => 
     const symbols: CompletionItem[] = [];
     
     // Add keywords
-    const keywords = ["fnc", "return", "int", "void", "def", "struct", "true", "false", "null", "nil", "string", "char", "bool", "float", "uint", "if", "also", "else", "unless", "while", "for", "do", "foreach", "loop", "in", "class", "this", "thisop", "pub", "priv", "static", "stop", "continue", "empty", "ignore", "use", "switch", "case", "default", "pubif", "unsafe", "as", "inline", "defer", "error", "throw", "self", "macro", "create", "del", "is", "isnt", "union", "enum", "type", "template", "opdef", "extern", "works", "otherwise", "imut", "show", "showb", "get", "keyget", "toint", "tofloat", "tostring", "sizeof", "size", "push", "popb", "popf", "pushb", "pushf", "insert", "clear", "remove", "extend", "isin", "rand", "randf", "seed", "choose", "wait", "timepass", "exit", "exec", "cstr", "lstr", "normescape", "inttobytes", "bytestoint", "floattobytes", "bytestofloat", "open", "close", "read", "write", "readln", "readb", "writeb", "replaceall", "rewind", "rename", "delete", "replace", "keys", "values"];
+    const keywords = ["fnc", "return", "int", "void", "def", "struct", "true", "false", "null", "nil", "string", "char", "bool", "float", "uint", "if", "also", "else", "unless", "while", "for", "do", "foreach", "loop", "in", "class", "this", "thisop", "pub", "priv", "static", "stop", "continue", "empty", "ignore", "use", "switch", "case", "default", "pubif", "unsafe", "as", "inline", "defer", "error", "throw", "self", "macro", "create", "del", "is", "isnt", "union", "enum", "type", "template", "opdef", "extern", "works", "otherwise", "imut", "show", "showb", "get", "keyget", "toint", "tofloat", "tostring", "sizeof", "size", "push", "popb", "popf", "pushb", "pushf", "insert", "clear", "remove", "extend", "extendv", "insertv", "inserta", "isin", "rand", "randf", "seed", "choose", "wait", "timepass", "exit", "exec", "cstr", "lstr", "normescape", "inttobytes", "bytestoint", "floattobytes", "bytestofloat", "open", "close", "read", "write", "readln", "readb", "writeb", "replaceall", "rewind", "rename", "delete", "replace", "keys", "values"];
     
     keywords.forEach(kw => {
         if (!currentWord || kw.startsWith(currentWord)) {

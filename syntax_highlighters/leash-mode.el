@@ -48,7 +48,7 @@
    '("\\b\\_FILEPATH\\_\\|\\_FILENAME\\_\\|\\_PLATFORM\\_\\b" . font-lock-constant-face)
     '("self\\(::[a-zA-Z_][a-zA-Z0-9_]*\\)?" . font-lock-constant-face)
     '("thisop\\.typ" . font-lock-builtin-face)
-    '("\\b\\(show\\|showb\\|get\\|keyget\\|set\\|toint\\|tofloat\\|tostring\\|cstr\\|lstr\\|normescape\\|size\\|cur\\|name\\|pushb\\|popb\\|pushf\\|popf\\|insert\\|clear\\|remove\\|extend\\|extendv\\|isin\\|rand\\|randf\\|seed\\|choose\\|wait\\|timepass\\|exit\\|exec\\|File\\|open\\|close\\|read\\|write\\|readln\\|readb\\|writeb\\|readlnb\\|replaceall\\|rewind\\|rename\\|delete\\|inttobytes\\|bytestoint\\|floattobytes\\|bytestofloat\\|getKey\\|keys\\|values\\|push\\)\\b" . font-lock-builtin-face)
+    '("\\b\\(show\\|showb\\|get\\|keyget\\|set\\|toint\\|tofloat\\|tostring\\|cstr\\|lstr\\|normescape\\|size\\|cur\\|name\\|pushb\\|popb\\|pushf\\|popf\\|insert\\|insertv\\|inserta\\|clear\\|remove\\|extend\\|extendv\\|isin\\|rand\\|randf\\|seed\\|choose\\|wait\\|timepass\\|exit\\|exec\\|File\\|open\\|close\\|read\\|write\\|readln\\|readb\\|writeb\\|readlnb\\|replaceall\\|rewind\\|rename\\|delete\\|inttobytes\\|bytestoint\\|floattobytes\\|bytestofloat\\|getKey\\|keys\\|values\\|push\\)\\b" . font-lock-builtin-face)
    '("\\b\\(replace\\)\\b" . font-lock-builtin-face)
      '("|>\\|&&\\|||\\|<<\\|>>\\|<>\\|\\+\\+\\|--\\|[+\\-*/%&|^~!<>=]=?\\|<<=\\|>>=\\|&=\\||=\\|\\^=" . font-lock-variable-name-face)
     '("\\?" . font-lock-variable-name-face)

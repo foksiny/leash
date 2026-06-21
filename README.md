@@ -2076,6 +2076,32 @@ v.extendv(other);
 show(v.size); // 6
 ```
 
+### Inserting Vectors and Arrays
+
+You can use `.insertv()` to insert all elements of another vector at a given position, or `.inserta()` to insert an array or slice:
+
+```leash
+v: vec<int>;
+v.pushb(1);
+v.pushb(2);
+v.pushb(3);
+
+other: vec<int>;
+other.pushb(4);
+other.pushb(2);
+
+// Insert all elements of another vec<T> at position 1
+v.insertv(1, other);  // v is now [1, 4, 2, 2, 3]
+
+v2: vec<string>;
+v2.pushb("a");
+v2.pushb("b");
+v2.pushb("c");
+
+// Insert an array literal or slice at position 1
+v2.inserta(1, {"x", "y"});  // v2 is now ["a", "x", "y", "b", "c"]
+```
+
 ### Vector Properties
 
 | Property | Description |
@@ -2097,6 +2123,8 @@ show(v.size); // 6
 | `.remove(idx)` | Remove the element at the specified index |
 | `.extend(arr)` | Append all elements from an array or slice to the vector |
 | `.extendv(other)`| Append all elements from another vector to this vector |
+| `.insertv(pos, other)` | Insert all elements from another vector at position `pos` |
+| `.inserta(pos, arr)` | Insert all elements from an array or slice at position `pos` |
 | `.clear()` | Remove all elements from the vector |
 | `.isin(val)` | Return `true` if the value exists in the vector, `false` otherwise |
 

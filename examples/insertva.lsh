@@ -1,0 +1,26 @@
+def N_Type : enum {
+    PERSON,
+    HASH
+};
+
+def Node : struct {
+    typ: N_Type;
+    val1: string;
+    val2: int;
+};
+
+fnc main {
+    hmm: vec<Node>;
+    hmm.pushb(Node {typ: N_Type::PERSON, val1: "John Doe", val2: 24});
+    hmm.pushb(Node {typ: N_Type::PERSON, val1: "Jane Doe", val2: 25});
+
+    hmm2: vec<Node>;
+    hmm2.pushb(Node {typ: N_Type::HASH, val1: "aaaa", val2: 83738});
+    hmm2.pushb(Node {typ: N_Type::HASH, val1: "HMMMMMAAAAAA", val2: 69420});
+
+    hmm.insertv(1, hmm2); // also there's inserta, which is to insert an array of the type used in the vector.
+
+    foreach i, v in<vector> hmm {
+        show(i, ": ", v.typ.name, ", ", v.val1, ", ", v.val2);
+    }
+}

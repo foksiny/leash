@@ -5007,6 +5007,113 @@ class CodeGen:
             self._update_vec_struct(vec_ptr, new_data, needed_size, new_cap)
             return None
 
+        elif method == "insertv":
+            idx = self._codegen(args[0])
+            idx = self._emit_cast(idx, ir.IntType(32))
+            idx_64 = self.builder.zext(idx, ir.IntType(64))
+
+            old_target = self.current_target_type
+            self.current_target_type = f"vec<{inner_type_name}>"
+            other_vec_val = self._codegen(args[1])
+            self.current_target_type = old_target
+
+            other_data = self.builder.extract_value(other_vec_val, 0)
+            other_size = self.builder.extract_value(other_vec_val, 1)
+
+            needed_size = self.builder.add(size, other_size)
+            new_data, new_cap = self._vector_ensure_capacity(
+                vec_ptr, data, size, cap, needed_size, inner_llvm
+            )
+
+            dummy_ptr = ir.Constant(inner_llvm.as_pointer(), None)
+            elem_size = self.builder.ptrtoint(
+                self.builder.gep(dummy_ptr, [ir.Constant(ir.IntType(32), 1)]),
+                ir.IntType(64),
+            )
+
+            # memmove data[idx+other_size..size+other_size-1] = data[idx..size-1]
+            data_bytes = self.builder.bitcast(new_data, ir.IntType(8).as_pointer())
+            idx_offset = self.builder.mul(idx_64, elem_size)
+            src_b = self.builder.gep(data_bytes, [idx_offset], inbounds=True)
+            dst_offset = self.builder.add(
+                idx_offset, self.builder.mul(other_size, elem_size)
+            )
+            dst_b = self.builder.gep(data_bytes, [dst_offset], inbounds=True)
+
+            copy_count = self.builder.sub(size, idx_64)
+            copy_bytes = self.builder.mul(copy_count, elem_size)
+
+            self.builder.call(self.memmove, [dst_b, src_b, copy_bytes])
+
+            # memmove data[idx..idx+other_size-1] = other_data[0..other_size-1]
+            dst_b = src_b
+            src_b = self.builder.bitcast(other_data, ir.IntType(8).as_pointer())
+            copy_bytes = self.builder.mul(other_size, elem_size)
+
+            self.builder.call(self.memmove, [dst_b, src_b, copy_bytes])
+
+            new_size = self.builder.add(size, other_size)
+            self._update_vec_struct(vec_ptr, new_data, new_size, new_cap)
+            return None
+
+        elif method == "inserta":
+            idx = self._codegen(args[0])
+            idx = self._emit_cast(idx, ir.IntType(32))
+            idx_64 = self.builder.zext(idx, ir.IntType(64))
+
+            old_target = self.current_target_type
+            self.current_target_type = f"{inner_type_name}[]"
+            arr_val = self._codegen(args[1])
+            self.current_target_type = old_target
+
+            if not (
+                isinstance(arr_val.type, ir.LiteralStructType)
+                and len(arr_val.type.elements) == 2
+            ):
+                raise LeashError(
+                    "Vector.inserta requires a slice or array (length + pointer)",
+                    node=args[1],
+                )
+
+            arr_len = self.builder.extract_value(arr_val, 0)
+            arr_ptr = self.builder.extract_value(arr_val, 1)
+
+            needed_size = self.builder.add(size, arr_len)
+            new_data, new_cap = self._vector_ensure_capacity(
+                vec_ptr, data, size, cap, needed_size, inner_llvm
+            )
+
+            dummy_ptr = ir.Constant(inner_llvm.as_pointer(), None)
+            elem_size = self.builder.ptrtoint(
+                self.builder.gep(dummy_ptr, [ir.Constant(ir.IntType(32), 1)]),
+                ir.IntType(64),
+            )
+
+            # memmove data[idx+arr_len..size+arr_len-1] = data[idx..size-1]
+            data_bytes = self.builder.bitcast(new_data, ir.IntType(8).as_pointer())
+            idx_offset = self.builder.mul(idx_64, elem_size)
+            src_b = self.builder.gep(data_bytes, [idx_offset], inbounds=True)
+            dst_offset = self.builder.add(
+                idx_offset, self.builder.mul(arr_len, elem_size)
+            )
+            dst_b = self.builder.gep(data_bytes, [dst_offset], inbounds=True)
+
+            copy_count = self.builder.sub(size, idx_64)
+            copy_bytes = self.builder.mul(copy_count, elem_size)
+
+            self.builder.call(self.memmove, [dst_b, src_b, copy_bytes])
+
+            # memmove data[idx..idx+arr_len-1] = arr_ptr[0..arr_len-1]
+            dst_b = src_b
+            src_b = self.builder.bitcast(arr_ptr, ir.IntType(8).as_pointer())
+            copy_bytes = self.builder.mul(arr_len, elem_size)
+
+            self.builder.call(self.memmove, [dst_b, src_b, copy_bytes])
+
+            new_size = self.builder.add(size, arr_len)
+            self._update_vec_struct(vec_ptr, new_data, new_size, new_cap)
+            return None
+
         raise LeashError(
             f"Vector method '{method}' not fully implemented yet", node=vec_ptr
         )

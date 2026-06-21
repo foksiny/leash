@@ -3904,6 +3904,52 @@ class TypeChecker:
                             node=expr.args[0],
                         )
                 return "void"
+            elif expr.method == "insertv":
+                if len(expr.args) != 2:
+                    self._error(
+                        f"Vector method '{expr.method}' expects 2 arguments, got {len(expr.args)}",
+                        node=expr,
+                    )
+                else:
+                    idx_type = self._infer_type(expr.args[0])
+                    if idx_type and not self._types_compatible(idx_type, "int"):
+                        self._warn(
+                            f"Vector method '{expr.method}' expects index of type 'int', but got '{idx_type}'",
+                            node=expr.args[0],
+                        )
+                    arg_t = self._infer_type(expr.args[1])
+                    expected_vec = f"vec<{inner_t}>"
+                    if arg_t and not self._types_compatible(arg_t, expected_vec):
+                        self._warn(
+                            f"Vector method '{expr.method}' expects argument of type '{expected_vec}', but got '{arg_t}'",
+                            node=expr.args[1],
+                        )
+                return "void"
+            elif expr.method == "inserta":
+                if len(expr.args) != 2:
+                    self._error(
+                        f"Vector method '{expr.method}' expects 2 arguments, got {len(expr.args)}",
+                        node=expr,
+                    )
+                else:
+                    idx_type = self._infer_type(expr.args[0])
+                    if idx_type and not self._types_compatible(idx_type, "int"):
+                        self._warn(
+                            f"Vector method '{expr.method}' expects index of type 'int', but got '{idx_type}'",
+                            node=expr.args[0],
+                        )
+                    arg_t = self._infer_type(expr.args[1])
+                    expected_arr = f"{inner_t}[]"
+                    expected_ptr = f"*{inner_t}"
+                    if arg_t and not (
+                        self._types_compatible(arg_t, expected_arr)
+                        or self._types_compatible(arg_t, expected_ptr)
+                    ):
+                        self._warn(
+                            f"Vector method '{expr.method}' expects argument of type '{expected_arr}' or '{expected_ptr}', but got '{arg_t}'",
+                            node=expr.args[1],
+                        )
+                return "void"
             else:
                 raise LeashError(
                     f"Vector has no method named '{expr.method}'", node=expr
