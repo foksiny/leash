@@ -514,6 +514,10 @@ class CodeGen:
             result.hash_value_ptrs = []
             return result
 
+        if resolved in self.class_symtab:
+            # Return null pointer for class types as fallback
+            return ir.Constant(llvm_type, None)
+
         if resolved.endswith("]") and "[" in resolved:
             # Empty array/slice: { 0, null }
             ptr_ty = llvm_type.elements[1]
@@ -1269,6 +1273,7 @@ class CodeGen:
             "vtable_type": None,
             "vtable_global": None,
             "vtable_indices": {},
+            "constructor_args": None,  # AST args tuple for the constructor (with 'this')
             "parent": node.parent,
         }
 
@@ -1327,6 +1332,8 @@ class CodeGen:
 
             # Register in method table immediately so recursive calls work
             self.class_symtab[node.name]["methods"][orig_name] = func
+            if orig_name == node.name:  # this is the constructor
+                self.class_symtab[node.name]["constructor_args"] = m.fnc.args
             self.class_symtab[node.name]["method_static"][orig_name] = m.is_static
             self.class_symtab[node.name]["method_imut"][orig_name] = m.is_imut
 
@@ -2067,6 +2074,16 @@ class CodeGen:
             else:
                 # Default init to zeros
                 self.builder.store(ir.Constant(union_type, None), ptr)
+            return
+
+        # Class type without initializer: auto-initialize with default constructor
+        if node.value is None and resolved_type in self.class_symtab:
+            val = self._codegen_CreateExpr(CreateExpr(resolved_type, []))
+            target_llvm = self._get_llvm_type(node.var_type)
+            val = self._emit_cast(val, target_llvm)
+            ptr = self.builder.alloca(val.type)
+            self.builder.store(val, ptr)
+            self.var_symtab[node.name] = (ptr, node.var_type, None)
             return
 
         # Check if we should pass the target type to the expression (useful for ArrayInit)
@@ -7914,11 +7931,28 @@ class CodeGen:
         constructor_name = f"{class_name}_{class_name}"
         if constructor_name in self.func_symtab:
             constructor = self.func_symtab[constructor_name]
-            # Prepare arguments: 'this' (instance pointer) + user arguments
+            # Prepare arguments: 'this' (instance pointer) + user arguments with defaults
             args = [instance_ptr]
-            for arg_expr in node.args:
-                arg_val = self._codegen(arg_expr)
-                args.append(arg_val)
+            constr_args = cls_info.get("constructor_args")
+            if constr_args:
+                # Skip 'this' (first arg)
+                non_this = constr_args[1:] if constr_args and constr_args[0][0] == 'this' else constr_args
+                for i, (_, _, default) in enumerate(non_this):
+                    if i < len(node.args):
+                        arg_val = self._codegen(node.args[i])
+                    elif default is not None:
+                        arg_val = self._codegen(default)
+                    else:
+                        raise LeashError(
+                            f"Constructor '{class_name}' missing required argument at position {i}",
+                            node=node,
+                        )
+                    args.append(arg_val)
+            else:
+                # Fallback: just use provided args
+                for arg_expr in node.args:
+                    arg_val = self._codegen(arg_expr)
+                    args.append(arg_val)
             self.builder.call(constructor, args)
 
         return instance_ptr

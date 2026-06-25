@@ -854,13 +854,16 @@ The `:=` syntax is syntactic sugar that enables the compiler to automatically de
 
 ### Default Initialization
 
-If you declare a variable without an assignment, Leash automatically initializes it to a default value (zero for numbers, empty strings, and empty vectors/arrays):
+If you declare a variable without an assignment, Leash automatically initializes it to a default value (zero for numbers, empty strings, empty vectors/arrays, and a heap-allocated instance for class types):
 
 ```leash
 n: int;       // 0
 s: string;    // ""
 v: vec<int>;  // empty vector
+p: Person;    // heap-allocated Person with default constructor
 ```
+
+For class types, the compiler calls the default constructor (all parameters must have default values, or the class must have no constructor). If the constructor has required parameters, a compile-time error is raised.
 
 ## Immutable Variables
 
@@ -3309,6 +3312,31 @@ fnc main() : void {
     p: Point = create Point(10, 20);
 }
 ```
+
+#### Auto-Initialization
+
+When a variable is declared with a class type but no initializer, Leash automatically heap-allocates an instance and calls the default constructor (the constructor with all default arguments, or no constructor at all):
+
+```leash
+def Person : class {
+    name: string;
+    age:  int;
+    pub Person(name string = "No Name", age int = 10) {
+        this.name = name;
+        this.age  = age;
+    }
+}
+
+fnc main {
+    p1: Person;                     // auto-init with default constructor
+    p2: Person = create Person;     // explicit (same result)
+    p3: Person = create Person();   // explicit with parens (same result)
+
+    show(p1.name, " ", p1.age);  // No Name 10
+}
+```
+
+The three forms are equivalent — all allocate a new `Person` on the heap and call the constructor with default values. If the constructor has required parameters (without defaults), the compiler reports an error at compile time.
 
 ### Deleting Class Instances with `del`
 

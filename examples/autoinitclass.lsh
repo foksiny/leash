@@ -1,0 +1,14 @@
+def Person : class {
+    name: string;
+    age:  int;
+    pub Person(name string = "No Name", age int = 10) {
+        this.name = name;
+        this.age  = age;
+    }
+}
+
+fnc main {
+    p1: Person; // uses the default values. using 'p1: Person = create Person;' works the same.
+
+    show(p1.name, " ", p1.age);
+}

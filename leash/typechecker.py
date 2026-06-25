@@ -1838,6 +1838,25 @@ class TypeChecker:
                 pass
 
         if stmt.value is None:
+            # If type is a class, verify a default constructor exists
+            if bare_decl_type in self.class_types:
+                class_info = self.class_types[bare_decl_type]
+                constructor_name = bare_decl_type
+                if constructor_name in class_info.get("methods", {}):
+                    method_info = class_info["methods"][constructor_name]
+                    if method_info:
+                        func_node = method_info[0] if isinstance(method_info, tuple) else method_info
+                        if hasattr(func_node, 'args'):
+                            start_idx = 1 if func_node.args and func_node.args[0][0] == 'this' else 0
+                            non_this_args = func_node.args[start_idx:]
+                            required_args = sum(1 for _, _, default in non_this_args if default is None)
+                            if required_args > 0:
+                                self._error(
+                                    f"Cannot auto-initialize variable '{stmt.name}' of class '{bare_decl_type}' "
+                                    f"because the constructor has {required_args} required argument(s) without defaults",
+                                    node=stmt,
+                                    tip="Provide an explicit initializer, like '... = create ClassName(args)'",
+                                )
             return
 
         val_type = self._infer_type(stmt.value)
@@ -2835,29 +2854,34 @@ class TypeChecker:
             if method_info:
                 func_node = method_info[0] if isinstance(method_info, tuple) else method_info
                 if hasattr(func_node, 'args'):
-                    # Check argument count
                     # First arg is 'this' for non-static methods, so subtract 1
-                    expected_args = len(func_node.args) - 1 if func_node.args and func_node.args[0][0] == 'this' else len(func_node.args)
+                    start_idx = 1 if func_node.args and func_node.args[0][0] == 'this' else 0
+                    non_this_args = func_node.args[start_idx:]
+                    total_params = len(non_this_args)
+                    required_args = sum(1 for _, _, default in non_this_args if default is None)
                     actual_args = len(expr.args)
-                    if expected_args != actual_args:
+                    if actual_args < required_args:
                         self._error(
-                            f"Constructor '{constructor_name}' expects {expected_args} arguments, but {actual_args} were given",
+                            f"Constructor '{constructor_name}' expects at least {required_args} arguments, but {actual_args} were given",
+                            node=expr,
+                            tip=f"Check the constructor definition for class '{class_name}'.",
+                        )
+                    elif actual_args > total_params:
+                        self._error(
+                            f"Constructor '{constructor_name}' expects at most {total_params} arguments, but {actual_args} were given",
                             node=expr,
                             tip=f"Check the constructor definition for class '{class_name}'.",
                         )
                     # Check argument types
                     for i, arg in enumerate(expr.args):
                         arg_type = self._infer_type(arg)
-                        if arg_type and i + 1 <= len(func_node.args):
-                            # Skip 'this' parameter
-                            idx = i + 1 if func_node.args and func_node.args[0][0] == 'this' else i
-                            if idx < len(func_node.args):
-                                expected_type = func_node.args[idx][1]
-                                if not self._types_compatible(arg_type, expected_type):
-                                    self._error(
-                                        f"Argument {i + 1} of constructor has type '{arg_type}', but expected '{expected_type}'",
-                                        node=arg,
-                                    )
+                        if arg_type and i < len(non_this_args):
+                            expected_type = non_this_args[i][1]
+                            if not self._types_compatible(arg_type, expected_type):
+                                self._error(
+                                    f"Argument {i + 1} of constructor has type '{arg_type}', but expected '{expected_type}'",
+                                    node=arg,
+                                )
 
         return class_name
 
