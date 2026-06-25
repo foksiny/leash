@@ -656,9 +656,27 @@ def _print_error(e, input_file, code):
         if explanation:
             print(explanation, file=sys.stderr)
 
-def _print_warning(w, warnings_as_errors=False):
+def _print_warning(w, warnings_as_errors=False, code=None):
     print(f"{'error:' if warnings_as_errors else 'warning:'} {w['msg']}", file=sys.stderr)
-    if w.get("line"): print(f"  --> {w.get('file','unknown')}:{w['line']}:{w.get('col',0)}{' ['+w['code']+']' if w.get('code') else ''}", file=sys.stderr)
+    f = w.get('file', 'unknown')
+    if w.get("line"):
+        print(f"  --> {f}:{w['line']}:{w.get('col',0)}{' ['+w['code']+']' if w.get('code') else ''}", file=sys.stderr)
+        if code:
+            c = code
+            if w.get('file') and w['file'] != f:
+                try:
+                    with open(w['file'], "r") as fh:
+                        c = fh.read()
+                except:
+                    pass
+            lines = c.splitlines(); idx = w['line'] - 1
+            if 0 <= idx < len(lines):
+                p = " " * (len(str(w['line'])) + 1)
+                print(f"{p}|", file=sys.stderr)
+                print(f"{w['line']} | {lines[idx]}", file=sys.stderr)
+                if w.get('col') is not None:
+                    print(f"{p}| {' '*w['col']}^", file=sys.stderr)
+                print(f"{p}|", file=sys.stderr)
     if w.get("tip"): print(f"tip: {w['tip']}", file=sys.stderr)
     if VERBOSE_MODE:
         explanation = get_verbose_explanation(w['msg'], w.get('code'))
@@ -700,7 +718,7 @@ def compile_file(input_file, output_name=None, output_type="executable", is_run_
         ast = resolve_imports(ast, os.path.dirname(os.path.abspath(input_file)) or ".", extra_import_dirs=extra_import_dirs)
         ast = resolve_conditionals(ast, target_config); ast = expand_macros(ast)
         warnings = TypeChecker(check_mode=check_mode).check(ast)
-        for w in warnings: _print_warning(w, warnings_as_errors)
+        for w in warnings: _print_warning(w, warnings_as_errors, code=code)
         if warnings_as_errors and warnings: sys.exit(1)
         ll_errors = LowLevelChecker().check(ast)
         if ll_errors:
@@ -781,7 +799,7 @@ def dump_file(input_file, output_name=None, target_name=None, check_mode=False, 
         ast = resolve_imports(ast, os.path.dirname(os.path.abspath(input_file)) or ".", extra_import_dirs=extra_import_dirs)
         ast = resolve_conditionals(ast, target_config); ast = expand_macros(ast)
         warnings = TypeChecker(check_mode=check_mode).check(ast)
-        for w in warnings: _print_warning(w, warnings_as_errors)
+        for w in warnings: _print_warning(w, warnings_as_errors, code=code)
         if warnings_as_errors and warnings: sys.exit(1)
         ll_errors = LowLevelChecker().check(ast)
         if ll_errors:
@@ -981,12 +999,13 @@ def main():
                 i += 2
             else:
                 i += 1
+        with open(sys.argv[2], "r") as f: check_code = f.read()
         print(f"Checking '{sys.argv[2]}'...\n")
         errs, warns = check_file(sys.argv[2], verbose=True, extra_import_dirs=extra_import_dirs)
         if warns:
             print(f"Found {len(warns)} warning(s):\n")
             for w in warns:
-                _print_warning(w)
+                _print_warning(w, code=check_code)
                 print()
         if not errs:
             print("No issues found." if not warns else f"Summary: 0 errors, {len(warns)} warnings.")

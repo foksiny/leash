@@ -2380,7 +2380,20 @@ class CodeGen:
             
             if slice_type_name == "string":
                 str_ptr = self.builder.load(slice_ptr)
+                if not self.in_unsafe_func:
+                    self._emit_null_pointer_check(
+                        str_ptr, "Runtime error: String index on null string.\n"
+                    )
                 idx_val = self._codegen(node.index)
+                if not self.in_unsafe_func:
+                    str_len = self.builder.call(self.strlen, [str_ptr])
+                    idx64 = self._emit_cast(idx_val, ir.IntType(64))
+                    idx_nonneg = self.builder.icmp_signed(">=", idx64, ir.Constant(ir.IntType(64), 0))
+                    idx_in_bounds = self.builder.icmp_unsigned("<", idx64, str_len)
+                    in_bounds = self.builder.and_(idx_nonneg, idx_in_bounds)
+                    self._emit_runtime_check(
+                        in_bounds, "Runtime error: String index out of bounds.\n"
+                    )
                 ptr = self.builder.gep(str_ptr, [idx_val], inbounds=True)
                 return (ptr, "char", None)
             
@@ -2414,6 +2427,9 @@ class CodeGen:
                     key_ptrs = getattr(hash_val, 'hash_key_ptrs', [])
                     value_ptrs = getattr(hash_val, 'hash_value_ptrs', [])
                 
+                found_ptr = self.builder.alloca(ir.IntType(1), name="hash_found")
+                self.builder.store(ir.Constant(ir.IntType(1), 0), found_ptr)
+                
                 for k_ptr, v_ptr in zip(key_ptrs, value_ptrs):
                     stored_key = self.builder.load(k_ptr)
                     if key_type == "string":
@@ -2425,14 +2441,30 @@ class CodeGen:
                     with self.builder.if_then(key_match):
                         stored_value = self.builder.load(v_ptr)
                         self.builder.store(stored_value, result_ptr)
+                        self.builder.store(ir.Constant(ir.IntType(1), 1), found_ptr)
+                
+                if not self.in_unsafe_func:
+                    was_found = self.builder.load(found_ptr)
+                    self._emit_runtime_check(
+                        was_found, "Runtime error: Hash key not found in index access.\n"
+                    )
                 
                 return (result_ptr, value_type, None)
             
             # Array/slice index access
             slice_val = self.builder.load(slice_ptr)
+            slice_size = self.builder.extract_value(slice_val, 0)
             data_ptr = self.builder.extract_value(slice_val, 1)
             idx_val = self._codegen(node.index)
-            ptr = self.builder.gep(data_ptr, [idx_val], inbounds=True)
+            idx64 = self._emit_cast(idx_val, ir.IntType(64))
+            if not self.in_unsafe_func:
+                idx_nonneg = self.builder.icmp_signed(">=", idx64, ir.Constant(ir.IntType(64), 0))
+                idx_in_bounds = self.builder.icmp_unsigned("<", idx64, slice_size)
+                in_bounds = self.builder.and_(idx_nonneg, idx_in_bounds)
+                self._emit_runtime_check(
+                    in_bounds, "Runtime error: Array index out of bounds.\n"
+                )
+            ptr = self.builder.gep(data_ptr, [idx64], inbounds=True)
             elem_type_name = (
                 slice_type_name.split("[")[0] if "[" in slice_type_name else "int"
             )
@@ -4048,6 +4080,7 @@ class CodeGen:
 
         if node.op == "*":  # Dereference
             val = self._codegen(node.expr)
+            self._emit_null_pointer_check(val, "Runtime error: Null pointer dereference.\n")
             return self.builder.load(val)
         if node.op == "&":  # Address-of
             # Check if we're taking address of a function
@@ -4786,6 +4819,13 @@ class CodeGen:
             return None
 
         elif method == "popf":
+            # Check vector is not empty
+            is_nonempty = self.builder.icmp_unsigned(
+                ">", size, ir.Constant(ir.IntType(64), 0)
+            )
+            self._emit_runtime_check(
+                is_nonempty, "Runtime error: popf called on empty vector.\n"
+            )
             # res = data[0], memmove data[0..size-2] = data[1..size-1], size--
             res_val = self.builder.load(data)
 
@@ -4814,6 +4854,14 @@ class CodeGen:
         elif method == "insert":
             idx = self._codegen(args[0])
             idx = self._emit_cast(idx, ir.IntType(32))
+            idx64 = self.builder.zext(idx, ir.IntType(64))
+            # Bounds check: 0 <= idx <= size (inserting at size == append)
+            idx_nonneg = self.builder.icmp_signed(">=", idx64, ir.Constant(ir.IntType(64), 0))
+            idx_in_bounds = self.builder.icmp_unsigned("<=", idx64, size)
+            in_bounds = self.builder.and_(idx_nonneg, idx_in_bounds)
+            self._emit_runtime_check(
+                in_bounds, "Runtime error: Vector insert index out of bounds.\n"
+            )
             val = self._codegen(args[1])
             val = self._emit_cast(val, inner_llvm)
 
@@ -4911,6 +4959,14 @@ class CodeGen:
             idx = self._codegen(args[0])
             idx = self._emit_cast(idx, ir.IntType(32))
             idx_64 = self.builder.zext(idx, ir.IntType(64))
+
+            # Bounds check: 0 <= idx < size
+            idx_nonneg = self.builder.icmp_signed(">=", idx_64, ir.Constant(ir.IntType(64), 0))
+            idx_in_bounds = self.builder.icmp_unsigned("<", idx_64, size)
+            in_bounds = self.builder.and_(idx_nonneg, idx_in_bounds)
+            self._emit_runtime_check(
+                in_bounds, "Runtime error: Vector remove index out of bounds.\n"
+            )
 
             # Compute element size at runtime (same as pushf/popf)
             dummy_ptr = ir.Constant(inner_llvm.as_pointer(), None)
@@ -5171,6 +5227,9 @@ class CodeGen:
             result_ptr = self.builder.alloca(key_llvm, name="getKey_result")
             self.builder.store(ir.Constant(key_llvm, None), result_ptr)
             
+            found_ptr = self.builder.alloca(ir.IntType(1), name="getKey_found")
+            self.builder.store(ir.Constant(ir.IntType(1), 0), found_ptr)
+            
             if key_ptrs and value_ptrs:
                 for k_ptr, v_ptr in zip(key_ptrs, value_ptrs):
                     stored_value = self.builder.load(v_ptr)
@@ -5183,6 +5242,13 @@ class CodeGen:
                     with self.builder.if_then(value_match):
                         stored_key = self.builder.load(k_ptr)
                         self.builder.store(stored_key, result_ptr)
+                        self.builder.store(ir.Constant(ir.IntType(1), 1), found_ptr)
+            
+            if not self.in_unsafe_func:
+                was_found = self.builder.load(found_ptr)
+                self._emit_runtime_check(
+                    was_found, "Runtime error: Hash value not found in getKey().\n"
+                )
             
             return self.builder.load(result_ptr)
 

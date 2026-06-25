@@ -1473,6 +1473,7 @@ class TypeChecker:
                     if var_name != "args" and var_name != "this" and not var_name.startswith("_"):
                         self._warn(
                             f"Unused local variable '{var_name}' in function '{node.name}'",
+                            node=node,
                             tip=f"If you don't need this variable, consider removing it.",
                         )
 
@@ -1483,6 +1484,7 @@ class TypeChecker:
                 elif not param_name.startswith("_"):
                     self._warn(
                         f"Unused parameter '{param_name}' in function '{node.name}'",
+                        node=node,
                         tip=f"If the function logic doesn't require this parameter, consider removing it or renaming it to `_{param_name}`.",
                     )
 

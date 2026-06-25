@@ -1109,6 +1109,7 @@ class Parser:
         return ClassDef(name, fields, methods, parent, type_params, visibility)
 
     def parse_function(self, visibility="pub", is_unsafe=False, is_inline=False):
+        fnc_tok = self.current()
         self.eat("FNC")
         name = self.eat("IDENT").value
         type_params = []
@@ -1160,7 +1161,7 @@ class Parser:
             self.eat("LBRACE")
             statements = self.parse_block()
 
-        return Function(
+        node = Function(
             name,
             tuple(args),
             return_type,
@@ -1171,6 +1172,9 @@ class Parser:
             is_inline,
             struct_type=struct_type,
         )
+        self._pos(node, fnc_tok)
+        node.source_file = self.source_file
+        return node
 
     def parse_opdef(self):
         """Parse an operator definition: opdef Type.method(args) : ret { body } or opdef TypeOp(args) : ret { body }"""
