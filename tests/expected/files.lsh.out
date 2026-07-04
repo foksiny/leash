@@ -73,5 +73,11 @@ Numbers file: Numbers: 0, 1, 2, 3, 4
 All test files cleaned up!
 
 === ALL TESTS COMPLETED ===
+--- Executed at 2026-07-04 19:32:03 ---
 warning: Unused local variable 'file_deleted' in function 'main'
+  --> examples\files.lsh:1:0
+  |
+1 | fnc main() : void {
+  | ^
+  |
 tip: If you don't need this variable, consider removing it.

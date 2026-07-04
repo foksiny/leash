@@ -404,6 +404,9 @@ class Parser:
         if self.current().type == "COLON":
             self.eat("COLON")
             return_type = self.parse_type()
+        elif self.current().type == "ARROW":
+            self.eat("ARROW")
+            return_type = self.parse_type()
         return f"fnc({', '.join(param_types)}) : {return_type}"
 
     # Type token types that can start a type in a cast
@@ -715,6 +718,8 @@ class Parser:
         args = []
         while self.current().type != "RPAREN":
             arg_name = self.eat("IDENT").value
+            if self.current().type == "COLON":
+                self.eat("COLON")
             arg_type = self.parse_type()
             args.append((arg_name, arg_type))
             if self.current().type == "COMMA":
@@ -772,6 +777,8 @@ class Parser:
         args = []
         while self.current().type != "RPAREN":
             arg_name = self.eat("IDENT").value
+            if self.current().type == "COLON":
+                self.eat("COLON")
             arg_type = self.parse_type()
             args.append((arg_name, arg_type, None))
             if self.current().type == "COMMA":
@@ -780,6 +787,9 @@ class Parser:
         return_type = "void"
         if self.current().type == "COLON":
             self.eat("COLON")
+            return_type = self.parse_type()
+        elif self.current().type == "ARROW":
+            self.eat("ARROW")
             return_type = self.parse_type()
         self.eat("SEMI")
         return (name, tuple(args), return_type)
@@ -1044,6 +1054,8 @@ class Parser:
                 has_default = False
                 while self.current().type != "RPAREN":
                     arg_name = self.eat("IDENT").value
+                    if self.current().type == "COLON":
+                        self.eat("COLON")
                     arg_type = self.parse_type()
                     default_value = None
                     if self.current().type == "ASSIGN":
@@ -1063,6 +1075,9 @@ class Parser:
                 return_type = "void"
                 if self.current().type == "COLON":
                     self.eat("COLON")
+                    return_type = self.parse_type()
+                elif self.current().type == "ARROW":
+                    self.eat("ARROW")
                     return_type = self.parse_type()
 
                 if self.current().type == "PIPE":
@@ -1127,6 +1142,8 @@ class Parser:
             has_default = False
             while self.current().type != "RPAREN":
                 arg_name = self.eat("IDENT").value
+                if self.current().type == "COLON":
+                    self.eat("COLON")
                 arg_type = self.parse_type()
                 default_value = None
                 if self.current().type == "ASSIGN":
@@ -1153,6 +1170,9 @@ class Parser:
             if self.current().type == "ARROW":
                 self.eat("ARROW")
                 struct_type = self.eat("IDENT").value
+        elif self.current().type == "ARROW":
+            self.eat("ARROW")
+            return_type = self.parse_type()
 
         if self.current().type == "PIPE":
             self.eat("PIPE")
@@ -1226,6 +1246,8 @@ class Parser:
         has_default = False
         while self.current().type != "RPAREN":
             arg_name = self.eat("IDENT").value
+            if self.current().type == "COLON":
+                self.eat("COLON")
             arg_type = self.parse_type()
             default_value = None
             if self.current().type == "ASSIGN":
@@ -1247,6 +1269,9 @@ class Parser:
         return_type = "void"
         if self.current().type == "COLON":
             self.eat("COLON")
+            return_type = self.parse_type()
+        elif self.current().type == "ARROW":
+            self.eat("ARROW")
             return_type = self.parse_type()
 
         # Parse body
@@ -1284,6 +1309,8 @@ class Parser:
         has_default = False
         while self.current().type != "RPAREN":
             arg_name = self.eat("IDENT").value
+            if self.current().type == "COLON":
+                self.eat("COLON")
             arg_type = self.parse_type()
             default_value = None
             if self.current().type == "ASSIGN":
@@ -1304,6 +1331,9 @@ class Parser:
         return_type = "void"
         if self.current().type == "COLON":
             self.eat("COLON")
+            return_type = self.parse_type()
+        elif self.current().type == "ARROW":
+            self.eat("ARROW")
             return_type = self.parse_type()
 
         if self.current().type == "PIPE":

@@ -3707,7 +3707,7 @@ The VS Code extension provides syntax highlighting, real-time diagnostics, hover
    cd syntax_highlighters/vscode
    npm run package
    ```
-3. Install the generated `leash-0.1.0.vsix` in VS Code (Extensions view -> `...` -> `Install from VSIX...`).
+3. Install the generated `leash-0.12.0.vsix` in VS Code (Extensions view -> `...` -> `Install from VSIX...`).
 
 ### Emacs
 

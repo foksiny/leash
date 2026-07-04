@@ -1,0 +1,33 @@
+// Old syntax still works
+fnc add_old(a int, b int) : int {
+    return a + b;
+}
+
+// New syntax works
+fnc add_new(a: int, b: int) -> int {
+    return a + b;
+}
+
+// Mixed: old args, new return
+fnc mixed1(a int, b int) -> int {
+    return a * b;
+}
+
+// Mixed: new args, old return
+fnc mixed2(a: int, b: int) : int {
+    return a - b;
+}
+
+// No return type (defaults to void)
+fnc noret(a: int, b: int) -> void {
+    show(a + b);
+}
+
+// Lambda with new syntax
+fnc main() -> void {
+    show(add_old(3, 4));
+    show(add_new(3, 4));
+    show(mixed1(3, 4));
+    show(mixed2(10, 3));
+    noret(5, 6);
+}
