@@ -31,6 +31,7 @@ from .ast_nodes import (
 )
 from .targets import get_target, get_native_target, list_targets, TargetConfig
 from .optimize import optimize_module, parse_opt_level
+from .ast_optimize import optimize_ast
 import llvmlite.binding as llvm
 
 
@@ -724,6 +725,8 @@ def compile_file(input_file, output_name=None, output_type="executable", is_run_
         if ll_errors:
             for err in ll_errors: _print_error(err, input_file, code)
             sys.exit(1)
+        ast = optimize_ast(ast)
+        parsed_opt, size_opt = parse_opt_level(opt_level)
         llvm.initialize_native_target(); llvm.initialize_native_asmprinter()
         codegen = CodeGen(target_platform=target_config.name); codegen.generate_code(ast, input_file)
         mod = llvm.parse_assembly(codegen.get_ir()); mod.verify()
@@ -805,6 +808,8 @@ def dump_file(input_file, output_name=None, target_name=None, check_mode=False, 
         if ll_errors:
             for err in ll_errors: _print_error(err, input_file, code)
             sys.exit(1)
+        ast = optimize_ast(ast)
+        popt, sopt = parse_opt_level(opt_level)
         llvm.initialize_all_targets()
         codegen = CodeGen(target_platform=target_config.name); codegen.generate_code(ast, input_file)
         mod = llvm.parse_assembly(codegen.get_ir()); mod.verify()
@@ -1051,7 +1056,7 @@ def main():
             print(f"Usage: leash {cmd} <file.lsh> [options]")
             sys.exit(1)
         if sys.argv[2] in ("--help", "-h"):
-            print(f"Options for {cmd}:\n  --target <target>\n  --check\n  --warnings-as-errors\n  --opt <0,1,2,3,s>\n  -l<lib>\n  --other-imports/-oi <folder>\n  --verbose/-vb        Enable highly detailed masterclass error and warning explanations.")
+            print(f"Options for {cmd}:\n  --target <target>\n  --check\n  --warnings-as-errors\n  --opt <0,1,2,3,s,z>\n  -l<lib>\n  --other-imports/-oi <folder>\n  --verbose/-vb        Enable highly detailed masterclass error and warning explanations.")
             sys.exit(0)
         infile = sys.argv[2]
         target, outname, outtype, check, warnerr, elibs, opt = None, None, "executable", False, False, [], "2"

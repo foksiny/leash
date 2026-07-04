@@ -14,19 +14,23 @@ __all__ = ["optimize_module", "parse_opt_level"]
 
 
 def parse_opt_level(arg):
-    """Convert a CLI string like '0', '1', '2', '3', 's' to an int (0‑3) and a boolean size‑flag."""
+    """Convert a CLI string like '0', '1', '2', '3', 's', 'z' to an int (0‑3) and a boolean size‑flag.
+
+    Returns (opt_level, size_opt) where size_opt can be 1 (-Os) or 2 (-Oz).
+    """
     if arg is None:
         return 0, False
     arg = str(arg).strip()
+    if arg.lower() in ("z", "min-size"):
+        return 1, 2           # -Oz: cap speed at O1, size_level=2
     if arg.lower() in ("s", "size"):
-        return 2, True
+        return 2, True        # -Os: O2 speed + size_level=1
     if arg == "3":
         return 3, False
     if arg == "2":
         return 2, False
     if arg == "1":
         return 1, False
-    # default / anything else -> O0
     return 0, False
 
 
@@ -128,8 +132,8 @@ def optimize_module(mod_ref, opt_level=0, size_opt=False, target_machine=None):
         target = llvm.Target.from_triple(triple)
         target_machine = target.create_target_machine(opt=opt_level)
 
-    speed = opt_level if not size_opt else min(opt_level, 2)
-    size = 1 if size_opt else 0
+    speed = opt_level if not size_opt else 2  # LLVM requires speed_level==2 when size_level>0
+    size = (size_opt if isinstance(size_opt, int) and size_opt > 1 else 1) if size_opt else 0
 
     pb = _create_pass_builder(target_machine, speed_level=speed, size_level=size)
     pm = llvm.create_new_module_pass_manager()
