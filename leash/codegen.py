@@ -2404,14 +2404,21 @@ class CodeGen:
                 idx_val = self._codegen(node.index)
                 if not self.in_unsafe_func:
                     str_len = self.builder.call(self.strlen, [str_ptr])
-                    idx64 = self._emit_cast(idx_val, ir.IntType(64))
+                    idx32 = self._emit_cast(idx_val, ir.IntType(32))
+                    idx64 = self.builder.sext(idx32, ir.IntType(64))
+                    # Normalize negative index: idx = idx < 0 ? idx + len : idx
+                    is_negative = self.builder.icmp_signed("<", idx64, ir.Constant(ir.IntType(64), 0))
+                    wrapped = self.builder.add(idx64, str_len)
+                    idx64 = self.builder.select(is_negative, wrapped, idx64)
                     idx_nonneg = self.builder.icmp_signed(">=", idx64, ir.Constant(ir.IntType(64), 0))
                     idx_in_bounds = self.builder.icmp_unsigned("<", idx64, str_len)
                     in_bounds = self.builder.and_(idx_nonneg, idx_in_bounds)
                     self._emit_runtime_check(
                         in_bounds, "Runtime error: String index out of bounds.\n"
                     )
-                ptr = self.builder.gep(str_ptr, [idx_val], inbounds=True)
+                    ptr = self.builder.gep(str_ptr, [idx64], inbounds=True)
+                else:
+                    ptr = self.builder.gep(str_ptr, [idx_val], inbounds=True)
                 return (ptr, "char", None)
             
             resolved = self._resolve_type_name(slice_type_name)
@@ -2473,7 +2480,12 @@ class CodeGen:
             slice_size = self.builder.extract_value(slice_val, 0)
             data_ptr = self.builder.extract_value(slice_val, 1)
             idx_val = self._codegen(node.index)
-            idx64 = self._emit_cast(idx_val, ir.IntType(64))
+            idx32 = self._emit_cast(idx_val, ir.IntType(32))
+            idx64 = self.builder.sext(idx32, ir.IntType(64))
+            # Normalize negative index: idx = idx < 0 ? idx + size : idx
+            is_negative = self.builder.icmp_signed("<", idx64, ir.Constant(ir.IntType(64), 0))
+            wrapped = self.builder.add(idx64, slice_size)
+            idx64 = self.builder.select(is_negative, wrapped, idx64)
             if not self.in_unsafe_func:
                 idx_nonneg = self.builder.icmp_signed(">=", idx64, ir.Constant(ir.IntType(64), 0))
                 idx_in_bounds = self.builder.icmp_unsigned("<", idx64, slice_size)
@@ -4765,6 +4777,12 @@ class CodeGen:
             idx = self._codegen(args[0])
             idx = self._emit_cast(idx, ir.IntType(32))
             idx64 = self.builder.sext(idx, ir.IntType(64))
+            # Normalize negative index: idx = idx < 0 ? idx + size : idx
+            is_negative = self.builder.icmp_signed(
+                "<", idx64, ir.Constant(ir.IntType(64), 0)
+            )
+            wrapped = self.builder.add(idx64, size)
+            idx64 = self.builder.select(is_negative, wrapped, idx64)
             # Bounds check: idx >= 0 && idx < size
             idx_nonneg = self.builder.icmp_signed(
                 ">=", idx64, ir.Constant(ir.IntType(64), 0)
@@ -4781,6 +4799,12 @@ class CodeGen:
             idx = self._codegen(args[0])
             idx = self._emit_cast(idx, ir.IntType(32))
             idx64 = self.builder.sext(idx, ir.IntType(64))
+            # Normalize negative index: idx = idx < 0 ? idx + size : idx
+            is_negative = self.builder.icmp_signed(
+                "<", idx64, ir.Constant(ir.IntType(64), 0)
+            )
+            wrapped = self.builder.add(idx64, size)
+            idx64 = self.builder.select(is_negative, wrapped, idx64)
             # Bounds check
             idx_nonneg = self.builder.icmp_signed(
                 ">=", idx64, ir.Constant(ir.IntType(64), 0)

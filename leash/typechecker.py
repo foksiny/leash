@@ -1029,7 +1029,7 @@ class TypeChecker:
 
     def _is_numeric(self, type_name):
         b = self._base_type(type_name)
-        return b in ("int", "uint", "float")
+        return b in ("int", "uint", "float", "char", "bool")
 
     def _is_function_pointer_type(self, type_name):
         """Check if a type string represents a function pointer type."""
@@ -2669,6 +2669,10 @@ class TypeChecker:
                         # Return type from opdef
                         return opdef_node.return_type
 
+            # General comparison: == and != between compatible types returns bool
+            if expr.op in ("==", "!=") and self._types_compatible(left_t, right_t):
+                return "bool"
+
             # Mixed string + non-string
             if (left_b == "string") or (right_b == "string"):
                 if (left_b == "string") and (right_b == "string"):
@@ -2759,7 +2763,7 @@ class TypeChecker:
 
         if cond_t:
             cond_b = self._base_type(cond_t)
-            if cond_b not in ("bool", "int", "uint"):
+            if cond_b not in ("bool", "int", "uint", "char"):
                 raise LeashError(
                     f"Ternary condition must be a boolean type, got '{cond_t}'",
                     node=expr,
@@ -3504,14 +3508,6 @@ class TypeChecker:
                 tip="Use an integer expression as the index.",
             )
 
-        if isinstance(expr.index, NumberLiteral) and expr.index.value < 0:
-            if not self.in_unsafe_func:
-                self._error(
-                    f"Negative array index {expr.index.value} is not allowed.",
-                    node=expr.index,
-                    tip="Array indices must be non-negative (0 or greater).",
-                )
-
         if base_type:
             resolved = self._resolve(base_type)
             # Array bounds safety check (static)
@@ -3520,9 +3516,9 @@ class TypeChecker:
                     parts = resolved.split("[")
                     if len(parts) > 1 and parts[1].strip("]") != "":
                         size = int(parts[1].strip("]"))
-                        if isinstance(expr.index, NumberLiteral):
+                        if isinstance(expr.index, NumberLiteral) and expr.index.value >= 0:
                             idx = expr.index.value
-                            if idx < 0 or idx >= size:
+                            if idx >= size:
                                 if not self.in_unsafe_func:
                                     raise LeashError(
                                         f"Array index {idx} is out of bounds for '{resolved}'",
