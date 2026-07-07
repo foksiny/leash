@@ -58,6 +58,14 @@ Leash is a strongly-typed, modern compiled programming language built on top of 
 - [Native Library Imports (FFI)](#native-library-imports-ffi)
 - [Library Imports](#library-imports)
 - [Program Termination](#program-termination)
+- [Leashed Package Manager](#leashed-package-manager)
+  - [Installation](#installation-1)
+  - [Creating a Package (`leashed init`)](#creating-a-package-leashed-init)
+  - [Publishing a Package (`leashed publish`)](#publishing-a-package-leashed-publish)
+  - [Installing Libraries (`leashed install`)](#installing-libraries-leashed-install)
+  - [Adding Libraries to a Project (`leashed add`)](#adding-libraries-to-a-project-leashed-add)
+  - [Searching for Libraries (`leashed search`)](#searching-for-libraries-leashed-search)
+  - [How Publishing Works Under the Hood](#how-publishing-works-under-the-hood)
 - [Library Installation](#library-installation)
 - [Concurrency](#concurrency)
   - [Shared Variables (`shared`)](#shared-variables-shared)
@@ -828,6 +836,154 @@ use utils::string_helpers::SomeFunction;
 - If a file or directory with the same name already exists in the global libs directory, the installation will fail. Remove the existing library first if you want to replace it.
 - The `install` command only copies files; it does not compile them.
 - Once installed, libraries are automatically available to all your Leash programs via the `use` statement.
+
+---
+
+## Leashed Package Manager
+
+`leashed` is the official package manager for Leash. It lets you create, publish, share, and install Leash libraries through a central registry at `github.com/foksiny/leash-packages`. Every library lives in its own GitHub repository; the registry is an `index.json` that maps library names to repo URLs.
+
+### Installation
+
+`leashed` is installed alongside the Leash compiler:
+
+```bash
+pip install -e .
+leashed --version
+# leashed v0.1.0
+```
+
+### Creating a Package (`leashed init`)
+
+Scaffold a new library project:
+
+```bash
+leashed init mylib
+cd mylib
+```
+
+This creates:
+
+```
+mylib/
+├── src/
+│   └── main.lsh       # Library entry point
+├── leash-pkg.lshc     # Package configuration
+└── .gitignore
+```
+
+The generated `leash-pkg.lshc`:
+
+```leashconfig
+name: "mylib"
+version: "0.1.0"
+author: "your-github-username"
+description: "The mylib library"
+main: "src/main.lsh"
+```
+
+Edit these fields to match your library. If you already have a GitHub repo for your library, add a `repo` field:
+
+```leashconfig
+repo: "https://github.com/you/mylib.git"
+```
+
+### Publishing a Package (`leashed publish`)
+
+From inside your project directory, publish your library:
+
+```bash
+leashed publish
+```
+
+This does the following automatically:
+
+1. **Verifies** your source code with `leash check`
+2. **Compiles** your library to a static `.lib` / `.a` file
+3. If no `repo` is set in config, **creates a GitHub repo** under your account via `gh repo create`
+4. **Pushes** the source and compiled library to your repo
+5. **Registers** the library in the central registry:
+   - If you're the registry owner — pushes directly to the `index.json`
+   - If you're a contributor — forks the registry, updates the index, and **creates a pull request**
+
+Requirements:
+- [GitHub CLI (`gh`)](https://cli.github.com) installed and authenticated (`gh auth login`)
+- Git installed
+
+### Installing Libraries (`leashed install`)
+
+Install a library globally so any Leash program can use it:
+
+```bash
+leashed install mylib
+```
+
+This:
+1. Fetches the registry `index.json` from `raw.githubusercontent.com` (no clone needed)
+2. Looks up the library name and finds its repo URL
+3. Shallow-clones only the library's repository
+4. Copies the files to `~/.leash/libs/<name>/`
+5. Creates a stub `<name>.lsh` so `use mylib::*;` resolves correctly
+
+After installation, import it in any Leash program:
+
+```leash
+use mylib::*;
+
+fnc main() {
+    show(greet("World"));
+}
+```
+
+### Adding Libraries to a Project (`leashed add`)
+
+Add a library as a dependency of the current project:
+
+```bash
+leashed add mylib
+```
+
+This:
+1. Installs the library globally if not already installed
+2. Appends `mylib@version` to the `dependencies` field in `leash-pkg.lshc`
+3. Inserts `use mylib::*;` into your main source file
+
+### Searching for Libraries (`leashed search`)
+
+Search the registry for libraries:
+
+```bash
+leashed search math
+```
+
+This fetches the registry `index.json` and filters entries by name and description. No cloning required.
+
+### How Publishing Works Under the Hood
+
+Each library has its own GitHub repository. The central registry (`foksiny/leash-packages`) is just an `index.json` file:
+
+```json
+{
+  "libraries": {
+    "mylib": {
+      "repo": "https://github.com/you/mylib.git",
+      "description": "The mylib library",
+      "author": "you",
+      "version": "0.1.0"
+    }
+  }
+}
+```
+
+**For the registry owner (`foksiny`)**: `leashed publish` pushes directly to the registry repo with `--force`, so re-publishing just overwrites the index entry.
+
+**For everyone else**: `leashed publish` forks the registry, updates `index.json`, and creates a pull request. A maintainer reviews and merges it.
+
+Security checks:
+- **Package name validation** — only `[a-zA-Z_][a-zA-Z0-9_-]*` names are allowed
+- **Source verification** — code must pass `leash check` before publishing
+- **Publisher identity** — when updating an existing registry entry, only the original author can modify it
+- **Compilation check** — the library must compile to a static library before it's published
 
 ## Defining Variables
 
