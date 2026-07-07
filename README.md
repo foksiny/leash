@@ -1,5 +1,7 @@
 # Leash Programming Language
 
+**Version 0.15.0 Beta**
+
 Leash is a strongly-typed, modern compiled programming language built on top of LLVM. It features an intuitive syntax and is designed to handle common tasks with native performance.
 
 ## Table of Contents
