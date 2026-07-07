@@ -1616,6 +1616,10 @@ class Parser:
             self.eat("SEMI")
             return self._pos(IgnoreStatement(), tok)
 
+        elif current.type == "FNC":
+            # Nested function declaration inside another function
+            return self.parse_function()
+
         elif current.type == "DEL":
             tok = self.current()
             self.eat("DEL")

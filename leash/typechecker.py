@@ -66,6 +66,9 @@ class TypeChecker:
         self.in_unsafe_func = False  # Track if we're inside an unsafe function
         self.current_method_static = False  # Track if current class method is static
 
+        # Nested functions scope tracking
+        self.nested_funcs = {}  # simple_name -> mangled_name for current function scope
+
         # OpDef (operator definition) support
         self.opdef_extensions = {}  # type_name -> {method_name: OpDef node}
         self.opdef_operators = {}  # (type_name, op) -> OpDef node
@@ -1426,6 +1429,24 @@ class TypeChecker:
         self.current_func_params = set()
         self.in_unsafe_func = getattr(node, "is_unsafe", False)
 
+        # Identify and register nested functions before checking body
+        saved_nested = self.nested_funcs.copy()
+        nested_funcs = []
+        regular_body = []
+        for stmt in node.body:
+            if isinstance(stmt, Function):
+                simple_name = stmt.name
+                mangled_name = f"{self.current_func}__{simple_name}"
+                stmt.name = mangled_name
+                arg_types = tuple(t for _, t, _ in stmt.args)
+                arg_names = tuple(n for n, _, _ in stmt.args)
+                arg_defaults = tuple(d is not None for _, _, d in stmt.args)
+                self.func_types[mangled_name] = (arg_types, stmt.return_type, arg_names, arg_defaults)
+                self.nested_funcs[simple_name] = mangled_name
+                nested_funcs.append(stmt)
+            else:
+                regular_body.append(stmt)
+
         if not node.body:
             self._warn(
                 f"Function '{node.name}' has an empty body.",
@@ -1453,7 +1474,11 @@ class TypeChecker:
             self.var_types["this"] = node.struct_type
             self.var_immutable["this"] = True
 
+        # Temporarily replace body with filtered version for statement checking
+        original_body = node.body
+        node.body = regular_body
         last_was_return = self._check_statements(node.body)
+        node.body = original_body  # restore
 
         bare_ret = self._strip_imut(node.return_type) if node.return_type else "void"
         if bare_ret != "void" and not last_was_return:
@@ -1487,6 +1512,16 @@ class TypeChecker:
                         node=node,
                         tip=f"If the function logic doesn't require this parameter, consider removing it or renaming it to `_{param_name}`.",
                     )
+
+        # Check nested function bodies recursively
+        for nf in nested_funcs:
+            self._check_function(nf)
+
+        # Clean up nested function registrations
+        for nf in nested_funcs:
+            if nf.name in self.func_types:
+                del self.func_types[nf.name]
+        self.nested_funcs = saved_nested
 
         # Restore
         self.var_types = saved_types
@@ -2935,6 +2970,10 @@ class TypeChecker:
         self._infer_type(stmt.call)
 
     def _check_call(self, expr):
+        # Resolve nested function names to mangled names
+        if expr.name in self.nested_funcs:
+            expr.name = self.nested_funcs[expr.name]
+
         if expr.name == "show":
             return "void"
 

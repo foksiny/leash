@@ -1568,6 +1568,23 @@ fnc main() : void {
 
 Lambda type syntax is `fnc(param_types) : return_type`. Lambdas can be stored in variables of function pointer type and called like regular functions.
 
+### Nested Functions
+
+Leash supports defining functions inside other functions. Nested functions work like regular functions — they can accept parameters, return values, and call other functions — but are scoped to the enclosing function. They are useful for organizing helper logic without polluting the global namespace.
+
+```leash
+fnc main() : void {
+    fnc add(a int, b int) : int {
+        return a + b;
+    }
+
+    result: int = add(10, 20);
+    show("10 + 20 = ", result);
+}
+```
+
+Nested functions use the same `fnc` syntax as global functions and are called by their simple name. They can access their own parameters and global variables, but do not capture variables from the enclosing scope (no closure semantics).
+
 ## Operator Definitions (`opdef`)
 
 Operator Definitions let you extend existing types with new methods and overload operators. They are defined using the `opdef` keyword and work with built-in types (`string`, `vec`, etc.) and user-defined types (classes, structs) alike.

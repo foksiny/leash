@@ -825,7 +825,7 @@ def dump_file(input_file, output_name=None, target_name=None, check_mode=False, 
     print(f"Dumped LLVM IR to '{output_name}'"); return output_name
 
 def run_file(input_file, args=[], target_name=None, check_mode=False, warnings_as_errors=False, extra_libs=None, opt_level=None, extra_import_dirs=None):
-    import platform, time, uuid, stat
+    import platform, time, uuid, stat, signal
     tcfg = get_target(target_name) if target_name else get_native_target()
     tmp = f".__temp_run_leash_exe_{uuid.uuid4().hex}"
     out = compile_file(input_file, output_name=tmp, is_run_mode=True, target_name=target_name, check_mode=check_mode, warnings_as_errors=warnings_as_errors, extra_libs=extra_libs, opt_level=opt_level, extra_import_dirs=extra_import_dirs)
@@ -843,10 +843,18 @@ def run_file(input_file, args=[], target_name=None, check_mode=False, warnings_a
         cmd = ["wine", out] + args
     elif tcfg.name in ("macos", "macos-arm") and sys_name != "darwin":
         print("error: Cannot run macOS binary on non-macOS"); sys.exit(1)
+    proc = None
+    old_handler = signal.signal(signal.SIGINT, signal.SIG_IGN)
     try:
         print(f"--- Executed at {time.strftime('%Y-%m-%d %H:%M:%S')} ---")
-        res = subprocess.run(cmd)
-        if res.returncode != 0: sys.exit(res.returncode)
+        proc = subprocess.Popen(cmd)
+        proc.wait()
+        if proc.returncode != 0:
+            if sys_name == "windows" and proc.returncode == 0xC000013A:
+                print("\n(Interrupted)")
+            elif proc.returncode < 0:
+                print(f"\n(Interrupted by signal {-proc.returncode})")
+            sys.exit(proc.returncode)
     except FileNotFoundError:
         exists = os.path.exists(out_abs)
         print(f"error: Could not execute '{out_abs}'", file=sys.stderr)
@@ -865,7 +873,15 @@ def run_file(input_file, args=[], target_name=None, check_mode=False, warnings_a
     except OSError as e:
         print(f"error: Could not execute '{out_abs}': {e}", file=sys.stderr)
         sys.exit(1)
+    except KeyboardInterrupt:
+        print("\n(Interrupted)")
+        if proc and proc.poll() is None:
+            proc.terminate()
+            try: proc.wait(timeout=5)
+            except: proc.kill(); proc.wait()
+        sys.exit(1)
     finally:
+        signal.signal(signal.SIGINT, old_handler)
         if os.path.exists(out_abs):
             for _ in range(10):
                 try:
@@ -984,10 +1000,10 @@ def main():
         sys.exit(1)
     cmd = sys.argv[1]
     if cmd in ("--help", "-h"):
-        print("Leash v0.14.0 Beta\nUsage: leash <command> [options]\nCommands: compile, run, dump, check, install, init, build, runp\nRun 'leash <command> --help' for details.\n\nGlobal Options:\n  --verbose/-vb        Enable highly detailed masterclass error and warning explanations.")
+        print("Leash v0.15.0 Beta\nUsage: leash <command> [options]\nCommands: compile, run, dump, check, install, init, build, runp\nRun 'leash <command> --help' for details.\n\nGlobal Options:\n  --verbose/-vb        Enable highly detailed masterclass error and warning explanations.")
         sys.exit(0)
     if cmd in ("--version", "-v"):
-        print("Leash v0.14.0 Beta\nBuilt on LLVM with custom GC"); sys.exit(0)
+        print("Leash v0.15.0 Beta\nBuilt on LLVM with custom GC"); sys.exit(0)
     if cmd == "check":
         if len(sys.argv) < 3:
             print("Usage: leash check <file.lsh> [options]")

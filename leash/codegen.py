@@ -1901,7 +1901,14 @@ class CodeGen:
 
         self.defer_stack.append([])  # Push new defer stack frame for this function
 
+        # Pre-declare nested functions so they are available when called from the body
+        nested_funcs = [s for s in node.body if isinstance(s, Function)]
+        for nf in nested_funcs:
+            self._codegen_predeclare_function(nf)
+
         for stmt in node.body:
+            if isinstance(stmt, Function):
+                continue  # Handled after the outer function body
             self._codegen(stmt)
             if self.builder.block.is_terminated:
                 break
@@ -1930,6 +1937,12 @@ class CodeGen:
                 self.builder.ret(default_val)
             else:
                 self.builder.unreachable()
+
+        # Generate nested function bodies
+        for nf in nested_funcs:
+            saved_vars = self.var_symtab.copy()
+            self._codegen_Function(nf)
+            self.var_symtab = saved_vars
 
         self.builder = None
         self.in_unsafe_func = old_unsafe
