@@ -654,7 +654,7 @@ def cmd_install(args):
 
     stub_path = os.path.join(LEASH_LIBS_DIR, f"{libname}.lsh")
     entry_main = "src/main.lsh"
-    entry_module = os.path.splitext(entry_main)[0].replace(os.sep, "::")
+    entry_module = os.path.splitext(entry_main)[0].replace("\\", "::").replace("/", "::")
     with open(stub_path, "w", encoding="utf-8") as f:
         f.write(f"// {libname} {ver} by {author}\n")
         f.write(f"// {desc}\n")
