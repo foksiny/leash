@@ -49,6 +49,7 @@ class Function(ASTNode):
         is_unsafe=False,
         is_inline=False,
         struct_type=None,
+        is_worker=False,
     ):
         self.name = name
         self.args = args  # list of (name, type, default) tuples - default can be None
@@ -59,6 +60,7 @@ class Function(ASTNode):
         self.is_unsafe = is_unsafe
         self.is_inline = is_inline
         self.struct_type = struct_type  # For struct functions: which struct this function belongs to
+        self.is_worker = is_worker
 
 
 class Block(ASTNode):
@@ -211,6 +213,13 @@ class ShowStatement(Statement):
         self.args = args
         self.is_buffer = is_buffer
         self.end = end
+
+
+class SpawnStatement(Statement):
+    """Represents spawning a worker function: spawn calculate(10, 20);"""
+
+    def __init__(self, call):
+        self.call = call  # Call node
 
 
 class ThrowStatement(Statement):
@@ -403,6 +412,13 @@ class ThisExpr(Expression):
         pass
 
 
+class ThisWorkerExpr(Expression):
+    """Represents 'thisworker' keyword in worker functions."""
+
+    def __init__(self):
+        pass
+
+
 class SelfExpr(Expression):
     def __init__(self, member=None):
         self.member = member
@@ -454,11 +470,13 @@ class ErrorDef(ASTNode):
 class GlobalVarDecl(ASTNode):
     """Represents a global variable declaration with visibility (pub/priv)."""
 
-    def __init__(self, name, var_type, value, visibility):
+    def __init__(self, name, var_type, value, visibility, is_shared=False, is_fusion=False):
         self.name = name
         self.var_type = var_type
         self.value = value  # expression or None
         self.visibility = visibility  # 'pub' or 'priv'
+        self.is_shared = is_shared
+        self.is_fusion = is_fusion
 
 
 class ImportStmt(ASTNode):

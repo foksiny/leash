@@ -88,11 +88,11 @@
                 },
                 {
                     "name": "keyword.declaration.leash",
-                    "match": "\\b(fnc|def|struct|union|enum|class|type|template|macro|opdef|error|pub|priv|static|pubif|unsafe|as|inline|imut|create|del|extern|use)\\b"
+                    "match": "\\b(fnc|def|struct|union|enum|class|type|template|macro|opdef|error|pub|priv|static|pubif|unsafe|as|inline|imut|create|del|extern|use|worker|shared|fusion|spawn)\\b"
                 },
                 {
                     "name": "keyword.other.leash",
-                    "match": "\\b(this|thisop|self|is|isnt|end)\\b"
+                    "match": "\\b(this|thisop|self|is|isnt|end|thisworker)\\b"
                 }
             ]
         },

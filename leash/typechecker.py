@@ -1571,6 +1571,8 @@ class TypeChecker:
             self._check_assignment(stmt)
         elif isinstance(stmt, ReturnStatement):
             self._check_return(stmt)
+        elif isinstance(stmt, SpawnStatement):
+            self._check_spawn(stmt)
         elif isinstance(stmt, ThrowStatement):
             self._check_throw(stmt)
         elif isinstance(stmt, ShowStatement):
@@ -2148,6 +2150,35 @@ class TypeChecker:
                     node=arg_expr,
                 )
 
+    def _check_spawn(self, stmt):
+        call = stmt.call
+        if not isinstance(call, Call):
+            self._error("spawn requires a function call", node=stmt)
+            return
+        func_name = call.name
+        if func_name not in self.func_types:
+            self._error(f"Cannot spawn unknown function '{func_name}'", node=stmt)
+            return
+        expected_args, return_type, arg_names, arg_defaults = self.func_types[func_name]
+        if len(call.args) != len(expected_args):
+            self._error(
+                f"Function '{func_name}' expects {len(expected_args)} arguments, but spawn call provides {len(call.args)}",
+                node=stmt,
+            )
+            return
+        for i, (arg_expr, expected) in enumerate(zip(call.args, expected_args)):
+            got = self._infer_type(arg_expr)
+            if got and not self._types_compatible(got, expected):
+                self._error(
+                    f"Argument {i + 1} of spawn '{func_name}' expects '{expected}', got '{got}'",
+                    node=arg_expr,
+                )
+        if return_type != "void":
+            self._error(
+                f"Spawned function '{func_name}' must return void, but returns '{return_type}'",
+                node=stmt,
+            )
+
     def _check_if(self, stmt):
         self._infer_type(stmt.condition)
         if isinstance(stmt.condition, BoolLiteral):
@@ -2271,6 +2302,10 @@ class TypeChecker:
             if self.current_func_node and getattr(self.current_func_node, 'struct_type', None):
                 return self.current_func_node.struct_type
             self._error("'this' can only be used inside a class method or struct function", node=expr)
+        elif isinstance(expr, ThisWorkerExpr):
+            if not self.current_func_node or not getattr(self.current_func_node, 'is_worker', False):
+                self._error("'thisworker' can only be used inside a worker function", node=expr)
+            return "thisworker"
         elif isinstance(expr, SelfExpr):
             if expr.member:
                 if expr.member == "Parent":
@@ -3328,6 +3363,10 @@ class TypeChecker:
         # Safe pointer allows '.' access as if it were the type itself
         if resolved.startswith("&"):
             resolved = self._resolve(resolved[1:])
+
+        # thisworker.interrupted
+        if resolved == "thisworker" and expr.member == "interrupted":
+            return "bool"
 
         # String .size
         if self._base_type(resolved) == "string" and expr.member == "size":

@@ -4,6 +4,7 @@ import sys
 import argparse
 import re
 import platform as pyplatform
+import signal
 from pathlib import Path
 
 # Paths to important directories
@@ -131,8 +132,26 @@ def run_leash(file_path, target=None):
             timeout=10,
         )
         return result.stdout + result.stderr, result.returncode
-    except subprocess.TimeoutExpired:
-        return "ERROR: Program timed out!", 1
+    except subprocess.TimeoutExpired as e:
+        if sys.platform != "win32":
+            e.process.send_signal(signal.SIGINT)
+        else:
+            e.process.send_signal(signal.CTRL_BREAK_EVENT)
+        try:
+            e.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            e.process.kill()
+            e.process.wait()
+        output = ""
+        if e.process.stdout:
+            output += e.process.stdout.read()
+        if e.process.stderr:
+            output += e.process.stderr.read()
+        if e.process.stdout:
+            e.process.stdout.close()
+        if e.process.stderr:
+            e.process.stderr.close()
+        return output, e.process.returncode
     except Exception as e:
         return f"ERROR: Running leash failed: {e}", 1
 

@@ -80,6 +80,11 @@ class Lexer:
         "ignore",
         "opdef",
         "thisop",
+        "shared",
+        "fusion",
+        "worker",
+        "spawn",
+        "thisworker",
     }
 
     # regexes

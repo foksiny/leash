@@ -4,7 +4,7 @@ if exists("b:current_syntax")
 endif
 
 " Keywords
- syn keyword leashKeyword fnc def struct union enum class type template macro opdef return if also else unless while for do foreach loop in imut vector vec this thisop pub priv static stop continue empty ignore use works otherwise switch case default unsafe as inline defer error throw self alsou create del is isnt
+ syn keyword leashKeyword fnc def struct union enum class type template macro opdef return if also else unless while for do foreach loop in imut vector vec this thisop pub priv static stop continue empty ignore use works otherwise switch case default unsafe as inline defer error throw self alsou create del is isnt worker spawn shared fusion thisworker
 
 " Enum member with custom value: MEMBER: type = value
 syn match leashEnumMember /^\s*\zs[a-zA-Z_][a-zA-Z0-9_]*\ze\s*:/

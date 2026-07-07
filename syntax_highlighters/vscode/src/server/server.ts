@@ -442,6 +442,11 @@ connection.onHover((params: TextDocumentPositionParams): Hover | null => {
         'del': 'Destroys a class instance and calls its destructor.',
         'is': 'Type/value check or equality operator.',
         'isnt': 'Negated type/value check or inequality operator.',
+        'worker': 'Declares a worker function that runs in its own thread.',
+        'spawn': 'Launches a worker function in a new OS thread.',
+        'shared': 'Declares a shared global variable (one writer, many readers).',
+        'fusion': 'Declares a fusion global variable (multiple readers and writers, atomic).',
+        'thisworker': 'Inside a worker, provides access to the worker\'s state (e.g. `thisworker.interrupted`).',
         'true': 'Boolean true literal.',
         'false': 'Boolean false literal.',
         'null': 'Null/nil literal representing absence of a value.',
@@ -654,7 +659,7 @@ connection.onCompletion((params: TextDocumentPositionParams): CompletionList => 
     const symbols: CompletionItem[] = [];
     
     // Add keywords
-    const keywords = ["fnc", "return", "int", "void", "def", "struct", "true", "false", "null", "nil", "string", "char", "bool", "float", "uint", "if", "also", "else", "unless", "while", "for", "do", "foreach", "loop", "in", "class", "this", "thisop", "pub", "priv", "static", "stop", "continue", "empty", "ignore", "use", "switch", "case", "default", "pubif", "unsafe", "as", "inline", "defer", "error", "throw", "self", "macro", "create", "del", "is", "isnt", "union", "enum", "type", "template", "opdef", "extern", "works", "otherwise", "imut", "show", "showb", "get", "keyget", "toint", "tofloat", "tostring", "sizeof", "size", "push", "popb", "popf", "pushb", "pushf", "insert", "clear", "remove", "extend", "extendv", "insertv", "inserta", "isin", "rand", "randf", "seed", "choose", "wait", "timepass", "exit", "exec", "cstr", "lstr", "normescape", "inttobytes", "bytestoint", "floattobytes", "bytestofloat", "open", "close", "read", "write", "readln", "readb", "writeb", "replaceall", "rewind", "rename", "delete", "replace", "keys", "values"];
+    const keywords = ["fnc", "return", "int", "void", "def", "struct", "true", "false", "null", "nil", "string", "char", "bool", "float", "uint", "if", "also", "else", "unless", "while", "for", "do", "foreach", "loop", "in", "class", "this", "thisop", "pub", "priv", "static", "stop", "continue", "empty", "ignore", "use", "switch", "case", "default", "pubif", "unsafe", "as", "inline", "defer", "error", "throw", "self", "macro", "create", "del", "is", "isnt", "union", "enum", "type", "template", "opdef", "extern", "works", "otherwise", "imut", "worker", "spawn", "shared", "fusion", "thisworker", "show", "showb", "get", "keyget", "toint", "tofloat", "tostring", "sizeof", "size", "push", "popb", "popf", "pushb", "pushf", "insert", "clear", "remove", "extend", "extendv", "insertv", "inserta", "isin", "rand", "randf", "seed", "choose", "wait", "timepass", "exit", "exec", "cstr", "lstr", "normescape", "inttobytes", "bytestoint", "floattobytes", "bytestofloat", "open", "close", "read", "write", "readln", "readb", "writeb", "replaceall", "rewind", "rename", "delete", "replace", "keys", "values"];
     
     keywords.forEach(kw => {
         if (!currentWord || kw.startsWith(currentWord)) {

@@ -18,6 +18,7 @@ from .ast_nodes import (
     ContinueStatement,
     EmptyStatement,
     IgnoreStatement,
+    SpawnStatement,
     ExpressionStatement,
     BinaryOp,
     UnaryOp,
@@ -54,6 +55,7 @@ from .ast_nodes import (
     ClassField,
     ClassMethod,
     ThisExpr,
+    ThisWorkerExpr,
     SelfExpr,
     PointerMemberAccess,
     TemplateDef,
@@ -477,7 +479,11 @@ class Parser:
                 self.eat("INLINE")
                 is_inline = True
 
-            if self.current().type in ("PUB", "PRIV"):
+            if self.current().type == "WORKER":
+                items.append(self.parse_worker_function(is_unsafe=is_unsafe, is_inline=is_inline))
+            elif self.current().type in ("SHARED", "FUSION"):
+                items.append(self.parse_shared_global_var())
+            elif self.current().type in ("PUB", "PRIV"):
                 # Peek ahead to see if next token is DEF or FNC or USE
                 if self.peek() and self.peek().type == "DEF":
                     # It's a def with visibility
@@ -619,7 +625,11 @@ class Parser:
             self.eat("UNSAFE")
             is_unsafe = True
 
-        if self.current().type in ("PUB", "PRIV"):
+        if self.current().type == "WORKER":
+            return self.parse_worker_function(is_unsafe=is_unsafe)
+        elif self.current().type in ("SHARED", "FUSION"):
+            return self.parse_shared_global_var()
+        elif self.current().type in ("PUB", "PRIV"):
             # Peek ahead to see if next token is DEF or FNC or USE
             if self.peek() and self.peek().type == "DEF":
                 visibility = self.current().value.lower()
@@ -991,6 +1001,32 @@ class Parser:
             value = self.parse_expression(no_struct_init=False)
         self.eat("SEMI")
         return GlobalVarDecl(name, var_type, value, visibility)
+
+    def parse_shared_global_var(self):
+        """Parse a shared or fusion global variable declaration."""
+        is_fusion = self.current().type == "FUSION"
+        self.eat(self.current().type)
+        visibility = "pub"
+        if self.current().type in ("PUB", "PRIV"):
+            visibility = self.current().value.lower()
+            self.eat(self.current().type)
+        name = self.eat("IDENT").value
+        self.eat("COLON")
+        var_type = self.parse_type()
+        value = None
+        if self.current().type == "ASSIGN":
+            self.eat("ASSIGN")
+            value = self.parse_expression(no_struct_init=False)
+        self.eat("SEMI")
+        return GlobalVarDecl(name, var_type, value, visibility, is_shared=not is_fusion, is_fusion=is_fusion)
+
+    def parse_worker_function(self, visibility="pub", is_unsafe=False, is_inline=False):
+        """Parse a worker function: worker fnc name(args) : void { ... }"""
+        tok = self.current()
+        self.eat("WORKER")
+        fnc_node = self.parse_function(visibility=visibility, is_unsafe=is_unsafe, is_inline=is_inline)
+        fnc_node.is_worker = True
+        return fnc_node
 
     def _parse_class_body(self, name, visibility="pub"):
         self.eat("CLASS")
@@ -1528,6 +1564,13 @@ class Parser:
                     tok.line,
                     tok.column,
                 )
+
+        elif current.type == "SPAWN":
+            tok = self.current()
+            self.eat("SPAWN")
+            call = self.parse_expression()
+            self.eat("SEMI")
+            return self._pos(SpawnStatement(call), tok)
 
         elif current.type in ("RETURN",):
             tok = self.current()
@@ -2070,6 +2113,10 @@ class Parser:
             tok = self.current()
             self.eat("THIS")
             return self._pos(ThisExpr(), tok)
+        elif self.current().type == "THISWORKER":
+            tok = self.current()
+            self.eat("THISWORKER")
+            return self._pos(ThisWorkerExpr(), tok)
         elif self.current().type == "THISOP":
             tok = self.current()
             self.eat("THISOP")

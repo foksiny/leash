@@ -9,6 +9,9 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <conio.h>
+#include <windows.h>
+#include <signal.h>
+#include "gc.h"
 
 FILE* _leash_get_stdout(void) {
     return stdout;
@@ -22,4 +25,89 @@ void __chkstk(void) {
 /* Read a single key without waiting for Enter */
 int leash_keyget(void) {
     return _getch();
+}
+
+/* ---- Threading support (Windows) ---- */
+
+/* Maximum number of worker threads */
+#define MAX_WORKERS 64
+
+/* Global interrupted flag for worker threads */
+static volatile int _leash_interrupted = 0;
+
+/* Thread handles for all spawned workers */
+static HANDLE _leash_workers[MAX_WORKERS];
+static int _leash_num_workers = 0;
+
+/* Signal handler for Ctrl+C / SIGINT */
+static void _leash_signal_handler(int sig) {
+    (void)sig;
+    _leash_interrupted = 1;
+}
+
+/* Thread wrapper to match pthread's void* (*)(void*) signature */
+typedef struct {
+    void* (*func)(void*);
+    void* arg;
+} WorkerArgs;
+
+static DWORD WINAPI _leash_thread_wrapper(LPVOID lpParam) {
+    WorkerArgs* wa = (WorkerArgs*)lpParam;
+    wa->func(wa->arg);
+    free(wa);
+    return 0;
+}
+
+/* Spawn a worker thread.
+ * Returns 0 on success, non-zero on failure.
+ */
+int leash_spawn_worker(void* (*func)(void*), void* arg) {
+    if (_leash_num_workers >= MAX_WORKERS) {
+        fprintf(stderr, "error: Maximum number of worker threads (%d) reached\n", MAX_WORKERS);
+        return -1;
+    }
+
+    /* Register the argument as a GC root so it isn't collected before the
+       worker thread starts and has a chance to load it.  The worker wrapper
+       (generated code) will unregister it after loading the parameters. */
+    if (arg) {
+        leash_gc_register_root(arg);
+    }
+
+    /* We need a wrapper because Windows threads have a different signature */
+    WorkerArgs* wa = (WorkerArgs*)malloc(sizeof(WorkerArgs));
+    if (!wa) {
+        fprintf(stderr, "error: Out of memory\n");
+        return -1;
+    }
+    wa->func = func;
+    wa->arg = arg;
+
+    HANDLE thread = CreateThread(NULL, 0, _leash_thread_wrapper, wa, 0, NULL);
+    if (thread == NULL) {
+        fprintf(stderr, "error: Failed to create worker thread\n");
+        free(wa);
+        return -1;
+    }
+    _leash_workers[_leash_num_workers++] = thread;
+    return 0;
+}
+
+/* Check if the program has been interrupted (Ctrl+C). Returns 1 if interrupted, 0 otherwise. */
+int leash_is_interrupted(void) {
+    return _leash_interrupted;
+}
+
+/* Set up the interrupt signal handler (SIGINT -> Ctrl+C). */
+void leash_setup_interrupt_handler(void) {
+    signal(SIGINT, _leash_signal_handler);
+}
+
+/* Wait for all spawned worker threads to finish. */
+void leash_wait_for_workers(void) {
+    for (int i = 0; i < _leash_num_workers; i++) {
+        WaitForSingleObject(_leash_workers[i], INFINITE);
+        CloseHandle(_leash_workers[i]);
+    }
+    _leash_num_workers = 0;
 }

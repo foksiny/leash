@@ -59,6 +59,14 @@ Leash is a strongly-typed, modern compiled programming language built on top of 
 - [Library Imports](#library-imports)
 - [Program Termination](#program-termination)
 - [Library Installation](#library-installation)
+- [Concurrency](#concurrency)
+  - [Shared Variables (`shared`)](#shared-variables-shared)
+  - [Fusion Variables (`fusion`)](#fusion-variables-fusion)
+  - [Worker Functions (`worker fnc`)](#worker-functions-worker-fnc)
+  - [Spawning Workers (`spawn`)](#spawning-workers-spawn)
+  - [The `thisworker` Built-in](#the-thisworker-built-in)
+  - [Lifecycle & Cleanup](#lifecycle--cleanup)
+  - [Thread Safety Notes](#thread-safety-notes)
 - [Syntax Highlighting](#syntax-highlighting)
 - [Unleashing IDE](#unleashing-ide)
 
@@ -3655,6 +3663,133 @@ fnc main() : void {
 
 This feature is useful for graceful error handling, fallback logic, and recovering from unexpected conditions.
 
+## Concurrency
+
+Leash supports multi-threaded programming through **workers** — special functions that run concurrently in separate OS threads. Workers communicate through two kinds of global variables:
+
+### Shared Variables (`shared`)
+
+A `shared` variable allows **one thread** to write while any number of threads read. This is the default safe pattern for producer-consumer scenarios:
+
+```leash
+shared result: int = 0;  // Only one writer, many readers
+```
+
+- Only a single worker may write to a `shared` variable at any time
+- Any number of workers may read the current value
+- No atomicity guarantees — readers may see stale values until the writer's store is visible
+
+### Fusion Variables (`fusion`)
+
+A `fusion` variable allows **multiple threads** to both read and write concurrently. Writes use atomic stores and reads use atomic loads, so every thread eventually sees the latest value:
+
+```leash
+fusion counter: int = 0;  // Multiple readers and writers
+```
+
+- Any worker may read or write
+- Changes are eventually visible to all threads (atomic semantics)
+- Use for counters, flags, and other values that many threads need to share
+
+### Worker Functions (`worker fnc`)
+
+Mark a function with `worker fnc` instead of `fnc` to make it runnable in its own thread:
+
+```leash
+worker fnc calculate(a int, b int) {
+    while !thisworker.interrupted {
+        result = a + b + result;
+        show("calculate updated result to: ", result);
+    }
+}
+```
+
+- Workers are declared just like regular functions but with the `worker` keyword
+- They accept parameters like normal functions
+- They run in an infinite loop by default — use `thisworker.interrupted` to check if the program is shutting down
+
+### Spawning Workers (`spawn`)
+
+Use `spawn` to launch a worker function in a new thread:
+
+```leash
+fnc main() {
+    spawn calculate(3, 5);
+    spawn increment_counter();
+    spawn show_result();
+}
+```
+
+- Each `spawn` creates a new OS thread running the given worker function
+- Arguments are passed by value (copied into a heap-allocated struct)
+- All spawned threads run concurrently with `main` and with each other
+- Workers stop when the program terminates or when `thisworker.interrupted` becomes true (e.g., on Ctrl+C)
+
+### The `thisworker` Built-in
+
+Inside a worker function, the `thisworker` keyword provides access to the current worker's state:
+
+```leash
+worker fnc my_worker() {
+    while !thisworker.interrupted {
+        // Do work
+    }
+}
+```
+
+| Member | Type | Description |
+|--------|------|-------------|
+| `interrupted` | `bool` | `true` when the program is shutting down (e.g., Ctrl+C) |
+
+### Full Example
+
+```leash
+shared result: int = 0;
+fusion counter: int = 0;
+
+worker fnc calculate(a int, b int) {
+    while !thisworker.interrupted {
+        result = a + b + result;
+        show("calculate updated result to: ", result);
+    }
+}
+
+worker fnc increment_counter() {
+    while !thisworker.interrupted {
+        counter = counter + 1;
+        show("counter incremented to: ", counter);
+    }
+}
+
+worker fnc show_result() {
+    while !thisworker.interrupted {
+        show("result:", result, " counter:", counter);
+    }
+}
+
+fnc main() {
+    spawn calculate(3, 5);
+    spawn increment_counter();
+    spawn show_result();
+}
+```
+
+### Lifecycle & Cleanup
+
+- Workers are automatically started when `spawn` is called
+- They run until the program exits or they detect `thisworker.interrupted`
+- Pressing Ctrl+C sets the interrupted flag, allowing workers to exit their loops cleanly
+- The runtime waits for all workers to finish before the program fully exits
+- Memory allocated in workers is handled by Leash's garbage collector (thread-safe)
+
+### Thread Safety Notes
+
+- `shared` variables have no atomicity guarantees — use them when only one worker writes
+- `fusion` variables use atomic loads/stores, making writes visible across threads
+- The garbage collector is fully thread-safe — allocations from any worker are safe
+- The `show()` function is thread-safe (output lines may interleave)
+- There is no built-in mutex or lock — use `fusion` variables for coordination
+
 ## Syntax Highlighting
 
 Leash provides native syntax highlighting for popular editors. You can find the files in the `syntax_highlighters/` directory.
@@ -3707,7 +3842,7 @@ The VS Code extension provides syntax highlighting, real-time diagnostics, hover
    cd syntax_highlighters/vscode
    npm run package
    ```
-3. Install the generated `leash-0.12.0.vsix` in VS Code (Extensions view -> `...` -> `Install from VSIX...`).
+3. Install the generated `leash-0.13.0.vsix` in VS Code (Extensions view -> `...` -> `Install from VSIX...`).
 
 ### Emacs
 

@@ -1,0 +1,28 @@
+shared result: int = 0; // Only one writer, all others can only read
+fusion counter: int = 0; // Multiple threads can read and write (atomic)
+
+worker fnc calculate(a int, b int) {
+    while (!thisworker.interrupted) && counter < 5000 {
+        result = a + b + result;
+        show("calculate updated result to: ", result);
+    }
+}
+
+worker fnc increment_counter() {
+    while (!thisworker.interrupted) && counter < 5000 {
+        counter = counter + 1;
+        show("counter incremented to: ", counter);
+    }
+}
+
+worker fnc show_result() {
+    while (!thisworker.interrupted) && counter < 5000 {
+        show("result:", result, " counter:", counter);
+    }
+}
+
+fnc main() {
+    spawn calculate(3, 5);
+    spawn increment_counter();
+    spawn show_result();
+}

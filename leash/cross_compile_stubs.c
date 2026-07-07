@@ -13,7 +13,10 @@
 #include <sys/time.h>
 #include <stdio.h>
 #include <termios.h>
+#include "gc.h"
 #include <unistd.h>
+#include <pthread.h>
+#include <signal.h>
 
 /* Helper to get stdout portably */
 FILE* _leash_get_stdout(void) {
@@ -50,4 +53,70 @@ int leash_keyget(void) {
     int c = getchar();
     tcsetattr(STDIN_FILENO, TCSANOW, &oldt);
     return c;
+}
+
+/* ---- Threading support (POSIX) ---- */
+
+/* Maximum number of worker threads */
+#define MAX_WORKERS 64
+
+/* Global interrupted flag for worker threads */
+static volatile int _leash_interrupted = 0;
+
+/* Thread handles for all spawned workers */
+static pthread_t _leash_workers[MAX_WORKERS];
+static int _leash_num_workers = 0;
+
+/* Signal handler for Ctrl+C / SIGINT */
+static void _leash_signal_handler(int sig) {
+    (void)sig;
+    _leash_interrupted = 1;
+}
+
+/* Spawn a worker thread.
+ * Returns 0 on success, non-zero on failure.
+ */
+int leash_spawn_worker(void* (*func)(void*), void* arg) {
+    if (_leash_num_workers >= MAX_WORKERS) {
+        fprintf(stderr, "error: Maximum number of worker threads (%d) reached\n", MAX_WORKERS);
+        return -1;
+    }
+
+    /* Register the argument as a GC root so it isn't collected before the
+       worker thread starts and has a chance to load it.  The worker wrapper
+       (generated code) will unregister it after loading the parameters. */
+    if (arg) {
+        leash_gc_register_root(arg);
+    }
+
+    pthread_t thread;
+    if (pthread_create(&thread, NULL, func, arg) != 0) {
+        if (arg) leash_gc_unregister_root(arg);
+        fprintf(stderr, "error: Failed to create worker thread\n");
+        return -1;
+    }
+    _leash_workers[_leash_num_workers++] = thread;
+    return 0;
+}
+
+/* Check if the program has been interrupted (Ctrl+C). Returns 1 if interrupted, 0 otherwise. */
+int leash_is_interrupted(void) {
+    return _leash_interrupted;
+}
+
+/* Set up the interrupt signal handler (SIGINT -> Ctrl+C). */
+void leash_setup_interrupt_handler(void) {
+    struct sigaction sa;
+    sa.sa_handler = _leash_signal_handler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sigaction(SIGINT, &sa, NULL);
+}
+
+/* Wait for all spawned worker threads to finish. */
+void leash_wait_for_workers(void) {
+    for (int i = 0; i < _leash_num_workers; i++) {
+        pthread_join(_leash_workers[i], NULL);
+    }
+    _leash_num_workers = 0;
 }

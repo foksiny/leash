@@ -14,6 +14,7 @@ from .ast_nodes import (
     TemplateDef,
     GlobalVarDecl,
     WorksOtherwiseStatement,
+    SpawnStatement,
     ThrowStatement,
     SelfExpr,
     NativeImport,
@@ -32,6 +33,7 @@ from .ast_nodes import (
     IsExpr,
     LoopStatement,
     ThisOpTypeExpr,
+    ThisWorkerExpr,
     OpDef,
 )
 
@@ -195,6 +197,12 @@ class CodeGen:
         gc_collect_ty = ir.FunctionType(ir.VoidType(), [])
         self.gc_collect = ir.Function(
             self.module, gc_collect_ty, name="leash_gc_collect"
+        )
+
+        # GC root management (used for multi-threading - spawn args)
+        gc_root_ty = ir.FunctionType(ir.VoidType(), [ir.IntType(8).as_pointer()])
+        self.gc_unregister_root = ir.Function(
+            self.module, gc_root_ty, name="leash_gc_unregister_root"
         )
 
         # Free is still declared just in case, but GC_malloc doesn't need it.
@@ -406,6 +414,20 @@ class CodeGen:
         )
         self.setbuf_fn = ir.Function(self.module, setbuf_ty, name="setbuf")
 
+        # Threading support
+        void_ptr = ir.IntType(8).as_pointer()
+        leash_spawn_ty = ir.FunctionType(ir.IntType(32), [ir.FunctionType(void_ptr, [void_ptr]).as_pointer(), void_ptr])
+        self.leash_spawn_worker_fn = ir.Function(self.module, leash_spawn_ty, name="leash_spawn_worker")
+
+        leash_is_interrupted_ty = ir.FunctionType(ir.IntType(32), [])
+        self.leash_is_interrupted_fn = ir.Function(self.module, leash_is_interrupted_ty, name="leash_is_interrupted")
+
+        leash_setup_interrupt_ty = ir.FunctionType(ir.VoidType(), [])
+        self.leash_setup_interrupt_fn = ir.Function(self.module, leash_setup_interrupt_ty, name="leash_setup_interrupt_handler")
+
+        leash_wait_workers_ty = ir.FunctionType(ir.VoidType(), [])
+        self.leash_wait_workers_fn = ir.Function(self.module, leash_wait_workers_ty, name="leash_wait_for_workers")
+
     def _emit_const_str(self, string_val):
         """Create a global string constant and return a pointer to it (i8*)."""
         # Search for existing constant
@@ -584,6 +606,8 @@ class CodeGen:
             if "this" in self.var_symtab:
                 return self.var_symtab["this"][1]
             return "int"
+        if isinstance(node, ThisWorkerExpr):
+            return "thisworker"
         if isinstance(node, Identifier):
             if node.name in self.var_symtab:
                 return self.var_symtab[node.name][1]
@@ -1667,6 +1691,13 @@ class CodeGen:
             return
         if node.name == "main":
             return
+        is_worker = getattr(node, "is_worker", False)
+        if is_worker:
+            void_ptr = ir.IntType(8).as_pointer()
+            func_type = ir.FunctionType(void_ptr, [void_ptr])
+            func = ir.Function(self.module, func_type, name=node.name)
+            self.func_symtab[node.name] = func
+            return
         arg_types = []
         struct_type_name = getattr(node, 'struct_type', None)
         if struct_type_name:
@@ -1719,20 +1750,28 @@ class CodeGen:
         )
         self.current_func_ret_type_name = node.return_type
 
-        # Determine return type
-        ret_type = self._get_llvm_type(node.return_type, is_return=True)
+        name = node.name
+        is_main_with_args = False
+        is_worker = getattr(node, "is_worker", False)
 
-        # Determine argument types
-        arg_types = []
-        for name, typ, _ in node.args:
-            arg_types.append(self._get_llvm_type(typ, is_return=False))
+        if is_worker:
+            # Worker functions have void*(void*) signature
+            void_ptr = ir.IntType(8).as_pointer()
+            func_type = ir.FunctionType(void_ptr, [void_ptr])
+            ret_type = void_ptr
+            arg_types = [void_ptr]
+        else:
+            # Determine return type
+            ret_type = self._get_llvm_type(node.return_type, is_return=True)
 
-        func_type = ir.FunctionType(ret_type, arg_types)
+            # Determine argument types
+            arg_types = []
+            for arg_name, typ, _ in node.args:
+                arg_types.append(self._get_llvm_type(typ, is_return=False))
+
+            func_type = ir.FunctionType(ret_type, arg_types)
 
         # Main function usually needs to be i32 main() in standard C compilation
-        name = node.name
-
-        is_main_with_args = False
         if name == "main":
             if len(node.args) == 1 and node.args[0][1] == "string[]":
                 is_main_with_args = True
@@ -1758,6 +1797,7 @@ class CodeGen:
         self.builder = ir.IRBuilder(block)
 
         name = node.name
+        is_worker = getattr(node, "is_worker", False)
 
         old_func_name = self.current_func_name
         self.current_func_name = name
@@ -1787,6 +1827,9 @@ class CodeGen:
                 seed_val = self.builder.trunc(time_val, ir.IntType(32))
                 self.builder.call(self.srand, [seed_val])
 
+            # Set up interrupt handler for worker threads
+            self.builder.call(self.leash_setup_interrupt_fn, [])
+
         # Allocate args
         struct_type_name = getattr(node, 'struct_type', None)
         arg_offset = 0
@@ -1797,7 +1840,40 @@ class CodeGen:
             self.var_symtab["this"] = (this_ptr, struct_type_name)
             arg_offset = 1
 
-        if is_main_with_args and len(node.args) == 1 and node.args[0][1] == "string[]":
+        if is_worker:
+            # Worker functions get void*(void*) - the arg contains params
+            func.args[0].name = "_arg"
+            if node.args:
+                # Cast void* arg to struct pointer and load each parameter
+                arg_types = [self._get_llvm_type(t) for _, t, _ in node.args]
+                arg_struct_ty = ir.LiteralStructType(arg_types)
+                arg_struct_ptr = self.builder.bitcast(
+                    func.args[0], arg_struct_ty.as_pointer()
+                )
+                for i, (arg_name, arg_type_name, _) in enumerate(node.args):
+                    llvm_arg_type = self._get_llvm_type(arg_type_name)
+                    ptr = self.builder.alloca(llvm_arg_type)
+                    gep = self.builder.gep(
+                        arg_struct_ptr,
+                        [
+                            ir.Constant(ir.IntType(32), 0),
+                            ir.Constant(ir.IntType(32), i),
+                        ],
+                    )
+                    val = self.builder.load(gep)
+                    self.builder.store(val, ptr)
+                    self.var_symtab[arg_name] = (ptr, arg_type_name)
+                # Unregister the arg from GC roots (registered in leash_spawn_worker)
+                self.builder.call(self.gc_unregister_root, [func.args[0]])
+            else:
+                for arg_name, arg_type_name, _ in node.args:
+                    llvm_arg_type = self._get_llvm_type(arg_type_name)
+                    ptr = self.builder.alloca(llvm_arg_type)
+                    self.builder.store(
+                        ir.Constant(llvm_arg_type, 0), ptr
+                    )
+                    self.var_symtab[arg_name] = (ptr, arg_type_name)
+        elif is_main_with_args and len(node.args) == 1 and node.args[0][1] == "string[]":
             argc_val = func.args[arg_offset]
             argv_val = func.args[arg_offset + 1]
             argc_val.name = "argc"
@@ -1840,7 +1916,12 @@ class CodeGen:
             self._emit_cleanup()
             if name == "main":
                 self.builder.call(self.showb_flush_fn, [])
+                # Wait for all worker threads before exiting
+                self.builder.call(self.leash_wait_workers_fn, [])
                 self.builder.ret(ir.Constant(ir.IntType(32), 0))
+            elif is_worker:
+                void_ptr = ir.IntType(8).as_pointer()
+                self.builder.ret(ir.Constant(void_ptr, None))
             elif node.return_type == "void":
                 self.builder.ret_void()
             elif node.return_type and node.return_type.startswith("("):
@@ -2579,6 +2660,56 @@ class CodeGen:
 
     def _codegen_ExpressionStatement(self, node):
         self._codegen(node.expr)
+
+    def _codegen_SpawnStatement(self, node):
+        from .ast_nodes import Call
+        call = node.call
+        if isinstance(call, Call):
+            func_name = call.name
+            if func_name in self.func_symtab:
+                func = self.func_symtab[func_name]
+                void_ptr = ir.IntType(8).as_pointer()
+                if call.args:
+                    # Evaluate all arguments
+                    arg_vals = [self._codegen(a) for a in call.args]
+                    # Build a struct type matching the argument types
+                    arg_types = [v.type for v in arg_vals]
+                    arg_struct_ty = ir.LiteralStructType(arg_types)
+                    # Allocate heap memory for the struct
+                    struct_size = self._get_type_size(arg_struct_ty)
+                    size_val = ir.Constant(ir.IntType(64), struct_size)
+                    arg_mem = self.builder.call(self.malloc, [size_val])
+                    arg_ptr = self.builder.bitcast(
+                        arg_mem, arg_struct_ty.as_pointer()
+                    )
+                    # Store each argument into the struct
+                    for i, v in enumerate(arg_vals):
+                        gep = self.builder.gep(
+                            arg_ptr,
+                            [
+                                ir.Constant(ir.IntType(32), 0),
+                                ir.Constant(ir.IntType(32), i),
+                            ],
+                        )
+                        self.builder.store(v, gep)
+                    self.builder.call(
+                        self.leash_spawn_worker_fn, [func, arg_mem]
+                    )
+                else:
+                    null_arg = ir.Constant(void_ptr, None)
+                    self.builder.call(
+                        self.leash_spawn_worker_fn, [func, null_arg]
+                    )
+            else:
+                raise LeashError(
+                    f"Cannot spawn unknown function '{func_name}'",
+                    line=node.line, col=node.col
+                )
+        return None
+
+    def _codegen_ThisWorkerExpr(self, node):
+        is_interrupted = self.builder.call(self.leash_is_interrupted_fn, [])
+        return self.builder.icmp_signed("!=", is_interrupted, ir.Constant(ir.IntType(32), 0))
 
     def _codegen_ShowStatement(self, node):
         from .ast_nodes import Identifier, MemberAccess
@@ -6734,6 +6865,11 @@ class CodeGen:
 
     def _codegen_MemberAccess(self, node):
         from .ast_nodes import Identifier
+
+        # Handle thisworker.interrupted
+        from .ast_nodes import ThisWorkerExpr
+        if isinstance(node.expr, ThisWorkerExpr) and node.member == "interrupted":
+            return self._codegen_ThisWorkerExpr(node.expr)
 
         # Handle static class field access (e.g., idkMath.PI or this.PI in static method)
         from .ast_nodes import ThisExpr

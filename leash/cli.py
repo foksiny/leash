@@ -18,6 +18,8 @@ from .ast_nodes import (
     ClassDef,
     Function,
     GlobalVarDecl,
+    SpawnStatement,
+    ThisWorkerExpr,
     TemplateDef,
     ImportStmt,
     ConditionalDef,
@@ -982,10 +984,10 @@ def main():
         sys.exit(1)
     cmd = sys.argv[1]
     if cmd in ("--help", "-h"):
-        print("Leash v0.12.0 Beta\nUsage: leash <command> [options]\nCommands: compile, run, dump, check, install, init, build, runp\nRun 'leash <command> --help' for details.\n\nGlobal Options:\n  --verbose/-vb        Enable highly detailed masterclass error and warning explanations.")
+        print("Leash v0.13.0 Beta\nUsage: leash <command> [options]\nCommands: compile, run, dump, check, install, init, build, runp\nRun 'leash <command> --help' for details.\n\nGlobal Options:\n  --verbose/-vb        Enable highly detailed masterclass error and warning explanations.")
         sys.exit(0)
     if cmd in ("--version", "-v"):
-        print("Leash v0.12.0 Beta\nBuilt on LLVM with custom GC"); sys.exit(0)
+        print("Leash v0.13.0 Beta\nBuilt on LLVM with custom GC"); sys.exit(0)
     if cmd == "check":
         if len(sys.argv) < 3:
             print("Usage: leash check <file.lsh> [options]")
