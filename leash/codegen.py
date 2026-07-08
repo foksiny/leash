@@ -681,6 +681,8 @@ class CodeGen:
             base_type = self._get_leash_type_name(node.expr)
             if "[" in base_type:
                 return base_type.split("[")[0]
+            elif base_type == "string":
+                return "char"
         elif isinstance(node, EnumMemberAccess):
             # Check if enum member has a custom type
             enum_info = self.enum_symtab.get(node.enum_name)
@@ -2959,7 +2961,7 @@ class CodeGen:
                 width = val.type.width
                 arg_type = self._get_leash_type_name(arg_node)
                 is_unsigned = (arg_type.startswith("uint") or arg_type == "uint")
-                if width == 8 and arg_type == "char":
+                if width == 8:
                     format_str += "%c"
                 elif width <= 32:
                     if width < 32:
@@ -7515,7 +7517,7 @@ class CodeGen:
                 res64 = self.builder.call(self.atoll, [val])
                 return self._emit_cast(res64, dst_type)
             else:
-                return self._emit_cast(val, dst_type)
+                return self._emit_cast(val, dst_type, is_signed=False)
         elif node.name == "tofloat":
             if src_is_str:
                 res64 = self.builder.call(self.atof, [val])
@@ -8067,10 +8069,8 @@ class CodeGen:
         if llvm_type is None or isinstance(llvm_type, ir.VoidType):
             return ir.Constant(ir.IntType(32), 0)
 
-        # Calculate size using GEP trick
-        null_ptr = ir.Constant(llvm_type.as_pointer(), None)
-        size_ptr = self.builder.gep(null_ptr, [ir.Constant(ir.IntType(32), 1)])
-        return self.builder.ptrtoint(size_ptr, ir.IntType(32))
+        size = self._get_type_size(llvm_type)
+        return ir.Constant(ir.IntType(32), size)
 
     def get_ir(self):
         return str(self.module)

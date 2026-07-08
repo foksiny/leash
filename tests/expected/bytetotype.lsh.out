@@ -1,15 +1,15 @@
-0: 10
-1: 0
-2: 0
-3: 0
-0: 190
-1: 7
-2: 0
-3: 0
-Restored int: 1982
-0: 31
-1: 133
-2: 235
-3: 81
-Restored float: 3.140000
---- Executed at 2026-04-28 13:29:45 ---
+Traceback (most recent call last):
+  File "<frozen runpy>", line 198, in _run_module_as_main
+  File "<frozen runpy>", line 88, in _run_code
+  File "C:\Users\foksiny\projects\leash\leash\cli.py", line 1128, in <module>
+    if __name__ == "__main__": main()
+                               ^^^^^^
+  File "C:\Users\foksiny\projects\leash\leash\cli.py", line 1114, in main
+    run_file(infile, sys.argv[i:], target, check, warnerr, elibs, opt, extra_import_dirs=extra_import_dirs)
+  File "C:\Users\foksiny\projects\leash\leash\cli.py", line 831, in run_file
+    out = compile_file(input_file, output_name=tmp, is_run_mode=True, target_name=target_name, check_mode=check_mode, warnings_as_errors=warnings_as_errors, extra_libs=extra_libs, opt_level=opt_level, extra_import_dirs=extra_import_dirs)
+          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\foksiny\projects\leash\leash\cli.py", line 717, in compile_file
+    with open(input_file, "r") as f: code = f.read()
+         ^^^^^^^^^^^^^^^^^^^^^
+FileNotFoundError: [Errno 2] No such file or directory: 'bytetotype.lsh'
