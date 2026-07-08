@@ -1,12 +1,13 @@
 # Leash Programming Language
 
-**Version 0.16.0 Beta**
+**Version 0.17.0 Beta**
 
 Leash is a strongly-typed, modern compiled programming language built on top of LLVM. It features an intuitive syntax and is designed to handle common tasks with native performance.
 
 ## Table of Contents
 - [Installation](#installation)
 - [Running Leash](#running-leash)
+  - [Leash Update (`update`)](#leash-update-update)
 - [Checking for Errors](#checking-for-errors)
   - [Verbose Diagnostics (`--verbose` / `-vb`)](#verbose-diagnostics---verbose---vb)
 - [Compilation Targets](#compilation-targets)
@@ -284,6 +285,20 @@ leash runp --other-imports path/to/imports -- arg1 arg2
 
 The output binary is temporary and cleaned up after execution, similar to `leash run`.
 
+### Leash Update (`update`)
+
+The `update` command checks for new releases on the Leash GitHub repository and pulls the latest changes:
+
+```bash
+leash update
+```
+
+This will:
+1. Fetch the latest release tag from `github.com/foksiny/leash` via the GitHub API
+2. Run `git pull` to update your local clone to the latest commit
+
+Requires Git to be installed and the Leash repo to have been cloned from GitHub.
+
 ### Additional Import Directories (`--other-imports / -oi`)
 
 The `--other-imports` (or `-oi`) flag adds extra directories to the module search path for `use ...;` statements. This is available on `compile`, `run`, `dump`, `build`, and `runp`:
@@ -326,10 +341,10 @@ python3 -m leash.cli compile program.lsh --opt s
 | **`-O0`** (default) | No optimization | Fastest compilation, unoptimized output |
 | **`-O1`** | Basic | Instruction combining, dead code elimination, simplify CFG |
 | **`-O2`** | Standard | Above + SROA, jump threading, reassociation, global opt, loop simplification |
-| **`-O3`** | Aggressive | Above + loop unrolling, loop strength reduction, always inline, merge functions, aggressive DCE, argument promotion, IPSCCP |
+| **`-O3`** | Aggressive | Above + loop unrolling, loop strength reduction, always inline, merge functions, aggressive DCE, argument promotion, IPSCCP, SLP vectorizer, loop distribution, versioning, interchange, predication, unswitching, called-value propagation, float-to-int promotion, speculative execution |
 | **`-Os`** | Size | `-O2` + global dead code elimination + extra CFG simplification |
 
-> **Note:** Optimization occurs on the generated LLVM IR just before emitting the object file, ensuring maximum effect across all target platforms.
+> **Note:** Optimization occurs at **three layers**: Leash AST (frontend), LLVM IR (middle-end), and C runtime (link-time). The `-O` flag controls all three simultaneously.
 
 ---
 
@@ -982,6 +997,65 @@ fnc main() {
     show(Math.sqrt(144));         // 12.0
 }
 ```
+
+### 12. AST-Level Optimizations (Frontend)
+
+Leash runs **semantics-preserving AST passes** before LLVM IR generation. These passes are always safe and never change program behavior.
+
+| Pass | File | Effect |
+|------|------|--------|
+| **Constant folding & propagation** | `ast_optimize.py` | Replaces constant expressions with their results at compile time |
+| **Dead branch elimination** | `ast_optimize.py` | Removes `if`/`else` branches with constant-false conditions |
+| **Unreachable code elimination** | `ast_optimize.py` | Removes statements after `return`, `exit()`, or `throw` |
+| **Dead code elimination** | `ast_optimize.py` | Removes unused top-level functions, globals, and type definitions |
+| **Foreach small-loop unrolling hint** | `ast_optimize.py` | Annotates arrays with ≤8 elements for the LLVM loop unroller |
+| **Pushb fusion (future)** | `ast_optimize.py` | Detects consecutive `.pushb()` calls on the same vector (reserved for batch-insertion expansion) |
+| **Redundant store elimination (future)** | `ast_optimize.py` | Detects dead stores to vector/matrix elements that are immediately overwritten |
+| **Size call caching** | `ast_optimize.py` | Annotates functions where `.size()` is called 3+ times on the same collection, enabling codegen to hoist the load |
+| **Empty collection skip (future)** | `ast_optimize.py` | Detects `.popb()`, `.popf()`, `.remove()` on empty vectors for early-out codegen |
+
+### 13. LLVM IR Codegen Optimizations
+
+At the **codegen layer** (`codegen.py`), Leash emits optimal LLVM IR directly:
+
+| Optimization | Details |
+|-------------|---------|
+| **`nuw`/`nsw` flags** | All vector/matrix index arithmetic (`add`, `sub`, `mul`) is emitted with `nuw` (no unsigned wrap) and `nsw` (no signed wrap) flags, enabling LLVM to fold, reorder, and eliminate redundant bounds checks |
+| **`fast` flag** | All floating-point operations (`fadd`, `fsub`, `fmul`, `fdiv`, `fcmp`) on `float` and `double` are emitted with `fast` semantics, enabling reassociation, reciprocal-math, and contract fusion |
+| **Branch weight metadata** | Foreach loop back-edges carry `set_weights([99, 1])` metadata, telling LLVM the loop body is hot (99:1 taken rate), which improves register allocation and code layout |
+| **GC-tracked vector allocation** | Vector backing buffers use `leash_gc_malloc` (not `_aligned_alloc` directly), ensuring the GC sees vector data as reachable roots |
+
+### 14. C Runtime Optimizations (`gc.c` / `gc.h`)
+
+When `compile` or `run` finishes, the Leash binary is linked against a **pre-compiled C runtime** (`-O3`). The following optimizations live in the runtime:
+
+| # | Optimization | Detail |
+|---|-------------|--------|
+| 1 | **Function-pointer matrix dispatch** | Element-wise binary ops on `float`, `double`, `int32`, `int64` use a single indirect call through a function-pointer table instead of switch-per-element, halving branch mispredictions |
+| 2 | **4× loop unrolling** | All C-level matrix loops use explicit 4× unrolling with `__builtin_prefetch(data[i+8])` |
+| 3 | **Thread pool** | Per-call thread creation is replaced by a **reusable thread pool** (`init_thread_pool`/`parallel_dispatch`) supporting both Win32 and POSIX threads. Pool is lazily initialized and persists for the program lifetime. Parallelism kicks in at ≥1024 elements. |
+| 4 | **Cache-blocked operations** | `leash_matrix_blocked_op_float` / `_double` process tiles that fit in L1 cache (`block_size ≈ 64`), improving cache reuse on large matrices |
+| 5 | **Vector batch utilities** | `leash_vec_bulk_copy`, `leash_vec_reverse`, `leash_vec_sort_i32`/`_i64`/`_f32`/`_f64` provide O(n log n) sorting and bulk operations directly in the runtime |
+| 6 | **Thread-local allocation (TLAB)** | `leash_tlab_alloc` provides a bump-pointer arena per thread — no atomic CAS for hot allocations. Falls back to `leash_gc_malloc` when the TLAB is exhausted. |
+| 7 | **GC bitmap** | `leash_gc_bitmap_init` stores a compact bitmask of allocated GC blocks, speeding up the mark phase by skipping free regions |
+| 8 | **Fast memcpy** | `leash_fast_memcpy` (a thin wrapper around `memcpy` with __restrict__ hints) is used for all vector/matrix element moves |
+
+### 15. LLVM Pass Pipeline Extras (`optimize.py`)
+
+Beyond the standard `-O` passes, Leash explicitly enables several LLVM passes that are not always on by default:
+
+| Pass | Purpose |
+|------|---------|
+| `loop_vectorize_pass` | Inner-loop vectorisation (SSE/AVX/NEON) |
+| `slp_vectorize_pass` | Straight-line (basic-block) vectorisation |
+| `loop_distribute_pass` | Split large loops into smaller ones to improve cache behaviour |
+| `loop_versioning_pass` | Create fast/slow paths based on runtime checks (e.g. aliasing) |
+| `loop_interchange_pass` | Swap loop nests to improve memory access patterns |
+| `loop_predication_pass` | Hoist loop-invariant condition checks out of loops |
+| `loop_unswitch_pass` | Duplicate loops to hoist invariant branches out |
+| `called_value_propagation_pass` | Propagate known function-pointer targets through calls |
+| `float2int_pass` | Convert floating-point ops to integer when safe |
+| `speculative_execution_pass` | Speculatively execute likely paths to shorten critical paths |
 
 ### String Utilities (`utils/str.lsh`)
 
@@ -2480,6 +2554,70 @@ v2.inserta(1, {"x", "y"});  // v2 is now ["a", "x", "y", "b", "c"]
 | `.inserta(pos, arr)` | Insert all elements from an array or slice at position `pos` |
 | `.clear()` | Remove all elements from the vector |
 | `.isin(val)` | Return `true` if the value exists in the vector, `false` otherwise |
+
+## Matrices
+
+Matrices are dynamically-sized, heap-allocated flat arrays that support element-wise math operations with automatic parallelisation. They are declared using the `matrix<T>` syntax.
+
+```leash
+m1: matrix<float> = {1.3, 2.1, 5.3};
+m2: matrix<float> = {2.4, 9.3, 4.2};
+
+result: matrix<float> = m1 + m2;
+
+foreach i, v in<matrix> result {
+    show(i, ": ", v);
+}
+```
+
+### Memory Layout
+
+```
+{ T* data, int64 size, int64 capacity }
+```
+
+All data pointers are 64-byte aligned for SIMD/cache-line friendliness.
+
+### Optimisations
+
+| # | Optimisation | Detail |
+|---|-------------|--------|
+| 1 | **Function-pointer dispatch** | `float`, `double`, `int32`, `int64` binary ops use a single indirect call through a function-pointer table instead of a per-element switch, halving branch mispredictions in the hot loop |
+| 2 | **4× loop unrolling + prefetch** | All C-level matrix loops are explicitly 4× unrolled with `__builtin_prefetch(data[i+8])` scheduling two cache lines ahead |
+| 3 | **Reusable thread pool** | Lazily-initialised thread pool (`init_thread_pool` / `parallel_dispatch`) replaces per-call thread creation. Parallelism activates at ≥1024 elements and splits work evenly across all cores (Win32/pthreads). |
+| 4 | **Cache-blocked ops** | `leash_matrix_blocked_op_float` / `_double` process the array in tiles of ≈64 elements that fit in L1 cache, dramatically reducing cache misses on matrices of 10⁵+ elements |
+| 5 | **Aligned allocation** | 64-byte aligned heap buffers via `leash_gc_malloc` (GC-tracked), plus explicit `__builtin_assume_aligned` hints in the hot paths |
+| 6 | **`nuw`/`nsw` IR flags** | All index arithmetic (`add`, `sub`, `mul`) in codegen carries `nuw` + `nsw`, letting LLVM fold, reorder, and eliminate bounds checks |
+| 7 | **`fast` IR flags on fp** | All `fadd`/`fsub`/`fmul`/`fdiv`/`fcmp` in matrix binary ops carry the `fast` flag, enabling reassociation, reciprocal-math, and fused multiply-add |
+
+### Matrix Methods
+
+| Method | Description |
+|--------|-------------|
+| `.pushb(val)` | Append element at the end |
+| `.pushf(val)` | Prepend element at the front |
+| `.popb()` | Remove and return the last element |
+| `.popf()` | Remove and return the first element |
+| `.insert(idx)` / `.insert(idx, val)` | Insert at flat index |
+| `.remove(idx)` | Remove element at flat index (negative wraps) |
+| `.get(idx...)` | Index into the flat array (negative wraps) |
+| `.set(idx..., val)` | Write val at flat index |
+| `.size()` | Total number of elements |
+| `.clear()` | Reset to empty (capacity preserved) |
+| `.isin(val)` | Search; returns `bool` |
+| `.shape()` | Returns `vec<int>` of dimension sizes |
+
+### Arithmetic
+
+| Op | Description |
+|----|-------------|
+| `+` | Element-wise add (parallel on `float`/`double`/`int32`/`int64`) |
+| `-` | Element-wise sub |
+| `*` | Element-wise mul |
+| `/` | Element-wise div |
+| `==` / `!=` | Element-wise comparison |
+
+All binary ops check size equality at runtime.
 
 ## Hash Tables
 
@@ -4184,7 +4322,7 @@ The VS Code extension provides syntax highlighting, real-time diagnostics, hover
    cd syntax_highlighters/vscode
    npm run package
    ```
-3. Install the generated `leash-0.13.0.vsix` in VS Code (Extensions view -> `...` -> `Install from VSIX...`).
+3. Install the generated `leash-0.17.0.vsix` in VS Code (Extensions view -> `...` -> `Install from VSIX...`).
 
 ### Emacs
 

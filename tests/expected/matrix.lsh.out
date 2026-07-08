@@ -1,0 +1,12 @@
+0: 3.700000
+1: 11.400000
+2: 9.500000
+size after pushb: 4
+m1.get(1): 2.100000
+m1.get(1) after set: 99.900000
+99.9 isin m1: -1
+42.0 isin m1: 0
+popped: 4.000000
+size after popb: 3
+size after clear: 0
+--- Executed at 2026-07-08 05:33:51 ---

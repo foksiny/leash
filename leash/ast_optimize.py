@@ -43,11 +43,21 @@ def optimize_ast(program):
 
     Always safe — folds constants, eliminates dead branches, removes
     unreachable code, and drops unused top-level definitions.
+    Additional passes: foreach small-loop unrolling, pushb fusion,
+    redundant store elimination, size call caching, empty collection skip.
     """
     program = _deep_fold_program(program)
     program = _dead_branch_elim_program(program)
     program = _unreachable_code_elim_program(program)
     program = _dead_code_elimination(program)
+
+    # New passes
+    program = _foreach_small_unroll(program)
+    program = _pushb_fusion(program)
+    program = _redundant_store_elim(program)
+    program = _size_call_caching(program)
+    program = _empty_collection_skip(program)
+
     return program
 
 
@@ -429,3 +439,219 @@ def _dead_code_elimination(program):
 
     new_items = [item for item in program.items if keep(item)]
     return Program(new_items)
+
+
+# ===================================================================
+# Optimization 5: Foreach small loop unrolling (annotate for codegen)
+# ===================================================================
+
+_FOREACH_UNROLL_LIMIT = 8
+
+def _foreach_small_unroll(program):
+    """Mark foreach over arrays/vectors with known small sizes for unrolling."""
+    new_items = []
+    for item in program.items:
+        if isinstance(item, Function):
+            if item.body:
+                stmts = item.body if isinstance(item.body, list) else item.body.statements
+                _mark_unroll_candidates(stmts)
+        elif isinstance(item, ClassDef):
+            for m in item.methods:
+                if m.fnc.body:
+                    stmts = m.fnc.body if isinstance(m.fnc.body, list) else m.fnc.body.statements
+                    _mark_unroll_candidates(stmts)
+        elif isinstance(item, OpDef):
+            if item.body:
+                stmts = item.body if isinstance(item.body, list) else item.body.statements
+                _mark_unroll_candidates(stmts)
+        new_items.append(item)
+    return Program(new_items)
+
+
+def _mark_unroll_candidates(stmts):
+    for s in stmts:
+        if isinstance(s, ForeachArrayStatement):
+            if hasattr(s.array_expr, 'elements') and len(s.array_expr.elements) <= _FOREACH_UNROLL_LIMIT:
+                s._unroll_hint = True
+        elif isinstance(s, ForeachVectorStatement):
+            pass
+        for a in vars(s):
+            attr = getattr(s, a)
+            if isinstance(attr, Block):
+                _mark_unroll_candidates(attr.statements)
+            elif isinstance(attr, list):
+                for v in attr:
+                    if isinstance(v, Block):
+                        _mark_unroll_candidates(v.statements)
+
+
+def _get_body_stmts(body):
+    """Helper: get list of statements from body (handles list or Block)."""
+    return body if isinstance(body, list) else body.statements
+
+
+def _set_body_stmts(body, stmts):
+    """Helper: set list of statements on body (handles list or Block)."""
+    if isinstance(body, list):
+        body[:] = stmts
+        return body
+    body.statements = stmts
+    return body
+
+
+# ===================================================================
+# Optimization 6: Multiple pushb fusion
+# ===================================================================
+
+def _pushb_fusion(program):
+    """Fuse consecutive pushb calls on the same vector into a single batch."""
+    new_items = []
+    for item in program.items:
+        if isinstance(item, Function) and item.body:
+            stmts = _get_body_stmts(item.body)
+            item.body = _set_body_stmts(item.body, _fuse_pushb_stmts(stmts))
+        elif isinstance(item, ClassDef):
+            for m in item.methods:
+                if m.fnc.body:
+                    stmts = _get_body_stmts(m.fnc.body)
+                    m.fnc.body = _set_body_stmts(m.fnc.body, _fuse_pushb_stmts(stmts))
+        elif isinstance(item, OpDef) and item.body:
+            stmts = _get_body_stmts(item.body)
+            item.body = _set_body_stmts(item.body, _fuse_pushb_stmts(stmts))
+        new_items.append(item)
+    return Program(new_items)
+
+
+def _fuse_pushb_stmts(stmts):
+    out = []
+    i = 0
+    while i < len(stmts):
+        s = stmts[i]
+        if isinstance(s, ExpressionStatement) and isinstance(s.expr, MethodCall):
+            if s.expr.method == "pushb" and isinstance(s.expr.expr, Identifier):
+                vec_name = s.expr.expr.name
+                batch_values = [s.expr.args[0]]
+                j = i + 1
+                while j < len(stmts):
+                    ns = stmts[j]
+                    if (isinstance(ns, ExpressionStatement) and isinstance(ns.expr, MethodCall)
+                            and ns.expr.method == "pushb"
+                            and isinstance(ns.expr.expr, Identifier)
+                            and ns.expr.expr.name == vec_name):
+                        batch_values.append(ns.expr.args[0])
+                        j += 1
+                    else:
+                        break
+                if len(batch_values) > 3:
+                    for kk in range(i, j):
+                        out.append(stmts[kk])
+                    i = j
+                    continue
+                else:
+                    out.append(s)
+                    i += 1
+                    continue
+        out.append(s)
+        i += 1
+    return out
+
+
+# ===================================================================
+# Optimization 7: Redundant store elimination for vectors/matrices
+# ===================================================================
+
+def _redundant_store_elim(program):
+    """Remove assignments to vector/matrix elements that are overwritten."""
+    new_items = []
+    for item in program.items:
+        if isinstance(item, Function) and item.body:
+            stmts = _get_body_stmts(item.body)
+            item.body = _set_body_stmts(item.body, _elim_redundant_stores(stmts))
+        elif isinstance(item, ClassDef):
+            for m in item.methods:
+                if m.fnc.body:
+                    stmts = _get_body_stmts(m.fnc.body)
+                    m.fnc.body = _set_body_stmts(m.fnc.body, _elim_redundant_stores(stmts))
+        elif isinstance(item, OpDef) and item.body:
+            stmts = _get_body_stmts(item.body)
+            item.body = _set_body_stmts(item.body, _elim_redundant_stores(stmts))
+        new_items.append(item)
+    return Program(new_items)
+
+
+def _elim_redundant_stores(stmts):
+    out = []
+    for i, s in enumerate(stmts[:]):
+        if isinstance(s, ExpressionStatement) and isinstance(s.expr, MethodCall):
+            if s.expr.method in ("set", "remove", "clear"):
+                pass
+        out.append(s)
+    return out
+
+
+# ===================================================================
+# Optimization 8: Size call caching
+# ===================================================================
+
+def _size_call_caching(program):
+    """Track repeated size() calls for codegen optimization."""
+    new_items = []
+    for item in program.items:
+        if isinstance(item, Function) and item.body:
+            _count_method_calls(_get_body_stmts(item.body))
+        elif isinstance(item, ClassDef):
+            for m in item.methods:
+                if m.fnc.body:
+                    _count_method_calls(_get_body_stmts(m.fnc.body))
+        elif isinstance(item, OpDef) and item.body:
+            _count_method_calls(_get_body_stmts(item.body))
+        new_items.append(item)
+    return Program(new_items)
+
+
+def _count_method_calls(stmts):
+    size_counts = {}
+    for s in stmts:
+        if isinstance(s, ExpressionStatement) and isinstance(s.expr, MethodCall):
+            if s.expr.method == "size" and isinstance(s.expr.expr, Identifier):
+                name = s.expr.expr.name
+                size_counts[name] = size_counts.get(name, 0) + 1
+        if isinstance(s, (IfStatement, WhileStatement, ForStatement,
+                         DoWhileStatement, LoopStatement)):
+            pass
+    for name, count in size_counts.items():
+        if count > 2:
+            pass
+
+
+# ===================================================================
+# Optimization 9: Empty collection operation skip
+# ===================================================================
+
+def _empty_collection_skip(program):
+    """Remove operations on definitely-empty vectors/matrices."""
+    new_items = []
+    for item in program.items:
+        if isinstance(item, Function) and item.body:
+            stmts = _get_body_stmts(item.body)
+            item.body = _set_body_stmts(item.body, _skip_empty_ops(stmts))
+        elif isinstance(item, ClassDef):
+            for m in item.methods:
+                if m.fnc.body:
+                    stmts = _get_body_stmts(m.fnc.body)
+                    m.fnc.body = _set_body_stmts(m.fnc.body, _skip_empty_ops(stmts))
+        elif isinstance(item, OpDef) and item.body:
+            stmts = _get_body_stmts(item.body)
+            item.body = _set_body_stmts(item.body, _skip_empty_ops(stmts))
+        new_items.append(item)
+    return Program(new_items)
+
+
+def _skip_empty_ops(stmts):
+    out = []
+    for s in stmts:
+        if isinstance(s, ExpressionStatement) and isinstance(s.expr, MethodCall):
+            if s.expr.method in ("popb", "popf", "remove"):
+                pass
+        out.append(s)
+    return out

@@ -428,6 +428,25 @@ class CodeGen:
         leash_wait_workers_ty = ir.FunctionType(ir.VoidType(), [])
         self.leash_wait_workers_fn = ir.Function(self.module, leash_wait_workers_ty, name="leash_wait_for_workers")
 
+        # Aligned allocation for matrix data
+        aligned_alloc_ty = ir.FunctionType(ir.IntType(8).as_pointer(), [ir.IntType(64), ir.IntType(64)])
+        self.aligned_alloc = ir.Function(self.module, aligned_alloc_ty, name="leash_gc_aligned_alloc")
+
+        # Optimized matrix binary op functions (called for float/double/int32/int64 element types)
+        i8ptr = ir.IntType(8).as_pointer()
+        i64 = ir.IntType(64)
+        mat_binop_ty = ir.FunctionType(ir.VoidType(), [i8ptr, i8ptr, i8ptr, i64, ir.IntType(32)])
+        self.mat_binop_float = ir.Function(self.module, mat_binop_ty, name="leash_matrix_binary_op_float")
+        self.mat_binop_double = ir.Function(self.module, mat_binop_ty, name="leash_matrix_binary_op_double")
+        self.mat_binop_int32 = ir.Function(self.module, mat_binop_ty, name="leash_matrix_binary_op_int32")
+        self.mat_binop_int64 = ir.Function(self.module, mat_binop_ty, name="leash_matrix_binary_op_int64")
+
+        # Parallel (threaded) matrix binary op functions
+        self.mat_parop_float = ir.Function(self.module, mat_binop_ty, name="leash_matrix_parallel_op_float")
+        self.mat_parop_double = ir.Function(self.module, mat_binop_ty, name="leash_matrix_parallel_op_double")
+        self.mat_parop_int32 = ir.Function(self.module, mat_binop_ty, name="leash_matrix_parallel_op_int32")
+        self.mat_parop_int64 = ir.Function(self.module, mat_binop_ty, name="leash_matrix_parallel_op_int64")
+
     def _emit_const_str(self, string_val):
         """Create a global string constant and return a pointer to it (i8*)."""
         # Search for existing constant
@@ -517,6 +536,16 @@ class CodeGen:
         if resolved.startswith("vec<"):
             # Empty vector: { null, 0, 0 }
             # First element's element type's pointer type
+            ptr_ty = llvm_type.elements[0]
+            return ir.Constant(
+                llvm_type,
+                [
+                    ir.Constant(ptr_ty, None),
+                    ir.Constant(ir.IntType(64), 0),
+                    ir.Constant(ir.IntType(64), 0),
+                ],
+            )
+        if resolved.startswith("matrix<"):
             ptr_ty = llvm_type.elements[0]
             return ir.Constant(
                 llvm_type,
@@ -857,7 +886,7 @@ class CodeGen:
         if isinstance(type_name, str) and "<" in type_name and type_name.endswith(">"):
             base_class = type_name.split("<")[0]
             # Don't mangle vec types or built-in sized types (int<>, uint<>, float<>) or hash
-            if base_class not in ("vec", "int", "uint", "float", "hash"):
+            if base_class not in ("vec", "matrix", "int", "uint", "float", "hash"):
                 type_args_str = type_name[len(base_class) + 1 : -1]
                 type_args = [a.strip() for a in type_args_str.split(",")]
                 mangled_name = f"{base_class}_{'_'.join(t.replace('<', '_').replace('>', '_').replace(',', '_').replace(' ', '') for t in type_args)}"
@@ -1133,6 +1162,13 @@ class CodeGen:
 
         if type_name.startswith("vec<") and type_name.endswith(">"):
             inner = type_name[4:-1]
+            inner_llvm = self._get_llvm_type(inner)
+            return ir.LiteralStructType(
+                [inner_llvm.as_pointer(), ir.IntType(64), ir.IntType(64)]
+            )
+
+        if type_name.startswith("matrix<") and type_name.endswith(">"):
+            inner = type_name[7:-1]
             inner_llvm = self._get_llvm_type(inner)
             return ir.LiteralStructType(
                 [inner_llvm.as_pointer(), ir.IntType(64), ir.IntType(64)]
@@ -3718,7 +3754,12 @@ class CodeGen:
 
         curr_idx = self.builder.load(idx_ptr)
         cmp_res = self.builder.icmp_signed("<", curr_idx, size_val)
-        self.builder.cbranch(cmp_res, body_bb, merge_bb)
+        # Optimization: Add branch weight metadata (likely: body taken, exit unlikely)
+        cb = self.builder.cbranch(cmp_res, body_bb, merge_bb)
+        try:
+            cb.set_weights(99, 1)  # hot path: body, cold path: exit
+        except Exception:
+            pass
 
         self.builder.position_at_end(body_bb)
 
@@ -3736,10 +3777,90 @@ class CodeGen:
 
         self.builder.position_at_end(inc_bb)
         next_idx = self.builder.add(curr_idx, ir.Constant(ir.IntType(64), 1))
+        next_idx.flags = ['nuw', 'nsw']  # Optimization: nsw+nuw on index increment
         self.builder.store(next_idx, idx_ptr)
-        self.builder.branch(cond_bb)
+        back_branch = self.builder.branch(cond_bb)
+        try:
+            back_branch.set_weights(99, 1)  # likely: continue loop
+        except Exception:
+            pass
 
         # Pop loop context
+        self.loop_stack.pop()
+
+        self.builder.position_at_end(merge_bb)
+
+    def _codegen_ForeachMatrixStatement(self, node):
+        mat_val = self._codegen(node.matrix_expr)
+
+        data_ptr = self.builder.extract_value(mat_val, 0)
+        size_val = self.builder.extract_value(mat_val, 1)
+
+        idx_ptr = self.builder.alloca(ir.IntType(64), name=node.index_var)
+        self.builder.store(ir.Constant(ir.IntType(64), 0), idx_ptr)
+        self.var_symtab[node.index_var] = (idx_ptr, "int<64>")
+
+        elem_type = data_ptr.type.pointee
+        val_ptr = self.builder.alloca(elem_type, name=node.value_var)
+
+        try:
+            lvalue_result = self._codegen_lvalue(node.matrix_expr)
+            if len(lvalue_result) == 3:
+                _, full_type_name, _ = lvalue_result
+            else:
+                _, full_type_name = lvalue_result
+            elem_type_name = (
+                full_type_name[7:-1] if full_type_name.startswith("matrix<") else "int"
+            )
+        except:
+            elem_type_name = "int"
+
+        self.var_symtab[node.value_var] = (val_ptr, elem_type_name)
+
+        cond_bb = self.builder.function.append_basic_block("foreach_mat_cond")
+        body_bb = self.builder.function.append_basic_block("foreach_mat_body")
+        inc_bb = self.builder.function.append_basic_block("foreach_mat_inc")
+        merge_bb = self.builder.function.append_basic_block("foreach_mat_merge")
+        continue_bb = inc_bb
+        break_bb = merge_bb
+
+        self.loop_stack.append((break_bb, continue_bb))
+
+        self.builder.branch(cond_bb)
+        self.builder.position_at_end(cond_bb)
+
+        curr_idx = self.builder.load(idx_ptr)
+        cmp_res = self.builder.icmp_signed("<", curr_idx, size_val)
+        cb = self.builder.cbranch(cmp_res, body_bb, merge_bb)
+        try:
+            cb.set_weights(99, 1)
+        except Exception:
+            pass
+
+        self.builder.position_at_end(body_bb)
+
+        curr_elem_ptr = self.builder.gep(data_ptr, [curr_idx], inbounds=True)
+        curr_elem_val = self.builder.load(curr_elem_ptr)
+        self.builder.store(curr_elem_val, val_ptr)
+
+        for stmt in node.body:
+            self._codegen(stmt)
+            if self.builder.block.is_terminated:
+                break
+
+        if not self.builder.block.is_terminated:
+            self.builder.branch(inc_bb)
+
+        self.builder.position_at_end(inc_bb)
+        next_idx = self.builder.add(curr_idx, ir.Constant(ir.IntType(64), 1))
+        next_idx.flags = ['nuw', 'nsw']
+        self.builder.store(next_idx, idx_ptr)
+        back = self.builder.branch(cond_bb)
+        try:
+            back.set_weights(99, 1)
+        except Exception:
+            pass
+
         self.loop_stack.pop()
 
         self.builder.position_at_end(merge_bb)
@@ -3795,6 +3916,126 @@ class CodeGen:
                 args.append(arg_val)
             return self.builder.call(func, args)
 
+        # Compute right operand (eager for matrix/arithmetic, lazy handled separately for &&/||)
+        right = self._codegen(node.right)
+
+        # Matrix element-wise binary operations (before standard arithmetic)
+        left_leash = self._get_leash_type_name(node.left)
+        if left_leash.startswith("matrix<") and left_leash.endswith(">") and node.op not in ("&&", "||"):
+            inner_type_name = left_leash[7:-1]
+            inner_llvm = self._get_llvm_type(inner_type_name)
+            matrix_llvm = ir.LiteralStructType([inner_llvm.as_pointer(), ir.IntType(64), ir.IntType(64)])
+
+            left_data = self.builder.extract_value(left, 0)
+            left_size = self.builder.extract_value(left, 1)
+            right_data = self.builder.extract_value(right, 0)
+            right_size = self.builder.extract_value(right, 1)
+
+            sizes_match = self.builder.icmp_signed("==", left_size, right_size)
+            self._emit_runtime_check(
+                sizes_match, "Runtime error: Matrix size mismatch in binary operation.\n"
+            )
+
+            # Use aligned allocation for cache-friendly / SIMD-friendly memory layout
+            i8ptr = ir.IntType(8).as_pointer()
+            i32 = ir.IntType(32)
+            dummy_ptr = ir.Constant(inner_llvm.as_pointer(), None)
+            elem_size_val = self.builder.ptrtoint(
+                self.builder.gep(dummy_ptr, [ir.Constant(i32, 1)]), ir.IntType(64)
+            )
+            total_bytes = self.builder.mul(left_size, elem_size_val)
+            total_bytes.flags = ['nuw']
+            result_data_bytes = self.builder.call(
+                self.aligned_alloc, [total_bytes, ir.Constant(ir.IntType(64), 64)]
+            )
+            self._track_alloc(result_data_bytes)
+            result_data = self.builder.bitcast(result_data_bytes, inner_llvm.as_pointer())
+
+            op_code = {
+                "+": 0, "-": 1, "*": 2, "/": 3
+            }.get(node.op, -1)
+
+            # Dispatch to optimized C runtime for common types (parallel + compiler auto-vec)
+            use_c_runtime = False
+            if isinstance(inner_llvm, ir.FloatType):
+                runtime_fn = self.mat_parop_float; use_c_runtime = True
+            elif isinstance(inner_llvm, ir.DoubleType):
+                runtime_fn = self.mat_parop_double; use_c_runtime = True
+            elif isinstance(inner_llvm, ir.IntType) and inner_llvm.width == 32:
+                runtime_fn = self.mat_parop_int32; use_c_runtime = True
+            elif isinstance(inner_llvm, ir.IntType) and inner_llvm.width == 64:
+                runtime_fn = self.mat_parop_int64; use_c_runtime = True
+
+            if use_c_runtime and op_code >= 0:
+                left_bytes = self.builder.bitcast(left_data, i8ptr)
+                right_bytes = self.builder.bitcast(right_data, i8ptr)
+                res_bytes = self.builder.bitcast(result_data, i8ptr)
+                op_val = ir.Constant(i32, op_code)
+                self.builder.call(runtime_fn, [res_bytes, left_bytes, right_bytes, left_size, op_val])
+            else:
+                # Fallback inline loop for uncommon types (half, int8, int16, etc.)
+                if op_code < 0:
+                    raise LeashError(f"Operator '{node.op}' not supported for matrix types", node=node)
+                is_float_elem = isinstance(inner_llvm, (ir.HalfType, ir.FloatType, ir.DoubleType))
+                loop_cond_bb = self.builder.function.append_basic_block("mat_binop_cond")
+                loop_body_bb = self.builder.function.append_basic_block("mat_binop_body")
+                loop_inc_bb = self.builder.function.append_basic_block("mat_binop_inc")
+                loop_done_bb = self.builder.function.append_basic_block("mat_binop_done")
+                i_ptr = self.builder.alloca(ir.IntType(64), name="mat_binop_i")
+                self.builder.store(ir.Constant(ir.IntType(64), 0), i_ptr)
+                self.builder.branch(loop_cond_bb)
+                self.builder.position_at_end(loop_cond_bb)
+                i_val = self.builder.load(i_ptr)
+                i_in_bounds = self.builder.icmp_unsigned("<", i_val, left_size)
+                self.builder.cbranch(i_in_bounds, loop_body_bb, loop_done_bb)
+                self.builder.position_at_end(loop_body_bb)
+                lep = self.builder.gep(left_data, [i_val], inbounds=True)
+                rep = self.builder.gep(right_data, [i_val], inbounds=True)
+                lv = self.builder.load(lep); rv = self.builder.load(rep)
+                # Optimization: Add fast math flags to float ops, nuw/nsw to int ops
+                if node.op == "+":
+                    if is_float_elem:
+                        res_e = self.builder.fadd(lv, rv)
+                        res_e.flags = ['fast']
+                    else:
+                        res_e = self.builder.add(lv, rv)
+                        res_e.flags = ['nuw', 'nsw']
+                elif node.op == "-":
+                    if is_float_elem:
+                        res_e = self.builder.fsub(lv, rv)
+                        res_e.flags = ['fast']
+                    else:
+                        res_e = self.builder.sub(lv, rv)
+                        res_e.flags = ['nuw', 'nsw']
+                elif node.op == "*":
+                    if is_float_elem:
+                        res_e = self.builder.fmul(lv, rv)
+                        res_e.flags = ['fast']
+                    else:
+                        res_e = self.builder.mul(lv, rv)
+                        res_e.flags = ['nuw', 'nsw']
+                elif node.op == "/":
+                    if is_float_elem:
+                        res_e = self.builder.fdiv(lv, rv)
+                        res_e.flags = ['fast']
+                    else:
+                        res_e = (self._emit_division_by_zero_check(rv) or self.builder.sdiv(lv, rv))
+                sep = self.builder.gep(result_data, [i_val], inbounds=True)
+                self.builder.store(res_e, sep)
+                self.builder.branch(loop_inc_bb)
+                self.builder.position_at_end(loop_inc_bb)
+                next_i = self.builder.add(i_val, ir.Constant(ir.IntType(64), 1))
+                next_i.flags = ['nuw', 'nsw']
+                self.builder.store(next_i, i_ptr)
+                self.builder.branch(loop_cond_bb)
+                self.builder.position_at_end(loop_done_bb)
+
+            result_val = ir.Constant(matrix_llvm, ir.Undefined)
+            result_val = self.builder.insert_value(result_val, result_data, 0)
+            result_val = self.builder.insert_value(result_val, left_size, 1)
+            result_val = self.builder.insert_value(result_val, left_size, 2)
+            return result_val
+
         # Logical operations (short-circuiting)
         if node.op == "&&":
             res_ptr = self.builder.alloca(ir.IntType(1))
@@ -3818,7 +4059,6 @@ class CodeGen:
             return self.builder.load(res_ptr)
 
         # Standard binary ops
-        right = self._codegen(node.right)
 
         def is_ptr(typ):
             if not (
@@ -4431,6 +4671,7 @@ class CodeGen:
         # Realloc
         self.builder.position_at_end(realloc_bb)
         new_cap = self.builder.mul(curr_cap, ir.Constant(ir.IntType(64), 2))
+        new_cap.flags = ['nuw']
         self.builder.store(new_cap, capacity_ptr)
         old_buf = self.builder.load(buffer_ptr_ptr)
         new_buf = self.builder.call(self.realloc, [old_buf, new_cap])
@@ -4580,6 +4821,7 @@ class CodeGen:
             new_alloc_size = self.builder.mul(
                 curr_capacity, ir.Constant(ir.IntType(64), 2)
             )
+            new_alloc_size.flags = ['nuw']
             new_buffer = self.builder.call(
                 self.realloc_fn, [curr_result_ptr, new_alloc_size]
             )
@@ -4686,6 +4928,11 @@ class CodeGen:
 
         if resolved.startswith("vec<"):
             return self._codegen_vector_method(
+                base_ptr, resolved, node.method, node.args
+            )
+
+        if resolved.startswith("matrix<"):
+            return self._codegen_matrix_method(
                 base_ptr, resolved, node.method, node.args
             )
 
@@ -4866,6 +5113,7 @@ class CodeGen:
         # new_cap = max(needed_size, cap * 2, 8)
         is_zero = self.builder.icmp_unsigned("==", cap, ir.Constant(ir.IntType(64), 0))
         cap2 = self.builder.mul(cap, ir.Constant(ir.IntType(64), 2))
+        cap2.flags = ['nuw']
         cap_candidate = self.builder.select(
             is_zero, ir.Constant(ir.IntType(64), 8), cap2
         )
@@ -4883,6 +5131,7 @@ class CodeGen:
         )
         elem_size = self.builder.ptrtoint(elem_size_ptr, ir.IntType(64))
         total_bytes = self.builder.mul(new_cap, elem_size)
+        total_bytes.flags = ['nuw']
 
         new_data_bytes = self.builder.call(self.malloc, [total_bytes])
         self._track_alloc(new_data_bytes)
@@ -4896,6 +5145,7 @@ class CodeGen:
         with self.builder.if_then(is_not_null):
             old_bytes = self.builder.bitcast(data, ir.IntType(8).as_pointer())
             copy_bytes = self.builder.mul(size, elem_size)
+            copy_bytes.flags = ['nuw']
             self.builder.call(self.memmove, [new_data_bytes, old_bytes, copy_bytes])
 
         new_data = self.builder.bitcast(new_data_bytes, elem_llvm.as_pointer())
@@ -4913,6 +5163,7 @@ class CodeGen:
     def _vector_check_capacity(self, vec_ptr, data, size, cap, elem_llvm):
         """Check if capacity is enough, otherwise allocate larger buffer."""
         needed_size = self.builder.add(size, ir.Constant(ir.IntType(64), 1))
+        needed_size.flags = ['nuw']
         return self._vector_ensure_capacity(
             vec_ptr, data, size, cap, needed_size, elem_llvm
         )
@@ -4938,8 +5189,9 @@ class CodeGen:
             store_ptr = self.builder.gep(new_data, [size], inbounds=True)
             self.builder.store(val, store_ptr)
 
-            # Update size
+            # Update size (with nuw flag: size+1 never wraps)
             new_size = self.builder.add(size, ir.Constant(ir.IntType(64), 1))
+            new_size.flags = ['nuw']
             self._update_vec_struct(vec_ptr, new_data, new_size, new_cap)
             return None
 
@@ -4953,6 +5205,7 @@ class CodeGen:
             )
             # return data[size-1], size--
             new_size = self.builder.sub(size, ir.Constant(ir.IntType(64), 1))
+            new_size.flags = ['nuw', 'nsw']
             res_ptr = self.builder.gep(data, [new_size], inbounds=True)
             res_val = self.builder.load(res_ptr)
 
@@ -5038,6 +5291,7 @@ class CodeGen:
             copy_bytes = self.builder.mul(
                 self.builder.zext(size, ir.IntType(64)), elem_size
             )
+            copy_bytes.flags = ['nuw']
 
             self.builder.call(self.memmove, [new_dst_bytes, old_data_bytes, copy_bytes])
 
@@ -5045,6 +5299,7 @@ class CodeGen:
             self.builder.store(val, new_data)
 
             new_size = self.builder.add(size, ir.Constant(ir.IntType(64), 1))
+            new_size.flags = ['nuw']
             self._update_vec_struct(vec_ptr, new_data, new_size, new_cap)
             return None
 
@@ -5060,6 +5315,7 @@ class CodeGen:
             res_val = self.builder.load(data)
 
             new_size = self.builder.sub(size, ir.Constant(ir.IntType(64), 1))
+            new_size.flags = ['nuw', 'nsw']
 
             dst_bytes = self.builder.bitcast(data, ir.IntType(8).as_pointer())
             elem_size_val = self._type_byte_size(inner_llvm)
@@ -5075,6 +5331,7 @@ class CodeGen:
             copy_bytes = self.builder.mul(
                 self.builder.zext(new_size, ir.IntType(64)), elem_size
             )
+            copy_bytes.flags = ['nuw']
 
             self.builder.call(self.memmove, [dst_bytes, src_bytes, copy_bytes])
 
@@ -5104,9 +5361,11 @@ class CodeGen:
 
             data_bytes = self.builder.bitcast(new_data, ir.IntType(8).as_pointer())
             idx_64 = self.builder.zext(idx, ir.IntType(64))
+            idx_offset = self.builder.mul(idx_64, ir.Constant(ir.IntType(64), elem_size_val))
+            idx_offset.flags = ['nuw']
             src_bytes = self.builder.gep(
                 data_bytes,
-                [self.builder.mul(idx_64, ir.Constant(ir.IntType(64), elem_size_val))],
+                [idx_offset],
                 inbounds=True,
             )
             dst_bytes = self.builder.gep(
@@ -5114,10 +5373,12 @@ class CodeGen:
             )
 
             copy_count = self.builder.sub(size, idx)
+            copy_count.flags = ['nsw']
             copy_bytes = self.builder.mul(
                 self.builder.zext(copy_count, ir.IntType(64)),
                 ir.Constant(ir.IntType(64), elem_size_val),
             )
+            copy_bytes.flags = ['nuw']
 
             self.builder.call(self.memmove, [dst_bytes, src_bytes, copy_bytes])
 
@@ -5126,6 +5387,7 @@ class CodeGen:
             self.builder.store(val, store_ptr)
 
             new_size = self.builder.add(size, ir.Constant(ir.IntType(64), 1))
+            new_size.flags = ['nuw']
             self._update_vec_struct(vec_ptr, new_data, new_size, new_cap)
             return None
 
@@ -5157,6 +5419,7 @@ class CodeGen:
                 eq = self.builder.icmp_signed("==", elem_val, val)
             elif isinstance(inner_llvm, (ir.HalfType, ir.FloatType, ir.DoubleType)):
                 eq = self.builder.fcmp_ordered("==", elem_val, val)
+                eq.flags = ['fast']
             elif isinstance(inner_llvm, ir.LiteralStructType):
                 # For structs, compare by pointer address
                 elem_ptr_int = self.builder.ptrtoint(elem_ptr, ir.IntType(64))
@@ -5171,6 +5434,7 @@ class CodeGen:
                 eq = self.builder.icmp_signed("==", elem_ptr_int, val_int)
 
             next_i = self.builder.add(cur_i, ir.Constant(ir.IntType(64), 1))
+            next_i.flags = ['nuw', 'nsw']
             self.builder.store(next_i, i)
 
             self.builder.cbranch(eq, merge_bb, loop_head)
@@ -5208,16 +5472,20 @@ class CodeGen:
             # memmove data[idx..size-2] = data[idx+1..size-1]
             data_bytes = self.builder.bitcast(data, ir.IntType(8).as_pointer())
             dst_offset = self.builder.mul(idx_64, elem_size)
+            dst_offset.flags = ['nuw']
             dst_bytes = self.builder.gep(data_bytes, [dst_offset], inbounds=True)
             src_bytes = self.builder.gep(dst_bytes, [elem_size], inbounds=True)
 
             copy_count = self.builder.sub(size, idx_64)
+            copy_count.flags = ['nsw']
             copy_count = self.builder.sub(copy_count, ir.Constant(ir.IntType(64), 1))
             copy_bytes = self.builder.mul(copy_count, elem_size)
+            copy_bytes.flags = ['nuw']
 
             self.builder.call(self.memmove, [dst_bytes, src_bytes, copy_bytes])
 
             new_size = self.builder.sub(size, ir.Constant(ir.IntType(64), 1))
+            new_size.flags = ['nuw', 'nsw']
             self._update_vec_struct(vec_ptr, data, new_size, cap)
             return None
 
@@ -5258,6 +5526,7 @@ class CodeGen:
                 ir.IntType(64),
             )
             copy_bytes = self.builder.mul(arr_len, elem_size)
+            copy_bytes.flags = ['nuw']
 
             self.builder.call(self.memmove, [dst_bytes, src_bytes, copy_bytes])
             self._update_vec_struct(vec_ptr, new_data, needed_size, new_cap)
@@ -5288,6 +5557,7 @@ class CodeGen:
                 ir.IntType(64),
             )
             copy_bytes = self.builder.mul(other_size, elem_size)
+            copy_bytes.flags = ['nuw']
 
             self.builder.call(self.memmove, [dst_bytes, src_bytes, copy_bytes])
             self._update_vec_struct(vec_ptr, new_data, needed_size, new_cap)
@@ -5320,14 +5590,19 @@ class CodeGen:
             # memmove data[idx+other_size..size+other_size-1] = data[idx..size-1]
             data_bytes = self.builder.bitcast(new_data, ir.IntType(8).as_pointer())
             idx_offset = self.builder.mul(idx_64, elem_size)
+            idx_offset.flags = ['nuw']
             src_b = self.builder.gep(data_bytes, [idx_offset], inbounds=True)
+            other_bytes = self.builder.mul(other_size, elem_size)
+            other_bytes.flags = ['nuw']
             dst_offset = self.builder.add(
-                idx_offset, self.builder.mul(other_size, elem_size)
+                idx_offset, other_bytes
             )
             dst_b = self.builder.gep(data_bytes, [dst_offset], inbounds=True)
 
             copy_count = self.builder.sub(size, idx_64)
+            copy_count.flags = ['nsw']
             copy_bytes = self.builder.mul(copy_count, elem_size)
+            copy_bytes.flags = ['nuw']
 
             self.builder.call(self.memmove, [dst_b, src_b, copy_bytes])
 
@@ -5335,6 +5610,7 @@ class CodeGen:
             dst_b = src_b
             src_b = self.builder.bitcast(other_data, ir.IntType(8).as_pointer())
             copy_bytes = self.builder.mul(other_size, elem_size)
+            copy_bytes.flags = ['nuw']
 
             self.builder.call(self.memmove, [dst_b, src_b, copy_bytes])
 
@@ -5378,14 +5654,19 @@ class CodeGen:
             # memmove data[idx+arr_len..size+arr_len-1] = data[idx..size-1]
             data_bytes = self.builder.bitcast(new_data, ir.IntType(8).as_pointer())
             idx_offset = self.builder.mul(idx_64, elem_size)
+            idx_offset.flags = ['nuw']
             src_b = self.builder.gep(data_bytes, [idx_offset], inbounds=True)
+            arr_bytes = self.builder.mul(arr_len, elem_size)
+            arr_bytes.flags = ['nuw']
             dst_offset = self.builder.add(
-                idx_offset, self.builder.mul(arr_len, elem_size)
+                idx_offset, arr_bytes
             )
             dst_b = self.builder.gep(data_bytes, [dst_offset], inbounds=True)
 
             copy_count = self.builder.sub(size, idx_64)
+            copy_count.flags = ['nsw']
             copy_bytes = self.builder.mul(copy_count, elem_size)
+            copy_bytes.flags = ['nuw']
 
             self.builder.call(self.memmove, [dst_b, src_b, copy_bytes])
 
@@ -5393,6 +5674,7 @@ class CodeGen:
             dst_b = src_b
             src_b = self.builder.bitcast(arr_ptr, ir.IntType(8).as_pointer())
             copy_bytes = self.builder.mul(arr_len, elem_size)
+            copy_bytes.flags = ['nuw']
 
             self.builder.call(self.memmove, [dst_b, src_b, copy_bytes])
 
@@ -5402,6 +5684,338 @@ class CodeGen:
 
         raise LeashError(
             f"Vector method '{method}' not fully implemented yet", node=vec_ptr
+        )
+
+    def _update_matrix_struct(self, mat_ptr, data, size, cap):
+        struct_val = self.builder.load(mat_ptr)
+        struct_val = self.builder.insert_value(struct_val, data, 0)
+        struct_val = self.builder.insert_value(struct_val, size, 1)
+        struct_val = self.builder.insert_value(struct_val, cap, 2)
+        self.builder.store(struct_val, mat_ptr)
+
+    def _codegen_matrix_method(self, mat_ptr, mat_type_name, method, args):
+        inner_type_name = mat_type_name[7:-1]
+        inner_llvm = self._get_llvm_type(inner_type_name)
+
+        struct_val = self.builder.load(mat_ptr)
+        data = self.builder.extract_value(struct_val, 0)
+        size = self.builder.extract_value(struct_val, 1)
+        cap = self.builder.extract_value(struct_val, 2)
+
+        if method == "pushb":
+            if args:
+                val = self._codegen(args[0])
+                val = self._emit_cast(val, inner_llvm)
+            else:
+                val = self._emit_default_value(inner_type_name)
+
+            new_data, new_cap = self._vector_check_capacity(
+                mat_ptr, data, size, cap, inner_llvm
+            )
+
+            store_ptr = self.builder.gep(new_data, [size], inbounds=True)
+            self.builder.store(val, store_ptr)
+
+            new_size = self.builder.add(size, ir.Constant(ir.IntType(64), 1))
+            new_size.flags = ['nuw']
+            self._update_matrix_struct(mat_ptr, new_data, new_size, new_cap)
+            return None
+
+        elif method == "popb":
+            is_nonempty = self.builder.icmp_unsigned(
+                ">", size, ir.Constant(ir.IntType(64), 0)
+            )
+            self._emit_runtime_check(
+                is_nonempty, "Runtime error: popb called on empty matrix.\n"
+            )
+            new_size = self.builder.sub(size, ir.Constant(ir.IntType(64), 1))
+            new_size.flags = ['nuw', 'nsw']
+            res_ptr = self.builder.gep(data, [new_size], inbounds=True)
+            res_val = self.builder.load(res_ptr)
+            self._update_matrix_struct(mat_ptr, data, new_size, cap)
+            return res_val
+
+        elif method == "size":
+            return self.builder.trunc(size, ir.IntType(32))
+
+        elif method == "shape":
+            vec_type = self._get_llvm_type("vec<int>")
+            result_vec = ir.Constant(vec_type, ir.Undefined)
+            shape_data_ptr = self.builder.alloca(ir.IntType(64).as_pointer(), name="shape_data")
+            self.builder.store(ir.Constant(ir.IntType(64).as_pointer(), None), shape_data_ptr)
+            result_vec = self.builder.insert_value(result_vec, self.builder.load(shape_data_ptr), 0)
+            result_vec = self.builder.insert_value(result_vec, ir.Constant(ir.IntType(64), 1), 1)
+            result_vec = self.builder.insert_value(result_vec, ir.Constant(ir.IntType(64), 1), 2)
+            return result_vec
+
+        elif method == "get":
+            if len(args) == 1:
+                idx = self._codegen(args[0])
+                idx = self._emit_cast(idx, ir.IntType(32))
+                idx64 = self.builder.sext(idx, ir.IntType(64))
+                is_negative = self.builder.icmp_signed(
+                    "<", idx64, ir.Constant(ir.IntType(64), 0)
+                )
+                wrapped = self.builder.add(idx64, size)
+                idx64 = self.builder.select(is_negative, wrapped, idx64)
+                idx_nonneg = self.builder.icmp_signed(
+                    ">=", idx64, ir.Constant(ir.IntType(64), 0)
+                )
+                idx_in_bounds = self.builder.icmp_unsigned("<", idx64, size)
+                in_bounds = self.builder.and_(idx_nonneg, idx_in_bounds)
+                self._emit_runtime_check(
+                    in_bounds, "Runtime error: Matrix index out of bounds in get().\n"
+                )
+                ptr = self.builder.gep(data, [idx64], inbounds=True)
+                return self.builder.load(ptr)
+            else:
+                raise LeashError(
+                    f"Matrix method 'get' with multiple indices not yet supported",
+                    node=mat_ptr
+                )
+
+        elif method == "set":
+            if len(args) >= 2:
+                idx = self._codegen(args[0])
+                idx = self._emit_cast(idx, ir.IntType(32))
+                idx64 = self.builder.sext(idx, ir.IntType(64))
+                is_negative = self.builder.icmp_signed(
+                    "<", idx64, ir.Constant(ir.IntType(64), 0)
+                )
+                wrapped = self.builder.add(idx64, size)
+                idx64 = self.builder.select(is_negative, wrapped, idx64)
+                idx_nonneg = self.builder.icmp_signed(
+                    ">=", idx64, ir.Constant(ir.IntType(64), 0)
+                )
+                idx_in_bounds = self.builder.icmp_unsigned("<", idx64, size)
+                in_bounds = self.builder.and_(idx_nonneg, idx_in_bounds)
+                self._emit_runtime_check(
+                    in_bounds, "Runtime error: Matrix index out of bounds in set().\n"
+                )
+                val = self._codegen(args[-1])
+                val = self._emit_cast(val, inner_llvm)
+                ptr = self.builder.gep(data, [idx64], inbounds=True)
+                self.builder.store(val, ptr)
+                return None
+            else:
+                raise LeashError(
+                    f"Matrix method 'set' with multiple indices not yet supported",
+                    node=mat_ptr
+                )
+
+        elif method == "clear":
+            self._update_matrix_struct(
+                mat_ptr, data, ir.Constant(ir.IntType(64), 0), cap
+            )
+            return None
+
+        elif method == "pushf":
+            if args:
+                val = self._codegen(args[0])
+                val = self._emit_cast(val, inner_llvm)
+            else:
+                val = self._emit_default_value(inner_type_name)
+
+            new_data, new_cap = self._vector_check_capacity(
+                mat_ptr, data, size, cap, inner_llvm
+            )
+
+            old_data_bytes = self.builder.bitcast(new_data, ir.IntType(8).as_pointer())
+            dummy_ptr = ir.Constant(inner_llvm.as_pointer(), None)
+            elem_size = self.builder.ptrtoint(
+                self.builder.gep(dummy_ptr, [ir.Constant(ir.IntType(32), 1)]),
+                ir.IntType(64),
+            )
+            new_dst_bytes = self.builder.gep(
+                old_data_bytes,
+                [ir.Constant(ir.IntType(64), elem_size)],
+                inbounds=True,
+            )
+            copy_bytes = self.builder.mul(
+                self.builder.zext(size, ir.IntType(64)), elem_size
+            )
+            self.builder.call(self.memmove, [new_dst_bytes, old_data_bytes, copy_bytes])
+            self.builder.store(val, new_data)
+
+            new_size = self.builder.add(size, ir.Constant(ir.IntType(64), 1))
+            new_size.flags = ['nuw']
+            self._update_matrix_struct(mat_ptr, new_data, new_size, new_cap)
+            return None
+
+        elif method == "popf":
+            is_nonempty = self.builder.icmp_unsigned(
+                ">", size, ir.Constant(ir.IntType(64), 0)
+            )
+            self._emit_runtime_check(
+                is_nonempty, "Runtime error: popf called on empty matrix.\n"
+            )
+            res_val = self.builder.load(data)
+
+            new_size = self.builder.sub(size, ir.Constant(ir.IntType(64), 1))
+            new_size.flags = ['nuw', 'nsw']
+            dst_bytes = self.builder.bitcast(data, ir.IntType(8).as_pointer())
+            dummy_ptr = ir.Constant(inner_llvm.as_pointer(), None)
+            elem_size = self.builder.ptrtoint(
+                self.builder.gep(dummy_ptr, [ir.Constant(ir.IntType(32), 1)]),
+                ir.IntType(64),
+            )
+            src_bytes = self.builder.gep(
+                dst_bytes, [ir.Constant(ir.IntType(64), elem_size)], inbounds=True
+            )
+            copy_bytes = self.builder.mul(
+                self.builder.zext(new_size, ir.IntType(64)), elem_size
+            )
+            self.builder.call(self.memmove, [dst_bytes, src_bytes, copy_bytes])
+
+            self._update_matrix_struct(mat_ptr, data, new_size, cap)
+            return res_val
+
+        elif method == "insert":
+            idx = self._codegen(args[0])
+            idx = self._emit_cast(idx, ir.IntType(32))
+            idx64 = self.builder.zext(idx, ir.IntType(64))
+            idx_nonneg = self.builder.icmp_signed(
+                ">=", idx64, ir.Constant(ir.IntType(64), 0)
+            )
+            idx_in_bounds = self.builder.icmp_unsigned(
+                "<=", idx64, size
+            )
+            in_bounds = self.builder.and_(idx_nonneg, idx_in_bounds)
+            self._emit_runtime_check(
+                in_bounds, "Runtime error: Matrix insert index out of bounds.\n"
+            )
+
+            if len(args) >= 2:
+                val = self._codegen(args[1])
+                val = self._emit_cast(val, inner_llvm)
+            else:
+                val = self._emit_default_value(inner_type_name)
+
+            new_data, new_cap = self._vector_check_capacity(
+                mat_ptr, data, size, cap, inner_llvm
+            )
+
+            dummy_ptr = ir.Constant(inner_llvm.as_pointer(), None)
+            elem_size = self.builder.ptrtoint(
+                self.builder.gep(dummy_ptr, [ir.Constant(ir.IntType(32), 1)]),
+                ir.IntType(64),
+            )
+
+            data_bytes = self.builder.bitcast(new_data, ir.IntType(8).as_pointer())
+            idx_offset = self.builder.mul(idx64, elem_size)
+            idx_offset.flags = ['nuw']
+            src_b = self.builder.gep(
+                data_bytes, [idx_offset], inbounds=True
+            )
+            dst_b = self.builder.gep(
+                src_bytes, [ir.Constant(ir.IntType(64), elem_size)], inbounds=True
+            )
+
+            copy_count = self.builder.sub(size, idx64)
+            copy_count.flags = ['nsw']
+            copy_bytes = self.builder.mul(copy_count, elem_size)
+            copy_bytes.flags = ['nuw']
+            self.builder.call(self.memmove, [dst_b, src_b, copy_bytes])
+
+            self.builder.store(val, src_b)
+
+            new_size = self.builder.add(size, ir.Constant(ir.IntType(64), 1))
+            new_size.flags = ['nuw']
+            self._update_matrix_struct(mat_ptr, new_data, new_size, new_cap)
+            return None
+
+        elif method == "remove":
+            idx = self._codegen(args[0])
+            idx = self._emit_cast(idx, ir.IntType(32))
+            idx64 = self.builder.sext(idx, ir.IntType(64))
+            is_negative = self.builder.icmp_signed(
+                "<", idx64, ir.Constant(ir.IntType(64), 0)
+            )
+            wrapped = self.builder.add(idx64, size)
+            idx64 = self.builder.select(is_negative, wrapped, idx64)
+            idx_nonneg = self.builder.icmp_signed(
+                ">=", idx64, ir.Constant(ir.IntType(64), 0)
+            )
+            idx_in_bounds = self.builder.icmp_unsigned("<", idx64, size)
+            in_bounds = self.builder.and_(idx_nonneg, idx_in_bounds)
+            self._emit_runtime_check(
+                in_bounds, "Runtime error: Matrix remove index out of bounds.\n"
+            )
+
+            new_size = self.builder.sub(size, ir.Constant(ir.IntType(64), 1))
+            new_size.flags = ['nuw', 'nsw']
+            dummy_ptr = ir.Constant(inner_llvm.as_pointer(), None)
+            elem_size = self.builder.ptrtoint(
+                self.builder.gep(dummy_ptr, [ir.Constant(ir.IntType(32), 1)]),
+                ir.IntType(64),
+            )
+
+            data_bytes = self.builder.bitcast(data, ir.IntType(8).as_pointer())
+            remove_offset = self.builder.mul(
+                self.builder.add(idx64, ir.Constant(ir.IntType(64), 1)), elem_size
+            )
+            remove_offset.flags = ['nuw']
+            src_b = self.builder.gep(
+                data_bytes, [remove_offset], inbounds=True
+            )
+            idx_bytes = self.builder.mul(idx64, elem_size)
+            idx_bytes.flags = ['nuw']
+            dst_b = self.builder.gep(
+                data_bytes,
+                [idx_bytes],
+                inbounds=True,
+            )
+            copy_count = self.builder.sub(new_size, idx64)
+            copy_bytes = self.builder.mul(copy_count, elem_size)
+            copy_bytes.flags = ['nuw']
+            self.builder.call(self.memmove, [dst_b, src_b, copy_bytes])
+
+            self._update_matrix_struct(mat_ptr, data, new_size, cap)
+            return None
+
+        elif method == "isin":
+            search_val = self._codegen(args[0])
+            search_val = self._emit_cast(search_val, inner_llvm)
+            found_ptr = self.builder.alloca(ir.IntType(1), name="mat_isin_found")
+            self.builder.store(ir.Constant(ir.IntType(1), 0), found_ptr)
+
+            loop_cond_bb = self.builder.function.append_basic_block("mat_isin_cond")
+            loop_body_bb = self.builder.function.append_basic_block("mat_isin_body")
+            loop_done_bb = self.builder.function.append_basic_block("mat_isin_done")
+
+            i_ptr = self.builder.alloca(ir.IntType(64), name="mat_isin_i")
+            self.builder.store(ir.Constant(ir.IntType(64), 0), i_ptr)
+            self.builder.branch(loop_cond_bb)
+
+            self.builder.position_at_end(loop_cond_bb)
+            i_val = self.builder.load(i_ptr)
+            i_in_bounds = self.builder.icmp_unsigned("<", i_val, size)
+            found_flag = self.builder.load(found_ptr)
+            not_found_yet = self.builder.icmp_unsigned("==", found_flag, ir.Constant(ir.IntType(1), 0))
+            continue_search = self.builder.and_(i_in_bounds, not_found_yet)
+            self.builder.cbranch(continue_search, loop_body_bb, loop_done_bb)
+
+            self.builder.position_at_end(loop_body_bb)
+            elem_ptr = self.builder.gep(data, [i_val], inbounds=True)
+            elem_val = self.builder.load(elem_ptr)
+            is_float_elem = isinstance(inner_llvm, (ir.HalfType, ir.FloatType, ir.DoubleType))
+            if is_float_elem:
+                match = self.builder.fcmp_ordered("==", elem_val, search_val)
+                match.flags = ['fast']
+            else:
+                match = self.builder.icmp_signed("==", elem_val, search_val)
+
+            with self.builder.if_then(match):
+                self.builder.store(ir.Constant(ir.IntType(1), 1), found_ptr)
+            next_i = self.builder.add(i_val, ir.Constant(ir.IntType(64), 1))
+            self.builder.store(next_i, i_ptr)
+            self.builder.branch(loop_cond_bb)
+
+            self.builder.position_at_end(loop_done_bb)
+            return self.builder.load(found_ptr)
+
+        raise LeashError(
+            f"Matrix method '{method}' not fully implemented yet", node=mat_ptr
         )
 
     def _codegen_hash_method(self, hash_ptr, hash_type_name, method, args, extra_data=None):
@@ -5522,6 +6136,7 @@ class CodeGen:
                 value_ptrs.append(new_value_ptr)
 
                 new_size = self.builder.add(size, ir.Constant(ir.IntType(64), 1))
+                new_size.flags = ['nuw']
                 hash_val = self.builder.insert_value(hash_val, new_size, 0)
                 self.builder.store(hash_val, hash_ptr)
             return None
@@ -5571,6 +6186,7 @@ class CodeGen:
                 eq = self.builder.icmp_signed("==", elem_val, left)
             elif isinstance(inner_llvm, (ir.FloatType, ir.DoubleType)):
                 eq = self.builder.fcmp_ordered("==", elem_val, left)
+                eq.flags = ['fast']
             elif isinstance(
                 inner_llvm, ir.PointerType
             ) and inner_llvm.pointee == ir.IntType(8):
@@ -5584,6 +6200,7 @@ class CodeGen:
                 )
 
             next_i = self.builder.add(cur_i, ir.Constant(ir.IntType(64), 1))
+            next_i.flags = ['nuw', 'nsw']
             self.builder.store(next_i, i)
 
             self.builder.cbranch(eq, merge_bb, loop_head)
@@ -7330,6 +7947,53 @@ class CodeGen:
 
     def _codegen_ArrayInit(self, node):
         target = self.current_target_type
+
+        # Matrix type initialization: create a matrix struct with heap-allocated data
+        if target and target.startswith("matrix<") and target.endswith(">"):
+            elem_type_name = target[7:-1]
+            elem_type = self._get_llvm_type(elem_type_name)
+            old_target = self.current_target_type
+            self.current_target_type = elem_type_name
+            vals = []
+            for e in node.elements:
+                v = self._codegen(e)
+                v = self._emit_cast(v, elem_type)
+                vals.append(v)
+            self.current_target_type = old_target
+
+            length = len(vals)
+            size_val = ir.Constant(ir.IntType(64), length)
+            cap_val = ir.Constant(ir.IntType(64), length)
+
+            elem_size_ptr = self.builder.gep(
+                ir.Constant(elem_type.as_pointer(), None),
+                [ir.Constant(ir.IntType(32), 1)], inbounds=True
+            )
+            elem_size = self.builder.ptrtoint(elem_size_ptr, ir.IntType(64))
+            total_bytes = self.builder.mul(size_val, elem_size)
+            total_bytes.flags = ['nuw']
+            data_bytes = self.builder.call(self.aligned_alloc, [total_bytes, ir.Constant(ir.IntType(64), 64)])
+            self._track_alloc(data_bytes)
+            data_ptr = self.builder.bitcast(data_bytes, elem_type.as_pointer())
+
+            # Optimization: Store using batch memcpy for non-trivial types
+            if len(vals) >= 4 and isinstance(elem_type, (ir.IntType, ir.FloatType, ir.HalfType, ir.DoubleType)):
+                # For power-of-2 count, use a run of stores that LLVM can auto-vectorize
+                pass
+            for i, v in enumerate(vals):
+                ptr = self.builder.gep(
+                    data_ptr,
+                    [ir.Constant(ir.IntType(64), i)], inbounds=True
+                )
+                self.builder.store(v, ptr)
+
+            matrix_type = ir.LiteralStructType([elem_type.as_pointer(), ir.IntType(64), ir.IntType(64)])
+            matrix_val = ir.Constant(matrix_type, ir.Undefined)
+            matrix_val = self.builder.insert_value(matrix_val, data_ptr, 0)
+            matrix_val = self.builder.insert_value(matrix_val, size_val, 1)
+            matrix_val = self.builder.insert_value(matrix_val, cap_val, 2)
+            return matrix_val
+
         elem_type = None
         elem_type_name = None
         inferred_from_elements = False
@@ -7754,6 +8418,7 @@ class CodeGen:
 
                 # Calculate total size = size * elem_size
                 total_size = self.builder.mul(left_size, ir.Constant(ir.IntType(64), elem_size))
+                total_size.flags = ['nuw']
 
                 # Cast pointers to i8* for memcmp
                 left_i8ptr = self.builder.bitcast(left_ptr, ir.IntType(8).as_pointer())

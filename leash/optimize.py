@@ -77,6 +77,25 @@ def _add_function_level_passes(pm, opt_level, size_opt=False):
         pm.add_partial_inliner_pass()                # partial inlining
         pm.add_always_inliner_pass()                 # always inline
 
+        if hasattr(pm, 'add_loop_vectorize_pass'):
+            pm.add_loop_vectorize_pass()             # Optimization 11: Loop vectorization
+        if hasattr(pm, 'add_slp_vectorize_pass'):
+            pm.add_slp_vectorize_pass()              # Optimization 12: SLP vectorization (auto-SIMD)
+        if hasattr(pm, 'add_loop_distribute_pass'):
+            pm.add_loop_distribute_pass()            # Optimization 13: Loop distribution for better vectorization
+        if hasattr(pm, 'add_loop_unswitch_pass'):
+            pm.add_loop_unswitch_pass()              # Optimization 14: Loop unswitching
+        if hasattr(pm, 'add_loop_versioning_pass'):
+            pm.add_loop_versioning_pass()            # Optimization 15: Loop versioning for SIMD
+        if hasattr(pm, 'add_loop_interchange_pass'):
+            pm.add_loop_interchange_pass()           # Optimization 16: Loop interchange
+        if hasattr(pm, 'add_loop_predication_pass'):
+            pm.add_loop_predication_pass()           # Optimization 17: Loop predication
+        if hasattr(pm, 'add_inject_tli_mappings_pass'):
+            pm.add_inject_tli_mappings_pass()        # Optimization 18: TLI for better vectorization
+        if hasattr(pm, 'add_coro_early_pass'):
+            pm.add_coro_early_pass()                 # Optimization 19: Coroutine early cleanup
+
 
 
 def _add_module_level_passes(pm, opt_level, size_opt=False):
@@ -97,6 +116,26 @@ def _add_module_level_passes(pm, opt_level, size_opt=False):
     if opt_level >= 3:
         pm.add_dead_store_elimination_pass()         # remove dead stores
         pm.add_break_critical_edges_pass()             # break crit edges before more opts
+
+        # Optimization 20: Additional IPO passes
+        if hasattr(pm, 'add_function_attrs_pass'):
+            pm.add_function_attrs_pass()
+        if hasattr(pm, 'add_called_value_propagation_pass'):
+            pm.add_called_value_propagation_pass()   # propagate callee values
+        if hasattr(pm, 'add_coro_split_pass'):
+            pm.add_coro_split_pass()
+        if hasattr(pm, 'add_coro_elide_pass'):
+            pm.add_coro_elide_pass()
+        if hasattr(pm, 'add_coro_cleanup_pass'):
+            pm.add_coro_cleanup_pass()
+
+        # Optimization 21: Extra function-level cleanup at module scope
+        if hasattr(pm, 'add_float2int_pass'):
+            pm.add_float2int_pass()                  # float-to-int conversion
+
+        # Optimization 22: Speculative execution optimization
+        if hasattr(pm, 'add_speculative_execution_pass'):
+            pm.add_speculative_execution_pass()
 
 
 def _add_size_passes(pm):

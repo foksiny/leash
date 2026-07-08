@@ -981,6 +981,37 @@ def run_project(prog_args=None, extra_import_dirs=None):
                     time.sleep(0.1)
 
 
+def update_leash():
+    import urllib.request
+    import json
+    
+    print("Leash Update Checker")
+    print("Current version: 0.17.0 Beta\n")
+    
+    try:
+        req = urllib.request.Request(
+            "https://api.github.com/repos/foksiny/leash/releases/latest",
+            headers={"User-Agent": "leash-update"}
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+            latest_tag = data.get("tag_name", "").lstrip("v")
+            print(f"Latest remote version: {latest_tag}")
+    except Exception as e:
+        print(f"Could not fetch latest version from GitHub: {e}")
+        print("Proceeding with git pull anyway...\n")
+    
+    print("\nPulling latest changes from GitHub...")
+    result = subprocess.run(["git", "pull"], capture_output=True, text=True)
+    print(result.stdout, end="")
+    if result.stderr:
+        print(result.stderr, end="")
+    if result.returncode == 0:
+        print("Update complete.")
+    else:
+        print("Update failed.")
+
+
 def main():
     global VERBOSE_MODE
     VERBOSE_MODE = False
@@ -995,15 +1026,15 @@ def main():
                 pass
 
     if len(sys.argv) < 2:
-        print("Usage: leash <compile|run|dump|check|install|init|build|runp> ... [options]")
+        print("Usage: leash <compile|run|dump|check|install|init|build|runp|update> ... [options]")
         print("Global Options:\n  --verbose/-vb        Enable highly detailed masterclass error and warning explanations.")
         sys.exit(1)
     cmd = sys.argv[1]
     if cmd in ("--help", "-h"):
-        print("Leash v0.16.0 Beta\nUsage: leash <command> [options]\nCommands: compile, run, dump, check, install, init, build, runp\nRun 'leash <command> --help' for details.\n\nGlobal Options:\n  --verbose/-vb        Enable highly detailed masterclass error and warning explanations.")
+        print("Leash v0.17.0 Beta\nUsage: leash <command> [options]\nCommands: compile, run, dump, check, install, init, build, runp, update\nRun 'leash <command> --help' for details.\n\nGlobal Options:\n  --verbose/-vb        Enable highly detailed masterclass error and warning explanations.")
         sys.exit(0)
     if cmd in ("--version", "-v"):
-        print("Leash v0.16.0 Beta\nBuilt on LLVM with custom GC"); sys.exit(0)
+        print("Leash v0.17.0 Beta\nBuilt on LLVM with custom GC"); sys.exit(0)
     if cmd == "check":
         if len(sys.argv) < 3:
             print("Usage: leash check <file.lsh> [options]")
@@ -1116,6 +1147,9 @@ def main():
             dump_file(infile, outname, target, check, warnerr, elibs, opt, extra_import_dirs=extra_import_dirs)
         else:
             compile_file(infile, outname, outtype, False, target, check, warnerr, elibs, opt, extra_import_dirs=extra_import_dirs)
+    elif cmd == "update":
+        update_leash()
+        sys.exit(0)
     elif cmd == "install":
         if len(sys.argv) < 3:
             print("Usage: leash install <path> ...")

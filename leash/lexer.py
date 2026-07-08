@@ -85,6 +85,7 @@ class Lexer:
         "worker",
         "spawn",
         "thisworker",
+        "matrix",
     }
 
     # regexes

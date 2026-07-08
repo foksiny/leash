@@ -256,6 +256,7 @@ const BUILTIN_DOCS: Record<string, { sig: string, desc: string, detail?: string 
     'void': { sig: 'void', desc: 'Represents the absence of a value.' },
     'hash': { sig: 'hash<K, V>', desc: 'Key-value hash table type with string keys.' },
     'vec': { sig: 'vec<T>', desc: 'Dynamic array (vector) type.' },
+    'matrix': { sig: 'matrix<T>', desc: 'Dynamically-sized, heap-allocated flat array with parallel element-wise math.' },
     'array': { sig: 'T[N]', desc: 'Fixed-size array type.' }
 };
 
@@ -659,7 +660,7 @@ connection.onCompletion((params: TextDocumentPositionParams): CompletionList => 
     const symbols: CompletionItem[] = [];
     
     // Add keywords
-    const keywords = ["fnc", "return", "int", "void", "def", "struct", "true", "false", "null", "nil", "string", "char", "bool", "float", "uint", "if", "also", "else", "unless", "while", "for", "do", "foreach", "loop", "in", "class", "this", "thisop", "pub", "priv", "static", "stop", "continue", "empty", "ignore", "use", "switch", "case", "default", "pubif", "unsafe", "as", "inline", "defer", "error", "throw", "self", "macro", "create", "del", "is", "isnt", "union", "enum", "type", "template", "opdef", "extern", "works", "otherwise", "imut", "worker", "spawn", "shared", "fusion", "thisworker", "show", "showb", "get", "keyget", "toint", "tofloat", "tostring", "sizeof", "size", "push", "popb", "popf", "pushb", "pushf", "insert", "clear", "remove", "extend", "extendv", "insertv", "inserta", "isin", "rand", "randf", "seed", "choose", "wait", "timepass", "exit", "exec", "cstr", "lstr", "normescape", "inttobytes", "bytestoint", "floattobytes", "bytestofloat", "open", "close", "read", "write", "readln", "readb", "writeb", "replaceall", "rewind", "rename", "delete", "replace", "keys", "values"];
+    const keywords = ["fnc", "return", "int", "void", "def", "struct", "true", "false", "null", "nil", "string", "char", "bool", "float", "uint", "if", "also", "else", "unless", "while", "for", "do", "foreach", "loop", "in", "class", "this", "thisop", "pub", "priv", "static", "stop", "continue", "empty", "ignore", "use", "switch", "case", "default", "pubif", "unsafe", "as", "inline", "defer", "error", "throw", "self", "macro", "create", "del", "is", "isnt", "union", "enum", "type", "template", "opdef", "extern", "works", "otherwise", "imut", "worker", "spawn", "shared", "fusion", "thisworker", "show", "showb", "get", "keyget", "toint", "tofloat", "tostring", "sizeof", "size", "push", "popb", "popf", "pushb", "pushf", "insert", "clear", "remove", "extend", "extendv", "insertv", "inserta", "isin", "rand", "randf", "seed", "choose", "wait", "timepass", "exit", "exec", "cstr", "lstr", "normescape", "inttobytes", "bytestoint", "floattobytes", "bytestofloat", "open", "close", "read", "write", "readln", "readb", "writeb", "replaceall", "rewind", "rename", "delete", "replace", "keys", "values", "matrix"];
     
     keywords.forEach(kw => {
         if (!currentWord || kw.startsWith(currentWord)) {

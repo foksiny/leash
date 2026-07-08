@@ -41,6 +41,7 @@ from .ast_nodes import (
     ForeachArrayStatement,
     ForeachStringStatement,
     ForeachVectorStatement,
+    ForeachMatrixStatement,
     MethodCall,
     UnionDef,
     EnumMemberAccess,
@@ -302,9 +303,10 @@ class Parser:
             "FLOAT",
             "UINT",
             "VEC",
+            "MATRIX",
         ):
             base = self.eat(tok.type).value
-            if tok.type not in ("IDENT", "VEC"):
+            if tok.type not in ("IDENT", "VEC", "MATRIX"):
                 base = tok.type.lower()
             if self.current().type == "LT":
                 self.eat("LT")
@@ -422,6 +424,7 @@ class Parser:
         "VOID",
         "IMUT",
         "VEC",
+        "MATRIX",
         "FNC",
         "THISOP",
     }
@@ -1240,9 +1243,9 @@ class Parser:
         # Read the type name
         type_tok = self.current()
         target_type = None
-        if type_tok.type in ("INT", "VOID", "IDENT", "STRING", "CHAR", "BOOL", "FLOAT", "UINT", "VEC"):
+        if type_tok.type in ("INT", "VOID", "IDENT", "STRING", "CHAR", "BOOL", "FLOAT", "UINT", "VEC", "MATRIX"):
             target_type = self.eat(type_tok.type).value
-            if type_tok.type not in ("IDENT", "VEC"):
+            if type_tok.type not in ("IDENT", "VEC", "MATRIX"):
                 target_type = type_tok.type.lower()
         else:
             raise LeashError(
@@ -1529,12 +1532,12 @@ class Parser:
             value_var = self.eat("IDENT").value
             self.eat("IN")
             self.eat("LT")
-            iterable_type = self.current().type  # STRUCT, ARRAY, STRING, VECTOR
-            if iterable_type in ("STRUCT", "ARRAY", "STRING", "VECTOR"):
+            iterable_type = self.current().type  # STRUCT, ARRAY, STRING, VECTOR, MATRIX
+            if iterable_type in ("STRUCT", "ARRAY", "STRING", "VECTOR", "MATRIX"):
                 self.eat(iterable_type)
             else:
                 raise LeashError(
-                    f"Expected 'struct', 'array', 'string' or 'vector' in foreach loop, but got {iterable_type}",
+                    f"Expected 'struct', 'array', 'string', 'vector' or 'matrix' in foreach loop, but got {iterable_type}",
                     self.current().line,
                     self.current().column,
                 )
@@ -1557,6 +1560,10 @@ class Parser:
             elif iterable_type == "VECTOR":
                 return self._pos(
                     ForeachVectorStatement(name_var, value_var, expr, body), tok
+                )
+            elif iterable_type == "MATRIX":
+                return self._pos(
+                    ForeachMatrixStatement(name_var, value_var, expr, body), tok
                 )
             else:
                 raise LeashError(
@@ -1980,7 +1987,7 @@ class Parser:
         pos = self.pos
 
         # Primitive type keywords
-        if tok.type in ("INT", "UINT", "FLOAT", "STRING", "CHAR", "BOOL", "VOID", "VEC"):
+        if tok.type in ("INT", "UINT", "FLOAT", "STRING", "CHAR", "BOOL", "VOID", "VEC", "MATRIX"):
             return True
 
         # Identifiers - could be type names or variables
@@ -2184,6 +2191,7 @@ class Parser:
                         if self.current().type in (
                             "IDENT",
                             "VEC",
+                            "MATRIX",
                             "INT",
                             "UINT",
                             "FLOAT",
@@ -2232,6 +2240,7 @@ class Parser:
                         if self.current().type in (
                             "IDENT",
                             "VEC",
+                            "MATRIX",
                             "INT",
                             "UINT",
                             "FLOAT",

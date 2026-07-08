@@ -153,6 +153,14 @@ class ForeachVectorStatement(Statement):
         self.body = body
 
 
+class ForeachMatrixStatement(Statement):
+    def __init__(self, index_var, value_var, matrix_expr, body):
+        self.index_var = index_var
+        self.value_var = value_var
+        self.matrix_expr = matrix_expr
+        self.body = body
+
+
 class ReturnStatement(Statement):
     def __init__(self, value):
         self.value = value

@@ -156,6 +156,8 @@ class TypeChecker:
         base = self._base_type(type_name)
         if base == "vec":
             return ["__T_OPDEF__"]
+        if base == "matrix":
+            return ["__T_OPDEF__"]
         if base == "hash":
             return ["__T_OPDEF_K__", "__T_OPDEF_V__"]
         # Check user-defined generic classes
@@ -170,6 +172,8 @@ class TypeChecker:
         base = self._base_type(concrete_type)
         if base == "vec" and concrete_type.startswith("vec<") and concrete_type.endswith(">"):
             return concrete_type[4:-1]
+        if base == "matrix" and concrete_type.startswith("matrix<") and concrete_type.endswith(">"):
+            return concrete_type[7:-1]
         if base == "hash" and concrete_type.startswith("hash<") and concrete_type.endswith(">"):
             inner = concrete_type[5:-1]
             return inner.split(",")[0].strip()  # return first type param
@@ -957,6 +961,8 @@ class TypeChecker:
             return "float"
         if t.startswith("vec<") and t.endswith(">"):
             return "vec"
+        if t.startswith("matrix<") and t.endswith(">"):
+            return "matrix"
         if t.startswith("hash<") and t.endswith(">"):
             return "hash"
         if t in self.class_types:
@@ -1006,7 +1012,7 @@ class TypeChecker:
                 return False
 
         base = self._base_type(t)
-        if base in ("int", "uint", "float", "string", "char", "bool", "void", "vec", "hash"):
+        if base in ("int", "uint", "float", "string", "char", "bool", "void", "vec", "hash", "matrix"):
             return True
         if (
             t in self.struct_types
@@ -1223,6 +1229,18 @@ class TypeChecker:
 
         src_b = self._base_type(src_r)
         dst_b = self._base_type(dst_r)
+
+        # Matrix compatibility: same inner type
+        if src_b == "matrix" and dst_b == "matrix":
+            src_inner = src_r[7:-1]
+            dst_inner = dst_r[7:-1]
+            return self._types_compatible(src_inner, dst_inner)
+
+        # Array literal to matrix assignment
+        if src_b == "array" and dst_b == "matrix":
+            src_elem = src_r.split("[")[0]
+            dst_inner = dst_r[7:-1]
+            return self._types_compatible(src_elem, dst_inner)
 
         # Disallow mixing numeric types with aggregate types (struct, class, union, enum)
         if (
@@ -1700,6 +1718,16 @@ class TypeChecker:
             elem_t = "any"  # default if unknown
             if vec_t and vec_t.startswith("vec<"):
                 elem_t = vec_t[4:-1]
+            self.var_types[stmt.index_var] = "int"
+            self.var_types[stmt.value_var] = elem_t
+            self._check_statements(stmt.body)
+            self.loop_depth -= 1
+        elif isinstance(stmt, ForeachMatrixStatement):
+            self.loop_depth += 1
+            mat_t = self._infer_type(stmt.matrix_expr)
+            elem_t = "any"
+            if mat_t and mat_t.startswith("matrix<"):
+                elem_t = mat_t[7:-1]
             self.var_types[stmt.index_var] = "int"
             self.var_types[stmt.value_var] = elem_t
             self._check_statements(stmt.body)
@@ -2710,6 +2738,28 @@ class TypeChecker:
                     )
 
                 return "int"
+
+            # Matrix arithmetic (element-wise)
+            if left_b == "matrix" and right_b == "matrix":
+                if expr.op in ("+", "-", "*", "/"):
+                    if not self._types_compatible(left_t, right_t):
+                        raise LeashError(
+                            f"Cannot apply operator '{expr.op}' to matrices of different types: '{left_t}' and '{right_t}'",
+                            node=expr,
+                        )
+                    return left_t
+                elif expr.op in ("==", "!="):
+                    if not self._types_compatible(left_t, right_t):
+                        raise LeashError(
+                            f"Cannot compare matrices of different types: '{left_t}' and '{right_t}'",
+                            node=expr,
+                        )
+                    return "bool"
+                else:
+                    raise LeashError(
+                        f"Operator '{expr.op}' is not supported for matrix types",
+                        node=expr,
+                    )
 
             # OpDef operator overload lookup
             if left_b == right_b:
@@ -4057,6 +4107,144 @@ class TypeChecker:
             else:
                 raise LeashError(
                     f"Vector has no method named '{expr.method}'", node=expr
+                )
+
+        # Matrix methods
+        if base_b == "matrix":
+            inner_t = base_t[7:-1]
+            if expr.method in ("pushb", "pushf"):
+                if len(expr.args) == 0:
+                    pass
+                elif len(expr.args) == 1:
+                    arg_type = self._infer_type(expr.args[0])
+                    if arg_type and not self._types_compatible(arg_type, inner_t):
+                        self._warn(
+                            f"Matrix method '{expr.method}' expects argument of type '{inner_t}' but got '{arg_type}'",
+                            node=expr.args[0],
+                        )
+                else:
+                    self._error(
+                        f"Matrix method '{expr.method}' expects 0 or 1 arguments, got {len(expr.args)}",
+                        node=expr,
+                    )
+                return "void"
+            elif expr.method == "insert":
+                if len(expr.args) not in (1, 2):
+                    self._error(
+                        f"Matrix method '{expr.method}' expects 1 or 2 arguments, got {len(expr.args)}",
+                        node=expr,
+                    )
+                else:
+                    idx_type = self._infer_type(expr.args[0])
+                    if idx_type and not self._types_compatible(idx_type, "int"):
+                        self._warn(
+                            f"Matrix method '{expr.method}' expects first argument of type 'int' (index) but got '{idx_type}'",
+                            node=expr.args[0],
+                        )
+                    if len(expr.args) == 2:
+                        val_type = self._infer_type(expr.args[1])
+                        if val_type and not self._types_compatible(val_type, inner_t):
+                            self._warn(
+                                f"Matrix method '{expr.method}' expects second argument of type '{inner_t}' but got '{val_type}'",
+                                node=expr.args[1],
+                            )
+                return "void"
+            elif expr.method in ("popb", "popf"):
+                if len(expr.args) not in (0, 1):
+                    self._error(
+                        f"Matrix method '{expr.method}' expects 0 or 1 arguments, got {len(expr.args)}",
+                        node=expr,
+                    )
+                return "void"
+            elif expr.method == "size":
+                if len(expr.args) != 0:
+                    self._error(
+                        f"Matrix method '{expr.method}' expects 0 arguments, got {len(expr.args)}",
+                        node=expr,
+                    )
+                return "int"
+            elif expr.method == "get":
+                if len(expr.args) < 1:
+                    self._error(
+                        f"Matrix method '{expr.method}' expects at least 1 argument, got {len(expr.args)}",
+                        node=expr,
+                    )
+                else:
+                    for i, arg in enumerate(expr.args):
+                        arg_type = self._infer_type(arg)
+                        if arg_type and not self._types_compatible(arg_type, "int"):
+                            self._warn(
+                                f"Matrix method '{expr.method}' expects argument {i + 1} of type 'int' (index) but got '{arg_type}'",
+                                node=arg,
+                            )
+                return inner_t
+            elif expr.method == "set":
+                if len(expr.args) < 2:
+                    self._error(
+                        f"Matrix method '{expr.method}' expects at least 2 arguments, got {len(expr.args)}",
+                        node=expr,
+                    )
+                else:
+                    for i in range(len(expr.args) - 1):
+                        arg_type = self._infer_type(expr.args[i])
+                        if arg_type and not self._types_compatible(arg_type, "int"):
+                            self._warn(
+                                f"Matrix method '{expr.method}' expects argument {i + 1} of type 'int' (index) but got '{arg_type}'",
+                                node=expr.args[i],
+                            )
+                    val_type = self._infer_type(expr.args[-1])
+                    if val_type and not self._types_compatible(val_type, inner_t):
+                        self._warn(
+                            f"Matrix method '{expr.method}' expects last argument of type '{inner_t}' but got '{val_type}'",
+                            node=expr.args[-1],
+                        )
+                return "void"
+            elif expr.method == "clear":
+                if len(expr.args) != 0:
+                    self._error(
+                        f"Matrix method '{expr.method}' expects 0 arguments, got {len(expr.args)}",
+                        node=expr,
+                    )
+                return "void"
+            elif expr.method == "remove":
+                if len(expr.args) < 1:
+                    self._error(
+                        f"Matrix method '{expr.method}' expects at least 1 argument, got {len(expr.args)}",
+                        node=expr,
+                    )
+                else:
+                    for i, arg in enumerate(expr.args):
+                        arg_type = self._infer_type(arg)
+                        if arg_type and not self._types_compatible(arg_type, "int"):
+                            self._warn(
+                                f"Matrix method '{expr.method}' expects argument {i + 1} of type 'int' (index) but got '{arg_type}'",
+                                node=arg,
+                            )
+                return "void"
+            elif expr.method == "isin":
+                if len(expr.args) != 1:
+                    self._error(
+                        f"Matrix method '{expr.method}' expects 1 argument, got {len(expr.args)}",
+                        node=expr,
+                    )
+                else:
+                    arg_type = self._infer_type(expr.args[0])
+                    if arg_type and not self._types_compatible(arg_type, inner_t):
+                        self._warn(
+                            f"Matrix method '{expr.method}' expects argument of type '{inner_t}' but got '{arg_type}'",
+                            node=expr.args[0],
+                        )
+                return "bool"
+            elif expr.method == "shape":
+                if len(expr.args) != 0:
+                    self._error(
+                        f"Matrix method '{expr.method}' expects 0 arguments, got {len(expr.args)}",
+                        node=expr,
+                    )
+                return "vec<int>"
+            else:
+                raise LeashError(
+                    f"Matrix has no method named '{expr.method}'", node=expr
                 )
 
         # String methods
