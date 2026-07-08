@@ -1000,7 +1000,7 @@ class TypeChecker:
         elif t.startswith("float<"):
             try:
                 size = int(t[t.find("<") + 1 : -1])
-                if size < 4 or size > 512:
+                if size < 16 or size > 128:
                     return False
             except ValueError:
                 return False
@@ -2688,9 +2688,13 @@ class TypeChecker:
             if self._is_numeric(left_t) and self._is_numeric(right_t):
                 if expr.op in ("==", "!=", "<", "<=", ">", ">="):
                     return "bool"
-                # Result type: float wins over int
+                # Result type: float wins over int/uint
                 if left_b == "float" or right_b == "float":
                     return "float"
+
+                # Preserve uint for unsigned operations
+                if left_b == "uint" and right_b == "uint":
+                    return "uint"
 
                 # Zero-division safety check (static)
                 if (

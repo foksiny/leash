@@ -15,5 +15,3 @@ def int512  : type int<512>;
 def float128 : type float<128>;
 def float64  : type float<64>;
 def float16  : type float<16>;
-def float256 : type float<256>;
-def float512 : type float<512>;

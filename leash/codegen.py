@@ -470,13 +470,18 @@ class CodeGen:
                 return buf
             elif llvm_ty.width == 64:
                 fmt = "%lld"
-            else:
+            elif llvm_ty.width < 32:
                 fmt = "%d"
-                if llvm_ty.width < 32:
-                    casted_val = self.builder.sext(val, ir.IntType(32))
-        elif isinstance(llvm_ty, (ir.FloatType, ir.DoubleType)):
+                casted_val = self.builder.sext(val, ir.IntType(32))
+            elif llvm_ty.width <= 64:
+                fmt = "%lld"
+                casted_val = self.builder.sext(val, ir.IntType(64))
+            else:
+                fmt = "%lld"
+                casted_val = self.builder.trunc(val, ir.IntType(64))
+        elif isinstance(llvm_ty, (ir.HalfType, ir.FloatType, ir.DoubleType)):
             fmt = "%f"
-            if isinstance(llvm_ty, ir.FloatType):
+            if not isinstance(llvm_ty, ir.DoubleType):
                 casted_val = self.builder.fpext(val, ir.DoubleType())
         else:
             return val  # already a string?
@@ -807,7 +812,7 @@ class CodeGen:
                 return "int"
             elif llvm_type.width == 64:
                 return "int<64>"
-        elif isinstance(llvm_type, (ir.FloatType, ir.DoubleType)):
+        elif isinstance(llvm_type, (ir.HalfType, ir.FloatType, ir.DoubleType)):
             return "float"
         elif isinstance(llvm_type, ir.PointerType):
             if llvm_type.pointee == ir.IntType(8):
@@ -1163,7 +1168,9 @@ class CodeGen:
             )  # standard float maps to standard float literals size
         elif type_name.startswith("float<"):
             size = int(type_name[6:-1])
-            if size <= 32:
+            if size <= 16:
+                return ir.HalfType()
+            elif size <= 32:
                 return ir.FloatType()
             else:
                 return ir.DoubleType()
@@ -1188,8 +1195,8 @@ class CodeGen:
         # Fallback: manual calculation for common types
         if isinstance(llvm_type, ir.IntType):
             return (llvm_type.width + 7) // 8
-        elif isinstance(llvm_type, (ir.FloatType, ir.DoubleType)):
-            return 4 if isinstance(llvm_type, ir.FloatType) else 8
+        elif isinstance(llvm_type, (ir.HalfType, ir.FloatType, ir.DoubleType)):
+            return 2 if isinstance(llvm_type, ir.HalfType) else (4 if isinstance(llvm_type, ir.FloatType) else 8)
         elif isinstance(llvm_type, ir.PointerType):
             return 8  # Pointer size on 64-bit
         elif isinstance(llvm_type, ir.LiteralStructType):
@@ -2091,7 +2098,7 @@ class CodeGen:
     def _get_default_value_for_type(self, ty):
         if isinstance(ty, ir.IntType):
             return ir.Constant(ty, 0)
-        elif isinstance(ty, ir.FloatType):
+        elif isinstance(ty, (ir.HalfType, ir.FloatType, ir.DoubleType)):
             return ir.Constant(ty, 0.0)
         elif isinstance(ty, ir.PointerType):
             return ir.Constant(ty, None)
@@ -2221,8 +2228,8 @@ class CodeGen:
         if matched_idx is None:
             for vname, vdata in union_info["variants"].items():
                 if isinstance(
-                    vdata["llvm_type"], (ir.FloatType, ir.DoubleType)
-                ) and isinstance(val.type, (ir.FloatType, ir.DoubleType)):
+                    vdata["llvm_type"], (ir.HalfType, ir.FloatType, ir.DoubleType)
+                ) and isinstance(val.type, (ir.HalfType, ir.FloatType, ir.DoubleType)):
                     val = self._emit_cast(val, vdata["llvm_type"])
                     matched_idx = vdata["index"]
                     break
@@ -2898,15 +2905,17 @@ class CodeGen:
         """Return (format_str, possibly_cast_val) for a single value."""
         if isinstance(val.type, ir.IntType):
             width = val.type.width
-            if width < 32:
-                val = self.builder.zext(val, ir.IntType(32))
-            if width == 64:
-                return ("%lld", val)
-            elif width == 8:
+            if width == 8:
                 return ("%c", val)
+            if width <= 32:
+                casted = self.builder.zext(val, ir.IntType(32)) if width < 32 else val
+                return ("%d", casted)
+            elif width == 64:
+                return ("%lld", val)
             else:
-                return ("%d", val)
-        elif isinstance(val.type, ir.FloatType):
+                casted = self.builder.trunc(val, ir.IntType(64))
+                return ("%lld", casted)
+        elif isinstance(val.type, (ir.HalfType, ir.FloatType)):
             val = self.builder.fpext(val, ir.DoubleType())
             return ("%f", val)
         elif isinstance(val.type, ir.DoubleType):
@@ -2948,16 +2957,24 @@ class CodeGen:
 
             if isinstance(val.type, ir.IntType):
                 width = val.type.width
-                if width < 32:
-                    val = self.builder.zext(val, ir.IntType(32))
-
-                if width == 64:
-                    format_str += "%lld"
-                elif width == 8:
+                arg_type = self._get_leash_type_name(arg_node)
+                is_unsigned = (arg_type.startswith("uint") or arg_type == "uint")
+                if width == 8 and arg_type == "char":
                     format_str += "%c"
-                else:
+                elif width <= 32:
+                    if width < 32:
+                        # Use zext for unsigned and bool types, sext for signed
+                        if is_unsigned or arg_type == "bool":
+                            val = self.builder.zext(val, ir.IntType(32))
+                        else:
+                            val = self.builder.sext(val, ir.IntType(32))
                     format_str += "%d"
-            elif isinstance(val.type, ir.FloatType):
+                elif width == 64:
+                    format_str += "%lld"
+                else:
+                    val = self.builder.trunc(val, ir.IntType(64))
+                    format_str += "%lld"
+            elif isinstance(val.type, (ir.HalfType, ir.FloatType)):
                 val = self.builder.fpext(val, ir.DoubleType())
                 format_str += "%f"
             elif isinstance(val.type, ir.DoubleType):
@@ -3066,16 +3083,19 @@ class CodeGen:
         """Print a value using standard show formatting."""
         if isinstance(val.type, ir.IntType):
             width = val.type.width
-            if width < 32:
-                val = self.builder.zext(val, ir.IntType(32))
-            if width == 64:
-                fmt = "%lld"
-            elif width == 8:
+            if width == 8:
                 fmt = "%c"
-            else:
+            elif width <= 32:
+                if width < 32:
+                    val = self.builder.zext(val, ir.IntType(32))
                 fmt = "%d"
+            elif width == 64:
+                fmt = "%lld"
+            else:
+                val = self.builder.trunc(val, ir.IntType(64))
+                fmt = "%lld"
             self._print_formatted(fmt, [val])
-        elif isinstance(val.type, ir.FloatType):
+        elif isinstance(val.type, (ir.HalfType, ir.FloatType)):
             val = self.builder.fpext(val, ir.DoubleType())
             self._print_formatted("%f", [val])
         elif isinstance(val.type, ir.DoubleType):
@@ -3224,7 +3244,7 @@ class CodeGen:
                 null_ptr = ir.Constant(cond_val.type, None)
                 return self.builder.icmp_unsigned("!=", cond_val, null_ptr)
             zero = ir.Constant(cond_val.type, 0)
-            if isinstance(cond_val.type, (ir.FloatType, ir.DoubleType)):
+            if isinstance(cond_val.type, (ir.HalfType, ir.FloatType, ir.DoubleType)):
                 return self.builder.fcmp_ordered("!=", cond_val, zero)
             else:
                 return self.builder.icmp_signed("!=", cond_val, zero)
@@ -3883,8 +3903,8 @@ class CodeGen:
         is_char_r = isinstance(right.type, ir.IntType) and right.type.width == 8
 
         # Mixed string concatenation
-        is_numeric_l = isinstance(left.type, (ir.IntType, ir.FloatType, ir.DoubleType))
-        is_numeric_r = isinstance(right.type, (ir.IntType, ir.FloatType, ir.DoubleType))
+        is_numeric_l = isinstance(left.type, (ir.IntType, ir.HalfType, ir.FloatType, ir.DoubleType))
+        is_numeric_r = isinstance(right.type, (ir.IntType, ir.HalfType, ir.FloatType, ir.DoubleType))
 
         if (
             node.op == "+"
@@ -4138,30 +4158,47 @@ class CodeGen:
             else:
                 raise Exception(f"Unknown string binary op {node.op}")
 
+        # Determine signedness for int type promotion
+        def _is_uint_expr(node):
+            t = self._get_leash_type_name(node)
+            return t.startswith("uint") or t == "uint"
+
         # Type promotion
         if left.type != right.type:
             if isinstance(left.type, ir.IntType) and isinstance(right.type, ir.IntType):
+                signed = not (_is_uint_expr(node.left) or _is_uint_expr(node.right))
                 if left.type.width < right.type.width:
-                    left = self._emit_cast(left, right.type)
+                    left = self._emit_cast(left, right.type, is_signed=signed)
                 else:
-                    right = self._emit_cast(right, left.type)
-            elif isinstance(left.type, (ir.FloatType, ir.DoubleType)) and isinstance(
-                right.type, (ir.FloatType, ir.DoubleType)
+                    right = self._emit_cast(right, left.type, is_signed=signed)
+            elif isinstance(left.type, (ir.HalfType, ir.FloatType, ir.DoubleType)) and isinstance(
+                right.type, (ir.HalfType, ir.FloatType, ir.DoubleType)
             ):
-                target = ir.DoubleType()
+                src_size = {ir.HalfType: 16, ir.FloatType: 32, ir.DoubleType: 64}.get(type(left.type), 64)
+                dst_size = {ir.HalfType: 16, ir.FloatType: 32, ir.DoubleType: 64}.get(type(right.type), 64)
+                target = left.type if src_size >= dst_size else right.type
                 left = self._emit_cast(left, target)
                 right = self._emit_cast(right, target)
-            elif isinstance(left.type, (ir.FloatType, ir.DoubleType)) and isinstance(
+            elif isinstance(left.type, (ir.HalfType, ir.FloatType, ir.DoubleType)) and isinstance(
                 right.type, ir.IntType
             ):
                 right = self._emit_cast(right, left.type)
             elif isinstance(left.type, ir.IntType) and isinstance(
-                right.type, (ir.FloatType, ir.DoubleType)
+                right.type, (ir.HalfType, ir.FloatType, ir.DoubleType)
             ):
                 left = self._emit_cast(left, right.type)
 
         # Determine if float or int based on types (assume matching types for now)
-        is_float = isinstance(left.type, (ir.FloatType, ir.DoubleType))
+        is_float = isinstance(left.type, (ir.HalfType, ir.FloatType, ir.DoubleType))
+
+        # Determine if unsigned operation (check Leash type names of operands)
+        if not is_float and isinstance(left.type, ir.IntType) and isinstance(right.type, ir.IntType):
+            left_type = self._get_leash_type_name(node.left)
+            right_type = self._get_leash_type_name(node.right)
+            is_unsigned = (left_type.startswith("uint") or left_type == "uint") or \
+                          (right_type.startswith("uint") or right_type == "uint")
+        else:
+            is_unsigned = False
 
         if node.op == "+":
             return (
@@ -4184,19 +4221,21 @@ class CodeGen:
         elif node.op == "/":
             if not is_float:
                 self._emit_division_by_zero_check(right)
-            return (
-                self.builder.fdiv(left, right)
-                if is_float
-                else self.builder.sdiv(left, right)
-            )
+            if is_float:
+                return self.builder.fdiv(left, right)
+            elif is_unsigned:
+                return self.builder.udiv(left, right)
+            else:
+                return self.builder.sdiv(left, right)
         elif node.op == "%":
             if not is_float:
                 self._emit_division_by_zero_check(right)
-            return (
-                self.builder.frem(left, right)
-                if is_float
-                else self.builder.srem(left, right)
-            )
+            if is_float:
+                return self.builder.frem(left, right)
+            elif is_unsigned:
+                return self.builder.urem(left, right)
+            else:
+                return self.builder.srem(left, right)
         elif node.op == "&":
             return self.builder.and_(left, right)
         elif node.op == "|":
@@ -4206,7 +4245,7 @@ class CodeGen:
         elif node.op == "<<":
             return self.builder.shl(left, right)
         elif node.op == ">>":
-            return self.builder.ashr(left, right)  # assume signed shift right
+            return self.builder.lshr(left, right) if is_unsigned else self.builder.ashr(left, right)
         elif node.op == "==":
             return (
                 self.builder.fcmp_ordered("==", left, right)
@@ -4223,25 +4262,29 @@ class CodeGen:
             return (
                 self.builder.fcmp_ordered("<", left, right)
                 if is_float
-                else self.builder.icmp_signed("<", left, right)
+                else (self.builder.icmp_unsigned("<", left, right) if is_unsigned
+                      else self.builder.icmp_signed("<", left, right))
             )
         elif node.op == "<=":
             return (
                 self.builder.fcmp_ordered("<=", left, right)
                 if is_float
-                else self.builder.icmp_signed("<=", left, right)
+                else (self.builder.icmp_unsigned("<=", left, right) if is_unsigned
+                      else self.builder.icmp_signed("<=", left, right))
             )
         elif node.op == ">":
             return (
                 self.builder.fcmp_ordered(">", left, right)
                 if is_float
-                else self.builder.icmp_signed(">", left, right)
+                else (self.builder.icmp_unsigned(">", left, right) if is_unsigned
+                      else self.builder.icmp_signed(">", left, right))
             )
         elif node.op == ">=":
             return (
                 self.builder.fcmp_ordered(">=", left, right)
                 if is_float
-                else self.builder.icmp_signed(">=", left, right)
+                else (self.builder.icmp_unsigned(">=", left, right) if is_unsigned
+                      else self.builder.icmp_signed(">=", left, right))
             )
         elif node.op == "<>":
             return self._codegen_isin_operator(left, right, node)
@@ -4271,7 +4314,7 @@ class CodeGen:
 
         val = self._codegen(node.expr)
         if node.op == "-":
-            if isinstance(val.type, (ir.FloatType, ir.DoubleType)):
+            if isinstance(val.type, (ir.HalfType, ir.FloatType, ir.DoubleType)):
                 return self.builder.fneg(val)
             else:
                 return self.builder.neg(val)
@@ -5110,7 +5153,7 @@ class CodeGen:
             elem_val = self.builder.load(elem_ptr)
             if isinstance(inner_llvm, ir.IntType):
                 eq = self.builder.icmp_signed("==", elem_val, val)
-            elif isinstance(inner_llvm, (ir.FloatType, ir.DoubleType)):
+            elif isinstance(inner_llvm, (ir.HalfType, ir.FloatType, ir.DoubleType)):
                 eq = self.builder.fcmp_ordered("==", elem_val, val)
             elif isinstance(inner_llvm, ir.LiteralStructType):
                 # For structs, compare by pointer address
@@ -6155,11 +6198,11 @@ class CodeGen:
             # Cast to double
             if isinstance(min_val.type, ir.IntType):
                 min_val = self.builder.sitofp(min_val, ir.DoubleType())
-            elif isinstance(min_val.type, ir.FloatType):
+            elif isinstance(min_val.type, (ir.HalfType, ir.FloatType)):
                 min_val = self.builder.fpext(min_val, ir.DoubleType())
             if isinstance(max_val.type, ir.IntType):
                 max_val = self.builder.sitofp(max_val, ir.DoubleType())
-            elif isinstance(max_val.type, ir.FloatType):
+            elif isinstance(max_val.type, (ir.HalfType, ir.FloatType)):
                 max_val = self.builder.fpext(max_val, ir.DoubleType())
             # (double)rand() / RAND_MAX
             rand_val = self.builder.call(self.rand, [])
@@ -6243,7 +6286,7 @@ class CodeGen:
             # Convert to double for microseconds calculation
             if isinstance(wait_val.type, ir.IntType):
                 wait_dbl = self.builder.sitofp(wait_val, ir.DoubleType())
-            elif isinstance(wait_val.type, (ir.FloatType, ir.DoubleType)):
+            elif isinstance(wait_val.type, (ir.HalfType, ir.FloatType, ir.DoubleType)):
                 wait_dbl = (
                     wait_val
                     if isinstance(wait_val.type, ir.DoubleType)
@@ -6580,7 +6623,7 @@ class CodeGen:
             # Convert to i32 if needed
             if isinstance(exit_val.type, ir.IntType) and exit_val.type.width != 32:
                 exit_val = self.builder.trunc(exit_val, ir.IntType(32))
-            elif isinstance(exit_val.type, (ir.FloatType, ir.DoubleType)):
+            elif isinstance(exit_val.type, (ir.HalfType, ir.FloatType, ir.DoubleType)):
                 exit_val = self.builder.fptoui(exit_val, ir.IntType(32))
             self.builder.call(self.exit_fn, [exit_val])
             # exit doesn't return - mark as unreachable
@@ -7116,7 +7159,7 @@ class CodeGen:
 
         # Determine the common type to promote all variants into
         has_float = any(
-            isinstance(vd["llvm_type"], (ir.FloatType, ir.DoubleType))
+            isinstance(vd["llvm_type"], (ir.HalfType, ir.FloatType, ir.DoubleType))
             for _, vd in variants
         )
         has_ptr = any(isinstance(vd["llvm_type"], ir.PointerType) for _, vd in variants)
@@ -7175,10 +7218,10 @@ class CodeGen:
             return val
 
         src_is_int = isinstance(src, ir.IntType)
-        src_is_float = isinstance(src, (ir.FloatType, ir.DoubleType))
+        src_is_float = isinstance(src, (ir.HalfType, ir.FloatType, ir.DoubleType))
         src_is_ptr = isinstance(src, ir.PointerType)
         dst_is_int = isinstance(dst, ir.IntType)
-        dst_is_float = isinstance(dst, (ir.FloatType, ir.DoubleType))
+        dst_is_float = isinstance(dst, (ir.HalfType, ir.FloatType, ir.DoubleType))
         dst_is_ptr = isinstance(dst, ir.PointerType)
 
         if src_is_int and dst_is_int:
@@ -7189,8 +7232,12 @@ class CodeGen:
         elif src_is_int and dst_is_float:
             return self.builder.sitofp(val, dst)
         elif src_is_float and dst_is_float:
-            if isinstance(src, ir.FloatType):
+            src_size = {ir.HalfType: 16, ir.FloatType: 32, ir.DoubleType: 64}.get(type(src), 64)
+            dst_size = {ir.HalfType: 16, ir.FloatType: 32, ir.DoubleType: 64}.get(type(dst), 64)
+            if src_size < dst_size:
                 return self.builder.fpext(val, dst)
+            elif src_size > dst_size:
+                return self.builder.fptrunc(val, dst)
         elif src_is_float and dst_is_int:
             return self.builder.fptosi(val, dst)
         elif src_is_ptr and dst_is_ptr:
@@ -7215,6 +7262,10 @@ class CodeGen:
         return ir.Constant(ir.IntType(32), node.value)
 
     def _codegen_FloatLiteral(self, node):
+        if self.current_target_type:
+            target_llvm = self._get_llvm_type(self.current_target_type)
+            if isinstance(target_llvm, (ir.HalfType, ir.FloatType, ir.DoubleType)):
+                return ir.Constant(target_llvm, node.value)
         return ir.Constant(ir.DoubleType(), node.value)
 
     def _codegen_CharLiteral(self, node):
@@ -7651,8 +7702,8 @@ class CodeGen:
                 else:
                     result = self.builder.icmp_signed("==", left_val, right_val)
             # Handle float comparisons
-            elif isinstance(left_llvm_type, (ir.FloatType, ir.DoubleType)) or \
-                 isinstance(right_llvm_type, (ir.FloatType, ir.DoubleType)):
+            elif isinstance(left_llvm_type, (ir.HalfType, ir.FloatType, ir.DoubleType)) or \
+                 isinstance(right_llvm_type, (ir.HalfType, ir.FloatType, ir.DoubleType)):
                 result = self.builder.fcmp_ordered("==", left_val, right_val)
             # Handle pointer comparisons (strings)
             elif isinstance(left_llvm_type, ir.PointerType) and isinstance(right_llvm_type, ir.PointerType):
@@ -7724,8 +7775,8 @@ class CodeGen:
 
             return result
 
-    def _emit_cast(self, val, target_type):
-        """Cast a value to the target LLVM type."""
+    def _emit_cast(self, val, target_type, is_signed=True):
+        """Cast a value to the target LLVM type. is_signed controls sext vs zext for int widening."""
         src = val.type
         dst = target_type
         if src == dst:
@@ -7759,7 +7810,7 @@ class CodeGen:
             if src.width > dst.width:
                 return self.builder.trunc(val, dst)
             elif src.width < dst.width:
-                return self.builder.zext(val, dst)
+                return self.builder.sext(val, dst) if is_signed else self.builder.zext(val, dst)
             return val
         # float -> float (fpext / fptrunc)
         elif src_is_float and dst_is_float:

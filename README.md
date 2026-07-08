@@ -1,10 +1,11 @@
 # Leash Programming Language
 
-**Version 0.15.0 Beta**
+**Version 0.16.0 Beta**
 
 Leash is a strongly-typed, modern compiled programming language built on top of LLVM. It features an intuitive syntax and is designed to handle common tasks with native performance.
 
 ## Table of Contents
+- [Installation](#installation)
 - [Running Leash](#running-leash)
 - [Checking for Errors](#checking-for-errors)
   - [Verbose Diagnostics (`--verbose` / `-vb`)](#verbose-diagnostics---verbose---vb)
@@ -78,45 +79,91 @@ Leash is a strongly-typed, modern compiled programming language built on top of 
   - [Lifecycle & Cleanup](#lifecycle--cleanup)
   - [Thread Safety Notes](#thread-safety-notes)
 - [Syntax Highlighting](#syntax-highlighting)
-- [Unleashing IDE](#unleashing-ide)
 
-## Unleashing IDE
+## Installation
 
-**Unleashing IDE** is the official desktop IDE for the Leash programming language. Built on Electron and powered by the Monaco Editor (the same editor behind VS Code), it provides a fast, modern development experience tailored specifically for Leash.
+### Prerequisites
 
-![Unleashing IDE](unleashing/icon.png)
+Before using Leash, you need the following installed on your system:
 
-### Features
+| Dependency | Required for | Version |
+|------------|-------------|---------|
+| **Python 3** | Running the Leash compiler | 3.8+ |
+| **LLVM** | Code generation via `llvmlite` | 11+ (development libraries) |
+| **C compiler** (`gcc` or `clang`) | Linking compiled Leash programs with the GC runtime | Any recent version |
 
-- **Full Language Support** — Syntax highlighting, auto-completion, hover diagnostics, and real-time error checking via an integrated LSP-like language server.
-- **Monaco Code Editor** — The same powerful editor that powers VS Code, with multi-cursor support, minimap, and more.
-- **File Explorer** — Tree view with create, rename, delete, and context menu support for files and folders.
-- **Run & Build** — Run scripts (F5), compile executables (Ctrl+B), dump LLVM IR, and check syntax — all from within the IDE. Configure optimization levels (O0–O3, Os), compilation targets (linux64, win64, macos), and extra compiler flags.
-- **Integrated Terminal** — A persistent PowerShell (Windows) or Bash (Linux/macOS) shell built right in.
-- **Output Console** — Real-time stdout/stderr streaming from running Leash programs, plus a Problems tab for errors and warnings.
-- **Command Palette** — Quick-access overlay (Ctrl+Shift+P) for commands and file navigation.
-- **12 Color Themes** — 6 dark themes (Neon, Deep Crimson, Cyberpunk Purple, Emerald Forest, Monokai, Midnight Solarized) and 6 light themes.
-- **Customizable Settings** — Font family/size, tab size, auto-save, minimap, auto-check interval, auto-fix imports, and rebindable keyboard shortcuts.
-- **Frameless Window** — Custom title bar with dropdown menus (File, Selection, Run, Help) and window controls.
+### Installing Dependencies
 
-### Running the IDE
+#### Linux (Debian/Ubuntu)
 
 ```bash
-cd unleashing
-npm install
-npm start
+# Install LLVM development libraries and a C compiler
+sudo apt install llvm-dev gcc
+
+# Optional: cross-compilation to Windows (MinGW)
+sudo apt install gcc-mingw-w64-x86-64
 ```
 
-### Project Structure
+#### Linux (Fedora/RHEL)
 
-| File | Description |
-|------|-------------|
-| `main.js` | Electron main process — window management, file system operations, compiler process spawning |
-| `renderer.js` | UI renderer — Monaco editor, file explorer, tabs, command palette, settings, themes |
-| `leash-language.js` | Monaco language support — tokenizer, completions, hovers, diagnostics |
-| `index.html` | IDE layout — title bar, sidebar, panels, editor, console, palette, status bar |
-| `index.css` | All IDE styling |
-| `icons.js` | SVG icon definitions |
+```bash
+sudo dnf install llvm-devel gcc
+```
+
+#### Linux (Arch)
+
+```bash
+sudo pacman -S llvm gcc
+```
+
+#### Windows
+
+```bash
+# Option 1: Using MinGW-w64 (recommended)
+# Download from https://www.mingw-w64.org/ or use winget:
+winget install mingw
+
+# Option 2: Using LLVM + clang
+# Download from https://releases.llvm.org/
+
+# Install Python 3 from https://python.org
+```
+
+### Install Leash
+
+Once the prerequisites are installed, install Leash and its Python dependencies:
+
+```bash
+# Clone or navigate to the Leash project directory, then:
+pip install -e .
+```
+
+This installs:
+- `leash` — the Leash compiler CLI (`leash compile`, `leash run`, etc.)
+- `leashed` — the Leash package manager
+
+Verify the installation:
+
+```bash
+leash --version
+leashed --version
+```
+
+### Optional Dependencies
+
+| Dependency | Used by | Notes |
+|------------|---------|-------|
+| **Git** | `leashed publish`, `leashed install` | Required for package management |
+| **GitHub CLI (`gh`)** | `leashed publish` | Required to create repos and PRs |
+| **Wine** | `leash run --target win64` on Linux | Run Windows binaries on Linux |
+
+```bash
+# Linux
+sudo apt install git gh wine
+
+# Windows
+winget install Git.Git GitHub.cli
+```
 
 ## Running Leash
 
@@ -841,6 +888,126 @@ use utils::string_helpers::SomeFunction;
 
 ---
 
+## Standard Libraries
+
+Leash ships with a set of standard libraries in the `installthis/` directory. Install them globally with `leash install installthis/` and then import via `use`.
+
+### Types (`types.lsh`)
+
+Type aliases for explicit bit-width types:
+
+| Alias | Underlying Type |
+|-------|----------------|
+| `double` | `float<64>` |
+| `float16` | `float<16>` |
+| `float64` | `float<64>` |
+| `float128` | `float<128>` |
+| `uint8` | `uint<8>` |
+| `uint16` | `uint<16>` |
+| `uint64` | `uint<64>` |
+| `uint128` | `uint<128>` |
+| `uint256` | `uint<256>` |
+| `uint512` | `uint<512>` |
+| `int8` | `int<8>` |
+| `int16` | `int<16>` |
+| `int64` | `int<64>` |
+| `int128` | `int<128>` |
+| `int256` | `int<256>` |
+| `int512` | `int<512>` |
+
+### Tuple (`tuple.lsh`)
+
+A generic `Tuple<T>` class for storing a collection of values.
+
+| Method | Description |
+|--------|-------------|
+| `Tuple.new(vals T[])` | Create a new Tuple from an array |
+| `.get(idx int)` | Get the element at index `idx` |
+| `.isin(val T)` | Check if a value exists |
+| `.size` | Number of elements |
+
+```leash
+use tuple::Tuple;
+
+fnc main() {
+    t: Tuple<int> = Tuple.new({1, 2, 3});
+    show(t.get(1));   // 2
+    show(t.isin(3));  // true
+}
+```
+
+### Hot Reloader (`hotreload.lsh`)
+
+`Reloader` watches a Leash source file for changes and automatically re-runs it.
+
+```leash
+use hotreload::Reloader;
+
+fnc main() {
+    r: Reloader = Reloader.new("main.lsh");
+    r.start();
+}
+```
+
+### Math Utilities (`utils/math.lsh`)
+
+Constants: `PI`, `E`, `HALF_PI`, `LN10`, `LN2`
+
+| Method | Description |
+|--------|-------------|
+| `.floor(x)` | Round down |
+| `.ceil(x)` | Round up |
+| `.fmod(x, y)` | Floating-point modulo |
+| `.sqrt(x)` | Square root |
+| `.exp(x)` | Exponential (e^x) |
+| `.log(x)` | Natural logarithm |
+| `.sin(x)` | Sine |
+| `.cos(x)` | Cosine |
+| `.tan(x)` | Tangent |
+| `.pow(base, exp)` | Power |
+| `.asin(x)` | Arc sine |
+| `.acos(x)` | Arc cosine |
+| `.atan(x)` | Arc tangent |
+| `.sinh(x)` | Hyperbolic sine |
+| `.cosh(x)` | Hyperbolic cosine |
+| `.log10(x)` | Base-10 logarithm |
+| `.log2(x)` | Base-2 logarithm |
+| `.fabs(x)` | Absolute value (unsafe) |
+
+```leash
+use math::Math;
+
+fnc main() {
+    show(Math.sin(Math.PI / 2));  // 1.0
+    show(Math.sqrt(144));         // 12.0
+}
+```
+
+### String Utilities (`utils/str.lsh`)
+
+| Method | Description |
+|--------|-------------|
+| `.split(str, delimiter)` | Split by a character |
+| `.splits(str, delimiters)` | Split by multiple characters |
+| `.starts(a, b)` | Check prefix |
+| `.ends(a, b)` | Check suffix |
+| `.upper(str)` | Convert to uppercase |
+| `.lower(str)` | Convert to lowercase |
+| `.reversed(str)` | Reverse the string |
+| `.digit(txt)` | Check if all digits |
+| `.alpha(txt)` | Check if all alphabetic |
+| `.alnum(txt)` | Check if alphanumeric |
+| `.ident(txt)` | Check if valid identifier |
+
+```leash
+use str::Str;
+
+fnc main() {
+    parts: vec<string> = Str.split("hello world", ' ');
+    show(Str.upper("hello"));  // "HELLO"
+}
+```
+
 ## Leashed Package Manager
 
 `leashed` is the official package manager for Leash. It lets you create, publish, share, and install Leash libraries through a central registry at `github.com/foksiny/leash-packages`. Every library lives in its own GitHub repository; the registry is an `index.json` that maps library names to repo URLs.
@@ -1112,7 +1279,7 @@ l: float = .5;          // 0.5 (leading dot)
 Leash integers and floats can specify an explicit bit width between `<` and `>` brackets to optimize memory and calculations. Leash supports arbitrary bit-widths for precise data representation:
 
 - **Integers**: `int<1>` to `int<512>` (and `uint<1>` to `uint<512>`)
-- **Floats**: `float<4>` to `float<512>`
+- **Floats**: `float<16>` to `float<128>`
 
 ```leash
 flag: uint<1>;           // 1-bit integer (boolean-like)
