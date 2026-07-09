@@ -1,0 +1,13 @@
+def Value : union {
+    i: int;
+    f: float;
+    b: bool;
+    s: string;
+    c: char
+};
+
+fnc main {
+    v := tounion(Value, 45);
+
+    show("v: ", v, ", typeof(v): ", typeof(v));
+}

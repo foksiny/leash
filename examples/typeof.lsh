@@ -1,0 +1,8 @@
+fnc main {
+    a := 10;
+
+    b := {1, 3, 5};
+
+    show(typeof(a));
+    show(typeof(b));
+}

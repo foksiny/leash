@@ -1,6 +1,6 @@
 # Leash Programming Language
 
-**Version 0.17.0 Beta**
+**Version 0.18.0 Beta**
 
 Leash is a strongly-typed, modern compiled programming language built on top of LLVM. It features an intuitive syntax and is designed to handle common tasks with native performance.
 
@@ -50,6 +50,7 @@ Leash is a strongly-typed, modern compiled programming language built on top of 
 - [The `as` Keyword](#the-as-keyword)
 - [Type Conversions](#type-conversions)
 - [The `sizeof()` Operator](#the-sizeof-operator)
+- [The `typeof()` Operator](#the-typeof-operator)
 - [Strings](#strings)
 - [Classes](#classes)
   - [Class Inheritance (Subclasses)](#class-inheritance-subclasses)
@@ -2911,6 +2912,27 @@ fnc main() : void {
 }
 ```
 
+### The `tounion()` Function
+
+The `tounion(UnionType, value)` built-in explicitly wraps a value into a union type, typically used with type-inferred variable declarations:
+
+```leash
+def Value : union {
+    i: int;
+    f: float;
+    b: bool;
+    s: string;
+    c: char
+};
+
+fnc main {
+    v := tounion(Value, 45);
+    show("v: ", v, ", typeof(v): ", typeof(v));  // v: 45, typeof(v): Value
+}
+```
+
+The compiler verifies that the union type exists and that the value's type matches one of its variants. It raises a compile-time error if no variant accepts the given type.
+
 *Note: Accessing an inactive variant (e.g., calling `v.i` when `v.f` is active) will trigger a **Runtime Safety Error** to prevent crashes or memory corruption.*
 
 ## Enums
@@ -3453,6 +3475,26 @@ fnc main() {
 
 The `size` argument is typically `sizeof(type)` to ensure the correct byte count. For `inttobytes`/`bytestoint`, the size determines the integer bit width (e.g., `sizeof(int<64>)` = 8 bytes). For `floattobytes`/`bytestofloat`, Leash's default float is 64-bit (`float<64>`).
 
+### Value to Union
+
+Use `tounion(UnionType, value)` to explicitly wrap a value into a union type. This is useful with type-inferred variable declarations:
+
+```leash
+def Value : union {
+    i: int;
+    f: float;
+    b: bool;
+    s: string;
+};
+
+fnc main() {
+    v := tounion(Value, 42);   // infers type 'Value'
+    show(v, " ", typeof(v));   // 42 Value
+}
+```
+
+The compiler validates that the value's type matches one of the union's variants at compile time.
+
 ## The `sizeof()` Operator
 
 The built-in `sizeof()` operator returns the size in bytes of a type or the result of an expression. It supports **literally anything** in Leash, from primitives to complex classes.
@@ -3479,6 +3521,33 @@ fnc main() {
 ```
 
 `sizeof()` is evaluated at compile time when possible, providing the precise memory footprint of your data structures and types.
+
+## The `typeof()` Operator
+
+The built-in `typeof()` operator returns the **type name** of any expression as a string at compile time. Useful for debugging, logging, or generic code that needs to inspect types.
+
+```leash
+fnc main {
+    a := 10;
+    b := "hello";
+    c := {1, 2, 3};
+    d := Point {x: 1, y: 2};
+
+    show(typeof(a));       // "int"
+    show(typeof(b));       // "string"
+    show(typeof(c));       // "int[]"
+    show(typeof(d));       // "Point"
+    show(typeof(c.x));     // "int"
+
+    lam: fnc(int) : int = fnc(x int) : int { return x + 1; };
+    show(typeof(lam));     // "fnc(int) : int"
+
+    m: matrix<float> = {1.0, 2.0, 3.0};
+    show(typeof(m));       // "matrix<float>"
+}
+```
+
+`typeof()` works with any expression — primitives, arrays, structs, enums, unions, lambdas, function pointers, vectors, matrices, and classes. The result is always a `string` known at compile time.
 
 ## Strings
 
@@ -4322,7 +4391,7 @@ The VS Code extension provides syntax highlighting, real-time diagnostics, hover
    cd syntax_highlighters/vscode
    npm run package
    ```
-3. Install the generated `leash-0.17.0.vsix` in VS Code (Extensions view -> `...` -> `Install from VSIX...`).
+3. Install the generated `leash-0.18.0.vsix` in VS Code (Extensions view -> `...` -> `Install from VSIX...`).
 
 ### Emacs
 

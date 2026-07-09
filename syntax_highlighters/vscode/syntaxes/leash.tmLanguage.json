@@ -124,7 +124,7 @@
             "patterns": [
                 {
                     "name": "support.function.builtin.leash",
-                    "match": "\\b(show|showb|get|keyget|set|toint|tofloat|tostring|cstr|lstr|normescape|sizeof|size|cur|name|pushb|popb|pushf|popf|insert|clear|remove|extend|extendv|isin|rand|randf|seed|choose|wait|timepass|exit|exec|inttobytes|bytestoint|floattobytes|bytestofloat|open|close|read|write|readln|readb|writeb|readlnb|replaceall|rewind|rename|delete|replace|getKey|getkey|keys|values|push|pop|front|back)\\b"
+                    "match": "\\b(show|showb|get|keyget|set|toint|tofloat|tounion|tostring|cstr|lstr|normescape|sizeof|typeof|size|cur|name|pushb|popb|pushf|popf|insert|clear|remove|extend|extendv|isin|rand|randf|seed|choose|wait|timepass|exit|exec|inttobytes|bytestoint|floattobytes|bytestofloat|open|close|read|write|readln|readb|writeb|readlnb|replaceall|rewind|rename|delete|replace|getKey|getkey|keys|values|push|pop|front|back)\\b"
                 }
             ]
         },

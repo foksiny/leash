@@ -502,12 +502,12 @@ def resolve_imports(program, base_path, extra_import_dirs=None):
             if isinstance(item, ImportStmt):
                 module_file = find_module_file(item.module_path, current_base_path)
                 if not module_file or isinstance(module_file, list):
-                    raise LeashError(f"Module '{'::'.join(item.module_path)}' not found or ambiguous", line=item.line, col=item.col)
+                    raise LeashError(f"Module '{'::'.join(item.module_path)}' not found or ambiguous", node=item)
                 module_file_abs = os.path.abspath(module_file)
                 if module_file_abs in loaded_modules: continue
                 with open(module_file_abs, "r") as f: code = f.read()
                 try:
-                    lexer = Lexer(code); tokens = lexer.tokenize(); parser = Parser(tokens); module_ast = parser.parse()
+                    lexer = Lexer(code); tokens = lexer.tokenize(); parser = Parser(tokens, module_file_abs); module_ast = parser.parse()
                 except LeashError as e:
                     if e.file is None: e.file = module_file_abs
                     raise
@@ -533,7 +533,7 @@ def resolve_imports(program, base_path, extra_import_dirs=None):
                 else:
                     if item.imported_items is not None:
                         for name in item.imported_items:
-                            if name not in available: raise LeashError(f"Imported item '{name}' not found in module", line=item.line, col=item.col)
+                            if name not in available: raise LeashError(f"Imported item '{name}' not found in module", node=item)
                     for name, mod_item in available.items(): new_items.append(mod_item)
                     for name, mod_item in internal_types.items(): new_items.append(mod_item)
                 loaded_modules.add(module_file_abs)
@@ -612,7 +612,7 @@ def _evaluate_conditional(cond_def, platform):
     def eval_expr(expr):
         if isinstance(expr, BuiltinVarLiteral):
             if expr.name == "_PLATFORM": return platform
-            raise LeashError(f"Unsupported builtin '{expr.name}'", expr.line, expr.col)
+            raise LeashError(f"Unsupported builtin '{expr.name}'", node=expr)
         elif isinstance(expr, StringLiteral): return expr.value
         elif isinstance(expr, BoolLiteral): return expr.value
         elif isinstance(expr, BinaryOp):
@@ -621,11 +621,11 @@ def _evaluate_conditional(cond_def, platform):
             if expr.op == "!=": return l != r
             if expr.op == "&&": return l and r
             if expr.op == "||": return l or r
-            raise LeashError(f"Operator '{expr.op}' not supported in conditional", expr.line, expr.col)
+            raise LeashError(f"Operator '{expr.op}' not supported in conditional", node=expr)
         elif isinstance(expr, UnaryOp):
             if expr.op == "!": return not eval_expr(expr.expr)
-            raise LeashError(f"Unary '{expr.op}' not supported", expr.line, expr.col)
-        raise LeashError(f"Unsupported expr {type(expr).__name__}", getattr(expr, "line"), getattr(expr, "col"))
+            raise LeashError(f"Unary '{expr.op}' not supported", node=expr)
+        raise LeashError(f"Unsupported expr {type(expr).__name__}", node=expr)
     if cond_def.invert:
         if not eval_expr(cond_def.condition): return cond_def.then_block
     elif eval_expr(cond_def.condition): return cond_def.then_block
@@ -643,7 +643,7 @@ def _print_error(e, input_file, code):
         c = code
         if e.file and e.file != input_file:
             try:
-                with open(e.file, "r") as fh: c = f.read()
+                with open(e.file, "r") as fh: c = fh.read()
             except: c = code
         lines = c.splitlines(); idx = e.line - 1
         if 0 <= idx < len(lines):
@@ -653,20 +653,22 @@ def _print_error(e, input_file, code):
             if e.col is not None:
                 print(f"{p}| {' '*e.col}^", file=sys.stderr)
             print(f"{p}|", file=sys.stderr)
-    if e.tip: print(f"tip: {e.tip}", file=sys.stderr)
+    if e.tip:
+        p = " " * (len(str(e.line)) + 1) if e.line else "  "
+        print(f"{p}= tip: {e.tip}", file=sys.stderr)
     if VERBOSE_MODE:
         explanation = get_verbose_explanation(e.msg, e.code)
         if explanation:
             print(explanation, file=sys.stderr)
 
-def _print_warning(w, warnings_as_errors=False, code=None):
+def _print_warning(w, warnings_as_errors=False, code=None, input_file=None):
     print(f"{'error:' if warnings_as_errors else 'warning:'} {w['msg']}", file=sys.stderr)
-    f = w.get('file', 'unknown')
+    f = w.get('file') or input_file or 'unknown'
     if w.get("line"):
         print(f"  --> {f}:{w['line']}:{w.get('col',0)}{' ['+w['code']+']' if w.get('code') else ''}", file=sys.stderr)
         if code:
             c = code
-            if w.get('file') and w['file'] != f:
+            if w.get('file') and w['file'] != input_file:
                 try:
                     with open(w['file'], "r") as fh:
                         c = fh.read()
@@ -680,7 +682,9 @@ def _print_warning(w, warnings_as_errors=False, code=None):
                 if w.get('col') is not None:
                     print(f"{p}| {' '*w['col']}^", file=sys.stderr)
                 print(f"{p}|", file=sys.stderr)
-    if w.get("tip"): print(f"tip: {w['tip']}", file=sys.stderr)
+    if w.get("tip"):
+        p = " " * (len(str(w['line'])) + 1) if w.get('line') else "  "
+        print(f"{p}= tip: {w['tip']}", file=sys.stderr)
     if VERBOSE_MODE:
         explanation = get_verbose_explanation(w['msg'], w.get('code'))
         if explanation:
@@ -721,7 +725,7 @@ def compile_file(input_file, output_name=None, output_type="executable", is_run_
         ast = resolve_imports(ast, os.path.dirname(os.path.abspath(input_file)) or ".", extra_import_dirs=extra_import_dirs)
         ast = resolve_conditionals(ast, target_config); ast = expand_macros(ast)
         warnings = TypeChecker(check_mode=check_mode).check(ast)
-        for w in warnings: _print_warning(w, warnings_as_errors, code=code)
+        for w in warnings: _print_warning(w, warnings_as_errors, code=code, input_file=input_file)
         if warnings_as_errors and warnings: sys.exit(1)
         ll_errors = LowLevelChecker().check(ast)
         if ll_errors:
@@ -804,7 +808,7 @@ def dump_file(input_file, output_name=None, target_name=None, check_mode=False, 
         ast = resolve_imports(ast, os.path.dirname(os.path.abspath(input_file)) or ".", extra_import_dirs=extra_import_dirs)
         ast = resolve_conditionals(ast, target_config); ast = expand_macros(ast)
         warnings = TypeChecker(check_mode=check_mode).check(ast)
-        for w in warnings: _print_warning(w, warnings_as_errors, code=code)
+        for w in warnings: _print_warning(w, warnings_as_errors, code=code, input_file=input_file)
         if warnings_as_errors and warnings: sys.exit(1)
         ll_errors = LowLevelChecker().check(ast)
         if ll_errors:
@@ -986,7 +990,7 @@ def update_leash():
     import json
     
     print("Leash Update Checker")
-    print("Current version: 0.17.0 Beta\n")
+    print("Current version: 0.18.0 Beta\n")
     
     try:
         req = urllib.request.Request(
@@ -1031,10 +1035,10 @@ def main():
         sys.exit(1)
     cmd = sys.argv[1]
     if cmd in ("--help", "-h"):
-        print("Leash v0.17.0 Beta\nUsage: leash <command> [options]\nCommands: compile, run, dump, check, install, init, build, runp, update\nRun 'leash <command> --help' for details.\n\nGlobal Options:\n  --verbose/-vb        Enable highly detailed masterclass error and warning explanations.")
+        print("Leash v0.18.0 Beta\nUsage: leash <command> [options]\nCommands: compile, run, dump, check, install, init, build, runp, update\nRun 'leash <command> --help' for details.\n\nGlobal Options:\n  --verbose/-vb        Enable highly detailed masterclass error and warning explanations.")
         sys.exit(0)
     if cmd in ("--version", "-v"):
-        print("Leash v0.17.0 Beta\nBuilt on LLVM with custom GC"); sys.exit(0)
+        print("Leash v0.18.0 Beta\nBuilt on LLVM with custom GC"); sys.exit(0)
     if cmd == "check":
         if len(sys.argv) < 3:
             print("Usage: leash check <file.lsh> [options]")
@@ -1059,7 +1063,7 @@ def main():
         if warns:
             print(f"Found {len(warns)} warning(s):\n")
             for w in warns:
-                _print_warning(w, code=check_code)
+                _print_warning(w, code=check_code, input_file=sys.argv[2])
                 print()
         if not errs:
             print("No issues found." if not warns else f"Summary: 0 errors, {len(warns)} warnings.")

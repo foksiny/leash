@@ -24,7 +24,7 @@ from .ast_nodes import (
     StructInit, ArrayInit, HashInit,
     NumberLiteral, FloatLiteral, StringLiteral, CharLiteral, BoolLiteral,
     NullLiteral, FilePathLiteral, BuiltinVarLiteral, CastExpr, AsExpr,
-    TypeConvExpr, ByteConvExpr, SizeofExpr, TernaryOp, IsExpr,
+    TypeConvExpr, ToUnionExpr, ByteConvExpr, SizeofExpr, TypeofExpr, TernaryOp, IsExpr,
     ThisExpr, ThisWorkerExpr, SelfExpr, Lambda, CreateExpr, ThisOpTypeExpr,
     GenericTypeExpr, MultiVariableDecl, MultiAssign,
     ForeachArrayStatement, ForeachVectorStatement, ForeachStringStatement,
@@ -347,6 +347,8 @@ def _collect_ref_names(node):
         if isinstance(n, (CastExpr, AsExpr, TypeConvExpr)):
             if isinstance(n.target_type, str):
                 str_attrs.add(n.target_type)
+        if isinstance(n, ToUnionExpr) and isinstance(n.union_name, str):
+            str_attrs.add(n.union_name)
         if isinstance(n, SizeofExpr) and isinstance(n.target, str):
             str_attrs.add(n.target)
         if isinstance(n, IsExpr) and n.is_type_check and isinstance(n.right, str):

@@ -439,9 +439,20 @@ class TypeConvExpr(Expression):
         self.expr = expr
 
 
+class ToUnionExpr(Expression):
+    def __init__(self, union_name, expr):
+        self.union_name = union_name  # The union type name
+        self.expr = expr
+
+
 class SizeofExpr(Expression):
     def __init__(self, target):
         self.target = target  # Can be a string (type name) or an Expression node
+
+
+class TypeofExpr(Expression):
+    def __init__(self, expr):
+        self.expr = expr  # The expression whose type name to get
 
 
 class ByteConvExpr(Expression):

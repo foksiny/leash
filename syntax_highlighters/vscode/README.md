@@ -20,7 +20,7 @@ This extension provides syntax highlighting and LSP support for the Leash progra
 ## Installation
 
 ### Method 1: Pre-built Extension
-1. Install the `leash-0.17.0.vsix` file in VS Code (Extensions view -> `...` -> `Install from VSIX...`).
+1. Install the `leash-0.18.0.vsix` file in VS Code (Extensions view -> `...` -> `Install from VSIX...`).
 
 ### Method 2: Manual Development Setup
 1. Copy this directory to your VS Code extensions folder.

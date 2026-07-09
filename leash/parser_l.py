@@ -70,6 +70,8 @@ from .ast_nodes import (
     FilePathLiteral,
     BuiltinVarLiteral,
     SizeofExpr,
+    TypeofExpr,
+    ToUnionExpr,
     ByteConvExpr,
     SwitchStatement,
     ConditionalDef,
@@ -97,6 +99,7 @@ class Parser:
             tok = self.current()
         node.line = tok.line
         node.col = tok.column
+        node.source_file = self.source_file
         return node
 
     def current(self):
@@ -2163,6 +2166,18 @@ class Parser:
                     target = self.parse_expression()
                     self.eat("RPAREN")
                     return self._pos(SizeofExpr(target), tok)
+            if name == "typeof" and self.current().type == "LPAREN":
+                self.eat("LPAREN")
+                target = self.parse_expression()
+                self.eat("RPAREN")
+                return self._pos(TypeofExpr(target), tok)
+            if name == "tounion" and self.current().type == "LPAREN":
+                self.eat("LPAREN")
+                union_name = self.parse_type()
+                self.eat("COMMA")
+                value = self.parse_expression()
+                self.eat("RPAREN")
+                return self._pos(ToUnionExpr(union_name, value), tok)
             if name in ("toint", "tofloat") and self.current().type == "LPAREN":
                 self.eat("LPAREN")
                 target_type = self.parse_type()

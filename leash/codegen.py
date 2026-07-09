@@ -21,6 +21,8 @@ from .ast_nodes import (
     DeferStatement,
     Lambda,
     SizeofExpr,
+    TypeofExpr,
+    ToUnionExpr,
     Identifier,
     MacroDef,
     CreateExpr,
@@ -599,7 +601,7 @@ class CodeGen:
         if isinstance(node, ThisOpTypeExpr):
             raise LeashError(
                 "Internal: thisop.typ not resolved at codegen time",
-                line=getattr(node, "line", None), col=getattr(node, "col", None)
+                node=node
             )
 
         method_name = f"_codegen_{type(node).__name__}"
@@ -626,6 +628,7 @@ class CodeGen:
             UnaryOp,
             PointerMemberAccess,
             SizeofExpr,
+            TypeofExpr,
             ByteConvExpr,
             BinaryOp,
             StructInit,
@@ -731,6 +734,8 @@ class CodeGen:
             return "bool"
         elif isinstance(node, TypeConvExpr):
             return node.target_type
+        elif isinstance(node, ToUnionExpr):
+            return node.union_name
         elif isinstance(node, ByteConvExpr):
             if node.name in ("inttobytes", "floattobytes"):
                 return "char[]"
@@ -738,6 +743,8 @@ class CodeGen:
                 return self._get_leash_type_name(node.value_expr)
         elif isinstance(node, SizeofExpr):
             return "int"
+        elif isinstance(node, TypeofExpr):
+            return "string"
         elif isinstance(node, Call):
             if node.name == "tostring":
                 return "string"
@@ -1273,6 +1280,12 @@ class CodeGen:
         old_class_name = self.current_class_name
         self.current_class_name = node.name
 
+        # Forward-declare the class struct type so recursive references to the
+        # class being defined (e.g. `vec<Self>` or `hash<string, Self>` fields)
+        # resolve to the correct pointer type instead of the `i32` fallback.
+        cls_type = self.module.context.get_identified_type(node.name)
+        self.class_symtab[node.name] = {"type": cls_type}
+
         # Vtable pointer type (i8*)
         vtable_ptr_type = ir.IntType(8).as_pointer()
 
@@ -1328,9 +1341,9 @@ class CodeGen:
                 llvm_types.append(self._get_llvm_type(f.var_type))
                 idx += 1
 
-        struct_type = ir.LiteralStructType(llvm_types)
+        cls_type.set_body(*llvm_types)
         self.class_symtab[node.name] = {
-            "type": struct_type,
+            "type": cls_type,
             "fields": fields,
             "field_types": field_types,
             "field_defaults": field_defaults,
@@ -2093,8 +2106,7 @@ class CodeGen:
         if not self.loop_stack:
             raise LeashError(
                 "`stop` can only be used inside a loop",
-                node.line,
-                node.col,
+                node=node,
                 tip="`stop` (break) is used to exit a loop early. It can only be used within `while`, `for`, `do-while`, or `foreach` loops.",
             )
         while self.defer_stack and self.defer_stack[-1]:
@@ -2108,8 +2120,7 @@ class CodeGen:
         if not self.loop_stack:
             raise LeashError(
                 "`continue` can only be used inside a loop",
-                node.line,
-                node.col,
+                node=node,
                 tip="`continue` skips to the next iteration of a loop. It can only be used within `while`, `for`, `do-while`, or `foreach` loops.",
             )
         while self.defer_stack and self.defer_stack[-1]:
@@ -2209,7 +2220,7 @@ class CodeGen:
             # Auto-assign the value into the union if provided
             if node.value is not None:
                 val = self._codegen(node.value)
-                self._union_auto_store(ptr, val, union_info)
+                self._union_auto_store(ptr, val, union_info, node=node)
             else:
                 # Default init to zeros
                 self.builder.store(ir.Constant(union_type, None), ptr)
@@ -2246,7 +2257,7 @@ class CodeGen:
         
         self.var_symtab[node.name] = (ptr, node.var_type, extra_data)
 
-    def _union_auto_store(self, union_ptr, val, union_info):
+    def _union_auto_store(self, union_ptr, val, union_info, node=None):
         """Store a value into a union, auto-detecting the matching variant by LLVM type."""
         matched_idx = None
         for vname, vdata in union_info["variants"].items():
@@ -2272,7 +2283,7 @@ class CodeGen:
                     matched_idx = vdata["index"]
                     break
         if matched_idx is None:
-            raise LeashError(f"Cannot store value of this type into the union")
+            raise LeashError(f"Cannot store value of this type into the union", node=node)
 
         # Store tag
         tag_ptr = self.builder.gep(
@@ -2358,8 +2369,12 @@ class CodeGen:
 
         # 3. Auto-detect Union variant if target is a union (e.g., f = 10, s.y = 3.14)
         if resolved_target_type in self.union_symtab:
-            val = self._codegen(node.value)
-            self._union_auto_store(ptr, val, self.union_symtab[resolved_target_type])
+            from .ast_nodes import BinaryOp as BinaryOpNode
+            if isinstance(node.value, BinaryOpNode):
+                self._codegen_assign_union_binop(ptr, node, resolved_target_type)
+            else:
+                val = self._codegen(node.value)
+                self._union_auto_store(ptr, val, self.union_symtab[resolved_target_type], node=node)
             return
 
         # 4. Standard Typed Assignment
@@ -2665,10 +2680,8 @@ class CodeGen:
             self.builder.store(val, ptr)
             return ptr, resolved, None
         else:
-            line = getattr(node, "line", None)
-            col = getattr(node, "col", None)
             raise LeashError(
-                f"Invalid l-value: {type(node).__name__}", line=line, col=col
+                f"Invalid l-value: {type(node).__name__}", node=node
             )
 
     def _codegen_PointerMemberAccess(self, node):
@@ -2681,8 +2694,7 @@ class CodeGen:
         else:
             raise LeashError(
                 "Cannot use '->' on non-pointer type",
-                line=getattr(node, "line", None),
-                col=getattr(node, "col", None),
+                node=node,
             )
 
         if underlying in self.struct_symtab:
@@ -2712,8 +2724,7 @@ class CodeGen:
 
         raise LeashError(
             f"Type '{underlying}' is not a struct or class",
-            line=getattr(node, "line", None),
-            col=getattr(node, "col", None),
+            node=node,
         )
 
     def _codegen_ExpressionStatement(self, node):
@@ -2761,7 +2772,7 @@ class CodeGen:
             else:
                 raise LeashError(
                     f"Cannot spawn unknown function '{func_name}'",
-                    line=node.line, col=node.col
+                    node=node
                 )
         return None
 
@@ -2774,89 +2785,54 @@ class CodeGen:
 
         is_buffer = getattr(node, "is_buffer", False)
 
-        # showb: print vector elements in buffer format
         if is_buffer:
             self._show_buffer(node.args)
             return
 
-        # Check if any arg is a union variable or union .cur — those need special per-variant printing
-        # First, collect which args are "union-cur" args
-        union_arg_indices = set()
-        for i, arg_node in enumerate(node.args):
-            union_name = self._get_union_type_for_node(arg_node)
-            if union_name:
-                union_arg_indices.add(i)
-
         end = getattr(node, "end", "\n")
 
-        if not union_arg_indices:
-            # No union args: standard show path
+        # Check if any arg is a union variable or union .cur
+        has_union = any(self._get_union_type_for_node(a) for a in node.args)
+
+        if not has_union:
             self._show_standard(node.args, end=end)
             return
 
-        # For simplicity, handle the common case: all non-union args come before or after union args
-        # We'll print non-union prefix first, then branch for union args, then non-union suffix
-        # Actually, the simplest correct approach: print all non-union args as prefix,
-        # then for each union arg, emit a per-variant branching printf
-
-        # Split into segments: print non-union prefix
-        prefix_args = []
+        # Handle each arg in order — correctly prints non-union args between unions
         for i, arg_node in enumerate(node.args):
-            if i in union_arg_indices:
-                break
-            prefix_args.append(arg_node)
-
-        if prefix_args:
-            self._show_standard(prefix_args, end="")
-
-        # Now handle each union arg
-        for i, arg_node in enumerate(node.args):
-            if i not in union_arg_indices:
-                if i > max(union_arg_indices):
-                    # suffix non-union args handled below
-                    continue
-                continue
             union_name = self._get_union_type_for_node(arg_node)
-            union_info = self.union_symtab[union_name]
+            if union_name:
+                union_info = self.union_symtab[union_name]
 
-            # Get the union pointer
-            if isinstance(arg_node, Identifier):
-                ptr = self.var_symtab[arg_node.name][0]
-            elif (
-                isinstance(arg_node, MemberAccess)
-                and arg_node.member == "cur"
-                and isinstance(arg_node.expr, Identifier)
-            ):
-                ptr = self.var_symtab[arg_node.expr.name][0]
+                if isinstance(arg_node, Identifier):
+                    ptr = self.var_symtab[arg_node.name][0]
+                elif (
+                    isinstance(arg_node, MemberAccess)
+                    and arg_node.member == "cur"
+                    and isinstance(arg_node.expr, Identifier)
+                ):
+                    ptr = self.var_symtab[arg_node.expr.name][0]
+                else:
+                    self._show_standard([arg_node], end="")
+                    continue
+
+                tag_ptr = self.builder.gep(
+                    ptr,
+                    [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)],
+                    inbounds=True,
+                )
+                tag_val = self.builder.load(tag_ptr)
+                data_ptr = self.builder.gep(
+                    ptr,
+                    [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)],
+                    inbounds=True,
+                )
+
+                self._union_show_branched(tag_val, data_ptr, union_info)
             else:
-                # fallback
                 self._show_standard([arg_node], end="")
-                continue
 
-            tag_ptr = self.builder.gep(
-                ptr,
-                [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)],
-                inbounds=True,
-            )
-            tag_val = self.builder.load(tag_ptr)
-            data_ptr = self.builder.gep(
-                ptr,
-                [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)],
-                inbounds=True,
-            )
-
-            self._union_show_branched(tag_val, data_ptr, union_info)
-
-        # suffix non-union args
-        suffix_args = []
-        if union_arg_indices:
-            last_union = max(union_arg_indices)
-            for i in range(last_union + 1, len(node.args)):
-                suffix_args.append(node.args[i])
-
-        if suffix_args:
-            self._show_standard(suffix_args, end=end)
-        elif end:
+        if end:
             self._print_raw(end)
 
     def _get_union_type_for_node(self, arg_node):
@@ -2943,6 +2919,11 @@ class CodeGen:
         """Return (format_str, possibly_cast_val) for a single value."""
         if isinstance(val.type, ir.IntType):
             width = val.type.width
+            if width == 1:
+                true_str = self._emit_const_str("true")
+                false_str = self._emit_const_str("false")
+                casted = self.builder.select(val, true_str, false_str)
+                return ("%s", casted)
             if width == 8:
                 return ("%c", val)
             if width <= 32:
@@ -3898,7 +3879,244 @@ class CodeGen:
             phi.add_incoming(false_val, false_bb)
         return phi
 
+    def _is_union_expr(self, node):
+        """Check if an AST node's type is a union type."""
+        type_name = self._get_leash_type_name(node)
+        if type_name:
+            resolved = self._resolve_type_name(type_name)
+            return resolved in self.union_symtab
+        return False
+
+    def _get_union_ptr(self, node):
+        """Get the LLVM pointer to a union from an expression node."""
+        from .ast_nodes import Identifier
+        if isinstance(node, Identifier):
+            if node.name in self.var_symtab:
+                return self.var_symtab[node.name][0]
+            if node.name in self.global_var_ptrs:
+                return self.global_var_ptrs[node.name][0]
+        raise LeashError("Cannot get pointer to union from this expression", node=node)
+
+    def _emit_binop_scalar(self, left, right, op):
+        """Perform a binary operation on two scalar values with type promotion."""
+        if left.type != right.type:
+            if isinstance(left.type, ir.IntType) and isinstance(right.type, ir.IntType):
+                signed = True
+                if left.type.width < right.type.width:
+                    left = self._emit_cast(left, right.type, is_signed=signed)
+                else:
+                    right = self._emit_cast(right, left.type, is_signed=signed)
+            elif isinstance(left.type, (ir.HalfType, ir.FloatType, ir.DoubleType)):
+                if isinstance(right.type, (ir.HalfType, ir.FloatType, ir.DoubleType)):
+                    src_size = {ir.HalfType: 16, ir.FloatType: 32, ir.DoubleType: 64}.get(type(left.type), 64)
+                    dst_size = {ir.HalfType: 16, ir.FloatType: 32, ir.DoubleType: 64}.get(type(right.type), 64)
+                    target = left.type if src_size >= dst_size else right.type
+                    left = self._emit_cast(left, target)
+                    right = self._emit_cast(right, target)
+                else:
+                    right = self._emit_cast(right, left.type)
+            elif isinstance(right.type, (ir.HalfType, ir.FloatType, ir.DoubleType)):
+                left = self._emit_cast(left, right.type)
+
+        is_float = isinstance(left.type, (ir.HalfType, ir.FloatType, ir.DoubleType))
+
+        if op == "+":
+            return self.builder.fadd(left, right) if is_float else self.builder.add(left, right)
+        elif op == "-":
+            return self.builder.fsub(left, right) if is_float else self.builder.sub(left, right)
+        elif op == "*":
+            return self.builder.fmul(left, right) if is_float else self.builder.mul(left, right)
+        elif op == "/":
+            if not is_float:
+                self._emit_division_by_zero_check(right)
+            return self.builder.fdiv(left, right) if is_float else self.builder.sdiv(left, right)
+        elif op == "%":
+            if not is_float:
+                self._emit_division_by_zero_check(right)
+            return self.builder.frem(left, right) if is_float else self.builder.srem(left, right)
+        elif op == "&":
+            return self.builder.and_(left, right)
+        elif op == "|":
+            return self.builder.or_(left, right)
+        elif op == "^":
+            return self.builder.xor(left, right)
+        elif op == "<<":
+            return self.builder.shl(left, right)
+        elif op == ">>":
+            return self.builder.ashr(left, right)
+        elif op == "==":
+            return self.builder.fcmp_ordered("==", left, right) if is_float else self.builder.icmp_signed("==", left, right)
+        elif op == "!=":
+            return self.builder.fcmp_ordered("!=", left, right) if is_float else self.builder.icmp_signed("!=", left, right)
+        elif op == "<":
+            return self.builder.fcmp_ordered("<", left, right) if is_float else self.builder.icmp_signed("<", left, right)
+        elif op == "<=":
+            return self.builder.fcmp_ordered("<=", left, right) if is_float else self.builder.icmp_signed("<=", left, right)
+        elif op == ">":
+            return self.builder.fcmp_ordered(">", left, right) if is_float else self.builder.icmp_signed(">", left, right)
+        elif op == ">=":
+            return self.builder.fcmp_ordered(">=", left, right) if is_float else self.builder.icmp_signed(">=", left, right)
+
+    def _codegen_union_binary_op(self, node, left_is_union, right_is_union):
+        """Handle binary operations where one or both operands are unions, with runtime dispatch."""
+        from .ast_nodes import BinaryOp as BinaryOpNode
+
+        zero = ir.Constant(ir.IntType(32), 0)
+        one = ir.Constant(ir.IntType(32), 1)
+
+        # Determine which side(s) are unions and get pointer(s) and fixed value(s)
+        if left_is_union and not right_is_union:
+            ptr = self._get_union_ptr(node.left)
+            union_name = self._resolve_type_name(self._get_leash_type_name(node.left))
+            fixed_val = self._codegen(node.right)
+            union_on_left = True
+        elif right_is_union and not left_is_union:
+            ptr = self._get_union_ptr(node.right)
+            union_name = self._resolve_type_name(self._get_leash_type_name(node.right))
+            fixed_val = self._codegen(node.left)
+            union_on_left = False
+        else:
+            raise LeashError("Binary operations on two union types not yet supported", node=node)
+
+        union_info = self.union_symtab[union_name]
+        variants = list(union_info["variants"].items())
+
+        # Determine common type for the result phi
+        has_float = any(
+            isinstance(vd["llvm_type"], (ir.HalfType, ir.FloatType, ir.DoubleType))
+            for _, vd in variants
+        )
+
+        if node.op in ("==", "!=", "<", ">", "<=", ">=", "&&", "||"):
+            common_type = ir.IntType(1)
+        elif has_float:
+            common_type = ir.DoubleType()
+        else:
+            common_type = ir.IntType(64)
+
+        # Load tag
+        tag_ptr = self.builder.gep(ptr, [zero, zero], inbounds=True)
+        tag_val = self.builder.load(tag_ptr)
+
+        # Create merge block and per-variant blocks
+        merge_bb = self.builder.function.append_basic_block("union_binop_merge")
+        var_bbs = []
+        for vname, _ in variants:
+            bb = self.builder.function.append_basic_block(f"union_binop_{vname}")
+            var_bbs.append(bb)
+
+        # If-else chain
+        for i, (vname, vdata) in enumerate(variants[:-1]):
+            cmp = self.builder.icmp_signed("==", tag_val, ir.Constant(ir.IntType(64), vdata["index"]))
+            next_check = self.builder.function.append_basic_block(f"union_binop_check_{i+1}")
+            self.builder.cbranch(cmp, var_bbs[i], next_check)
+            self.builder.position_at_end(next_check)
+        self.builder.branch(var_bbs[-1])
+
+        # Per-variant code: extract value, perform op, convert to common type
+        incoming = []
+        for i, (vname, vdata) in enumerate(variants):
+            self.builder.position_at_end(var_bbs[i])
+            data_ptr = self.builder.gep(ptr, [zero, one], inbounds=True)
+            typed_ptr = self.builder.bitcast(data_ptr, vdata["llvm_type"].as_pointer())
+            loaded = self.builder.load(typed_ptr)
+
+            # For pointer variants in arithmetic ops, convert to i64
+            if isinstance(loaded.type, ir.PointerType) and node.op not in ("==", "!=", "&&", "||"):
+                loaded = self.builder.ptrtoint(loaded, ir.IntType(64))
+
+            # Perform binary op
+            if union_on_left:
+                result = self._emit_binop_scalar(loaded, fixed_val, node.op)
+            else:
+                result = self._emit_binop_scalar(fixed_val, loaded, node.op)
+
+            # Convert to common type for phi
+            if node.op in ("==", "!=", "<", ">", "<=", ">=", "&&", "||"):
+                converted = result
+            else:
+                converted = self._emit_cast(result, common_type)
+            incoming.append((converted, var_bbs[i]))
+            self.builder.branch(merge_bb)
+
+        self.builder.position_at_end(merge_bb)
+        phi = self.builder.phi(common_type)
+        for val, bb in incoming:
+            phi.add_incoming(val, bb)
+        return phi
+
+    def _codegen_assign_union_binop(self, ptr, node, union_name):
+        """Handle augmented assignment on a union (e.g., v += 10) preserving the variant."""
+        from .ast_nodes import BinaryOp as BinaryOpNode
+
+        union_info = self.union_symtab[union_name]
+        variants = list(union_info["variants"].items())
+
+        zero = ir.Constant(ir.IntType(32), 0)
+        one = ir.Constant(ir.IntType(32), 1)
+
+        # Load tag
+        tag_ptr = self.builder.gep(ptr, [zero, zero], inbounds=True)
+        tag_val = self.builder.load(tag_ptr)
+
+        binary_op = node.value
+        left_is_union = self._is_union_expr(binary_op.left)
+        right_is_union = self._is_union_expr(binary_op.right)
+
+        # Codegen the non-union side outside the dispatch
+        if not left_is_union:
+            fixed_val = self._codegen(binary_op.left)
+            union_on_left = False
+        elif not right_is_union:
+            fixed_val = self._codegen(binary_op.right)
+            union_on_left = True
+        else:
+            raise LeashError("Cannot assign with binary op involving two unions", node=node)
+
+        # Create merge and per-variant blocks
+        merge_bb = self.builder.function.append_basic_block("union_assign_merge")
+        var_bbs = []
+        for vname, _ in variants:
+            bb = self.builder.function.append_basic_block(f"union_assign_{vname}")
+            var_bbs.append(bb)
+
+        # If-else chain
+        for i, (vname, vdata) in enumerate(variants[:-1]):
+            cmp = self.builder.icmp_signed("==", tag_val, ir.Constant(ir.IntType(64), vdata["index"]))
+            next_check = self.builder.function.append_basic_block(f"union_assign_check_{i+1}")
+            self.builder.cbranch(cmp, var_bbs[i], next_check)
+            self.builder.position_at_end(next_check)
+        self.builder.branch(var_bbs[-1])
+
+        for i, (vname, vdata) in enumerate(variants):
+            self.builder.position_at_end(var_bbs[i])
+            data_ptr = self.builder.gep(ptr, [zero, one], inbounds=True)
+            typed_ptr = self.builder.bitcast(data_ptr, vdata["llvm_type"].as_pointer())
+            loaded = self.builder.load(typed_ptr)
+
+            if isinstance(loaded.type, ir.PointerType):
+                loaded = self.builder.ptrtoint(loaded, ir.IntType(64))
+
+            if union_on_left:
+                result = self._emit_binop_scalar(loaded, fixed_val, binary_op.op)
+            else:
+                result = self._emit_binop_scalar(fixed_val, loaded, binary_op.op)
+
+            # Store back to the same variant, preserving the tag
+            stored_val = self._emit_cast(result, vdata["llvm_type"])
+            self.builder.store(stored_val, typed_ptr)
+
+            self.builder.branch(merge_bb)
+
+        self.builder.position_at_end(merge_bb)
+
     def _codegen_BinaryOp(self, node):
+        # Check for union operands
+        left_union = self._is_union_expr(node.left)
+        right_union = self._is_union_expr(node.right)
+        if left_union or right_union:
+            return self._codegen_union_binary_op(node, left_union, right_union)
+
         left = self._codegen(node.left)
 
         # OpDef operator overload
@@ -5088,8 +5306,7 @@ class CodeGen:
 
         raise LeashError(
             f"Method '{node.method}' is not implemented for type '{resolved}'",
-            line=getattr(node, "line", None),
-            col=getattr(node, "col", None),
+            node=node,
         )
 
     def _update_vec_struct(self, vec_ptr, data, size, cap):
@@ -6225,14 +6442,12 @@ class CodeGen:
             raise LeashError(
                 "The '<>' operator on raw pointers requires a size context. "
                 "Use it with array types instead.",
-                line=getattr(node, "line", None),
-                col=getattr(node, "col", None),
+                node=node,
             )
 
         raise LeashError(
             f"The '<>' operator is not supported for type '{resolved_right}'",
-            line=getattr(node, "line", None),
-            col=getattr(node, "col", None),
+            node=node,
         )
 
     def _codegen_file_method(self, file_ptr, method, args):
@@ -6480,7 +6695,7 @@ class CodeGen:
             )
             return None
 
-        raise LeashError(f"File method '{method}' not implemented", line=getattr(node, "line", None), col=getattr(node, "col", None))
+        raise LeashError(f"File method '{method}' not implemented", node=node)
 
     def _codegen_file_static_method(self, method, args):
         """Handle File static methods: open, rename, delete."""
@@ -6514,7 +6729,7 @@ class CodeGen:
             result = self.builder.call(self.remove_fn, [filename])
             return self.builder.trunc(result, ir.IntType(32))
 
-        raise LeashError(f"File static method '{method}' not implemented", line=getattr(node, "line", None), col=getattr(node, "col", None))
+        raise LeashError(f"File static method '{method}' not implemented", node=node)
 
     def _file_replace(self, file_ptr, file_handle, old_str, new_str, replace_all):
         """Implement file replace/replaceall functionality."""
@@ -8190,6 +8405,9 @@ class CodeGen:
                 return self._emit_cast(val, dst_type)
         return val
 
+    def _codegen_ToUnionExpr(self, node):
+        return self._codegen(node.expr)
+
     def _codegen_ByteConvExpr(self, node):
         size_val = self._codegen(node.size_expr)
 
@@ -8616,6 +8834,8 @@ class CodeGen:
                     )
                 result = self.builder.or_(result, field_val)
             return result
+        # Fallback: no conversion needed (identity / passthrough cast)
+        return val
         self.builder.call(self.strcat, [result_after_new, suffix_start])
 
         self.builder.branch(merge_bb)
@@ -8736,6 +8956,10 @@ class CodeGen:
 
         size = self._get_type_size(llvm_type)
         return ir.Constant(ir.IntType(32), size)
+
+    def _codegen_TypeofExpr(self, node):
+        leash_type = self._get_leash_type_name(node.expr)
+        return self._emit_const_str(leash_type)
 
     def get_ir(self):
         return str(self.module)

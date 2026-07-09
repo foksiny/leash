@@ -1075,6 +1075,29 @@ class TypeChecker:
             return dst_t
         return dst_t
 
+    def _check_tounion(self, expr):
+        if expr.union_name not in self.union_types:
+            raise LeashError(
+                f"tounion expects a union type, got '{expr.union_name}'",
+                node=expr,
+                tip="Define a union type first, e.g. `def MyUnion : union { a: int; b: float; };`",
+            )
+        expr_t = self._infer_type(expr.expr)
+        union_variants = self.union_types[expr.union_name]
+        variant_match = None
+        for vname, vtype in union_variants.items():
+            if self._types_compatible(expr_t, vtype):
+                variant_match = vname
+                break
+        if variant_match is None:
+            self._error(
+                f"Cannot convert type '{expr_t}' to union '{expr.union_name}' - "
+                f"no variant accepts this type",
+                node=expr,
+                tip=f"Union '{expr.union_name}' accepts: {', '.join(f'{n}: {t}' for n, t in union_variants.items())}",
+            )
+        return expr.union_name
+
     def _check_byte_conv(self, expr):
         size_type = self._infer_type(expr.size_expr)
         if not self._is_int_family(size_type):
@@ -2480,10 +2503,14 @@ class TypeChecker:
             return self._check_enum_member_access(expr)
         elif isinstance(expr, TypeConvExpr):
             return self._check_type_conv(expr)
+        elif isinstance(expr, ToUnionExpr):
+            return self._check_tounion(expr)
         elif isinstance(expr, ByteConvExpr):
             return self._check_byte_conv(expr)
         elif isinstance(expr, SizeofExpr):
             return self._check_sizeof(expr)
+        elif isinstance(expr, TypeofExpr):
+            return self._check_typeof(expr)
         elif isinstance(expr, TernaryOp):
             return self._check_ternary_op(expr)
         elif isinstance(expr, IsExpr):
@@ -2553,6 +2580,10 @@ class TypeChecker:
 
             self._infer_type(expr.target)
         return "int"
+
+    def _check_typeof(self, expr):
+        self._infer_type(expr.expr)
+        return "string"
 
     def _check_binary_op(self, expr):
         left_t = self._infer_type(expr.left)

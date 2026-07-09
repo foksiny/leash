@@ -1,10 +1,10 @@
 Error: Undefined variable: 'unknown_var'
 After 'works'
---- Executed at 2026-07-04 19:31:45 ---
+--- Executed at 2026-07-09 19:41:54 ---
 warning: Unused local variable 'a' in function 'main'
   --> examples\worksotherwise.lsh:1:0
   |
 1 | fnc main() : void {
   | ^
   |
-tip: If you don't need this variable, consider removing it.
+  = tip: If you don't need this variable, consider removing it.

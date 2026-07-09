@@ -39,9 +39,7 @@ class LowLevelChecker:
                     self._collect_info(value)
 
     def _error(self, msg, node=None, tip=None):
-        line = getattr(node, "line", None)
-        col = getattr(node, "col", None)
-        self.errors.append(LeashError(msg, line=line, col=col, tip=tip, code="E_LOWLEVEL"))
+        self.errors.append(LeashError(msg, node=node, tip=tip, code="E_LOWLEVEL"))
 
     def _get_var_name(self, expr):
         """Extract variable name from an expression (handles chains like a.b.c -> a)."""
