@@ -28,6 +28,7 @@ from .ast_nodes import (
     CreateExpr,
     DelStatement,
     StringLiteral,
+    InterpolatedString,
     NumberLiteral,
     FloatLiteral,
     BoolLiteral,
@@ -511,6 +512,22 @@ class CodeGen:
         self.builder.call(self.sprintf, [buf, fmt_ptr, casted_val])
         return buf
 
+    def _concat_strings(self, left_ptr, right_ptr):
+        left_len = self.builder.call(self.strlen, [left_ptr])
+        right_len = self.builder.call(self.strlen, [right_ptr])
+        total = self.builder.add(left_len, right_len)
+        total_plus_1 = self.builder.add(total, ir.Constant(ir.IntType(64), 1))
+        result = self.builder.call(self.malloc, [total_plus_1])
+        self._track_alloc(result)
+        self.builder.call(self.strcpy, [result, left_ptr])
+        self.builder.call(self.strcat, [result, right_ptr])
+        return result
+
+    def _ensure_string(self, val, llvm_ty):
+        if isinstance(val.type, ir.PointerType) and val.type.pointee == ir.IntType(8):
+            return val
+        return self._emit_tostring(val, llvm_ty)
+
     def _track_alloc(self, ptr):
         """No-op since we are using Boeing GC."""
         return ptr
@@ -665,6 +682,8 @@ class CodeGen:
         elif isinstance(node, FloatLiteral):
             return "float"
         elif isinstance(node, StringLiteral):
+            return "string"
+        elif isinstance(node, InterpolatedString):
             return "string"
         elif isinstance(node, CharLiteral):
             return "char"
@@ -8159,6 +8178,28 @@ class CodeGen:
         global_str.global_constant = True
         global_str.initializer = c_str
         return self.builder.bitcast(global_str, ir.IntType(8).as_pointer())
+
+    def _codegen_InterpolatedString(self, node):
+        parts = node.parts
+        if not parts:
+            return self._emit_const_str("")
+
+        first_lit, first_expr = parts[0]
+        if first_lit is not None:
+            result = self._emit_const_str(first_lit)
+        else:
+            val = self._codegen(first_expr)
+            result = self._ensure_string(val, val.type)
+
+        for lit, expr_node in parts[1:]:
+            if lit is not None:
+                right = self._emit_const_str(lit)
+            else:
+                val = self._codegen(expr_node)
+                right = self._ensure_string(val, val.type)
+            result = self._concat_strings(result, right)
+
+        return result
 
     def _codegen_ArrayInit(self, node):
         target = self.current_target_type

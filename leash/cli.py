@@ -990,7 +990,7 @@ def update_leash():
     import json
     
     print("Leash Update Checker")
-    print("Current version: 0.18.0 Beta\n")
+    print("Current version: 0.18.2 Beta\n")
     
     try:
         req = urllib.request.Request(
@@ -1035,10 +1035,10 @@ def main():
         sys.exit(1)
     cmd = sys.argv[1]
     if cmd in ("--help", "-h"):
-        print("Leash v0.18.0 Beta\nUsage: leash <command> [options]\nCommands: compile, run, dump, check, install, init, build, runp, update\nRun 'leash <command> --help' for details.\n\nGlobal Options:\n  --verbose/-vb        Enable highly detailed masterclass error and warning explanations.")
+        print("Leash v0.18.2 Beta\nUsage: leash <command> [options]\nCommands: compile, run, dump, check, install, init, build, runp, update\nRun 'leash <command> --help' for details.\n\nGlobal Options:\n  --verbose/-vb        Enable highly detailed masterclass error and warning explanations.")
         sys.exit(0)
     if cmd in ("--version", "-v"):
-        print("Leash v0.18.0 Beta\nBuilt on LLVM with custom GC"); sys.exit(0)
+        print("Leash v0.18.2 Beta\nBuilt on LLVM with custom GC"); sys.exit(0)
     if cmd == "check":
         if len(sys.argv) < 3:
             print("Usage: leash check <file.lsh> [options]")

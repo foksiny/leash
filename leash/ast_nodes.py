@@ -353,6 +353,11 @@ class StringLiteral(Expression):
         self.value = value
 
 
+class InterpolatedString(Expression):
+    def __init__(self, parts):
+        self.parts = parts  # list of (literal_text_or_None, expr_or_None)
+
+
 class CharLiteral(Expression):
     def __init__(self, value):
         self.value = value

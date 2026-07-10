@@ -45,22 +45,35 @@
                     "begin": "\"",
                     "end": "\"",
                     "patterns": [
-                        {
-                            "name": "constant.character.escape.leash",
-                            "match": "\\\\[0tnr\"'\\\\]"
-                        },
-                        {
-                            "name": "constant.character.escape.hex.leash",
-                            "match": "\\\\x[0-9a-fA-F]{2}"
-                        },
-                        {
-                            "name": "constant.character.escape.unicode.leash",
-                            "match": "\\\\u[0-9a-fA-F]{4}"
-                        }
-                    ]
+                {
+                    "name": "constant.character.escape.leash",
+                    "match": "\\\\[0tnr\"'{}\\\\]"
                 },
                 {
-                    "name": "string.quoted.single.leash",
+                    "name": "constant.character.escape.hex.leash",
+                    "match": "\\\\x[0-9a-fA-F]{2}"
+                },
+                {
+                    "name": "constant.character.escape.unicode.leash",
+                    "match": "\\\\u[0-9a-fA-F]{4}"
+                },
+                {
+                    "name": "variable.other.interpolation.leash",
+                    "begin": "(?<!\\\\)\\{",
+                    "end": "(?<!\\\\)\\}",
+                    "patterns": [
+                        { "include": "#strings" },
+                        { "include": "#comments" },
+                        { "include": "#numbers" },
+                        { "include": "#constants" },
+                        { "include": "#builtins" },
+                        { "include": "#operators" }
+                    ]
+                }
+            ]
+        },
+        {
+            "name": "string.quoted.single.leash",
                     "begin": "'",
                     "end": "'",
                     "patterns": [

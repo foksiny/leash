@@ -1,4 +1,4 @@
-from .lexer import Lexer, Token
+from .lexer import Lexer, Token, leash_unescape
 from .ast_nodes import (
     Program,
     StructDef,
@@ -27,6 +27,7 @@ from .ast_nodes import (
     MemberAccess,
     NumberLiteral,
     StringLiteral,
+    InterpolatedString,
     BoolLiteral,
     CastExpr,
     AsExpr,
@@ -101,6 +102,79 @@ class Parser:
         node.col = tok.column
         node.source_file = self.source_file
         return node
+
+    def _parse_interpolated_string(self, tok):
+        raw = getattr(tok, 'raw', tok.value)
+        parts = []
+        i = 0
+        last_end = 0
+        content = raw
+
+        while i < len(content):
+            if content[i] == '\\' and i + 1 < len(content):
+                i += 2
+                continue
+            if content[i] == '{':
+                literal_raw = content[last_end:i]
+                literal = leash_unescape(literal_raw) if literal_raw else ""
+                parts.append((literal, None))
+
+                i += 1
+                depth = 1
+                expr_start = i
+                while i < len(content) and depth > 0:
+                    if content[i] == '\\' and i + 1 < len(content):
+                        i += 2
+                        continue
+                    if content[i] == '"':
+                        i += 1
+                        while i < len(content) and content[i] != '"':
+                            if content[i] == '\\':
+                                i += 1
+                            i += 1
+                        i += 1
+                        continue
+                    if content[i] == "'":
+                        i += 1
+                        while i < len(content) and content[i] != "'":
+                            if content[i] == '\\':
+                                i += 1
+                            i += 1
+                        i += 1
+                        continue
+                    if content[i] == '{':
+                        depth += 1
+                    elif content[i] == '}':
+                        depth -= 1
+                    i += 1
+
+                expr_text = content[expr_start:i-1]
+
+                try:
+                    sub_lexer = Lexer(expr_text)
+                    sub_tokens = sub_lexer.tokenize()
+                    sub_parser = Parser(sub_tokens, source_file=self.source_file)
+                    expr_node = sub_parser.parse_expression()
+                    if sub_parser.current().type != "EOF":
+                        raise Exception("Extra tokens after expression")
+                    parts.append((None, expr_node))
+                except Exception:
+                    raw_literal = "{" + expr_text + "}"
+                    literal = leash_unescape(raw_literal)
+                    if parts and parts[-1][0] is not None:
+                        parts[-1] = (parts[-1][0] + literal, None)
+                    else:
+                        parts.append((literal, None))
+
+                last_end = i
+            else:
+                i += 1
+
+        if last_end < len(content):
+            literal = leash_unescape(content[last_end:])
+            parts.append((literal, None))
+
+        return InterpolatedString(parts)
 
     def current(self):
         return self.tokens[self.pos]
@@ -2107,6 +2181,10 @@ class Parser:
             return self._pos(NumberLiteral(val), tok)
         elif self.current().type in ("STRING", "MLSTRING_D", "MLSTRING_S"):
             tok = self.current()
+            raw = getattr(tok, 'raw', None) if hasattr(tok, 'raw') else None
+            if raw and '{' in raw:
+                self.eat(tok.type)
+                return self._pos(self._parse_interpolated_string(tok), tok)
             return self._pos(StringLiteral(self.eat(tok.type).value), tok)
         elif self.current().type == "CHAR":
             tok = self.current()

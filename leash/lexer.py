@@ -2,6 +2,38 @@ import re
 from .errors import LeashError
 
 
+def _leash_escape(raw_text):
+    """Pre-process raw string to replace \{ → \x7b and \} → \x7d
+    so that Python's unicode_escape codec (which on 3.12+ preserves
+    unrecognized escapes) correctly produces { and }."""
+    parts = []
+    i = 0
+    while i < len(raw_text):
+        if raw_text[i] == "\\" and i + 1 < len(raw_text):
+            nxt = raw_text[i + 1]
+            if nxt == "{":
+                parts.append("\\x7b")
+                i += 2
+                continue
+            if nxt == "}":
+                parts.append("\\x7d")
+                i += 2
+                continue
+            parts.append(raw_text[i])
+            parts.append(nxt)
+            i += 2
+            continue
+        parts.append(raw_text[i])
+        i += 1
+    return "".join(parts)
+
+
+def leash_unescape(text):
+    """Unescape a Leash string, handling \{ → { and \} → } on Python 3.12+."""
+    text = _leash_escape(text)
+    return text.encode("utf-8").decode("unicode_escape")
+
+
 class Token:
     def __init__(self, type, value, line, column):
         self.type = type
@@ -212,12 +244,19 @@ class Lexer:
             column = mo.start() - line_start
             if kind == "NUMBER":
                 value = self._parse_number(value)
-            elif kind in ("STRING", "CHAR"):
+            elif kind == "STRING":
+                raw = value[1:-1]  # keep raw (with escape sequences) for interpolation
+                value = leash_unescape(raw)
+                tok = Token(kind, value, line_num, column)
+                tok.raw = raw
+                tokens.append(tok)
+                continue
+            elif kind == "CHAR":
                 value = value[1:-1]  # strip quotes
-                value = value.encode("utf-8").decode("unicode_escape")
+                value = leash_unescape(value)
             elif kind in ("MLSTRING_D", "MLSTRING_S"):
                 value = value[3:-3]  # strip triple quotes
-                value = value.encode("utf-8").decode("unicode_escape")
+                value = leash_unescape(value)
             elif kind == "IDENT" and value in self.KEYWORDS:
                 kind = value.upper()
             elif kind == "NEWLINE":

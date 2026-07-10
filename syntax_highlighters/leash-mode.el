@@ -76,8 +76,10 @@
    '("\\bfnc\\s-+\\([a-zA-Z_][a-zA-Z0-9_]*\\)" 1 font-lock-function-name-face)
    ;; Method calls (with or without parentheses)
    '("\\.\\([a-zA-Z_][a-zA-Z0-9_]*\\)\\s-*(" 1 font-lock-function-name-face)
-   '("\\.\\([a-zA-Z_][a-zA-Z0-9_]*\\)\\s-*[;:{]" 1 font-lock-function-name-face)
-   )
+    '("\\.\\([a-zA-Z_][a-zA-Z0-9_]*\\)\\s-*[;:{]" 1 font-lock-function-name-face)
+    ;; String interpolation: highlight {expr} inside double-quoted strings
+    '("\"[^\"]*?\\({\\)[^{}]*\\(}\\)" (1 font-lock-variable-name-face t) (2 font-lock-variable-name-face t))
+    )
   "Default font-lock keywords for Leash mode")
 
 (defvar leash-syntax-table

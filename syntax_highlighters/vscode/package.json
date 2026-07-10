@@ -2,7 +2,7 @@
     "name": "leash",
     "displayName": "Leash",
     "description": "Leash Programming Language Support",
-    "version": "0.18.0",
+    "version": "0.18.2",
     "publisher": "leash-lang",
     "engines": {
         "vscode": "^1.75.0"

@@ -1,0 +1,6 @@
+fnc main {
+    a: int = 10;
+    b: int = 20;
+
+    show("{a} + {b} = {a + b}");
+}

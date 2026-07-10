@@ -2371,6 +2371,11 @@ class TypeChecker:
             return "float"
         elif isinstance(expr, StringLiteral):
             return "string"
+        elif isinstance(expr, InterpolatedString):
+            for _, sub_expr in expr.parts:
+                if sub_expr is not None:
+                    self._infer_type(sub_expr)
+            return "string"
         elif isinstance(expr, CharLiteral):
             return "char"
         elif isinstance(expr, BoolLiteral):

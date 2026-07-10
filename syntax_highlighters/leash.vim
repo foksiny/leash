@@ -85,8 +85,10 @@ syn match leashNamespace "::"
 syn region leashMLString start=/"""/ end=/"""/ keepend
 syn region leashMLString start=/'''/ end=/'''/ keepend
 " Regular strings and chars
-syn region leashString start=/"/ skip=/\\./ end=/"/
+syn region leashString start=/"/ skip=/\\./ end=/"/ contains=leashInterpolation
 syn region leashChar start=/'/ skip=/\\./ end=/'/
+" String interpolation: {expr} inside strings (but not \{)
+syn region leashInterpolation matchgroup=leashInterpolationDelimiter start='\%(\\\)\@<!{' end='\%(\\\)\@<!}' contained containedin=leashString
 " Multi-line comments: /*...*/
 syn region leashMLComment start=/\/\*/ end=/\*\// keepend
 syn match leashComment "//.*$"
@@ -132,6 +134,8 @@ hi def link leashNamespace Special
 hi def link leashMLString String
 hi def link leashString String
 hi def link leashChar Character
+hi def link leashInterpolation Identifier
+hi def link leashInterpolationDelimiter Delimiter
 hi def link leashMLComment Comment
 hi def link leashComment Comment
 hi def link leashNumber Number

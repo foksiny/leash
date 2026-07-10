@@ -1,6 +1,6 @@
 # Leash Programming Language
 
-**Version 0.18.0 Beta**
+**Version 0.18.2 Beta**
 
 Leash is a strongly-typed, modern compiled programming language built on top of LLVM. It features an intuitive syntax and is designed to handle common tasks with native performance.
 
@@ -3572,6 +3572,40 @@ charVar: char = c[1];
 strLen: int = c.size; // evaluates length!
 ```
 
+### String Interpolation
+
+Leash supports string interpolation inside double-quoted strings. Any Leash expression enclosed in `{` `}` is evaluated and converted to a string at runtime:
+
+```leash
+fnc main() : void {
+    a: int = 10;
+    b: int = 20;
+    show("{a} + {b} = {a + b}");  // "10 + 20 = 30"
+}
+```
+
+Interpolation works with any expression, including function calls:
+
+```leash
+fnc double(x int) : int { return x * 2; }
+
+fnc main() : void {
+    show("{double(5)}");  // "10"
+}
+```
+
+To include a literal `{` or `}` in an interpolated string, escape it with `\{` and `\}`:
+
+```leash
+fnc main() : void {
+    mylist: int[10] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+    show("mylist isn't '\{1, 2, 3, 4, 5, 6, 7, 8, 9, 10\}'");
+    // Output: mylist isn't '{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}'
+}
+```
+
+Interpolation is supported for double-quoted strings only (single-quoted strings and triple-quoted strings do not support interpolation).
+
 ### Multi-Line Strings
 
 Leash supports multi-line strings using triple quotes (`"""` or `'''`):
@@ -4391,7 +4425,7 @@ The VS Code extension provides syntax highlighting, real-time diagnostics, hover
    cd syntax_highlighters/vscode
    npm run package
    ```
-3. Install the generated `leash-0.18.0.vsix` in VS Code (Extensions view -> `...` -> `Install from VSIX...`).
+3. Install the generated `leash-0.18.2.vsix` in VS Code (Extensions view -> `...` -> `Install from VSIX...`).
 
 ### Emacs
 
