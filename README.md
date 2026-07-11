@@ -3148,6 +3148,21 @@ Macros perform **textual substitution** at compile time. When the compiler encou
 - **Arguments are evaluated per-use** — if an argument appears multiple times in the body, it is re-evaluated each time
 - **No type constraints** — macro parameters can accept any expression type
 
+### Zero-Parameter Macros
+
+Macros with no parameters can omit the parentheses when calling them. Both `NAME` and `NAME()` are accepted:
+
+```leash
+def PI : macro() |> 3.14159;
+
+fnc main() : void {
+    show(PI);     // 3.14159
+    show(PI());   // 3.14159 — equivalent
+}
+```
+
+This is particularly useful for constants defined as macros (e.g., key codes, color values from libraries), where the parentheses can feel redundant.
+
 ### Visibility
 
 Macros support `pub` (default) and `priv` visibility modifiers:

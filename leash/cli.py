@@ -579,6 +579,15 @@ def expand_macros(program):
         return node
     def expand_expr(node):
         if node is None or isinstance(node, (str, int, float, bool)) or not hasattr(node, '__dict__'): return node
+        if isinstance(node, Identifier) and node.name in macros:
+            m = macros[node.name]
+            if len(m.params) == 0:
+                if len(m.body) == 1:
+                    s = m.body[0]
+                    if isinstance(s, ExpressionStatement): return copy.deepcopy(s.expr)
+                    elif isinstance(s, ReturnStatement): return copy.deepcopy(s.value)
+                    return copy.deepcopy(s)
+                return copy.deepcopy(m.body)
         if isinstance(node, Call) and node.name in macros:
             m = macros[node.name]
             if len(node.args) != len(m.params): raise LeashError(f"Macro '{node.name}' expects {len(m.params)} args, got {len(node.args)}", node=node)
@@ -589,11 +598,20 @@ def expand_macros(program):
                 elif isinstance(s, ReturnStatement): return substitute(copy.deepcopy(s.value), pmap)
                 return substitute(copy.deepcopy(s), pmap)
             return substitute(copy.deepcopy(m.body), pmap)
+        # Handle AST nodes whose attributes contain tuples (e.g. IfStatement.also_blocks)
+        from .ast_nodes import IfStatement
+        if isinstance(node, IfStatement):
+            node.condition = expand_expr(node.condition)
+            node.then_block = expand_stmts(node.then_block)
+            node.also_blocks = [(expand_expr(c), expand_stmts(b), inv) for c, b, inv in node.also_blocks]
+            node.else_block = expand_stmts(node.else_block) if node.else_block else None
+            return node
         for attr in list(vars(node)):
             if attr.startswith('_'): continue
             val = getattr(node, attr)
             if val is None: continue
             if isinstance(val, list): setattr(node, attr, [expand_expr(i) for i in val])
+            elif isinstance(val, tuple): setattr(node, attr, tuple(expand_expr(i) for i in val))
             elif hasattr(val, '__dict__') and not isinstance(val, str): setattr(node, attr, expand_expr(val))
         return node
     def expand_stmts(stmts):
@@ -611,7 +629,7 @@ def expand_macros(program):
             for m in item.methods: m.fnc.body = expand_stmts(m.fnc.body)
         elif isinstance(item, ConditionalDef):
             item.then_block = expand_stmts(item.then_block) if item.then_block else None
-            item.also_blocks = [(c, expand_stmts(b), inv) for c, b, inv in item.also_blocks]
+            item.also_blocks = [(expand_expr(c), expand_stmts(b), inv) for c, b, inv in item.also_blocks]
             item.else_block = expand_stmts(item.else_block) if item.else_block else None
         new_items.append(item)
     return Program(new_items)
