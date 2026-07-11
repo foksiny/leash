@@ -16,6 +16,15 @@ static LONG  gc_mutex_ready = 0;
    leash_gc_init() is called from main() before any threads exist, so we
    initialise it there and then set gc_mutex_ready.  Use InterlockedExchange
    so the flag becomes visible to all threads. */
+#else
+#include <unistd.h>
+#include <pthread.h>
+/* On non-Windows we use pthread mutexes. */
+static pthread_mutex_t gc_mutex = PTHREAD_MUTEX_INITIALIZER;
+#endif
+
+/* GC is initialised via leash_gc_init once before any concurrent access. */
+#ifdef _WIN32
 #define GC_LOCK()                                                          \
     do {                                                                   \
         if (!InterlockedExchangeAdd(&gc_mutex_ready, 0)) {                 \
@@ -26,8 +35,6 @@ static LONG  gc_mutex_ready = 0;
     } while(0)
 #define GC_UNLOCK() LeaveCriticalSection(&gc_mutex)
 #else
-#include <pthread.h>
-static pthread_mutex_t gc_mutex = PTHREAD_MUTEX_INITIALIZER;
 #define GC_LOCK()   pthread_mutex_lock(&gc_mutex)
 #define GC_UNLOCK() pthread_mutex_unlock(&gc_mutex)
 #endif

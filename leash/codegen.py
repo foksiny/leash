@@ -1,4 +1,5 @@
 import sys
+import os
 import llvmlite.ir as ir
 import llvmlite.binding as llvm
 from .errors import LeashError
@@ -1014,6 +1015,31 @@ class CodeGen:
         if node.value is not None:
             self.global_init_list.append((gv, node.value, node.var_type))
 
+    def _resolve_native_lib_path(self, lib_path, source_file):
+        """Resolve a native library path relative to the source file and detect platform extensions."""
+        source_dir = os.path.dirname(os.path.abspath(source_file)) if source_file else "."
+
+        _, ext = os.path.splitext(lib_path)
+        if not ext:
+            platform_extensions = {
+                "linux64": [".so", ".a"],
+                "linux32": [".so", ".a"],
+                "macos": [".dylib", ".a"],
+                "macos-arm": [".dylib", ".a"],
+                "win64": [".lib", ".dll", ".a"],
+            }
+            extensions = platform_extensions.get(self.target_platform, [".so", ".a"])
+            for ext in extensions:
+                candidate = lib_path + ext
+                abs_candidate = os.path.join(source_dir, candidate) if not os.path.isabs(candidate) else candidate
+                if os.path.exists(abs_candidate):
+                    return os.path.normpath(abs_candidate)
+            lib_path = lib_path + extensions[0]
+
+        if os.path.isabs(lib_path):
+            return os.path.normpath(lib_path)
+        return os.path.normpath(os.path.join(source_dir, lib_path))
+
     def _codegen_NativeImport(self, node):
         """Generate external function declarations for native library imports (first pass)."""
         for name, args, return_type in node.func_declarations:
@@ -1024,9 +1050,10 @@ class CodeGen:
             func.linkage = "external"
             self.func_symtab[name] = func
         self._codegen_native_import_structs_unions_enums(node)
+        resolved_path = self._resolve_native_lib_path(node.lib_path, getattr(node, "source_file", None))
         self.native_libs.append(
             (
-                node.lib_path,
+                resolved_path,
                 node.func_declarations,
                 node.var_declarations,
                 node.struct_declarations,

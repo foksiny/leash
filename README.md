@@ -1,6 +1,6 @@
 # Leash Programming Language
 
-**Version 0.18.2 Beta**
+**Version 0.19.0 Beta**
 
 Leash is a strongly-typed, modern compiled programming language built on top of LLVM. It features an intuitive syntax and is designed to handle common tasks with native performance.
 
@@ -1082,6 +1082,50 @@ fnc main() {
     show(Str.upper("hello"));  // "HELLO"
 }
 ```
+
+### Raylib (`lshraylib`)
+
+A cross-platform raylib binding for Leash, providing 2D/3D graphics, audio, input, and window management. Works on Windows and Linux.
+
+**Usage:**
+```leash
+use lshraylib::raylib::*;
+
+fnc main() : void {
+    width: imut int = 800;
+    height: imut int = 600;
+    
+    InitWindow(width, height, "raylib [core] example - basic window");
+    SetTargetFPS(60);
+    
+    while !WindowShouldClose() {
+        BeginDrawing();
+            ClearBackground(RAYWHITE());
+            DrawText("Hello from Leash + raylib!", 190, 200, 20, LIGHTGRAY());
+        EndDrawing();
+    }
+    
+    CloseWindow();
+}
+```
+
+**Key Features:**
+- **Cross-platform**: Automatically selects Windows or Linux bindings via `_PLATFORM` compile-time variable
+- **Complete bindings**: All raylib 5.0+ functions, structs, and constants
+- **Color macros**: `WHITE()`, `BLACK()`, `RED()`, `BLUE()`, `GREEN()`, `RAYWHITE()`, etc.
+- **Math types**: `Vector2`, `Vector3`, `Vector4`, `Matrix`, `Rectangle`, `Color`
+- **Auto-linking**: Detects and links system dependencies (`gdi32`, `winmm` on Windows; `X11`, `m`, `dl` on Linux; `Cocoa`, `OpenGL`, `IOKit` on macOS)
+
+**Module Structure:**
+```
+lshraylib/
+├── raylib.lsh          # Entry point with platform conditionals
+├── win/
+│   └── main.lsh        # Windows bindings (@from("libraylib.a"))
+└── linux/
+    └── main.lsh        # Linux bindings (@from("libraylib.a"))
+```
+
 
 ## Leashed Package Manager
 
@@ -2885,8 +2929,42 @@ fnc main() : void {
 |--------|-------------|---------|
 | `*T` | Raw pointer to type T | `*int`, `*Point`, `*char` |
 | `&T` | Safe reference to type T | `&int`, `&Point` |
+| `pointer<T>` | Generic pointer syntax (canonicalizes to `*T`) | `pointer<int>`, `pointer<Point>` |
 
 *Note: Leash uses the Boehm Garbage Collector for memory management, so pointers to GC-allocated objects remain valid throughout the program's lifetime.*
+
+### Generic Pointer Syntax (`pointer<T>`)
+
+Leash supports a generic pointer syntax `pointer<T>` as an alternative to the `*T` syntax. This is particularly useful for readability in complex generic types and template metaprogramming:
+
+```leash
+// These are equivalent:
+def Node : struct {
+    value: int;
+    next: *Node;           // raw pointer syntax
+};
+
+def Node2 : struct {
+    value: int;
+    next: pointer<Node2>;  // generic pointer syntax
+};
+
+// Useful in generic contexts:
+def LinkedList<T> : struct {
+    head: pointer<Node<T>>;  // cleaner than *Node<T>
+    size: int;
+};
+
+// Also works with type aliases:
+def int_ptr : type pointer<int>;  // same as *int
+
+fnc main() : void {
+    p: pointer<int> = &10;
+    show(*p);  // 10
+}
+```
+
+The `pointer<T>` syntax is **canonicalized to `*T`** at parse time, so both forms are completely interchangeable and have identical behavior.
 
 ## Unions
 
@@ -4425,7 +4503,7 @@ The VS Code extension provides syntax highlighting, real-time diagnostics, hover
    cd syntax_highlighters/vscode
    npm run package
    ```
-3. Install the generated `leash-0.18.2.vsix` in VS Code (Extensions view -> `...` -> `Install from VSIX...`).
+3. Install the generated `leash-0.19.0.vsix` in VS Code (Extensions view -> `...` -> `Install from VSIX...`).
 
 ### Emacs
 

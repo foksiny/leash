@@ -1,0 +1,3510 @@
+@from("libraylib.a") {
+
+    //====================================================
+    // Basic structs
+    //====================================================
+
+    def Color : struct {
+        r: uint<8>;
+        g: uint<8>;
+        b: uint<8>;
+        a: uint<8>;
+    };
+
+    def Vector2 : struct {
+        x: float;
+        y: float;
+    };
+
+    def Vector3 : struct {
+        x: float;
+        y: float;
+        z: float;
+    };
+
+    def Vector4 : struct {
+        x: float;
+        y: float;
+        z: float;
+        w: float;
+    };
+
+    def Rectangle : struct {
+        x: float;
+        y: float;
+        width: float;
+        height: float;
+    };
+
+    def Matrix : struct {
+        m0: float;
+        m4: float;
+        m8: float;
+        m12: float;
+
+        m1: float;
+        m5: float;
+        m9: float;
+        m13: float;
+
+        m2: float;
+        m6: float;
+        m10: float;
+        m14: float;
+
+        m3: float;
+        m7: float;
+        m11: float;
+        m15: float;
+    };
+
+    //====================================================
+    // Window
+    //====================================================
+
+    fnc InitWindow(width int, height int, title string) : void;
+    fnc CloseWindow() : void;
+    fnc WindowShouldClose() : bool;
+
+    fnc IsWindowReady() : bool;
+    fnc IsWindowFullscreen() : bool;
+    fnc IsWindowHidden() : bool;
+    fnc IsWindowMinimized() : bool;
+    fnc IsWindowMaximized() : bool;
+    fnc IsWindowFocused() : bool;
+    fnc IsWindowResized() : bool;
+    fnc IsWindowState(flag uint) : bool;
+
+    fnc SetWindowState(flags uint) : void;
+    fnc ClearWindowState(flags uint) : void;
+
+    fnc ToggleFullscreen() : void;
+    fnc ToggleBorderlessWindowed() : void;
+
+    fnc MaximizeWindow() : void;
+    fnc MinimizeWindow() : void;
+    fnc RestoreWindow() : void;
+
+    fnc SetWindowIcon(image pointer<void>) : void;
+    fnc SetWindowIcons(images pointer<void>, count int) : void;
+
+    fnc SetWindowTitle(title string) : void;
+    fnc SetWindowPosition(x int, y int) : void;
+    fnc SetWindowMonitor(monitor int) : void;
+    fnc SetWindowMinSize(width int, height int) : void;
+    fnc SetWindowMaxSize(width int, height int) : void;
+    fnc SetWindowSize(width int, height int) : void;
+    fnc SetWindowOpacity(opacity float) : void;
+
+    fnc SetWindowFocused() : void;
+
+    fnc GetWindowHandle() : pointer<void>;
+
+    fnc GetScreenWidth() : int;
+    fnc GetScreenHeight() : int;
+
+    fnc GetRenderWidth() : int;
+    fnc GetRenderHeight() : int;
+
+    fnc GetMonitorCount() : int;
+    fnc GetCurrentMonitor() : int;
+
+    fnc GetMonitorPosition(monitor int) : Vector2;
+
+    fnc GetMonitorWidth(monitor int) : int;
+    fnc GetMonitorHeight(monitor int) : int;
+
+    fnc GetMonitorPhysicalWidth(monitor int) : int;
+    fnc GetMonitorPhysicalHeight(monitor int) : int;
+
+    fnc GetMonitorRefreshRate(monitor int) : int;
+
+    fnc GetWindowPosition() : Vector2;
+    fnc GetWindowScaleDPI() : Vector2;
+
+    fnc GetMonitorName(monitor int) : string;
+
+    fnc SetClipboardText(text string) : void;
+    fnc GetClipboardText() : string;
+
+    fnc EnableEventWaiting() : void;
+    fnc DisableEventWaiting() : void;
+
+    //====================================================
+    // Cursor
+    //====================================================
+
+    fnc ShowCursor() : void;
+    fnc HideCursor() : void;
+
+    fnc IsCursorHidden() : bool;
+    fnc EnableCursor() : void;
+    fnc DisableCursor() : void;
+
+    fnc IsCursorOnScreen() : bool;
+
+    //====================================================
+    // Drawing
+    //====================================================
+
+    fnc BeginDrawing() : void;
+    fnc EndDrawing() : void;
+
+    fnc ClearBackground(color Color) : void;
+
+    //====================================================
+    // Timing
+    //====================================================
+
+    fnc SetTargetFPS(fps int) : void;
+
+    fnc GetFPS() : int;
+
+    fnc GetFrameTime() : float;
+
+    fnc GetTime() : float;
+
+    //====================================================
+    // Keyboard
+    //====================================================
+
+    fnc IsKeyPressed(key int) : bool;
+    fnc IsKeyPressedRepeat(key int) : bool;
+    fnc IsKeyDown(key int) : bool;
+    fnc IsKeyReleased(key int) : bool;
+    fnc IsKeyUp(key int) : bool;
+
+    fnc GetKeyPressed() : int;
+    fnc GetCharPressed() : int;
+
+    fnc SetExitKey(key int) : void;
+
+    //====================================================
+    // Mouse
+    //====================================================
+
+    fnc IsMouseButtonPressed(button int) : bool;
+    fnc IsMouseButtonDown(button int) : bool;
+    fnc IsMouseButtonReleased(button int) : bool;
+    fnc IsMouseButtonUp(button int) : bool;
+
+    fnc GetMouseX() : int;
+    fnc GetMouseY() : int;
+
+    fnc GetMousePosition() : Vector2;
+
+    fnc GetMouseDelta() : Vector2;
+
+    fnc SetMousePosition(x int, y int) : void;
+
+    fnc SetMouseOffset(offsetx int, offsety int) : void;
+
+    fnc SetMouseScale(scaleX float, scaleY float) : void;
+
+    fnc GetMouseWheelMove() : float;
+
+    fnc GetMouseWheelMoveV() : Vector2;
+
+    fnc SetMouseCursor(cursor int) : void;
+
+    //====================================================
+    // Gamepad
+    //====================================================
+
+    fnc IsGamepadAvailable(gamepad int) : bool;
+
+    fnc GetGamepadName(gamepad int) : string;
+
+    fnc IsGamepadButtonPressed(gamepad int, button int) : bool;
+    fnc IsGamepadButtonDown(gamepad int, button int) : bool;
+    fnc IsGamepadButtonReleased(gamepad int, button int) : bool;
+    fnc IsGamepadButtonUp(gamepad int, button int) : bool;
+
+    fnc GetGamepadButtonPressed() : int;
+
+    fnc GetGamepadAxisCount(gamepad int) : int;
+
+    fnc GetGamepadAxisMovement(gamepad int, axis int) : float;
+
+    fnc SetGamepadMappings(mappings string) : int;
+
+    //====================================================
+    // Gestures
+    //====================================================
+
+    fnc SetGesturesEnabled(flags uint) : void;
+
+    fnc IsGestureDetected(gesture int) : bool;
+
+    fnc GetGestureDetected() : int;
+
+    fnc GetGestureHoldDuration() : float;
+
+    fnc GetGestureDragVector() : Vector2;
+    fnc GetGestureDragAngle() : float;
+
+    fnc GetGesturePinchVector() : Vector2;
+    fnc GetGesturePinchAngle() : float;
+
+    //====================================================
+    // Pixel
+    //====================================================
+
+    fnc DrawPixel(posX int, posY int, color Color) : void;
+    fnc DrawPixelV(position Vector2, color Color) : void;
+
+    //====================================================
+    // Lines
+    //====================================================
+
+    fnc DrawLine(startPosX int, startPosY int,
+                 endPosX int, endPosY int,
+                 color Color) : void;
+
+    fnc DrawLineV(startPos Vector2,
+                  endPos Vector2,
+                  color Color) : void;
+
+    fnc DrawLineEx(startPos Vector2,
+                   endPos Vector2,
+                   thick float,
+                   color Color) : void;
+
+    fnc DrawLineStrip(points pointer<Vector2>,
+                      pointCount int,
+                      color Color) : void;
+
+    fnc DrawLineBezier(startPos Vector2,
+                       endPos Vector2,
+                       thick float,
+                       color Color) : void;
+
+    //====================================================
+    // Circles
+    //====================================================
+
+    fnc DrawCircle(centerX int,
+                   centerY int,
+                   radius float,
+                   color Color) : void;
+
+    fnc DrawCircleSector(center Vector2,
+                         radius float,
+                         startAngle float,
+                         endAngle float,
+                         segments int,
+                         color Color) : void;
+
+    fnc DrawCircleSectorLines(center Vector2,
+                              radius float,
+                              startAngle float,
+                              endAngle float,
+                              segments int,
+                              color Color) : void;
+
+    fnc DrawCircleGradient(centerX int,
+                           centerY int,
+                           radius float,
+                           inner Color,
+                           outer Color) : void;
+
+    fnc DrawCircleV(center Vector2,
+                    radius float,
+                    color Color) : void;
+
+    fnc DrawCircleLines(centerX int,
+                        centerY int,
+                        radius float,
+                        color Color) : void;
+
+    fnc DrawCircleLinesV(center Vector2,
+                         radius float,
+                         color Color) : void;
+
+    //====================================================
+    // Ellipses
+    //====================================================
+
+    fnc DrawEllipse(centerX int,
+                    centerY int,
+                    radiusH float,
+                    radiusV float,
+                    color Color) : void;
+
+    fnc DrawEllipseLines(centerX int,
+                         centerY int,
+                         radiusH float,
+                         radiusV float,
+                         color Color) : void;
+
+    //====================================================
+    // Rings
+    //====================================================
+
+    fnc DrawRing(center Vector2,
+                 innerRadius float,
+                 outerRadius float,
+                 startAngle float,
+                 endAngle float,
+                 segments int,
+                 color Color) : void;
+
+    fnc DrawRingLines(center Vector2,
+                      innerRadius float,
+                      outerRadius float,
+                      startAngle float,
+                      endAngle float,
+                      segments int,
+                      color Color) : void;
+
+    //====================================================
+    // Rectangles
+    //====================================================
+
+    fnc DrawRectangle(posX int,
+                      posY int,
+                      width int,
+                      height int,
+                      color Color) : void;
+
+    fnc DrawRectangleV(position Vector2,
+                       size Vector2,
+                       color Color) : void;
+
+    fnc DrawRectangleRec(rec Rectangle,
+                         color Color) : void;
+
+    fnc DrawRectanglePro(rec Rectangle,
+                         origin Vector2,
+                         rotation float,
+                         color Color) : void;
+
+    fnc DrawRectangleGradientV(posX int,
+                               posY int,
+                               width int,
+                               height int,
+                               top Color,
+                               bottom Color) : void;
+
+    fnc DrawRectangleGradientH(posX int,
+                               posY int,
+                               width int,
+                               height int,
+                               left Color,
+                               right Color) : void;
+
+    fnc DrawRectangleGradientEx(rec Rectangle,
+                                topLeft Color,
+                                bottomLeft Color,
+                                topRight Color,
+                                bottomRight Color) : void;
+
+    fnc DrawRectangleLines(posX int,
+                           posY int,
+                           width int,
+                           height int,
+                           color Color) : void;
+
+    fnc DrawRectangleLinesEx(rec Rectangle,
+                             lineThick float,
+                             color Color) : void;
+
+    fnc DrawRectangleRounded(rec Rectangle,
+                             roundness float,
+                             segments int,
+                             color Color) : void;
+
+    fnc DrawRectangleRoundedLines(rec Rectangle,
+                                  roundness float,
+                                  segments int,
+                                  lineThick float,
+                                  color Color) : void;
+
+    //====================================================
+    // Triangles
+    //====================================================
+
+    fnc DrawTriangle(v1 Vector2,
+                     v2 Vector2,
+                     v3 Vector2,
+                     color Color) : void;
+
+    fnc DrawTriangleLines(v1 Vector2,
+                          v2 Vector2,
+                          v3 Vector2,
+                          color Color) : void;
+
+    fnc DrawTriangleFan(points pointer<Vector2>,
+                        pointCount int,
+                        color Color) : void;
+
+    fnc DrawTriangleStrip(points pointer<Vector2>,
+                          pointCount int,
+                          color Color) : void;
+
+    //====================================================
+    // Polygons
+    //====================================================
+
+    fnc DrawPoly(center Vector2,
+                 sides int,
+                 radius float,
+                 rotation float,
+                 color Color) : void;
+
+    fnc DrawPolyLines(center Vector2,
+                      sides int,
+                      radius float,
+                      rotation float,
+                      color Color) : void;
+
+    fnc DrawPolyLinesEx(center Vector2,
+                        sides int,
+                        radius float,
+                        rotation float,
+                        lineThick float,
+                        color Color) : void;
+
+    //====================================================
+    // Splines
+    //====================================================
+
+    fnc DrawSplineLinear(points pointer<Vector2>,
+                         pointCount int,
+                         thick float,
+                         color Color) : void;
+
+    fnc DrawSplineBasis(points pointer<Vector2>,
+                        pointCount int,
+                        thick float,
+                        color Color) : void;
+
+    fnc DrawSplineCatmullRom(points pointer<Vector2>,
+                             pointCount int,
+                             thick float,
+                             color Color) : void;
+
+    fnc DrawSplineBezierQuadratic(points pointer<Vector2>,
+                                  pointCount int,
+                                  thick float,
+                                  color Color) : void;
+
+    fnc DrawSplineBezierCubic(points pointer<Vector2>,
+                              pointCount int,
+                              thick float,
+                              color Color) : void;
+
+    fnc GetSplinePointLinear(startPos Vector2,
+                             endPos Vector2,
+                             t float) : Vector2;
+
+    fnc GetSplinePointBasis(p1 Vector2,
+                            p2 Vector2,
+                            p3 Vector2,
+                            p4 Vector2,
+                            t float) : Vector2;
+
+    fnc GetSplinePointCatmullRom(p1 Vector2,
+                                 p2 Vector2,
+                                 p3 Vector2,
+                                 p4 Vector2,
+                                 t float) : Vector2;
+
+    fnc GetSplinePointBezierQuad(p1 Vector2,
+                                 c2 Vector2,
+                                 p3 Vector2,
+                                 t float) : Vector2;
+
+    fnc GetSplinePointBezierCubic(p1 Vector2,
+                                  c2 Vector2,
+                                  c3 Vector2,
+                                  p4 Vector2,
+                                  t float) : Vector2;
+
+    //====================================================
+    // Collision
+    //====================================================
+
+    fnc CheckCollisionRecs(rec1 Rectangle,
+                           rec2 Rectangle) : bool;
+
+    fnc CheckCollisionCircles(center1 Vector2,
+                              radius1 float,
+                              center2 Vector2,
+                              radius2 float) : bool;
+
+    fnc CheckCollisionCircleRec(center Vector2,
+                                radius float,
+                                rec Rectangle) : bool;
+
+    fnc CheckCollisionPointRec(point Vector2,
+                               rec Rectangle) : bool;
+
+    fnc CheckCollisionPointCircle(point Vector2,
+                                  center Vector2,
+                                  radius float) : bool;
+
+    fnc CheckCollisionPointTriangle(point Vector2,
+                                    p1 Vector2,
+                                    p2 Vector2,
+                                    p3 Vector2) : bool;
+
+    fnc CheckCollisionPointPoly(point Vector2,
+                                points pointer<Vector2>,
+                                pointCount int) : bool;
+
+    fnc CheckCollisionLines(startPos1 Vector2,
+                            endPos1 Vector2,
+                            startPos2 Vector2,
+                            endPos2 Vector2,
+                            collisionPoint pointer<Vector2>) : bool;
+
+    fnc CheckCollisionPointLine(point Vector2,
+                                p1 Vector2,
+                                p2 Vector2,
+                                threshold int) : bool;
+
+    fnc GetCollisionRec(rec1 Rectangle,
+                        rec2 Rectangle) : Rectangle;
+
+    //====================================================
+    // Structs
+    //====================================================
+
+    def Image : struct {
+        data: pointer<void>;
+        width: int;
+        height: int;
+        mipmaps: int;
+        format: int;
+    };
+
+    def Texture : struct {
+        id: uint;
+        width: int;
+        height: int;
+        mipmaps: int;
+        format: int;
+    };
+
+    def Texture2D : type Texture;
+
+    def TextureCubemap : type Texture;
+
+    def RenderTexture : struct {
+        id: uint;
+        texture: Texture;
+        depth: Texture;
+    };
+
+    def RenderTexture2D : type RenderTexture;
+
+    def NPatchInfo : struct {
+        source: Rectangle;
+
+        left: int;
+        top: int;
+        right: int;
+        bottom: int;
+
+        layout: int;
+    };
+
+    //====================================================
+    // Image loading
+    //====================================================
+
+    fnc LoadImage(fileName string) : Image;
+
+    fnc LoadImageRaw(
+        fileName string,
+        width int,
+        height int,
+        format int,
+        headerSize int
+    ) : Image;
+
+    fnc LoadImageSvg(
+        fileName string,
+        width int,
+        height int
+    ) : Image;
+
+    fnc LoadImageAnim(
+        fileName string,
+        frames pointer<int>
+    ) : Image;
+
+    fnc LoadImageAnimFromMemory(
+        fileType string,
+        fileData pointer<uint<8>>,
+        dataSize int,
+        frames pointer<int>
+    ) : Image;
+
+    fnc LoadImageFromMemory(
+        fileType string,
+        fileData pointer<uint<8>>,
+        dataSize int
+    ) : Image;
+
+    fnc LoadImageFromTexture(
+        texture Texture2D
+    ) : Image;
+
+    fnc LoadImageFromScreen() : Image;
+
+    fnc IsImageValid(
+        image Image
+    ) : bool;
+
+    fnc UnloadImage(
+        image Image
+    ) : void;
+
+    fnc ExportImage(
+        image Image,
+        fileName string
+    ) : bool;
+
+    fnc ExportImageToMemory(
+        image Image,
+        fileType string,
+        fileSize pointer<int>
+    ) : pointer<uint<8>>;
+
+    fnc ExportImageAsCode(
+        image Image,
+        fileName string
+    ) : bool;
+
+    //====================================================
+    // Image generation
+    //====================================================
+
+    fnc GenImageColor(
+        width int,
+        height int,
+        color Color
+    ) : Image;
+
+    fnc GenImageGradientLinear(
+        width int,
+        height int,
+        direction int,
+        start Color,
+        end Color
+    ) : Image;
+
+    fnc GenImageGradientRadial(
+        width int,
+        height int,
+        density float,
+        inner Color,
+        outer Color
+    ) : Image;
+
+    fnc GenImageGradientSquare(
+        width int,
+        height int,
+        density float,
+        inner Color,
+        outer Color
+    ) : Image;
+
+    fnc GenImageChecked(
+        width int,
+        height int,
+        checksX int,
+        checksY int,
+        col1 Color,
+        col2 Color
+    ) : Image;
+
+    fnc GenImageWhiteNoise(
+        width int,
+        height int,
+        factor float
+    ) : Image;
+
+    fnc GenImagePerlinNoise(
+        width int,
+        height int,
+        offsetX int,
+        offsetY int,
+        scale float
+    ) : Image;
+
+    fnc GenImageCellular(
+        width int,
+        height int,
+        tileSize int
+    ) : Image;
+
+    fnc GenImageText(
+        width int,
+        height int,
+        text string
+    ) : Image;
+
+    //====================================================
+    // Image copy
+    //====================================================
+
+    fnc ImageCopy(
+        image Image
+    ) : Image;
+
+    fnc ImageFromImage(
+        image Image,
+        rec Rectangle
+    ) : Image;
+
+    fnc ImageText(
+        text string,
+        fontSize int,
+        color Color
+    ) : Image;
+
+    fnc ImageTextEx(
+        font pointer<void>,
+        text string,
+        fontSize float,
+        spacing float,
+        tint Color
+    ) : Image;
+
+    //====================================================
+    // Format
+    //====================================================
+
+    fnc ImageFormat(
+        image pointer<Image>,
+        newFormat int
+    ) : void;
+
+    fnc ImageToPOT(
+        image pointer<Image>,
+        fill Color
+    ) : void;
+
+    //====================================================
+    // Crop
+    //====================================================
+
+    fnc ImageCrop(
+        image pointer<Image>,
+        crop Rectangle
+    ) : void;
+
+    fnc ImageAlphaCrop(
+        image pointer<Image>,
+        threshold float
+    ) : void;
+
+    //====================================================
+    // Alpha
+    //====================================================
+
+    fnc ImageAlphaClear(
+        image pointer<Image>,
+        color Color,
+        threshold float
+    ) : void;
+
+    fnc ImageAlphaMask(
+        image pointer<Image>,
+        alphaMask Image
+    ) : void;
+
+    fnc ImageAlphaPremultiply(
+        image pointer<Image>
+    ) : void;
+
+    //====================================================
+    // Blur
+    //====================================================
+
+    fnc ImageBlurGaussian(
+        image pointer<Image>,
+        blurSize int
+    ) : void;
+
+    //====================================================
+    // Resize
+    //====================================================
+
+    fnc ImageResize(
+        image pointer<Image>,
+        newWidth int,
+        newHeight int
+    ) : void;
+
+    fnc ImageResizeNN(
+        image pointer<Image>,
+        newWidth int,
+        newHeight int
+    ) : void;
+
+    fnc ImageResizeCanvas(
+        image pointer<Image>,
+        newWidth int,
+        newHeight int,
+        offsetX int,
+        offsetY int,
+        fill Color
+    ) : void;
+
+    //====================================================
+    // Mipmaps
+    //====================================================
+
+    fnc ImageMipmaps(
+        image pointer<Image>
+    ) : void;
+
+    fnc ImageDither(
+        image pointer<Image>,
+        rBpp int,
+        gBpp int,
+        bBpp int,
+        aBpp int
+    ) : void;
+
+    //====================================================
+    // Flip
+    //====================================================
+
+    fnc ImageFlipVertical(
+        image pointer<Image>
+    ) : void;
+
+    fnc ImageFlipHorizontal(
+        image pointer<Image>
+    ) : void;
+
+    //====================================================
+    // Rotate
+    //====================================================
+
+    fnc ImageRotate(
+        image pointer<Image>,
+        degrees int
+    ) : void;
+
+    fnc ImageRotateCW(
+        image pointer<Image>
+    ) : void;
+
+    fnc ImageRotateCCW(
+        image pointer<Image>
+    ) : void;
+
+    //====================================================
+    // Colors
+    //====================================================
+
+    fnc ImageColorTint(
+        image pointer<Image>,
+        color Color
+    ) : void;
+
+    fnc ImageColorInvert(
+        image pointer<Image>
+    ) : void;
+
+    fnc ImageColorGrayscale(
+        image pointer<Image>
+    ) : void;
+
+    fnc ImageColorContrast(
+        image pointer<Image>,
+        contrast float
+    ) : void;
+
+    fnc ImageColorBrightness(
+        image pointer<Image>,
+        brightness int
+    ) : void;
+
+    fnc ImageColorReplace(
+        image pointer<Image>,
+        color Color,
+        replace Color
+    ) : void;
+
+    //====================================================
+    // Pixel data
+    //====================================================
+
+    fnc LoadImageColors(
+        image Image
+    ) : pointer<Color>;
+
+    fnc LoadImagePalette(
+        image Image,
+        maxPaletteSize int,
+        colorCount pointer<int>
+    ) : pointer<Color>;
+
+    fnc UnloadImageColors(
+        colors pointer<Color>
+    ) : void;
+
+    fnc UnloadImagePalette(
+        colors pointer<Color>
+    ) : void;
+
+    fnc GetImageAlphaBorder(
+        image Image,
+        threshold float
+    ) : Rectangle;
+
+    fnc GetImageColor(
+        image Image,
+        x int,
+        y int
+    ) : Color;
+
+    //====================================================
+    // Texture loading
+    //====================================================
+
+    fnc LoadTexture(
+        fileName string
+    ) : Texture2D;
+
+    fnc LoadTextureFromImage(
+        image Image
+    ) : Texture2D;
+
+    fnc LoadTextureCubemap(
+        image Image,
+        layout int
+    ) : TextureCubemap;
+
+    fnc LoadRenderTexture(
+        width int,
+        height int
+    ) : RenderTexture2D;
+
+    fnc IsTextureValid(
+        texture Texture2D
+    ) : bool;
+
+    fnc IsRenderTextureValid(
+        target RenderTexture2D
+    ) : bool;
+
+    //====================================================
+    // Texture unload
+    //====================================================
+
+    fnc UnloadTexture(
+        texture Texture2D
+    ) : void;
+
+    fnc UnloadRenderTexture(
+        target RenderTexture2D
+    ) : void;
+
+    //====================================================
+    // Texture update (GPU Upload)
+    //====================================================
+
+    fnc UpdateTexture(
+        texture Texture2D,
+        pixels pointer<void>
+    ) : void;
+
+    fnc UpdateTextureRec(
+        texture Texture2D,
+        rec Rectangle,
+        pixels pointer<void>
+    ) : void;
+
+    //====================================================
+    // Texture filtering
+    //====================================================
+
+    fnc GenTextureMipmaps(
+        texture pointer<Texture2D>
+    ) : void;
+
+    fnc SetTextureFilter(
+        texture Texture2D,
+        filter int
+    ) : void;
+
+    //====================================================
+    // Texture wrapping
+    //====================================================
+
+    fnc SetTextureWrap(
+        texture Texture2D,
+        wrap int
+    ) : void;
+
+    //====================================================
+    // RenderTexture
+    //====================================================
+
+    fnc BeginTextureMode(
+        target RenderTexture2D
+    ) : void;
+
+    fnc EndTextureMode() : void;
+
+    //====================================================
+    // Cubemap helpers
+    //====================================================
+
+    fnc GenTextureCubemap(
+        shader pointer<void>,
+        panorama Texture2D,
+        size int,
+        format int
+    ) : TextureCubemap;
+
+    fnc GenTextureIrradiance(
+        shader pointer<void>,
+        cubemap TextureCubemap,
+        size int
+    ) : TextureCubemap;
+
+    fnc GenTexturePrefilter(
+        shader pointer<void>,
+        cubemap TextureCubemap,
+        size int
+    ) : TextureCubemap;
+
+    fnc GenTextureBRDF(
+        shader pointer<void>,
+        size int
+    ) : Texture2D;
+
+    //====================================================
+    // Texture drawing
+    //====================================================
+
+    fnc DrawTexture(
+        texture Texture2D,
+        posX int,
+        posY int,
+        tint Color
+    ) : void;
+
+    fnc DrawTextureV(
+        texture Texture2D,
+        position Vector2,
+        tint Color
+    ) : void;
+
+    fnc DrawTextureEx(
+        texture Texture2D,
+        position Vector2,
+        rotation float,
+        scale float,
+        tint Color
+    ) : void;
+
+    fnc DrawTextureRec(
+        texture Texture2D,
+        source Rectangle,
+        position Vector2,
+        tint Color
+    ) : void;
+
+    fnc DrawTexturePro(
+        texture Texture2D,
+        source Rectangle,
+        dest Rectangle,
+        origin Vector2,
+        rotation float,
+        tint Color
+    ) : void;
+
+    fnc DrawTextureNPatch(
+        texture Texture2D,
+        nPatchInfo NPatchInfo,
+        dest Rectangle,
+        origin Vector2,
+        rotation float,
+        tint Color
+    ) : void;
+
+    //====================================================
+    // RenderTexture drawing helpers
+    //====================================================
+    //
+    // RenderTexture2D is drawn using the same DrawTexture*
+    // functions because RenderTexture.texture is a Texture2D.
+    //
+    // Example:
+    //
+    // DrawTextureRec(
+    //     target.texture,
+    //     Rectangle {
+    //         x: 0,
+    //         y: 0,
+    //         width: target.texture.width,
+    //         height: -target.texture.height
+    //     },
+    //     Vector2 { x: 0, y: 0 },
+    //     WHITE
+    // );
+    //
+
+    //====================================================
+    // Structs
+    //====================================================
+
+    def GlyphInfo : struct {
+        value: int;
+        offsetX: int;
+        offsetY: int;
+        advanceX: int;
+        image: Image;
+    };
+
+    def Font : struct {
+        baseSize: int;
+        glyphCount: int;
+        glyphPadding: int;
+
+        texture: Texture2D;
+
+        recs: pointer<Rectangle>;
+        glyphs: pointer<GlyphInfo>;
+    };
+
+    //====================================================
+    // Font loading
+    //====================================================
+
+    fnc GetFontDefault() : Font;
+
+    fnc LoadFont(
+        fileName string
+    ) : Font;
+
+    fnc LoadFontEx(
+        fileName string,
+        fontSize int,
+        codepoints pointer<int>,
+        codepointCount int
+    ) : Font;
+
+    fnc LoadFontFromImage(
+        image Image,
+        key Color,
+        firstChar int
+    ) : Font;
+
+    fnc LoadFontFromMemory(
+        fileType string,
+        fileData pointer<uint<8>>,
+        dataSize int,
+        fontSize int,
+        codepoints pointer<int>,
+        codepointCount int
+    ) : Font;
+
+    fnc IsFontValid(
+        font Font
+    ) : bool;
+
+    fnc LoadFontData(
+        fileData pointer<uint<8>>,
+        dataSize int,
+        fontSize int,
+        codepoints pointer<int>,
+        codepointCount int,
+        typ int
+    ) : pointer<GlyphInfo>;
+
+    fnc GenImageFontAtlas(
+        glyphs pointer<GlyphInfo>,
+        recs pointer<pointer<Rectangle>>,
+        glyphCount int,
+        fontSize int,
+        padding int,
+        packMethod int
+    ) : Image;
+
+    fnc UnloadFontData(
+        glyphs pointer<GlyphInfo>,
+        glyphCount int
+    ) : void;
+
+    fnc UnloadFont(
+        font Font
+    ) : void;
+
+    fnc ExportFontAsCode(
+        font Font,
+        fileName string
+    ) : bool;
+
+    //====================================================
+    // Drawing
+    //====================================================
+
+    fnc DrawFPS(
+        posX int,
+        posY int
+    ) : void;
+
+    fnc DrawText(
+        text string,
+        posX int,
+        posY int,
+        fontSize int,
+        color Color
+    ) : void;
+
+    fnc DrawTextEx(
+        font Font,
+        text string,
+        position Vector2,
+        fontSize float,
+        spacing float,
+        tint Color
+    ) : void;
+
+    fnc DrawTextPro(
+        font Font,
+        text string,
+        position Vector2,
+        origin Vector2,
+        rotation float,
+        fontSize float,
+        spacing float,
+        tint Color
+    ) : void;
+
+    fnc DrawTextCodepoint(
+        font Font,
+        codepoint int,
+        position Vector2,
+        fontSize float,
+        tint Color
+    ) : void;
+
+    fnc DrawTextCodepoints(
+        font Font,
+        codepoints pointer<int>,
+        codepointCount int,
+        position Vector2,
+        fontSize float,
+        spacing float,
+        tint Color
+    ) : void;
+
+    //====================================================
+    // Measure
+    //====================================================
+
+    fnc MeasureText(
+        text string,
+        fontSize int
+    ) : int;
+
+    fnc MeasureTextEx(
+        font Font,
+        text string,
+        fontSize float,
+        spacing float
+    ) : Vector2;
+
+    //====================================================
+    // Glyph lookup
+    //====================================================
+
+    fnc GetGlyphIndex(
+        font Font,
+        codepoint int
+    ) : int;
+
+    fnc GetGlyphInfo(
+        font Font,
+        codepoint int
+    ) : GlyphInfo;
+
+    fnc GetGlyphAtlasRec(
+        font Font,
+        codepoint int
+    ) : Rectangle;
+
+    //====================================================
+    // UTF-8 conversion
+    //====================================================
+
+    fnc LoadUTF8(
+        codepoints pointer<int>,
+        length int
+    ) : string;
+
+    fnc UnloadUTF8(
+        text string
+    ) : void;
+
+    fnc LoadCodepoints(
+        text string,
+        count pointer<int>
+    ) : pointer<int>;
+
+    fnc UnloadCodepoints(
+        codepoints pointer<int>
+    ) : void;
+
+    //====================================================
+    // Codepoint helpers
+    //====================================================
+
+    fnc GetCodepointCount(
+        text string
+    ) : int;
+
+    fnc GetCodepoint(
+        text string,
+        codepointSize pointer<int>
+    ) : int;
+
+    fnc GetCodepointNext(
+        text string,
+        codepointSize pointer<int>
+    ) : int;
+
+    fnc GetCodepointPrevious(
+        text string,
+        codepointSize pointer<int>
+    ) : int;
+
+    fnc CodepointToUTF8(
+        codepoint int,
+        utf8Size pointer<int>
+    ) : string;
+
+    //====================================================
+    // Text utilities
+    //====================================================
+
+    fnc TextCopy(
+        dst pointer<char>,
+        src string
+    ) : int;
+
+    fnc TextIsEqual(
+        text1 string,
+        text2 string
+    ) : bool;
+
+    fnc TextLength(
+        text string
+    ) : uint;
+
+    fnc TextFormat(
+        text string
+    ) : string;
+
+    fnc TextSubtext(
+        text string,
+        position int,
+        length int
+    ) : string;
+
+    fnc TextReplace(
+        text string,
+        replace string,
+        by string
+    ) : string;
+
+    fnc TextInsert(
+        text string,
+        insert string,
+        position int
+    ) : string;
+
+    fnc TextJoin(
+        text pointer<string>,
+        count int,
+        delimiter string
+    ) : string;
+
+    fnc TextSplit(
+        text string,
+        delimiter char,
+        count pointer<int>
+    ) : pointer<string>;
+
+    fnc TextAppend(
+        text pointer<char>,
+        append string,
+        position pointer<int>
+    ) : void;
+
+    fnc TextFindIndex(
+        text string,
+        find string
+    ) : int;
+
+    fnc TextFindLast(
+        text string,
+        find string
+    ) : int;
+
+    fnc TextCompare(
+        text1 string,
+        text2 string
+    ) : int;
+
+    fnc TextToUpper(
+        text string
+    ) : string;
+
+    fnc TextToLower(
+        text string
+    ) : string;
+
+    fnc TextToPascal(
+        text string
+    ) : string;
+
+    fnc TextToInteger(
+        text string
+    ) : int;
+
+    //====================================================
+    // Character helpers
+    //====================================================
+
+    fnc TextCharIsValid(
+        codepoint int
+    ) : bool;
+
+    fnc TextCharIsAlpha(
+        codepoint int
+    ) : bool;
+
+    fnc TextCharIsDigit(
+        codepoint int
+    ) : bool;
+
+    fnc TextCharIsAlnum(
+        codepoint int
+    ) : bool;
+
+    fnc TextCharIsSpace(
+        codepoint int
+    ) : bool;
+
+    //====================================================
+    // Camera
+    //====================================================
+
+    def Camera3D : struct {
+        position: Vector3;
+        target: Vector3;
+        up: Vector3;
+        fovy: float;
+        projection: int;
+    };
+
+    def Camera : type Camera3D;
+
+    def Camera2D : struct {
+        offset: Vector2;
+        target: Vector2;
+        rotation: float;
+        zoom: float;
+    };
+
+    //====================================================
+    // Ray
+    //====================================================
+
+    def Ray : struct {
+        position: Vector3;
+        direction: Vector3;
+    };
+
+    def RayCollision : struct {
+        hit: bool;
+        distance: float;
+        point: Vector3;
+        normal: Vector3;
+    };
+
+    //====================================================
+    // Bounding Box
+    //====================================================
+
+    def BoundingBox : struct {
+        min: Vector3;
+        max: Vector3;
+    };
+
+    //====================================================
+    // Vertex
+    //====================================================
+
+    def VertexAttribute : struct {
+        typ: int;
+        compSize: int;
+        normalized: bool;
+    };
+
+    //====================================================
+    // Transform
+    //====================================================
+
+    def Transform : struct {
+        translation: Vector3;
+        rotation: Vector4;
+        scale: Vector3;
+    };
+
+    //====================================================
+    // Bone
+    //====================================================
+
+    def BoneInfo : struct {
+        name: string;
+        parent: int;
+    };
+
+    //====================================================
+    // Mesh
+    //====================================================
+
+    def Mesh : struct {
+
+        vertexCount: int;
+        triangleCount: int;
+
+        vertices: pointer<float>;
+        texcoords: pointer<float>;
+        texcoords2: pointer<float>;
+        normals: pointer<float>;
+        tangents: pointer<float>;
+        colors: pointer<uint<8>>;
+
+        indices: pointer<uint<16>>;
+
+        animVertices: pointer<float>;
+        animNormals: pointer<float>;
+
+        boneIds: pointer<uint<8>>;
+        boneWeights: pointer<float>;
+
+        vaoId: uint;
+
+        vboId: pointer<uint>;
+    };
+
+    //====================================================
+    // Shader
+    //====================================================
+
+    def Shader : struct {
+        id: uint;
+        locs: pointer<int>;
+    };
+
+    //====================================================
+    // Material Map
+    //====================================================
+
+    def MaterialMap : struct {
+        texture: Texture2D;
+        color: Color;
+        value: float;
+    };
+
+    //====================================================
+    // Material
+    //====================================================
+
+    def Material : struct {
+        shader: Shader;
+        maps: pointer<MaterialMap>;
+        params: pointer<float>;
+    };
+
+    //====================================================
+    // Model
+    //====================================================
+
+    def Model : struct {
+
+        transform: Matrix;
+
+        meshCount: int;
+        materialCount: int;
+
+        meshes: pointer<Mesh>;
+
+        materials: pointer<Material>;
+
+        meshMaterial: pointer<int>;
+
+        boneCount: int;
+
+        bones: pointer<BoneInfo>;
+
+        bindPose: pointer<Transform>;
+    };
+
+    //====================================================
+    // Animation
+    //====================================================
+
+    def ModelAnimation : struct {
+
+        boneCount: int;
+
+        frameCount: int;
+
+        bones: pointer<BoneInfo>;
+
+        framePoses: pointer<pointer<Transform>>;
+
+        name: string;
+    };
+
+    //====================================================
+    // Camera
+    //====================================================
+
+    fnc BeginMode2D(
+        camera Camera2D
+    ) : void;
+
+    fnc EndMode2D() : void;
+
+    fnc BeginMode3D(
+        camera Camera3D
+    ) : void;
+
+    fnc EndMode3D() : void;
+
+    fnc GetMouseRay(
+        mousePosition Vector2,
+        camera Camera3D
+    ) : Ray;
+
+    fnc GetCameraMatrix(
+        camera Camera3D
+    ) : Matrix;
+
+    fnc GetCameraMatrix2D(
+        camera Camera2D
+    ) : Matrix;
+
+    fnc GetWorldToScreen(
+        position Vector3,
+        camera Camera3D
+    ) : Vector2;
+
+    fnc GetScreenToWorld2D(
+        position Vector2,
+        camera Camera2D
+    ) : Vector2;
+
+    fnc GetWorldToScreenEx(
+        position Vector3,
+        camera Camera3D,
+        width int,
+        height int
+    ) : Vector2;
+
+    fnc GetWorldToScreen2D(
+        position Vector2,
+        camera Camera2D
+    ) : Vector2;
+
+    fnc GetScreenToWorldRay(
+        position Vector2,
+        camera Camera3D
+    ) : Ray;
+
+    //====================================================
+    // Mesh Loading
+    //====================================================
+
+    fnc UploadMesh(
+        mesh pointer<Mesh>,
+        dynamic bool
+    ) : void;
+
+    fnc UpdateMeshBuffer(
+        mesh Mesh,
+        index int,
+        data pointer<void>,
+        dataSize int,
+        offset int
+    ) : void;
+
+    fnc UnloadMesh(
+        mesh Mesh
+    ) : void;
+
+    fnc ExportMesh(
+        mesh Mesh,
+        fileName string
+    ) : bool;
+
+    fnc GetMeshBoundingBox(
+        mesh Mesh
+    ) : BoundingBox;
+
+    //====================================================
+    // Mesh Drawing
+    //====================================================
+
+    fnc DrawMesh(
+        mesh Mesh,
+        material Material,
+        transform Matrix
+    ) : void;
+
+    fnc DrawMeshInstanced(
+        mesh Mesh,
+        material Material,
+        transforms pointer<Matrix>,
+        instances int
+    ) : void;
+
+    //====================================================
+    // Mesh Generation
+    //====================================================
+
+    fnc GenMeshPoly(
+        sides int,
+        radius float
+    ) : Mesh;
+
+    fnc GenMeshPlane(
+        width float,
+        length float,
+        resX int,
+        resZ int
+    ) : Mesh;
+
+    fnc GenMeshCube(
+        width float,
+        height float,
+        length float
+    ) : Mesh;
+
+    fnc GenMeshSphere(
+        radius float,
+        rings int,
+        slices int
+    ) : Mesh;
+
+    fnc GenMeshHemiSphere(
+        radius float,
+        rings int,
+        slices int
+    ) : Mesh;
+
+    fnc GenMeshCylinder(
+        radius float,
+        height float,
+        slices int
+    ) : Mesh;
+
+    fnc GenMeshCone(
+        radius float,
+        height float,
+        slices int
+    ) : Mesh;
+
+    fnc GenMeshTorus(
+        radius float,
+        size float,
+        radSeg int,
+        sides int
+    ) : Mesh;
+
+    fnc GenMeshKnot(
+        radius float,
+        size float,
+        radSeg int,
+        sides int
+    ) : Mesh;
+
+    fnc GenMeshHeightmap(
+        heightmap Image,
+        size Vector3
+    ) : Mesh;
+
+    fnc GenMeshCubicmap(
+        cubicmap Image,
+        cubeSize Vector3
+    ) : Mesh;
+
+    //====================================================
+    // Mesh Processing
+    //====================================================
+
+    fnc GenMeshTangents(
+        mesh pointer<Mesh>
+    ) : void;
+
+    fnc GenMeshBinormals(
+        mesh pointer<Mesh>
+    ) : void;
+
+    //====================================================
+    // Model Loading
+    //====================================================
+
+    fnc LoadModel(
+        fileName string
+    ) : Model;
+
+    fnc LoadModelFromMesh(
+        mesh Mesh
+    ) : Model;
+
+    fnc IsModelValid(
+        model Model
+    ) : bool;
+
+    fnc UnloadModel(
+        model Model
+    ) : void;
+
+    fnc GetModelBoundingBox(
+        model Model
+    ) : BoundingBox;
+
+    //====================================================
+    // Materials
+    //====================================================
+
+    fnc LoadMaterials(
+        fileName string,
+        materialCount pointer<int>
+    ) : pointer<Material>;
+
+    fnc LoadMaterialDefault() : Material;
+
+    fnc IsMaterialValid(
+        material Material
+    ) : bool;
+
+    fnc UnloadMaterial(
+        material Material
+    ) : void;
+
+    fnc SetMaterialTexture(
+        material pointer<Material>,
+        mapType int,
+        texture Texture2D
+    ) : void;
+
+    fnc SetModelMeshMaterial(
+        model pointer<Model>,
+        meshId int,
+        materialId int
+    ) : void;
+
+    //====================================================
+    // Model Drawing
+    //====================================================
+
+    fnc DrawModel(
+        model Model,
+        position Vector3,
+        scale float,
+        tint Color
+    ) : void;
+
+    fnc DrawModelEx(
+        model Model,
+        position Vector3,
+        rotationAxis Vector3,
+        rotationAngle float,
+        scale Vector3,
+        tint Color
+    ) : void;
+
+    fnc DrawModelWires(
+        model Model,
+        position Vector3,
+        scale float,
+        tint Color
+    ) : void;
+
+    fnc DrawModelWiresEx(
+        model Model,
+        position Vector3,
+        rotationAxis Vector3,
+        rotationAngle float,
+        scale Vector3,
+        tint Color
+    ) : void;
+
+    //====================================================
+    // Bounding Boxes
+    //====================================================
+
+    fnc DrawBoundingBox(
+        box BoundingBox,
+        color Color
+    ) : void;
+
+    //====================================================
+    // Billboards
+    //====================================================
+
+    fnc DrawBillboard(
+        camera Camera3D,
+        texture Texture2D,
+        position Vector3,
+        size float,
+        tint Color
+    ) : void;
+
+    fnc DrawBillboardRec(
+        camera Camera3D,
+        texture Texture2D,
+        source Rectangle,
+        position Vector3,
+        size Vector2,
+        tint Color
+    ) : void;
+
+    fnc DrawBillboardPro(
+        camera Camera3D,
+        texture Texture2D,
+        source Rectangle,
+        position Vector3,
+        up Vector3,
+        size Vector2,
+        origin Vector2,
+        rotation float,
+        tint Color
+    ) : void;
+
+    //====================================================
+    // Model Animations
+    //====================================================
+
+    fnc LoadModelAnimations(
+        fileName string,
+        animCount pointer<int>
+    ) : pointer<ModelAnimation>;
+
+    fnc UpdateModelAnimation(
+        model Model,
+        anim ModelAnimation,
+        frame int
+    ) : void;
+
+    fnc UpdateModelAnimationBones(
+        model Model,
+        anim ModelAnimation,
+        frame int
+    ) : void;
+
+    fnc IsModelAnimationValid(
+        model Model,
+        anim ModelAnimation
+    ) : bool;
+
+    fnc UnloadModelAnimation(
+        anim ModelAnimation
+    ) : void;
+
+    fnc UnloadModelAnimations(
+        animations pointer<ModelAnimation>,
+        count int
+    ) : void;
+
+    //====================================================
+    // Collision Tests
+    //====================================================
+
+    fnc CheckCollisionSpheres(
+        center1 Vector3,
+        radius1 float,
+        center2 Vector3,
+        radius2 float
+    ) : bool;
+
+    fnc CheckCollisionBoxes(
+        box1 BoundingBox,
+        box2 BoundingBox
+    ) : bool;
+
+    fnc CheckCollisionBoxSphere(
+        box BoundingBox,
+        center Vector3,
+        radius float
+    ) : bool;
+
+    //====================================================
+    // Ray Collisions
+    //====================================================
+
+    fnc GetRayCollisionSphere(
+        ray Ray,
+        center Vector3,
+        radius float
+    ) : RayCollision;
+
+    fnc GetRayCollisionBox(
+        ray Ray,
+        box BoundingBox
+    ) : RayCollision;
+
+    fnc GetRayCollisionMesh(
+        ray Ray,
+        mesh Mesh,
+        transform Matrix
+    ) : RayCollision;
+
+    fnc GetRayCollisionTriangle(
+        ray Ray,
+        p1 Vector3,
+        p2 Vector3,
+        p3 Vector3
+    ) : RayCollision;
+
+    fnc GetRayCollisionQuad(
+        ray Ray,
+        p1 Vector3,
+        p2 Vector3,
+        p3 Vector3,
+        p4 Vector3
+    ) : RayCollision;
+
+    //====================================================
+    // Shader Loading
+    //====================================================
+
+    fnc LoadShader(
+        vsFileName string,
+        fsFileName string
+    ) : Shader;
+
+    fnc LoadShaderFromMemory(
+        vsCode string,
+        fsCode string
+    ) : Shader;
+
+    fnc IsShaderValid(
+        shader Shader
+    ) : bool;
+
+    fnc UnloadShader(
+        shader Shader
+    ) : void;
+
+    //====================================================
+    // Shader Locations
+    //====================================================
+
+    fnc GetShaderLocation(
+        shader Shader,
+        uniformName string
+    ) : int;
+
+    fnc GetShaderLocationAttrib(
+        shader Shader,
+        attribName string
+    ) : int;
+
+    //====================================================
+    // Shader Uniforms
+    //====================================================
+
+    fnc SetShaderValue(
+        shader Shader,
+        location int,
+        value pointer<void>,
+        uniformType int
+    ) : void;
+
+    fnc SetShaderValueV(
+        shader Shader,
+        location int,
+        value pointer<void>,
+        uniformType int,
+        count int
+    ) : void;
+
+    fnc SetShaderValueMatrix(
+        shader Shader,
+        location int,
+        mtx Matrix
+    ) : void;
+
+    fnc SetShaderValueTexture(
+        shader Shader,
+        location int,
+        texture Texture2D
+    ) : void;
+
+    //====================================================
+    // Structs
+    //====================================================
+
+    def Wave : struct {
+        frameCount: uint;
+        sampleRate: uint;
+        sampleSize: uint;
+        channels: uint;
+        data: pointer<void>;
+    };
+
+    def AudioStream : struct {
+        buffer: pointer<void>;
+        processor: pointer<void>;
+        sampleRate: uint;
+        sampleSize: uint;
+        channels: uint;
+    };
+
+    def Sound : struct {
+        stream: AudioStream;
+        frameCount: uint;
+    };
+
+    def Music : struct {
+        stream: AudioStream;
+        frameCount: uint;
+        looping: bool;
+        ctxType: int;
+        ctxData: pointer<void>;
+    };
+
+    //====================================================
+    // Audio Device
+    //====================================================
+
+    fnc InitAudioDevice() : void;
+    fnc CloseAudioDevice() : void;
+
+    fnc IsAudioDeviceReady() : bool;
+
+    fnc SetMasterVolume(volume float) : void;
+
+    fnc GetMasterVolume() : float;
+
+    //====================================================
+    // Wave
+    //====================================================
+
+    fnc LoadWave(
+        fileName string
+    ) : Wave;
+
+    fnc LoadWaveFromMemory(
+        fileType string,
+        fileData pointer<uint<8>>,
+        dataSize int
+    ) : Wave;
+
+    fnc IsWaveValid(
+        wave Wave
+    ) : bool;
+
+    fnc LoadWaveSamples(
+        wave Wave
+    ) : pointer<float>;
+
+    fnc UnloadWave(
+        wave Wave
+    ) : void;
+
+    fnc UnloadWaveSamples(
+        samples pointer<float>
+    ) : void;
+
+    fnc ExportWave(
+        wave Wave,
+        fileName string
+    ) : bool;
+
+    fnc ExportWaveAsCode(
+        wave Wave,
+        fileName string
+    ) : bool;
+
+    fnc WaveCopy(
+        wave Wave
+    ) : Wave;
+
+    fnc WaveCrop(
+        wave pointer<Wave>,
+        initFrame int,
+        finalFrame int
+    ) : void;
+
+    fnc WaveFormat(
+        wave pointer<Wave>,
+        sampleRate int,
+        sampleSize int,
+        channels int
+    ) : void;
+
+    //====================================================
+    // Sound
+    //====================================================
+
+    fnc LoadSound(
+        fileName string
+    ) : Sound;
+
+    fnc LoadSoundFromWave(
+        wave Wave
+    ) : Sound;
+
+    fnc LoadSoundAlias(
+        source Sound
+    ) : Sound;
+
+    fnc IsSoundValid(
+        sound Sound
+    ) : bool;
+
+    fnc UpdateSound(
+        sound Sound,
+        data pointer<void>,
+        sampleCount int
+    ) : void;
+
+    fnc UnloadSound(
+        sound Sound
+    ) : void;
+
+    fnc UnloadSoundAlias(
+        alias Sound
+    ) : void;
+
+    fnc PlaySound(
+        sound Sound
+    ) : void;
+
+    fnc StopSound(
+        sound Sound
+    ) : void;
+
+    fnc PauseSound(
+        sound Sound
+    ) : void;
+
+    fnc ResumeSound(
+        sound Sound
+    ) : void;
+
+    fnc IsSoundPlaying(
+        sound Sound
+    ) : bool;
+
+    fnc SetSoundVolume(
+        sound Sound,
+        volume float
+    ) : void;
+
+    fnc SetSoundPitch(
+        sound Sound,
+        pitch float
+    ) : void;
+
+    fnc SetSoundPan(
+        sound Sound,
+        pan float
+    ) : void;
+
+    //====================================================
+    // Music
+    //====================================================
+
+    fnc LoadMusicStream(
+        fileName string
+    ) : Music;
+
+    fnc LoadMusicStreamFromMemory(
+        fileType string,
+        data pointer<uint<8>>,
+        dataSize int
+    ) : Music;
+
+    fnc IsMusicValid(
+        music Music
+    ) : bool;
+
+    fnc UnloadMusicStream(
+        music Music
+    ) : void;
+
+    fnc PlayMusicStream(
+        music Music
+    ) : void;
+
+    fnc IsMusicStreamPlaying(
+        music Music
+    ) : bool;
+
+    fnc UpdateMusicStream(
+        music Music
+    ) : void;
+
+    fnc StopMusicStream(
+        music Music
+    ) : void;
+
+    fnc PauseMusicStream(
+        music Music
+    ) : void;
+
+    fnc ResumeMusicStream(
+        music Music
+    ) : void;
+
+    fnc SeekMusicStream(
+        music Music,
+        position float
+    ) : void;
+
+    fnc SetMusicVolume(
+        music Music,
+        volume float
+    ) : void;
+
+    fnc SetMusicPitch(
+        music Music,
+        pitch float
+    ) : void;
+
+    fnc SetMusicPan(
+        music Music,
+        pan float
+    ) : void;
+
+    fnc GetMusicTimeLength(
+        music Music
+    ) : float;
+
+    fnc GetMusicTimePlayed(
+        music Music
+    ) : float;
+
+    //====================================================
+    // AudioStream
+    //====================================================
+
+    fnc LoadAudioStream(
+        sampleRate uint,
+        sampleSize uint,
+        channels uint
+    ) : AudioStream;
+
+    fnc IsAudioStreamValid(
+        stream AudioStream
+    ) : bool;
+
+    fnc UnloadAudioStream(
+        stream AudioStream
+    ) : void;
+
+    fnc UpdateAudioStream(
+        stream AudioStream,
+        data pointer<void>,
+        frameCount int
+    ) : void;
+
+    fnc IsAudioStreamProcessed(
+        stream AudioStream
+    ) : bool;
+
+    fnc PlayAudioStream(
+        stream AudioStream
+    ) : void;
+
+    fnc PauseAudioStream(
+        stream AudioStream
+    ) : void;
+
+    fnc ResumeAudioStream(
+        stream AudioStream
+    ) : void;
+
+    fnc IsAudioStreamPlaying(
+        stream AudioStream
+    ) : bool;
+
+    fnc StopAudioStream(
+        stream AudioStream
+    ) : void;
+
+    fnc SetAudioStreamVolume(
+        stream AudioStream,
+        volume float
+    ) : void;
+
+    fnc SetAudioStreamPitch(
+        stream AudioStream,
+        pitch float
+    ) : void;
+
+    fnc SetAudioStreamPan(
+        stream AudioStream,
+        pan float
+    ) : void;
+
+    fnc SetAudioStreamBufferSizeDefault(
+        size int
+    ) : void;
+
+    //====================================================
+    // Scalar
+    //====================================================
+
+    fnc Clamp(
+        value float,
+        min float,
+        max float
+    ) : float;
+
+    fnc Lerp(
+        start float,
+        end float,
+        amount float
+    ) : float;
+
+    fnc Normalize(
+        value float,
+        start float,
+        end float
+    ) : float;
+
+    fnc Remap(
+        value float,
+        inputStart float,
+        inputEnd float,
+        outputStart float,
+        outputEnd float
+    ) : float;
+
+    fnc Wrap(
+        value float,
+        min float,
+        max float
+    ) : float;
+
+    fnc FloatEquals(
+        x float,
+        y float
+    ) : bool;
+
+    //====================================================
+    // Vector2
+    //====================================================
+
+    fnc Vector2Zero() : Vector2;
+    fnc Vector2One() : Vector2;
+
+    fnc Vector2Add(
+        v1 Vector2,
+        v2 Vector2
+    ) : Vector2;
+
+    fnc Vector2AddValue(
+        v Vector2,
+        add float
+    ) : Vector2;
+
+    fnc Vector2Subtract(
+        v1 Vector2,
+        v2 Vector2
+    ) : Vector2;
+
+    fnc Vector2SubtractValue(
+        v Vector2,
+        sub float
+    ) : Vector2;
+
+    fnc Vector2Scale(
+        v Vector2,
+        scale float
+    ) : Vector2;
+
+    fnc Vector2Multiply(
+        v1 Vector2,
+        v2 Vector2
+    ) : Vector2;
+
+    fnc Vector2Divide(
+        v1 Vector2,
+        v2 Vector2
+    ) : Vector2;
+
+    fnc Vector2Negate(
+        v Vector2
+    ) : Vector2;
+
+    fnc Vector2Invert(
+        v Vector2
+    ) : Vector2;
+
+    fnc Vector2Length(
+        v Vector2
+    ) : float;
+
+    fnc Vector2LengthSqr(
+        v Vector2
+    ) : float;
+
+    fnc Vector2DotProduct(
+        v1 Vector2,
+        v2 Vector2
+    ) : float;
+
+    fnc Vector2Distance(
+        v1 Vector2,
+        v2 Vector2
+    ) : float;
+
+    fnc Vector2DistanceSqr(
+        v1 Vector2,
+        v2 Vector2
+    ) : float;
+
+    fnc Vector2Angle(
+        v1 Vector2,
+        v2 Vector2
+    ) : float;
+
+    fnc Vector2LineAngle(
+        start Vector2,
+        end Vector2
+    ) : float;
+
+    fnc Vector2Normalize(
+        v Vector2
+    ) : Vector2;
+
+    fnc Vector2Transform(
+        v Vector2,
+        mat Matrix
+    ) : Vector2;
+
+    fnc Vector2Lerp(
+        v1 Vector2,
+        v2 Vector2,
+        amount float
+    ) : Vector2;
+
+    fnc Vector2Reflect(
+        v Vector2,
+        normal Vector2
+    ) : Vector2;
+
+    fnc Vector2Rotate(
+        v Vector2,
+        angle float
+    ) : Vector2;
+
+    fnc Vector2MoveTowards(
+        current Vector2,
+        target Vector2,
+        maxDistance float
+    ) : Vector2;
+
+    fnc Vector2Clamp(
+        value Vector2,
+        min Vector2,
+        max Vector2
+    ) : Vector2;
+
+    fnc Vector2ClampValue(
+        value Vector2,
+        min float,
+        max float
+    ) : Vector2;
+
+    fnc Vector2Equals(
+        p Vector2,
+        q Vector2
+    ) : bool;
+
+    //====================================================
+    // Vector3
+    //====================================================
+
+    fnc Vector3Zero() : Vector3;
+    fnc Vector3One() : Vector3;
+
+    fnc Vector3Add(
+        v1 Vector3,
+        v2 Vector3
+    ) : Vector3;
+
+    fnc Vector3AddValue(
+        v Vector3,
+        add float
+    ) : Vector3;
+
+    fnc Vector3Subtract(
+        v1 Vector3,
+        v2 Vector3
+    ) : Vector3;
+
+    fnc Vector3SubtractValue(
+        v Vector3,
+        sub float
+    ) : Vector3;
+
+    fnc Vector3Scale(
+        v Vector3,
+        scale float
+    ) : Vector3;
+
+    fnc Vector3Multiply(
+        v1 Vector3,
+        v2 Vector3
+    ) : Vector3;
+
+    fnc Vector3Divide(
+        v1 Vector3,
+        v2 Vector3
+    ) : Vector3;
+
+    fnc Vector3Negate(
+        v Vector3
+    ) : Vector3;
+
+    fnc Vector3Invert(
+        v Vector3
+    ) : Vector3;
+
+    fnc Vector3Length(
+        v Vector3
+    ) : float;
+
+    fnc Vector3LengthSqr(
+        v Vector3
+    ) : float;
+
+    fnc Vector3DotProduct(
+        v1 Vector3,
+        v2 Vector3
+    ) : float;
+
+    fnc Vector3CrossProduct(
+        v1 Vector3,
+        v2 Vector3
+    ) : Vector3;
+
+    fnc Vector3Distance(
+        v1 Vector3,
+        v2 Vector3
+    ) : float;
+
+    fnc Vector3DistanceSqr(
+        v1 Vector3,
+        v2 Vector3
+    ) : float;
+
+    fnc Vector3Angle(
+        v1 Vector3,
+        v2 Vector3
+    ) : float;
+
+    fnc Vector3Normalize(
+        v Vector3
+    ) : Vector3;
+
+    fnc Vector3Project(
+        v1 Vector3,
+        v2 Vector3
+    ) : Vector3;
+
+    fnc Vector3Reject(
+        v1 Vector3,
+        v2 Vector3
+    ) : Vector3;
+
+    fnc Vector3Perpendicular(
+        v Vector3
+    ) : Vector3;
+
+    fnc Vector3Lerp(
+        v1 Vector3,
+        v2 Vector3,
+        amount float
+    ) : Vector3;
+
+    fnc Vector3Reflect(
+        v Vector3,
+        normal Vector3
+    ) : Vector3;
+
+    fnc Vector3RotateByQuaternion(
+        v Vector3,
+        q Vector4
+    ) : Vector3;
+
+    fnc Vector3RotateByAxisAngle(
+        v Vector3,
+        axis Vector3,
+        angle float
+    ) : Vector3;
+
+    fnc Vector3MoveTowards(
+        current Vector3,
+        target Vector3,
+        maxDistance float
+    ) : Vector3;
+
+    fnc Vector3Clamp(
+        value Vector3,
+        min Vector3,
+        max Vector3
+    ) : Vector3;
+
+    fnc Vector3ClampValue(
+        value Vector3,
+        min float,
+        max float
+    ) : Vector3;
+
+    fnc Vector3Equals(
+        p Vector3,
+        q Vector3
+    ) : bool;
+
+    //====================================================
+    // Vector4
+    //====================================================
+
+    fnc Vector4Zero() : Vector4;
+    fnc Vector4One() : Vector4;
+
+    fnc Vector4Add(
+        v1 Vector4,
+        v2 Vector4
+    ) : Vector4;
+
+    fnc Vector4Subtract(
+        v1 Vector4,
+        v2 Vector4
+    ) : Vector4;
+
+    fnc Vector4Scale(
+        v Vector4,
+        scale float
+    ) : Vector4;
+
+    fnc Vector4Multiply(
+        v1 Vector4,
+        v2 Vector4
+    ) : Vector4;
+
+    fnc Vector4Divide(
+        v1 Vector4,
+        v2 Vector4
+    ) : Vector4;
+
+    fnc Vector4Length(
+        v Vector4
+    ) : float;
+
+    fnc Vector4Normalize(
+        v Vector4
+    ) : Vector4;
+
+    fnc Vector4DotProduct(
+        v1 Vector4,
+        v2 Vector4
+    ) : float;
+
+    fnc Vector4Distance(
+        v1 Vector4,
+        v2 Vector4
+    ) : float;
+
+    fnc Vector4Lerp(
+        v1 Vector4,
+        v2 Vector4,
+        amount float
+    ) : Vector4;
+
+    fnc Vector4Min(
+        v1 Vector4,
+        v2 Vector4
+    ) : Vector4;
+
+    fnc Vector4Max(
+        v1 Vector4,
+        v2 Vector4
+    ) : Vector4;
+
+    fnc Vector4Equals(
+        p Vector4,
+        q Vector4
+    ) : bool;
+
+    //====================================================
+    // Matrix
+    //====================================================
+
+    fnc MatrixDeterminant(
+        mat Matrix
+    ) : float;
+
+    fnc MatrixTrace(
+        mat Matrix
+    ) : float;
+
+    fnc MatrixTranspose(
+        mat Matrix
+    ) : Matrix;
+
+    fnc MatrixInvert(
+        mat Matrix
+    ) : Matrix;
+
+    fnc MatrixIdentity() : Matrix;
+
+    fnc MatrixAdd(
+        left Matrix,
+        right Matrix
+    ) : Matrix;
+
+    fnc MatrixSubtract(
+        left Matrix,
+        right Matrix
+    ) : Matrix;
+
+    fnc MatrixMultiply(
+        left Matrix,
+        right Matrix
+    ) : Matrix;
+
+    //====================================================
+    // Translation
+    //====================================================
+
+    fnc MatrixTranslate(
+        x float,
+        y float,
+        z float
+    ) : Matrix;
+
+    //====================================================
+    // Rotation
+    //====================================================
+
+    fnc MatrixRotate(
+        axis Vector3,
+        angle float
+    ) : Matrix;
+
+    fnc MatrixRotateX(
+        angle float
+    ) : Matrix;
+
+    fnc MatrixRotateY(
+        angle float
+    ) : Matrix;
+
+    fnc MatrixRotateZ(
+        angle float
+    ) : Matrix;
+
+    fnc MatrixRotateXYZ(
+        angles Vector3
+    ) : Matrix;
+
+    fnc MatrixRotateZYX(
+        angles Vector3
+    ) : Matrix;
+
+    //====================================================
+    // Scale
+    //====================================================
+
+    fnc MatrixScale(
+        x float,
+        y float,
+        z float
+    ) : Matrix;
+
+    //====================================================
+    // Projection
+    //====================================================
+
+    fnc MatrixFrustum(
+        left float,
+        right float,
+        bottom float,
+        top float,
+        nearPlane float,
+        farPlane float
+    ) : Matrix;
+
+    fnc MatrixPerspective(
+        fovy float,
+        aspect float,
+        nearPlane float,
+        farPlane float
+    ) : Matrix;
+
+    fnc MatrixOrtho(
+        left float,
+        right float,
+        bottom float,
+        top float,
+        nearPlane float,
+        farPlane float
+    ) : Matrix;
+
+    //====================================================
+    // View
+    //====================================================
+
+    fnc MatrixLookAt(
+        eye Vector3,
+        target Vector3,
+        up Vector3
+    ) : Matrix;
+
+    //====================================================
+    // Quaternion conversion
+    //====================================================
+
+    fnc MatrixToFloat(
+        mat Matrix
+    ) : pointer<float>;
+
+    //====================================================
+    // Quaternion
+    //====================================================
+    // Na raylib, Quaternion é um alias de Vector4.
+    // (x, y, z, w)
+
+    def Quaternion : type Vector4;
+
+    //====================================================
+    // Basic
+    //====================================================
+
+    fnc QuaternionIdentity() : Quaternion;
+
+    fnc QuaternionAdd(
+        q1 Quaternion,
+        q2 Quaternion
+    ) : Quaternion;
+
+    fnc QuaternionAddValue(
+        q Quaternion,
+        value float
+    ) : Quaternion;
+
+    fnc QuaternionSubtract(
+        q1 Quaternion,
+        q2 Quaternion
+    ) : Quaternion;
+
+    fnc QuaternionSubtractValue(
+        q Quaternion,
+        value float
+    ) : Quaternion;
+
+    fnc QuaternionScale(
+        q Quaternion,
+        scale float
+    ) : Quaternion;
+
+    fnc QuaternionDivide(
+        q1 Quaternion,
+        q2 Quaternion
+    ) : Quaternion;
+
+    fnc QuaternionNegate(
+        q Quaternion
+    ) : Quaternion;
+
+    fnc QuaternionInvert(
+        q Quaternion
+    ) : Quaternion;
+
+    fnc QuaternionNormalize(
+        q Quaternion
+    ) : Quaternion;
+
+    fnc QuaternionLength(
+        q Quaternion
+    ) : float;
+
+    fnc QuaternionDotProduct(
+        q1 Quaternion,
+        q2 Quaternion
+    ) : float;
+
+    //====================================================
+    // Interpolation
+    //====================================================
+
+    fnc QuaternionLerp(
+        q1 Quaternion,
+        q2 Quaternion,
+        amount float
+    ) : Quaternion;
+
+    fnc QuaternionNlerp(
+        q1 Quaternion,
+        q2 Quaternion,
+        amount float
+    ) : Quaternion;
+
+    fnc QuaternionSlerp(
+        q1 Quaternion,
+        q2 Quaternion,
+        amount float
+    ) : Quaternion;
+
+    //====================================================
+    // Multiply
+    //====================================================
+
+    fnc QuaternionMultiply(
+        q1 Quaternion,
+        q2 Quaternion
+    ) : Quaternion;
+
+    //====================================================
+    // Conversion
+    //====================================================
+
+    fnc QuaternionFromVector3ToVector3(
+        from Vector3,
+        to Vector3
+    ) : Quaternion;
+
+    fnc QuaternionFromMatrix(
+        mat Matrix
+    ) : Quaternion;
+
+    fnc QuaternionToMatrix(
+        q Quaternion
+    ) : Matrix;
+
+    fnc QuaternionFromAxisAngle(
+        axis Vector3,
+        angle float
+    ) : Quaternion;
+
+    fnc QuaternionToAxisAngle(
+        q Quaternion,
+        axis pointer<Vector3>,
+        angle pointer<float>
+    ) : void;
+
+    fnc QuaternionFromEuler(
+        pitch float,
+        yaw float,
+        roll float
+    ) : Quaternion;
+
+    fnc QuaternionToEuler(
+        q Quaternion
+    ) : Vector3;
+
+    //====================================================
+    // Transform
+    //====================================================
+
+    fnc QuaternionTransform(
+        q Quaternion,
+        mat Matrix
+    ) : Quaternion;
+
+    //====================================================
+    // Equality
+    //====================================================
+
+    fnc QuaternionEquals(
+        p Quaternion,
+        q Quaternion
+    ) : bool;
+
+};
+
+def LIGHTGRAY : macro() |> Color { r: 200, g: 200, b: 200, a: 255 };
+def GRAY : macro() |> Color { r: 130, g: 130, b: 130, a: 255 };
+def DARKGRAY : macro() |> Color { r: 80, g: 80, b: 80, a: 255 };
+def YELLOW : macro() |> Color { r: 253, g: 249, b: 0, a: 255 };
+def GOLD : macro() |> Color { r: 255, g: 203, b: 0, a: 255 };
+def ORANGE : macro() |> Color { r: 255, g: 161, b: 0, a: 255 };
+def PINK : macro() |> Color { r: 255, g: 109, b: 194, a: 255 };
+def RED : macro() |> Color { r: 230, g: 41, b: 55, a: 255 };
+def MAROON : macro() |> Color { r: 190, g: 33, b: 55, a: 255 };
+def GREEN : macro() |> Color { r: 0, g: 228, b: 48, a: 255 };
+def LIME : macro() |> Color { r: 0, g: 158, b: 47, a: 255 };
+def DARKGREEN : macro() |> Color { r: 0, g: 117, b: 44, a: 255 };
+def SKYBLUE : macro() |> Color { r: 102, g: 191, b: 255, a: 255 };
+def BLUE : macro() |> Color { r: 0, g: 121, b: 241, a: 255 };
+def DARKBLUE : macro() |> Color { r: 0, g: 82, b: 172, a: 255 };
+def PURPLE : macro() |> Color { r: 200, g: 122, b: 255, a: 255 };
+def VIOLET : macro() |> Color { r: 135, g: 60, b: 190, a: 255 };
+def DARKPURPLE : macro() |> Color { r: 112, g: 31, b: 126, a: 255 };
+def BEIGE : macro() |> Color { r: 211, g: 176, b: 131, a: 255 };
+def BROWN : macro() |> Color { r: 127, g: 106, b: 79, a: 255 };
+def DARKBROWN : macro() |> Color { r: 76, g: 63, b: 47, a: 255 };
+def WHITE : macro() |> Color { r: 255, g: 255, b: 255, a: 255 };
+def BLACK : macro() |> Color { r: 0, g: 0, b: 0, a: 255 };
+def BLANK : macro() |> Color { r: 0, g: 0, b: 0, a: 0 };
+def MAGENTA : macro() |> Color { r: 255, g: 0, b: 255, a: 255 };
+def RAYWHITE : macro() |> Color { r: 245, g: 245, b: 245, a: 255 };
+
+//====================================================
+// Keyboard keys (alphanumeric)
+//====================================================
+def KEY_APOSTROPHE : macro() |> 39;
+def KEY_COMMA : macro() |> 44;
+def KEY_MINUS : macro() |> 45;
+def KEY_PERIOD : macro() |> 46;
+def KEY_SLASH : macro() |> 47;
+def KEY_ZERO : macro() |> 48;
+def KEY_ONE : macro() |> 49;
+def KEY_TWO : macro() |> 50;
+def KEY_THREE : macro() |> 51;
+def KEY_FOUR : macro() |> 52;
+def KEY_FIVE : macro() |> 53;
+def KEY_SIX : macro() |> 54;
+def KEY_SEVEN : macro() |> 55;
+def KEY_EIGHT : macro() |> 56;
+def KEY_NINE : macro() |> 57;
+def KEY_SEMICOLON : macro() |> 59;
+def KEY_EQUAL : macro() |> 61;
+def KEY_A : macro() |> 65;
+def KEY_B : macro() |> 66;
+def KEY_C : macro() |> 67;
+def KEY_D : macro() |> 68;
+def KEY_E : macro() |> 69;
+def KEY_F : macro() |> 70;
+def KEY_G : macro() |> 71;
+def KEY_H : macro() |> 72;
+def KEY_I : macro() |> 73;
+def KEY_J : macro() |> 74;
+def KEY_K : macro() |> 75;
+def KEY_L : macro() |> 76;
+def KEY_M : macro() |> 77;
+def KEY_N : macro() |> 78;
+def KEY_O : macro() |> 79;
+def KEY_P : macro() |> 80;
+def KEY_Q : macro() |> 81;
+def KEY_R : macro() |> 82;
+def KEY_S : macro() |> 83;
+def KEY_T : macro() |> 84;
+def KEY_U : macro() |> 85;
+def KEY_V : macro() |> 86;
+def KEY_W : macro() |> 87;
+def KEY_X : macro() |> 88;
+def KEY_Y : macro() |> 89;
+def KEY_Z : macro() |> 90;
+def KEY_LEFT_BRACKET : macro() |> 91;
+def KEY_BACKSLASH : macro() |> 92;
+def KEY_RIGHT_BRACKET : macro() |> 93;
+def KEY_GRAVE : macro() |> 96;
+
+//====================================================
+// Keyboard keys (function keys)
+//====================================================
+def KEY_SPACE : macro() |> 32;
+def KEY_ESCAPE : macro() |> 256;
+def KEY_ENTER : macro() |> 257;
+def KEY_TAB : macro() |> 258;
+def KEY_BACKSPACE : macro() |> 259;
+def KEY_INSERT : macro() |> 260;
+def KEY_DELETE : macro() |> 261;
+def KEY_RIGHT : macro() |> 262;
+def KEY_LEFT : macro() |> 263;
+def KEY_DOWN : macro() |> 264;
+def KEY_UP : macro() |> 265;
+def KEY_PAGE_UP : macro() |> 266;
+def KEY_PAGE_DOWN : macro() |> 267;
+def KEY_HOME : macro() |> 268;
+def KEY_END : macro() |> 269;
+def KEY_CAPS_LOCK : macro() |> 280;
+def KEY_SCROLL_LOCK : macro() |> 281;
+def KEY_NUM_LOCK : macro() |> 282;
+def KEY_PRINT_SCREEN : macro() |> 283;
+def KEY_PAUSE : macro() |> 284;
+def KEY_F1 : macro() |> 290;
+def KEY_F2 : macro() |> 291;
+def KEY_F3 : macro() |> 292;
+def KEY_F4 : macro() |> 293;
+def KEY_F5 : macro() |> 294;
+def KEY_F6 : macro() |> 295;
+def KEY_F7 : macro() |> 296;
+def KEY_F8 : macro() |> 297;
+def KEY_F9 : macro() |> 298;
+def KEY_F10 : macro() |> 299;
+def KEY_F11 : macro() |> 300;
+def KEY_F12 : macro() |> 301;
+def KEY_LEFT_SHIFT : macro() |> 340;
+def KEY_LEFT_CONTROL : macro() |> 341;
+def KEY_LEFT_ALT : macro() |> 342;
+def KEY_LEFT_SUPER : macro() |> 343;
+def KEY_RIGHT_SHIFT : macro() |> 344;
+def KEY_RIGHT_CONTROL : macro() |> 345;
+def KEY_RIGHT_ALT : macro() |> 346;
+def KEY_RIGHT_SUPER : macro() |> 347;
+def KEY_KB_MENU : macro() |> 348;
+def KEY_KP_0 : macro() |> 320;
+def KEY_KP_1 : macro() |> 321;
+def KEY_KP_2 : macro() |> 322;
+def KEY_KP_3 : macro() |> 323;
+def KEY_KP_4 : macro() |> 324;
+def KEY_KP_5 : macro() |> 325;
+def KEY_KP_6 : macro() |> 326;
+def KEY_KP_7 : macro() |> 327;
+def KEY_KP_8 : macro() |> 328;
+def KEY_KP_9 : macro() |> 329;
+def KEY_KP_DECIMAL : macro() |> 330;
+def KEY_KP_DIVIDE : macro() |> 331;
+def KEY_KP_MULTIPLY : macro() |> 332;
+def KEY_KP_SUBTRACT : macro() |> 333;
+def KEY_KP_ADD : macro() |> 334;
+def KEY_KP_ENTER : macro() |> 335;
+def KEY_KP_EQUAL : macro() |> 336;
+def KEY_BACK : macro() |> 4;
+def KEY_MENU : macro() |> 5;
+def KEY_VOLUME_UP : macro() |> 24;
+def KEY_VOLUME_DOWN : macro() |> 25;
+
+//====================================================
+// Mouse buttons
+//====================================================
+def MOUSE_BUTTON_LEFT : macro() |> 0;
+def MOUSE_BUTTON_RIGHT : macro() |> 1;
+def MOUSE_BUTTON_MIDDLE : macro() |> 2;
+def MOUSE_BUTTON_SIDE : macro() |> 3;
+def MOUSE_BUTTON_EXTRA : macro() |> 4;
+def MOUSE_BUTTON_FORWARD : macro() |> 5;
+def MOUSE_BUTTON_BACK : macro() |> 6;
+
+//====================================================
+// Mouse cursors
+//====================================================
+def MOUSE_CURSOR_DEFAULT : macro() |> 0;
+def MOUSE_CURSOR_ARROW : macro() |> 1;
+def MOUSE_CURSOR_IBEAM : macro() |> 2;
+def MOUSE_CURSOR_CROSSHAIR : macro() |> 3;
+def MOUSE_CURSOR_POINTING_HAND : macro() |> 4;
+def MOUSE_CURSOR_RESIZE_EW : macro() |> 5;
+def MOUSE_CURSOR_RESIZE_NS : macro() |> 6;
+def MOUSE_CURSOR_RESIZE_NWSE : macro() |> 7;
+def MOUSE_CURSOR_RESIZE_NESW : macro() |> 8;
+def MOUSE_CURSOR_RESIZE_ALL : macro() |> 9;
+def MOUSE_CURSOR_NOT_ALLOWED : macro() |> 10;
+
+//====================================================
+// Gamepad buttons
+//====================================================
+def GAMEPAD_BUTTON_UNKNOWN : macro() |> 0;
+def GAMEPAD_BUTTON_LEFT_FACE_UP : macro() |> 1;
+def GAMEPAD_BUTTON_LEFT_FACE_RIGHT : macro() |> 2;
+def GAMEPAD_BUTTON_LEFT_FACE_DOWN : macro() |> 3;
+def GAMEPAD_BUTTON_LEFT_FACE_LEFT : macro() |> 4;
+def GAMEPAD_BUTTON_RIGHT_FACE_UP : macro() |> 5;
+def GAMEPAD_BUTTON_RIGHT_FACE_RIGHT : macro() |> 6;
+def GAMEPAD_BUTTON_RIGHT_FACE_DOWN : macro() |> 7;
+def GAMEPAD_BUTTON_RIGHT_FACE_LEFT : macro() |> 8;
+def GAMEPAD_BUTTON_LEFT_TRIGGER_1 : macro() |> 9;
+def GAMEPAD_BUTTON_LEFT_TRIGGER_2 : macro() |> 10;
+def GAMEPAD_BUTTON_RIGHT_TRIGGER_1 : macro() |> 11;
+def GAMEPAD_BUTTON_RIGHT_TRIGGER_2 : macro() |> 12;
+def GAMEPAD_BUTTON_MIDDLE_LEFT : macro() |> 13;
+def GAMEPAD_BUTTON_MIDDLE : macro() |> 14;
+def GAMEPAD_BUTTON_MIDDLE_RIGHT : macro() |> 15;
+def GAMEPAD_BUTTON_LEFT_THUMB : macro() |> 16;
+def GAMEPAD_BUTTON_RIGHT_THUMB : macro() |> 17;
+
+//====================================================
+// Gamepad axis
+//====================================================
+def GAMEPAD_AXIS_LEFT_X : macro() |> 0;
+def GAMEPAD_AXIS_LEFT_Y : macro() |> 1;
+def GAMEPAD_AXIS_RIGHT_X : macro() |> 2;
+def GAMEPAD_AXIS_RIGHT_Y : macro() |> 3;
+def GAMEPAD_AXIS_LEFT_TRIGGER : macro() |> 4;
+def GAMEPAD_AXIS_RIGHT_TRIGGER : macro() |> 5;
+
+//====================================================
+// Gestures
+//====================================================
+def GESTURE_NONE : macro() |> 0;
+def GESTURE_TAP : macro() |> 1;
+def GESTURE_DOUBLETAP : macro() |> 2;
+def GESTURE_HOLD : macro() |> 4;
+def GESTURE_DRAG : macro() |> 8;
+def GESTURE_SWIPE_RIGHT : macro() |> 16;
+def GESTURE_SWIPE_LEFT : macro() |> 32;
+def GESTURE_SWIPE_UP : macro() |> 64;
+def GESTURE_SWIPE_DOWN : macro() |> 128;
+def GESTURE_PINCH_IN : macro() |> 256;
+def GESTURE_PINCH_OUT : macro() |> 512;
+
+//====================================================
+// Config flags
+//====================================================
+def FLAG_VSYNC_HINT : macro() |> 64;
+def FLAG_FULLSCREEN_MODE : macro() |> 2;
+def FLAG_WINDOW_RESIZABLE : macro() |> 4;
+def FLAG_WINDOW_UNDECORATED : macro() |> 8;
+def FLAG_WINDOW_HIDDEN : macro() |> 128;
+def FLAG_WINDOW_MINIMIZED : macro() |> 512;
+def FLAG_WINDOW_MAXIMIZED : macro() |> 1024;
+def FLAG_WINDOW_UNFOCUSED : macro() |> 2048;
+def FLAG_WINDOW_TOPMOST : macro() |> 4096;
+def FLAG_WINDOW_ALWAYS_RUN : macro() |> 256;
+def FLAG_WINDOW_TRANSPARENT : macro() |> 16;
+def FLAG_WINDOW_HIGHDPI : macro() |> 8192;
+def FLAG_WINDOW_MOUSE_PASSTHROUGH : macro() |> 16384;
+def FLAG_BORDERLESS_WINDOWED_MODE : macro() |> 32768;
+def FLAG_MSAA_4X_HINT : macro() |> 32;
+def FLAG_INTERLACED_HINT : macro() |> 65536;
+
+//====================================================
+// Trace log levels
+//====================================================
+def LOG_ALL : macro() |> 0;
+def LOG_TRACE : macro() |> 1;
+def LOG_DEBUG : macro() |> 2;
+def LOG_INFO : macro() |> 3;
+def LOG_WARNING : macro() |> 4;
+def LOG_ERROR : macro() |> 5;
+def LOG_FATAL : macro() |> 6;
+def LOG_NONE : macro() |> 7;
+
+//====================================================
+// Shader location indices
+//====================================================
+def SHADER_LOC_VERTEX_POSITION : macro() |> 0;
+def SHADER_LOC_VERTEX_TEXCOORD01 : macro() |> 1;
+def SHADER_LOC_VERTEX_TEXCOORD02 : macro() |> 2;
+def SHADER_LOC_VERTEX_NORMAL : macro() |> 3;
+def SHADER_LOC_VERTEX_TANGENT : macro() |> 4;
+def SHADER_LOC_VERTEX_COLOR : macro() |> 5;
+def SHADER_LOC_MATRIX_MVP : macro() |> 6;
+def SHADER_LOC_MATRIX_VIEW : macro() |> 7;
+def SHADER_LOC_MATRIX_PROJECTION : macro() |> 8;
+def SHADER_LOC_MATRIX_MODEL : macro() |> 9;
+def SHADER_LOC_VECTOR_VIEW : macro() |> 10;
+def SHADER_LOC_COLOR_DIFFUSE : macro() |> 11;
+def SHADER_LOC_COLOR_SPECULAR : macro() |> 12;
+def SHADER_LOC_COLOR_AMBIENT : macro() |> 13;
+def SHADER_LOC_MAP_ALBEDO : macro() |> 14;
+def SHADER_LOC_MAP_METALNESS : macro() |> 15;
+def SHADER_LOC_MAP_NORMAL : macro() |> 16;
+def SHADER_LOC_MAP_ROUGHNESS : macro() |> 17;
+def SHADER_LOC_MAP_OCCLUSION : macro() |> 18;
+def SHADER_LOC_MAP_EMISSION : macro() |> 19;
+def SHADER_LOC_MAP_HEIGHT : macro() |> 20;
+def SHADER_LOC_MAP_CUBEMAP : macro() |> 21;
+def SHADER_LOC_MAP_IRRADIANCE : macro() |> 22;
+def SHADER_LOC_MAP_PREFILTER : macro() |> 23;
+def SHADER_LOC_MAP_BRDF : macro() |> 24;
+
+//====================================================
+// Material map types
+//====================================================
+def MATERIAL_MAP_ALBEDO : macro() |> 0;
+def MATERIAL_MAP_METALNESS : macro() |> 1;
+def MATERIAL_MAP_NORMAL : macro() |> 2;
+def MATERIAL_MAP_ROUGHNESS : macro() |> 3;
+def MATERIAL_MAP_OCCLUSION : macro() |> 4;
+def MATERIAL_MAP_EMISSION : macro() |> 5;
+def MATERIAL_MAP_HEIGHT : macro() |> 6;
+def MATERIAL_MAP_CUBEMAP : macro() |> 7;
+def MATERIAL_MAP_IRRADIANCE : macro() |> 8;
+def MATERIAL_MAP_PREFILTER : macro() |> 9;
+def MATERIAL_MAP_BRDF : macro() |> 10;
+
+//====================================================
+// Pixel formats
+//====================================================
+def PIXELFORMAT_UNCOMPRESSED_GRAYSCALE : macro() |> 1;
+def PIXELFORMAT_UNCOMPRESSED_GRAY_ALPHA : macro() |> 2;
+def PIXELFORMAT_UNCOMPRESSED_R5G6B5 : macro() |> 3;
+def PIXELFORMAT_UNCOMPRESSED_R8G8B8 : macro() |> 4;
+def PIXELFORMAT_UNCOMPRESSED_R5G5B5A1 : macro() |> 5;
+def PIXELFORMAT_UNCOMPRESSED_R4G4B4A4 : macro() |> 6;
+def PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 : macro() |> 7;
+def PIXELFORMAT_UNCOMPRESSED_R32 : macro() |> 8;
+def PIXELFORMAT_UNCOMPRESSED_R32G32B32 : macro() |> 9;
+def PIXELFORMAT_UNCOMPRESSED_R32G32B32A32 : macro() |> 10;
+def PIXELFORMAT_UNCOMPRESSED_R16 : macro() |> 11;
+def PIXELFORMAT_UNCOMPRESSED_R16G16B16 : macro() |> 12;
+def PIXELFORMAT_UNCOMPRESSED_R16G16B16A16 : macro() |> 13;
+def PIXELFORMAT_COMPRESSED_DXT1_RGB : macro() |> 14;
+def PIXELFORMAT_COMPRESSED_DXT1_RGBA : macro() |> 15;
+def PIXELFORMAT_COMPRESSED_DXT3_RGBA : macro() |> 16;
+def PIXELFORMAT_COMPRESSED_DXT5_RGBA : macro() |> 17;
+def PIXELFORMAT_COMPRESSED_ETC1_RGB : macro() |> 18;
+def PIXELFORMAT_COMPRESSED_ETC2_RGB : macro() |> 19;
+def PIXELFORMAT_COMPRESSED_ETC2_EAC_RGBA : macro() |> 20;
+def PIXELFORMAT_COMPRESSED_PVRT_RGB : macro() |> 21;
+def PIXELFORMAT_COMPRESSED_PVRT_RGBA : macro() |> 22;
+def PIXELFORMAT_COMPRESSED_ASTC_4x4_RGBA : macro() |> 23;
+def PIXELFORMAT_COMPRESSED_ASTC_8x8_RGBA : macro() |> 24;
+
+//====================================================
+// Texture filters
+//====================================================
+def TEXTURE_FILTER_POINT : macro() |> 0;
+def TEXTURE_FILTER_BILINEAR : macro() |> 1;
+def TEXTURE_FILTER_TRILINEAR : macro() |> 2;
+def TEXTURE_FILTER_ANISOTROPIC_4X : macro() |> 3;
+def TEXTURE_FILTER_ANISOTROPIC_8X : macro() |> 4;
+def TEXTURE_FILTER_ANISOTROPIC_16X : macro() |> 5;
+
+//====================================================
+// Texture wrap modes
+//====================================================
+def TEXTURE_WRAP_REPEAT : macro() |> 0;
+def TEXTURE_WRAP_CLAMP : macro() |> 1;
+def TEXTURE_WRAP_MIRROR_REPEAT : macro() |> 2;
+def TEXTURE_WRAP_MIRROR_CLAMP : macro() |> 3;
+
+//====================================================
+// Font types
+//====================================================
+def FONT_DEFAULT : macro() |> 0;
+def FONT_BITMAP : macro() |> 1;
+def FONT_SDF : macro() |> 2;
+
+//====================================================
+// Blend modes
+//====================================================
+def BLEND_ALPHA : macro() |> 0;
+def BLEND_ADDITIVE : macro() |> 1;
+def BLEND_MULTIPLIED : macro() |> 2;
+def BLEND_ADD_COLORS : macro() |> 3;
+def BLEND_SUBTRACT_COLORS : macro() |> 4;
+def BLEND_ALPHA_PREMULTIPLY : macro() |> 5;
+def BLEND_CUSTOM : macro() |> 6;
+def BLEND_CUSTOM_SEPARATE : macro() |> 7;
+
+//====================================================
+// Other constants
+//====================================================
+def MAX_TOUCH_POINTS : macro() |> 12;
+def MAX_KEY_PRESSED_QUEUE : macro() |> 16;
+def MAX_CHAR_PRESSED_QUEUE : macro() |> 16;
+def DEG2RAD : macro() |> (3.141592653589793 / 180.0);
+def RAD2DEG : macro() |> (180.0 / 3.141592653589793);
+def PI : macro() |> 3.141592653589793;
+def EPSILON : macro() |> 0.000001;

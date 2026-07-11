@@ -200,7 +200,7 @@ class Parser:
             )
 
     def _get_smart_tip(self, expected_type, token):
-        obs_val = token.value.lower() if token.value else ""
+        obs_val = token.value.lower() if isinstance(token.value, str) else str(token.value)
         obs_type = token.type
 
         # 1. Smart detections (20+)
@@ -399,7 +399,11 @@ class Parser:
                     while self.current().type == "COMMA":
                         self.eat("COMMA")
                         type_args.append(self.parse_type())
-                    base = f"{base}<{', '.join(type_args)}>"
+                    # Canonicalize pointer<T> to *T (raw pointer syntax)
+                    if base == "pointer" and len(type_args) == 1:
+                        base = "*" + type_args[0]
+                    else:
+                        base = f"{base}<{', '.join(type_args)}>"
                     is_type = True
 
                 if not is_type:
@@ -1730,7 +1734,7 @@ class Parser:
             self.eat("SEMI")
             return self._pos(DelStatement(target), tok)
 
-        elif self.current().type in ("IDENT", "THIS", "MUL", "BIT_AND"):
+        elif self.current().type in ("IDENT", "THIS", "MUL", "BIT_AND", "NUMBER", "STRING", "TRUE", "FALSE", "LPAREN", "MINUS", "BANG", "TILDE"):
             # Could be assignment or function call or show
             if self.current().type == "IDENT" and self.current().value == "show":
                 tok = self.current()

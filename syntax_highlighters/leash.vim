@@ -26,7 +26,7 @@ syn match leashMethod /\.\zs[a-zA-Z_][a-zA-Z0-9_]*\ze\s*[;:]/
 syn match leashMethod /\.\zs[a-zA-Z_][a-zA-Z0-9_]*\ze\s*{/
 
 " Types with optional bitwidths
-syn match leashType /\<\(int\|uint\|float\|bool\|string\|char\|void\|array\|vec\|hash\)\>\(<\d\+>\)\?/
+ syn match leashType /\<\(int\|uint\|float\|bool\|string\|char\|void\|array\|vec\|hash\|pointer\)\>\(<\d\+>\)\?/
 
 " Hash table type with generic parameters: hash<K, V>
 syn match leashType /\<hash<[^>]*>/

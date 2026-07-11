@@ -113,15 +113,15 @@
             "patterns": [
                 {
                     "name": "support.type.leash",
-                    "match": "\\b(int|uint|float|bool|string|char|void|array|vec|vector|hash)\\b(?=\\s*[<(]|[^a-zA-Z0-9_])"
+                    "match": "\\b(int|uint|float|bool|string|char|void|array|vec|vector|hash|pointer)\\b(?=\\s*[<(]|[^a-zA-Z0-9_])"
                 },
                 {
                     "name": "support.type.generic.leash",
-                    "match": "\\b(vec|vector|hash|int|uint|float)<\\d+>"
+                    "match": "\\b(vec|vector|hash|int|uint|float|pointer)<\\d+>"
                 },
                 {
                     "name": "support.type.bitwidth.leash",
-                    "match": "\\b(int|uint|float)<\\d+>"
+                    "match": "\\b(int|uint|float|pointer)<\\d+>"
                 },
                 {
                     "name": "entity.name.type.leash",

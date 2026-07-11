@@ -1193,6 +1193,14 @@ class TypeChecker:
         src_r = self._normalize_type(src)
         dst_r = self._normalize_type(dst)
 
+        # Strip imut for compatibility checking: an imut variable accepts a
+        # non-imut value (immutability is about reassignment, not initialization),
+        # and assigning an imut value to a mutable variable is fine (makes a copy).
+        if src_r.startswith("imut "):
+            src_r = src_r[5:]
+        if dst_r.startswith("imut "):
+            dst_r = dst_r[5:]
+
         if src_r == dst_r:
             return True
 

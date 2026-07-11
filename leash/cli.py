@@ -29,6 +29,7 @@ from .ast_nodes import (
     BinaryOp,
     UnaryOp,
     MacroDef,
+    NativeImport,
     Call
 )
 from .targets import get_target, get_native_target, list_targets, TargetConfig
@@ -517,12 +518,21 @@ def resolve_imports(program, base_path, extra_import_dirs=None):
                 available = {}
                 all_templates = {i.name: i for i in module_ast.items if isinstance(i, TemplateDef)}
                 internal_types = {}
-                for mod_item in module_ast.items:
-                    if not is_priv_import and hasattr(mod_item, "visibility") and mod_item.visibility == "priv":
-                        if isinstance(mod_item, (StructDef, UnionDef, EnumDef, ClassDef, TypeAlias, ErrorDef)): internal_types[mod_item.name] = mod_item
-                        continue
-                    if isinstance(mod_item, (StructDef, UnionDef, EnumDef, ErrorDef, TypeAlias, ClassDef, Function, TemplateDef, MacroDef)): available[mod_item.name] = mod_item
-                    elif isinstance(mod_item, GlobalVarDecl) and (mod_item.visibility == "pub" or is_priv_import): available[mod_item.name] = mod_item
+                def _collect_items(mod_items):
+                    for mod_item in mod_items:
+                        if isinstance(mod_item, ConditionalDef):
+                            _collect_items(mod_item.then_block)
+                            for c, b, inv in getattr(mod_item, 'also_blocks', []):
+                                _collect_items(b)
+                            if mod_item.else_block:
+                                _collect_items(mod_item.else_block)
+                            continue
+                        if not is_priv_import and hasattr(mod_item, "visibility") and mod_item.visibility == "priv":
+                            if isinstance(mod_item, (StructDef, UnionDef, EnumDef, ClassDef, TypeAlias, ErrorDef)): internal_types[mod_item.name] = mod_item
+                            continue
+                        if isinstance(mod_item, (StructDef, UnionDef, EnumDef, ErrorDef, TypeAlias, ClassDef, Function, TemplateDef, MacroDef)): available[mod_item.name] = mod_item
+                        elif isinstance(mod_item, GlobalVarDecl) and (mod_item.visibility == "pub" or is_priv_import): available[mod_item.name] = mod_item
+                _collect_items(module_ast.items)
                 if not is_priv_import:
                     for name, it in list(available.items()):
                         if hasattr(it, 'type_params') and it.type_params:
@@ -536,7 +546,16 @@ def resolve_imports(program, base_path, extra_import_dirs=None):
                             if name not in available: raise LeashError(f"Imported item '{name}' not found in module", node=item)
                     for name, mod_item in available.items(): new_items.append(mod_item)
                     for name, mod_item in internal_types.items(): new_items.append(mod_item)
+                    for mod_item in module_ast.items:
+                        if isinstance(mod_item, NativeImport): new_items.append(mod_item)
+                        if isinstance(mod_item, ConditionalDef): new_items.append(mod_item)
                 loaded_modules.add(module_file_abs)
+            elif isinstance(item, ConditionalDef):
+                if item.then_block: item.then_block = _expand_items(item.then_block, current_base_path).items
+                if item.also_blocks:
+                    item.also_blocks = [(c, _expand_items(b, current_base_path).items, inv) for c, b, inv in item.also_blocks]
+                if item.else_block: item.else_block = _expand_items(item.else_block, current_base_path).items
+                new_items.append(item)
             else: new_items.append(item)
         return Program(new_items)
     return _expand_items(program.items, base_path)
@@ -629,8 +648,10 @@ def _evaluate_conditional(cond_def, platform):
     if cond_def.invert:
         if not eval_expr(cond_def.condition): return cond_def.then_block
     elif eval_expr(cond_def.condition): return cond_def.then_block
-    for c, b in cond_def.also_blocks:
-        if eval_expr(c): return b
+    for c, b, inv in cond_def.also_blocks:
+        if inv:
+            if not eval_expr(c): return b
+        elif eval_expr(c): return b
     return cond_def.else_block
 
 def _print_error(e, input_file, code):
@@ -747,22 +768,96 @@ def compile_file(input_file, output_name=None, output_type="executable", is_run_
     if parsed_opt > 0 or size_opt: optimize_module(mod, opt_level=parsed_opt, size_opt=size_opt, target_machine=tm)
     obj_name = output_name + ".o"
     with open(obj_name, "wb") as f: f.write(tm.emit_object(mod))
-    return _link_native(obj_name, output_name, target_config, is_run_mode, output_type, codegen, os.path.dirname(os.path.abspath(input_file)) or ".", extra_libs)
+    return _link_native(obj_name, output_name, target_config, is_run_mode, output_type, codegen, extra_libs)
 
-def _link_native(obj_name, output_name, target_config, is_run_mode, output_type, codegen, base_path, extra_libs=None):
-    nlib_args = [os.path.join(base_path, l[0]) if l[0].startswith(".") else l[0] for l in codegen.native_libs]
+def _parse_undefined_symbols(stderr):
+    """Parse undefined reference symbols from linker error output."""
+    import re
+    symbols = set()
+    # MinGW/ld: "undefined reference to `__imp_timeEndPeriod'"
+    for m in re.finditer(r"undefined reference to [`']([^`']+)", stderr):
+        sym = m.group(1)
+        sym = sym.lstrip("_")
+        if sym.startswith("imp_"):
+            sym = sym[4:]
+        if sym:
+            symbols.add(sym)
+    return symbols
+
+
+_WIN32_SYMBOL_LIBS = {
+    "CreateRectRgn": "gdi32", "DeleteObject": "gdi32", "SwapBuffers": "gdi32",
+    "CreateDCW": "gdi32", "GetDeviceGammaRamp": "gdi32", "DeleteDC": "gdi32",
+    "GetDeviceCaps": "gdi32", "ChoosePixelFormat": "gdi32", "SetPixelFormat": "gdi32",
+    "DescribePixelFormat": "gdi32", "CreateDIBSection": "gdi32", "CreateBitmap": "gdi32",
+    "SetDeviceGammaRamp": "gdi32",
+    "timeEndPeriod": "winmm", "timeBeginPeriod": "winmm",
+    "glClear": "opengl32", "glBegin": "opengl32", "glEnd": "opengl32",
+    "glMatrixMode": "opengl32", "glLoadIdentity": "opengl32",
+    "glOrtho": "opengl32", "glViewport": "opengl32",
+}
+
+
+_LINUX_SYMBOL_LIBS = {
+    "XOpenDisplay": "X11", "XCloseDisplay": "X11", "XCreateWindow": "X11",
+    "XMapWindow": "X11", "XFlush": "X11",
+    "glXSwapBuffers": "GL", "glXMakeCurrent": "GL",
+    "dlopen": "dl", "dlsym": "dl", "dlclose": "dl",
+    "sincosf": "m", "sincos": "m",
+    "fmaxf": "m", "fmax": "m", "fminf": "m", "fmin": "m",
+    "atan2f": "m", "atan2": "m",
+    "sinf": "m", "sin": "m", "cosf": "m", "cos": "m",
+    "sqrtf": "m", "sqrt": "m",
+    "powf": "m", "pow": "m",
+    "fmodf": "m", "fmod": "m",
+    "roundf": "m", "round": "m",
+    "hypotf": "m", "hypot": "m",
+    "logf": "m", "log": "m",
+    "acosf": "m", "acos": "m",
+    "asinf": "m", "asin": "m",
+    "tanf": "m", "tan": "m",
+}
+
+
+_MACOS_SYMBOL_LIBS = {
+    "objc_msgSend": "objc", "objc_getClass": "objc",
+    "sel_registerName": "objc",
+}
+
+
+def _match_symbols_to_libs(symbols, target_name):
+    """Match undefined symbols to system library names by target platform."""
+    deps = set()
+    mapping = {}
+    if target_name == "win64":
+        mapping = _WIN32_SYMBOL_LIBS
+        # On Windows MinGW, also try to check if gdi32/winmm/opengl32 exist as
+        # import libraries and add them proactively when many Win32 symbols are seen
+        win32_count = sum(1 for s in symbols if s in _WIN32_SYMBOL_LIBS)
+    elif target_name in ("linux64", "linux32"):
+        mapping = _LINUX_SYMBOL_LIBS
+    elif target_name in ("macos", "macos-arm"):
+        mapping = _MACOS_SYMBOL_LIBS
+    for sym in symbols:
+        lib = mapping.get(sym)
+        if lib:
+            deps.add(lib)
+    return deps
+
+
+def _link_native(obj_name, output_name, target_config, is_run_mode, output_type, codegen, extra_libs=None):
+    nlib_args = [l[0] for l in codegen.native_libs]
     if extra_libs: nlib_args.extend([f"-l{l}" for l in extra_libs])
     cc = os.environ.get("CC") or target_config.detect_cross_linker()
     if not cc:
         if os.name == "nt":
-            # On Windows, prefer gcc (MinGW) over clang since clang often
-            # requires a Visual Studio installation for linking.
             cc = "gcc" if shutil.which("gcc") else "clang"
         else:
             cc = shutil.which("gcc") or shutil.which("clang")
             if not cc:
                 print("error: No C compiler found (install gcc or clang, or set CC env var)", file=sys.stderr)
                 sys.exit(1)
+
     stubs = []
     for sfile in ["gc.c", "cross_compile_stubs.c" if not (os.name == "nt" and target_config.name == "win64") else "windows_stubs.c"]:
         spath = os.path.join(os.path.dirname(os.path.abspath(__file__)), sfile)
@@ -774,29 +869,49 @@ def _link_native(obj_name, output_name, target_config, is_run_mode, output_type,
                 print(f"warning: failed to compile {sfile}: {err}", file=sys.stderr)
             else:
                 stubs.append(oname)
-    try:
-        if output_type == "executable":
-            out = target_config.get_output_name(output_name)
-            subprocess.run([cc, obj_name] + stubs + ["-o", out] + target_config.linker_flags + nlib_args, check=True)
-        elif output_type == "dynamic":
-            out = output_name + (".dll" if os.name == "nt" else ".so")
-            subprocess.run([cc, "-shared", obj_name, "-o", out, "-fPIC"] + nlib_args, check=True)
-        elif output_type == "static":
-            out = output_name + (".lib" if os.name == "nt" else ".a")
-            subprocess.run(["ar", "rcs", out, obj_name], check=True)
-    except subprocess.CalledProcessError as e:
-        if e.stderr:
-            err = e.stderr.decode("utf-8", errors="replace").strip()
-            print(f"error: Linker failed: {err}", file=sys.stderr)
-        else:
-            print(f"error: Linker failed with exit code {e.returncode}", file=sys.stderr)
-        sys.exit(1)
-    except FileNotFoundError:
-        print(f"error: C compiler '{cc}' not found", file=sys.stderr)
-        sys.exit(1)
-    finally:
-        for f in [obj_name] + stubs:
-            if os.path.exists(f): os.remove(f)
+
+    out = None
+    retried = False
+    while True:
+        try:
+            if output_type == "executable":
+                out = target_config.get_output_name(output_name)
+                result = subprocess.run([cc, obj_name] + stubs + ["-o", out] + target_config.linker_flags + nlib_args, stderr=subprocess.PIPE)
+                if result.returncode != 0:
+                    raise subprocess.CalledProcessError(result.returncode, result.args, stderr=result.stderr)
+            elif output_type == "dynamic":
+                out = output_name + (".dll" if os.name == "nt" else ".so")
+                subprocess.run([cc, "-shared", obj_name, "-o", out, "-fPIC"] + nlib_args, stderr=subprocess.PIPE, check=True)
+            elif output_type == "static":
+                out = output_name + (".lib" if os.name == "nt" else ".a")
+                subprocess.run(["ar", "rcs", out, obj_name], check=True)
+            break
+        except subprocess.CalledProcessError as e:
+            stderr_text = e.stderr.decode("utf-8", errors="replace") if e.stderr else ""
+            if output_type == "executable" and stderr_text:
+                symbols = _parse_undefined_symbols(stderr_text)
+                detected = _match_symbols_to_libs(symbols, target_config.name)
+                if detected:
+                    to_add = [f"-l{l}" for l in sorted(detected) if f"-l{l}" not in nlib_args]
+                    if to_add:
+                        nlib_args.extend(to_add)
+                        print(f"Auto-detected missing system libraries: {', '.join(sorted(detected))}", file=sys.stderr)
+                        continue
+            if stderr_text:
+                print(stderr_text.strip(), file=sys.stderr)
+            else:
+                print(f"error: Linker failed with exit code {e.returncode}", file=sys.stderr)
+            sys.exit(1)
+        except FileNotFoundError:
+            print(f"error: C compiler '{cc}' not found", file=sys.stderr)
+            sys.exit(1)
+
+    for f in [obj_name] + stubs:
+        try:
+            if os.path.exists(f):
+                os.remove(f)
+        except OSError:
+            pass
     if not is_run_mode: print(f"Successfully compiled to '{out}'")
     return out
 
@@ -990,7 +1105,7 @@ def update_leash():
     import json
     
     print("Leash Update Checker")
-    print("Current version: 0.18.2 Beta\n")
+    print("Current version: 0.19.0b0\n")
     
     try:
         req = urllib.request.Request(
@@ -1035,10 +1150,10 @@ def main():
         sys.exit(1)
     cmd = sys.argv[1]
     if cmd in ("--help", "-h"):
-        print("Leash v0.18.2 Beta\nUsage: leash <command> [options]\nCommands: compile, run, dump, check, install, init, build, runp, update\nRun 'leash <command> --help' for details.\n\nGlobal Options:\n  --verbose/-vb        Enable highly detailed masterclass error and warning explanations.")
+        print("Leash v0.19.0b0\nUsage: leash <command> [options]\nCommands: compile, run, dump, check, install, init, build, runp, update\nRun 'leash <command> --help' for details.\n\nGlobal Options:\n  --verbose/-vb        Enable highly detailed masterclass error and warning explanations.")
         sys.exit(0)
     if cmd in ("--version", "-v"):
-        print("Leash v0.18.2 Beta\nBuilt on LLVM with custom GC"); sys.exit(0)
+        print("Leash v0.19.0b0\nBuilt on LLVM with custom GC"); sys.exit(0)
     if cmd == "check":
         if len(sys.argv) < 3:
             print("Usage: leash check <file.lsh> [options]")

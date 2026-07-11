@@ -29,7 +29,7 @@
      '("\\b\\(fnc\\|def\\|struct\\|union\\|enum\\|class\\|type\\|template\\|macro\\|opdef\\|return\\|if\\|also\\|else\\|unless\\|while\\|for\\|do\\|foreach\\|loop\\|in\\|imut\\|vec\\|vector\\|matrix\\|this\\|thisop\\|pub\\|priv\\|static\\|stop\\|continue\\|empty\\|ignore\\|use\\|works\\|otherwise\\|switch\\|case\\|default\\|unsafe\\|as\\|inline\\|defer\\|error\\|throw\\|self\\|alsou\\|create\\|del\\|is\\|isnt\\|worker\\|spawn\\|shared\\|fusion\\|thisworker\\)\\b" . font-lock-keyword-face)
     ;; Enum member with custom value: MEMBER: type = value
     '("^[ \t]*\\([a-zA-Z_][a-zA-Z0-9_]*\\)[ \t]*:" . (1 font-lock-variable-name-face))
-   '("\\b\\(int\\|uint\\|float\\|bool\\|string\\|char\\|void\\|array\\|vec\\|hash\\)\\b\\(?:<[0-9]+>\\)?" . font-lock-type-face)
+   '("\\b\\(int\\|uint\\|float\\|bool\\|string\\|char\\|void\\|array\\|vec\\|hash\\|pointer\\)\\b\\(?:<[0-9]+>\\)?" . font-lock-type-face)
    ;; Hash table type: hash<K, V>
    '("\\bhash<[^>]+>" . font-lock-type-face)
    ;; Array types with sizes: int[5], char[n], int[x + y]
