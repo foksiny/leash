@@ -101,7 +101,7 @@
                 },
                 {
                     "name": "keyword.declaration.leash",
-                    "match": "\\b(fnc|def|struct|union|enum|class|type|template|macro|opdef|error|pub|priv|static|pubif|unsafe|as|inline|imut|create|del|extern|use|worker|shared|fusion|spawn)\\b"
+                    "match": "\\b(fnc|def|struct|union|enum|class|type|template|macro|opdef|error|pub|priv|static|pubif|unsafe|nogc|as|inline|imut|create|del|extern|use|worker|shared|fusion|spawn)\\b"
                 },
                 {
                     "name": "keyword.other.leash",
@@ -137,7 +137,7 @@
             "patterns": [
                 {
                     "name": "support.function.builtin.leash",
-                    "match": "\\b(show|showb|get|keyget|set|toint|tofloat|tounion|tostring|cstr|lstr|normescape|sizeof|typeof|size|cur|name|pushb|popb|pushf|popf|insert|clear|remove|extend|extendv|isin|rand|randf|seed|choose|wait|timepass|exit|exec|inttobytes|bytestoint|floattobytes|bytestofloat|open|close|read|write|readln|readb|writeb|readlnb|replaceall|rewind|rename|delete|replace|getKey|getkey|keys|values|push|pop|front|back)\\b"
+                    "match": "\\b(show|showb|get|keyget|set|toint|tofloat|tounion|tostring|cstr|lstr|normescape|sizeof|typeof|size|cur|name|pushb|popb|pushf|popf|insert|clear|remove|extend|extendv|isin|rand|randf|seed|choose|wait|timepass|exit|exec|inttobytes|bytestoint|floattobytes|bytestofloat|open|close|read|write|readln|readb|writeb|readlnb|replaceall|rewind|rename|delete|replace|getKey|getkey|keys|values|push|pop|front|back|malloc|calloc|realloc|free|atoi|atol|atoll|strtol|strtoul|strtof|strtod|abs|labs|abort|atexit|getenv|qsort|bsearch|printf|sprintf|snprintf|fprintf|scanf|fscanf|sscanf|fopen|fclose|fread|fwrite|fgets|fputs|fgetc|fputc|ungetc|fseek|ftell|rewind|rename|remove|fflush|feof|perror|puts|getchar|putchar|tmpfile|setbuf|setvbuf|popen|pclose|fileno|strlen|strcpy|strncpy|strcat|strncat|strcmp|strncmp|strcasecmp|strchr|strrchr|strstr|strtok|strdup|memcpy|memmove|memset|memcmp|memchr|strpbrk|strspn|strcspn|isalnum|isalpha|iscntrl|isdigit|isgraph|islower|isprint|ispunct|isspace|isupper|isxdigit|tolower|toupper|sqrt|cbrt|fabs|ceil|floor|round|trunc|exp|log|log10|sin|cos|tan|asin|acos|atan|sinh|cosh|tanh|pow|atan2|fmod|clock|difftime|time|mktime|localtime|gmtime|asctime|ctime)\\b"
                 }
             ]
         },

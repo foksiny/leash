@@ -1,6 +1,6 @@
 # Leash Programming Language
 
-**Version 0.20.0 Beta**
+**Version 0.21.0b0 Beta**
 
 Leash is a strongly-typed, modern compiled programming language built on top of LLVM. It features an intuitive syntax and is designed to handle common tasks with native performance.
 
@@ -791,6 +791,29 @@ def pMath : class {
 ```
 
 > **Warning:** Use `unsafe` only when you truly need to bypass safety checks. Unsafe code can cause undefined behavior, crashes, or memory corruption if used incorrectly.
+
+### The `nogc` Modifier
+
+Leash provides a `nogc` modifier for functions that need manual memory management instead of the garbage collector:
+
+```leash
+unsafe nogc fnc main : int {
+    buf: *char = (*char)malloc(256);
+    strcpy(buf, "Manual memory");
+    printf("%s\n", buf);
+    free(buf);
+    return 0;
+}
+```
+
+When a function is marked `nogc`:
+
+- **GC init is skipped** — `leash_gc_init()` is not called for `nogc main()`, reducing startup overhead
+- **C heap allocation** — `malloc`, `calloc`, `realloc`, and `free` call the standard C library directly
+- **Low-level checker integration** — calling a `nogc` function from a GC-managed function produces a warning (use `unsafe` to suppress)
+- **Combined with `unsafe`** — `unsafe nogc` is the typical pattern for low-level code
+
+> **Note:** The `--no-garbage-collector` / `-ngc` CLI flag applies `nogc` globally to the entire program.
 
 ### Native Library Compilation
 
@@ -4518,6 +4541,62 @@ extern fnc leash_gc_collect() : void;  // Declare if using FFI
 
 *Note: The custom GC is implemented in `leash/gc.c` and `leash/gc.h`.*
 
+### Manual Memory Management (`nogc`)
+
+For low-level systems programming, Leash supports **manual memory management** via the `nogc` function modifier and the `--no-garbage-collector` / `-ngc` global flag.
+
+#### `nogc` Functions
+
+Mark a function with `nogc` to use C's `malloc`/`free` instead of the GC allocator:
+
+```leash
+unsafe nogc fnc main : int {
+    buf: *char = (*char)malloc(256);
+    strcpy(buf, "Hello, raw heap!");
+    printf("%s\n", buf);
+    free(buf);
+    return 0;
+}
+```
+
+Key behaviors:
+- Memory allocated with `malloc`/`calloc`/`realloc` inside `nogc` functions uses the **C heap** directly
+- The GC is **not initialized** for `nogc` main functions (saves startup time and memory)
+- `nogc` functions called from GC-managed code produce a low-level checker warning
+- Use `unsafe nogc` together to suppress safety checks (recommended for raw pointer code)
+
+#### `--no-garbage-collector` / `-ngc`
+
+The `-ngc` flag disables the garbage collector **globally** for the entire program:
+
+```bash
+leash run myprogram.lsh --no-garbage-collector
+leash compile myprogram.lsh -ngc
+```
+
+When `-ngc` is active:
+- The GC runtime (`gc.c`) is **not linked** into the binary
+- All internal allocations (strings, vectors, etc.) use C `malloc`/`free` instead of `leash_gc_malloc`
+- `gc_init` is never called — no startup overhead
+- You are responsible for **every** `free()` — memory leaks are possible
+
+> **Warning:** `-ngc` is intended for embedded, real-time, or minimal-binary-size scenarios. Use with extreme care.
+
+#### C Standard Library Stubs
+
+When using `nogc` (or `-ngc`), the following C standard library functions are available as built-in calls (no `@from` import needed):
+
+| Header    | Functions |
+|-----------|-----------|
+| `stdlib.h` | `malloc`, `calloc`, `realloc`, `free`, `atoi`, `atol`, `atoll`, `strtol`, `strtoll`, `strtoul`, `strtof`, `strtod`, `abs`, `labs`, `abort`, `atexit`, `getenv`, `qsort`, `bsearch` |
+| `string.h` | `strlen`, `strcpy`, `strncpy`, `strcat`, `strncat`, `strcmp`, `strncmp`, `strcasecmp`, `strchr`, `strrchr`, `strstr`, `strtok`, `strdup`, `memcpy`, `memmove`, `memset`, `memcmp`, `memchr`, `strpbrk`, `strspn`, `strcspn` |
+| `stdio.h`  | `printf`, `sprintf`, `snprintf`, `fprintf`, `scanf`, `fscanf`, `sscanf`, `fopen`, `fclose`, `fread`, `fwrite`, `fgets`, `fputs`, `fgetc`, `fputc`, `ungetc`, `fseek`, `ftell`, `rewind`, `rename`, `remove`, `fflush`, `feof`, `perror`, `puts`, `getchar`, `putchar`, `tmpfile`, `setbuf`, `setvbuf`, `popen`, `pclose`, `fileno` |
+| `ctype.h`  | `isalpha`, `isdigit`, `isalnum`, `isxdigit`, `isspace`, `isupper`, `islower`, `toupper`, `tolower`, `iscntrl`, `isprint`, `ispunct`, `isgraph` |
+| `math.h`   | `sqrt`, `cbrt`, `fabs`, `ceil`, `floor`, `round`, `trunc`, `exp`, `log`, `log10`, `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh`, `pow`, `atan2`, `fmod` |
+| `time.h`   | `clock`, `difftime`, `time`, `mktime`, `localtime`, `gmtime`, `asctime`, `ctime` |
+
+These functions can also be called from regular (GC-managed) code — the type checker accepts `string` where `*char` is expected by performing an automatic conversion.
+
 ## Error Handling & Safety
 
 Leash prioritizes developer experience with helpful error reporting and safety features:
@@ -4773,7 +4852,7 @@ The VS Code extension provides syntax highlighting, real-time diagnostics, hover
    cd syntax_highlighters/vscode
    npm run package
    ```
-3. Install the generated `leash-0.20.0.vsix` in VS Code (Extensions view -> `...` -> `Install from VSIX...`).
+3. Install the generated `leash-0.21.0.vsix` in VS Code (Extensions view -> `...` -> `Install from VSIX...`).
 
 ### Emacs
 

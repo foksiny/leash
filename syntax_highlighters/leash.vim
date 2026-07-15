@@ -1,6 +1,6 @@
 " Vim syntax file for Leash (.lsh)
 " Language: Leash - A strongly-typed compiled language on LLVM
-" Version: 0.20.0 Beta
+" Version: 0.21.0 Beta
 " Maintainer: foksiny <foksiny@github.com>
 " Last Updated: 2026
 
@@ -12,13 +12,13 @@ endif
 syn keyword leashKeyword	fnc def struct union enum class type template macro opdef
 syn keyword leashKeyword	return if also else unless alsou while for do loop in
 syn keyword leashKeyword	imut pub priv static stop continue empty ignore use works otherwise
-syn keyword leashKeyword	switch case default unsafe as inline defer throw error create del
+syn keyword leashKeyword	switch case default unsafe nogc as inline defer throw error create del
 syn keyword leashKeyword	worker spawn shared fusion thisworker extern sizeof typeof
 syn keyword leashKeyword	cstr lstr normescape toint tofloat tostring tounion
 syn keyword leashKeyword	inttobytes bytestoint floattobytes bytestofloat getKey keys values delete push
 
 " Storage/Type Modifiers -----------------------------------------------------
-syn keyword leashStorage	pub priv static imut inline unsafe worker shared fusion extern
+syn keyword leashStorage	pub priv static imut inline unsafe nogc worker shared fusion extern
 syn keyword leashStorage	template macro type
 
 " Built-in Types -------------------------------------------------------------
@@ -40,6 +40,21 @@ syn keyword leashBuiltin	normescape sizeof typeof size cur name pushb popb pushf
 syn keyword leashBuiltin	insertv inserta clear remove extend extendv isin rand randf seed choose
 syn keyword leashBuiltin	wait timepass exit exec inttobytes bytestoint floattobytes bytestofloat
 syn keyword leashBuiltin	getKey keys values delete push
+" C Standard Library Stubs
+syn keyword leashBuiltin	malloc calloc realloc free atoi atol atoll strtol strtoul strtof strtod
+syn keyword leashBuiltin	abs labs abort atexit getenv qsort bsearch
+syn keyword leashBuiltin	printf sprintf snprintf fprintf scanf fscanf sscanf fopen fclose
+syn keyword leashBuiltin	fread fwrite fgets fputs fgetc fputc ungetc fseek ftell rewind
+syn keyword leashBuiltin	rename remove fflush feof perror puts getchar putchar tmpfile
+syn keyword leashBuiltin	setbuf setvbuf popen pclose fileno
+syn keyword leashBuiltin	strlen strcpy strncpy strcat strncat strcmp strncmp strcasecmp
+syn keyword leashBuiltin	strchr strrchr strstr strtok strdup memcpy memmove memset
+syn keyword leashBuiltin	memcmp memchr strpbrk strspn strcspn
+syn keyword leashBuiltin	isalnum isalpha iscntrl isdigit isgraph islower isprint
+syn keyword leashBuiltin	ispunct isspace isupper isxdigit tolower toupper
+syn keyword leashBuiltin	sqrt cbrt fabs ceil floor round trunc exp log log10
+syn keyword leashBuiltin	sin cos tan asin acos atan sinh cosh tanh pow atan2 fmod
+syn keyword leashBuiltin	clock difftime time mktime localtime gmtime asctime ctime
 
 " Built-in File Class Methods ------------------------------------------------
 syn keyword leashBuiltin	File open close read write readln readb writeb readlnb replaceall

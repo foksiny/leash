@@ -77,6 +77,7 @@ class TypeChecker:
 
         # Register built-in classes
         self._register_builtin_classes()
+        self._register_c_stubs()
 
     def check(self, program):
         """Run type checking on a Program AST node. Returns list of warnings."""
@@ -139,6 +140,133 @@ class TypeChecker:
             self.enum_types[name] = members
         for _, name, target_type in node.typedef_declarations:
             self.type_aliases[name] = target_type
+
+    def _register_c_stubs(self):
+        c_stubs = [
+            # stdlib.h
+            ("malloc", ("int",), "*char", ("size",), (False,)),
+            ("calloc", ("int", "int"), "*char", ("nmemb", "size"), (False, False)),
+            ("realloc", ("*char", "int"), "*char", ("ptr", "size"), (False, False)),
+            ("free", ("*char",), "void", ("ptr",), (False,)),
+            ("atoi", ("*char",), "int", ("str",), (False,)),
+            ("atol", ("*char",), "int", ("str",), (False,)),
+            ("atoll", ("*char",), "int", ("str",), (False,)),
+            ("strtol", ("*char", "*char", "int"), "int", ("str", "endptr", "base"), (False, False, False)),
+            ("strtoll", ("*char", "*char", "int"), "int", ("str", "endptr", "base"), (False, False, False)),
+            ("strtoul", ("*char", "*char", "int"), "int", ("str", "endptr", "base"), (False, False, False)),
+            ("strtof", ("*char", "*char"), "float", ("str", "endptr"), (False, False)),
+            ("strtod", ("*char", "*char"), "float", ("str", "endptr"), (False, False)),
+            ("abs", ("int",), "int", ("x",), (False,)),
+            ("labs", ("int",), "int", ("x",), (False,)),
+            ("abort", (), "void", (), ()),
+            ("atexit", ("*char",), "int", ("func",), (False,)),
+            ("getenv", ("*char",), "*char", ("name",), (False,)),
+            ("qsort", ("*char", "int", "int", "*char"), "void", ("base", "nmemb", "size", "compar"), (False, False, False, False)),
+            ("bsearch", ("*char", "*char", "int", "int", "*char"), "*char", ("key", "base", "nmemb", "size", "compar"), (False, False, False, False, False)),
+            # string.h
+            ("strlen", ("*char",), "int", ("str",), (False,)),
+            ("strcpy", ("*char", "*char"), "*char", ("dst", "src"), (False, False)),
+            ("strncpy", ("*char", "*char", "int"), "*char", ("dst", "src", "n"), (False, False, False)),
+            ("strcat", ("*char", "*char"), "*char", ("dst", "src"), (False, False)),
+            ("strncat", ("*char", "*char", "int"), "*char", ("dst", "src", "n"), (False, False, False)),
+            ("strcmp", ("*char", "*char"), "int", ("s1", "s2"), (False, False)),
+            ("strncmp", ("*char", "*char", "int"), "int", ("s1", "s2", "n"), (False, False, False)),
+            ("strcasecmp", ("*char", "*char"), "int", ("s1", "s2"), (False, False)),
+            ("strchr", ("*char", "int"), "*char", ("str", "c"), (False, False)),
+            ("strrchr", ("*char", "int"), "*char", ("str", "c"), (False, False)),
+            ("strstr", ("*char", "*char"), "*char", ("haystack", "needle"), (False, False)),
+            ("strtok", ("*char", "*char"), "*char", ("str", "delim"), (False, False)),
+            ("strdup", ("*char",), "*char", ("str",), (False,)),
+            ("memcpy", ("*char", "*char", "int"), "*char", ("dst", "src", "n"), (False, False, False)),
+            ("memmove", ("*char", "*char", "int"), "*char", ("dst", "src", "n"), (False, False, False)),
+            ("memset", ("*char", "int", "int"), "*char", ("ptr", "val", "n"), (False, False, False)),
+            ("memcmp", ("*char", "*char", "int"), "int", ("s1", "s2", "n"), (False, False, False)),
+            ("memchr", ("*char", "int", "int"), "*char", ("ptr", "val", "n"), (False, False, False)),
+            # stdio.h
+            ("printf", ("*char",), "int", ("fmt",), (False,)),
+            ("sprintf", ("*char", "*char"), "int", ("buf", "fmt"), (False, False)),
+            ("snprintf", ("*char", "int", "*char"), "int", ("buf", "size", "fmt"), (False, False, False)),
+            ("fprintf", ("*char", "*char"), "int", ("stream", "fmt"), (False, False)),
+            ("vprintf", ("*char", "*char"), "int", ("fmt", "args"), (False, False)),
+            ("vfprintf", ("*char", "*char", "*char"), "int", ("stream", "fmt", "args"), (False, False, False)),
+            ("scanf", ("*char",), "int", ("fmt",), (False,)),
+            ("fscanf", ("*char", "*char"), "int", ("stream", "fmt"), (False, False)),
+            ("sscanf", ("*char", "*char"), "int", ("buf", "fmt"), (False, False)),
+            ("fopen", ("*char", "*char"), "*char", ("path", "mode"), (False, False)),
+            ("fclose", ("*char",), "int", ("stream",), (False,)),
+            ("fread", ("*char", "int", "int", "*char"), "int", ("ptr", "size", "nmemb", "stream"), (False, False, False, False)),
+            ("fwrite", ("*char", "int", "int", "*char"), "int", ("ptr", "size", "nmemb", "stream"), (False, False, False, False)),
+            ("fgets", ("*char", "int", "*char"), "*char", ("str", "n", "stream"), (False, False, False)),
+            ("fputs", ("*char", "*char"), "int", ("str", "stream"), (False, False)),
+            ("fgetc", ("*char",), "int", ("stream",), (False,)),
+            ("fputc", ("int", "*char"), "int", ("c", "stream"), (False, False)),
+            ("ungetc", ("int", "*char"), "int", ("c", "stream"), (False, False)),
+            ("fseek", ("*char", "int", "int"), "int", ("stream", "offset", "whence"), (False, False, False)),
+            ("ftell", ("*char",), "int", ("stream",), (False,)),
+            ("rewind", ("*char",), "void", ("stream",), (False,)),
+            ("rename", ("*char", "*char"), "int", ("old", "new"), (False, False)),
+            ("remove", ("*char",), "int", ("path",), (False,)),
+            ("fflush", ("*char",), "int", ("stream",), (False,)),
+            ("feof", ("*char",), "int", ("stream",), (False,)),
+            ("perror", ("*char",), "void", ("str",), (False,)),
+            ("puts", ("*char",), "int", ("str",), (False,)),
+            ("getchar", (), "int", (), ()),
+            ("putchar", ("int",), "int", ("c",), (False,)),
+            ("tmpfile", (), "*char", (), ()),
+            ("setbuf", ("*char", "*char"), "void", ("stream", "buf"), (False, False)),
+            ("setvbuf", ("*char", "*char", "int", "int"), "int", ("stream", "buf", "mode", "size"), (False, False, False, False)),
+            ("popen", ("*char", "*char"), "*char", ("cmd", "mode"), (False, False)),
+            ("pclose", ("*char",), "int", ("stream",), (False,)),
+            ("fileno", ("*char",), "int", ("stream",), (False,)),
+            # ctype.h
+            ("isalpha", ("int",), "int", ("c",), (False,)),
+            ("isdigit", ("int",), "int", ("c",), (False,)),
+            ("isalnum", ("int",), "int", ("c",), (False,)),
+            ("isxdigit", ("int",), "int", ("c",), (False,)),
+            ("isspace", ("int",), "int", ("c",), (False,)),
+            ("isupper", ("int",), "int", ("c",), (False,)),
+            ("islower", ("int",), "int", ("c",), (False,)),
+            ("toupper", ("int",), "int", ("c",), (False,)),
+            ("tolower", ("int",), "int", ("c",), (False,)),
+            ("iscntrl", ("int",), "int", ("c",), (False,)),
+            ("isprint", ("int",), "int", ("c",), (False,)),
+            ("ispunct", ("int",), "int", ("c",), (False,)),
+            ("isgraph", ("int",), "int", ("c",), (False,)),
+            # math.h
+            ("sqrt", ("float",), "float", ("x",), (False,)),
+            ("cbrt", ("float",), "float", ("x",), (False,)),
+            ("fabs", ("float",), "float", ("x",), (False,)),
+            ("ceil", ("float",), "float", ("x",), (False,)),
+            ("floor", ("float",), "float", ("x",), (False,)),
+            ("round", ("float",), "float", ("x",), (False,)),
+            ("trunc", ("float",), "float", ("x",), (False,)),
+            ("exp", ("float",), "float", ("x",), (False,)),
+            ("log", ("float",), "float", ("x",), (False,)),
+            ("log10", ("float",), "float", ("x",), (False,)),
+            ("sin", ("float",), "float", ("x",), (False,)),
+            ("cos", ("float",), "float", ("x",), (False,)),
+            ("tan", ("float",), "float", ("x",), (False,)),
+            ("asin", ("float",), "float", ("x",), (False,)),
+            ("acos", ("float",), "float", ("x",), (False,)),
+            ("atan", ("float",), "float", ("x",), (False,)),
+            ("sinh", ("float",), "float", ("x",), (False,)),
+            ("cosh", ("float",), "float", ("x",), (False,)),
+            ("tanh", ("float",), "float", ("x",), (False,)),
+            ("pow", ("float", "float"), "float", ("x", "y"), (False, False)),
+            ("atan2", ("float", "float"), "float", ("y", "x"), (False, False)),
+            ("fmod", ("float", "float"), "float", ("x", "y"), (False, False)),
+            # time.h
+            ("clock", (), "int", (), ()),
+            ("difftime", ("float", "float"), "float", ("t1", "t0"), (False, False)),
+            ("time", ("*char",), "int", ("t",), (False,)),
+            ("mktime", ("*char",), "int", ("tm",), (False,)),
+            ("localtime", ("*char",), "*char", ("timer",), (False,)),
+            ("gmtime", ("*char",), "*char", ("timer",), (False,)),
+            ("asctime", ("*char",), "*char", ("tm",), (False,)),
+            ("ctime", ("*char",), "*char", ("timer",), (False,)),
+        ]
+        for name, arg_types, ret_type, arg_names, arg_defaults in c_stubs:
+            self.func_types[name] = (arg_types, ret_type, arg_names, arg_defaults)
 
     def _opdef_mangle_name(self, type_name, op_name, type_args=None):
         """Mangle an opdef name into a function name.
@@ -1252,6 +1380,12 @@ class TypeChecker:
             if self._types_compatible(src_elem, dst_elem):
                 return True
 
+        # string is compatible with *char (C string) and vice versa
+        if src_r == "string" and dst_r.startswith("*"):
+            return True
+        if dst_r == "string" and src_r.startswith("*"):
+            return True
+
         # Handle arrays
         if "[" in src_r and "]" in src_r and "[" in dst_r and "]" in dst_r:
             src_elem = src_r.split("[")[0]
@@ -1477,6 +1611,7 @@ class TypeChecker:
         self.used_params = set()
         self.current_func_params = set()
         self.in_unsafe_func = getattr(node, "is_unsafe", False)
+        is_nogc = getattr(node, "is_nogc", False)
 
         # Identify and register nested functions before checking body
         saved_nested = self.nested_funcs.copy()

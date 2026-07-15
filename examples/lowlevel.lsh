@@ -1,0 +1,24 @@
+// nogc is used to tell the compiler that manual memory management is going to be used (full unsafeness).
+// note that the low-level checker support calling nogc functions on normal functions,
+// and also the low-level checker will try to warn about as much possible memory leaks that it can
+// if 'unsafe' is not set.
+// in this example there will be no warnings or errors as the 'unsafe' flag will prevent the warnings of
+// possible memory leaks from the nogc, but even still it wouldn't warn as there's a free() function there.
+// you can also use --no-garbage-collector (-ngc) to disable GC globally (really risky and not recommended).
+
+unsafe nogc fnc main : int {
+    dynamic_str: *char = (*char)malloc(50 * sizeof(char));
+
+    if dynamic_str == null {
+        show("Memory allocation failed"); // or just use printf() instead.
+        return 1;
+    }
+
+    strcpy(dynamic_str, "Hello, world!");
+
+    printf("The string is: %s\n", dynamic_str);
+
+    free(dynamic_str);
+
+    return 0;
+}

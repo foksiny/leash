@@ -122,6 +122,7 @@ class Lexer:
         "spawn",
         "thisworker",
         "matrix",
+        "nogc",
     }
 
     KEYWORD_MAP = {k: k.upper() for k in KEYWORDS}

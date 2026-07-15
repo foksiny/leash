@@ -8,12 +8,14 @@ from .ast_nodes import (
 class LowLevelChecker:
     def __init__(self):
         self.in_unsafe_func = False
+        self.in_nogc_func = False
         self.errors = []
         self.in_assign_target = False
         self.union_variants = {}  # union_type_name -> set of variant names
         self.var_union_info = {}  # var_name -> {union_type, active_variant} (per function scope)
         self.param_types = {}     # param_name -> type_name (per function scope)
         self.unsafe_func_names = set()  # names of functions marked `unsafe`
+        self.nogc_func_names = set()  # names of functions marked `nogc`
 
     def check(self, ast):
         # First pass: collect union definitions and unsafe function names
@@ -24,12 +26,18 @@ class LowLevelChecker:
     def _collect_info(self, node):
         if isinstance(node, UnionDef):
             self.union_variants[node.name] = {v[0] for v in node.variants}
-        elif isinstance(node, Function) and getattr(node, "is_unsafe", False):
-            self.unsafe_func_names.add(node.name)
+        elif isinstance(node, Function):
+            if getattr(node, "is_unsafe", False):
+                self.unsafe_func_names.add(node.name)
+            if getattr(node, "is_nogc", False):
+                self.nogc_func_names.add(node.name)
         elif isinstance(node, ClassMethod):
             fnc = getattr(node, "fnc", None)
-            if fnc and getattr(node, "is_unsafe", False):
-                self.unsafe_func_names.add(fnc.name)
+            if fnc:
+                if getattr(node, "is_unsafe", False):
+                    self.unsafe_func_names.add(fnc.name)
+                if getattr(node.fnc, "is_nogc", False):
+                    self.nogc_func_names.add(fnc.name)
         elif isinstance(node, list):
             for item in node:
                 self._collect_info(item)
@@ -108,9 +116,11 @@ class LowLevelChecker:
 
     def visit_Function(self, node):
         old_unsafe = self.in_unsafe_func
+        old_nogc = self.in_nogc_func
         old_var_info = self.var_union_info
         old_param_types = self.param_types
         self.in_unsafe_func = getattr(node, "is_unsafe", False)
+        self.in_nogc_func = getattr(node, "is_nogc", False)
         self.var_union_info = {}
         self.param_types = {}
         # Track parameter types for union variant matching
@@ -120,13 +130,16 @@ class LowLevelChecker:
         self.generic_visit(node)
         self.param_types = old_param_types
         self.var_union_info = old_var_info
+        self.in_nogc_func = old_nogc
         self.in_unsafe_func = old_unsafe
 
     def visit_ClassMethod(self, node):
         old_unsafe = self.in_unsafe_func
+        old_nogc = self.in_nogc_func
         old_var_info = self.var_union_info
         old_param_types = self.param_types
         self.in_unsafe_func = getattr(node, "is_unsafe", False) or getattr(getattr(node, "fnc", None), "is_unsafe", False)
+        self.in_nogc_func = getattr(getattr(node, "fnc", None), "is_nogc", False)
         self.var_union_info = {}
         self.param_types = {}
         fnc = getattr(node, "fnc", None)
@@ -137,6 +150,7 @@ class LowLevelChecker:
         self.generic_visit(node)
         self.param_types = old_param_types
         self.var_union_info = old_var_info
+        self.in_nogc_func = old_nogc
         self.in_unsafe_func = old_unsafe
 
     def visit_VariableDecl(self, node):
@@ -272,14 +286,22 @@ class LowLevelChecker:
         self.generic_visit(node)
 
     def visit_Call(self, node):
-        """Flag calls to `unsafe` functions from non-unsafe context."""
+        """Flag calls to `unsafe`/`nogc` functions from non-unsafe/non-nogc context."""
+        fn_name = node.name if isinstance(node.name, str) else getattr(node.name, "name", str(node.name))
         if not self.in_unsafe_func:
-            fn_name = node.name if isinstance(node.name, str) else getattr(node.name, "name", str(node.name))
             if fn_name in self.unsafe_func_names:
                 self._error(
                     f"Calling `unsafe` function `{fn_name}` is unsafe outside an `unsafe` function",
                     node,
                     tip="Mark the containing function as `unsafe`: `unsafe fnc ...`. "
                          "Or wrap the call in an `unsafe` context."
+                )
+        if not self.in_nogc_func:
+            if fn_name in self.nogc_func_names:
+                self._error(
+                    f"Calling `nogc` function `{fn_name}` from a GC-managed function may cause memory issues",
+                    node,
+                    tip="Mark the containing function as `nogc`: `nogc fnc ...`. "
+                         "nogc functions use manual memory management and should only be called from nogc functions."
                 )
         self.generic_visit(node)

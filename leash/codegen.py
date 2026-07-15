@@ -43,7 +43,7 @@ from .ast_nodes import (
 
 
 class CodeGen:
-    def __init__(self, target_platform=None):
+    def __init__(self, target_platform=None, no_gc=False):
         self.module = ir.Module(name="leash_module")
         try:
             # Initialize once (safe to call multiple times)
@@ -87,6 +87,11 @@ class CodeGen:
             False  # Track if we're generating code for an unsafe function
         )
 
+        # For nogc functions - use C malloc/free instead of GC allocation
+        self.in_nogc_func = (
+            False  # Track if we're generating code for a nogc function
+        )
+
         # stderr - REMOVED, now using printf for error output
 
         # Native libraries for FFI (from @from statements)
@@ -94,6 +99,7 @@ class CodeGen:
 
         # Boehm GC configuration (replacing legacy SAMM)
         self.current_func_alloc_limit = 0  # Not used with GC
+        self.no_gc = no_gc  # Global no-gc mode: use C malloc instead of GC malloc
 
         # Deferred function calls stack (per scope)
         self.defer_stack = []  # list of lists of Call nodes
@@ -380,6 +386,18 @@ class CodeGen:
         # Note: malloc is already declared above as GC_malloc, but we need C malloc for file buffers
         self.c_malloc = ir.Function(self.module, malloc_ty, name="malloc")
 
+        # C calloc and realloc for nogc mode
+        calloc_ty = ir.FunctionType(ir.IntType(8).as_pointer(), [ir.IntType(64), ir.IntType(64)])
+        self.c_calloc = ir.Function(self.module, calloc_ty, name="calloc")
+
+        realloc_ty = ir.FunctionType(ir.IntType(8).as_pointer(), [ir.IntType(8).as_pointer(), ir.IntType(64)])
+        self.c_realloc = ir.Function(self.module, realloc_ty, name="realloc")
+
+        # If global no-gc mode, use C malloc/free everywhere
+        if self.no_gc:
+            self.malloc = self.c_malloc
+            self.realloc = self.c_realloc
+
         fileno_ty = ir.FunctionType(
             ir.IntType(32),  # int (file descriptor)
             [ir.IntType(8).as_pointer()],  # FILE*
@@ -449,6 +467,208 @@ class CodeGen:
         self.mat_parop_double = ir.Function(self.module, mat_binop_ty, name="leash_matrix_parallel_op_double")
         self.mat_parop_int32 = ir.Function(self.module, mat_binop_ty, name="leash_matrix_parallel_op_int32")
         self.mat_parop_int64 = ir.Function(self.module, mat_binop_ty, name="leash_matrix_parallel_op_int64")
+
+        # ── Register C stubs in func_symtab so they're callable from user code ──
+
+        # stdlib.h
+        self.func_symtab["malloc"] = self.c_malloc
+        self.func_symtab["calloc"] = self.c_calloc
+        self.func_symtab["realloc"] = self.c_realloc
+        self.func_symtab["free"] = self.free
+        self.func_symtab["exit"] = self.exit_fn
+        self.func_symtab["system"] = self.system_fn
+
+        # atoi / atol / atoll / atof
+        atoi_ty = ir.FunctionType(ir.IntType(32), [ir.IntType(8).as_pointer()])
+        self.func_symtab["atoi"] = ir.Function(self.module, atoi_ty, name="atoi")
+        atol_ty = ir.FunctionType(ir.IntType(64), [ir.IntType(8).as_pointer()])
+        self.func_symtab["atol"] = ir.Function(self.module, atol_ty, name="atol")
+        self.func_symtab["atoll"] = self.atoll
+        self.func_symtab["atof"] = self.atof
+
+        # strtol / strtoll / strtoul / strtoull / strtof / strtod / strtold
+        i8ptr = ir.IntType(8).as_pointer()
+        i8pp = i8ptr.as_pointer()
+        i32 = ir.IntType(32)
+        i64 = ir.IntType(64)
+        strtol_ty = ir.FunctionType(i64, [i8ptr, i8pp, i32])
+        self.func_symtab["strtol"] = ir.Function(self.module, strtol_ty, name="strtol")
+        self.func_symtab["strtoll"] = ir.Function(self.module, strtol_ty, name="strtoll")
+        strtoul_ty = ir.FunctionType(i64, [i8ptr, i8pp, i32])
+        self.func_symtab["strtoul"] = ir.Function(self.module, strtoul_ty, name="strtoul")
+        self.func_symtab["strtoull"] = ir.Function(self.module, strtoul_ty, name="strtoull")
+        strtof_ty = ir.FunctionType(ir.FloatType(), [i8ptr, i8pp])
+        self.func_symtab["strtof"] = ir.Function(self.module, strtof_ty, name="strtof")
+        strtod_ty = ir.FunctionType(ir.DoubleType(), [i8ptr, i8pp])
+        self.func_symtab["strtod"] = ir.Function(self.module, strtod_ty, name="strtod")
+        strtold_ty = ir.FunctionType(ir.DoubleType(), [i8ptr, i8pp])
+        self.func_symtab["strtold"] = ir.Function(self.module, strtold_ty, name="strtold")
+
+        # abs / labs / llabs
+        abs_ty = ir.FunctionType(i32, [i32])
+        self.func_symtab["abs"] = ir.Function(self.module, abs_ty, name="abs")
+        labs_ty = ir.FunctionType(i64, [i64])
+        self.func_symtab["labs"] = ir.Function(self.module, labs_ty, name="labs")
+        self.func_symtab["llabs"] = ir.Function(self.module, labs_ty, name="llabs")
+
+        # abort / atexit / getenv
+        abort_ty = ir.FunctionType(ir.VoidType(), [])
+        self.func_symtab["abort"] = ir.Function(self.module, abort_ty, name="abort")
+        atexit_ty = ir.FunctionType(i32, [ir.FunctionType(ir.VoidType(), []).as_pointer()])
+        self.func_symtab["atexit"] = ir.Function(self.module, atexit_ty, name="atexit")
+        getenv_ty = ir.FunctionType(i8ptr, [i8ptr])
+        self.func_symtab["getenv"] = ir.Function(self.module, getenv_ty, name="getenv")
+
+        # qsort / bsearch
+        void_ptr = i8ptr
+        qsort_ty = ir.FunctionType(ir.VoidType(), [void_ptr, i64, i64, ir.FunctionType(i32, [void_ptr, void_ptr]).as_pointer()])
+        self.func_symtab["qsort"] = ir.Function(self.module, qsort_ty, name="qsort")
+        bsearch_ty = ir.FunctionType(void_ptr, [void_ptr, void_ptr, i64, i64, ir.FunctionType(i32, [void_ptr, void_ptr]).as_pointer()])
+        self.func_symtab["bsearch"] = ir.Function(self.module, bsearch_ty, name="bsearch")
+
+        # string.h
+        self.func_symtab["strlen"] = self.strlen
+        self.func_symtab["strcpy"] = self.strcpy
+        self.func_symtab["strncpy"] = self.strncpy
+        self.func_symtab["strcat"] = self.strcat
+        self.func_symtab["strcmp"] = self.strcmp
+        self.func_symtab["strstr"] = self.strstr
+
+        # memset / memcpy / memmove / memcmp / memchr
+        memset_ty = ir.FunctionType(void_ptr, [void_ptr, i32, i64])
+        self.func_symtab["memset"] = ir.Function(self.module, memset_ty, name="memset")
+        memcpy_ty = ir.FunctionType(void_ptr, [void_ptr, void_ptr, i64])
+        self.func_symtab["memcpy"] = ir.Function(self.module, memcpy_ty, name="memcpy")
+        self.func_symtab["memmove"] = self.memmove
+        self.func_symtab["memcmp"] = self.memcmp
+        memchr_ty = ir.FunctionType(void_ptr, [void_ptr, i32, i64])
+        self.func_symtab["memchr"] = ir.Function(self.module, memchr_ty, name="memchr")
+
+        # strncat / strncmp / strcasecmp / strncasecmp
+        strncat_ty = ir.FunctionType(i8ptr, [i8ptr, i8ptr, i64])
+        self.func_symtab["strncat"] = ir.Function(self.module, strncat_ty, name="strncat")
+        strncmp_ty = ir.FunctionType(i32, [i8ptr, i8ptr, i64])
+        self.func_symtab["strncmp"] = ir.Function(self.module, strncmp_ty, name="strncmp")
+        self.func_symtab["strcasecmp"] = ir.Function(self.module, strncmp_ty, name="strcasecmp")
+        self.func_symtab["strncasecmp"] = ir.Function(self.module, strncmp_ty, name="strncasecmp")
+
+        # strchr / strrchr / strtok / strdup / strndup
+        strchr_ty = ir.FunctionType(i8ptr, [i8ptr, i32])
+        self.func_symtab["strchr"] = ir.Function(self.module, strchr_ty, name="strchr")
+        self.func_symtab["strrchr"] = ir.Function(self.module, strchr_ty, name="strrchr")
+        strtok_ty = ir.FunctionType(i8ptr, [i8ptr, i8ptr])
+        self.func_symtab["strtok"] = ir.Function(self.module, strtok_ty, name="strtok")
+        strdup_ty = ir.FunctionType(i8ptr, [i8ptr])
+        self.func_symtab["strdup"] = ir.Function(self.module, strdup_ty, name="strdup")
+        strndup_ty = ir.FunctionType(i8ptr, [i8ptr, i64])
+        self.func_symtab["strndup"] = ir.Function(self.module, strndup_ty, name="strndup")
+
+        # strpbrk / strspn / strcspn
+        strpbrk_ty = ir.FunctionType(i8ptr, [i8ptr, i8ptr])
+        self.func_symtab["strpbrk"] = ir.Function(self.module, strpbrk_ty, name="strpbrk")
+        strspn_ty = ir.FunctionType(i64, [i8ptr, i8ptr])
+        self.func_symtab["strspn"] = ir.Function(self.module, strspn_ty, name="strspn")
+        self.func_symtab["strcspn"] = ir.Function(self.module, strspn_ty, name="strcspn")
+
+        # stdio.h
+        self.func_symtab["printf"] = self.printf
+        self.func_symtab["sprintf"] = self.sprintf
+        self.func_symtab["fprintf"] = self.fprintf
+        self.func_symtab["fopen"] = self.fopen
+        self.func_symtab["fclose"] = self.fclose
+        self.func_symtab["fread"] = self.fread
+        self.func_symtab["fwrite"] = self.fwrite
+        self.func_symtab["fgets"] = self.fgets
+        self.func_symtab["fseek"] = self.fseek
+        self.func_symtab["ftell"] = self.ftell
+        self.func_symtab["rewind"] = self.frewind
+        self.func_symtab["rename"] = self.rename_fn
+        self.func_symtab["remove"] = self.remove_fn
+        self.func_symtab["fflush"] = self.fflush
+        self.func_symtab["feof"] = self.feof
+        self.func_symtab["getchar"] = self.getchar
+        self.func_symtab["putchar"] = self.putchar
+        self.func_symtab["popen"] = self.popen_fn
+        self.func_symtab["pclose"] = self.pclose_fn
+        self.func_symtab["setbuf"] = self.setbuf_fn
+
+        # snprintf / vsnprintf
+        snprintf_ty = ir.FunctionType(i32, [i8ptr, i64, i8ptr], var_arg=True)
+        self.func_symtab["snprintf"] = ir.Function(self.module, snprintf_ty, name="snprintf")
+
+        # vprintf / vsprintf / vfprintf
+        vprintf_ty = ir.FunctionType(i32, [i8ptr, i8ptr])
+        self.func_symtab["vprintf"] = ir.Function(self.module, vprintf_ty, name="vprintf")
+        self.func_symtab["vsprintf"] = ir.Function(self.module, vprintf_ty, name="vsprintf")
+        vfprintf_ty = ir.FunctionType(i32, [i8ptr, i8ptr, i8ptr])
+        self.func_symtab["vfprintf"] = ir.Function(self.module, vfprintf_ty, name="vfprintf")
+
+        # scanf / fscanf / sscanf
+        scanf_ty = ir.FunctionType(i32, [i8ptr], var_arg=True)
+        self.func_symtab["scanf"] = ir.Function(self.module, scanf_ty, name="scanf")
+        fscanf_ty = ir.FunctionType(i32, [i8ptr, i8ptr], var_arg=True)
+        self.func_symtab["fscanf"] = ir.Function(self.module, fscanf_ty, name="fscanf")
+        self.func_symtab["sscanf"] = ir.Function(self.module, scanf_ty, name="sscanf")
+
+        # fgetc / fputc / ungetc / puts / fputs / perror
+        fgetc_ty = ir.FunctionType(i32, [i8ptr])
+        self.func_symtab["fgetc"] = ir.Function(self.module, fgetc_ty, name="fgetc")
+        fputc_ty = ir.FunctionType(i32, [i32, i8ptr])
+        self.func_symtab["fputc"] = ir.Function(self.module, fputc_ty, name="fputc")
+        ungetc_ty = ir.FunctionType(i32, [i32, i8ptr])
+        self.func_symtab["ungetc"] = ir.Function(self.module, ungetc_ty, name="ungetc")
+        puts_ty = ir.FunctionType(i32, [i8ptr])
+        self.func_symtab["puts"] = ir.Function(self.module, puts_ty, name="puts")
+        fputs_ty = ir.FunctionType(i32, [i8ptr, i8ptr])
+        self.func_symtab["fputs"] = ir.Function(self.module, fputs_ty, name="fputs")
+        perror_ty = ir.FunctionType(ir.VoidType(), [i8ptr])
+        self.func_symtab["perror"] = ir.Function(self.module, perror_ty, name="perror")
+        tmpfile_ty = ir.FunctionType(i8ptr, [])
+        self.func_symtab["tmpfile"] = ir.Function(self.module, tmpfile_ty, name="tmpfile")
+        setvbuf_ty = ir.FunctionType(i32, [i8ptr, i8ptr, i32, i64])
+        self.func_symtab["setvbuf"] = ir.Function(self.module, setvbuf_ty, name="setvbuf")
+        self.func_symtab["fileno"] = self.fileno_fn
+
+        # ctype.h
+        ctype_ty = ir.FunctionType(i32, [i32])
+        for fn in ("isalnum", "isalpha", "iscntrl", "isdigit", "isgraph",
+                   "islower", "isprint", "ispunct", "isspace", "isupper",
+                   "isxdigit", "tolower", "toupper"):
+            self.func_symtab[fn] = ir.Function(self.module, ctype_ty, name=fn)
+
+        # math.h (all take double, return double)
+        dbl = ir.DoubleType()
+        dbl_unary_ty = ir.FunctionType(dbl, [dbl])
+        dbl_binary_ty = ir.FunctionType(dbl, [dbl, dbl])
+        for fn in ("sin", "cos", "tan", "asin", "acos", "atan",
+                   "sinh", "cosh", "tanh", "exp", "log", "log10",
+                   "sqrt", "ceil", "floor", "fabs", "round", "trunc"):
+            self.func_symtab[fn] = ir.Function(self.module, dbl_unary_ty, name=fn)
+        for fn in ("atan2", "pow", "fmod", "fmin", "fmax"):
+            self.func_symtab[fn] = ir.Function(self.module, dbl_binary_ty, name=fn)
+
+        # time.h
+        clock_ty = ir.FunctionType(i64, [])
+        self.func_symtab["clock"] = ir.Function(self.module, clock_ty, name="clock")
+        difftime_ty = ir.FunctionType(dbl, [i64, i64])
+        self.func_symtab["difftime"] = ir.Function(self.module, difftime_ty, name="difftime")
+        self.func_symtab["time"] = self.time
+        mktime_ty = ir.FunctionType(i64, [i8ptr])
+        self.func_symtab["mktime"] = ir.Function(self.module, mktime_ty, name="mktime")
+        self.func_symtab["localtime"] = ir.Function(self.module, mktime_ty, name="localtime")
+        self.func_symtab["gmtime"] = ir.Function(self.module, mktime_ty, name="gmtime")
+        asctime_ty = ir.FunctionType(i8ptr, [i8ptr])
+        self.func_symtab["asctime"] = ir.Function(self.module, asctime_ty, name="asctime")
+        self.func_symtab["ctime"] = ir.Function(self.module, asctime_ty, name="ctime")
+        strftime_ty = ir.FunctionType(i64, [i8ptr, i64, i8ptr, i8ptr])
+        self.func_symtab["strftime"] = ir.Function(self.module, strftime_ty, name="strftime")
+
+        # usleep
+        self.func_symtab["usleep"] = self.usleep
+
+        # rand / srand
+        self.func_symtab["rand"] = self.rand
+        self.func_symtab["srand"] = self.srand
 
     def _emit_const_str(self, string_val):
         """Create a global string constant and return a pointer to it (i8*)."""
@@ -1020,7 +1240,8 @@ class CodeGen:
         saved_builder = self.builder
         self.builder = ir.IRBuilder(block)
 
-        self.builder.call(self.gc_init, [])
+        if not self.no_gc:
+            self.builder.call(self.gc_init, [])
         stdout_ptr = self.builder.call(self.get_stdout_fn, [])
         null_ptr = ir.Constant(i8p, None)
         self.builder.call(self.setbuf_fn, [stdout_ptr, null_ptr])
@@ -2001,10 +2222,13 @@ class CodeGen:
         self.current_func_name = name
 
         old_unsafe = self.in_unsafe_func
+        old_nogc = self.in_nogc_func
         self.in_unsafe_func = getattr(node, "is_unsafe", False)
+        self.in_nogc_func = getattr(node, "is_nogc", False)
 
         if name == "main":
-            self.builder.call(self.gc_init, [])
+            if not self.in_nogc_func and not self.no_gc:
+                self.builder.call(self.gc_init, [])
             # Set stdout to unbuffered so that interactive prompts and prints are flushed in real time
             stdout_ptr = self.builder.call(self.get_stdout_fn, [])
             null_ptr = ir.Constant(ir.IntType(8).as_pointer(), None)
@@ -2144,6 +2368,7 @@ class CodeGen:
 
         self.builder = None
         self.in_unsafe_func = old_unsafe
+        self.in_nogc_func = old_nogc
         self.current_func_name = old_func_name
 
     def _codegen_ReturnStatement(self, node):
@@ -2730,6 +2955,15 @@ class CodeGen:
                 return (ptr, "char", None)
             
             resolved = self._resolve_type_name(slice_type_name)
+            
+            # Handle raw pointer index access: *char, *int, etc.
+            if resolved.startswith("*"):
+                ptr = self.builder.load(slice_ptr)
+                idx_val = self._codegen(node.index)
+                elem_type = self._get_llvm_type(resolved[1:])
+                idx64 = self._emit_cast(idx_val, ir.IntType(64))
+                gep_ptr = self.builder.gep(ptr, [idx64], inbounds=bool(self.in_unsafe_func))
+                return (gep_ptr, resolved[1:], None)
             
             # Handle hash table index access
             if resolved.startswith("hash<") and resolved.endswith(">"):
@@ -4760,15 +4994,19 @@ class CodeGen:
                 phi.add_incoming(res_not_found, not_found_bb)
                 return phi
             elif node.op == "==":
-                cmp = self.builder.call(self.strcmp, [left, right])
-                return self.builder.icmp_signed(
-                    "==", cmp, ir.Constant(ir.IntType(32), 0)
-                )
+                is_right_null = isinstance(right, ir.Constant) and right.constant is None
+                is_left_null = isinstance(left, ir.Constant) and left.constant is None
+                if is_right_null or is_left_null:
+                    return self.builder.icmp_unsigned("==", left, right)
+                cmp_val = self.builder.call(self.strcmp, [left, right])
+                return self.builder.icmp_signed("==", cmp_val, ir.Constant(ir.IntType(32), 0))
             elif node.op == "!=":
-                cmp = self.builder.call(self.strcmp, [left, right])
-                return self.builder.icmp_signed(
-                    "!=", cmp, ir.Constant(ir.IntType(32), 0)
-                )
+                is_right_null = isinstance(right, ir.Constant) and right.constant is None
+                is_left_null = isinstance(left, ir.Constant) and left.constant is None
+                if is_right_null or is_left_null:
+                    return self.builder.icmp_unsigned("!=", left, right)
+                cmp_val = self.builder.call(self.strcmp, [left, right])
+                return self.builder.icmp_signed("!=", cmp_val, ir.Constant(ir.IntType(32), 0))
             else:
                 raise Exception(f"Unknown string binary op {node.op}")
 
@@ -5231,6 +5469,38 @@ class CodeGen:
             else:
                 self.builder.call(self.system_fn, [command_val])
             return self._emit_const_str("")
+
+    def _emit_nogc_malloc(self, node):
+        """Emit a call to C malloc (for nogc functions)."""
+        if len(node.args) != 1:
+            self._error(f"malloc expects 1 argument (size), got {len(node.args)}", node=node)
+        size = self._codegen(node.args[0])
+        if isinstance(size.type, ir.IntType) and size.type.width != 64:
+            size = self.builder.zext(size, ir.IntType(64))
+        result = self.builder.call(self.c_malloc, [size])
+        return result
+
+    def _emit_nogc_calloc(self, node):
+        """Emit a call to C calloc (for nogc functions)."""
+        if len(node.args) != 2:
+            self._error(f"calloc expects 2 arguments (nmemb, size), got {len(node.args)}", node=node)
+        nmemb = self._codegen(node.args[0])
+        size = self._codegen(node.args[1])
+        if isinstance(nmemb.type, ir.IntType) and nmemb.type.width != 64:
+            nmemb = self.builder.zext(nmemb, ir.IntType(64))
+        if isinstance(size.type, ir.IntType) and size.type.width != 64:
+            size = self.builder.zext(size, ir.IntType(64))
+        return self.builder.call(self.c_calloc, [nmemb, size])
+
+    def _emit_nogc_realloc(self, node):
+        """Emit a call to C realloc (for nogc functions)."""
+        if len(node.args) != 2:
+            self._error(f"realloc expects 2 arguments (ptr, size), got {len(node.args)}", node=node)
+        ptr = self._codegen(node.args[0])
+        size = self._codegen(node.args[1])
+        if isinstance(size.type, ir.IntType) and size.type.width != 64:
+            size = self.builder.zext(size, ir.IntType(64))
+        return self.builder.call(self.c_realloc, [ptr, size])
 
     def _codegen_MethodCall(self, node):
         from .ast_nodes import Identifier
@@ -7620,6 +7890,15 @@ class CodeGen:
 
         if node.name == "exec":
             return self._emit_exec(node)
+
+        # In nogc mode, redirect malloc/realloc/calloc to C versions
+        if self.in_nogc_func:
+            if node.name == "malloc":
+                return self._emit_nogc_malloc(node)
+            if node.name == "calloc":
+                return self._emit_nogc_calloc(node)
+            if node.name == "realloc":
+                return self._emit_nogc_realloc(node)
 
         func = self.func_symtab.get(node.name)
         if not func:

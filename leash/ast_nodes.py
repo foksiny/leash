@@ -50,6 +50,7 @@ class Function(ASTNode):
         is_inline=False,
         struct_type=None,
         is_worker=False,
+        is_nogc=False,
     ):
         self.name = name
         self.args = args  # list of (name, type, default) tuples - default can be None
@@ -61,6 +62,7 @@ class Function(ASTNode):
         self.is_inline = is_inline
         self.struct_type = struct_type  # For struct functions: which struct this function belongs to
         self.is_worker = is_worker
+        self.is_nogc = is_nogc
 
 
 class Block(ASTNode):

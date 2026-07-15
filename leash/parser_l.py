@@ -517,7 +517,7 @@ class Parser:
         try:
             self.eat("LPAREN")
             tok = self.current()
-            if tok.type in self.TYPE_STARTERS or tok.type == "IDENT":
+            if tok.type in self.TYPE_STARTERS or tok.type in ("MUL", "BIT_AND", "IDENT"):
                 # Try consuming a type
                 self.parse_type()
                 # After the type, must be RPAREN
@@ -555,16 +555,20 @@ class Parser:
         while self.current().type != "EOF":
             is_unsafe = False
             is_inline = False
-            if self.current().type == "UNSAFE":
-                self.eat("UNSAFE")
-                is_unsafe = True
-
-            if self.current().type == "INLINE":
-                self.eat("INLINE")
-                is_inline = True
+            is_nogc = False
+            while self.current().type in ("NOGC", "UNSAFE", "INLINE"):
+                if self.current().type == "NOGC":
+                    self.eat("NOGC")
+                    is_nogc = True
+                elif self.current().type == "UNSAFE":
+                    self.eat("UNSAFE")
+                    is_unsafe = True
+                elif self.current().type == "INLINE":
+                    self.eat("INLINE")
+                    is_inline = True
 
             if self.current().type == "WORKER":
-                items.append(self.parse_worker_function(is_unsafe=is_unsafe, is_inline=is_inline))
+                items.append(self.parse_worker_function(is_unsafe=is_unsafe, is_inline=is_inline, is_nogc=is_nogc))
             elif self.current().type in ("SHARED", "FUSION"):
                 items.append(self.parse_shared_global_var())
             elif self.current().type in ("PUB", "PRIV"):
@@ -583,6 +587,7 @@ class Parser:
                             visibility=visibility,
                             is_unsafe=is_unsafe,
                             is_inline=is_inline,
+                            is_nogc=is_nogc,
                         )
                     )
                 elif self.peek() and self.peek().type == "ERROR":
@@ -603,7 +608,7 @@ class Parser:
                 items.append(self.parse_error_def())
             elif self.current().type == "FNC":
                 items.append(
-                    self.parse_function(is_unsafe=is_unsafe, is_inline=is_inline)
+                    self.parse_function(is_unsafe=is_unsafe, is_inline=is_inline, is_nogc=is_nogc)
                 )
             elif (
                 self.current().type == "IDENT"
@@ -705,12 +710,20 @@ class Parser:
     def parse_top_level_item(self):
         """Parse a single top-level item (used inside conditional branches)."""
         is_unsafe = False
-        if self.current().type == "UNSAFE":
-            self.eat("UNSAFE")
-            is_unsafe = True
+        is_nogc = False
+        while self.current().type in ("NOGC", "UNSAFE", "INLINE"):
+            if self.current().type == "NOGC":
+                self.eat("NOGC")
+                is_nogc = True
+            elif self.current().type == "UNSAFE":
+                self.eat("UNSAFE")
+                is_unsafe = True
+            elif self.current().type == "INLINE":
+                self.eat("INLINE")
+                pass
 
         if self.current().type == "WORKER":
-            return self.parse_worker_function(is_unsafe=is_unsafe)
+            return self.parse_worker_function(is_unsafe=is_unsafe, is_nogc=is_nogc)
         elif self.current().type in ("SHARED", "FUSION"):
             return self.parse_shared_global_var()
         elif self.current().type in ("PUB", "PRIV"):
@@ -722,7 +735,7 @@ class Parser:
             elif self.peek() and self.peek().type == "FNC":
                 visibility = self.current().value.lower()
                 self.eat(self.current().type)
-                return self.parse_function(visibility=visibility, is_unsafe=is_unsafe)
+                return self.parse_function(visibility=visibility, is_unsafe=is_unsafe, is_nogc=is_nogc)
             elif self.peek() and self.peek().type == "USE":
                 visibility = self.current().value.lower()
                 self.eat(self.current().type)
@@ -733,7 +746,7 @@ class Parser:
         elif self.current().type == "DEF":
             return self.parse_def()
         elif self.current().type == "FNC":
-            return self.parse_function(is_unsafe=is_unsafe)
+            return self.parse_function(is_unsafe=is_unsafe, is_nogc=is_nogc)
         elif (
             self.current().type == "IDENT"
             and self.peek()
@@ -1104,11 +1117,11 @@ class Parser:
         self.eat("SEMI")
         return GlobalVarDecl(name, var_type, value, visibility, is_shared=not is_fusion, is_fusion=is_fusion)
 
-    def parse_worker_function(self, visibility="pub", is_unsafe=False, is_inline=False):
+    def parse_worker_function(self, visibility="pub", is_unsafe=False, is_inline=False, is_nogc=False):
         """Parse a worker function: worker fnc name(args) : void { ... }"""
         tok = self.current()
         self.eat("WORKER")
-        fnc_node = self.parse_function(visibility=visibility, is_unsafe=is_unsafe, is_inline=is_inline)
+        fnc_node = self.parse_function(visibility=visibility, is_unsafe=is_unsafe, is_inline=is_inline, is_nogc=is_nogc)
         fnc_node.is_worker = True
         return fnc_node
 
@@ -1243,7 +1256,7 @@ class Parser:
             self.eat("SEMI")
         return ClassDef(name, fields, methods, parent, type_params, visibility)
 
-    def parse_function(self, visibility="pub", is_unsafe=False, is_inline=False):
+    def parse_function(self, visibility="pub", is_unsafe=False, is_inline=False, is_nogc=False):
         fnc_tok = self.current()
         self.eat("FNC")
         name = self.eat("IDENT").value
@@ -1311,6 +1324,7 @@ class Parser:
             is_unsafe,
             is_inline,
             struct_type=struct_type,
+            is_nogc=is_nogc,
         )
         self._pos(node, fnc_tok)
         node.source_file = self.source_file
@@ -1961,7 +1975,6 @@ class Parser:
             "elseif": "Leash uses `also` for 'else if' conditions! (e.g., `if a { ... } also b { ... }`)",
             "print": 'Leash uses `show()` for console output! Example: `show("Hello");`',
             "println": 'Leash uses `show()` for console output! Example: `show("Hello");`',
-            "printf": "Leash uses `show()` for console output! (No format strings needed, it's smart!)",
             "def": "Top-level definitions use `def`, but functions use `fnc`! Example: `fnc main() : void { ... }`",
             "func": "Leash uses the short `fnc` keyword for functions!",
             "function": "Leash uses the short `fnc` keyword for functions!",

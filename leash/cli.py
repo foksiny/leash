@@ -770,7 +770,7 @@ def _get_target_machine(triple, reloc, opt_level):
         )
     return _target_machine_cache[key]
 
-def compile_file(input_file, output_name=None, output_type="executable", is_run_mode=False, target_name=None, check_mode=False, warnings_as_errors=False, extra_libs=None, opt_level=None, extra_import_dirs=None, opt_verbose=False):
+def compile_file(input_file, output_name=None, output_type="executable", is_run_mode=False, target_name=None, check_mode=False, warnings_as_errors=False, extra_libs=None, opt_level=None, extra_import_dirs=None, opt_verbose=False, no_gc=False):
     with open(input_file, "r") as f: code = f.read()
     target_config = get_target(target_name) if target_name else get_native_target()
     try:
@@ -788,7 +788,7 @@ def compile_file(input_file, output_name=None, output_type="executable", is_run_
         parsed_opt, size_opt = parse_opt_level(opt_level)
         ast = optimize_ast(ast, opt_level=parsed_opt, opt_verbose=opt_verbose)
         llvm.initialize_native_target(); llvm.initialize_native_asmprinter()
-        codegen = CodeGen(target_platform=target_config.name); codegen.generate_code(ast, input_file)
+        codegen = CodeGen(target_platform=target_config.name, no_gc=no_gc); codegen.generate_code(ast, input_file)
         hoist_allocas(codegen.module)
         mod = llvm.parse_assembly(codegen.get_ir()); mod.verify()
     except LeashError as e: _print_error(e, input_file, code); sys.exit(1)
@@ -804,7 +804,7 @@ def compile_file(input_file, output_name=None, output_type="executable", is_run_
     optimize_module(mod, opt_level=parsed_opt, size_opt=size_opt, target_machine=tm, opt_verbose=opt_verbose)
     obj_name = output_name + ".o"
     with open(obj_name, "wb") as f: f.write(tm.emit_object(mod))
-    return _link_native(obj_name, output_name, target_config, is_run_mode, output_type, codegen, extra_libs)
+    return _link_native(obj_name, output_name, target_config, is_run_mode, output_type, codegen, extra_libs, no_gc=no_gc)
 
 def _parse_undefined_symbols(stderr):
     """Parse undefined reference symbols from linker error output."""
@@ -897,10 +897,12 @@ def _link_native(obj_name, output_name, target_config, is_run_mode, output_type,
 # Cache compiled runtime stubs to avoid recompiling gc.c + stubs every link
 _runtime_stub_cache = {}
 
-def _get_runtime_stubs(cc):
+def _get_runtime_stubs(cc, no_gc=False):
     """Return list of compiled .o paths for runtime C files, cached by (compiler, mtime)."""
     leash_dir = os.path.dirname(os.path.abspath(__file__))
-    stub_files = ["gc.c"]
+    stub_files = []
+    if not no_gc:
+        stub_files.append("gc.c")
     if os.name == "nt":
         stub_files.append("windows_stubs.c")
     else:
@@ -939,7 +941,7 @@ def _get_runtime_stubs(cc):
             result.append(cached_o)
     return result
 
-def _link_native(obj_name, output_name, target_config, is_run_mode, output_type, codegen, extra_libs=None):
+def _link_native(obj_name, output_name, target_config, is_run_mode, output_type, codegen, extra_libs=None, no_gc=False):
     nlib_args = [l[0] for l in codegen.native_libs]
     if extra_libs: nlib_args.extend([f"-l{l}" for l in extra_libs])
     cc = os.environ.get("CC") or target_config.detect_cross_linker()
@@ -952,7 +954,7 @@ def _link_native(obj_name, output_name, target_config, is_run_mode, output_type,
                 print("error: No C compiler found (install gcc or clang, or set CC env var)", file=sys.stderr)
                 sys.exit(1)
 
-    stubs = _get_runtime_stubs(cc)
+    stubs = _get_runtime_stubs(cc, no_gc=no_gc)
 
     out = None
     retried = False
@@ -999,7 +1001,7 @@ def _link_native(obj_name, output_name, target_config, is_run_mode, output_type,
     if not is_run_mode: print(f"Successfully compiled to '{out}'")
     return out
 
-def dump_file(input_file, output_name=None, target_name=None, check_mode=False, warnings_as_errors=False, extra_libs=None, opt_level=None, extra_import_dirs=None, opt_verbose=False):
+def dump_file(input_file, output_name=None, target_name=None, check_mode=False, warnings_as_errors=False, extra_libs=None, opt_level=None, extra_import_dirs=None, opt_verbose=False, no_gc=False):
     with open(input_file, "r") as f: code = f.read()
     target_config = get_target(target_name) if target_name else get_native_target()
     try:
@@ -1016,7 +1018,7 @@ def dump_file(input_file, output_name=None, target_name=None, check_mode=False, 
         popt, sopt = parse_opt_level(opt_level)
         ast = optimize_ast(ast, opt_level=popt, opt_verbose=opt_verbose)
         llvm.initialize_all_targets()
-        codegen = CodeGen(target_platform=target_config.name); codegen.generate_code(ast, input_file)
+        codegen = CodeGen(target_platform=target_config.name, no_gc=no_gc); codegen.generate_code(ast, input_file)
         hoist_allocas(codegen.module)
         mod = llvm.parse_assembly(codegen.get_ir()); mod.verify()
     except LeashError as e: _print_error(e, input_file, code); sys.exit(1)
@@ -1028,11 +1030,11 @@ def dump_file(input_file, output_name=None, target_name=None, check_mode=False, 
     with open(output_name, "w") as f: f.write(str(mod))
     print(f"Dumped LLVM IR to '{output_name}'"); return output_name
 
-def run_file(input_file, args=[], target_name=None, check_mode=False, warnings_as_errors=False, extra_libs=None, opt_level=None, extra_import_dirs=None, opt_verbose=False):
+def run_file(input_file, args=[], target_name=None, check_mode=False, warnings_as_errors=False, extra_libs=None, opt_level=None, extra_import_dirs=None, opt_verbose=False, no_gc=False):
     import platform, time, uuid, stat, signal
     tcfg = get_target(target_name) if target_name else get_native_target()
     tmp = f".__temp_run_leash_exe_{uuid.uuid4().hex}"
-    out = compile_file(input_file, output_name=tmp, is_run_mode=True, target_name=target_name, check_mode=check_mode, warnings_as_errors=warnings_as_errors, extra_libs=extra_libs, opt_level=opt_level, extra_import_dirs=extra_import_dirs, opt_verbose=opt_verbose)
+    out = compile_file(input_file, output_name=tmp, is_run_mode=True, target_name=target_name, check_mode=check_mode, warnings_as_errors=warnings_as_errors, extra_libs=extra_libs, opt_level=opt_level, extra_import_dirs=extra_import_dirs, opt_verbose=opt_verbose, no_gc=no_gc)
     # Use absolute path to avoid working directory issues
     out_abs = os.path.abspath(out)
     # Ensure binary is executable (important on filesystems like WSL DrvFs)
@@ -1190,7 +1192,7 @@ def update_leash():
     import json
     
     print("Leash Update Checker")
-    print("Current version: 0.20.0b0\n")
+    print("Current version: 0.21.0b0\n")
     
     try:
         req = urllib.request.Request(
@@ -1245,10 +1247,10 @@ def main():
         sys.exit(1)
     cmd = sys.argv[1]
     if cmd in ("--help", "-h"):
-        print("Leash v0.20.0b0\nUsage: leash <command> [options]\nCommands: compile, run, dump, check, install, init, build, runp, update\nRun 'leash <command> --help' for details.\n\nGlobal Options:\n  --verbose/-vb                       Enable highly detailed masterclass error and warning explanations.\n  --optimization-verbosity/-ov      Show optimization pass details.")
+        print("Leash v0.21.0b0\nUsage: leash <command> [options]\nCommands: compile, run, dump, check, install, init, build, runp, update\nRun 'leash <command> --help' for details.\n\nGlobal Options:\n  --verbose/-vb                       Enable highly detailed masterclass error and warning explanations.\n  --optimization-verbosity/-ov      Show optimization pass details.")
         sys.exit(0)
     if cmd in ("--version", "-v"):
-        print("Leash v0.20.0b0\nBuilt on LLVM with custom GC"); sys.exit(0)
+        print("Leash v0.21.0b0\nBuilt on LLVM with custom GC"); sys.exit(0)
     if cmd == "check":
         if len(sys.argv) < 3:
             print("Usage: leash check <file.lsh> [options]")
@@ -1319,10 +1321,11 @@ def main():
             print(f"Usage: leash {cmd} <file.lsh> [options]")
             sys.exit(1)
         if sys.argv[2] in ("--help", "-h"):
-            print(f"Options for {cmd}:\n  --target <target>\n  --check\n  --warnings-as-errors\n  --opt <0,1,2,3,4,s,z>\n  -l<lib>\n  --other-imports/-oi <folder>\n  --verbose/-vb                       Enable highly detailed masterclass error and warning explanations.\n  --optimization-verbosity/-ov      Show optimization pass details.")
+            print(f"Options for {cmd}:\n  --target <target>\n  --check\n  --warnings-as-errors\n  --opt <0,1,2,3,4,s,z>\n  -l<lib>\n  --other-imports/-oi <folder>\n  --no-garbage-collector/-ngc   Disable garbage collector (use C malloc/free everywhere)\n  --verbose/-vb                       Enable highly detailed masterclass error and warning explanations.\n  --optimization-verbosity/-ov      Show optimization pass details.")
             sys.exit(0)
         infile = sys.argv[2]
         target, outname, outtype, check, warnerr, elibs, opt = None, None, "executable", False, False, [], "2"
+        no_gc = False
         extra_import_dirs = []
         i = 3
         while i < len(sys.argv):
@@ -1359,14 +1362,17 @@ def main():
             elif sys.argv[i] in ("--other-imports", "-oi") and i + 1 < len(sys.argv):
                 extra_import_dirs.append(os.path.abspath(sys.argv[i + 1]))
                 i += 2
+            elif sys.argv[i] in ("--no-garbage-collector", "-ngc"):
+                no_gc = True
+                i += 1
             else:
                 i += 1
         if cmd == "run":
-            run_file(infile, sys.argv[i:], target, check, warnerr, elibs, opt, extra_import_dirs=extra_import_dirs, opt_verbose=OPT_VERBOSE_MODE)
+            run_file(infile, sys.argv[i:], target, check, warnerr, elibs, opt, extra_import_dirs=extra_import_dirs, opt_verbose=OPT_VERBOSE_MODE, no_gc=no_gc)
         elif cmd == "dump":
-            dump_file(infile, outname, target, check, warnerr, elibs, opt, extra_import_dirs=extra_import_dirs, opt_verbose=OPT_VERBOSE_MODE)
+            dump_file(infile, outname, target, check, warnerr, elibs, opt, extra_import_dirs=extra_import_dirs, opt_verbose=OPT_VERBOSE_MODE, no_gc=no_gc)
         else:
-            compile_file(infile, outname, outtype, False, target, check, warnerr, elibs, opt, extra_import_dirs=extra_import_dirs, opt_verbose=OPT_VERBOSE_MODE)
+            compile_file(infile, outname, outtype, False, target, check, warnerr, elibs, opt, extra_import_dirs=extra_import_dirs, opt_verbose=OPT_VERBOSE_MODE, no_gc=no_gc)
     elif cmd == "update":
         update_leash()
         sys.exit(0)
