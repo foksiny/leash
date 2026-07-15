@@ -1,0 +1,276 @@
+pub use lshraylib::raylib::*;
+
+pub def LIGHTGRAY : macro() |> Color { r: 200, g: 200, b: 200, a: 255 };
+pub def GRAY : macro() |> Color { r: 130, g: 130, b: 130, a: 255 };
+pub def DARKGRAY : macro() |> Color { r: 80, g: 80, b: 80, a: 255 };
+pub def YELLOW : macro() |> Color { r: 253, g: 249, b: 0, a: 255 };
+pub def GOLD : macro() |> Color { r: 255, g: 203, b: 0, a: 255 };
+pub def ORANGE : macro() |> Color { r: 255, g: 161, b: 0, a: 255 };
+pub def PINK : macro() |> Color { r: 255, g: 109, b: 194, a: 255 };
+pub def RED : macro() |> Color { r: 230, g: 41, b: 55, a: 255 };
+pub def MAROON : macro() |> Color { r: 190, g: 33, b: 55, a: 255 };
+pub def GREEN : macro() |> Color { r: 0, g: 228, b: 48, a: 255 };
+pub def LIME : macro() |> Color { r: 0, g: 158, b: 47, a: 255 };
+pub def DARKGREEN : macro() |> Color { r: 0, g: 117, b: 44, a: 255 };
+pub def SKYBLUE : macro() |> Color { r: 102, g: 191, b: 255, a: 255 };
+pub def BLUE : macro() |> Color { r: 0, g: 121, b: 241, a: 255 };
+pub def DARKBLUE : macro() |> Color { r: 0, g: 82, b: 172, a: 255 };
+pub def PURPLE : macro() |> Color { r: 200, g: 122, b: 255, a: 255 };
+pub def VIOLET : macro() |> Color { r: 135, g: 60, b: 190, a: 255 };
+pub def DARKPURPLE : macro() |> Color { r: 112, g: 31, b: 126, a: 255 };
+pub def BEIGE : macro() |> Color { r: 211, g: 176, b: 131, a: 255 };
+pub def BROWN : macro() |> Color { r: 127, g: 106, b: 79, a: 255 };
+pub def DARKBROWN : macro() |> Color { r: 76, g: 63, b: 47, a: 255 };
+pub def WHITE : macro() |> Color { r: 255, g: 255, b: 255, a: 255 };
+pub def BLACK : macro() |> Color { r: 0, g: 0, b: 0, a: 255 };
+pub def BLANK : macro() |> Color { r: 0, g: 0, b: 0, a: 0 };
+pub def MAGENTA : macro() |> Color { r: 255, g: 0, b: 255, a: 255 };
+pub def RAYWHITE : macro() |> Color { r: 245, g: 245, b: 245, a: 255 };
+
+//====================================================
+// Keyboard keys (alphanumeric)
+//====================================================
+def KEY_APOSTROPHE : macro() |> 39;
+def KEY_COMMA : macro() |> 44;
+def KEY_MINUS : macro() |> 45;
+def KEY_PERIOD : macro() |> 46;
+def KEY_SLASH : macro() |> 47;
+def KEY_ZERO : macro() |> 48;
+def KEY_ONE : macro() |> 49;
+def KEY_TWO : macro() |> 50;
+def KEY_THREE : macro() |> 51;
+def KEY_FOUR : macro() |> 52;
+def KEY_FIVE : macro() |> 53;
+def KEY_SIX : macro() |> 54;
+def KEY_SEVEN : macro() |> 55;
+def KEY_EIGHT : macro() |> 56;
+def KEY_NINE : macro() |> 57;
+def KEY_SEMICOLON : macro() |> 59;
+def KEY_EQUAL : macro() |> 61;
+def KEY_A : macro() |> 65;
+def KEY_B : macro() |> 66;
+def KEY_C : macro() |> 67;
+def KEY_D : macro() |> 68;
+def KEY_E : macro() |> 69;
+def KEY_F : macro() |> 70;
+def KEY_G : macro() |> 71;
+def KEY_H : macro() |> 72;
+def KEY_I : macro() |> 73;
+def KEY_J : macro() |> 74;
+def KEY_K : macro() |> 75;
+def KEY_L : macro() |> 76;
+def KEY_M : macro() |> 77;
+def KEY_N : macro() |> 78;
+def KEY_O : macro() |> 79;
+def KEY_P : macro() |> 80;
+def KEY_Q : macro() |> 81;
+def KEY_R : macro() |> 82;
+def KEY_S : macro() |> 83;
+def KEY_T : macro() |> 84;
+def KEY_U : macro() |> 85;
+def KEY_V : macro() |> 86;
+def KEY_W : macro() |> 87;
+def KEY_X : macro() |> 88;
+def KEY_Y : macro() |> 89;
+def KEY_Z : macro() |> 90;
+def KEY_LEFT_BRACKET : macro() |> 91;
+def KEY_BACKSLASH : macro() |> 92;
+def KEY_RIGHT_BRACKET : macro() |> 93;
+def KEY_GRAVE : macro() |> 96;
+
+//====================================================
+// Keyboard keys (function keys)
+//====================================================
+def KEY_SPACE : macro() |> 32;
+def KEY_ESCAPE : macro() |> 256;
+def KEY_ENTER : macro() |> 257;
+def KEY_TAB : macro() |> 258;
+def KEY_BACKSPACE : macro() |> 259;
+def KEY_INSERT : macro() |> 260;
+def KEY_DELETE : macro() |> 261;
+def KEY_RIGHT : macro() |> 262;
+def KEY_LEFT : macro() |> 263;
+def KEY_DOWN : macro() |> 264;
+def KEY_UP : macro() |> 265;
+def KEY_PAGE_UP : macro() |> 266;
+def KEY_PAGE_DOWN : macro() |> 267;
+def KEY_HOME : macro() |> 268;
+def KEY_END : macro() |> 269;
+def KEY_CAPS_LOCK : macro() |> 280;
+def KEY_SCROLL_LOCK : macro() |> 281;
+def KEY_NUM_LOCK : macro() |> 282;
+def KEY_PRINT_SCREEN : macro() |> 283;
+def KEY_PAUSE : macro() |> 284;
+def KEY_F1 : macro() |> 290;
+def KEY_F2 : macro() |> 291;
+def KEY_F3 : macro() |> 292;
+def KEY_F4 : macro() |> 293;
+def KEY_F5 : macro() |> 294;
+def KEY_F6 : macro() |> 295;
+def KEY_F7 : macro() |> 296;
+def KEY_F8 : macro() |> 297;
+def KEY_F9 : macro() |> 298;
+def KEY_F10 : macro() |> 299;
+def KEY_F11 : macro() |> 300;
+def KEY_F12 : macro() |> 301;
+def KEY_LEFT_SHIFT : macro() |> 340;
+def KEY_LEFT_CONTROL : macro() |> 341;
+def KEY_LEFT_ALT : macro() |> 342;
+def KEY_LEFT_SUPER : macro() |> 343;
+def KEY_RIGHT_SHIFT : macro() |> 344;
+def KEY_RIGHT_CONTROL : macro() |> 345;
+def KEY_RIGHT_ALT : macro() |> 346;
+def KEY_RIGHT_SUPER : macro() |> 347;
+def KEY_KB_MENU : macro() |> 348;
+def KEY_KP_0 : macro() |> 320;
+def KEY_KP_1 : macro() |> 321;
+def KEY_KP_2 : macro() |> 322;
+def KEY_KP_3 : macro() |> 323;
+def KEY_KP_4 : macro() |> 324;
+def KEY_KP_5 : macro() |> 325;
+def KEY_KP_6 : macro() |> 326;
+def KEY_KP_7 : macro() |> 327;
+def KEY_KP_8 : macro() |> 328;
+def KEY_KP_9 : macro() |> 329;
+def KEY_KP_DECIMAL : macro() |> 330;
+def KEY_KP_DIVIDE : macro() |> 331;
+def KEY_KP_MULTIPLY : macro() |> 332;
+def KEY_KP_SUBTRACT : macro() |> 333;
+def KEY_KP_ADD : macro() |> 334;
+def KEY_KP_ENTER : macro() |> 335;
+def KEY_KP_EQUAL : macro() |> 336;
+def KEY_BACK : macro() |> 4;
+def KEY_MENU : macro() |> 5;
+def KEY_VOLUME_UP : macro() |> 24;
+def KEY_VOLUME_DOWN : macro() |> 25;
+
+pub def Color : struct {
+    r: uint<8>;
+    g: uint<8>;
+    b: uint<8>;
+    a: uint<8>;
+};
+
+pub def Vector2 : struct {
+    x: float<32>;
+    y: float<32>;
+};
+
+pub def LshWindow : struct {
+    width:  int;
+    height: int;
+    title:  string;
+    fps:    int;
+    bgc:    Color;
+};
+
+pub fnc create_window(width int,
+                      height int, title string,
+                      fps int = 60,
+                      bgc Color = Color { r: 0, g: 0, b: 0, a: 255 }
+                    ) : LshWindow {
+    return LshWindow { width: width, height: height, title: title, fps: fps, bgc: bgc };
+}
+
+pub fnc init_window(window &LshWindow,
+                    startf fnc() : void,
+                    updatef fnc() : void,
+                    endf fnc() : void) : void {
+    InitWindow(window.width, window.height, window.title);
+    SetTargetFPS(window.fps);
+
+    startf();
+
+    while !WindowShouldClose() {
+        BeginDrawing();
+            ClearBackground(window.bgc);
+            updatef();
+        EndDrawing(0);
+    }
+
+    endf();
+    CloseWindow();
+}
+
+pub fnc close_key(key int) {
+    SetExitKey(key);
+}
+
+pub fnc close_window() {
+    CloseWindow();
+}
+
+pub fnc toggle_fullscreen() {
+    ToggleFullscreen();
+}
+
+pub fnc set_title(window &LshWindow, title string) {
+    window.title = title;
+    SetWindowTitle(title);
+}
+
+pub fnc norm_rect(sizes Vector2) : Vector2 {
+    return Vector2 { x: sizes.x / 2, y: sizes.y / 2 };
+}
+
+pub fnc check_border_rect(window LshWindow, pos Vector2, sizes Vector2) : Vector2 {
+    out  := Vector2 { x: 0, y: 0 };
+    norm := norm_rect(sizes);
+    if pos.x < norm.x {
+        out.x = -1;
+    } also pos.x + norm.x > window.width {
+        out.x = 1;
+    }
+
+    if pos.y < norm.y {
+        out.y = -1;
+    } also pos.y + norm.y > window.height {
+        out.y = 1;
+    }
+
+    return out;
+}
+
+pub def Draw : class {
+    pub static fnc draw_rect(pos Vector2, sizes Vector2, color Color) {
+        DrawRectangle(pos.x - (sizes.x / 2), pos.y - (sizes.y / 2), sizes.x, sizes.y, color);
+    }
+
+    pub static fnc draw_circle(pos Vector2, radius float<32>, color Color) {
+        DrawCircle(pos.x, pos.y, radius, color);
+    }
+
+    pub static fnc draw_line(startpos Vector2, endpos Vector2, color Color) {
+        DrawLine(startpos.x, startpos.y, endpos.x, endpos.y, color);
+    }
+
+    pub static fnc draw_pixel(pos Vector2, color Color) {
+        DrawPixel(pos.x, pos.y, color);
+    }
+
+    pub static fnc draw_ellipse(pos Vector2, radius Vector2, color Color) {
+        DrawEllipse(pos.x, pos.y, radius.x, radius.y, color);
+    }
+
+    pub static fnc draw_ellipse_lines(pos Vector2, radius Vector2, color Color) {
+        DrawEllipseLines(pos.x, pos.y, radius.x, radius.y, color);
+    }
+}
+
+pub def Input : class {
+    pub static fnc key_down(key int) : bool {
+        return IsKeyDown(key);
+    }
+
+    pub static fnc key_up(key int) : bool {
+        return IsKeyUp(key);
+    }
+
+    pub static fnc key_pressed(key int) : bool {
+        return IsKeyPressed(key);
+    }
+
+    pub static fnc key_released(key int) : bool {
+        return IsKeyReleased(key);
+    }
+}

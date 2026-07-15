@@ -45,16 +45,15 @@ from .ast_nodes import (
 class CodeGen:
     def __init__(self, target_platform=None):
         self.module = ir.Module(name="leash_module")
-        # Initialize data layout for type size calculations
         try:
-            llvm.initialize()
+            # Initialize once (safe to call multiple times)
             llvm.initialize_native_target()
             llvm.initialize_native_asmprinter()
-            target = llvm.get_default_target_triple()
-            target_machine = llvm.create_target_machine(target)
-            self.module.data_layout = target_machine.target_data
+            self.module.triple = llvm.get_default_triple()
+            # Get data layout from a throwaway target machine
+            t = llvm.Target.from_triple(self.module.triple)
+            self.module.data_layout = t.create_target_machine().target_data
         except:
-            # Fallback if LLVM binding fails
             pass
         self.builder = None
         self.func_symtab = {}
@@ -1000,6 +999,55 @@ class CodeGen:
             elif isinstance(item, OpDef):
                 self._codegen(item)
 
+        # Generate main wrapper from class static main if no top-level main exists
+        if "main" not in self.func_symtab:
+            for cls_name, cls_info in self.class_symtab.items():
+                if cls_info["method_static"].get("main", False):
+                    main_func = cls_info["methods"].get("main")
+                    if main_func is not None:
+                        self._generate_main_wrapper_from_class(main_func)
+                        break
+
+    def _generate_main_wrapper_from_class(self, class_main_func):
+        """Generate a standard C main() wrapper that calls a class static main()."""
+        i32 = ir.IntType(32)
+        i8p = ir.IntType(8).as_pointer()
+        func_type = ir.FunctionType(i32, [i32, i8p.as_pointer()])
+        func = ir.Function(self.module, func_type, name="main")
+        self.func_symtab["main"] = func
+
+        block = func.append_basic_block(name="entry")
+        saved_builder = self.builder
+        self.builder = ir.IRBuilder(block)
+
+        self.builder.call(self.gc_init, [])
+        stdout_ptr = self.builder.call(self.get_stdout_fn, [])
+        null_ptr = ir.Constant(i8p, None)
+        self.builder.call(self.setbuf_fn, [stdout_ptr, null_ptr])
+
+        if self.init_func:
+            self.builder.call(self.init_func, [])
+
+        self.builder.call(
+            self.clock_gettime, [self.CLOCK_MONOTONIC, self.start_time_gv]
+        )
+
+        if not self.seed_called:
+            time_val = self.builder.call(
+                self.time, [ir.Constant(ir.IntType(64).as_pointer(), None)]
+            )
+            seed_val = self.builder.trunc(time_val, i32)
+            self.builder.call(self.srand, [seed_val])
+
+        self.builder.call(self.leash_setup_interrupt_fn, [])
+
+        self.builder.call(class_main_func, [])
+        self.builder.call(self.showb_flush_fn, [])
+        self.builder.call(self.leash_wait_workers_fn, [])
+        self.builder.ret(ir.Constant(i32, 0))
+
+        self.builder = saved_builder
+
     def _codegen_GlobalVarDecl(self, node):
         """Generate LLVM global variable for a top-level pub/priv declaration."""
         # Resolve the Leash type to LLVM type
@@ -1040,16 +1088,58 @@ class CodeGen:
             return os.path.normpath(lib_path)
         return os.path.normpath(os.path.join(source_dir, lib_path))
 
+    def _is_hfa_struct(self, llvm_type):
+        """Check if a struct type is a Homogeneous Float Aggregate (all fields same float type, ≤4)."""
+        if not isinstance(llvm_type, ir.LiteralStructType):
+            return False
+        elems = llvm_type.elements
+        if len(elems) == 0 or len(elems) > 4:
+            return False
+        float_types = (ir.FloatType, ir.DoubleType, ir.HalfType)
+        first_is_float = isinstance(elems[0], float_types)
+        if not first_is_float:
+            return False
+        return all(isinstance(e, float_types) and type(e) is type(elems[0]) for e in elems)
+
+    def _struct_bit_size(self, llvm_type):
+        """Get total bit size of a struct's fields."""
+        if not isinstance(llvm_type, ir.LiteralStructType):
+            return 0
+        total = 0
+        for e in llvm_type.elements:
+            if isinstance(e, ir.IntType):
+                total += e.width
+            elif isinstance(e, (ir.FloatType, ir.DoubleType, ir.HalfType)):
+                total += int(e.intrinsic_name[1:])
+            else:
+                return 0
+        return total
+
+    def _flatten_struct_type(self, llvm_type):
+        """For non-HFA small structs (≤64 bits), return the equivalent integer type."""
+        if not isinstance(llvm_type, ir.LiteralStructType):
+            return llvm_type
+        if self._is_hfa_struct(llvm_type):
+            return llvm_type
+        bits = self._struct_bit_size(llvm_type)
+        if bits == 0 or bits > 64:
+            return llvm_type
+        return ir.IntType(bits)
+
     def _codegen_NativeImport(self, node):
         """Generate external function declarations for native library imports (first pass)."""
+        # Register structs, unions, and enums FIRST so they're available
+        # when resolving function parameter types.
+        self._codegen_native_import_structs_unions_enums(node)
         for name, args, return_type in node.func_declarations:
-            arg_types = [self._get_llvm_type(arg_type) for _, arg_type, _ in args]
-            ret_type = self._get_llvm_type(return_type, is_return=True)
+            raw_arg_types = [self._get_llvm_type(arg_type) for _, arg_type, _ in args]
+            # Flatten small non-HFA structs to integers for correct ABI on Windows x64
+            arg_types = [self._flatten_struct_type(t) for t in raw_arg_types]
+            ret_type = self._flatten_struct_type(self._get_llvm_type(return_type, is_return=True))
             func_type = ir.FunctionType(ret_type, arg_types)
             func = ir.Function(self.module, func_type, name=name)
             func.linkage = "external"
             self.func_symtab[name] = func
-        self._codegen_native_import_structs_unions_enums(node)
         resolved_path = self._resolve_native_lib_path(node.lib_path, getattr(node, "source_file", None))
         self.native_libs.append(
             (
@@ -1280,9 +1370,12 @@ class CodeGen:
 
     def _get_type_size(self, llvm_type):
         """Get the size of an LLVM type in bytes."""
-        # Use the target data layout to get the size
+        # Try using the target data layout if available
         if hasattr(self.module, 'data_layout') and self.module.data_layout:
-            return self.module.data_layout.get_abi_size(llvm_type)
+            try:
+                return self.module.data_layout.get_abi_size(llvm_type)
+            except Exception:
+                pass
         # Fallback: manual calculation for common types
         if isinstance(llvm_type, ir.IntType):
             return (llvm_type.width + 7) // 8
@@ -1290,8 +1383,9 @@ class CodeGen:
             return 2 if isinstance(llvm_type, ir.HalfType) else (4 if isinstance(llvm_type, ir.FloatType) else 8)
         elif isinstance(llvm_type, ir.PointerType):
             return 8  # Pointer size on 64-bit
-        elif isinstance(llvm_type, ir.LiteralStructType):
-            # Sum up field sizes (simplified - doesn't account for padding)
+        elif isinstance(llvm_type, ir.ArrayType):
+            return llvm_type.count * self._get_type_size(llvm_type.element)
+        elif isinstance(llvm_type, (ir.LiteralStructType, ir.IdentifiedStructType)):
             total = 0
             for elem in llvm_type.elements:
                 total += self._get_type_size(elem)
@@ -2055,13 +2149,16 @@ class CodeGen:
     def _codegen_ReturnStatement(self, node):
         old_target = self.current_target_type
         self.current_target_type = getattr(self, "current_func_ret_type_name", None)
-        val = self._codegen(node.value)
-        self.current_target_type = old_target
 
-        # Cast to return type
         ret_type = self.builder.function.type.pointee.return_type
-        if not isinstance(ret_type, ir.VoidType):
-            val = self._emit_cast(val, ret_type)
+        val = None
+        if node.value is not None:
+            val = self._codegen(node.value)
+            # Cast to return type
+            if not isinstance(ret_type, ir.VoidType):
+                val = self._emit_cast(val, ret_type)
+
+        self.current_target_type = old_target
 
         # Execute deferred calls before returning
         while self.defer_stack and self.defer_stack[-1]:
@@ -2071,8 +2168,10 @@ class CodeGen:
         self._emit_cleanup(ret_val=val)  # Auto-free everything EXCEPT the return value
         if isinstance(ret_type, ir.VoidType):
             self.builder.ret_void()
-        else:
+        elif val is not None:
             self.builder.ret(val)
+        else:
+            self.builder.ret(ir.Constant(ret_type, 0))
 
     def _codegen_MultiReturnStatement(self, node):
         """Generate code for multi-return: return expr1, expr2, ..."""
@@ -2446,6 +2545,15 @@ class CodeGen:
 
         if isinstance(node, Identifier):
             if node.name not in self.var_symtab:
+                # Check global variables (including those from @from)
+                gv_info = self.global_var_ptrs.get(node.name)
+                if gv_info:
+                    ptr, type_name = gv_info
+                    resolved = self._resolve_type_name(type_name)
+                    while resolved.startswith("&"):
+                        ptr = self.builder.load(ptr)
+                        resolved = resolved[1:]
+                    return ptr, resolved, None
                 if node.name in self.class_symtab:
                     return None, node.name, None  # Static access
                 # Special handling for File class (built-in)
@@ -7628,7 +7736,7 @@ class CodeGen:
                         v = self._codegen(arg_expr)
                 else:
                     v = self._codegen(arg_expr)
-                v = self._emit_cast(v, target_llvm)
+                v = self._emit_cast(v, target_llvm, node=arg_expr)
                 args.append(v)
             else:
                 v = self._codegen(arg_expr)
@@ -7741,10 +7849,13 @@ class CodeGen:
                     if any(k == fname for k, _ in node.kwargs):
                         continue
                     idx = struct_info["fields"][fname]
-                    field_val = self._codegen(default_expr)
-                    # Ensure type match
                     expected_type_str = struct_info["field_types"][fname]
                     expected_llvm_type = self._get_llvm_type(expected_type_str)
+                    old_target = self.current_target_type
+                    self.current_target_type = expected_type_str
+                    field_val = self._codegen(default_expr)
+                    self.current_target_type = old_target
+                    # Ensure type match
                     if field_val.type != expected_llvm_type:
                         field_val = self._emit_cast(field_val, expected_llvm_type)
                     val = self.builder.insert_value(val, field_val, idx)
@@ -7754,13 +7865,15 @@ class CodeGen:
                 idx = struct_info["fields"].get(key)
                 if idx is None:
                     raise LeashError(f"Struct '{node.name}' has no member named '{key}'", node=node)
-                field_val = self._codegen(expr)
-                # Convert field_val to the expected field type if needed
                 expected_type_str = struct_info["field_types"].get(key)
-                if expected_type_str:
-                    expected_llvm_type = self._get_llvm_type(expected_type_str)
-                    if field_val.type != expected_llvm_type:
-                        field_val = self._emit_cast(field_val, expected_llvm_type)
+                expected_llvm_type = self._get_llvm_type(expected_type_str) if expected_type_str else None
+                old_target = self.current_target_type
+                self.current_target_type = expected_type_str
+                field_val = self._codegen(expr)
+                self.current_target_type = old_target
+                # Convert field_val to the expected field type if needed
+                if expected_llvm_type and field_val.type != expected_llvm_type:
+                    field_val = self._emit_cast(field_val, expected_llvm_type)
                 val = self.builder.insert_value(val, field_val, idx)
             return val
 
@@ -7777,6 +7890,7 @@ class CodeGen:
             gv_info = self.global_var_ptrs.get(node.name)
             if gv_info:
                 ptr, type_name = gv_info
+
         if not ptr:
             # Check if it's a function with no arguments
             func = self.func_symtab.get(node.name)
@@ -8728,7 +8842,7 @@ class CodeGen:
 
             return result
 
-    def _emit_cast(self, val, target_type, is_signed=True):
+    def _emit_cast(self, val, target_type, is_signed=True, node=None):
         """Cast a value to the target LLVM type. is_signed controls sext vs zext for int widening."""
         src = val.type
         dst = target_type
@@ -8865,26 +8979,35 @@ class CodeGen:
                     new_vec = self.builder.insert_value(new_vec, cap_val, 2)
                     return new_vec
 
+        # Helper to get bit width of primitive types
+        def _field_width(typ):
+            if isinstance(typ, ir.IntType):
+                return typ.width
+            if isinstance(typ, (ir.FloatType, ir.DoubleType, ir.HalfType)):
+                return int(typ.intrinsic_name[1:])
+            raise LeashError(
+                f"Cannot convert struct with field type '{typ}'",
+                node=node
+            )
+
         # Handle struct to integer conversion (manual bitcast)
         if isinstance(src, ir.LiteralStructType) and dst_is_int:
             # Calculate total size of struct in bits
-            src_bits = sum(field.width for field in src.elements)
+            src_bits = sum(_field_width(f) for f in src.elements)
             if src_bits != dst.width:
                 raise LeashError(
                     f"Cannot convert struct of size {src_bits} bits to integer of {dst.width} bits",
                     node=node
                 )
-            # Ensure all fields are integers
-            for field in src.elements:
-                if not isinstance(field, ir.IntType):
-                    raise LeashError(
-                        f"Cannot convert struct with non-integer field to integer",
-                        node=node
-                    )
             # Build integer from fields (little-endian: first field is least significant bits)
             result = ir.Constant(dst, 0)
             for idx, field_type in enumerate(src.elements):
                 field_val = self.builder.extract_value(val, idx)
+                # Bitcast float fields to their integer equivalent
+                if isinstance(field_type, (ir.FloatType, ir.DoubleType, ir.HalfType)):
+                    int_width = int(field_type.intrinsic_name[1:])
+                    field_type = ir.IntType(int_width)
+                    field_val = self.builder.bitcast(field_val, field_type)
                 # Truncate or extend field_val to its native width
                 if field_type.width != field_val.type.width:
                     if field_type.width < field_val.type.width:
@@ -8895,31 +9018,42 @@ class CodeGen:
                 if field_type.width < dst.width:
                     field_val = self.builder.zext(field_val, dst)
                 # Shift and combine
-                shift_amount = sum(f.width for f in src.elements[:idx])
+                shift_amount = sum(_field_width(f) for f in src.elements[:idx])
                 if shift_amount > 0:
                     field_val = self.builder.shl(
                         field_val, ir.Constant(dst, shift_amount)
                     )
                 result = self.builder.or_(result, field_val)
             return result
+
+        # Handle integer to struct conversion (reverse of above)
+        if src_is_int and isinstance(dst, ir.LiteralStructType):
+            dst_bits = sum(_field_width(f) for f in dst.elements)
+            if src.width != dst_bits:
+                raise LeashError(
+                    f"Cannot convert integer of {src.width} bits to struct of {dst_bits} bits",
+                    node=node
+                )
+            result = ir.Constant(dst, ir.Undefined)
+            for idx, field_type in enumerate(dst.elements):
+                field_width = _field_width(field_type)
+                shift_amount = sum(_field_width(f) for f in dst.elements[:idx])
+                if shift_amount > 0:
+                    field_val = self.builder.lshr(val, ir.Constant(src, shift_amount))
+                else:
+                    field_val = val
+                # Truncate to field width
+                field_int_type = ir.IntType(field_width)
+                if src.width > field_width:
+                    field_val = self.builder.trunc(field_val, field_int_type)
+                # Bitcast float fields
+                if isinstance(field_type, (ir.FloatType, ir.DoubleType, ir.HalfType)):
+                    field_val = self.builder.bitcast(field_val, field_type)
+                result = self.builder.insert_value(result, field_val, idx)
+            return result
+
         # Fallback: no conversion needed (identity / passthrough cast)
         return val
-        self.builder.call(self.strcat, [result_after_new, suffix_start])
-
-        self.builder.branch(merge_bb)
-
-        self.builder.position_at_end(not_found_bb)
-        str_len_plus_1 = self.builder.add(str_len, ir.Constant(ir.IntType(64), 1))
-        result_copy = self.builder.call(self.malloc, [str_len_plus_1])
-        self._track_alloc(result_copy)
-        self.builder.call(self.strcpy, [result_copy, str_val])
-        self.builder.branch(merge_bb)
-
-        self.builder.position_at_end(merge_bb)
-        phi = self.builder.phi(str_val.type, name="str_replace_res")
-        phi.add_incoming(result, found_bb)
-        phi.add_incoming(result_copy, not_found_bb)
-        return phi
 
     def _codegen_string_replace_from_value(self, str_val, args):
         """Implement string.replace(old, new) for StringLiteral - replace first occurrence."""

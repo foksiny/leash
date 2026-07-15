@@ -12,50 +12,50 @@
     };
 
     def Vector2 : struct {
-        x: float;
-        y: float;
+        x: float<32>;
+        y: float<32>;
     };
 
     def Vector3 : struct {
-        x: float;
-        y: float;
-        z: float;
+        x: float<32>;
+        y: float<32>;
+        z: float<32>;
     };
 
     def Vector4 : struct {
-        x: float;
-        y: float;
-        z: float;
-        w: float;
+        x: float<32>;
+        y: float<32>;
+        z: float<32>;
+        w: float<32>;
     };
 
     def Rectangle : struct {
-        x: float;
-        y: float;
-        width: float;
-        height: float;
+        x: float<32>;
+        y: float<32>;
+        width: float<32>;
+        height: float<32>;
     };
 
     def Matrix : struct {
-        m0: float;
-        m4: float;
-        m8: float;
-        m12: float;
+        m0: float<32>;
+        m4: float<32>;
+        m8: float<32>;
+        m12: float<32>;
 
-        m1: float;
-        m5: float;
-        m9: float;
-        m13: float;
+        m1: float<32>;
+        m5: float<32>;
+        m9: float<32>;
+        m13: float<32>;
 
-        m2: float;
-        m6: float;
-        m10: float;
-        m14: float;
+        m2: float<32>;
+        m6: float<32>;
+        m10: float<32>;
+        m14: float<32>;
 
-        m3: float;
-        m7: float;
-        m11: float;
-        m15: float;
+        m3: float<32>;
+        m7: float<32>;
+        m11: float<32>;
+        m15: float<32>;
     };
 
     //====================================================
@@ -94,7 +94,7 @@
     fnc SetWindowMinSize(width int, height int) : void;
     fnc SetWindowMaxSize(width int, height int) : void;
     fnc SetWindowSize(width int, height int) : void;
-    fnc SetWindowOpacity(opacity float) : void;
+    fnc SetWindowOpacity(opacity float<32>) : void;
 
     fnc SetWindowFocused() : void;
 
@@ -160,9 +160,9 @@
 
     fnc GetFPS() : int;
 
-    fnc GetFrameTime() : float;
+    fnc GetFrameTime() : float<32>;
 
-    fnc GetTime() : float;
+    fnc GetTime() : float<32>;
 
     //====================================================
     // Keyboard
@@ -199,9 +199,9 @@
 
     fnc SetMouseOffset(offsetx int, offsety int) : void;
 
-    fnc SetMouseScale(scaleX float, scaleY float) : void;
+    fnc SetMouseScale(scaleX float<32>, scaleY float<32>) : void;
 
-    fnc GetMouseWheelMove() : float;
+    fnc GetMouseWheelMove() : float<32>;
 
     fnc GetMouseWheelMoveV() : Vector2;
 
@@ -224,7 +224,7 @@
 
     fnc GetGamepadAxisCount(gamepad int) : int;
 
-    fnc GetGamepadAxisMovement(gamepad int, axis int) : float;
+    fnc GetGamepadAxisMovement(gamepad int, axis int) : float<32>;
 
     fnc SetGamepadMappings(mappings string) : int;
 
@@ -238,13 +238,13 @@
 
     fnc GetGestureDetected() : int;
 
-    fnc GetGestureHoldDuration() : float;
+    fnc GetGestureHoldDuration() : float<32>;
 
     fnc GetGestureDragVector() : Vector2;
-    fnc GetGestureDragAngle() : float;
+    fnc GetGestureDragAngle() : float<32>;
 
     fnc GetGesturePinchVector() : Vector2;
-    fnc GetGesturePinchAngle() : float;
+    fnc GetGesturePinchAngle() : float<32>;
 
     //====================================================
     // Pixel
@@ -267,7 +267,7 @@
 
     fnc DrawLineEx(startPos Vector2,
                    endPos Vector2,
-                   thick float,
+                   thick float<32>,
                    color Color) : void;
 
     fnc DrawLineStrip(points pointer<Vector2>,
@@ -276,7 +276,7 @@
 
     fnc DrawLineBezier(startPos Vector2,
                        endPos Vector2,
-                       thick float,
+                       thick float<32>,
                        color Color) : void;
 
     //====================================================
@@ -285,40 +285,40 @@
 
     fnc DrawCircle(centerX int,
                    centerY int,
-                   radius float,
+                   radius float<32>,
                    color Color) : void;
 
     fnc DrawCircleSector(center Vector2,
-                         radius float,
-                         startAngle float,
-                         endAngle float,
+                         radius float<32>,
+                         startAngle float<32>,
+                         endAngle float<32>,
                          segments int,
                          color Color) : void;
 
     fnc DrawCircleSectorLines(center Vector2,
-                              radius float,
-                              startAngle float,
-                              endAngle float,
+                              radius float<32>,
+                              startAngle float<32>,
+                              endAngle float<32>,
                               segments int,
                               color Color) : void;
 
     fnc DrawCircleGradient(centerX int,
                            centerY int,
-                           radius float,
+                           radius float<32>,
                            inner Color,
                            outer Color) : void;
 
     fnc DrawCircleV(center Vector2,
-                    radius float,
+                    radius float<32>,
                     color Color) : void;
 
     fnc DrawCircleLines(centerX int,
                         centerY int,
-                        radius float,
+                        radius float<32>,
                         color Color) : void;
 
     fnc DrawCircleLinesV(center Vector2,
-                         radius float,
+                         radius float<32>,
                          color Color) : void;
 
     //====================================================
@@ -327,14 +327,14 @@
 
     fnc DrawEllipse(centerX int,
                     centerY int,
-                    radiusH float,
-                    radiusV float,
+                    radiusH float<32>,
+                    radiusV float<32>,
                     color Color) : void;
 
     fnc DrawEllipseLines(centerX int,
                          centerY int,
-                         radiusH float,
-                         radiusV float,
+                         radiusH float<32>,
+                         radiusV float<32>,
                          color Color) : void;
 
     //====================================================
@@ -342,18 +342,18 @@
     //====================================================
 
     fnc DrawRing(center Vector2,
-                 innerRadius float,
-                 outerRadius float,
-                 startAngle float,
-                 endAngle float,
+                 innerRadius float<32>,
+                 outerRadius float<32>,
+                 startAngle float<32>,
+                 endAngle float<32>,
                  segments int,
                  color Color) : void;
 
     fnc DrawRingLines(center Vector2,
-                      innerRadius float,
-                      outerRadius float,
-                      startAngle float,
-                      endAngle float,
+                      innerRadius float<32>,
+                      outerRadius float<32>,
+                      startAngle float<32>,
+                      endAngle float<32>,
                       segments int,
                       color Color) : void;
 
@@ -376,7 +376,7 @@
 
     fnc DrawRectanglePro(rec Rectangle,
                          origin Vector2,
-                         rotation float,
+                         rotation float<32>,
                          color Color) : void;
 
     fnc DrawRectangleGradientV(posX int,
@@ -406,18 +406,18 @@
                            color Color) : void;
 
     fnc DrawRectangleLinesEx(rec Rectangle,
-                             lineThick float,
+                             lineThick float<32>,
                              color Color) : void;
 
     fnc DrawRectangleRounded(rec Rectangle,
-                             roundness float,
+                             roundness float<32>,
                              segments int,
                              color Color) : void;
 
     fnc DrawRectangleRoundedLines(rec Rectangle,
-                                  roundness float,
+                                  roundness float<32>,
                                   segments int,
-                                  lineThick float,
+                                  lineThick float<32>,
                                   color Color) : void;
 
     //====================================================
@@ -448,21 +448,21 @@
 
     fnc DrawPoly(center Vector2,
                  sides int,
-                 radius float,
-                 rotation float,
+                 radius float<32>,
+                 rotation float<32>,
                  color Color) : void;
 
     fnc DrawPolyLines(center Vector2,
                       sides int,
-                      radius float,
-                      rotation float,
+                      radius float<32>,
+                      rotation float<32>,
                       color Color) : void;
 
     fnc DrawPolyLinesEx(center Vector2,
                         sides int,
-                        radius float,
-                        rotation float,
-                        lineThick float,
+                        radius float<32>,
+                        rotation float<32>,
+                        lineThick float<32>,
                         color Color) : void;
 
     //====================================================
@@ -471,55 +471,55 @@
 
     fnc DrawSplineLinear(points pointer<Vector2>,
                          pointCount int,
-                         thick float,
+                         thick float<32>,
                          color Color) : void;
 
     fnc DrawSplineBasis(points pointer<Vector2>,
                         pointCount int,
-                        thick float,
+                        thick float<32>,
                         color Color) : void;
 
     fnc DrawSplineCatmullRom(points pointer<Vector2>,
                              pointCount int,
-                             thick float,
+                             thick float<32>,
                              color Color) : void;
 
     fnc DrawSplineBezierQuadratic(points pointer<Vector2>,
                                   pointCount int,
-                                  thick float,
+                                  thick float<32>,
                                   color Color) : void;
 
     fnc DrawSplineBezierCubic(points pointer<Vector2>,
                               pointCount int,
-                              thick float,
+                              thick float<32>,
                               color Color) : void;
 
     fnc GetSplinePointLinear(startPos Vector2,
                              endPos Vector2,
-                             t float) : Vector2;
+                             t float<32>) : Vector2;
 
     fnc GetSplinePointBasis(p1 Vector2,
                             p2 Vector2,
                             p3 Vector2,
                             p4 Vector2,
-                            t float) : Vector2;
+                            t float<32>) : Vector2;
 
     fnc GetSplinePointCatmullRom(p1 Vector2,
                                  p2 Vector2,
                                  p3 Vector2,
                                  p4 Vector2,
-                                 t float) : Vector2;
+                                 t float<32>) : Vector2;
 
     fnc GetSplinePointBezierQuad(p1 Vector2,
                                  c2 Vector2,
                                  p3 Vector2,
-                                 t float) : Vector2;
+                                 t float<32>) : Vector2;
 
     fnc GetSplinePointBezierCubic(p1 Vector2,
                                   c2 Vector2,
                                   c3 Vector2,
                                   p4 Vector2,
-                                  t float) : Vector2;
+                                  t float<32>) : Vector2;
 
     //====================================================
     // Collision
@@ -529,12 +529,12 @@
                            rec2 Rectangle) : bool;
 
     fnc CheckCollisionCircles(center1 Vector2,
-                              radius1 float,
+                              radius1 float<32>,
                               center2 Vector2,
-                              radius2 float) : bool;
+                              radius2 float<32>) : bool;
 
     fnc CheckCollisionCircleRec(center Vector2,
-                                radius float,
+                                radius float<32>,
                                 rec Rectangle) : bool;
 
     fnc CheckCollisionPointRec(point Vector2,
@@ -542,7 +542,7 @@
 
     fnc CheckCollisionPointCircle(point Vector2,
                                   center Vector2,
-                                  radius float) : bool;
+                                  radius float<32>) : bool;
 
     fnc CheckCollisionPointTriangle(point Vector2,
                                     p1 Vector2,
@@ -699,7 +699,7 @@
     fnc GenImageGradientRadial(
         width int,
         height int,
-        density float,
+        density float<32>,
         inner Color,
         outer Color
     ) : Image;
@@ -707,7 +707,7 @@
     fnc GenImageGradientSquare(
         width int,
         height int,
-        density float,
+        density float<32>,
         inner Color,
         outer Color
     ) : Image;
@@ -769,8 +769,8 @@
     fnc ImageTextEx(
         font pointer<void>,
         text string,
-        fontSize float,
-        spacing float,
+        fontSize float<32>,
+        spacing float<32>,
         tint Color
     ) : Image;
 
@@ -1103,8 +1103,8 @@
     fnc DrawTextureEx(
         texture Texture2D,
         position Vector2,
-        rotation float,
-        scale float,
+        rotation float<32>,
+        scale float<32>,
         tint Color
     ) : void;
 
@@ -1120,7 +1120,7 @@
         source Rectangle,
         dest Rectangle,
         origin Vector2,
-        rotation float,
+        rotation float<32>,
         tint Color
     ) : void;
 
@@ -1129,7 +1129,7 @@
         nPatchInfo NPatchInfo,
         dest Rectangle,
         origin Vector2,
-        rotation float,
+        rotation float<32>,
         tint Color
     ) : void;
 
@@ -1267,8 +1267,8 @@
         font Font,
         text string,
         position Vector2,
-        fontSize float,
-        spacing float,
+        fontSize float<32>,
+        spacing float<32>,
         tint Color
     ) : void;
 
@@ -1277,9 +1277,9 @@
         text string,
         position Vector2,
         origin Vector2,
-        rotation float,
-        fontSize float,
-        spacing float,
+        rotation float<32>,
+        fontSize float<32>,
+        spacing float<32>,
         tint Color
     ) : void;
 
@@ -1287,7 +1287,7 @@
         font Font,
         codepoint int,
         position Vector2,
-        fontSize float,
+        fontSize float<32>,
         tint Color
     ) : void;
 
@@ -1296,8 +1296,8 @@
         codepoints pointer<int>,
         codepointCount int,
         position Vector2,
-        fontSize float,
-        spacing float,
+        fontSize float<32>,
+        spacing float<32>,
         tint Color
     ) : void;
 
@@ -1313,7 +1313,7 @@
     fnc MeasureTextEx(
         font Font,
         text string,
-        fontSize float,
+        fontSize float<32>,
         spacing float
     ) : Vector2;
 
@@ -1507,7 +1507,7 @@
         position: Vector3;
         target: Vector3;
         up: Vector3;
-        fovy: float;
+        fovy: float<32>;
         projection: int;
     };
 
@@ -1516,8 +1516,8 @@
     def Camera2D : struct {
         offset: Vector2;
         target: Vector2;
-        rotation: float;
-        zoom: float;
+        rotation: float<32>;
+        zoom: float<32>;
     };
 
     //====================================================
@@ -1531,7 +1531,7 @@
 
     def RayCollision : struct {
         hit: bool;
-        distance: float;
+        distance: float<32>;
         point: Vector3;
         normal: Vector3;
     };
@@ -1619,7 +1619,7 @@
     def MaterialMap : struct {
         texture: Texture2D;
         color: Color;
-        value: float;
+        value: float<32>;
     };
 
     //====================================================
@@ -1786,52 +1786,52 @@
     ) : Mesh;
 
     fnc GenMeshPlane(
-        width float,
-        length float,
+        width float<32>,
+        length float<32>,
         resX int,
         resZ int
     ) : Mesh;
 
     fnc GenMeshCube(
-        width float,
-        height float,
+        width float<32>,
+        height float<32>,
         length float
     ) : Mesh;
 
     fnc GenMeshSphere(
-        radius float,
+        radius float<32>,
         rings int,
         slices int
     ) : Mesh;
 
     fnc GenMeshHemiSphere(
-        radius float,
+        radius float<32>,
         rings int,
         slices int
     ) : Mesh;
 
     fnc GenMeshCylinder(
-        radius float,
-        height float,
+        radius float<32>,
+        height float<32>,
         slices int
     ) : Mesh;
 
     fnc GenMeshCone(
-        radius float,
-        height float,
+        radius float<32>,
+        height float<32>,
         slices int
     ) : Mesh;
 
     fnc GenMeshTorus(
-        radius float,
-        size float,
+        radius float<32>,
+        size float<32>,
         radSeg int,
         sides int
     ) : Mesh;
 
     fnc GenMeshKnot(
-        radius float,
-        size float,
+        radius float<32>,
+        size float<32>,
         radSeg int,
         sides int
     ) : Mesh;
@@ -1920,7 +1920,7 @@
     fnc DrawModel(
         model Model,
         position Vector3,
-        scale float,
+        scale float<32>,
         tint Color
     ) : void;
 
@@ -1928,7 +1928,7 @@
         model Model,
         position Vector3,
         rotationAxis Vector3,
-        rotationAngle float,
+        rotationAngle float<32>,
         scale Vector3,
         tint Color
     ) : void;
@@ -1936,7 +1936,7 @@
     fnc DrawModelWires(
         model Model,
         position Vector3,
-        scale float,
+        scale float<32>,
         tint Color
     ) : void;
 
@@ -1944,7 +1944,7 @@
         model Model,
         position Vector3,
         rotationAxis Vector3,
-        rotationAngle float,
+        rotationAngle float<32>,
         scale Vector3,
         tint Color
     ) : void;
@@ -1966,7 +1966,7 @@
         camera Camera3D,
         texture Texture2D,
         position Vector3,
-        size float,
+        size float<32>,
         tint Color
     ) : void;
 
@@ -1987,7 +1987,7 @@
         up Vector3,
         size Vector2,
         origin Vector2,
-        rotation float,
+        rotation float<32>,
         tint Color
     ) : void;
 
@@ -2032,7 +2032,7 @@
 
     fnc CheckCollisionSpheres(
         center1 Vector3,
-        radius1 float,
+        radius1 float<32>,
         center2 Vector3,
         radius2 float
     ) : bool;
@@ -2193,9 +2193,9 @@
 
     fnc IsAudioDeviceReady() : bool;
 
-    fnc SetMasterVolume(volume float) : void;
+    fnc SetMasterVolume(volume float<32>) : void;
 
-    fnc GetMasterVolume() : float;
+    fnc GetMasterVolume() : float<32>;
 
     //====================================================
     // Wave
@@ -2391,11 +2391,11 @@
 
     fnc GetMusicTimeLength(
         music Music
-    ) : float;
+    ) : float<32>;
 
     fnc GetMusicTimePlayed(
         music Music
-    ) : float;
+    ) : float<32>;
 
     //====================================================
     // AudioStream
@@ -2469,39 +2469,39 @@
     //====================================================
 
     fnc Clamp(
-        value float,
-        min float,
+        value float<32>,
+        min float<32>,
         max float
-    ) : float;
+    ) : float<32>;
 
     fnc Lerp(
-        start float,
-        end float,
+        start float<32>,
+        end float<32>,
         amount float
-    ) : float;
+    ) : float<32>;
 
     fnc Normalize(
-        value float,
-        start float,
+        value float<32>,
+        start float<32>,
         end float
-    ) : float;
+    ) : float<32>;
 
     fnc Remap(
-        value float,
-        inputStart float,
-        inputEnd float,
-        outputStart float,
+        value float<32>,
+        inputStart float<32>,
+        inputEnd float<32>,
+        outputStart float<32>,
         outputEnd float
-    ) : float;
+    ) : float<32>;
 
     fnc Wrap(
-        value float,
-        min float,
+        value float<32>,
+        min float<32>,
         max float
-    ) : float;
+    ) : float<32>;
 
     fnc FloatEquals(
-        x float,
+        x float<32>,
         y float
     ) : bool;
 
@@ -2557,36 +2557,36 @@
 
     fnc Vector2Length(
         v Vector2
-    ) : float;
+    ) : float<32>;
 
     fnc Vector2LengthSqr(
         v Vector2
-    ) : float;
+    ) : float<32>;
 
     fnc Vector2DotProduct(
         v1 Vector2,
         v2 Vector2
-    ) : float;
+    ) : float<32>;
 
     fnc Vector2Distance(
         v1 Vector2,
         v2 Vector2
-    ) : float;
+    ) : float<32>;
 
     fnc Vector2DistanceSqr(
         v1 Vector2,
         v2 Vector2
-    ) : float;
+    ) : float<32>;
 
     fnc Vector2Angle(
         v1 Vector2,
         v2 Vector2
-    ) : float;
+    ) : float<32>;
 
     fnc Vector2LineAngle(
         start Vector2,
         end Vector2
-    ) : float;
+    ) : float<32>;
 
     fnc Vector2Normalize(
         v Vector2
@@ -2627,7 +2627,7 @@
 
     fnc Vector2ClampValue(
         value Vector2,
-        min float,
+        min float<32>,
         max float
     ) : Vector2;
 
@@ -2688,16 +2688,16 @@
 
     fnc Vector3Length(
         v Vector3
-    ) : float;
+    ) : float<32>;
 
     fnc Vector3LengthSqr(
         v Vector3
-    ) : float;
+    ) : float<32>;
 
     fnc Vector3DotProduct(
         v1 Vector3,
         v2 Vector3
-    ) : float;
+    ) : float<32>;
 
     fnc Vector3CrossProduct(
         v1 Vector3,
@@ -2707,17 +2707,17 @@
     fnc Vector3Distance(
         v1 Vector3,
         v2 Vector3
-    ) : float;
+    ) : float<32>;
 
     fnc Vector3DistanceSqr(
         v1 Vector3,
         v2 Vector3
-    ) : float;
+    ) : float<32>;
 
     fnc Vector3Angle(
         v1 Vector3,
         v2 Vector3
-    ) : float;
+    ) : float<32>;
 
     fnc Vector3Normalize(
         v Vector3
@@ -2773,7 +2773,7 @@
 
     fnc Vector3ClampValue(
         value Vector3,
-        min float,
+        min float<32>,
         max float
     ) : Vector3;
 
@@ -2816,7 +2816,7 @@
 
     fnc Vector4Length(
         v Vector4
-    ) : float;
+    ) : float<32>;
 
     fnc Vector4Normalize(
         v Vector4
@@ -2825,12 +2825,12 @@
     fnc Vector4DotProduct(
         v1 Vector4,
         v2 Vector4
-    ) : float;
+    ) : float<32>;
 
     fnc Vector4Distance(
         v1 Vector4,
         v2 Vector4
-    ) : float;
+    ) : float<32>;
 
     fnc Vector4Lerp(
         v1 Vector4,
@@ -2859,11 +2859,11 @@
 
     fnc MatrixDeterminant(
         mat Matrix
-    ) : float;
+    ) : float<32>;
 
     fnc MatrixTrace(
         mat Matrix
-    ) : float;
+    ) : float<32>;
 
     fnc MatrixTranspose(
         mat Matrix
@@ -2895,8 +2895,8 @@
     //====================================================
 
     fnc MatrixTranslate(
-        x float,
-        y float,
+        x float<32>,
+        y float<32>,
         z float
     ) : Matrix;
 
@@ -2934,8 +2934,8 @@
     //====================================================
 
     fnc MatrixScale(
-        x float,
-        y float,
+        x float<32>,
+        y float<32>,
         z float
     ) : Matrix;
 
@@ -2944,27 +2944,27 @@
     //====================================================
 
     fnc MatrixFrustum(
-        left float,
-        right float,
-        bottom float,
-        top float,
-        nearPlane float,
+        left float<32>,
+        right float<32>,
+        bottom float<32>,
+        top float<32>,
+        nearPlane float<32>,
         farPlane float
     ) : Matrix;
 
     fnc MatrixPerspective(
-        fovy float,
-        aspect float,
-        nearPlane float,
+        fovy float<32>,
+        aspect float<32>,
+        nearPlane float<32>,
         farPlane float
     ) : Matrix;
 
     fnc MatrixOrtho(
-        left float,
-        right float,
-        bottom float,
-        top float,
-        nearPlane float,
+        left float<32>,
+        right float<32>,
+        bottom float<32>,
+        top float<32>,
+        nearPlane float<32>,
         farPlane float
     ) : Matrix;
 
@@ -3044,12 +3044,12 @@
 
     fnc QuaternionLength(
         q Quaternion
-    ) : float;
+    ) : float<32>;
 
     fnc QuaternionDotProduct(
         q1 Quaternion,
         q2 Quaternion
-    ) : float;
+    ) : float<32>;
 
     //====================================================
     // Interpolation
@@ -3111,8 +3111,8 @@
     ) : void;
 
     fnc QuaternionFromEuler(
-        pitch float,
-        yaw float,
+        pitch float<32>,
+        yaw float<32>,
         roll float
     ) : Quaternion;
 

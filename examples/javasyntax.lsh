@@ -1,0 +1,5 @@
+def Main : class {
+    static fnc main {
+        show("Hello, world!");
+    }
+}

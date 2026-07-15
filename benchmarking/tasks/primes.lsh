@@ -1,0 +1,36 @@
+fnc sieve_count(n int) : int {
+    is_prime: vec<int>;
+    i: int = 0;
+    while i <= n {
+        is_prime.pushb(1);
+        i = i + 1;
+    }
+    is_prime.set(0, 0);
+    is_prime.set(1, 0);
+    i = 2;
+    while i * i <= n {
+        if is_prime.get(i) == 1 {
+            j: int = i * i;
+            while j <= n {
+                is_prime.set(j, 0);
+                j = j + i;
+            }
+        }
+        i = i + 1;
+    }
+    count: int = 0;
+    i = 2;
+    while i <= n {
+        if is_prime.get(i) == 1 {
+            count = count + 1;
+        }
+        i = i + 1;
+    }
+    return count;
+}
+
+fnc main() : void {
+    n: int = 1000000;
+    result: int = sieve_count(n);
+    show("primes up to ", n, ": ", result);
+}

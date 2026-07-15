@@ -1,0 +1,30 @@
+fnc fib_rec(n int) : int {
+    if n <= 1 {
+        return n;
+    }
+    return fib_rec(n - 1) + fib_rec(n - 2);
+}
+
+fnc fib_iter(n int) : int {
+    if n <= 1 {
+        return n;
+    }
+    a: int = 0;
+    b: int = 1;
+    i: int = 2;
+    while i <= n {
+        temp: int = a + b;
+        a = b;
+        b = temp;
+        i = i + 1;
+    }
+    return b;
+}
+
+fnc main() : void {
+    n: int = 40;
+    result_rec: int = fib_rec(n);
+    result_iter: int = fib_iter(n);
+    show("fib_rec(", n, "): ", result_rec);
+    show("fib_iter(", n, "): ", result_iter);
+}

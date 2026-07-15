@@ -1,8 +1,10 @@
 # Leash Programming Language
 
-**Version 0.19.0 Beta**
+**Version 0.20.0 Beta**
 
 Leash is a strongly-typed, modern compiled programming language built on top of LLVM. It features an intuitive syntax and is designed to handle common tasks with native performance.
+
+> **New to Leash?** See the [Compiler Pipeline](#compiler-pipeline) for an overview of how source code becomes an executable.
 
 ## Table of Contents
 - [Installation](#installation)
@@ -55,6 +57,7 @@ Leash is a strongly-typed, modern compiled programming language built on top of 
 - [Classes](#classes)
   - [Class Inheritance (Subclasses)](#class-inheritance-subclasses)
   - [Polymorphism and Dynamic Dispatch](#polymorphism-and-dynamic-dispatch)
+  - [Class-Based Entry Points (Java-Friendly Syntax)](#class-based-entry-points-java-friendly-syntax)
 - [File I/O](#file-io)
 - [Memory Management](#memory-management)
 - [Error Handling & Safety](#error-handling--safety)
@@ -331,11 +334,17 @@ python3 -m leash.cli compile program.lsh --opt 2
 # Aggressive optimizations
 python3 -m leash.cli run program.lsh --opt 3
 
+# Maximum optimizations (tail recursion opt, extra LLVM passes)
+python3 -m leash.cli compile program.lsh --opt 4
+
 # Optimize for size
 python3 -m leash.cli compile program.lsh --opt s
+
+# Optimize for minimum size (additional size reductions)
+python3 -m leash.cli compile program.lsh --opt z
 ```
 
-#### Optimization Passes by Level
+### Optimization Passes by Level
 
 | Level | Description | Key Passes |
 |-------|-------------|------------|
@@ -343,9 +352,164 @@ python3 -m leash.cli compile program.lsh --opt s
 | **`-O1`** | Basic | Instruction combining, dead code elimination, simplify CFG |
 | **`-O2`** | Standard | Above + SROA, jump threading, reassociation, global opt, loop simplification |
 | **`-O3`** | Aggressive | Above + loop unrolling, loop strength reduction, always inline, merge functions, aggressive DCE, argument promotion, IPSCCP, SLP vectorizer, loop distribution, versioning, interchange, predication, unswitching, called-value propagation, float-to-int promotion, speculative execution |
+| **`-O4`** | Maximum | Above + tail recursion optimization (AST), **aggressive inlining** (threshold 600 vs default 225), **dual-pass pipeline** (run standard O3 pass‑manager twice with aggressive cleanup iterations between and after) |
 | **`-Os`** | Size | `-O2` + global dead code elimination + extra CFG simplification |
 
 > **Note:** Optimization occurs at **three layers**: Leash AST (frontend), LLVM IR (middle-end), and C runtime (link-time). The `-O` flag controls all three simultaneously.
+
+### Optimization Verbosity (`--optimization-verbosity` / `-ov`)
+
+The `-ov` flag enables detailed logging of optimization passes as they run. This is useful for understanding what the optimizer is doing, debugging performance issues, or learning about the optimization pipeline.
+
+```bash
+python3 -m leash.cli compile program.lsh -ov
+python3 -m leash.cli run program.lsh --opt 3 -ov
+```
+
+When enabled, the compiler prints messages for each phase:
+- **`[AST Opt]`** — AST-level pipeline start/end and phase descriptions
+- **`[CF]`** — Constant folding of specific expressions
+- **`[CP]`** — Constant propagation inlining compile-time constants
+- **`[DBE]`** — Dead branch elimination (removing if/else with constant conditions)
+- **`[UCE]`** — Unreachable code elimination (statements after `return`)
+- **`[DCE]`** — Dead code elimination (unused top-level definitions)
+- **`[TRO]`** — Tail recursion optimization (applied at `-O4`)
+- **`[LLVM Opt]`** — LLVM pass pipeline execution details
+
+This flag is independent of `--verbose`/`-vb` — it only shows optimization-related messages, not masterclass diagnostics.
+
+---
+
+## Compiler Pipeline
+
+Leash transforms source code into a native executable through a multi-stage pipeline. Each stage feeds its output into the next:
+
+```
+                          ┌─────────────────────────────────────┐
+   .lsh file  ──────────▶ │         1. Lexer (Lexer)            │
+                          │  characters → tokens                │
+                          └──────────────┬──────────────────────┘
+                                         │ tokens
+                                         ▼
+                          ┌─────────────────────────────────────┐
+                          │         2. Parser (Parser)          │
+                          │  tokens → AST (Abstract Syntax Tree)│
+                          └──────────────┬──────────────────────┘
+                                         │ raw AST
+                                         ▼
+                          ┌─────────────────────────────────────┐
+                          │    3. Import Resolution             │
+                          │  resolve_imports()                  │
+                          │  inlines `use` references           │
+                          └──────────────┬──────────────────────┘
+                                         │ resolved AST
+                                         ▼
+                          ┌─────────────────────────────────────┐
+                          │  4. Conditional Compilation         │
+                          │  resolve_conditionals()             │
+                          │  evaluates `if _PLATFORM == ...`    │
+                          └──────────────┬──────────────────────┘
+                                         │ target-specific AST
+                                         ▼
+                          ┌─────────────────────────────────────┐
+                          │      5. Macro Expansion             │
+                          │  expand_macros()                    │
+                          │  expands `def : macro` blocks       │
+                          └──────────────┬──────────────────────┘
+                                         │ expanded AST
+                                         ▼
+                          ┌─────────────────────────────────────┐
+                          │      6. Type Checker                │
+                          │  TypeChecker.check()                │
+                          │  validates types, reports warnings  │
+                          └──────────────┬──────────────────────┘
+                                         │ checked AST + warnings
+                                         ▼
+                          ┌─────────────────────────────────────┐
+                          │      7. Low-Level Checker           │
+                          │  LowLevelChecker.check()            │
+                          │  validates memory layout, fields    │
+                          └──────────────┬──────────────────────┘
+                                         │ verified AST
+                                         ▼
+                          ┌─────────────────────────────────────┐
+                          │      8. AST Optimization            │
+                          │  optimize_ast()                     │
+                          │  constant folding, DCE, CP, TRO...  │
+                          └──────────────┬──────────────────────┘
+                                         │ optimized AST
+                                         ▼
+                          ┌─────────────────────────────────────┐
+                          │      9. Code Generation (CodeGen)   │
+                          │  generate_code()                    │
+                          │  AST → LLVM IR in-memory module     │
+                          └──────────────┬──────────────────────┘
+                                         │ LLVM IR module
+                                         ▼
+                          ┌─────────────────────────────────────┐
+                          │    10. Alloca Hoisting              │
+                          │  hoist_allocas()                    │
+                          │  moves all alloca to entry block    │
+                          └──────────────┬──────────────────────┘
+                                         │ cleaned LLVM IR
+                                         ▼
+                          ┌─────────────────────────────────────┐
+                          │   11. Re-parse & Verify             │
+                          │  llvm.parse_assembly() + .verify()  │
+                          │  ensures IR is well-formed          │
+                          └──────────────┬──────────────────────┘
+                                         │ verified module
+                                         ▼
+                          ┌─────────────────────────────────────┐
+                          │   12. LLVM Optimization             │
+                          │  optimize_module()                  │
+                          │  runs LLVM pass pipeline (-O0..-O4) │
+                          └──────────────┬──────────────────────┘
+                                         │ optimized module
+                                         ▼
+                          ┌─────────────────────────────────────┐
+                          │   13. Object Emission               │
+                          │  TargetMachine.emit_object()        │
+                          │  LLVM IR → .o machine code          │
+                          └──────────────┬──────────────────────┘
+                                         │ .o object file
+                                         ▼
+                          ┌─────────────────────────────────────┐
+                          │   14. C Runtime Compilation         │
+                          │  _get_runtime_stubs()               │
+                          │  compiles gc.c + platform stubs     │
+                          └──────────────┬──────────────────────┘
+                                         │ runtime .o files
+                                         ▼
+                          ┌─────────────────────────────────────┐
+                          │   15. Linking (gcc/clang)           │
+                          │  _link_native()                     │
+                          │  links .o + GC + libs → executable  │
+                          └──────────────┬──────────────────────┘
+                                         │
+                                         ▼
+                                   .exe / binary
+```
+
+### Stage Details
+
+| # | Stage | Input | Output | File(s) | Description |
+|---|-------|-------|--------|---------|-------------|
+| 1 | **Lexer** | Source text (`str`) | Token list | `leash/lexer.py` | Breaks source into tokens: keywords (`fnc`, `def`, `if`, ...), operators, identifiers, literals, whitespace-tracking. |
+| 2 | **Parser** | Token list | AST root node | `leash/parser_l.py` | Recursive-descent parser. Builds a typed AST with nodes for functions, classes, control flow, expressions, etc. |
+| 3 | **Import Resolution** | AST | Expanded AST | `leash/cli.py` | Resolves `use module::Item;` statements by locating and parsing referenced modules, inlining their public definitions. |
+| 4 | **Conditional Compilation** | AST | Filtered AST | `leash/cli.py` | Evaluates top-level `if _condition { ... }` blocks. Prunes branches for non-matching targets (e.g., Win32-only code on Linux). |
+| 5 | **Macro Expansion** | AST | Expanded AST | `leash/cli.py` | Expands `defmacro` definitions in-place, substituting captured arguments into template bodies. |
+| 6 | **Type Checker** | AST | Checked AST + warnings | `leash/typechecker.py` | Infers and validates types for all expressions, checks assignments, reports unused variables, unreachable code, redundant ops, etc. |
+| 7 | **Low-Level Checker** | AST | Verified AST | `leash/cli.py` | Validates struct/class field layout, union tag consistency, and other low-level invariants. |
+| 8 | **AST Optimization** | AST | Optimized AST | `leash/ast_optimize.py` | Semantics-preserving frontend passes: constant folding, dead branch elimination, unreachable code elimination, DCE, constant propagation, foreach unrolling, pushb fusion, tail recursion (`-O4`). |
+| 9 | **Code Generation** | AST | LLVM IR module | `leash/codegen.py` | Walks the optimized AST and emits LLVM IR instructions, functions, globals, and debug metadata into an in-memory `llvmlite` module. Generates `main` wrapper for class-based entry points. |
+| 10 | **Alloca Hoisting** | LLVM module | Cleaned module | `leash/hoist_allocas.py` | Moves all `alloca` instructions to the entry block of each function, improving LLVM's optimization opportunities. |
+| 11 | **Re-parse & Verify** | IR string | Verified module | `llvmlite` | Serializes the module back to IR text, re-parses it, and calls `verify()` to catch any codegen-level issues. |
+| 12 | **LLVM Optimization** | Module | Optimized module | `leash/optimize.py` | Runs the LLVM pass manager with function- and module-level passes controlled by `-O0` through `-O4` (and `-Os`/`-Oz`). |
+| 13 | **Object Emission** | Module | `.o` file | `llvmlite` / TargetMachine | Lowers LLVM IR to native machine code for the target triple. |
+| 14 | **Runtime Compilation** | `gc.c` + stubs | `.o` files | `leash/gc.c`, `windows_stubs.c`, `cross_compile_stubs.c` | Compiles the Boehm-style garbage collector and platform-specific stubs with the detected C compiler. Results are cached to avoid repeated recompilation. |
+| 15 | **Linking** | `.o` files | executable | `gcc` / `clang` | Links the program object, GC runtime, `-l` libraries, and system libraries into the final native binary. Auto-detects missing system libraries by parsing linker errors. |
 
 ---
 
@@ -1083,48 +1247,113 @@ fnc main() {
 }
 ```
 
-### Raylib (`lshraylib`)
+### Window Library (`utils::window`)
 
-A cross-platform raylib binding for Leash, providing 2D/3D graphics, audio, input, and window management. Works on Windows and Linux.
+> **Note:** The low-level `lshraylib` binding (direct raylib FFI) is **unstable and buggy** on Leash — many raylib functions cause crashes, memory corruption, or undefined behavior when called through the FFI layer. It is only kept for backwards compatibility.
+
+The `utils::window` library is a **new, in-development replacement** that wraps raylib in a Leash-native API using only stable, well-tested functions. It provides a safe, idiomatic Leash interface for windowing, rendering, and input.
 
 **Usage:**
 ```leash
-use lshraylib::raylib::*;
+use utils::window::*;
 
-fnc main() : void {
-    width: imut int = 800;
-    height: imut int = 600;
-    
-    InitWindow(width, height, "raylib [core] example - basic window");
-    SetTargetFPS(60);
-    
-    while !WindowShouldClose() {
-        BeginDrawing();
-            ClearBackground(RAYWHITE());
-            DrawText("Hello from Leash + raylib!", 190, 200, 20, LIGHTGRAY());
-        EndDrawing();
+wind: LshWindow;
+pos: Vector2;
+speed: int = 5;
+
+fnc start() {
+    pos = Vector2 { x: wind.width / 2, y: wind.height / 2 };
+}
+
+fnc update() {
+    sizes := Vector2 { x: 50, y: 50 };
+    Draw.draw_rect(pos, sizes, WHITE);
+
+    if Input.key_down(KEY_W) {
+        pos.y -= speed;
+    } also Input.key_down(KEY_S) {
+        pos.y += speed;
     }
-    
-    CloseWindow();
+
+    if Input.key_down(KEY_A) {
+        pos.x -= speed;
+    } also Input.key_down(KEY_D) {
+        pos.x += speed;
+    }
+
+    result := check_border_rect(wind, pos, sizes);
+
+    normalized := norm_rect(sizes);
+
+    if result.x == -1 {
+        pos.x = normalized.x;
+    } also result.x == 1 {
+        pos.x = wind.width - normalized.x;
+    }
+
+    if result.y == -1 {
+        pos.y = normalized.y;
+    } also result.y == 1 {
+        pos.y = wind.height - normalized.y;
+    }
+}
+
+fnc endd() {
+    ignore;
+}
+
+fnc main {
+    wind = create_window(800, 600, "My Game");
+    close_key(KEY_ESCAPE);
+
+    init_window(wind, &start, &update, &endd);
 }
 ```
 
-**Key Features:**
-- **Cross-platform**: Automatically selects Windows or Linux bindings via `_PLATFORM` compile-time variable
-- **Complete bindings**: All raylib 5.0+ functions, structs, and constants
-- **Color macros**: `WHITE()`, `BLACK()`, `RED()`, `BLUE()`, `GREEN()`, `RAYWHITE()`, etc.
-- **Math types**: `Vector2`, `Vector3`, `Vector4`, `Matrix`, `Rectangle`, `Color`
-- **Auto-linking**: Detects and links system dependencies (`gdi32`, `winmm` on Windows; `X11`, `m`, `dl` on Linux; `Cocoa`, `OpenGL`, `IOKit` on macOS)
+**Key Structures:**
 
-**Module Structure:**
-```
-lshraylib/
-├── raylib.lsh          # Entry point with platform conditionals
-├── win/
-│   └── main.lsh        # Windows bindings (@from("libraylib.a"))
-└── linux/
-    └── main.lsh        # Linux bindings (@from("libraylib.a"))
-```
+| Type | Description |
+|------|-------------|
+| `LshWindow` | Window configuration (width, height, title, fps, background color) |
+| `Vector2` | 2D vector with `x: float<32>`, `y: float<32>` |
+| `Color` | RGBA color with `r`, `g`, `b`, `a: uint<8>` |
+
+**Key Functions:**
+
+| Function | Description |
+|----------|-------------|
+| `create_window(w, h, title, fps=60, bgc)` | Create a window config struct |
+| `init_window(&window, &start, &update, &end)` | Run the window event loop |
+| `close_key(key)` | Set the key that closes the window |
+| `close_window()` | Close the window manually |
+| `toggle_fullscreen()` | Toggle fullscreen mode |
+| `set_title(&window, title)` | Change the window title |
+| `norm_rect(sizes)` | Normalize a rect to its center point |
+| `check_border_rect(window, pos, sizes)` | Check if a rect is colliding with the window border |
+
+**Drawing API (`Draw` class):**
+
+| Method | Description |
+|--------|-------------|
+| `Draw.draw_rect(pos, sizes, color)` | Draw a centered rectangle |
+| `Draw.draw_circle(pos, radius, color)` | Draw a circle |
+| `Draw.draw_line(start, end, color)` | Draw a line |
+| `Draw.draw_pixel(pos, color)` | Draw a single pixel |
+| `Draw.draw_ellipse(pos, radius, color)` | Draw an ellipse |
+| `Draw.draw_ellipse_lines(pos, radius, color)` | Draw an ellipse outline |
+
+**Input API (`Input` class):**
+
+| Method | Description |
+|--------|-------------|
+| `Input.key_down(key)` | Is a key currently held down? |
+| `Input.key_up(key)` | Is a key up? |
+| `Input.key_pressed(key)` | Was the key just pressed this frame? |
+| `Input.key_released(key)` | Was the key just released this frame? |
+
+Pre-defined key constants are available: `KEY_W`, `KEY_A`, `KEY_S`, `KEY_D`, `KEY_SPACE`, `KEY_ESCAPE`, `KEY_ENTER`, `KEY_UP`, `KEY_DOWN`, `KEY_LEFT`, `KEY_RIGHT`, etc.
+
+**Color macros:** `WHITE()`, `BLACK()`, `RED()`, `GREEN()`, `BLUE()`, `YELLOW()`, `ORANGE()`, `PURPLE()`, `RAYWHITE()`, `GRAY()`, and more.
 
 
 ## Leashed Package Manager
@@ -4050,6 +4279,32 @@ Destructors are methods named `DEL_ClassName` (with `DEL_` prefix followed by th
 - The `del` keyword is used on a variable
 - The instance is no longer referenced and GC collects it (though `del` provides explicit control)
 
+### Class-Based Entry Points (Java-Friendly Syntax)
+
+Leash supports Java-like entry points: instead of a top-level `fnc main()`, you can define a class named `Main` with a `static fnc main` method. The compiler detects this pattern and generates the appropriate `main` wrapper automatically.
+
+```leash
+def Main : class {
+    static fnc main {
+        show("Hello, world!");
+    }
+}
+```
+
+This is equivalent to writing:
+
+```leash
+fnc main() : void {
+    show("Hello, world!");
+}
+```
+
+**Rules:**
+- The class must be named exactly `Main` (case-sensitive).
+- It must contain a `static fnc main` method (no arguments, `void` return).
+- The `Main` class can contain other members — only `static fnc main` is used as the entry point.
+- If both a top-level `fnc main()` and a `Main` class with `static fnc main` exist, the top-level function takes precedence.
+
 ## File I/O
 
 Leash provides a built-in `File` class for reading and writing files. The `File` class is a native class (not a primitive type) that wraps the C standard library's `FILE*` operations.
@@ -4518,7 +4773,7 @@ The VS Code extension provides syntax highlighting, real-time diagnostics, hover
    cd syntax_highlighters/vscode
    npm run package
    ```
-3. Install the generated `leash-0.19.0.vsix` in VS Code (Extensions view -> `...` -> `Install from VSIX...`).
+3. Install the generated `leash-0.20.0.vsix` in VS Code (Extensions view -> `...` -> `Install from VSIX...`).
 
 ### Emacs
 

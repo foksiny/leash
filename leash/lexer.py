@@ -35,11 +35,14 @@ def leash_unescape(text):
 
 
 class Token:
+    __slots__ = ("type", "value", "line", "column", "raw")
+
     def __init__(self, type, value, line, column):
         self.type = type
         self.value = value
         self.line = line
         self.column = column
+        self.raw = None
 
     def __repr__(self):
         return f"Token({self.type}, {repr(self.value)}, line={self.line}, col={self.column})"
@@ -48,6 +51,7 @@ class Token:
 class Lexer:
     # Token types
     KEYWORDS = {
+
         "fnc",
         "return",
         "int",
@@ -119,6 +123,8 @@ class Lexer:
         "thisworker",
         "matrix",
     }
+
+    KEYWORD_MAP = {k: k.upper() for k in KEYWORDS}
 
     # regexes
     TOKEN_SPECIFICATION = [
@@ -197,8 +203,20 @@ class Lexer:
         ("MISMATCH", r"."),  # Any other character
     ]
 
+    _regex = None
+    _regex_source = None
+
     def __init__(self, code):
         self.code = code
+
+    @classmethod
+    def _ensure_regex(cls):
+        """Build and cache the combined regex from TOKEN_SPECIFICATION."""
+        src = "|".join("(?P<%s>%s)" % pair for pair in cls.TOKEN_SPECIFICATION)
+        if cls._regex is None or src != cls._regex_source:
+            cls._regex = re.compile(src)
+            cls._regex_source = src
+        return cls._regex
 
     @staticmethod
     def _parse_number(raw):
@@ -234,60 +252,59 @@ class Lexer:
         return int(raw, 10)
 
     def tokenize(self):
-        tok_regex = "|".join("(?P<%s>%s)" % pair for pair in self.TOKEN_SPECIFICATION)
+        regex = self._ensure_regex()
+        code = self.code
         line_num = 1
         line_start = 0
         tokens = []
-        for mo in re.finditer(tok_regex, self.code):
+        depth = 0
+        tokens_append = tokens.append
+        keywords = self.KEYWORD_MAP
+
+        for mo in regex.finditer(code):
             kind = mo.lastgroup
             value = mo.group(kind)
-            column = mo.start() - line_start
-            if kind == "NUMBER":
-                value = self._parse_number(value)
-            elif kind == "STRING":
-                raw = value[1:-1]  # keep raw (with escape sequences) for interpolation
-                value = leash_unescape(raw)
-                tok = Token(kind, value, line_num, column)
-                tok.raw = raw
-                tokens.append(tok)
-                continue
-            elif kind == "CHAR":
-                value = value[1:-1]  # strip quotes
-                value = leash_unescape(value)
-            elif kind in ("MLSTRING_D", "MLSTRING_S"):
-                value = value[3:-3]  # strip triple quotes
-                value = leash_unescape(value)
-            elif kind == "IDENT" and value in self.KEYWORDS:
-                kind = value.upper()
-            elif kind == "NEWLINE":
+            start = mo.start()
+            column = start - line_start
+
+            if kind == "NEWLINE":
                 line_start = mo.end()
                 line_num += 1
                 continue
-            elif kind == "SKIP" or kind == "COMMENT" or kind == "MLCOMMENT":
+            if kind == "SKIP" or kind == "COMMENT" or kind == "MLCOMMENT":
                 continue
-            elif kind == "MISMATCH":
+            if kind == "NUMBER":
+                tokens_append(Token(kind, self._parse_number(value), line_num, column))
+                continue
+            if kind == "MISMATCH":
                 raise LeashError(f"Unexpected character: {value}", line_num, column)
+            if kind == "STRING":
+                raw = value[1:-1]
+                t = Token(kind, leash_unescape(raw), line_num, column)
+                t.raw = raw
+                tokens_append(t)
+                continue
 
-            tokens.append(Token(kind, value, line_num, column))
+            if kind == "CHAR":
+                value = value[1:-1]
+                value = leash_unescape(value)
+            elif kind in ("MLSTRING_D", "MLSTRING_S"):
+                value = value[3:-3]
+                value = leash_unescape(value)
+            elif kind == "IDENT" and value in keywords:
+                kind = keywords[value]
+            elif kind == "SHR" and depth > 0:
+                tokens_append(Token("GT", ">", line_num, column))
+                tokens_append(Token("GT", ">", line_num, column + 1))
+                depth -= 2
+                continue
 
-        # Post-process tokens to split SHR into two GT when inside generic brackets
-        depth = 0
-        final_tokens = []
-        for token in tokens:
-            if token.type == "LT":
+            if kind == "LT":
                 depth += 1
-                final_tokens.append(token)
-            elif token.type == "GT":
+            elif kind == "GT":
                 depth -= 1
-                final_tokens.append(token)
-            elif token.type == "SHR" and depth > 0:
-                # Replace with two GT tokens
-                final_tokens.append(Token("GT", ">", token.line, token.column))
-                final_tokens.append(Token("GT", ">", token.line, token.column + 1))
-                depth -= 2  # account for the two GT tokens we inserted
-            else:
-                final_tokens.append(token)
-        tokens = final_tokens
 
-        tokens.append(Token("EOF", "", line_num, len(self.code) - line_start))
+            tokens_append(Token(kind, value, line_num, column))
+
+        tokens.append(Token("EOF", "", line_num, len(code) - line_start))
         return tokens

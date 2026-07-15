@@ -1663,6 +1663,10 @@ class Parser:
         elif current.type in ("RETURN",):
             tok = self.current()
             self.eat("RETURN")
+            # Check for bare return; (no value)
+            if self.current().type == "SEMI":
+                self.eat("SEMI")
+                return self._pos(ReturnStatement(None), tok)
             # Check for multi-return: return expr1, expr2, ...
             values = [self.parse_expression()]
             while self.current().type == "COMMA":

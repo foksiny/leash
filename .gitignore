@@ -88,6 +88,7 @@ examples/newclass
 examples/advanced_static
 examples/auto
 **/*.exe
+**/*.o
 
 # Trash
 trash/
@@ -110,4 +111,7 @@ unleashing/node_modules/
 unleashing/*.log
 unleashing/package-lock.json
 .DS_Store
-Thumbs.db
+Thumbs.db]
+
+# Test
+*.json
