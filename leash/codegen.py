@@ -1938,7 +1938,7 @@ class CodeGen:
         custom_values = {}  # member_name -> (llvm_type, llvm_value) for literals
         
         for member in node.members:
-            if isinstance(member, tuple):
+            if isinstance(member, (tuple, list)):
                 mname, mtype, mvalue = member
             else:
                 # Backward compatibility

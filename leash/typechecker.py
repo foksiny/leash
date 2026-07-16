@@ -640,7 +640,7 @@ class TypeChecker:
         seen = set()
         members_info = {}  # name -> (type, value_expr)
         for member in node.members:
-            if isinstance(member, tuple):
+            if isinstance(member, (tuple, list)):
                 member_name, member_type, member_value = member
             else:
                 # Backward compatibility for simple member names

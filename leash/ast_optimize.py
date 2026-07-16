@@ -827,7 +827,7 @@ def _collect_all_modified_vars(node):
         elif isinstance(n, DelStatement):
             if isinstance(n.target, Identifier):
                 modified.add(n.target.name)
-        elif isinstance(n, UnaryOp) and n.op == "&":
+        elif isinstance(n, UnaryOp) and n.op in ("&", "++", "--", "++p", "--p"):
             if isinstance(n.expr, Identifier):
                 modified.add(n.expr.name)
 
@@ -844,6 +844,11 @@ def _collect_all_modified_vars(node):
     def _mark_target(t):
         if isinstance(t, Identifier):
             modified.add(t.name)
+        elif isinstance(t, (MemberAccess, IndexAccess)):
+            if isinstance(t.expr, Identifier):
+                modified.add(t.expr.name)
+            else:
+                walk(t.expr)
         else:
             walk(t)
 
