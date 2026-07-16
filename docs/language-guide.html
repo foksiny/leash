@@ -1,0 +1,1018 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Language Guide - Leash</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<button class="menu-toggle" onclick="document.querySelector('.sidebar').classList.toggle('open')">&#9776;</button>
+
+<aside class="sidebar">
+    <div class="sidebar-header">
+        <h1>Leash</h1>
+        <div class="version">v0.21.0b0 Beta</div>
+        <div class="subtitle">Programming Language</div>
+    </div>
+    <nav class="sidebar-nav">
+        <div class="nav-section">
+            <div class="nav-section-title">Getting Started</div>
+            <a href="index.html">Overview</a>
+            <a href="getting-started.html">Installation &amp; Setup</a>
+        </div>
+        <div class="nav-section">
+            <div class="nav-section-title">Language Guide</div>
+            <a href="language-guide.html" class="active">Language Reference</a>
+            <a href="compiler.html">Compiler &amp; CLI</a>
+            <a href="stdlib.html">Standard Library</a>
+        </div>
+        <div class="nav-section">
+            <div class="nav-section-title">Ecosystem</div>
+            <a href="package-manager.html">Package Manager</a>
+            <a href="concurrency.html">Concurrency Model</a>
+            <a href="advanced.html">Advanced Topics</a>
+        </div>
+    </nav>
+</aside>
+
+<main class="main">
+
+<div class="breadcrumb">
+    <a href="index.html">Home</a> <span class="sep">/</span> <span class="current">Language Reference</span>
+</div>
+
+<h1>Language Reference</h1>
+
+<h2>Variables</h2>
+
+<p>In Leash, variables must declare their type upon initialization.</p>
+
+<pre><code>a: <span class="kw">int</span> = 10;
+b: <span class="kw">string</span> = <span class="str">"Hello World"</span>;</code></pre>
+
+<h3>Auto-Type Inference (<code>:=</code>)</h3>
+
+<p>Leash supports automatic type inference using the <code>:=</code> operator. Instead of explicitly declaring the type, the compiler automatically infers the type from the value on the right-hand side. This is syntactic sugar that makes code more concise when the type is obvious from context.</p>
+
+<pre><code><span class="kw">fnc</span> <span class="fn">main</span>() : <span class="kw">void</span> {
+    a := 10;           <span class="cm">// infers 'int'</span>
+    name := <span class="str">"Leash"</span>;  <span class="cm">// infers 'string'</span>
+    <span class="fn">show</span>(a, <span class="str">" "</span>, name);
+}</code></pre>
+
+<div class="callout callout-info">Using <code>:=</code> requires an initializer expression. The type cannot be inferred without a value.</div>
+
+<h3>Default Initialization</h3>
+
+<p>If you declare a variable without an assignment, Leash automatically initializes it to a default value &mdash; zero for numbers, empty strings, empty vectors/arrays, and a heap-allocated instance for class types (calling the default constructor when possible).</p>
+
+<pre><code>n: <span class="kw">int</span>;           <span class="cm">// 0</span>
+s: <span class="kw">string</span>;        <span class="cm">// ""</span>
+v: <span class="kw">vec</span>&lt;<span class="kw">int</span>&gt;;     <span class="cm">// empty vector</span>
+p: Person;         <span class="cm">// heap-allocated Person with default constructor</span></code></pre>
+
+<h2>Immutable Variables</h2>
+
+<p>Leash supports immutable (constant) variables using the <code>imut</code> qualifier. Once assigned, an <code>imut</code> variable cannot be reassigned. Function parameters can also be marked <code>imut</code> to prevent modification inside the function body.</p>
+
+<pre><code>a: <span class="kw">imut</span> <span class="kw">int</span> = 10;
+<span class="cm">// a = 20;  // ERROR: cannot assign to immutable variable</span>
+
+<span class="kw">fnc</span> <span class="fn">add</span>(a <span class="kw">imut</span> <span class="kw">int</span>, b <span class="kw">imut</span> <span class="kw">int</span>) : <span class="kw">int</span> {
+    <span class="cm">// a = 5;  // ERROR: cannot assign to immutable parameter</span>
+    <span class="kw">return</span> a + b;
+}</code></pre>
+
+<h3>Infectious Immutability</h3>
+
+<p>Functions can return <code>imut</code> types. When an <code>imut</code> return value is assigned to a variable, that variable <strong>automatically becomes immutable</strong> &mdash; even if it wasn't originally declared as <code>imut</code>. This makes <code>imut</code> a powerful tool for enforcing data safety across function boundaries.</p>
+
+<pre><code><span class="kw">fnc</span> <span class="fn">imut_add</span>(a <span class="kw">imut</span> <span class="kw">int</span>, b <span class="kw">imut</span> <span class="kw">int</span>) : <span class="kw">imut</span> <span class="kw">int</span> {
+    <span class="kw">return</span> a + b;
+}
+
+<span class="kw">fnc</span> <span class="fn">main</span>() : <span class="kw">void</span> {
+    c: <span class="kw">int</span> = imut_add(10, 20);
+    <span class="cm">// c = 50;  // ERROR: 'c' is now immutable</span>
+}</code></pre>
+
+<h2>Data Types</h2>
+
+<p>Leash supports rich generic and specific-length types natively. Beyond the standard primitives, you can specify explicit bit widths for precise data representation.</p>
+
+<h3>Primitive Types</h3>
+<table>
+    <tr><th>Type</th><th>Description</th></tr>
+    <tr><td><code>int</code> / <code>uint</code></td><td>Signed/unsigned integer (platform default)</td></tr>
+    <tr><td><code>float</code></td><td>Floating-point number</td></tr>
+    <tr><td><code>bool</code></td><td>Boolean (<code>true</code> / <code>false</code>)</td></tr>
+    <tr><td><code>string</code></td><td>Managed UTF-8 string</td></tr>
+    <tr><td><code>char</code></td><td>Single character</td></tr>
+    <tr><td><code>void</code></td><td>No value</td></tr>
+</table>
+
+<h3>Explicit Bit-Width Types</h3>
+<p>Leash integers and floats can specify an explicit bit width to optimize memory and calculations. Integers use native LLVM support for arbitrary bit-widths, while floats are intelligently mapped to the closest standard hardware format (32-bit or 64-bit).</p>
+
+<pre><code>flag: <span class="kw">uint</span>&lt;1&gt;;              <span class="cm">// 1-bit (boolean-like)</span>
+half: <span class="kw">float</span>&lt;16&gt; = 1.0;       <span class="cm">// 16-bit float</span>
+pixel: <span class="kw">uint</span>&lt;8&gt; = 255;        <span class="cm">// 8-bit integer</span>
+bigInt: <span class="kw">int</span>&lt;512&gt;;             <span class="cm">// 512-bit integer</span></code></pre>
+
+<p>Supported ranges: <code>int&lt;1&gt;</code> to <code>int&lt;512&gt;</code>, <code>uint&lt;1&gt;</code> to <code>uint&lt;512&gt;</code>, <code>float&lt;16&gt;</code> to <code>float&lt;128&gt;</code>.</p>
+
+<h3>Number Literals</h3>
+<p>Leash supports multiple number literal formats for integers and floats, giving you flexibility in how you express numeric values in code.</p>
+
+<pre><code>a: <span class="kw">int</span> = 42;           <span class="cm">// decimal</span>
+b: <span class="kw">int</span> = 0xFF;         <span class="cm">// hexadecimal</span>
+c: <span class="kw">int</span> = 0b1010;       <span class="cm">// binary</span>
+d: <span class="kw">int</span> = 0o755;        <span class="cm">// octal</span>
+e: <span class="kw">float</span> = 1e10;       <span class="cm">// scientific notation (1 &times; 10^10)</span>
+f: <span class="kw">float</span> = 0x1.5p3;    <span class="cm">// hex float with binary exponent (1.5 &times; 2^3 = 10.5)</span>
+g: <span class="kw">float</span> = .5;         <span class="cm">// leading dot (0.5)</span></code></pre>
+
+<h2>Operators</h2>
+
+<p>Leash supports a full suite of arithmetic, comparison, bitwise, and logical operators.</p>
+
+<h3>Arithmetic</h3>
+<table>
+    <tr><th>Op</th><th>Description</th></tr>
+    <tr><td><code>+</code> <code>-</code> <code>*</code> <code>/</code> <code>%</code></td><td>Basic arithmetic</td></tr>
+    <tr><td><code>+=</code> <code>-=</code> <code>*=</code> <code>/=</code> <code>%=</code></td><td>Compound assignment</td></tr>
+    <tr><td><code>&lt;&lt;=</code> <code>&gt;&gt;=</code></td><td>Shift and assign</td></tr>
+    <tr><td><code>&amp;=</code> <code>|=</code> <code>^=</code></td><td>Bitwise and assign</td></tr>
+    <tr><td><code>++</code> <code>--</code></td><td>Increment / decrement (prefix and postfix, expands to <code>a = a + 1</code>)</td></tr>
+</table>
+
+<h3>Comparison &amp; Logical</h3>
+<table>
+    <tr><th>Op</th><th>Description</th></tr>
+    <tr><td><code>==</code> <code>!=</code> <code>&lt;</code> <code>&gt;</code> <code>&lt;=</code> <code>&gt;=</code></td><td>Comparison</td></tr>
+    <tr><td><code>&amp;&amp;</code> <code>||</code> <code>!</code></td><td>Logical (short-circuit evaluation &mdash; right operand only evaluated if necessary)</td></tr>
+    <tr><td><code>&amp;</code> <code>|</code> <code>^</code> <code>~</code></td><td>Bitwise AND, OR, XOR, NOT</td></tr>
+    <tr><td><code>&lt;&lt;</code> <code>&gt;&gt;</code></td><td>Left shift, right shift</td></tr>
+</table>
+
+<h3>Is-In Operator (<code>&lt;&gt;</code>)</h3>
+<p>The <code>&lt;&gt;</code> operator checks if a value exists within an array, returning <code>true</code> if found. For vectors, use the <code>.isin()</code> method instead.</p>
+
+<pre><code>nums: <span class="kw">int</span>[5] = {1, 2, 3, 4, 5};
+<span class="kw">if</span> 3 &lt;&gt; nums {
+    <span class="fn">show</span>(<span class="str">"3 is in the array"</span>);
+}
+<span class="kw">if</span> <span class="str">"world"</span> &lt;&gt; words {
+    <span class="fn">show</span>(<span class="str">"Found 'world'!"</span>);
+}</code></pre>
+
+<h3><code>is</code> / <code>isnt</code> Operators</h3>
+<p>Leash supports <code>is</code> and <code>isnt</code> for both <strong>type checking</strong> and <strong>deep value comparison</strong>. For arrays and vectors, value comparisons perform deep checking (each element), not just pointer equality.</p>
+
+<pre><code><span class="cm">// Type checking</span>
+<span class="kw">if</span> a <span class="kw">is</span> <span class="kw">int</span> { <span class="fn">show</span>(<span class="str">"It's int!"</span>); }
+<span class="kw">if</span> myvar <span class="kw">isnt</span> <span class="kw">string</span> { <span class="fn">show</span>(<span class="str">"Not a string"</span>); }
+
+<span class="cm">// Deep value comparison (arrays, strings, vectors)</span>
+<span class="kw">if</span> mylist <span class="kw">is</span> {1, 2, 3, 4, 5} { ... }
+<span class="kw">if</span> myvec <span class="kw">isnt</span> mv2 { ... }</code></pre>
+
+<table>
+    <tr><th>Type</th><th><code>is</code>/<code>isnt</code> Support</th></tr>
+    <tr><td>Primitives (<code>int</code>, <code>float</code>, <code>bool</code>, <code>char</code>)</td><td>Type checks and value comparisons</td></tr>
+    <tr><td>Strings</td><td>Deep comparison (content-based)</td></tr>
+    <tr><td>Arrays / Vectors</td><td>Deep comparison of all elements</td></tr>
+    <tr><td>Structs / Unions / Enums / Classes</td><td>Type checking only</td></tr>
+</table>
+
+<h3>Ternary Operator</h3>
+<p>The ternary conditional operator evaluates a condition and returns the value of the matching branch. Both branches must have compatible types.</p>
+<pre><code>a: <span class="kw">int</span> = 10 == 10 ? 10 : 20;              <span class="cm">// 10</span>
+result: <span class="kw">string</span> = x &gt; 3 ? <span class="str">"big"</span> : <span class="str">"small"</span>;</code></pre>
+
+<h2>Functions</h2>
+
+<p>Functions are defined with the <code>fnc</code> keyword, followed by the argument list and return type. The entrypoint to any compiled Leash application is <code>main() : void</code>.</p>
+
+<pre><code><span class="cm">// Standard function</span>
+<span class="kw">fnc</span> <span class="fn">add</span>(a <span class="kw">int</span>, b <span class="kw">int</span>) : <span class="kw">int</span> {
+    <span class="kw">return</span> a + b;
+}
+
+<span class="cm">// One-line using pipe operator (|>)</span>
+<span class="kw">fnc</span> <span class="fn">multiply</span>(a <span class="kw">int</span>, b <span class="kw">int</span>) : <span class="kw">int</span> |> <span class="kw">return</span> a * b;
+
+<span class="cm">// Void return is the default</span>
+<span class="kw">fnc</span> <span class="fn">greet</span>(name <span class="kw">string</span>) |> <span class="fn">show</span>(<span class="str">"Hello, "</span>, name);</code></pre>
+
+<h3>Optional Parentheses</h3>
+<p>When a function takes no arguments, the parentheses <code>()</code> can be omitted in both definitions and calls. This makes for cleaner code when there are no parameters to declare.</p>
+
+<pre><code><span class="kw">fnc</span> <span class="fn">greet</span> {
+    <span class="fn">show</span>(<span class="str">"Hello!"</span>);
+}
+
+<span class="kw">fnc</span> <span class="fn">getValue</span> : <span class="kw">int</span> {
+    <span class="kw">return</span> 42;
+}
+
+<span class="kw">fnc</span> <span class="fn">main</span> {
+    greet;                  <span class="cm">// no parens needed</span>
+    x: <span class="kw">int</span> = getValue;     <span class="cm">// also works with return values</span>
+    <span class="fn">show</span>(<span class="fn">getValue</span>());     <span class="cm">// parens still valid too</span>
+}</code></pre>
+
+<h3>Default Arguments</h3>
+<p>Leash supports default argument values. Parameters with default values are optional at the call site &mdash; if not provided, the default value is used. Arguments without default values must come <strong>before</strong> arguments with default values.</p>
+
+<pre><code><span class="kw">fnc</span> <span class="fn">add</span>(a <span class="kw">int</span>, b <span class="kw">int</span>, c <span class="kw">int</span> = 0) : <span class="kw">int</span> {
+    <span class="kw">return</span> a + b + c;
+}
+<span class="fn">show</span>(add(10, 20));       <span class="cm">// 30 (uses c=0)</span>
+<span class="fn">show</span>(add(10, 20, 30));   <span class="cm">// 60</span>
+
+<span class="cm">// Valid: required before optional</span>
+<span class="kw">fnc</span> <span class="fn">valid</span>(a <span class="kw">int</span>, b <span class="kw">int</span> = 1, c <span class="kw">int</span> = 2) : <span class="kw">int</span> { ... }
+
+<span class="cm">// Invalid: compile error</span>
+<span class="cm">// fnc invalid(a int = 1, b int) : int { ... }</span></code></pre>
+
+<h3>Named Arguments</h3>
+<p>When calling a function, you can specify arguments by name using the <code>name=value</code> syntax. This is especially useful when a function has many parameters with default values and you want to skip some optional parameters while specifying others.</p>
+
+<pre><code><span class="kw">fnc</span> <span class="fn">math</span>(a <span class="kw">int</span> = 1, b <span class="kw">int</span> = 2, typ <span class="kw">int</span> = 0) : <span class="kw">int</span> { ... }
+
+<span class="fn">show</span>(math());                   <span class="cm">// 3 (all defaults)</span>
+<span class="fn">show</span>(math(10, 20));            <span class="cm">// 30 (positional)</span>
+<span class="fn">show</span>(math(b=20, typ=2));       <span class="cm">// 40 (a=1 default, b=20, typ=2)</span></code></pre>
+
+<h3>Command Line Arguments</h3>
+<p>To accept command line arguments, declare <code>main</code> with an <code>args string[]</code> parameter. The built-in <code>show()</code> function makes printing multiple values easy.</p>
+
+<pre><code><span class="kw">fnc</span> <span class="fn">main</span>(args <span class="kw">string</span>[]) : <span class="kw">void</span> {
+    <span class="fn">show</span>(<span class="str">"Received "</span>, args.size, <span class="str">" arguments"</span>);
+    <span class="kw">foreach</span> i, arg <span class="kw">in&lt;array&gt;</span> args {
+        <span class="fn">show</span>(i, <span class="str">": "</span>, arg);
+    }
+}</code></pre>
+
+<h4>The <code>end</code> Parameter</h4>
+<p>By default, <code>show()</code> appends a newline after printing all arguments. You can override this with the <code>end</code> keyword argument, which is useful for building output incrementally.</p>
+
+<pre><code><span class="fn">show</span>(<span class="str">"Hello"</span>, end=<span class="str">""</span>);      <span class="cm">// No trailing newline</span>
+<span class="fn">show</span>(<span class="str">"World"</span>, end=<span class="str">", "</span>);    <span class="cm">// Trailing comma+space instead</span>
+<span class="fn">show</span>(<span class="str">"Done"</span>);                <span class="cm">// Still appends newline by default</span></code></pre>
+
+<h4>Buffered Output (<code>showb</code>)</h4>
+<p>Leash also provides <code>showb()</code> for more precise output control. Unlike <code>show()</code>, it prints arguments exactly as they are, without any automatic separators or trailing newlines. This is particularly powerful when working with vectors and nested vectors, as it can unpack and print their contents recursively.</p>
+
+<pre><code><span class="fn">showb</span>(<span class="str">"Hello "</span>);
+<span class="fn">showb</span>(<span class="str">"World!\n"</span>);   <span class="cm">// No auto-separators or newlines</span>
+
+<span class="cm">// Powerful with vectors:</span>
+grid: <span class="kw">vec</span>&lt;<span class="kw">vec</span>&lt;<span class="kw">uint</span>&lt;1&gt;&gt;&gt;;
+grid.<span class="fn">pushb</span>((<span class="kw">vec</span>&lt;<span class="kw">uint</span>&lt;1&gt;&gt;){1, 0, 1});
+grid.<span class="fn">pushb</span>((<span class="kw">vec</span>&lt;<span class="kw">uint</span>&lt;1&gt;&gt;){0, 1, 0});
+<span class="kw">foreach</span> _, row <span class="kw">in&lt;vector&gt;</span> grid {
+    <span class="fn">showb</span>(row);        <span class="cm">// unpacks and prints inline</span>
+    <span class="fn">showb</span>(<span class="str">"\n"</span>);      <span class="cm">// manual newline</span>
+}
+<span class="cm">// Output: 101\n010</span></code></pre>
+
+<h3>Inline Functions</h3>
+<p>Functions marked with <code>inline</code> suggest the compiler should insert the function body at the call site instead of generating a function call. This can improve performance for small, frequently-called functions.</p>
+
+<pre><code><span class="kw">inline</span> <span class="kw">fnc</span> <span class="fn">add</span>(a <span class="kw">int</span>, b <span class="kw">int</span>) : <span class="kw">int</span> {
+    <span class="kw">return</span> a + b;
+}</code></pre>
+
+<h3>Deferred Execution (<code>defer</code>)</h3>
+<p>The <code>defer</code> keyword schedules a function call to be executed automatically when the current scope exits. This is useful for resource cleanup (like closing files) and ensures cleanup happens even if the function returns early. Deferred calls execute in <strong>reverse order</strong> (last defer runs first).</p>
+
+<pre><code><span class="kw">fnc</span> <span class="fn">read_file</span>(fname <span class="kw">string</span>) : <span class="kw">string</span> {
+    f: <span class="kw">File</span> = <span class="kw">File</span>.<span class="fn">open</span>(fname, <span class="str">"r"</span>);
+    <span class="kw">defer</span> f.<span class="fn">close</span>();   <span class="cm">// called when read_file returns</span>
+    <span class="kw">return</span> f.<span class="fn">read</span>();
+}</code></pre>
+
+<h3>Lambdas</h3>
+<p>Leash supports anonymous functions (lambdas) that can be assigned to variables and passed around. Lambda type syntax is <code>fnc(param_types) : return_type</code>.</p>
+
+<pre><code>add: <span class="kw">fnc</span>(<span class="kw">int</span>, <span class="kw">int</span>) : <span class="kw">int</span> = <span class="kw">fnc</span>(a <span class="kw">int</span>, b <span class="kw">int</span>) : <span class="kw">int</span> {
+    <span class="kw">return</span> a + b;
+};
+<span class="fn">show</span>(add(1, 2));  <span class="cm">// 3</span>
+
+sub: <span class="kw">fnc</span>(<span class="kw">int</span>, <span class="kw">int</span>) : <span class="kw">int</span> = <span class="kw">fnc</span>(a <span class="kw">int</span>, b <span class="kw">int</span>) : <span class="kw">int</span> {
+    <span class="kw">return</span> a - b;
+};</code></pre>
+
+<h3>Nested Functions</h3>
+<p>Leash supports defining functions inside other functions. They are scoped to the enclosing function and are useful for organizing helper logic without polluting the global namespace. Nested functions do <strong>not</strong> capture variables from the enclosing scope (no closure semantics).</p>
+
+<pre><code><span class="kw">fnc</span> <span class="fn">main</span>() : <span class="kw">void</span> {
+    <span class="kw">fnc</span> <span class="fn">add</span>(a <span class="kw">int</span>, b <span class="kw">int</span>) : <span class="kw">int</span> {
+        <span class="kw">return</span> a + b;
+    }
+    result: <span class="kw">int</span> = add(10, 20);
+    <span class="fn">show</span>(result);
+}</code></pre>
+
+<h2>Operator Definitions (<code>opdef</code>)</h2>
+
+<p>Operator Definitions let you extend existing types with new methods and overload operators. They work with built-in types (<code>string</code>, <code>vec</code>, etc.) and user-defined types (classes, structs) alike. For generic types like <code>vec&lt;T&gt;</code>, use <code>thisop.typ</code> to refer to the inner type parameter.</p>
+
+<h3>Extension Methods</h3>
+<pre><code><span class="kw">opdef</span> <span class="kw">string</span>.<span class="fn">join</span>(a <span class="kw">string</span>, b <span class="kw">string</span>) : <span class="kw">string</span> {
+    <span class="kw">return</span> a + b;
+}
+
+<span class="kw">opdef</span> <span class="kw">string</span>.<span class="fn">repeat</span>(s <span class="kw">string</span>, n <span class="kw">int</span>) : <span class="kw">string</span> {
+    result: <span class="kw">string</span> = <span class="str">""</span>;
+    <span class="kw">for</span> i: <span class="kw">int</span> = 0; i &lt; n; i = i + 1 {
+        result = result + s;
+    }
+    <span class="kw">return</span> result;
+}
+
+<span class="fn">show</span>(<span class="str">"Hello, "</span>.<span class="fn">join</span>(<span class="str">"world!"</span>));  <span class="cm">// Hello, world!</span>
+<span class="fn">show</span>(<span class="str">"Hey"</span>.<span class="fn">repeat</span>(3));               <span class="cm">// HeyHeyHey</span></code></pre>
+
+<h3>Operator Overloads</h3>
+<pre><code><span class="kw">opdef</span> <span class="kw">vec</span>+(vec1 <span class="kw">vec</span>, vec2 <span class="kw">vec</span>) : <span class="kw">vec</span> {
+    result: <span class="kw">vec</span>&lt;thisop.typ&gt;;  <span class="cm">// resolves to concrete type</span>
+    <span class="kw">foreach</span> _, v <span class="kw">in&lt;vector&gt;</span> vec1 { result.<span class="fn">pushb</span>(v); }
+    <span class="kw">foreach</span> _, v <span class="kw">in&lt;vector&gt;</span> vec2 { result.<span class="fn">pushb</span>(v); }
+    <span class="kw">return</span> result;
+}
+result: <span class="kw">vec</span>&lt;<span class="kw">int</span>&gt; = vec1 + vec2;</code></pre>
+
+<h2>Global Variables</h2>
+<p>Leash supports module-level variable declarations accessible from any function within the same module. By default, top-level variables are public. Use <code>pub</code> or <code>priv</code> to control visibility. Global variables can have initializers evaluated at program startup (before <code>main</code> runs).</p>
+
+<pre><code>a: <span class="kw">int</span> = 10;                    <span class="cm">// public (default)</span>
+<span class="kw">pub</span> b: <span class="kw">string</span> = <span class="str">"hello"</span>;         <span class="cm">// explicitly public</span>
+<span class="kw">priv</span> secret: <span class="kw">int</span> = 42;          <span class="cm">// module-private</span></code></pre>
+
+<h2>Control Flow</h2>
+
+<h3>Branching</h3>
+<p>Use <code>if</code>, <code>also</code> (acts like <code>else if</code>), and <code>else</code> for conditional branching.</p>
+<pre><code><span class="kw">if</span> a &lt; b {
+    <span class="fn">show</span>(<span class="str">"a is less than b"</span>);
+} <span class="kw">also</span> a &gt; b {
+    <span class="fn">show</span>(<span class="str">"a is greater than b"</span>);
+} <span class="kw">else</span> {
+    <span class="fn">show</span>(<span class="str">"a is equal to b"</span>);
+}</code></pre>
+
+<h4>Unless</h4>
+<p><code>unless</code> is like <code>if</code> but inverts the condition &mdash; it executes the then-block when the condition is <strong>false</strong>. The <code>alsou</code> keyword also inverts its branch's condition.</p>
+<pre><code><span class="kw">unless</span> some_error_occurred {
+    <span class="fn">show</span>(<span class="str">"All is well"</span>);
+} <span class="kw">alsou</span> is_pending {
+    <span class="fn">show</span>(<span class="str">"Still waiting..."</span>);
+} <span class="kw">else</span> {
+    <span class="fn">show</span>(<span class="str">"Error happened"</span>);
+}</code></pre>
+
+<h3>Loops</h3>
+<p>Leash comes packed with multiple loop types: <code>while</code>, <code>for</code>, <code>do-while</code>, and infinite <code>loop</code>.</p>
+
+<pre><code><span class="cm">// While &mdash; runs while condition is true</span>
+i: <span class="kw">int</span> = 0;
+<span class="kw">while</span> i &lt; 10 { i = i + 1; }
+
+<span class="cm">// For &mdash; init; condition; update</span>
+<span class="kw">for</span> j: <span class="kw">int</span> = 0; j &lt; 10; j = j + 1 {
+    <span class="fn">show</span>(j);
+}
+
+<span class="cm">// Do-While &mdash; runs body at least once</span>
+k: <span class="kw">int</span> = 0;
+<span class="kw">do</span> { k = k + 1; } <span class="kw">while</span> k &lt; 10;
+
+<span class="cm">// Infinite Loop &mdash; runs until 'stop' is used</span>
+<span class="kw">loop</span> {
+    <span class="fn">show</span>(i);
+    i = i + 1;
+    <span class="kw">if</span> i &gt; 10 { <span class="kw">stop</span>; }
+}</code></pre>
+
+<h3>For-Each</h3>
+<p>Leash supports iterating over arrays, vectors, strings, and even struct fields using the <code>foreach</code> keyword with the <code>in&lt;type&gt;</code> syntax.</p>
+<pre><code><span class="cm">// Over array</span>
+<span class="kw">foreach</span> index, value <span class="kw">in&lt;array&gt;</span> a { ... }
+
+<span class="cm">// Over vector</span>
+<span class="kw">foreach</span> i, v <span class="kw">in&lt;vector&gt;</span> myvec { ... }
+
+<span class="cm">// Over string characters</span>
+<span class="kw">foreach</span> i, c <span class="kw">in&lt;string&gt;</span> s { ... }
+
+<span class="cm">// Over struct fields &mdash; unrolled at compile time</span>
+<span class="kw">foreach</span> name, value <span class="kw">in&lt;struct&gt;</span> p { ... }</code></pre>
+
+<h3>Switch-Case</h3>
+<p>Leash supports <code>switch-case</code> for multi-way branching. Unlike C-style switch, each case block is wrapped in <code>{ }</code> braces, so there is <strong>no fall-through</strong>. Switch supports integers, floats, booleans, strings, and enums.</p>
+
+<pre><code><span class="kw">switch</span> c {
+    <span class="kw">case</span> Color::RED {
+        <span class="fn">show</span>(<span class="str">"it's RED!"</span>);
+    } <span class="kw">case</span> Color::GREEN {
+        <span class="fn">show</span>(<span class="str">"it's GREEN!"</span>);
+    } <span class="kw">default</span> {
+        <span class="fn">show</span>(<span class="str">"something else"</span>);
+    }
+}
+
+<span class="cm">// Works with any comparable type</span>
+<span class="kw">switch</span> x {
+    <span class="kw">case</span> 1 { <span class="fn">show</span>(<span class="str">"one"</span>); }
+    <span class="kw">case</span> 2 { <span class="fn">show</span>(<span class="str">"two"</span>); }
+    <span class="kw">default</span> { <span class="fn">show</span>(<span class="str">"not one or two"</span>); }
+}</code></pre>
+
+<h3><code>stop</code>, <code>continue</code>, <code>empty</code>, <code>ignore</code></h3>
+<p><code>stop</code> exits the innermost loop, <code>continue</code> skips to the next iteration. <code>empty</code> is a no-op placeholder. <code>ignore</code> immediately exits the current function and returns the default value for its return type (zero for numbers, null for pointers, empty for strings). It executes any deferred calls before returning.</p>
+
+<pre><code><span class="kw">stop</span>;      <span class="cm">// break out of loop</span>
+<span class="kw">continue</span>;  <span class="cm">// skip to next iteration</span>
+<span class="kw">empty</span>;     <span class="cm">// does nothing</span>
+<span class="kw">ignore</span>;    <span class="cm">// exit function with default value</span></code></pre>
+
+<h2>Strings</h2>
+
+<p>String evaluation is supported natively in the language, with concatenation, substring removal, indexing, and length queries all built-in.</p>
+
+<pre><code>a: <span class="kw">string</span> = <span class="str">"hello"</span>;
+b: <span class="kw">string</span> = <span class="str">"world"</span>;
+c: <span class="kw">string</span> = a + b;           <span class="cm">// concatenation: "helloworld"</span>
+removed: <span class="kw">string</span> = c - b;     <span class="cm">// remove first occurrence: "hello"</span>
+ch: <span class="kw">char</span> = c[1];              <span class="cm">// character indexing: 'e'</span>
+len: <span class="kw">int</span> = c.size;            <span class="cm">// string length</span></code></pre>
+
+<h3>String Interpolation</h3>
+<p>Leash supports string interpolation inside double-quoted strings. Any Leash expression enclosed in <code>{ }</code> is evaluated and converted to a string at runtime. To include a literal <code>{</code> or <code>}</code>, escape it with <code>\{</code> and <code>\}</code>. Interpolation works only for double-quoted strings.</p>
+
+<pre><code>a: <span class="kw">int</span> = 10;
+b: <span class="kw">int</span> = 20;
+<span class="fn">show</span>(<span class="str">"{a} + {b} = {a + b}"</span>);  <span class="cm">// "10 + 20 = 30"</span>
+
+<span class="cm">// Function calls work too</span>
+<span class="fn">show</span>(<span class="str">"{double(5)}"</span>);           <span class="cm">// "10"</span>
+
+<span class="cm">// Escaping braces</span>
+<span class="fn">show</span>(<span class="str">"mylist isn't '\{1, 2, 3\}'"</span>);</code></pre>
+
+<h3>Multi-Line Strings</h3>
+<p>Use triple quotes (<code>"""</code> or <code>'''</code>) for multi-line strings. Single-quoted triple strings do not support interpolation.</p>
+<pre><code>poem: <span class="kw">string</span> = <span class="str">"""Roses are red,
+Violets are blue,
+Leash is awesome!"""</span>;</code></pre>
+
+<h3>String Methods</h3>
+<table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td><code>.replace(old, new)</code></td><td>Replace first occurrence of <code>old</code> with <code>new</code></td></tr>
+    <tr><td><code>.size</code></td><td>Return the length of the string (property)</td></tr>
+</table>
+
+<h3><code>cstr()</code> / <code>lstr()</code> &amp; Char Arrays</h3>
+<p>Leash natively supports both managed <code>string</code> types and lower-level <code>char[]</code> slices. <code>cstr()</code> converts a string to a <code>char[]</code>, <code>lstr()</code> converts back to a managed string.</p>
+
+<pre><code>str: <span class="kw">char</span>[] = <span class="fn">cstr</span>(<span class="str">"Hello World"</span>);
+s: <span class="kw">string</span> = <span class="fn">lstr</span>(str);
+
+<span class="cm">// Iteration over strings:</span>
+<span class="kw">foreach</span> i, c <span class="kw">in&lt;string&gt;</span> s {
+    <span class="fn">show</span>(i, <span class="str">": "</span>, c);
+}
+
+<span class="cm">// Mixed concatenation works automatically:</span>
+s = s + <span class="str">'!'</span>;            <span class="cm">// with character</span>
+s = s + <span class="fn">cstr</span>(<span class="str">" :D"</span>);    <span class="cm">// with char[]</span></code></pre>
+
+<h3>Escape Normalization</h3>
+<p>The built-in <code>normescape()</code> converts escape sequences in a string to their actual character values. Supported: <code>\n</code>, <code>\t</code>, <code>\r</code>, <code>\0</code>, <code>\a</code>, <code>\b</code>, <code>\f</code>, <code>\v</code>, <code>\\</code>, <code>\"</code>, <code>\'</code>, <code>\?</code>, <code>\xNN</code> (hex bytes).</p>
+
+<pre><code>s: <span class="kw">string</span> = <span class="str">"Hello, world!\n haha \\"</span>;
+<span class="fn">show</span>(<span class="fn">normescape</span>(s));
+<span class="cm">/* Output:</span>
+<span class="cm">Hello, world!</span>
+<span class="cm"> haha \ */</span></code></pre>
+
+<h2>Arrays</h2>
+
+<p>Data is sequentially packed into memory and can be easily constructed with inline lists. All arrays in Leash are stored as runtime-sized structures (<code>{ i64 size, ptr data }</code>), so array sizes are evaluated at runtime.</p>
+
+<pre><code>a: <span class="kw">int</span>&lt;64&gt;[10] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10};
+len: <span class="kw">int</span> = a.size;
+
+<span class="kw">foreach</span> index, value <span class="kw">in&lt;array&gt;</span> a {
+    <span class="fn">show</span>(index, <span class="str">": "</span>, value);
+}</code></pre>
+
+<h3>Dynamic Array Sizes</h3>
+<p>Leash supports using variables, member access, and even math expressions to specify array sizes at runtime.</p>
+<pre><code>n: <span class="kw">int</span> = 5;
+arr1: <span class="kw">int</span>[n] = {1, 2, 3, 4, 5};
+
+<span class="cm">// Using member access</span>
+chars: <span class="kw">char</span>[str.size] = <span class="fn">cstr</span>(str);
+
+<span class="cm">// Using math expressions</span>
+arr2: <span class="kw">int</span>[x + y + 1] = {1, 2, 3, 4, 5, 6};</code></pre>
+
+<h2>Vectors</h2>
+
+<p>Vectors are dynamic arrays that can grow or shrink in size. They are declared using the <code>vec&lt;T&gt;</code> syntax and provide a rich set of methods for manipulation.</p>
+
+<pre><code>v: <span class="kw">vec</span>&lt;<span class="kw">string</span>&gt;;
+v.<span class="fn">pushb</span>(<span class="str">"first"</span>);     <span class="cm">// push to back</span>
+v.<span class="fn">pushb</span>(<span class="str">"second"</span>);
+v.<span class="fn">pushf</span>(<span class="str">"start"</span>);     <span class="cm">// push to front</span>
+
+<span class="fn">show</span>(<span class="str">"Size: "</span>, v.size);    <span class="cm">// .size is a property</span>
+<span class="fn">show</span>(<span class="str">"First: "</span>, v.<span class="fn">get</span>(0));
+v.<span class="fn">set</span>(1, <span class="str">"middle"</span>);
+v.<span class="fn">insert</span>(1, <span class="str">"extra"</span>);
+
+<span class="cm">// Bulk copy operations</span>
+v.<span class="fn">extend</span>({2, 3, 4});      <span class="cm">// append array/slice</span>
+v.<span class="fn">extendv</span>(other);        <span class="cm">// append another vector</span>
+v.<span class="fn">insertv</span>(1, other);     <span class="cm">// insert vector at position</span>
+v.<span class="fn">inserta</span>(1, {<span class="str">"x"</span>, <span class="str">"y"</span>}); <span class="cm">// insert array at position</span>
+
+v.<span class="fn">clear</span>();</code></pre>
+
+<table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td><code>.pushb(val)</code></td><td>Push element to the back</td></tr>
+    <tr><td><code>.popb()</code></td><td>Remove and return the last element</td></tr>
+    <tr><td><code>.pushf(val)</code></td><td>Push element to the front</td></tr>
+    <tr><td><code>.popf()</code></td><td>Remove and return the first element</td></tr>
+    <tr><td><code>.get(idx)</code></td><td>Get element at the specified index</td></tr>
+    <tr><td><code>.set(idx, val)</code></td><td>Set element at the specified index</td></tr>
+    <tr><td><code>.insert(idx, val)</code></td><td>Insert an element at index</td></tr>
+    <tr><td><code>.remove(idx)</code></td><td>Remove element at index</td></tr>
+    <tr><td><code>.extend(arr)</code></td><td>Append all elements from an array/slice</td></tr>
+    <tr><td><code>.extendv(other)</code></td><td>Append all elements from another vector</td></tr>
+    <tr><td><code>.insertv(pos, other)</code></td><td>Insert all elements of a vector at position</td></tr>
+    <tr><td><code>.inserta(pos, arr)</code></td><td>Insert array/slice at position</td></tr>
+    <tr><td><code>.clear()</code></td><td>Remove all elements</td></tr>
+    <tr><td><code>.isin(val)</code></td><td>Return <code>true</code> if the value exists</td></tr>
+</table>
+
+<h2>Matrices</h2>
+
+<p>Matrices are dynamically-sized, heap-allocated flat arrays that support element-wise math operations with automatic parallelisation. They use 64-byte aligned allocation for SIMD/cache-line friendliness and include optimizations like function-pointer dispatch, 4&times; loop unrolling with prefetching, cache-blocked operations, and a reusable thread pool.</p>
+
+<pre><code>m1: <span class="kw">matrix</span>&lt;<span class="kw">float</span>&gt; = {1.3, 2.1, 5.3};
+m2: <span class="kw">matrix</span>&lt;<span class="kw">float</span>&gt; = {2.4, 9.3, 4.2};
+result: <span class="kw">matrix</span>&lt;<span class="kw">float</span>&gt; = m1 + m2;  <span class="cm">// element-wise (parallel)</span>
+
+<span class="kw">foreach</span> i, v <span class="kw">in&lt;matrix&gt;</span> result {
+    <span class="fn">show</span>(i, <span class="str">": "</span>, v);
+}</code></pre>
+
+<table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td><code>.pushb(val)</code></td><td>Append element at the end</td></tr>
+    <tr><td><code>.pushf(val)</code></td><td>Prepend element at the front</td></tr>
+    <tr><td><code>.popb()</code> / <code>.popf()</code></td><td>Remove and return last/first</td></tr>
+    <tr><td><code>.get(idx)</code></td><td>Index into the flat array</td></tr>
+    <tr><td><code>.set(idx, val)</code></td><td>Write at flat index</td></tr>
+    <tr><td><code>.size()</code></td><td>Total number of elements</td></tr>
+    <tr><td><code>.isin(val)</code></td><td>Search; returns <code>bool</code></td></tr>
+</table>
+
+<p>Matrix arithmetic supports <code>+</code>, <code>-</code>, <code>*</code>, <code>/</code>, <code>==</code>, <code>!=</code> with automatic parallelisation at &ge;1024 elements.</p>
+
+<h2>Hash Tables</h2>
+
+<p>Hash tables are key-value data structures providing efficient lookup by key, declared with <code>hash&lt;K, V&gt;</code>. They support any value types, including pointers, classes, structs, unions, and even other hash tables.</p>
+
+<pre><code>persons: <span class="kw">hash</span>&lt;<span class="kw">string</span>, <span class="kw">int</span>&gt; = {<span class="str">"John Doe"</span>: 23, <span class="str">"Jane Doe"</span>: 24};
+<span class="fn">show</span>(persons[<span class="str">"John Doe"</span>]);     <span class="cm">// 23</span>
+persons[<span class="str">"John Doe"</span>] = 30;       <span class="cm">// update via bracket</span>
+persons.<span class="fn">push</span>(<span class="str">"Bob"</span>, 25);       <span class="cm">// add new entry</span>
+
+<span class="cm">// Lookup</span>
+key: <span class="kw">string</span> = persons.<span class="fn">getKey</span>(23);
+<span class="kw">if</span> persons.<span class="fn">isin</span>(<span class="str">"John Doe"</span>) { ... }
+
+<span class="cm">// Bulk access</span>
+keys: <span class="kw">vec</span>&lt;<span class="kw">string</span>&gt; = persons.<span class="fn">keys</span>();
+vals: <span class="kw">vec</span>&lt;<span class="kw">int</span>&gt; = persons.<span class="fn">values</span>();
+persons.<span class="fn">delete</span>(<span class="str">"Jane Doe"</span>);</code></pre>
+
+<h2>Structs</h2>
+
+<p>Structs group different variables together. You can declare them at the top-level using the <code>def</code> keyword. Leash natively supports iterating across struct members.</p>
+
+<pre><code><span class="kw">def</span> Point : <span class="kw">struct</span> {
+    x: <span class="kw">int</span>;
+    y: <span class="kw">int</span>;
+};
+
+p: Point = Point {x: 10, y: 20};
+p.x = 15;
+
+<span class="cm">// Native struct field iteration</span>
+<span class="kw">foreach</span> name, value <span class="kw">in&lt;struct&gt;</span> p {
+    <span class="fn">show</span>(name, <span class="str">": "</span>, value); <span class="cm">// x: 15, y: 20</span>
+}</code></pre>
+
+<h3>Struct Field Default Values</h3>
+<p>Struct fields can have default values used when the struct is created without specifying all fields. Omitted fields use their defaults.</p>
+<pre><code><span class="kw">def</span> Person : <span class="kw">struct</span> {
+    name: <span class="kw">string</span> = <span class="str">"John Doe"</span>;
+    age:  <span class="kw">int</span>    = 23;
+};
+
+p1: Person = Person {};                            <span class="cm">// all defaults</span>
+p2: Person = Person { name: <span class="str">"Jane"</span> };           <span class="cm">// Jane 23</span>
+p3: Person = Person { name: <span class="str">"Bob"</span>, age: 30 };   <span class="cm">// Bob 30</span></code></pre>
+
+<h3>Struct Functions</h3>
+<p>Structs can have functions attached using <code>fnc ... -&gt; StructType</code> syntax. The function receives an implicit <code>this</code> pointer with no heap allocation or vtable dispatch.</p>
+<pre><code><span class="kw">fnc</span> <span class="fn">getName</span>() : <span class="kw">string</span> -&gt; Person {
+    <span class="kw">return</span> <span class="kw">this</span>.name;
+}
+p.<span class="fn">getName</span>();  <span class="cm">// called on instance</span></code></pre>
+
+<h2>Pointers</h2>
+
+<p>Leash supports pointers for low-level memory operations and efficient parameter passing. Leash recommends using <code>&amp;</code> (references) instead of <code>*</code> (raw pointers) for function parameters when possible, as references provide the same efficiency with better safety.</p>
+
+<pre><code>a: <span class="kw">int</span> = 10;
+p: *<span class="kw">int</span> = &amp;a;
+<span class="fn">show</span>(*p);     <span class="cm">// dereference, prints 10</span>
+*p = 20;       <span class="cm">// modify through pointer</span></code></pre>
+
+<h3>Safe References (<code>&amp;</code>)</h3>
+<pre><code><span class="kw">fnc</span> <span class="fn">increment</span>(v &amp;<span class="kw">int</span>) : <span class="kw">void</span> {
+    v = v + 1;  <span class="cm">// modifies original</span>
+}
+increment(a);  <span class="cm">// passes address automatically</span></code></pre>
+
+<h3>Pointer Arithmetic</h3>
+<p>Pointer arithmetic is supported on <code>*char</code> pointers for working with raw character data.</p>
+<pre><code>c_str: *<span class="kw">char</span> = <span class="fn">cstr</span>(<span class="str">"Hello"</span>);
+<span class="fn">show</span>(*(c_str + 1)); <span class="cm">// 'e'</span>
+<span class="fn">show</span>(*(c_str + 4)); <span class="cm">// 'o'</span></code></pre>
+
+<h3>Pointer Member Access (<code>-&gt;</code>)</h3>
+<pre><code><span class="kw">fnc</span> <span class="fn">print_point</span>(p *Point) : <span class="kw">void</span> {
+    <span class="fn">show</span>(p-&gt;x);
+    <span class="fn">show</span>(p-&gt;y);
+}
+
+pt: Point = Point {x: 10, y: 20};
+print_point(&amp;pt);</code></pre>
+
+<h3>Generic Pointer Syntax (<code>pointer&lt;T&gt;</code>)</h3>
+<p>Leash supports a generic pointer syntax <code>pointer&lt;T&gt;</code> as an alternative to <code>*T</code>, particularly useful in complex generic types. It is canonicalized to <code>*T</code> at parse time, so both forms are interchangeable.</p>
+<pre><code><span class="kw">def</span> Node : <span class="kw">struct</span> {
+    value: <span class="kw">int</span>;
+    next: <span class="kw">pointer</span>&lt;Node&gt;;  <span class="cm">// same as *Node</span>
+};
+
+<span class="kw">def</span> LinkedList&lt;T&gt; : <span class="kw">struct</span> {
+    head: <span class="kw">pointer</span>&lt;Node&lt;T&gt;&gt;;  <span class="cm">// cleaner than *Node&lt;T&gt;</span>
+};</code></pre>
+
+<h2>Unions</h2>
+
+<p>Unions allow a variable to store different types of data at different times. Leash implements <strong>Tagged Unions</strong>, meaning the language tracks which type is currently active at runtime for safety. Accessing an inactive variant triggers a Runtime Safety Error.</p>
+
+<pre><code><span class="kw">def</span> Value : <span class="kw">union</span> {
+    i: <span class="kw">int</span>;
+    f: <span class="kw">float</span>;
+    s: <span class="kw">string</span>;
+};
+
+v: Value = 42;        <span class="cm">// auto-detects 'i' variant</span>
+<span class="fn">show</span>(v.cur);          <span class="cm">// smart-prints active variant</span>
+
+v = <span class="str">"hello"</span>;          <span class="cm">// changes to 's' variant</span>
+<span class="fn">show</span>(v.cur);
+
+v.f = 3.14;           <span class="cm">// explicit variant access</span>
+<span class="fn">show</span>(v.f);</code></pre>
+
+<h3>The <code>tounion()</code> Function</h3>
+<p>The <code>tounion(UnionType, value)</code> built-in explicitly wraps a value into a union type, typically used with type-inferred variable declarations. The compiler validates that the value's type matches one of the union's variants.</p>
+<pre><code>v := <span class="fn">tounion</span>(Value, 45);
+<span class="fn">show</span>(v, <span class="str">" "</span>, <span class="fn">typeof</span>(v));  <span class="cm">// 45 Value</span></code></pre>
+
+<div class="callout callout-danger">Accessing an inactive variant (e.g., calling <code>v.i</code> when <code>v.f</code> is active) triggers a <strong>Runtime Safety Error</strong> to prevent crashes or memory corruption.</div>
+
+<h2>Enums</h2>
+
+<p>Enums allow you to define a set of named constants. In Leash, enums are represented as integers under the hood but provide a <code>.name</code> property for string representation. Enums are compatible with <code>int</code>.</p>
+
+<pre><code><span class="kw">def</span> Color : <span class="kw">enum</span> {
+    RED,
+    GREEN,
+    BLUE
+};
+
+c: Color = Color::RED;
+<span class="fn">show</span>(c);              <span class="cm">// 0 (integer value)</span>
+<span class="fn">show</span>(c.name);         <span class="cm">// "RED"</span>
+v: <span class="kw">int</span> = c;            <span class="cm">// 0 (implicit int conversion)</span></code></pre>
+
+<h3>Enums with Custom Values</h3>
+<p>Leash supports enums with custom values. Each member can have a type annotation and a custom value, supporting strings, integers, floats, and booleans. When accessing members with custom values, use the member's type, not the enum type.</p>
+<pre><code><span class="kw">def</span> ErrorCodes : <span class="kw">enum</span> {
+    OK: <span class="kw">int</span> = 0,
+    NOT_FOUND: <span class="kw">int</span> = 404,
+    SERVER_ERROR: <span class="kw">int</span> = 500
+};
+
+code: <span class="kw">int</span> = ErrorCodes::NOT_FOUND;  <span class="cm">// 404</span>
+
+<span class="kw">def</span> Names : <span class="kw">enum</span> {
+    PERSON1: <span class="kw">string</span> = <span class="str">"John Doe"</span>,
+    PERSON2: <span class="kw">string</span> = <span class="str">"Jane Doe"</span>
+};
+name: <span class="kw">string</span> = Names::PERSON1;      <span class="cm">// "John Doe"</span></code></pre>
+
+<p>Members without custom values default to sequential integer values (0, 1, 2, ...). Supported value types: <code>string</code>, <code>int</code>, <code>uint</code>, <code>float</code>, <code>bool</code>, and explicit bit-width types.</p>
+
+<h2>Type Aliases</h2>
+<p>Define custom names for existing types to improve readability or create abstraction layers.</p>
+<pre><code><span class="kw">def</span> MyInt : <span class="kw">type</span> <span class="kw">int</span>;
+<span class="kw">def</span> Pixel : <span class="kw">type</span> <span class="kw">uint</span>&lt;8&gt;;
+a: MyInt = 10;
+p: Pixel = 255;</code></pre>
+
+<h2>Macros</h2>
+
+<p>Macros allow you to define reusable code snippets that are expanded at compile time through textual substitution. Unlike functions, macros have <strong>no call overhead</strong> &mdash; the expression is inlined directly at the call site. Arguments are evaluated each time they appear in the body, and macro parameters have no type constraints.</p>
+
+<pre><code><span class="cm">// Single-line macro using |></span>
+<span class="kw">def</span> MAX : <span class="kw">macro</span>(a, b) |> a &lt; b ? b : a;
+
+<span class="cm">// Multi-line macro using { }</span>
+<span class="kw">def</span> CLAMP : <span class="kw">macro</span>(val, lo, hi) {
+    <span class="kw">if</span> val &lt; lo { <span class="kw">return</span> lo; }
+    <span class="kw">if</span> val &gt; hi { <span class="kw">return</span> hi; }
+    <span class="kw">return</span> val;
+};
+
+<span class="kw">fnc</span> <span class="fn">main</span>() : <span class="kw">void</span> {
+    <span class="fn">show</span>(MAX(10, 20));  <span class="cm">// expanded to: 10 &lt; 20 ? 20 : 10 &rarr; 20</span>
+}
+
+<span class="cm">// Zero-parameter macros can omit parens</span>
+<span class="kw">def</span> PI : <span class="kw">macro</span>() |> 3.14159;
+<span class="fn">show</span>(PI);     <span class="cm">// 3.14159</span>
+<span class="fn">show</span>(PI());   <span class="cm">// 3.14159 &mdash; equivalent</span></code></pre>
+
+<h2>Generic Types</h2>
+
+<p>Leash supports generic programming through templates. Use the <code>template</code> keyword to declare a type parameter, conventionally named with a single uppercase letter or descriptive names like <code>KeyType</code>, <code>ValueType</code>.</p>
+
+<pre><code><span class="kw">def</span> T : <span class="kw">template</span>;
+
+<span class="kw">fnc</span> <span class="fn">identity</span>(x T) : T {
+    <span class="kw">return</span> x;
+}
+
+<span class="fn">show</span>(<span class="fn">identity</span>&lt;<span class="kw">int</span>&gt;(42));           <span class="cm">// must specify concrete type</span>
+<span class="fn">show</span>(<span class="fn">identity</span>&lt;<span class="kw">string</span>&gt;(<span class="str">"hi"</span>));</code></pre>
+
+<h3>Generic Classes</h3>
+<pre><code><span class="kw">def</span> K : <span class="kw">template</span>;
+<span class="kw">def</span> V : <span class="kw">template</span>;
+
+<span class="kw">def</span> Pair : <span class="kw">class</span>&lt;K, V&gt; {
+    first: K;
+    second: V;
+}
+
+p: Pair&lt;<span class="kw">int</span>, <span class="kw">string</span>&gt; = Pair&lt;<span class="kw">int</span>, <span class="kw">string</span>&gt; {first: 1, second: <span class="str">"one"</span>};
+p.<span class="fn">get_first</span>();   <span class="cm">// 1</span></code></pre>
+
+<h2>Multi-Type Functions</h2>
+
+<p>Multi-type functions allow you to write generic-like functions without explicitly declaring template parameters. Use square brackets <code>[type1, type2, ...]</code> to specify multiple allowed types. When called, Leash automatically instantiates a specialized version based on the concrete argument types.</p>
+
+<pre><code><span class="kw">fnc</span> <span class="fn">add</span>(a [<span class="kw">int</span>, <span class="kw">float</span>], b [<span class="kw">int</span>, <span class="kw">float</span>]) : [<span class="kw">int</span>, <span class="kw">float</span>] {
+    <span class="kw">return</span> a + b;
+}
+
+i: <span class="kw">int</span> = add(10, 20);          <span class="cm">// instantiates int version</span>
+f: <span class="kw">float</span> = add(10.5, 20.5);  <span class="cm">// instantiates float version</span></code></pre>
+
+<p>Each instantiation is type-checked and compiled separately, ensuring type safety while maintaining flexibility.</p>
+
+<h2>Multi-Return Functions</h2>
+
+<p>Leash supports functions that return multiple values. Under the hood, multi-return values are passed as an LLVM struct &mdash; the compiler automatically constructs a struct from the returned values and extracts each element on assignment.</p>
+
+<pre><code><span class="kw">fnc</span> <span class="fn">add_sub</span>(a <span class="kw">int</span>, b <span class="kw">int</span>) : (<span class="kw">int</span>, <span class="kw">int</span>) {
+    <span class="kw">return</span> a + b, a - b;
+}
+
+sum, diff: <span class="kw">int</span>, <span class="kw">int</span> = add_sub(10, 4);
+<span class="cm">// sum = 14, diff = 6</span>
+
+<span class="cm">// Multi-assignment to existing variables</span>
+x, y = swap(x, y);
+
+<span class="cm">// Three or more return values</span>
+sum, prod, diff: <span class="kw">int</span>, <span class="kw">int</span>, <span class="kw">int</span> = stats(2, 3, 4);
+
+<span class="cm">// Mixed types</span>
+i, f: <span class="kw">int</span>, <span class="kw">float</span> = compute(5, 3.14);</code></pre>
+
+<p>The compiler enforces that the number and types of return values match the declaration, and that multi-assignment targets existing, mutable variables with compatible types.</p>
+
+<h2>Type Casting &amp; Conversions</h2>
+
+<h3>C-Style Cast <code>(type)expr</code></h3>
+<p>Explicit casting between incompatible types, useful for low-level pointer casts and bit manipulation.</p>
+<pre><code>f: <span class="kw">float</span> = 3.99;
+i: <span class="kw">int</span> = (<span class="kw">int</span>)f;    <span class="cm">// 3 (truncation)</span>
+c: <span class="kw">char</span> = <span class="str">'A'</span>;
+u: <span class="kw">uint</span> = (<span class="kw">uint</span>)c;  <span class="cm">// 65 (ASCII)</span></code></pre>
+
+<h3>The <code>as</code> Keyword</h3>
+<p>The <code>as</code> keyword provides clean, readable type conversions that the compiler can validate. It supports numeric conversions, bit-width changes, class upcasting/downcasting, and pointer conversions. Inside <code>unsafe</code> functions, it also allows pointer-to-integer conversions.</p>
+<pre><code><span class="fn">show</span>(10 <span class="kw">as</span> <span class="kw">float</span>);        <span class="cm">// 10.000000</span>
+<span class="fn">show</span>(dog <span class="kw">as</span> Animal);       <span class="cm">// upcast child to parent</span>
+d = (Dog)animal;             <span class="cm">// downcast parent to child (C-style)</span></code></pre>
+
+<table>
+    <tr><th>Syntax</th><th>Use Case</th><th>Safety</th></tr>
+    <tr><td><code>expr as type</code></td><td>Safe numeric/class conversions</td><td>Type-checked at compile time</td></tr>
+    <tr><td><code>(type)expr</code></td><td>Low-level casts, bit manipulation</td><td>Allows any cast (may be unsafe)</td></tr>
+    <tr><td><code>toint()</code> / <code>tofloat()</code></td><td>String parsing</td><td>Runtime parsing</td></tr>
+</table>
+
+<h3>String &harr; Number</h3>
+<pre><code>a: <span class="kw">int</span> = <span class="fn">toint</span>(<span class="kw">int</span>, <span class="str">"123"</span>);
+b: <span class="kw">float</span>&lt;32&gt; = <span class="fn">tofloat</span>(<span class="kw">float</span>&lt;32&gt;, <span class="str">"3.14159"</span>);
+s: <span class="kw">string</span> = <span class="fn">tostring</span>(123);      <span class="cm">// "123"</span></code></pre>
+
+<h3>Byte Conversions</h3>
+<p>Functions for converting between integers/floats and byte representations, useful for binary serialization and FFI.</p>
+<pre><code>bytes: <span class="kw">char</span>[8] = <span class="fn">inttobytes</span>(<span class="fn">sizeof</span>(<span class="kw">int</span>&lt;64&gt;), n);
+restored: <span class="kw">int</span>&lt;64&gt; = <span class="fn">bytestoint</span>(<span class="fn">sizeof</span>(<span class="kw">int</span>&lt;64&gt;), bytes);
+fbytes: <span class="kw">char</span>[8] = <span class="fn">floattobytes</span>(<span class="fn">sizeof</span>(<span class="kw">float</span>&lt;64&gt;), f);</code></pre>
+
+<h2><code>sizeof()</code> &amp; <code>typeof()</code></h2>
+<p><code>sizeof()</code> returns the size in bytes of a type or expression, evaluated at compile time when possible. It supports anything in Leash from primitives to complex classes. <code>typeof()</code> returns the type name of any expression as a string, known at compile time &mdash; useful for debugging and logging.</p>
+
+<pre><code><span class="fn">show</span>(<span class="fn">sizeof</span>(<span class="kw">int</span>));            <span class="cm">// 4</span>
+<span class="fn">show</span>(<span class="fn">sizeof</span>(Point));          <span class="cm">// 8</span>
+<span class="fn">show</span>(<span class="fn">sizeof</span>(a + 10));         <span class="cm">// 16</span>
+
+<span class="fn">show</span>(<span class="fn">typeof</span>(a));               <span class="cm">// "int"</span>
+<span class="fn">show</span>(<span class="fn">typeof</span>(Point {x:1, y:2})); <span class="cm">// "Point"</span>
+<span class="fn">show</span>(<span class="fn">typeof</span>(lam));             <span class="cm">// "fnc(int) : int"</span></code></pre>
+
+<h2>Classes</h2>
+
+<p>Leash supports Object-Oriented Programming through classes. Classes combine data (fields) and behavior (methods) into a single unit. Use <code>pub</code> for publicly accessible members and <code>priv</code> for members only accessible within the class. Non-static methods receive an implicit <code>this</code> pointer.</p>
+
+<pre><code><span class="kw">def</span> Person : <span class="kw">class</span> {
+    <span class="kw">pub</span> name: <span class="kw">string</span>;
+    <span class="kw">priv</span> age: <span class="kw">int</span>;
+
+    <span class="kw">static</span> <span class="kw">pub</span> <span class="kw">fnc</span> <span class="fn">new</span>(name <span class="kw">string</span>, age <span class="kw">int</span>) : Person {
+        <span class="kw">return</span> Person { name: name, age: age };
+    }
+
+    <span class="kw">pub</span> <span class="kw">fnc</span> <span class="fn">greet</span>() : <span class="kw">string</span> {
+        <span class="kw">return</span> <span class="str">"Hello, my name is "</span> + <span class="kw">this</span>.name;
+    }
+};
+
+p: Person = Person.<span class="fn">new</span>(<span class="str">"John"</span>, 30);
+<span class="fn">show</span>(p.<span class="fn">greet</span>());
+p.name = <span class="str">"Jane"</span>;</code></pre>
+
+<h3>Creating Instances with <code>create</code></h3>
+<p>The <code>create</code> keyword instantiates a class and calls its constructor (a method with the same name as the class). If a variable is declared with a class type but no initializer, Leash automatically heap-allocates an instance and calls the default constructor.</p>
+
+<pre><code>m: Math = <span class="kw">create</span> Math();      <span class="cm">// explicit with constructor</span>
+p: Person;                       <span class="cm">// auto-init with default constructor</span>
+
+<span class="kw">def</span> Point : <span class="kw">class</span> {
+    <span class="kw">pub</span> Point(x <span class="kw">int</span>, y <span class="kw">int</span>) {
+        <span class="kw">this</span>.x = x;
+        <span class="kw">this</span>.y = y;
+    }
+    <span class="kw">priv</span> x: <span class="kw">int</span>;
+    <span class="kw">priv</span> y: <span class="kw">int</span>;
+};
+p: Point = <span class="kw">create</span> Point(10, 20);</code></pre>
+
+<h3>Destructors with <code>del</code></h3>
+<p>The <code>del</code> keyword deletes a class instance and frees its memory, calling the destructor method named <code>DEL_ClassName</code>. Destructors are called automatically when the instance is no longer referenced and GC collects it.</p>
+
+<pre><code><span class="kw">priv</span> DEL_Math() {
+    <span class="fn">show</span>(<span class="str">"Destroyed!"</span>);
+}
+<span class="kw">del</span> m;  <span class="cm">// calls DEL_Math() and frees memory</span></code></pre>
+
+<h3>Inheritance</h3>
+<p>Leash supports class inheritance using <code>def Child : class(Parent)</code>. Child classes inherit all fields and methods from the parent and can override methods to provide specialized behavior.</p>
+
+<pre><code><span class="kw">def</span> Animal : <span class="kw">class</span> {
+    <span class="kw">pub</span> name: <span class="kw">string</span>;
+    <span class="kw">pub</span> <span class="kw">fnc</span> <span class="fn">talk</span>() : <span class="kw">void</span> { <span class="fn">show</span>(<span class="str">"No sounds"</span>); }
+};
+
+<span class="kw">def</span> Dog : <span class="kw">class</span>(Animal) {
+    <span class="kw">pub</span> <span class="kw">fnc</span> <span class="fn">talk</span>() : <span class="kw">void</span> { <span class="fn">show</span>(<span class="str">"Bark Bark!"</span>); }
+};
+
+<span class="kw">def</span> Cat : <span class="kw">class</span>(Animal) {
+    <span class="kw">pub</span> <span class="kw">fnc</span> <span class="fn">talk</span>() : <span class="kw">void</span> { <span class="fn">show</span>(<span class="str">"Meow!"</span>); }
+};</code></pre>
+
+<h3>Polymorphism &amp; Dynamic Dispatch</h3>
+<p>A child class can be used wherever its parent class is expected. Method calls are dispatched dynamically at runtime using vtables, so the correct overridden method is called based on the actual object type. Upcasting (child to parent) is implicit; downcasting (parent to child) uses an explicit cast.</p>
+
+<pre><code>a: Animal = Animal.<span class="fn">new</span>(<span class="str">"bob"</span>);
+d: Dog    = Dog.<span class="fn">new</span>(<span class="str">"Jake"</span>);
+a2: Animal = Dog.<span class="fn">new</span>(<span class="str">"Jakeee"</span>);  <span class="cm">// upcast (implicit)</span>
+a2.<span class="fn">talk</span>();                           <span class="cm">// "Bark Bark!" (dynamic dispatch)</span>
+d = (Dog)a2;                           <span class="cm">// downcast (explicit)</span></code></pre>
+
+<h4>Preventing Overrides with <code>imut</code></h4>
+<p>Use <code>imut</code> before <code>fnc</code> to make a method non-overridable by subclasses, ensuring consistent behavior for critical operations.</p>
+<pre><code><span class="kw">pub</span> <span class="kw">imut</span> <span class="kw">fnc</span> <span class="fn">talk</span>() : <span class="kw">void</span> { ... }  <span class="cm">// cannot be overridden</span></code></pre>
+
+<h3>Class-Based Entry Points</h3>
+<p>Instead of a top-level <code>fnc main()</code>, you can define a class named <code>Main</code> with a <code>static fnc main</code> method. The compiler detects this and generates the appropriate <code>main</code> wrapper automatically.</p>
+<pre><code><span class="kw">def</span> Main : <span class="kw">class</span> {
+    <span class="kw">static</span> <span class="kw">fnc</span> <span class="fn">main</span> {
+        <span class="fn">show</span>(<span class="str">"Hello, world!"</span>);
+    }
+}</code></pre>
+
+<h2>The <code>self</code> Keyword</h2>
+<p>The <code>self</code> keyword evaluates to the name of the current code context as a string. It is highly useful for logging, debugging, and generic error messages because it always stays in sync with your code &mdash; unlike hardcoded strings that can break when you rename a function.</p>
+
+<table>
+    <tr><th>Context</th><th><code>self</code> Value</th></tr>
+    <tr><td>Function</td><td>Function name</td></tr>
+    <tr><td>Class Method</td><td>Method name</td></tr>
+    <tr><td>Lambda</td><td><code>"&lt;lambda&gt;"</code></td></tr>
+    <tr><td>Error Definition</td><td>Error name</td></tr>
+</table>
+
+<pre><code><span class="fn">show</span>(<span class="kw">self</span>);              <span class="cm">// current function/method name</span>
+<span class="fn">show</span>(<span class="kw">self</span>::Class);        <span class="cm">// current class name</span>
+<span class="fn">show</span>(<span class="kw">self</span>::Parent);       <span class="cm">// parent class name (subclasses only)</span>
+
+<span class="cm">// Practical use: error messages that stay in sync</span>
+<span class="kw">error</span> DatabaseError(msg <span class="kw">string</span>) -&gt; <span class="str">"["</span> + <span class="kw">self</span> + <span class="str">"]: "</span> + msg;</code></pre>
+
+<h2>Input Handling</h2>
+<p><code>get()</code> reads an entire line of text and returns it as a <code>string</code>, with an optional prompt. <code>keyget()</code> reads a single key press immediately without waiting for Enter, useful for menu-driven apps and game controls.</p>
+<pre><code>name: <span class="kw">string</span> = <span class="fn">get</span>(<span class="str">"What is your name? "</span>);
+key: <span class="kw">char</span> = <span class="fn">keyget</span>();     <span class="cm">// single key, no Enter needed</span></code></pre>
+
+<h2>Random Numbers</h2>
+<pre><code><span class="fn">seed</span>(42);                         <span class="cm">// set deterministic seed</span>
+n: <span class="kw">int</span> = <span class="fn">rand</span>(-10, 10);            <span class="cm">// random integer (inclusive)</span>
+f: <span class="kw">float</span> = <span class="fn">randf</span>(0, 2);          <span class="cm">// random float</span>
+name: <span class="kw">string</span> = <span class="fn">choose</span>(<span class="str">"Alice"</span>, <span class="str">"Bob"</span>, <span class="str">"Charlie"</span>);</code></pre>
+
+<h2>Time and Delays</h2>
+<pre><code><span class="fn">wait</span>(1.5);                      <span class="cm">// pause 1.5 seconds</span>
+t: <span class="kw">float</span> = <span class="fn">timepass</span>();         <span class="cm">// elapsed seconds since program start</span></code></pre>
+
+<h2>Shell Commands</h2>
+<p>The <code>exec()</code> function executes shell commands and captures output. Different modes control how output is handled.</p>
+<pre><code>result: <span class="kw">string</span> = <span class="fn">exec</span>(<span class="str">"echo Hello"</span>, <span class="kw">nil</span>);  <span class="cm">// capture output</span>
+<span class="fn">exec</span>(<span class="str">"rm temp.txt"</span>, <span class="str">"silent"</span>);                <span class="cm">// suppress output</span>
+code: <span class="kw">string</span> = <span class="fn">exec</span>(<span class="str">"ls /nonexistent"</span>, <span class="str">"code"</span>); <span class="cm">// get exit code</span></code></pre>
+
+<table>
+    <tr><th>Mode</th><th>Description</th><th>Returns</th></tr>
+    <tr><td><code>nil</code></td><td>Execute and return output</td><td>Output string</td></tr>
+    <tr><td><code>"wait"</code></td><td>Wait and return output</td><td>Output string</td></tr>
+    <tr><td><code>"silent"</code></td><td>Suppress all output</td><td><code>""</code></td></tr>
+    <tr><td><code>"code"</code></td><td>Return exit code</td><td>Exit code as string</td></tr>
+</table>
+
+</main>
+
+<script>
+document.querySelectorAll('.sidebar a').forEach(link => {
+    if (link.href === window.location.href) link.classList.add('active');
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Standard Library - Leash</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<button class="menu-toggle" onclick="document.querySelector('.sidebar').classList.toggle('open')">&#9776;</button>
+
+<aside class="sidebar">
+    <div class="sidebar-header">
+        <h1>Leash</h1>
+        <div class="version">v0.21.0b0 Beta</div>
+        <div class="subtitle">Programming Language</div>
+    </div>
+    <nav class="sidebar-nav">
+        <div class="nav-section">
+            <div class="nav-section-title">Getting Started</div>
+            <a href="index.html">Overview</a>
+            <a href="getting-started.html">Installation &amp; Setup</a>
+        </div>
+        <div class="nav-section">
+            <div class="nav-section-title">Language Guide</div>
+            <a href="language-guide.html">Language Reference</a>
+            <a href="compiler.html">Compiler &amp; CLI</a>
+            <a href="stdlib.html" class="active">Standard Library</a>
+        </div>
+        <div class="nav-section">
+            <div class="nav-section-title">Ecosystem</div>
+            <a href="package-manager.html">Package Manager</a>
+            <a href="concurrency.html">Concurrency Model</a>
+            <a href="advanced.html">Advanced Topics</a>
+        </div>
+    </nav>
+</aside>
+
+<main class="main">
+
+<div class="breadcrumb">
+    <a href="index.html">Home</a> <span class="sep">/</span> <span class="current">Standard Library</span>
+</div>
+
+<h1>Standard Library Reference</h1>
+
+<p>Leash ships with a set of standard libraries in the <code>installthis/</code> directory. These libraries provide common utilities like type aliases for explicit bit-width types, math functions, string manipulation, tuple containers, and a windowing API. Install them globally to make them available from any project via the <code>use</code> statement.</p>
+
+<div class="callout callout-info">The standard libraries are optional &mdash; you can install only the ones you need, or write your own libraries following the same patterns.</div>
+
+<h2>Installation</h2>
+<pre><code><span class="cm"># Install all standard libraries globally</span>
+leash install installthis/
+
+<span class="cm"># Then import in any project</span>
+<span class="kw">use</span> types::*;
+<span class="kw">use</span> math::Math;
+<span class="kw">use</span> str::Str;</code></pre>
+
+<h2>Library Imports</h2>
+
+<h3>Basic Import Syntax</h3>
+<pre><code><span class="kw">use</span> module_name::ItemName;
+<span class="kw">use</span> hash::Hash;
+<span class="kw">use</span> colors::Color;
+
+<span class="cm">// Import all public items</span>
+<span class="kw">use</span> mylib::*;</code></pre>
+
+<h3>Private Imports</h3>
+<pre><code><span class="cm">// Import without re-exporting</span>
+<span class="kw">priv</span> <span class="kw">use</span> mylib::*;
+
+<span class="kw">pub</span> <span class="kw">fnc</span> <span class="fn">helper</span>() : <span class="kw">int</span> {
+    <span class="kw">return</span> lib_priv();  <span class="cm">// can use private items</span>
+}</code></pre>
+
+<h3>Nested Paths</h3>
+<pre><code><span class="kw">use</span> math::operations::add;
+<span class="kw">use</span> utils::string_helpers::capitalize;</code></pre>
+
+<p>The compiler searches for modules in two locations:</p>
+<ol>
+    <li><strong>The local directory</strong> of the file containing the <code>use</code> statement (including subdirectories)</li>
+    <li><strong>The global libraries directory</strong> (<code>~/.leash/libs/</code>) &mdash; where installed libraries are available from anywhere</li>
+</ol>
+<p>When you import a module, all its public definitions (structs, classes, enums, functions, templates, etc.) become available in your file. This makes it easy to organize code into reusable, namespaced modules.</p>
+
+<h2>Types Library (<code>types.lsh</code>)</h2>
+
+<p>Type aliases for explicit bit-width types:</p>
+
+<table>
+    <tr><th>Alias</th><th>Underlying Type</th></tr>
+    <tr><td><code>double</code></td><td><code>float&lt;64&gt;</code></td></tr>
+    <tr><td><code>float16</code></td><td><code>float&lt;16&gt;</code></td></tr>
+    <tr><td><code>float64</code></td><td><code>float&lt;64&gt;</code></td></tr>
+    <tr><td><code>float128</code></td><td><code>float&lt;128&gt;</code></td></tr>
+    <tr><td><code>uint8</code></td><td><code>uint&lt;8&gt;</code></td></tr>
+    <tr><td><code>uint16</code></td><td><code>uint&lt;16&gt;</code></td></tr>
+    <tr><td><code>uint64</code></td><td><code>uint&lt;64&gt;</code></td></tr>
+    <tr><td><code>uint128</code></td><td><code>uint&lt;128&gt;</code></td></tr>
+    <tr><td><code>uint256</code></td><td><code>uint&lt;256&gt;</code></td></tr>
+    <tr><td><code>uint512</code></td><td><code>uint&lt;512&gt;</code></td></tr>
+    <tr><td><code>int8</code></td><td><code>int&lt;8&gt;</code></td></tr>
+    <tr><td><code>int16</code></td><td><code>int&lt;16&gt;</code></td></tr>
+    <tr><td><code>int64</code></td><td><code>int&lt;64&gt;</code></td></tr>
+    <tr><td><code>int128</code></td><td><code>int&lt;128&gt;</code></td></tr>
+    <tr><td><code>int256</code></td><td><code>int&lt;256&gt;</code></td></tr>
+    <tr><td><code>int512</code></td><td><code>int&lt;512&gt;</code></td></tr>
+</table>
+
+<h2>Tuple Library (<code>tuple.lsh</code>)</h2>
+
+<p>A generic <code>Tuple&lt;T&gt;</code> class for storing a collection of values. Tuples provide a lightweight way to group items without defining a custom struct, with methods for indexed access, membership testing, and size queries.</p>
+
+<table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td><code>Tuple.new(vals T[])</code></td><td>Create a new Tuple from an array</td></tr>
+    <tr><td><code>.get(idx int)</code></td><td>Get the element at index <code>idx</code></td></tr>
+    <tr><td><code>.isin(val T)</code></td><td>Check if a value exists</td></tr>
+    <tr><td><code>.size</code></td><td>Number of elements (property)</td></tr>
+</table>
+
+<pre><code><span class="kw">use</span> tuple::Tuple;
+
+<span class="kw">fnc</span> <span class="fn">main</span>() {
+    t: Tuple&lt;<span class="kw">int</span>&gt; = Tuple.<span class="fn">new</span>({1, 2, 3});
+    <span class="fn">show</span>(t.<span class="fn">get</span>(1));   <span class="cm">// 2</span>
+    <span class="fn">show</span>(t.<span class="fn">isin</span>(3));  <span class="cm">// true</span>
+}</code></pre>
+
+<h2>Math Utilities (<code>utils/math.lsh</code>)</h2>
+
+<h3>Constants</h3>
+<p><code>PI</code>, <code>E</code>, <code>HALF_PI</code>, <code>LN10</code>, <code>LN2</code></p>
+
+<h3>Methods</h3>
+<table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td><code>.floor(x)</code></td><td>Round down</td></tr>
+    <tr><td><code>.ceil(x)</code></td><td>Round up</td></tr>
+    <tr><td><code>.fmod(x, y)</code></td><td>Floating-point modulo</td></tr>
+    <tr><td><code>.sqrt(x)</code></td><td>Square root</td></tr>
+    <tr><td><code>.exp(x)</code></td><td>Exponential (e^x)</td></tr>
+    <tr><td><code>.log(x)</code></td><td>Natural logarithm</td></tr>
+    <tr><td><code>.sin(x)</code></td><td>Sine</td></tr>
+    <tr><td><code>.cos(x)</code></td><td>Cosine</td></tr>
+    <tr><td><code>.tan(x)</code></td><td>Tangent</td></tr>
+    <tr><td><code>.pow(base, exp)</code></td><td>Power</td></tr>
+    <tr><td><code>.asin(x)</code></td><td>Arc sine</td></tr>
+    <tr><td><code>.acos(x)</code></td><td>Arc cosine</td></tr>
+    <tr><td><code>.atan(x)</code></td><td>Arc tangent</td></tr>
+    <tr><td><code>.sinh(x)</code></td><td>Hyperbolic sine</td></tr>
+    <tr><td><code>.cosh(x)</code></td><td>Hyperbolic cosine</td></tr>
+    <tr><td><code>.log10(x)</code></td><td>Base-10 logarithm</td></tr>
+    <tr><td><code>.log2(x)</code></td><td>Base-2 logarithm</td></tr>
+    <tr><td><code>.fabs(x)</code></td><td>Absolute value (unsafe)</td></tr>
+</table>
+
+<pre><code><span class="kw">use</span> math::Math;
+
+<span class="kw">fnc</span> <span class="fn">main</span>() {
+    <span class="fn">show</span>(Math.<span class="fn">sin</span>(Math.PI / 2));  <span class="cm">// 1.0</span>
+    <span class="fn">show</span>(Math.<span class="fn">sqrt</span>(144));         <span class="cm">// 12.0</span>
+}</code></pre>
+
+<h2>String Utilities (<code>utils/str.lsh</code>)</h2>
+
+<table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td><code>.split(str, delimiter)</code></td><td>Split by a character</td></tr>
+    <tr><td><code>.splits(str, delimiters)</code></td><td>Split by multiple characters</td></tr>
+    <tr><td><code>.starts(a, b)</code></td><td>Check prefix</td></tr>
+    <tr><td><code>.ends(a, b)</code></td><td>Check suffix</td></tr>
+    <tr><td><code>.upper(str)</code></td><td>Convert to uppercase</td></tr>
+    <tr><td><code>.lower(str)</code></td><td>Convert to lowercase</td></tr>
+    <tr><td><code>.reversed(str)</code></td><td>Reverse the string</td></tr>
+    <tr><td><code>.digit(txt)</code></td><td>Check if all digits</td></tr>
+    <tr><td><code>.alpha(txt)</code></td><td>Check if all alphabetic</td></tr>
+    <tr><td><code>.alnum(txt)</code></td><td>Check if alphanumeric</td></tr>
+    <tr><td><code>.ident(txt)</code></td><td>Check if valid identifier</td></tr>
+</table>
+
+<pre><code><span class="kw">use</span> str::Str;
+
+<span class="kw">fnc</span> <span class="fn">main</span>() {
+    parts: <span class="kw">vec</span>&lt;<span class="kw">string</span>&gt; = Str.<span class="fn">split</span>(<span class="str">"hello world"</span>, <span class="str">' '</span>);
+    <span class="fn">show</span>(Str.<span class="fn">upper</span>(<span class="str">"hello"</span>));  <span class="cm">// "HELLO"</span>
+}</code></pre>
+
+<h2>File I/O</h2>
+
+<pre><code><span class="cm">// Open, write, and close</span>
+file: <span class="kw">File</span> = <span class="kw">File</span>.<span class="fn">open</span>(<span class="str">"output.txt"</span>, <span class="str">"w"</span>);
+file.<span class="fn">write</span>(<span class="str">"Hello, World!"</span>);
+file.<span class="fn">close</span>();
+
+<span class="cm">// Read back</span>
+reader: <span class="kw">File</span> = <span class="kw">File</span>.<span class="fn">open</span>(<span class="str">"output.txt"</span>, <span class="str">"r"</span>);
+content: <span class="kw">string</span> = reader.<span class="fn">read</span>();
+reader.<span class="fn">close</span>();</code></pre>
+
+<h3>File Modes</h3>
+<table>
+    <tr><th>Mode</th><th>Description</th></tr>
+    <tr><td><code>"r"</code></td><td>Open for reading (file must exist)</td></tr>
+    <tr><td><code>"w"</code></td><td>Open for writing (creates or truncates)</td></tr>
+    <tr><td><code>"a"</code></td><td>Open for appending</td></tr>
+    <tr><td><code>"r+"</code></td><td>Open for reading and writing</td></tr>
+</table>
+
+<h3>Static Methods</h3>
+<table>
+    <tr><th>Method</th><th>Returns</th></tr>
+    <tr><td><code>File.open(filename, mode)</code></td><td><code>File</code> (or <code>nil</code> on error)</td></tr>
+    <tr><td><code>File.rename(oldname, newname)</code></td><td><code>int</code></td></tr>
+    <tr><td><code>File.delete(filename)</code></td><td><code>int</code></td></tr>
+</table>
+
+<h3>Instance Methods</h3>
+<table>
+    <tr><th>Method</th><th>Returns</th></tr>
+    <tr><td><code>.read()</code></td><td><code>string</code> &mdash; entire file content</td></tr>
+    <tr><td><code>.write(text)</code></td><td><code>int</code></td></tr>
+    <tr><td><code>.close()</code></td><td><code>int</code></td></tr>
+    <tr><td><code>.readln()</code></td><td><code>string</code> &mdash; one line (stripped)</td></tr>
+    <tr><td><code>.readb()</code></td><td><code>char[]</code> &mdash; bytes</td></tr>
+    <tr><td><code>.writeb(bytes)</code></td><td><code>int</code></td></tr>
+    <tr><td><code>.readlnb()</code></td><td><code>char[]</code> &mdash; line as bytes</td></tr>
+    <tr><td><code>.replace(old, new)</code></td><td><code>int</code> &mdash; 1 if found</td></tr>
+    <tr><td><code>.replaceall(old, new)</code></td><td><code>int</code> &mdash; count of replacements</td></tr>
+    <tr><td><code>.rewind()</code></td><td><code>void</code></td></tr>
+</table>
+
+<h3>Reading Line by Line</h3>
+<pre><code>reader: <span class="kw">File</span> = <span class="kw">File</span>.<span class="fn">open</span>(<span class="str">"data.txt"</span>, <span class="str">"r"</span>);
+line1: <span class="kw">string</span> = reader.<span class="fn">readln</span>();  <span class="cm">// "Line 1"</span>
+reader.<span class="fn">close</span>();</code></pre>
+
+<h3>Byte Operations</h3>
+<pre><code><span class="cm">// Write binary data</span>
+file: <span class="kw">File</span> = <span class="kw">File</span>.<span class="fn">open</span>(<span class="str">"data.bin"</span>, <span class="str">"wb"</span>);
+file.<span class="fn">writeb</span>(cstr(<span class="str">"Binary content"</span>));
+file.<span class="fn">close</span>();</code></pre>
+
+<h3>Appending to Files</h3>
+<pre><code>logger: <span class="kw">File</span> = <span class="kw">File</span>.<span class="fn">open</span>(<span class="str">"log.txt"</span>, <span class="str">"a"</span>);
+logger.<span class="fn">write</span>(<span class="str">"Entry 1\n"</span>);
+logger.<span class="fn">close</span>();</code></pre>
+
+<h2>Hot Reloader (<code>hotreload.lsh</code>)</h2>
+
+<p>The <code>Reloader</code> watches a Leash source file for changes and automatically re-runs it. This is particularly useful during development when you want a live-reload workflow &mdash; edit your code and see the results immediately without manually re-running the compiler.</p>
+
+<pre><code><span class="kw">use</span> hotreload::Reloader;
+
+<span class="kw">fnc</span> <span class="fn">main</span>() {
+    r: Reloader = Reloader.<span class="fn">new</span>(<span class="str">"main.lsh"</span>);
+    r.<span class="fn">start</span>();
+}</code></pre>
+
+<h2>Window Library (<code>utils::window</code>)</h2>
+
+<div class="callout callout-warning">The low-level <code>lshraylib</code> binding is unstable and buggy. The <code>utils::window</code> library is the new, in-development replacement that wraps raylib in a Leash-native API.</div>
+
+<pre><code><span class="kw">use</span> utils::window::*;
+
+wind: LshWindow;
+pos: Vector2;
+speed: <span class="kw">int</span> = 5;
+
+<span class="kw">fnc</span> <span class="fn">start</span>() {
+    pos = Vector2 { x: wind.width / 2, y: wind.height / 2 };
+}
+
+<span class="kw">fnc</span> <span class="fn">update</span>() {
+    sizes := Vector2 { x: 50, y: 50 };
+    Draw.<span class="fn">draw_rect</span>(pos, sizes, WHITE);
+
+    <span class="kw">if</span> Input.<span class="fn">key_down</span>(KEY_W) { pos.y -= speed; }
+    <span class="kw">also</span> Input.<span class="fn">key_down</span>(KEY_S) { pos.y += speed; }
+    <span class="kw">also</span> Input.<span class="fn">key_down</span>(KEY_A) { pos.x -= speed; }
+    <span class="kw">also</span> Input.<span class="fn">key_down</span>(KEY_D) { pos.x += speed; }
+}
+
+<span class="kw">fnc</span> <span class="fn">main</span> {
+    wind = <span class="fn">create_window</span>(800, 600, <span class="str">"My Game"</span>);
+    <span class="fn">close_key</span>(KEY_ESCAPE);
+    <span class="fn">init_window</span>(wind, &amp;start, &amp;update, &amp;endd);
+}</code></pre>
+
+<h3>Key Structures</h3>
+<table>
+    <tr><th>Type</th><th>Description</th></tr>
+    <tr><td><code>LshWindow</code></td><td>Window config (width, height, title, fps, background color)</td></tr>
+    <tr><td><code>Vector2</code></td><td>2D vector with <code>x: float&lt;32&gt;</code>, <code>y: float&lt;32&gt;</code></td></tr>
+    <tr><td><code>Color</code></td><td>RGBA color with <code>r</code>, <code>g</code>, <code>b</code>, <code>a: uint&lt;8&gt;</code></td></tr>
+</table>
+
+<h3>Key Functions</h3>
+<table>
+    <tr><th>Function</th><th>Description</th></tr>
+    <tr><td><code>create_window(w, h, title, fps=60, bgc)</code></td><td>Create a window config struct</td></tr>
+    <tr><td><code>init_window(&amp;window, &amp;start, &amp;update, &amp;end)</code></td><td>Run the window event loop</td></tr>
+    <tr><td><code>close_key(key)</code></td><td>Set the key that closes the window</td></tr>
+    <tr><td><code>close_window()</code></td><td>Close the window manually</td></tr>
+    <tr><td><code>toggle_fullscreen()</code></td><td>Toggle fullscreen mode</td></tr>
+</table>
+
+<h3>Drawing API</h3>
+<table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td><code>Draw.draw_rect(pos, sizes, color)</code></td><td>Draw a centered rectangle</td></tr>
+    <tr><td><code>Draw.draw_circle(pos, radius, color)</code></td><td>Draw a circle</td></tr>
+    <tr><td><code>Draw.draw_line(start, end, color)</code></td><td>Draw a line</td></tr>
+    <tr><td><code>Draw.draw_pixel(pos, color)</code></td><td>Draw a single pixel</td></tr>
+    <tr><td><code>Draw.draw_ellipse(pos, radius, color)</code></td><td>Draw an ellipse</td></tr>
+</table>
+
+<h3>Input API</h3>
+<table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td><code>Input.key_down(key)</code></td><td>Is a key currently held down?</td></tr>
+    <tr><td><code>Input.key_up(key)</code></td><td>Is a key up?</td></tr>
+    <tr><td><code>Input.key_pressed(key)</code></td><td>Was the key just pressed this frame?</td></tr>
+    <tr><td><code>Input.key_released(key)</code></td><td>Was the key just released this frame?</td></tr>
+</table>
+
+<p>Pre-defined key constants: <code>KEY_W</code>, <code>KEY_A</code>, <code>KEY_S</code>, <code>KEY_D</code>, <code>KEY_SPACE</code>, <code>KEY_ESCAPE</code>, <code>KEY_ENTER</code>, <code>KEY_UP</code>, <code>KEY_DOWN</code>, <code>KEY_LEFT</code>, <code>KEY_RIGHT</code>, and more.</p>
+
+<p>Color macros: <code>WHITE()</code>, <code>BLACK()</code>, <code>RED()</code>, <code>GREEN()</code>, <code>BLUE()</code>, <code>YELLOW()</code>, <code>ORANGE()</code>, <code>PURPLE()</code>, <code>RAYWHITE()</code>, <code>GRAY()</code>, and more.</p>
+
+</main>
+
+<script>
+document.querySelectorAll('.sidebar a').forEach(link => {
+    if (link.href === window.location.href) link.classList.add('active');
+});
+</script>
+</body>
+</html>

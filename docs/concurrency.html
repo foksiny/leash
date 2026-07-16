@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Concurrency - Leash</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<button class="menu-toggle" onclick="document.querySelector('.sidebar').classList.toggle('open')">&#9776;</button>
+
+<aside class="sidebar">
+    <div class="sidebar-header">
+        <h1>Leash</h1>
+        <div class="version">v0.21.0b0 Beta</div>
+        <div class="subtitle">Programming Language</div>
+    </div>
+    <nav class="sidebar-nav">
+        <div class="nav-section">
+            <div class="nav-section-title">Getting Started</div>
+            <a href="index.html">Overview</a>
+            <a href="getting-started.html">Installation &amp; Setup</a>
+        </div>
+        <div class="nav-section">
+            <div class="nav-section-title">Language Guide</div>
+            <a href="language-guide.html">Language Reference</a>
+            <a href="compiler.html">Compiler &amp; CLI</a>
+            <a href="stdlib.html">Standard Library</a>
+        </div>
+        <div class="nav-section">
+            <div class="nav-section-title">Ecosystem</div>
+            <a href="package-manager.html">Package Manager</a>
+            <a href="concurrency.html" class="active">Concurrency Model</a>
+            <a href="advanced.html">Advanced Topics</a>
+        </div>
+    </nav>
+</aside>
+
+<main class="main">
+
+<div class="breadcrumb">
+    <a href="index.html">Home</a> <span class="sep">/</span> <span class="current">Concurrency Model</span>
+</div>
+
+<h1>Concurrency Model</h1>
+
+<p>Leash supports multi-threaded programming through <strong>workers</strong> &mdash; special functions that run concurrently in separate OS threads. Workers communicate through two kinds of global variables: <code>shared</code> and <code>fusion</code>.</p>
+
+<h2>Shared Variables (<code>shared</code>)</h2>
+
+<p>A <code>shared</code> variable allows <strong>one thread to write</strong> while any number of threads read. This is the default safe pattern for producer-consumer scenarios where a single worker produces data and multiple workers consume it. Since only one writer is allowed, there's no risk of write-write conflicts, making <code>shared</code> the simplest and safest choice for one-to-many communication patterns.</p>
+
+<pre><code><span class="kw">shared</span> result: <span class="kw">int</span> = 0;  <span class="cm">// Only one writer, many readers</span></code></pre>
+
+<table>
+    <tr><th>Property</th><th>Description</th></tr>
+    <tr><td>Writers</td><td>Only one worker may write at a time</td></tr>
+    <tr><td>Readers</td><td>Any number of workers may read</td></tr>
+    <tr><td>Atomicity</td><td>No guarantees &mdash; readers may see stale values</td></tr>
+</table>
+
+<h2>Fusion Variables (<code>fusion</code>)</h2>
+
+<p>A <code>fusion</code> variable allows <strong>multiple threads</strong> to both read and write concurrently. Writes use atomic stores and reads use atomic loads, so every thread eventually sees the latest value. This makes <code>fusion</code> the right choice for counters, flags, and coordination variables that many threads need to share and update.</p>
+
+<pre><code><span class="kw">fusion</span> counter: <span class="kw">int</span> = 0;  <span class="cm">// Multiple readers and writers</span></code></pre>
+
+<table>
+    <tr><th>Property</th><th>Description</th></tr>
+    <tr><td>Readers &amp; Writers</td><td>Any worker may read or write</td></tr>
+    <tr><td>Visibility</td><td>Changes eventually visible to all threads (atomic semantics)</td></tr>
+    <tr><td>Use cases</td><td>Counters, flags, values shared by many threads</td></tr>
+</table>
+
+<h2>Worker Functions (<code>worker fnc</code>)</h2>
+
+<p>Mark a function with <code>worker fnc</code> instead of <code>fnc</code> to make it runnable in its own OS thread. Workers are declared just like regular functions but with the <code>worker</code> keyword, accept parameters normally, and typically run in an infinite loop &mdash; checking <code>thisworker.interrupted</code> to know when the program is shutting down.</p>
+
+<pre><code><span class="kw">worker</span> <span class="kw">fnc</span> <span class="fn">calculate</span>(a <span class="kw">int</span>, b <span class="kw">int</span>) {
+    <span class="kw">while</span> !thisworker.interrupted {
+        result = a + b + result;
+        <span class="fn">show</span>(<span class="str">"calculate updated result to: "</span>, result);
+    }
+}</code></pre>
+
+<ul>
+    <li>Workers are declared like regular functions but with the <code>worker</code> keyword</li>
+    <li>They accept parameters like normal functions</li>
+    <li>They run in an infinite loop by default</li>
+    <li>Use <code>thisworker.interrupted</code> to check if the program is shutting down</li>
+</ul>
+
+<h2>Spawning Workers (<code>spawn</code>)</h2>
+
+<p>Use <code>spawn</code> to launch a worker function in a new OS thread. Each <code>spawn</code> call creates a dedicated thread, passes arguments by value (copied into a heap-allocated struct), and starts execution immediately. Spawned threads run concurrently with <code>main</code> and with each other.</p>
+
+<pre><code><span class="kw">fnc</span> <span class="fn">main</span>() {
+    <span class="kw">spawn</span> calculate(3, 5);
+    <span class="kw">spawn</span> increment_counter();
+    <span class="kw">spawn</span> show_result();
+}</code></pre>
+
+<ul>
+    <li>Each <code>spawn</code> creates a new OS thread running the given worker function</li>
+    <li>Arguments are passed by value (copied into a heap-allocated struct)</li>
+    <li>All spawned threads run concurrently with <code>main</code> and with each other</li>
+    <li>Workers stop when the program terminates or when <code>thisworker.interrupted</code> becomes true (e.g., on Ctrl+C)</li>
+</ul>
+
+<h2>The <code>thisworker</code> Built-in</h2>
+
+<table>
+    <tr><th>Member</th><th>Type</th><th>Description</th></tr>
+    <tr><td><code>interrupted</code></td><td><code>bool</code></td><td><code>true</code> when program is shutting down (e.g., Ctrl+C)</td></tr>
+</table>
+
+<pre><code><span class="kw">worker</span> <span class="kw">fnc</span> <span class="fn">my_worker</span>() {
+    <span class="kw">while</span> !thisworker.interrupted {
+        <span class="cm">// Do work</span>
+    }
+}</code></pre>
+
+<h2>Full Example</h2>
+
+<pre><code><span class="kw">shared</span> result: <span class="kw">int</span> = 0;
+<span class="kw">fusion</span> counter: <span class="kw">int</span> = 0;
+
+<span class="kw">worker</span> <span class="kw">fnc</span> <span class="fn">calculate</span>(a <span class="kw">int</span>, b <span class="kw">int</span>) {
+    <span class="kw">while</span> !thisworker.interrupted {
+        result = a + b + result;
+        <span class="fn">show</span>(<span class="str">"calculate updated result to: "</span>, result);
+    }
+}
+
+<span class="kw">worker</span> <span class="kw">fnc</span> <span class="fn">increment_counter</span>() {
+    <span class="kw">while</span> !thisworker.interrupted {
+        counter = counter + 1;
+        <span class="fn">show</span>(<span class="str">"counter incremented to: "</span>, counter);
+    }
+}
+
+<span class="kw">worker</span> <span class="kw">fnc</span> <span class="fn">show_result</span>() {
+    <span class="kw">while</span> !thisworker.interrupted {
+        <span class="fn">show</span>(<span class="str">"result:"</span>, result, <span class="str">" counter:"</span>, counter);
+    }
+}
+
+<span class="kw">fnc</span> <span class="fn">main</span>() {
+    <span class="kw">spawn</span> calculate(3, 5);
+    <span class="kw">spawn</span> increment_counter();
+    <span class="kw">spawn</span> show_result();
+}</code></pre>
+
+<h2>Lifecycle &amp; Cleanup</h2>
+
+<ul>
+    <li>Workers are automatically started when <code>spawn</code> is called</li>
+    <li>They run until the program exits or <code>thisworker.interrupted</code> is true</li>
+    <li>Ctrl+C sets the interrupted flag for clean shutdown</li>
+    <li>The runtime waits for all workers to finish before full exit</li>
+    <li>Memory allocated in workers is handled by the thread-safe garbage collector</li>
+</ul>
+
+<h2>Thread Safety Notes</h2>
+
+<table>
+    <tr><th>Feature</th><th>Safety</th></tr>
+    <tr><td><code>shared</code> variables</td><td>No atomicity guarantees &mdash; use when only one worker writes</td></tr>
+    <tr><td><code>fusion</code> variables</td><td>Atomic loads/stores &mdash; writes visible across threads</td></tr>
+    <tr><td>Garbage collector</td><td>Fully thread-safe &mdash; allocations from any worker are safe</td></tr>
+    <tr><td><code>show()</code> function</td><td>Thread-safe (output lines may interleave)</td></tr>
+    <tr><td>Mutex / locks</td><td>Not built-in &mdash; use <code>fusion</code> variables for coordination</td></tr>
+</table>
+
+</main>
+
+<script>
+document.querySelectorAll('.sidebar a').forEach(link => {
+    if (link.href === window.location.href) link.classList.add('active');
+});
+</script>
+</body>
+</html>

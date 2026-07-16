@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Package Manager - Leash</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<button class="menu-toggle" onclick="document.querySelector('.sidebar').classList.toggle('open')">&#9776;</button>
+
+<aside class="sidebar">
+    <div class="sidebar-header">
+        <h1>Leash</h1>
+        <div class="version">v0.21.0b0 Beta</div>
+        <div class="subtitle">Programming Language</div>
+    </div>
+    <nav class="sidebar-nav">
+        <div class="nav-section">
+            <div class="nav-section-title">Getting Started</div>
+            <a href="index.html">Overview</a>
+            <a href="getting-started.html">Installation &amp; Setup</a>
+        </div>
+        <div class="nav-section">
+            <div class="nav-section-title">Language Guide</div>
+            <a href="language-guide.html">Language Reference</a>
+            <a href="compiler.html">Compiler &amp; CLI</a>
+            <a href="stdlib.html">Standard Library</a>
+        </div>
+        <div class="nav-section">
+            <div class="nav-section-title">Ecosystem</div>
+            <a href="package-manager.html" class="active">Package Manager</a>
+            <a href="concurrency.html">Concurrency Model</a>
+            <a href="advanced.html">Advanced Topics</a>
+        </div>
+    </nav>
+</aside>
+
+<main class="main">
+
+<div class="breadcrumb">
+    <a href="index.html">Home</a> <span class="sep">/</span> <span class="current">Package Manager</span>
+</div>
+
+<h1>Leashed Package Manager</h1>
+
+<p><code>leashed</code> is the official package manager for Leash. It lets you create, publish, share, and install Leash libraries through a central registry at <code>github.com/foksiny/leash-packages</code>. Every library lives in its own GitHub repository; the registry is an <code>index.json</code> that maps library names to repo URLs.</p>
+
+<h2>Installation</h2>
+<pre><code><span class="cm"># Installed alongside the Leash compiler</span>
+pip install -e .
+leashed --version
+<span class="cm"># leashed v0.1.0</span></code></pre>
+
+<h2>Creating a Package</h2>
+<p>Scaffold a new library project with <code>leashed init</code>. This creates the standard library structure with a package configuration file where you specify the library's name, version, author, and entry point.</p>
+<pre><code>leashed init mylib
+<span class="kw">cd</span> mylib</code></pre>
+
+<p>Creates:</p>
+<pre><code>mylib/
+&#x251C;&#x2500; src/
+&#x2502;   &#x2514;&#x2500; main.lsh        <span class="cm"># Library entry point</span>
+&#x251C;&#x2500; leash-pkg.lshc     <span class="cm"># Package configuration</span>
+&#x2514;&#x2500; .gitignore</code></pre>
+
+<h3>Package Configuration (<code>leash-pkg.lshc</code>)</h3>
+<pre><code>name: <span class="str">"mylib"</span>
+version: <span class="str">"0.1.0"</span>
+author: <span class="str">"your-github-username"</span>
+description: <span class="str">"The mylib library"</span>
+main: <span class="str">"src/main.lsh"</span></code></pre>
+
+<p>To link to an existing GitHub repo, add a <code>repo</code> field:</p>
+<pre><code>repo: <span class="str">"https://github.com/you/mylib.git"</span></code></pre>
+
+<h2>Publishing a Package</h2>
+<p>From inside your project directory, publish your library to the central registry. The publish command handles everything from verification to registration, making it easy to share your libraries with the community.</p>
+<pre><code>leashed publish</code></pre>
+
+<p>This does the following automatically:</p>
+<ol>
+    <li><strong>Verifies</strong> your source code with <code>leash check</code></li>
+    <li><strong>Compiles</strong> your library to a static <code>.lib</code> / <code>.a</code> file</li>
+    <li><strong>Creates a GitHub repo</strong> under your account (if no <code>repo</code> is set) via <code>gh repo create</code></li>
+    <li><strong>Pushes</strong> the source and compiled library to your repo</li>
+    <li><strong>Registers</strong> the library in the central registry:
+        <ul>
+            <li>If you're the registry owner &mdash; pushes directly to <code>index.json</code></li>
+            <li>If you're a contributor &mdash; forks the registry, updates index, and creates a pull request</li>
+        </ul>
+    </li>
+</ol>
+
+<div class="callout callout-info">Requires <a href="https://cli.github.com">GitHub CLI (<code>gh</code>)</a> installed and authenticated (<code>gh auth login</code>), and Git installed.</div>
+
+<h2>Installing Libraries</h2>
+<p>Install a library globally so any Leash program can use it. The installer fetches the registry, finds the library's repository, clones it, and places the files in the global libraries directory &mdash; no manual configuration needed.</p>
+<pre><code>leashed install mylib</code></pre>
+
+<p>This process:</p>
+<ol>
+    <li>Fetches the registry <code>index.json</code> from <code>raw.githubusercontent.com</code> (no clone needed for the registry itself)</li>
+    <li>Looks up the library name and finds its repo URL</li>
+    <li>Shallow-clones only the library's repository (efficient, no history)</li>
+    <li>Copies the files to <code>~/.leash/libs/&lt;name&gt;/</code></li>
+    <li>Creates a stub <code>&lt;name&gt;.lsh</code> so <code>use mylib::*;</code> resolves correctly</li>
+</ol>
+
+<pre><code><span class="kw">use</span> mylib::*;
+
+<span class="kw">fnc</span> <span class="fn">main</span>() {
+    <span class="fn">show</span>(<span class="fn">greet</span>(<span class="str">"World"</span>));
+}</code></pre>
+
+<h2>Adding Dependencies to a Project</h2>
+<p>Add a library as a dependency of the current project. This is the standard way to declare and manage project dependencies &mdash; it installs the library, records the dependency in your package config, and sets up the import automatically.</p>
+<pre><code>leashed add mylib</code></pre>
+
+<p>This process:</p>
+<ol>
+    <li>Installs the library globally if not already installed</li>
+    <li>Appends <code>mylib@version</code> to the <code>dependencies</code> field in <code>leash-pkg.lshc</code></li>
+    <li>Inserts <code>use mylib::*;</code> into your main source file</li>
+</ol>
+
+<h2>Searching for Libraries</h2>
+<p>Search the registry for libraries by name or description. The search is efficient because it only fetches the lightweight <code>index.json</code> file &mdash; no cloning of individual library repositories is needed until you decide to install one.</p>
+<pre><code>leashed search math</code></pre>
+
+<h2>How Publishing Works Under the Hood</h2>
+
+<p>Each library has its own GitHub repository. The central registry (<code>foksiny/leash-packages</code>) is an <code>index.json</code> file:</p>
+
+<pre><code>{
+  <span class="str">"libraries"</span>: {
+    <span class="str">"mylib"</span>: {
+      <span class="str">"repo"</span>: <span class="str">"https://github.com/you/mylib.git"</span>,
+      <span class="str">"description"</span>: <span class="str">"The mylib library"</span>,
+      <span class="str">"author"</span>: <span class="str">"you"</span>,
+      <span class="str">"version"</span>: <span class="str">"0.1.0"</span>
+    }
+  }
+}</code></pre>
+
+<h3>Security Checks</h3>
+<table>
+    <tr><th>Check</th><th>Description</th></tr>
+    <tr><td>Package name validation</td><td>Only <code>[a-zA-Z_][a-zA-Z0-9_-]*</code> names allowed</td></tr>
+    <tr><td>Source verification</td><td>Code must pass <code>leash check</code></td></tr>
+    <tr><td>Publisher identity</td><td>Only the original author can update an existing entry</td></tr>
+    <tr><td>Compilation check</td><td>Library must compile to a static library</td></tr>
+</table>
+
+<h2>Global Library Installation</h2>
+
+<p>Leash also provides a lower-level <code>install</code> command on the <code>leash</code> CLI to copy library files into <code>~/.leash/libs/</code> without the package manager.</p>
+
+<h3>Installing a Single File</h3>
+<pre><code>leash install path/to/mylib.lsh</code></pre>
+
+<h3>Installing a Directory</h3>
+<pre><code>leash install path/to/mylib_folder/</code></pre>
+
+<p>The <strong>contents</strong> of the directory are copied directly into <code>~/.leash/libs/</code>. The top-level folder name is not preserved.</p>
+
+<p>For example, given:</p>
+<pre><code>mylib_folder/
+&#x251C;&#x2500; hash.lsh
+&#x2514;&#x2500; utils/
+    &#x2514;&#x2500; string_helpers.lsh</code></pre>
+
+<p>After installation, <code>~/.leash/libs/</code> contains:</p>
+<pre><code>~/.leash/libs/
+&#x251C;&#x2500; hash.lsh
+&#x2514;&#x2500; utils/
+    &#x2514;&#x2500; string_helpers.lsh</code></pre>
+
+<div class="callout callout-info">If a file or directory with the same name already exists in the global libs directory, the installation will fail. Remove the existing library first to replace it.</div>
+
+</main>
+
+<script>
+document.querySelectorAll('.sidebar a').forEach(link => {
+    if (link.href === window.location.href) link.classList.add('active');
+});
+</script>
+</body>
+</html>

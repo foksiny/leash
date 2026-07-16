@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Getting Started - Leash</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<button class="menu-toggle" onclick="document.querySelector('.sidebar').classList.toggle('open')">&#9776;</button>
+
+<aside class="sidebar">
+    <div class="sidebar-header">
+        <h1>Leash</h1>
+        <div class="version">v0.21.0b0 Beta</div>
+        <div class="subtitle">Programming Language</div>
+    </div>
+    <nav class="sidebar-nav">
+        <div class="nav-section">
+            <div class="nav-section-title">Getting Started</div>
+            <a href="index.html">Overview</a>
+            <a href="getting-started.html" class="active">Installation &amp; Setup</a>
+        </div>
+        <div class="nav-section">
+            <div class="nav-section-title">Language Guide</div>
+            <a href="language-guide.html">Language Reference</a>
+            <a href="compiler.html">Compiler &amp; CLI</a>
+            <a href="stdlib.html">Standard Library</a>
+        </div>
+        <div class="nav-section">
+            <div class="nav-section-title">Ecosystem</div>
+            <a href="package-manager.html">Package Manager</a>
+            <a href="concurrency.html">Concurrency Model</a>
+            <a href="advanced.html">Advanced Topics</a>
+        </div>
+    </nav>
+</aside>
+
+<main class="main">
+
+<div class="breadcrumb">
+    <a href="index.html">Home</a> <span class="sep">/</span> <span class="current">Installation &amp; Setup</span>
+</div>
+
+<h1>Installation &amp; Setup</h1>
+
+<p>Before using Leash, you need to install its dependencies: Python 3 for running the compiler, LLVM development libraries for code generation, and a C compiler (GCC or Clang) for linking the runtime garbage collector. Leash itself is then installed via pip.</p>
+
+<h2>Prerequisites</h2>
+
+<table>
+    <tr><th>Dependency</th><th>Required for</th><th>Version</th></tr>
+    <tr><td><strong>Python 3</strong></td><td>Running the Leash compiler</td><td>3.8+</td></tr>
+    <tr><td><strong>LLVM</strong></td><td>Code generation via <code>llvmlite</code></td><td>11+ (development libraries)</td></tr>
+    <tr><td><strong>C compiler</strong> (<code>gcc</code> / <code>clang</code>)</td><td>Linking with the GC runtime</td><td>Any recent version</td></tr>
+</table>
+
+<h3>Linux (Debian/Ubuntu)</h3>
+<pre><code><span class="cm"># Install LLVM development libraries and a C compiler</span>
+sudo apt install llvm-dev gcc
+
+<span class="cm"># Optional: cross-compilation to Windows (MinGW)</span>
+sudo apt install gcc-mingw-w64-x86-64</code></pre>
+
+<h3>Linux (Fedora/RHEL)</h3>
+<pre><code>sudo dnf install llvm-devel gcc</code></pre>
+
+<h3>Linux (Arch)</h3>
+<pre><code>sudo pacman -S llvm gcc</code></pre>
+
+<h3>Windows</h3>
+<pre><code><span class="cm"># Option 1: Using MinGW-w64 (recommended)</span>
+winget install mingw
+
+<span class="cm"># Option 2: Using LLVM + clang</span>
+<span class="cm"># Download from https://releases.llvm.org/</span>
+
+<span class="cm"># Install Python 3 from https://python.org</span></code></pre>
+
+<h3>Optional Dependencies</h3>
+<table>
+    <tr><th>Dependency</th><th>Used by</th><th>Notes</th></tr>
+    <tr><td><strong>Git</strong></td><td><code>leashed publish</code>, <code>leashed install</code></td><td>Required for package management</td></tr>
+    <tr><td><strong>GitHub CLI (<code>gh</code>)</strong></td><td><code>leashed publish</code></td><td>Required to create repos and PRs</td></tr>
+    <tr><td><strong>Wine</strong></td><td><code>leash run --target win64</code> on Linux</td><td>Run Windows binaries on Linux</td></tr>
+</table>
+
+<pre><code><span class="cm"># Linux</span>
+sudo apt install git gh wine
+
+<span class="cm"># Windows</span>
+winget install Git.Git GitHub.cli</code></pre>
+
+<h2>Install Leash</h2>
+
+<p>Once the prerequisites are installed, install Leash and its Python dependencies. The <code>-e</code> flag installs in editable mode, which is useful during development as changes to the source are immediately reflected.</p>
+
+<pre><code><span class="cm"># Navigate to the Leash project directory, then:</span>
+pip install -e .</code></pre>
+
+<p>This installs two CLI tools:</p>
+<ul>
+    <li><code>leash</code> &mdash; the Leash compiler CLI for compiling, running, and analyzing programs</li>
+    <li><code>leashed</code> &mdash; the Leash package manager for publishing and installing libraries</li>
+</ul>
+
+<pre><code><span class="cm"># Verify installation</span>
+leash --version
+leashed --version</code></pre>
+
+<h2>Running Leash Programs</h2>
+
+<p>You can run Leash files (<code>.lsh</code>) directly using the <code>run</code> command, or compile them to a native executable using the <code>compile</code> command. Leash also supports project-level workflows with <code>init</code>, <code>build</code>, and <code>runp</code> for larger projects with configuration files.</p>
+
+<h3>Direct Execution</h3>
+<p>To execute a Leash program without creating an output binary executable (and optionally pass command line arguments):</p>
+<pre><code>python3 -m leash.cli run program.lsh [arguments...]</code></pre>
+
+<h3>Compiling to a Binary</h3>
+<pre><code><span class="cm"># Default output (same name as input)</span>
+python3 -m leash.cli compile program.lsh
+./program
+
+<span class="cm"># Custom output name</span>
+python3 -m leash.cli compile program.lsh to my_custom_binary
+./my_custom_binary
+
+<span class="cm"># Dynamic library (.so)</span>
+python3 -m leash.cli compile program.lsh to-dynamic mylib
+
+<span class="cm"># Static library (.a)</span>
+python3 -m leash.cli compile program.lsh to-static mylib
+
+<span class="cm"># Link with external libraries</span>
+python3 -m leash.cli compile program.lsh -lm
+python3 -m leash.cli run program.lsh -lcurl</code></pre>
+
+<h3>Dumping LLVM IR</h3>
+<pre><code>python3 -m leash.cli dump program.lsh
+python3 -m leash.cli dump program.lsh to myoutput</code></pre>
+
+<h2>Project Workflow</h2>
+
+<h3>Project Init (<code>init</code>)</h3>
+<p>The <code>init</code> command scaffolds a new Leash project with the standard directory structure, including a main entry point, import and output directories, and a project configuration file. This provides a consistent starting point for any new Leash project.</p>
+<pre><code>leash init my_project</code></pre>
+
+<p>Creates the standard project structure:</p>
+<pre><code>my_project/
+&#x251C;&#x2500; src/
+&#x2502;   &#x2514;&#x2500; main.lsh          <span class="cm"># Entry point</span>
+&#x251C;&#x2500; imports/               <span class="cm"># Local import directory</span>
+&#x251C;&#x2500; out/                   <span class="cm"># Compiled output directory</span>
+&#x2514;&#x2500; config.lshc            <span class="cm"># Project configuration</span></code></pre>
+
+<p>Generated <code>main.lsh</code>:</p>
+<pre><code><span class="kw">fnc</span> <span class="fn">main</span> |> <span class="fn">show</span>(<span class="str">"Hello, World!"</span>);</code></pre>
+
+<p>Generated <code>config.lshc</code>:</p>
+<pre><code>main: <span class="str">"src/main.lsh"</span>
+clibs: {}
+imports: <span class="str">"imports/"</span>
+opt_level: <span class="str">"O3"</span></code></pre>
+
+<h3>Project Build (<code>build</code>)</h3>
+<p>The <code>build</code> command reads <code>config.lshc</code> from the current directory and compiles the project. This uses the project configuration to find the main entry file, resolve imports, link C libraries, and apply the configured optimization level.</p>
+<pre><code>leash build
+leash build --other-imports path/to/imports
+leash build -oi path/to/imports</code></pre>
+
+<h3>Project Run (<code>runp</code>)</h3>
+<p>The <code>runp</code> command compiles and runs a project in one step, using <code>config.lshc</code>. The output binary is temporary and cleaned up after execution, making it ideal for development and testing.</p>
+<pre><code><span class="cm"># Compile and run</span>
+leash runp
+
+<span class="cm"># Pass arguments to the program (after --)</span>
+leash runp -- arg1 arg2 arg3
+
+<span class="cm"># With additional import directories</span>
+leash runp --other-imports path/to/imports -- arg1 arg2</code></pre>
+
+<h2>Updating Leash</h2>
+<p>The <code>update</code> command checks for new releases on the Leash GitHub repository and pulls the latest changes. It fetches the latest release tag from <code>github.com/foksiny/leash</code> via the GitHub API, then runs <code>git pull</code> to update your local clone to the latest commit. Requires Git to be installed and the Leash repo to have been cloned from GitHub.</p>
+<pre><code>leash update</code></pre>
+
+<h2>Additional Import Paths</h2>
+<p>The <code>--other-imports</code> (or <code>-oi</code>) flag adds extra directories to the module search path for <code>use ...;</code> statements. This is available on <code>compile</code>, <code>run</code>, <code>dump</code>, <code>build</code>, and <code>runp</code>. These directories are searched before <code>~/.leash/libs/</code>, making it useful when working outside a project setup or when you need to import from non-standard locations.</p>
+<pre><code>leash compile program.lsh --other-imports mylibs/
+leash run program.lsh -oi mylibs/ -oi other_libs/</code></pre>
+
+</main>
+
+<script>
+document.querySelectorAll('.sidebar a').forEach(link => {
+    if (link.href === window.location.href) link.classList.add('active');
+});
+</script>
+</body>
+</html>

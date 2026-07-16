@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Leash Programming Language</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<button class="menu-toggle" onclick="document.querySelector('.sidebar').classList.toggle('open')">&#9776;</button>
+
+<aside class="sidebar">
+    <div class="sidebar-header">
+        <h1>Leash</h1>
+        <div class="version">v0.21.0b0 Beta</div>
+        <div class="subtitle">Programming Language</div>
+    </div>
+    <nav class="sidebar-nav">
+        <div class="nav-section">
+            <div class="nav-section-title">Getting Started</div>
+            <a href="index.html" class="active">Overview</a>
+            <a href="getting-started.html">Installation &amp; Setup</a>
+        </div>
+        <div class="nav-section">
+            <div class="nav-section-title">Language Guide</div>
+            <a href="language-guide.html">Language Reference</a>
+            <a href="compiler.html">Compiler &amp; CLI</a>
+            <a href="stdlib.html">Standard Library</a>
+        </div>
+        <div class="nav-section">
+            <div class="nav-section-title">Ecosystem</div>
+            <a href="package-manager.html">Package Manager</a>
+            <a href="concurrency.html">Concurrency Model</a>
+            <a href="advanced.html">Advanced Topics</a>
+        </div>
+    </nav>
+</aside>
+
+<main class="main">
+
+<div class="hero">
+    <div class="version-badge">v0.21.0b0 Beta</div>
+    <h1>Leash</h1>
+    <p class="tagline">A strongly-typed, modern compiled programming language built on LLVM.</p>
+</div>
+
+<p>Leash combines an intuitive syntax with native performance, targeting developers who want the control of a systems language without the ceremony. It compiles directly to machine code via LLVM, features a built-in garbage collector, and ships with a package manager, standard library, and cross-platform support.</p>
+
+<h2>Key Features</h2>
+
+<div class="feature-grid">
+    <div class="feature-card">
+        <h3>Strongly Typed</h3>
+        <p>Full type inference with explicit bit-width integers, floats, generics, and tagged unions.</p>
+    </div>
+    <div class="feature-card">
+        <h3>LLVM-Powered</h3>
+        <p>Compiles to native code via LLVM with multiple optimization levels including LTO and PGO.</p>
+    </div>
+    <div class="feature-card">
+        <h3>Zero-Cost Abstractions</h3>
+        <p>Classes, generics, lambdas, and operator overloading compile down to efficient machine code.</p>
+    </div>
+    <div class="feature-card">
+        <h3>Built-in GC</h3>
+        <p>Automatic memory management with an optional manual mode (<code>nogc</code>) for low-level control.</p>
+    </div>
+    <div class="feature-card">
+        <h3>Package Manager</h3>
+        <p><code>leashed</code> lets you publish, install, and manage libraries with semantic versioning.</p>
+    </div>
+    <div class="feature-card">
+        <h3>Cross-Platform</h3>
+        <p>Compile for Linux, Windows, and macOS from a single source with conditional compilation.</p>
+    </div>
+    <div class="feature-card">
+        <h3>Concurrency</h3>
+        <p>Built-in worker threads with shared and fusion variables for safe multi-threaded programming.</p>
+    </div>
+    <div class="feature-card">
+        <h3>Rich Standard Library</h3>
+        <p>Vectors, matrices, hash tables, file I/O, string utilities, math functions, and windowing.</p>
+    </div>
+</div>
+
+<h2>Quick Start</h2>
+
+<pre><code><span class="kw">fnc</span> <span class="fn">main</span>() : <span class="kw">void</span> {
+    <span class="fn">show</span>(<span class="str">"Hello, World!"</span>);
+}</code></pre>
+
+<pre><code><span class="cm"># Install</span>
+pip install -e .
+leash --version
+
+<span class="cm"># Run directly</span>
+python3 -m leash.cli run hello.lsh
+
+<span class="cm"># Compile to native binary</span>
+python3 -m leash.cli compile hello.lsh
+./hello</code></pre>
+
+<div class="quick-links">
+    <a href="getting-started.html" class="quick-link">
+        <strong>Installation &rarr;</strong>
+        <span>Set up Leash on your system</span>
+    </a>
+    <a href="language-guide.html" class="quick-link">
+        <strong>Language Guide &rarr;</strong>
+        <span>Learn the syntax and features</span>
+    </a>
+    <a href="compiler.html" class="quick-link">
+        <strong>Compiler &rarr;</strong>
+        <span>CLI commands and optimization</span>
+    </a>
+    <a href="stdlib.html" class="quick-link">
+        <strong>Standard Library &rarr;</strong>
+        <span>Built-in types and utilities</span>
+    </a>
+    <a href="package-manager.html" class="quick-link">
+        <strong>Package Manager &rarr;</strong>
+        <span>Publishing and installing libraries</span>
+    </a>
+    <a href="concurrency.html" class="quick-link">
+        <strong>Concurrency &rarr;</strong>
+        <span>Workers, shared, and fusion variables</span>
+    </a>
+</div>
+
+<h2>Compiler Pipeline</h2>
+
+<p>Leash transforms source code into a native executable through a multi-stage pipeline. Each stage feeds its output into the next, from raw source text all the way to a linked binary. The pipeline includes lexical analysis, parsing, type checking, optimization at both the AST and LLVM IR levels, code generation, and final linking with the garbage collector runtime.</p>
+
+<p>Here are the major stages:</p>
+
+<pre><code><span class="cm">.lsh source</span>
+  &#x251C;&#x2500; Lexer (characters &rarr; tokens)
+  &#x251C;&#x2500; Parser (tokens &rarr; AST)
+  &#x251C;&#x2500; Import Resolution
+  &#x251C;&#x2500; Conditional Compilation
+  &#x251C;&#x2500; Macro Expansion
+  &#x251C;&#x2500; Type Checker
+  &#x251C;&#x2500; Low-Level Checker
+  &#x251C;&#x2500; AST Optimization
+  &#x251C;&#x2500; Code Generation (AST &rarr; LLVM IR)
+  &#x251C;&#x2500; Alloca Hoisting
+  &#x251C;&#x2500; Re-parse &amp; Verify
+  &#x251C;&#x2500; LLVM Optimization
+  &#x251C;&#x2500; Object Emission
+  &#x251C;&#x2500; C Runtime Compilation
+  &#x2514;&#x2500; Linking &rarr; Native Binary
+</code></pre>
+
+</main>
+
+<script>
+document.querySelectorAll('.sidebar a').forEach(link => {
+    if (link.href === window.location.href) link.classList.add('active');
+});
+</script>
+</body>
+</html>

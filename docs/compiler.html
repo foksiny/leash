@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Compiler &amp; CLI - Leash</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<button class="menu-toggle" onclick="document.querySelector('.sidebar').classList.toggle('open')">&#9776;</button>
+
+<aside class="sidebar">
+    <div class="sidebar-header">
+        <h1>Leash</h1>
+        <div class="version">v0.21.0b0 Beta</div>
+        <div class="subtitle">Programming Language</div>
+    </div>
+    <nav class="sidebar-nav">
+        <div class="nav-section">
+            <div class="nav-section-title">Getting Started</div>
+            <a href="index.html">Overview</a>
+            <a href="getting-started.html">Installation &amp; Setup</a>
+        </div>
+        <div class="nav-section">
+            <div class="nav-section-title">Language Guide</div>
+            <a href="language-guide.html">Language Reference</a>
+            <a href="compiler.html" class="active">Compiler &amp; CLI</a>
+            <a href="stdlib.html">Standard Library</a>
+        </div>
+        <div class="nav-section">
+            <div class="nav-section-title">Ecosystem</div>
+            <a href="package-manager.html">Package Manager</a>
+            <a href="concurrency.html">Concurrency Model</a>
+            <a href="advanced.html">Advanced Topics</a>
+        </div>
+    </nav>
+</aside>
+
+<main class="main">
+
+<div class="breadcrumb">
+    <a href="index.html">Home</a> <span class="sep">/</span> <span class="current">Compiler &amp; CLI</span>
+</div>
+
+<h1>Compiler &amp; CLI Reference</h1>
+
+<p>The Leash compiler transforms <code>.lsh</code> source files into native executables through a 15-stage pipeline that spans lexical analysis, type checking, optimization, code generation via LLVM, and linking. You interact with this pipeline through the <code>leash</code> CLI, which provides commands for compilation, execution, static analysis, and project management.</p>
+
+<h2>Command Overview</h2>
+
+<table>
+    <tr><th>Command</th><th>Description</th></tr>
+    <tr><td><code>leash compile &lt;file&gt;</code></td><td>Compile to a native executable</td></tr>
+    <tr><td><code>leash run &lt;file&gt;</code></td><td>Run directly without creating a binary</td></tr>
+    <tr><td><code>leash dump &lt;file&gt;</code></td><td>Dump LLVM IR to a <code>.ll</code> file</td></tr>
+    <tr><td><code>leash check &lt;file&gt;</code></td><td>Static analysis without compiling</td></tr>
+    <tr><td><code>leash init [dir]</code></td><td>Scaffold a new project</td></tr>
+    <tr><td><code>leash build</code></td><td>Build project from <code>config.lshc</code></td></tr>
+    <tr><td><code>leash runp</code></td><td>Compile and run project from <code>config.lshc</code></td></tr>
+    <tr><td><code>leash install &lt;path&gt;</code></td><td>Install library to <code>~/.leash/libs/</code></td></tr>
+    <tr><td><code>leash update</code></td><td>Update Leash to the latest version</td></tr>
+</table>
+
+<p>Leash can also compile programs into shared (<code>.so</code>) or static (<code>.a</code>) libraries for use by other programs or languages. This is useful for creating reusable components that can be linked into other projects.</p>
+
+<h2>Compilation Targets</h2>
+
+<p>Leash supports multiple compilation targets, allowing you to compile your code for different platforms. The default target compiles to a native binary for your current system. Cross-compilation to Windows and macOS is supported when the appropriate toolchains are installed.</p>
+
+<pre><code><span class="cm"># Current system (default)</span>
+python3 -m leash.cli compile program.lsh
+
+<span class="cm"># Windows 64-bit (cross-compile)</span>
+python3 -m leash.cli compile program.lsh --target win64
+
+<span class="cm"># macOS (cross-compile)</span>
+python3 -m leash.cli compile program.lsh --target macos</code></pre>
+
+<h2>Library Output Types</h2>
+
+<table>
+    <tr><th>Output Type</th><th>Flag</th><th>Output File</th></tr>
+    <tr><td>Executable</td><td><code>to &lt;name&gt;</code></td><td><code>&lt;name&gt;</code></td></tr>
+    <tr><td>Dynamic Library</td><td><code>to-dynamic &lt;name&gt;</code></td><td><code>lib&lt;name&gt;.so</code></td></tr>
+    <tr><td>Static Library</td><td><code>to-static &lt;name&gt;</code></td><td><code>lib&lt;name&gt;.a</code></td></tr>
+</table>
+
+<pre><code>leash compile math.lsh to-dynamic math   <span class="cm"># libmath.so</span>
+leash compile utils.lsh to-static utils  <span class="cm"># libutils.a</span></code></pre>
+
+<p>Native targets produce standalone binaries with full access to the system's C library, garbage collector, and OS APIs.</p>
+
+<h2>Static Analysis</h2>
+
+<p>Leash provides thorough static analysis to catch errors and potential issues before your code runs. You can analyze a file without compiling it using the <code>check</code> command, which runs the full type checker with enhanced safety analysis.</p>
+
+<h3>The <code>check</code> Command</h3>
+<pre><code>python3 -m leash.cli check program.lsh</code></pre>
+
+<p>The checker reports:</p>
+<ul>
+    <li>Type errors, undefined variables, unknown types</li>
+    <li>Duplicate switch cases</li>
+    <li>Shadowed globals</li>
+    <li>Missing switch defaults</li>
+    <li>Large stack arrays (&gt;10,000 elements)</li>
+    <li>Self-assignments (<code>x = x</code>)</li>
+    <li>Unused variables and parameters</li>
+    <li>Empty blocks</li>
+    <li>Unreachable code</li>
+    <li>Always-true/false conditions</li>
+    <li>Redundant operations (<code>+ 0</code>, <code>* 1</code>, <code>x == x</code>)</li>
+</ul>
+
+<h3>The <code>--check</code> Flag</h3>
+<pre><code>python3 -m leash.cli compile program.lsh --check
+python3 -m leash.cli run program.lsh --check</code></pre>
+
+<h3>Warnings as Errors</h3>
+<pre><code>python3 -m leash.cli compile program.lsh --warnings-as-errors</code></pre>
+
+<h3>Verbose Diagnostics</h3>
+<pre><code>python3 -m leash.cli check program.lsh --verbose
+python3 -m leash.cli compile program.lsh -vb</code></pre>
+
+<p>For strict builds (e.g., CI/CD), use the <code>--warnings-as-errors</code> flag to treat all warnings as errors, ensuring your codebase stays clean.</p>
+
+<h3>Verbose Diagnostics (<code>--verbose</code> / <code>-vb</code>)</h3>
+<p>For in-depth educational guidance, the <code>--verbose</code> or <code>-vb</code> flag prompts the compiler to print highly detailed, step-by-step masterclass explanations, diagnostics, and fully validated Leash code tips for any encountered errors or warnings. This is particularly useful when learning the language or debugging complex type issues.</p>
+
+<h2>Compiler Pipeline</h2>
+
+<p>Leash transforms source code into a native executable through a multi-stage pipeline. Each stage feeds its output into the next, from raw source text all the way to a linked binary. Here are the 15 stages:</p>
+
+<table>
+    <tr><th>#</th><th>Stage</th><th>Description</th></tr>
+    <tr><td>1</td><td><strong>Lexer</strong></td><td>Characters &rarr; tokens (keywords, operators, identifiers, literals)</td></tr>
+    <tr><td>2</td><td><strong>Parser</strong></td><td>Tokens &rarr; AST (recursive-descent parser)</td></tr>
+    <tr><td>3</td><td><strong>Import Resolution</strong></td><td>Resolves <code>use module::Item;</code> statements</td></tr>
+    <tr><td>4</td><td><strong>Conditional Compilation</strong></td><td>Evaluates top-level <code>if _PLATFORM == ...</code></td></tr>
+    <tr><td>5</td><td><strong>Macro Expansion</strong></td><td>Expands <code>defmacro</code> definitions in-place</td></tr>
+    <tr><td>6</td><td><strong>Type Checker</strong></td><td>Validates types, reports warnings</td></tr>
+    <tr><td>7</td><td><strong>Low-Level Checker</strong></td><td>Validates memory layout and field invariants</td></tr>
+    <tr><td>8</td><td><strong>AST Optimization</strong></td><td>Constant folding, DCE, dead branch elimination, TRO</td></tr>
+    <tr><td>9</td><td><strong>Code Generation</strong></td><td>AST &rarr; LLVM IR in-memory module</td></tr>
+    <tr><td>10</td><td><strong>Alloca Hoisting</strong></td><td>Moves all <code>alloca</code> to entry block</td></tr>
+    <tr><td>11</td><td><strong>Re-parse &amp; Verify</strong></td><td>Parse IR and call <code>verify()</code></td></tr>
+    <tr><td>12</td><td><strong>LLVM Optimization</strong></td><td>LLVM pass pipeline (<code>-O0</code> through <code>-O4</code>)</td></tr>
+    <tr><td>13</td><td><strong>Object Emission</strong></td><td>LLVM IR &rarr; <code>.o</code> machine code</td></tr>
+    <tr><td>14</td><td><strong>Runtime Compilation</strong></td><td>Compiles <code>gc.c</code> + platform stubs</td></tr>
+    <tr><td>15</td><td><strong>Linking</strong></td><td>Links <code>.o</code> + GC + libraries &rarr; executable</td></tr>
+</table>
+
+<h2>Optimization Levels</h2>
+
+<p>Leash supports LLVM optimization levels via the <code>--opt</code> (or <code>-O</code>) flag, controlling the aggressiveness of the optimization pipeline across <strong>three layers</strong>: Leash AST (frontend), LLVM IR (middle-end), and C runtime (link-time). The <code>-O</code> flag controls all three simultaneously, so a single flag choice applies consistent optimization throughout the entire compilation process.</p>
+
+<table>
+    <tr><th>Level</th><th>Description</th><th>Key Passes</th></tr>
+    <tr><td><code>-O0</code></td><td>No optimization (default)</td><td>Fastest compilation</td></tr>
+    <tr><td><code>-O1</code></td><td>Basic</td><td>Instruction combining, DCE, CFG simplification</td></tr>
+    <tr><td><code>-O2</code></td><td>Standard</td><td>SROA, jump threading, reassociation, loop simplification</td></tr>
+    <tr><td><code>-O3</code></td><td>Aggressive</td><td>Loop unrolling, vectorization, inlining, IPSCCP, argument promotion</td></tr>
+    <tr><td><code>-O4</code></td><td>Maximum</td><td>Tail recursion opt, aggressive inlining, dual-pass pipeline</td></tr>
+    <tr><td><code>-Os</code></td><td>Size</td><td>O2 + global DCE + extra CFG simplification</td></tr>
+    <tr><td><code>-Oz</code></td><td>Minimum size</td><td>Additional size reductions</td></tr>
+</table>
+
+<pre><code>python3 -m leash.cli compile program.lsh --opt 3
+python3 -m leash.cli run program.lsh -O s</code></pre>
+
+<div class="callout callout-info">Optimization occurs at <strong>three layers</strong>: Leash AST (frontend), LLVM IR (middle-end), and C runtime (link-time). The <code>-O</code> flag controls all three simultaneously.</div>
+
+<h3>Optimization Verbosity</h3>
+<pre><code>python3 -m leash.cli compile program.lsh -ov
+python3 -m leash.cli run program.lsh --opt 3 -ov</code></pre>
+
+<p>Displays detailed logs per phase:</p>
+<ul>
+    <li><strong>[AST Opt]</strong> &mdash; AST-level pipeline phases</li>
+    <li><strong>[CF]</strong> &mdash; Constant folding</li>
+    <li><strong>[CP]</strong> &mdash; Constant propagation</li>
+    <li><strong>[DBE]</strong> &mdash; Dead branch elimination</li>
+    <li><strong>[UCE]</strong> &mdash; Unreachable code elimination</li>
+    <li><strong>[DCE]</strong> &mdash; Dead code elimination</li>
+    <li><strong>[TRO]</strong> &mdash; Tail recursion optimization</li>
+    <li><strong>[LLVM Opt]</strong> &mdash; LLVM pass pipeline</li>
+</ul>
+
+<p>The <code>-ov</code> flag is independent of <code>--verbose</code>/<code>-vb</code> &mdash; it only shows optimization-related messages, not masterclass diagnostics.</p>
+
+<h2>AST-Level Optimizations (Frontend)</h2>
+
+<p>Leash runs <strong>semantics-preserving AST passes</strong> before LLVM IR generation. These passes are always safe, never change program behavior, and are applied regardless of the optimization level selected. They form the foundation of Leash's optimization stack, catching simplification opportunities early in the compilation process.</p>
+
+<table>
+    <tr><th>Pass</th><th>Effect</th></tr>
+    <tr><td>Constant folding &amp; propagation</td><td>Replaces constant expressions with results at compile time</td></tr>
+    <tr><td>Dead branch elimination</td><td>Removes <code>if</code>/<code>else</code> with constant-false conditions</td></tr>
+    <tr><td>Unreachable code elimination</td><td>Removes code after <code>return</code>, <code>exit()</code>, <code>throw</code></td></tr>
+    <tr><td>Dead code elimination</td><td>Removes unused top-level functions, globals, types</td></tr>
+    <tr><td>Foreach small-loop unrolling</td><td>Annotates arrays &le;8 elements for LLVM unroller</td></tr>
+    <tr><td>Pushb fusion (future)</td><td>Detects consecutive <code>.pushb()</code> for batch insertion</td></tr>
+    <tr><td>Size call caching</td><td>Hoists <code>.size()</code> calls used 3+ times on same collection</td></tr>
+    <tr><td>Tail recursion optimization</td><td>Converts tail-recursive calls to <code>jmp</code> (<code>-O4</code>)</td></tr>
+</table>
+
+<h2>LLVM Codegen Optimizations</h2>
+
+<p>At the codegen layer, Leash emits optimal LLVM IR directly, setting flags and metadata that enable LLVM's own optimization passes to work more effectively. These are not separate optimization passes but rather smarter code generation that gives LLVM better information to work with.</p>
+
+<table>
+    <tr><th>Optimization</th><th>Details</th></tr>
+    <tr><td><code>nuw</code>/<code>nsw</code> flags</td><td>Index arithmetic emitted with no-wrap flags for better LLVM folding</td></tr>
+    <tr><td><code>fast</code> flag</td><td>Float operations use fast semantics (reassociation, reciprocal-math)</td></tr>
+    <tr><td>Branch weight metadata</td><td>Foreach back-edges weighted 99:1 for better register allocation</td></tr>
+    <tr><td>GC-tracked allocation</td><td>Vector buffers use <code>leash_gc_malloc</code> for reachability</td></tr>
+</table>
+
+<h2>Link-Time Optimization (LTO)</h2>
+
+<p>LTO enables whole-program analysis after linking, enabling optimizations across module boundaries. This is particularly powerful for projects that span multiple source files, as it allows the compiler to analyze and optimize across what were previously separate compilation units.</p>
+
+<h3>Benefits</h3>
+<ul>
+    <li><strong>Dead function elimination</strong> across modules</li>
+    <li><strong>Cross-module inlining</strong> (e.g., library functions)</li>
+    <li><strong>Devirtualization</strong> of virtual calls when the target is known</li>
+    <li><strong>Constant propagation</strong> across translation units</li>
+</ul>
+
+<pre><code><span class="cm"># ThinLTO &mdash; best balance of speed and optimization</span>
+python3 -m leash.cli compile program.lsh --opt 2 --lto thin
+
+<span class="cm"># Full LTO &mdash; maximum cross-module optimization</span>
+python3 -m leash.cli compile program.lsh --opt 3 --lto full</code></pre>
+
+<h2>Profile-Guided Optimization (PGO)</h2>
+
+<p>PGO uses runtime profiling data to optimize hot paths in your program. The workflow is a three-step process: first compile with instrumentation, run the program to collect real execution data, then recompile using that data to make better optimization decisions. This enables optimizations that would be impossible with purely static analysis.</p>
+
+<pre><code><span class="cm"># Step 1: Compile with instrumentation</span>
+python3 -m leash.cli compile program.lsh --opt 2 --pgo-generate
+
+<span class="cm"># Step 2: Run to collect profile data</span>
+./program
+
+<span class="cm"># Step 3: Recompile with profile data</span>
+python3 -m leash.cli compile program.lsh --opt 3 --pgo-use</code></pre>
+
+<p>PGO enables hot/cold code splitting, accurate branch prediction, and informed inlining and unrolling decisions based on actual execution frequency.</p>
+
+<p>PGO enables:</p>
+<ul>
+    <li><strong>Hot/cold code splitting</strong> &mdash; frequently-executed code is packed together for better cache locality</li>
+    <li><strong>Accurate branch prediction</strong> &mdash; branches weighted by actual execution frequency</li>
+    <li><strong>Inlining decisions</strong> &mdash; functions in hot paths are inlined first</li>
+    <li><strong>Loop unrolling</strong> &mdash; unroll only hot loops based on actual trip counts</li>
+</ul>
+
+<h2>Runtime Safety Checks</h2>
+
+<p>Leash embeds runtime safety checks into compiled programs to catch common issues before they cause undefined behavior. All checks produce descriptive error messages with unique error codes (e.g., <code>LEASH-E004</code>) for easy reference. These checks can be disabled per-function using the <code>unsafe</code> keyword when maximum performance is needed.</p>
+
+<table>
+    <tr><th>Check</th><th>Description</th></tr>
+    <tr><td>Division by zero</td><td>Caught at runtime with descriptive error message</td></tr>
+    <tr><td>Vector bounds checking</td><td><code>get()</code>, <code>set()</code>, <code>popb()</code>, <code>popf()</code> validate indices and empty vectors</td></tr>
+    <tr><td>Null file handle checks</td><td>File operations on unopened/closed files produce clear errors</td></tr>
+    <tr><td>Union tag mismatch</td><td>Accessing the wrong union variant halts with a runtime error</td></tr>
+</table>
+
+<h2>Conditional Compilation</h2>
+
+<p>Leash supports conditional compilation using <code>if</code> statements at the top level (outside any function). When the compiler encounters a top-level <code>if</code>, it evaluates the condition at <strong>compile time</strong>. Only the branch whose condition evaluates to <code>true</code> is included in the final program; the other branches are completely ignored (no code is generated, and they are not type-checked).</p>
+
+<p>This is similar to C/C++ preprocessor <code>#if</code> but happens at the AST level, making it more integrated with the language. Conditions can check the target platform, file path, or file name, and can be combined with <code>&amp;&amp;</code>, <code>||</code>, and <code>!</code> operators.</p>
+
+<pre><code><span class="kw">if</span> _PLATFORM == <span class="str">"linux64"</span> {
+    <span class="kw">fnc</span> <span class="fn">main</span>() : <span class="kw">void</span> {
+        <span class="fn">show</span>(<span class="str">"Running on Linux"</span>);
+    }
+} <span class="kw">also</span> _PLATFORM == <span class="str">"win64"</span> {
+    <span class="kw">fnc</span> <span class="fn">main</span>() : <span class="kw">void</span> {
+        <span class="fn">show</span>(<span class="str">"Running on Windows"</span>);
+    }
+}</code></pre>
+
+<h3>Built-in Compile-Time Variables</h3>
+<table>
+    <tr><th>Variable</th><th>Description</th></tr>
+    <tr><td><code>_FILEPATH</code></td><td>Full path to the current source file</td></tr>
+    <tr><td><code>_FILENAME</code></td><td>Name of the current source file</td></tr>
+    <tr><td><code>_PLATFORM</code></td><td>Target platform (<code>"linux64"</code>, <code>"win64"</code>, <code>"macos"</code>, <code>"macos-arm"</code>)</td></tr>
+</table>
+
+</main>
+
+<script>
+document.querySelectorAll('.sidebar a').forEach(link => {
+    if (link.href === window.location.href) link.classList.add('active');
+});
+</script>
+</body>
+</html>
