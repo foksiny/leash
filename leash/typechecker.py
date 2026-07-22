@@ -829,7 +829,23 @@ class TypeChecker:
         }
 
     def _register_global_var(self, node):
-        """Register a global variable."""
+        """Register a global variable (supports := type inference)."""
+        # Handle auto-type inference (:= syntax)
+        if node.var_type is None:
+            if node.value is None:
+                self._error(
+                    f"Cannot use ':=' for global variable '{node.name}' without an initializer expression",
+                    node=node,
+                    tip="Use ':=' when the type should be inferred from the value, e.g., `a := 10;`",
+                )
+            inferred_type = self._infer_type(node.value)
+            if inferred_type is None:
+                self._error(
+                    f"Cannot infer type for global variable '{node.name}' from its initializer",
+                    node=node,
+                )
+            node.var_type = inferred_type
+
         # Resolve and validate the type
         resolved_type = self._resolve(node.var_type)
         if not self._is_valid_type(resolved_type):
@@ -846,7 +862,7 @@ class TypeChecker:
         if node.value is not None:
             # Check the initializer expression
             init_type = self._infer_type(node.value)
-            if not self._types_compatible(init_type, node.var_type):
+            if init_type and not self._types_compatible(init_type, node.var_type):
                 self._error(
                     f"Cannot initialize global variable '{node.name}' of type '{node.var_type}' with value of type '{init_type}'",
                     node=node,
@@ -1406,6 +1422,18 @@ class TypeChecker:
             src_elem = src_r.split("[")[0]
             dst_inner = dst_r[7:-1]
             return self._types_compatible(src_elem, dst_inner)
+
+        # Array literal to vector assignment: vec<T> accepts T[]
+        if src_b == "array" and dst_b == "vec":
+            src_elem = src_r.split("[")[0]
+            dst_inner = dst_r[4:-1]  # strip vec< and >
+            return self._types_compatible(src_elem, dst_inner)
+
+        # Vector to vector compatibility: same inner type
+        if src_b == "vec" and dst_b == "vec":
+            src_inner = src_r[4:-1]
+            dst_inner = dst_r[4:-1]
+            return self._types_compatible(src_inner, dst_inner)
 
         # Disallow mixing numeric types with aggregate types (struct, class, union, enum)
         if (

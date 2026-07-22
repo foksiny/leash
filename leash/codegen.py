@@ -1102,6 +1102,10 @@ class CodeGen:
             for name, info in self.struct_symtab.items():
                 if info["type"] == llvm_type:
                     return name
+        # Also check class types
+        for name, info in self.class_symtab.items():
+            if info.get("type") == llvm_type:
+                return name
         return "int"  # fallback
 
     def _resolve_type_name(self, type_name):
@@ -1270,19 +1274,52 @@ class CodeGen:
         self.builder = saved_builder
 
     def _codegen_GlobalVarDecl(self, node):
-        """Generate LLVM global variable for a top-level pub/priv declaration."""
+        """Generate LLVM global variable for a top-level pub/priv declaration.
+        Supports := type inference, imut, vec/hash/matrix, and all local-variable operations.
+        """
+        var_type = node.var_type
+        # If typechecker didn't infer it (safety net for := ), do a basic inference
+        if var_type is None and node.value is not None:
+            from .ast_nodes import ArrayInit, NumberLiteral, FloatLiteral, StringLiteral, BoolLiteral, CharLiteral, HashInit
+            if isinstance(node.value, NumberLiteral):
+                var_type = "int"
+            elif isinstance(node.value, FloatLiteral):
+                var_type = "float"
+            elif isinstance(node.value, StringLiteral):
+                var_type = "string"
+            elif isinstance(node.value, BoolLiteral):
+                var_type = "bool"
+            elif isinstance(node.value, CharLiteral):
+                var_type = "char"
+            elif isinstance(node.value, ArrayInit):
+                if node.value.elements:
+                    first = node.value.elements[0]
+                    if isinstance(first, FloatLiteral):
+                        var_type = "vec<float>"
+                    elif isinstance(first, StringLiteral):
+                        var_type = "vec<string>"
+                    else:
+                        var_type = "vec<int>"
+                else:
+                    var_type = "vec<int>"
+            elif isinstance(node.value, HashInit):
+                var_type = "hash<string, int>"
+            else:
+                var_type = "int"
+            node.var_type = var_type
+
         # Resolve the Leash type to LLVM type
-        llvm_type = self._get_llvm_type(node.var_type)
+        llvm_type = self._get_llvm_type(var_type)
         # Create the global variable
         gv = ir.GlobalVariable(self.module, llvm_type, name=node.name)
         gv.linkage = (
             "internal"  # module-local; could use external for pub but not needed
         )
         # Store in global symbol table for visibility in functions
-        self.global_var_ptrs[node.name] = (gv, node.var_type)
+        self.global_var_ptrs[node.name] = (gv, var_type)
         # If there is an initializer, schedule it for runtime initialization
         if node.value is not None:
-            self.global_init_list.append((gv, node.value, node.var_type))
+            self.global_init_list.append((gv, node.value, var_type))
 
     def _resolve_native_lib_path(self, lib_path, source_file):
         """Resolve a native library path relative to the source file and detect platform extensions."""
@@ -1452,7 +1489,14 @@ class CodeGen:
         block = init_func.append_basic_block("entry")
         self.builder = ir.IRBuilder(block)
         for gv, init_expr, leash_type in self.global_init_list:
+            # Set the target type context so ArrayInit/HashInit can produce vec/hash structs
+            old_target = self.current_target_type
+            self.current_target_type = leash_type
             init_val = self._codegen(init_expr)
+            self.current_target_type = old_target
+            # Cast to the expected LLVM type and store
+            target_llvm = self._get_llvm_type(leash_type)
+            init_val = self._emit_cast(init_val, target_llvm)
             self.builder.store(init_val, gv)
         self.builder.ret_void()
         self.builder = None
@@ -2729,7 +2773,53 @@ class CodeGen:
             except LeashError:
                 pass  # Fallback to standard assignment
 
-        # 2. General Assignment (handles Identifiers, IndexAccess, and Struct Members)
+        # 2. Handle Hash IndexAccess assignment (h["key"] = val) via hash.push(key, val)
+        from .ast_nodes import IndexAccess as IndexAccessNode
+        if isinstance(node.target, IndexAccessNode):
+            base_type = self._get_leash_type_name(node.target.expr)
+            base_resolved = self._resolve_type_name(base_type)
+            if base_resolved.startswith("hash<") and base_resolved.endswith(">"):
+                key_val = self._codegen(node.target.index)
+                val = self._codegen(node.value)
+                inner = base_resolved[5:-1]
+                parts = inner.split(", ")
+                if len(parts) == 2:
+                    key_type, value_type = parts
+                else:
+                    key_type, value_type = "string", "void"
+                key_llvm = self._get_llvm_type(key_type)
+                value_llvm = self._get_llvm_type(value_type)
+                key_val = self._emit_cast(key_val, key_llvm)
+                val = self._emit_cast(val, value_llvm)
+                # Load hash, push key/value, store back
+                lvalue_result2 = self._codegen_lvalue(node.target.expr)
+                if len(lvalue_result2) == 3:
+                    hash_ptr, _, extra_data2 = lvalue_result2
+                else:
+                    hash_ptr, _ = lvalue_result2
+                    extra_data2 = None
+                hash_val = self.builder.load(hash_ptr)
+                size = self.builder.extract_value(hash_val, 0)
+                key_ptrs = []
+                value_ptrs = []
+                if extra_data2:
+                    key_ptrs, value_ptrs = extra_data2
+                elif hasattr(hash_val, 'hash_key_ptrs'):
+                    key_ptrs = getattr(hash_val, 'hash_key_ptrs', [])
+                    value_ptrs = getattr(hash_val, 'hash_value_ptrs', [])
+                new_key_ptr = self.builder.alloca(key_llvm, name="hash_assign_key")
+                self.builder.store(key_val, new_key_ptr)
+                new_value_ptr = self.builder.alloca(value_llvm, name="hash_assign_value")
+                self.builder.store(val, new_value_ptr)
+                key_ptrs.append(new_key_ptr)
+                value_ptrs.append(new_value_ptr)
+                new_size = self.builder.add(size, ir.Constant(ir.IntType(64), 1))
+                new_size.flags = ['nuw']
+                hash_val = self.builder.insert_value(hash_val, new_size, 0)
+                self.builder.store(hash_val, hash_ptr)
+                return
+
+        # 3. General Assignment (handles Identifiers, IndexAccess, and Struct Members)
         lvalue_result = self._codegen_lvalue(node.target)
         if len(lvalue_result) == 3:
             ptr, target_type_name, _ = lvalue_result
@@ -2737,7 +2827,7 @@ class CodeGen:
             ptr, target_type_name = lvalue_result
         resolved_target_type = self._resolve_type_name(target_type_name)
 
-        # 3. Auto-detect Union variant if target is a union (e.g., f = 10, s.y = 3.14)
+        # 4. Auto-detect Union variant if target is a union (e.g., f = 10, s.y = 3.14)
         if resolved_target_type in self.union_symtab:
             from .ast_nodes import BinaryOp as BinaryOpNode
             if isinstance(node.value, BinaryOpNode):
@@ -2747,7 +2837,7 @@ class CodeGen:
                 self._union_auto_store(ptr, val, self.union_symtab[resolved_target_type], node=node)
             return
 
-        # 4. Standard Typed Assignment
+        # 5. Standard Typed Assignment
         old_target = self.current_target_type
         self.current_target_type = target_type_name
         val = self._codegen(node.value)
@@ -5568,19 +5658,24 @@ class CodeGen:
         
         resolved = self._resolve_type_name(type_name)
 
-        if resolved.startswith("vec<"):
+        # Strip leading & for reference types so method dispatch works on refs
+        check_type = resolved
+        while check_type.startswith("&"):
+            check_type = check_type[1:]
+
+        if check_type.startswith("vec<"):
             return self._codegen_vector_method(
-                base_ptr, resolved, node.method, node.args
+                base_ptr, check_type, node.method, node.args
             )
 
-        if resolved.startswith("matrix<"):
+        if check_type.startswith("matrix<"):
             return self._codegen_matrix_method(
-                base_ptr, resolved, node.method, node.args
+                base_ptr, check_type, node.method, node.args
             )
 
-        if resolved.startswith("hash<") and resolved.endswith(">"):
+        if check_type.startswith("hash<") and check_type.endswith(">"):
             return self._codegen_hash_method(
-                base_ptr, resolved, node.method, node.args, extra_data
+                base_ptr, check_type, node.method, node.args, extra_data
             )
 
         if resolved == "string" and node.method == "size":
@@ -5597,7 +5692,7 @@ class CodeGen:
             return self.builder.trunc(length, ir.IntType(32))
 
         # Handle struct method calls (e.g., p.getName())
-        if resolved in self.struct_symtab:
+        if check_type in self.struct_symtab:
             struct_info = self.struct_symtab[resolved]
             func = struct_info["methods"].get(node.method)
             if not func:
@@ -5904,7 +5999,7 @@ class CodeGen:
             return None
 
         elif method == "clear":
-            self._update_vec_struct(vec_ptr, data, ir.Constant(ir.IntType(32), 0), cap)
+            self._update_vec_struct(vec_ptr, data, ir.Constant(ir.IntType(64), 0), cap)
             return None
 
         elif method == "pushf":
@@ -6013,7 +6108,7 @@ class CodeGen:
                 src_bytes, [ir.Constant(ir.IntType(64), elem_size_val)], inbounds=True
             )
 
-            copy_count = self.builder.sub(size, idx)
+            copy_count = self.builder.sub(size, idx64)
             copy_count.flags = ['nsw']
             copy_bytes = self.builder.mul(
                 self.builder.zext(copy_count, ir.IntType(64)),
@@ -6023,8 +6118,8 @@ class CodeGen:
 
             self.builder.call(self.memmove, [dst_bytes, src_bytes, copy_bytes])
 
-            # Store at data[idx]
-            store_ptr = self.builder.gep(new_data, [idx], inbounds=True)
+            # Store at data[idx64]
+            store_ptr = self.builder.gep(new_data, [idx64], inbounds=True)
             self.builder.store(val, store_ptr)
 
             new_size = self.builder.add(size, ir.Constant(ir.IntType(64), 1))
@@ -8624,6 +8719,44 @@ class CodeGen:
     def _codegen_ArrayInit(self, node):
         target = self.current_target_type
 
+        # Vec type initialization: create a vec struct with heap-allocated data
+        if target and target.startswith("vec<") and target.endswith(">"):
+            elem_type_name = target[4:-1]
+            elem_type = self._get_llvm_type(elem_type_name)
+            old_target = self.current_target_type
+            self.current_target_type = elem_type_name
+            vals = []
+            for e in node.elements:
+                v = self._codegen(e)
+                v = self._emit_cast(v, elem_type)
+                vals.append(v)
+            self.current_target_type = old_target
+
+            length = len(vals)
+            size_val = ir.Constant(ir.IntType(64), length)
+            cap_val = ir.Constant(ir.IntType(64), length)
+
+            elem_size = self._type_byte_size(elem_type)
+            total_bytes = self.builder.mul(size_val, ir.Constant(ir.IntType(64), elem_size))
+            total_bytes.flags = ['nuw']
+            data_bytes = self.builder.call(self.malloc, [total_bytes])
+            self._track_alloc(data_bytes)
+            data_ptr = self.builder.bitcast(data_bytes, elem_type.as_pointer())
+
+            for i, v in enumerate(vals):
+                ptr = self.builder.gep(
+                    data_ptr,
+                    [ir.Constant(ir.IntType(64), i)], inbounds=True
+                )
+                self.builder.store(v, ptr)
+
+            vec_type = ir.LiteralStructType([elem_type.as_pointer(), ir.IntType(64), ir.IntType(64)])
+            vec_val = ir.Constant(vec_type, ir.Undefined)
+            vec_val = self.builder.insert_value(vec_val, data_ptr, 0)
+            vec_val = self.builder.insert_value(vec_val, size_val, 1)
+            vec_val = self.builder.insert_value(vec_val, cap_val, 2)
+            return vec_val
+
         # Matrix type initialization: create a matrix struct with heap-allocated data
         if target and target.startswith("matrix<") and target.endswith(">"):
             elem_type_name = target[7:-1]
@@ -9156,6 +9289,9 @@ class CodeGen:
             if src.width > dst.width:
                 return self.builder.trunc(val, dst)
             elif src.width < dst.width:
+                # bool (i1) values should always be zero-extended to preserve 0/1
+                if src.width == 1:
+                    return self.builder.zext(val, dst)
                 return self.builder.sext(val, dst) if is_signed else self.builder.zext(val, dst)
             return val
         # float -> float (fpext / fptrunc)

@@ -613,7 +613,7 @@ class Parser:
             elif (
                 self.current().type == "IDENT"
                 and self.peek()
-                and self.peek().type == "COLON"
+                and (self.peek().type == "COLON" or self.peek().type == "COLON_ASSIGN")
             ):
                 items.append(self.parse_global_var())
             elif self.current().type == "USE":
@@ -1084,12 +1084,22 @@ class Parser:
         return MacroDef(name, params, body, visibility)
 
     def parse_global_var(self):
-        """Parse a global variable declaration with optional visibility."""
+        """Parse a global variable declaration with optional visibility.
+        Supports:
+          name : type = value;
+          name := value;   (type inference)
+        """
         visibility = "pub"  # default visibility for top-level vars is public
         if self.current().type in ("PUB", "PRIV"):
             visibility = self.current().value.lower()
             self.eat(self.current().type)
         name = self.eat("IDENT").value
+        # Check for := (type inference) or : type
+        if self.current().type == "COLON_ASSIGN":
+            self.eat("COLON_ASSIGN")
+            value = self.parse_expression(no_struct_init=False)
+            self.eat("SEMI")
+            return GlobalVarDecl(name, None, value, visibility)
         self.eat("COLON")
         var_type = self.parse_type()
         value = None
