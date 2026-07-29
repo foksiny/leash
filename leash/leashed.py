@@ -142,16 +142,16 @@ def read_pkg_config(path):
 def write_pkg_config(path, config):
     with open(path, "w", encoding="utf-8") as f:
         f.write("# Leashed package configuration\n")
-        for key in ["name", "version", "author", "description", "main", "repo", "dependencies"]:
+        for key in ["name", "version", "author", "description", "main", "repo", "dependencies", "imports"]:
             val = config.get(key)
             if val:
                 f.write(f'{key}: "{val}"\n')
 
 
-def run_leash_check(filepath):
+def run_leash_check(filepath, extra_import_dirs=None):
     try:
         from leash.cli import check_file
-        errs, warns = check_file(filepath, verbose=VERBOSE)
+        errs, warns = check_file(filepath, verbose=VERBOSE, extra_import_dirs=extra_import_dirs)
         if errs:
             eprint(f"error: {len(errs)} error(s) found in source code. Fix them before publishing.")
             for e in errs:
@@ -161,10 +161,11 @@ def run_leash_check(filepath):
             print(f"[leashed] {len(warns)} warning(s) found (continuing)")
         return True
     except ImportError:
-        rc = subprocess.run(
-            [sys.executable, "-m", "leash.cli", "check", filepath],
-            capture_output=True, text=True
-        )
+        cmd = [sys.executable, "-m", "leash.cli", "check", filepath]
+        if extra_import_dirs:
+            for d in extra_import_dirs:
+                cmd.extend(["-oi", d])
+        rc = subprocess.run(cmd, capture_output=True, text=True)
         if rc.returncode != 0:
             eprint("error: Source code check failed. Fix errors before publishing.")
             eprint(rc.stderr)
@@ -172,7 +173,7 @@ def run_leash_check(filepath):
         return True
 
 
-def run_leash_compile(filepath, output_stem):
+def run_leash_compile(filepath, output_stem, extra_import_dirs=None):
     try:
         from leash.cli import compile_file
         compile_file(
@@ -180,13 +181,15 @@ def run_leash_compile(filepath, output_stem):
             output_name=output_stem,
             output_type="static",
             is_run_mode=False,
+            extra_import_dirs=extra_import_dirs,
         )
         return True
     except ImportError:
-        rc = subprocess.run(
-            [sys.executable, "-m", "leash.cli", "compile", filepath, "to-static", output_stem],
-            capture_output=True, text=True
-        )
+        cmd = [sys.executable, "-m", "leash.cli", "compile", filepath, "to-static", output_stem]
+        if extra_import_dirs:
+            for d in extra_import_dirs:
+                cmd.extend(["-oi", d])
+        rc = subprocess.run(cmd, capture_output=True, text=True)
         if rc.returncode != 0:
             eprint("error: Compilation failed.")
             eprint(rc.stderr)
@@ -265,12 +268,19 @@ def cmd_publish(args):
     if not gh_user:
         eprint("error: GitHub CLI (gh) is required for publishing. Authenticate with 'gh auth login'")
         sys.exit(1)
+    # Read extra import dirs from config
+    imports_str = config.get("imports", "")
+    extra_import_dirs = [d.strip() for d in imports_str.split(",") if d.strip()] if imports_str else None
+    # Make relative paths absolute from project_dir
+    if extra_import_dirs:
+        extra_import_dirs = [os.path.join(project_dir, d) if not os.path.isabs(d) else d for d in extra_import_dirs]
+
     print(f"[leashed] Publishing '{name}' v{version} by {author}")
     print(f"[leashed] Publisher: {publisher}")
 
     # Step 1: Verify source code
     print("[leashed] Verifying source code...")
-    run_leash_check(main_path)
+    run_leash_check(main_path, extra_import_dirs=extra_import_dirs)
 
     # Step 2: Compile to static library
     print("[leashed] Compiling library...")
@@ -279,7 +289,7 @@ def cmd_publish(args):
     os.makedirs(lib_out, exist_ok=True)
     output_stem = os.path.join(lib_out, name)
     try:
-        run_leash_compile(main_path, output_stem)
+        run_leash_compile(main_path, output_stem, extra_import_dirs=extra_import_dirs)
     except Exception as e:
         eprint(f"error: Compilation failed: {e}")
         tmp_cleanup(out_dir)
@@ -653,8 +663,21 @@ def cmd_install(args):
     shutil.copytree(src, dest_root)
 
     stub_path = os.path.join(LEASH_LIBS_DIR, f"{libname}.lsh")
+    # Read actual main from the installed package config
+    pkg_config_path = os.path.join(dest_root, "package.lshc")
     entry_main = "src/main.lsh"
-    entry_module = os.path.splitext(entry_main)[0].replace("\\", "::").replace("/", "::")
+    if os.path.exists(pkg_config_path):
+        import json as _json
+        with open(pkg_config_path, "r", encoding="utf-8") as _f:
+            try:
+                _pkg = _json.load(_f)
+                if "main" in _pkg:
+                    entry_main = _pkg["main"]
+            except:
+                pass
+    # The main file path in config is relative to project dir, but files are
+    # copied to the library root (subdirectory stripped). Use just the filename.
+    entry_module = os.path.splitext(os.path.basename(entry_main))[0]
     with open(stub_path, "w", encoding="utf-8") as f:
         f.write(f"// {libname} {ver} by {author}\n")
         f.write(f"// {desc}\n")
