@@ -3300,8 +3300,23 @@ class TypeChecker:
                     node=expr,
                 )
             arg_t = self._infer_type(expr.args[0])
-            if arg_t and self._resolve(arg_t) == "string":
-                self._warn("Calling 'tostring' on a 'string' is redundant.", node=expr)
+            if arg_t:
+                resolved_t = self._resolve(arg_t)
+                if resolved_t == "string":
+                    self._warn("Calling 'tostring' on a 'string' is redundant.", node=expr)
+                # Check for class types: warn if no VAL_ClassName method
+                elif resolved_t in self.class_types:
+                    # Extract base class name from generic type: "Hash<string, int>" -> "Hash"
+                    base_class = resolved_t.split("<")[0] if "<" in resolved_t else resolved_t
+                    val_method_name = f"VAL_{base_class}"
+                    methods = self.class_types[resolved_t].get("methods", {})
+                    if val_method_name not in methods:
+                        self._warn(
+                            f"Class '{resolved_t}' does not define a '{val_method_name}' method, "
+                            f"so 'tostring' will return the raw pointer instead of a string representation.",
+                            node=expr,
+                            tip=f"Define a `pub {val_method_name}() : string` method in class '{base_class}' to customize its string representation.",
+                        )
             return "string"
 
         if expr.name == "rand":

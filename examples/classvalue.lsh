@@ -1,0 +1,68 @@
+def T1 : template;
+def T2 : template;
+
+def Hash : class<T1, T2> {
+    names:  vec<T1>;
+    values: vec<T2>;
+
+    static pub fnc new() : Hash {
+        return Hash {};
+    }
+
+    pub fnc VAL_Hash() : string {
+        out: string = "\{";
+        foreach i, n in<vector> this.names {
+            if i == 0 {
+                out += tostring(n) + ": " + tostring(this.values.get(i));
+            } else {
+                out += ", " + tostring(n) + ": " + tostring(this.values.get(i));
+            }
+        }
+        out += "\}";
+
+        return out;
+    }
+
+    pub fnc add(name T1, value T2) : void {
+        this.names.pushb(name);
+        this.values.pushb(value);
+    }
+
+    pub fnc get(name T1) : T2 {
+        io: int = -1;
+        foreach i, n in<vector> this.names {
+            if n == name {
+                io = i;
+                stop;
+            }
+        }
+        if io == -1 {
+            return nil;
+        }
+        return this.values.get(io);
+    }
+
+    pub fnc remove(name T1) : T2 {
+        io: int = -1;
+        foreach i, n in<vector> this.names {
+            if n == name {
+                io = i;
+                stop;
+            }
+        }
+        if io == -1 {
+            return nil;
+        }
+        this.values.remove(io);
+        this.names.remove(io);
+        return nil;
+    }
+}
+
+fnc main {
+    h: Hash<string, int> = Hash.new();
+
+    h.add("John Doe", 25);
+    h.add("Jane Doe", 24);
+    show(h);
+}

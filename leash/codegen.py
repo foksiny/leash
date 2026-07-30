@@ -3452,6 +3452,27 @@ class CodeGen:
                 args.append(self.builder.extract_value(val, 1))
                 continue
 
+            # Check if argument is a class instance (has a VAL_ClassName method)
+            arg_type = self._get_leash_type_name(arg_node)
+            arg_resolved = self._resolve_type_name(arg_type)
+            if arg_resolved in self.class_symtab:
+                cls_info = self.class_symtab[arg_resolved]
+                # Extract the base class name from the original type string
+                # to handle generic classes: "Hash<string, int>" -> base="Hash"
+                base_class = arg_type.split("<")[0] if "<" in arg_type else arg_type
+                val_method_name = f"VAL_{base_class}"
+                val_func = cls_info["methods"].get(val_method_name)
+                if val_func:
+                    is_m_static = cls_info["method_static"].get(val_method_name, False)
+                    if not is_m_static:
+                        this_ptr = val
+                        str_val = self.builder.call(val_func, [this_ptr])
+                    else:
+                        str_val = self.builder.call(val_func, [])
+                    format_str += "%s"
+                    args.append(str_val)
+                    continue
+
             if isinstance(val.type, ir.IntType):
                 width = val.type.width
                 arg_type = self._get_leash_type_name(arg_node)
@@ -7504,6 +7525,23 @@ class CodeGen:
 
         if node.name == "tostring":
             arg_val = self._codegen(node.args[0])
+            # Check if argument is a class instance (has a VAL_ClassName method)
+            arg_type_name = self._get_leash_type_name(node.args[0])
+            resolved = self._resolve_type_name(arg_type_name)
+            if resolved in self.class_symtab:
+                cls_info = self.class_symtab[resolved]
+                # Extract the base class name from the original type string
+                # to handle generic classes: "Hash<string, int>" -> base="Hash"
+                base_class = arg_type_name.split("<")[0] if "<" in arg_type_name else arg_type_name
+                val_method_name = f"VAL_{base_class}"
+                val_func = cls_info["methods"].get(val_method_name)
+                if val_func:
+                    is_m_static = cls_info["method_static"].get(val_method_name, False)
+                    if not is_m_static:
+                        this_ptr = arg_val
+                        return self.builder.call(val_func, [this_ptr])
+                    else:
+                        return self.builder.call(val_func, [])
             # format based on type
             # allocate 64 bytes for the result string
             buf = self.builder.call(self.malloc, [ir.Constant(ir.IntType(64), 64)])

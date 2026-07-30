@@ -176,6 +176,34 @@ class Parser:
 
         return InterpolatedString(parts)
 
+    @staticmethod
+    def _has_interpolation(raw):
+        """Check if a raw string contains actual interpolation expressions {expr}.
+        Avoids false positives on lone '{' or '}' characters.
+        """
+        depth = 0
+        i = 0
+        while i < len(raw):
+            if raw[i] == '\\' and i + 1 < len(raw):
+                i += 2
+                continue
+            if raw[i] == '{':
+                depth += 1
+            elif raw[i] == '}':
+                depth -= 1
+                if depth == 0:
+                    # Found a complete {...} pair — check if there's content
+                    # (not just empty braces {})
+                    end = i
+                    start = end
+                    while start > 0 and raw[start] != '{':
+                        start -= 1
+                    inner = raw[start+1:end]
+                    if inner.strip():
+                        return True
+            i += 1
+        return False
+
     def current(self):
         return self.tokens[self.pos]
 
@@ -2213,7 +2241,7 @@ class Parser:
         elif self.current().type in ("STRING", "MLSTRING_D", "MLSTRING_S"):
             tok = self.current()
             raw = getattr(tok, 'raw', None) if hasattr(tok, 'raw') else None
-            if raw and '{' in raw:
+            if raw and '{' in raw and '}' in raw and self._has_interpolation(raw):
                 self.eat(tok.type)
                 return self._pos(self._parse_interpolated_string(tok), tok)
             return self._pos(StringLiteral(self.eat(tok.type).value), tok)

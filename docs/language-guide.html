@@ -923,6 +923,34 @@ p: Point = <span class="kw">create</span> Point(10, 20);</code></pre>
 }
 <span class="kw">del</span> m;  <span class="cm">// calls DEL_Math() and frees memory</span></code></pre>
 
+<h3>Class Values with <code>VAL_</code></h3>
+<p>Classes can define a custom string representation by implementing a method named <code>VAL_ClassName</code> that returns a <code>string</code>. This method is automatically called when the class instance is passed to <code>show()</code> or <code>tostring()</code>, providing a clean way to control how your objects are displayed.</p>
+
+<pre><code><span class="kw">def</span> Hash : <span class="kw">class</span>&lt;T1, T2&gt; {
+    names:  <span class="kw">vec</span>&lt;T1&gt;;
+    values: <span class="kw">vec</span>&lt;T2&gt;;
+
+    <span class="kw">pub</span> <span class="kw">fnc</span> <span class="fn">VAL_Hash</span>() : <span class="kw">string</span> {
+        out: <span class="kw">string</span> = <span class="str">"{"</span>;
+        <span class="kw">foreach</span> i, n <span class="kw">in&lt;vector&gt;</span> <span class="kw">this</span>.names {
+            <span class="kw">if</span> i == 0 {
+                out += n + <span class="str">": "</span> + <span class="fn">tostring</span>(<span class="kw">this</span>.values.<span class="fn">get</span>(i));
+            } <span class="kw">else</span> {
+                out += <span class="str">", "</span> + n + <span class="str">": "</span> + <span class="fn">tostring</span>(<span class="kw">this</span>.values.<span class="fn">get</span>(i));
+            }
+        }
+        out += <span class="str">"}"</span>;
+        <span class="kw">return</span> out;
+    }
+}
+
+h: Hash&lt;<span class="kw">string</span>, <span class="kw">int</span>&gt; = Hash.<span class="fn">new</span>();
+h.<span class="fn">add</span>(<span class="str">"John Doe"</span>, 25);
+h.<span class="fn">add</span>(<span class="str">"Jane Doe"</span>, 24);
+<span class="fn">show</span>(h);  <span class="cm">// calls VAL_Hash(), prints: {John Doe: 25, Jane Doe: 24}</span></code></pre>
+
+<div class="callout callout-info">The <code>VAL_</code> method must be named <code>VAL_</code> followed by the exact class name (e.g., <code>VAL_Hash</code> for class <code>Hash</code>, <code>VAL_Person</code> for class <code>Person</code>) and must return <code>string</code>.</div>
+
 <h3>Inheritance</h3>
 <p>Leash supports class inheritance using <code>def Child : class(Parent)</code>. Child classes inherit all fields and methods from the parent and can override methods to provide specialized behavior.</p>
 
