@@ -13,7 +13,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v0.21.0b0 Beta</div>
+        <div class="version">v0.21.3b0 Beta</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -104,6 +104,42 @@
 leash compile myprogram.lsh -ngc</code></pre>
 
 <div class="callout callout-warning"><code>-ngc</code> is intended for embedded, real-time, or minimal-binary-size scenarios. Use with extreme care.</div>
+
+<h3>Smart Auto-Free (<code>--autofree</code> / <code>-af</code>)</h3>
+
+<p>Leash also offers a <strong>garbage-collector-free</strong> mode that still frees memory automatically. Instead of relying on a mark-and-sweep collector, the compiler <strong>tracks every heap allocation</strong> at code-generation time and <strong>inserts <code>free()</code> calls automatically</strong> when the allocating function exits. This gives you deterministic, GC-free memory management without writing a single <code>free()</code> by hand.</p>
+
+<pre><code>leash run myprogram.lsh --autofree
+leash compile myprogram.lsh -af
+leash compile myprogram.lsh --opt 3 -af</code></pre>
+
+<p>You can also enable it per-project by adding <code>autofree: true</code> to your <code>config.lshc</code>:</p>
+
+<pre><code>main: "src/main.lsh"
+clibs: {}
+imports: "imports/"
+opt_level: "O3"
+out_name: "myprogram"
+autofree: true</code></pre>
+
+<h4>How It Works</h4>
+<ul>
+    <li><strong>Compile-time tracking</strong> &mdash; every allocation (strings, vectors, matrices, class instances, buffers) is recorded in a per-function tracking array</li>
+    <li><strong>Deterministic cleanup</strong> &mdash; at function exit the compiler emits a cleanup loop that <code>free()</code>s every tracked, non-returned allocation</li>
+    <li><strong>Return-value aware</strong> &mdash; allocations returned to the caller are automatically excluded from the free set, so returned strings/vectors remain valid</li>
+    <li><strong>Zero GC runtime</strong> &mdash; the GC runtime is compiled in stub mode (<code>malloc</code>/<code>free</code> only), producing binaries with no GC machinery</li>
+    <li><strong>Null-safe</strong> &mdash; the cleanup loop checks each slot before freeing, so partially-filled tracking arrays are safe</li>
+</ul>
+
+<h4>When to Use It</h4>
+<ul>
+    <li><strong>Embedded &amp; real-time systems</strong> &mdash; no GC pauses, fully deterministic memory behaviour</li>
+    <li><strong>Minimal binaries</strong> &mdash; the GC runtime is reduced to a thin malloc/free stub</li>
+    <li><strong>FFI with non-GC languages</strong> &mdash; produced code integrates cleanly with C, C++, Rust, Zig, and other languages that expect raw <code>malloc</code>/<code>free</code> ownership semantics (e.g. when compiling <code>to-dynamic</code>/<code>to-static</code> libraries)</li>
+    <li><strong>Per-thread determinism</strong> &mdash; memory is reclaimed when the function returns, not at an arbitrary collection point</li>
+</ul>
+
+<div class="callout callout-info"><code>--autofree</code> is stricter than <code>-ngc</code>: it not only disables the GC but also <em>frees everything for you</em>. Use it whenever you want GC-free semantics without manual memory management.</div>
 
 <h2>Error Handling &amp; Safety</h2>
 

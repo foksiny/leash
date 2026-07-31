@@ -43,7 +43,7 @@ from .ast_nodes import (
 
 
 class CodeGen:
-    def __init__(self, target_platform=None, no_gc=False):
+    def __init__(self, target_platform=None, no_gc=False, autofree=False):
         self.module = ir.Module(name="leash_module")
         try:
             # Initialize once (safe to call multiple times)
@@ -100,6 +100,15 @@ class CodeGen:
         # Boehm GC configuration (replacing legacy SAMM)
         self.current_func_alloc_limit = 0  # Not used with GC
         self.no_gc = no_gc  # Global no-gc mode: use C malloc instead of GC malloc
+        self.autofree = autofree  # Autofree mode: track allocs and auto-free on scope exit
+
+        # Per-function tracking structures for autofree mode
+        # These are LLVM values (alloca'd in the entry block) that dominate all uses
+        self.af_tracking_array = None  # alloca'd [N x i8*] for tracked pointers
+        self.af_tracking_count = None  # alloca'd i64 counter
+        self.af_tracking_capacity = 1024  # max tracked allocations per function
+        self.af_is_return_value = []  # list of bools marking which slots are return values (Python-side tracking)
+        self.af_cleanup_emitted = False  # Whether cleanup blocks have been generated for this function
 
         # Deferred function calls stack (per scope)
         self.defer_stack = []  # list of lists of Call nodes
@@ -393,10 +402,12 @@ class CodeGen:
         realloc_ty = ir.FunctionType(ir.IntType(8).as_pointer(), [ir.IntType(8).as_pointer(), ir.IntType(64)])
         self.c_realloc = ir.Function(self.module, realloc_ty, name="realloc")
 
-        # If global no-gc mode, use C malloc/free everywhere
-        if self.no_gc:
+        # If global no-gc or autofree mode, use C malloc/free everywhere
+        if self.no_gc or self.autofree:
             self.malloc = self.c_malloc
             self.realloc = self.c_realloc
+            self.malloc_fn = self.c_malloc
+            self.realloc_fn = self.c_realloc
 
         fileno_ty = ir.FunctionType(
             ir.IntType(32),  # int (file descriptor)
@@ -452,6 +463,10 @@ class CodeGen:
         # Aligned allocation for matrix data
         aligned_alloc_ty = ir.FunctionType(ir.IntType(8).as_pointer(), [ir.IntType(64), ir.IntType(64)])
         self.aligned_alloc = ir.Function(self.module, aligned_alloc_ty, name="leash_gc_aligned_alloc")
+        # In no-gc/autofree mode, use C malloc instead of GC aligned_alloc
+        # (malloc provides sufficient alignment for most vector/matrix operations)
+        if self.no_gc or self.autofree:
+            self.aligned_alloc = self.c_malloc
 
         # Optimized matrix binary op functions (called for float/double/int32/int64 element types)
         i8ptr = ir.IntType(8).as_pointer()
@@ -749,12 +764,107 @@ class CodeGen:
         return self._emit_tostring(val, llvm_ty)
 
     def _track_alloc(self, ptr):
-        """No-op since we are using Boeing GC."""
+        """Track a heap allocation for later cleanup.
+        In GC mode: no-op.
+        In autofree mode: register the pointer for automatic freeing at scope exit.
+        """
+        if self.autofree and self.af_tracking_array is not None:
+            # Store the pointer in the tracking array at current count
+            count_ptr = self.builder.gep(
+                self.af_tracking_count,
+                [ir.Constant(ir.IntType(32), 0)]
+            )
+            count = self.builder.load(count_ptr)
+            # Bounds check (should never exceed capacity in practice)
+            in_bounds = self.builder.icmp_unsigned(
+                "<", count, ir.Constant(ir.IntType(64), self.af_tracking_capacity)
+            )
+            with self.builder.if_then(in_bounds):
+                ptr_array = self.builder.gep(
+                    self.af_tracking_array,
+                    [ir.Constant(ir.IntType(32), 0), count]
+                )
+                self.builder.store(ptr, ptr_array)
+                # Increment count
+                new_count = self.builder.add(
+                    count, ir.Constant(ir.IntType(64), 1)
+                )
+                self.builder.store(new_count, count_ptr)
+            self.af_is_return_value.append(False)
         return ptr
 
+    def _mark_as_return_value(self, ptr):
+        """Mark a tracked pointer as the return value so _emit_cleanup skips it."""
+        if self.autofree:
+            # Mark the most recent slot as return value
+            if self.af_is_return_value:
+                self.af_is_return_value[-1] = True
+
     def _emit_cleanup(self, ret_val=None):
-        """No-op since we are using Boeing GC."""
-        pass
+        """Emit cleanup code at scope exit.
+        In GC mode: no-op.
+        In autofree mode: free all tracked allocations except the return value.
+        Only generates cleanup code ONCE per function (the first call).
+        Subsequent calls are no-ops since cleanup already branches to exit.
+        """
+        if not self.autofree:
+            return
+        if self.af_tracking_array is None or self.af_cleanup_emitted:
+            return
+        self.af_cleanup_emitted = True
+        
+        i64 = ir.IntType(64)
+        i8ptr = ir.IntType(8).as_pointer()
+        null_ptr = ir.Constant(i8ptr, None)
+        
+        count_ptr = self.builder.gep(
+            self.af_tracking_count,
+            [ir.Constant(ir.IntType(32), 0)]
+        )
+        count = self.builder.load(count_ptr)
+        
+        # Early exit if nothing to free
+        is_zero = self.builder.icmp_signed("==", count, ir.Constant(i64, 0))
+        
+        # Use a simple if-then (provided by llvmlite IRBuilder)
+        # that creates proper structured control flow
+        def do_cleanup():
+            # Loop through tracked allocations
+            loop_bb = self.builder.function.append_basic_block("af_loop")
+            body_bb = self.builder.function.append_basic_block("af_body")
+            free_bb = self.builder.function.append_basic_block("af_free")
+            merge_bb = self.builder.function.append_basic_block("af_next")
+            exit_bb = self.builder.function.append_basic_block("af_done")
+            
+            self.builder.branch(loop_bb)
+            self.builder.position_at_end(loop_bb)
+            idx = self.builder.phi(i64, name="af_i")
+            idx.add_incoming(ir.Constant(i64, 0), self.builder.block)
+            done = self.builder.icmp_signed(">=", idx, count)
+            self.builder.cbranch(done, exit_bb, body_bb)
+            
+            self.builder.position_at_end(body_bb)
+            ptr_ptr = self.builder.gep(
+                self.af_tracking_array,
+                [ir.Constant(ir.IntType(32), 0), idx]
+            )
+            ptr = self.builder.load(ptr_ptr)
+            is_null = self.builder.icmp_signed("==", ptr, null_ptr)
+            self.builder.cbranch(is_null, merge_bb, free_bb)
+            
+            self.builder.position_at_end(free_bb)
+            self.builder.call(self.free, [ptr])
+            self.builder.branch(merge_bb)
+            
+            self.builder.position_at_end(merge_bb)
+            nxt = self.builder.add(idx, ir.Constant(i64, 1))
+            idx.add_incoming(nxt, merge_bb)
+            self.builder.branch(loop_bb)
+            
+            self.builder.position_at_end(exit_bb)
+            self.builder.store(ir.Constant(i64, 0), count_ptr)
+        
+        self.builder.if_then(self.builder.not_(is_zero), do_cleanup)
 
     def _emit_default_value(self, type_name):
         resolved = self._resolve_type_name(type_name)
@@ -1244,7 +1354,7 @@ class CodeGen:
         saved_builder = self.builder
         self.builder = ir.IRBuilder(block)
 
-        if not self.no_gc:
+        if not self.no_gc and not self.autofree:
             self.builder.call(self.gc_init, [])
         stdout_ptr = self.builder.call(self.get_stdout_fn, [])
         null_ptr = ir.Constant(i8p, None)
@@ -2270,8 +2380,25 @@ class CodeGen:
         self.in_unsafe_func = getattr(node, "is_unsafe", False)
         self.in_nogc_func = getattr(node, "is_nogc", False)
 
+        # Initialize autofree tracking structures at function entry
+        if self.autofree:
+            # Allocate tracking array and counter in entry block (dominates all uses)
+            i8ptr = ir.IntType(8).as_pointer()
+            array_ty = ir.ArrayType(i8ptr, self.af_tracking_capacity)
+            self.af_tracking_array = self.builder.alloca(array_ty, name="af_tracking")
+            # Zero-initialize the array
+            self.builder.store(
+                ir.Constant(array_ty, [ir.Constant(i8ptr, None)] * self.af_tracking_capacity),
+                self.af_tracking_array
+            )
+            self.af_tracking_count = self.builder.alloca(
+                ir.IntType(64), name="af_count"
+            )
+            self.builder.store(ir.Constant(ir.IntType(64), 0), self.af_tracking_count)
+            self.af_is_return_value = []
+
         if name == "main":
-            if not self.in_nogc_func and not self.no_gc:
+            if not self.in_nogc_func and not self.no_gc and not self.autofree:
                 self.builder.call(self.gc_init, [])
             # Set stdout to unbuffered so that interactive prompts and prints are flushed in real time
             stdout_ptr = self.builder.call(self.get_stdout_fn, [])
@@ -2330,7 +2457,9 @@ class CodeGen:
                     self.builder.store(val, ptr)
                     self.var_symtab[arg_name] = (ptr, arg_type_name)
                 # Unregister the arg from GC roots (registered in leash_spawn_worker)
-                self.builder.call(self.gc_unregister_root, [func.args[0]])
+                # Skip in no-gc/autofree modes since there is no GC
+                if not self.no_gc and not self.autofree:
+                    self.builder.call(self.gc_unregister_root, [func.args[0]])
             else:
                 for arg_name, arg_type_name, _ in node.args:
                     llvm_arg_type = self._get_llvm_type(arg_type_name)
@@ -2414,6 +2543,12 @@ class CodeGen:
         self.in_unsafe_func = old_unsafe
         self.in_nogc_func = old_nogc
         self.current_func_name = old_func_name
+        # Reset autofree tracking structures for next function
+        if self.autofree:
+            self.af_tracking_array = None
+            self.af_tracking_count = None
+            self.af_is_return_value = []
+            self.af_cleanup_emitted = False
 
     def _codegen_ReturnStatement(self, node):
         old_target = self.current_target_type

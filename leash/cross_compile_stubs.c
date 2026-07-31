@@ -84,7 +84,8 @@ int leash_spawn_worker(void* (*func)(void*), void* arg) {
 
     /* Register the argument as a GC root so it isn't collected before the
        worker thread starts and has a chance to load it.  The worker wrapper
-       (generated code) will unregister it after loading the parameters. */
+       (generated code) will unregister it after loading the parameters.
+       In no-gc/autofree mode the stubs are no-ops. */
     if (arg) {
         leash_gc_register_root(arg);
     }

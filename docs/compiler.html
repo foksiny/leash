@@ -13,7 +13,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v0.21.0b0 Beta</div>
+        <div class="version">v0.21.3b0 Beta</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -148,9 +148,26 @@ python3 -m leash.cli compile program.lsh -vb</code></pre>
     <tr><td>11</td><td><strong>Re-parse &amp; Verify</strong></td><td>Parse IR and call <code>verify()</code></td></tr>
     <tr><td>12</td><td><strong>LLVM Optimization</strong></td><td>LLVM pass pipeline (<code>-O0</code> through <code>-O4</code>)</td></tr>
     <tr><td>13</td><td><strong>Object Emission</strong></td><td>LLVM IR &rarr; <code>.o</code> machine code</td></tr>
-    <tr><td>14</td><td><strong>Runtime Compilation</strong></td><td>Compiles <code>gc.c</code> + platform stubs</td></tr>
-    <tr><td>15</td><td><strong>Linking</strong></td><td>Links <code>.o</code> + GC + libraries &rarr; executable</td></tr>
+    <tr><td>14</td><td><strong>Runtime Compilation</strong></td><td>Compiles <code>gc.c</code> + platform stubs (with <code>-DNO_GC</code> in <code>--autofree</code>/<code>-ngc</code> modes)</td></tr>
+    <tr><td>15</td><td><strong>Linking</strong></td><td>Links <code>.o</code> + GC (or stub) + libraries &rarr; executable</td></tr>
 </table>
+
+<h2>Memory Management Modes</h2>
+
+<p>Leash ships three memory management modes, selectable at compile time. The default uses the built-in mark-and-sweep garbage collector; the other two produce GC-free binaries.</p>
+
+<table>
+    <tr><th>Mode</th><th>Flag</th><th>Allocator</th><th>Reclamation</th></tr>
+    <tr><td>Garbage Collected</td><td><em>(default)</em></td><td><code>leash_gc_malloc</code></td><td>Mark-and-sweep at threshold</td></tr>
+    <tr><td>No GC (raw)</td><td><code>--no-garbage-collector</code> / <code>-ngc</code></td><td>C <code>malloc</code></td><td>Manual <code>free()</code> only</td></tr>
+    <tr><td><strong>Auto-Free</strong></td><td><code>--autofree</code> / <code>-af</code></td><td>C <code>malloc</code></td><td>Automatic <code>free()</code> at function exit</td></tr>
+</table>
+
+<pre><code>leash compile myprogram.lsh              <span class="cm"># GC mode (default)</span>
+leash compile myprogram.lsh -ngc        <span class="cm"># GC-free, manual free()</span>
+leash compile myprogram.lsh -af         <span class="cm"># GC-free, auto free()</span></code></pre>
+
+<p><code>--autofree</code> (<code>-af</code>) tracks every heap allocation the compiler emits and inserts <code>free()</code> calls automatically when the allocating function returns &mdash; no GC and no manual memory management. Allocations that are returned to the caller are excluded automatically, so returned strings, vectors, and class instances remain valid. The GC runtime is linked in stub mode (thin <code>malloc</code>/<code>free</code> wrappers), keeping binaries small and deterministic. This is especially useful when compiling libraries (<code>to-dynamic</code> / <code>to-static</code>) for use from non-GC languages.</p>
 
 <h2>Optimization Levels</h2>
 

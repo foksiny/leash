@@ -1,12 +1,53 @@
 /**
  * Leash Custom Garbage Collector — Multi-Thread Ready
  * A simple mark-and-sweep GC with mutex-based thread safety.
+ *
+ * When compiled with -DNO_GC (used by --no-gc and --autofree modes),
+ * all functions become thin wrappers around standard malloc/free,
+ * making the binary independent of the GC runtime.
  */
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+
+#ifdef NO_GC
+/* ===== Stub mode: plain malloc/free, no GC tracking ===== */
+
+void leash_gc_init(void) {}
+void leash_gc_shutdown(void) {}
+
+void* leash_gc_malloc(size_t size) {
+    if (size == 0) return NULL;
+    void* p = malloc(size);
+    if (!p) { fprintf(stderr, "Leash: Out of memory!\n"); abort(); }
+    memset(p, 0, size);
+    return p;
+}
+
+void* leash_gc_realloc(void* ptr, size_t new_size) {
+    if (!ptr) return leash_gc_malloc(new_size);
+    if (new_size == 0) { free(ptr); return NULL; }
+    void* p = realloc(ptr, new_size);
+    if (!p) { fprintf(stderr, "Leash: Out of memory!\n"); abort(); }
+    return p;
+}
+
+void* leash_gc_aligned_alloc(size_t size, size_t alignment) {
+    (void)alignment;
+    return leash_gc_malloc(size);
+}
+
+void leash_gc_collect(void) {}
+void leash_gc_register_root(void* ptr) { (void)ptr; }
+void leash_gc_unregister_root(void* ptr) { (void)ptr; }
+void* leash_gc_alloc_string(size_t len) { return leash_gc_malloc(len + 1); }
+void* leash_gc_alloc_vector_data(size_t elem_size, size_t capacity) { return leash_gc_malloc(elem_size * capacity); }
+
+/* ===== End stub mode ===== */
+#else
+/* Full GC implementation follows */
 
 #ifdef _WIN32
 #include <windows.h>
@@ -1098,3 +1139,5 @@ void leash_gc_shutdown(void) {
     gc.root_capacity = 0;
     GC_UNLOCK();
 }
+
+#endif /* NO_GC */
