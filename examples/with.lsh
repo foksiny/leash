@@ -1,0 +1,9 @@
+fnc main {
+    with a: int = 10 {
+        show(a);
+    }
+
+    with {a: int = 10; b: int = 20} {
+        show(a + b);
+    }
+}

@@ -13,7 +13,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v0.21.3b0 Beta</div>
+        <div class="version">v0.22.0 Beta</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -414,6 +414,27 @@ k: <span class="kw">int</span> = 0;
 
 <span class="cm">// Over struct fields &mdash; unrolled at compile time</span>
 <span class="kw">foreach</span> name, value <span class="kw">in&lt;struct&gt;</span> p { ... }</code></pre>
+
+<h3>With &mdash; Scoped Variable Blocks</h3>
+<p>The <code>with</code> statement declares one or more variables that exist only inside its block. The variables are scoped to the block: they are visible inside it (and inside any nested statements), but they disappear when the block ends, so the same name can be reused by a later <code>with</code> block. Things declared outside the block remain fully accessible inside it.</p>
+<pre><code><span class="cm">// Single declaration</span>
+<span class="kw">with</span> a: <span class="kw">int</span> = 10 {
+    <span class="fn">show</span>(a);                     <span class="cm">// 10</span>
+}
+
+<span class="cm">// Multiple declarations (single or multiple lines)</span>
+<span class="kw">with</span> {b: <span class="kw">int</span> = 10; c: <span class="kw">int</span> = 20} {
+    <span class="fn">show</span>(b + c);                 <span class="cm">// 30</span>
+}
+
+<span class="cm">// Same name can be reused in a later block</span>
+<span class="kw">with</span> a: <span class="kw">int</span> = 100 {
+    <span class="fn">show</span>(a);                     <span class="cm">// 100</span>
+}
+<span class="kw">with</span> a: <span class="kw">int</span> = 200 {
+    <span class="fn">show</span>(a);                     <span class="cm">// 200</span>
+}</code></pre>
+<p>Variables declared with <code>with</code> are ordinary variables &mdash; they can be any type, use the <code>:=</code> type-inference syntax, and can be assigned to inside the block. The scope is enforced at compile time: referencing a <code>with</code> variable after its block has ended is an error.</p>
 
 <h3>Switch-Case</h3>
 <p>Leash supports <code>switch-case</code> for multi-way branching. Unlike C-style switch, each case block is wrapped in <code>{ }</code> braces, so there is <strong>no fall-through</strong>. Switch supports integers, floats, booleans, strings, and enums.</p>
@@ -854,6 +875,30 @@ d = (Dog)animal;             <span class="cm">// downcast parent to child (C-sty
     <tr><td><code>expr as type</code></td><td>Safe numeric/class conversions</td><td>Type-checked at compile time</td></tr>
     <tr><td><code>(type)expr</code></td><td>Low-level casts, bit manipulation</td><td>Allows any cast (may be unsafe)</td></tr>
     <tr><td><code>toint()</code> / <code>tofloat()</code></td><td>String parsing</td><td>Runtime parsing</td></tr>
+    <tr><td><code>scast()</code></td><td>Anything-to-anything, verified</td><td>Runtime checks, aborts on data loss</td></tr>
+</table>
+
+<h3>The <code>scast()</code> Function (Highly Safe Cast)</h3>
+<p><code>scast(TargetType, value)</code> casts a value between any two types, but guards the conversion at runtime so that no information is ever silently lost. Unlike <code>(type)expr</code>, which truncates, wraps, or clobbers values without complaint, <code>scast()</code> verifies the result before producing it and aborts with a descriptive runtime error if the conversion would be lossy. It supports every pair of types &mdash; integers, floats, strings, booleans, chars, pointers, slices, vectors, and classes &mdash; and can even parse strings into numbers and format numbers into strings. Inside <code>unsafe</code> functions the checks are skipped and it degrades to a raw cast.</p>
+
+<pre><code>u: <span class="kw">uint</span> = <span class="fn">scast</span>(<span class="kw">uint</span>, 10);     <span class="cm">// 10 (fits)</span>
+b: <span class="kw">uint</span> = <span class="fn">scast</span>(<span class="kw">uint</span>, -5);     <span class="cm">// runtime error: does not fit</span>
+n: <span class="kw">int</span> = <span class="fn">scast</span>(<span class="kw">int</span>, 3.5);       <span class="cm">// runtime error: fractional</span>
+i: <span class="kw">int</span> = <span class="fn">scast</span>(<span class="kw">int</span>, <span class="str">"42"</span>);    <span class="cm">// 42 (strictly parsed)</span>
+d: <span class="kw">float</span> = <span class="fn">scast</span>(<span class="kw">float</span>, 123);    <span class="cm">// 123.000000 (exact)</span>
+s: <span class="kw">string</span> = <span class="fn">scast</span>(<span class="kw">string</span>, 42);  <span class="cm">// "42"</span></code></pre>
+
+<p>The checks performed depend on the types involved:</p>
+
+<table>
+    <tr><th>Conversion</th><th>Runtime safety check</th></tr>
+    <tr><td>Integer &rarr; integer</td><td>The value fits the target width and signedness (no negative &rarr; <code>uint</code>, no overflow when narrowing)</td></tr>
+    <tr><td>Integer &rarr; float</td><td>The value is exactly representable (mantissa limit)</td></tr>
+    <tr><td>Float &rarr; integer</td><td>In range, integral, and not NaN</td></tr>
+    <tr><td>Float &rarr; float</td><td>Narrowing is lossless (round-trip comparison)</td></tr>
+    <tr><td>String &rarr; number</td><td>Parses completely with no trailing garbage, and the result fits</td></tr>
+    <tr><td>Number / bool / char / pointer &rarr; string</td><td>Always safe</td></tr>
+    <tr><td>Pointers / slices / vectors / classes</td><td>Bit-level conversions, inherently lossless</td></tr>
 </table>
 
 <h3>String &harr; Number</h3>

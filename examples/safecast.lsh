@@ -1,0 +1,6 @@
+fnc main {
+    a: int = 10;
+    b: uint = 20;
+
+    show(scast(uint, a) + b);
+}

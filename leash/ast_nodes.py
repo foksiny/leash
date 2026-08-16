@@ -98,6 +98,12 @@ class IfStatement(Statement):
         self.invert = invert  # if True, check if condition is false instead of true
 
 
+class WithStatement(Statement):
+    def __init__(self, decls, body):
+        self.decls = decls  # list of VariableDecl
+        self.body = body    # list of statements
+
+
 class WhileStatement(Statement):
     def __init__(self, condition, body):
         self.condition = condition
@@ -442,6 +448,19 @@ class SelfExpr(Expression):
 class TypeConvExpr(Expression):
     def __init__(self, name, target_type, expr):
         self.name = name  # 'toint', 'tofloat', etc.
+        self.target_type = target_type
+        self.expr = expr
+
+
+class SafeCastExpr(Expression):
+    """scast(TargetType, value) - a highly safe cast between any two types.
+
+    Unlike '(Type)value', scast emits runtime checks that abort the program
+    if the conversion would silently lose information (range overflow,
+    signedness loss, fractional/NaN to integer, float precision loss, or
+    malformed number strings)."""
+
+    def __init__(self, target_type, expr):
         self.target_type = target_type
         self.expr = expr
 

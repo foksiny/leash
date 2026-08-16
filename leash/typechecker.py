@@ -1219,6 +1219,22 @@ class TypeChecker:
             return dst_t
         return dst_t
 
+    def _check_safecast(self, expr):
+        dst_t = expr.target_type
+        src_t = self._infer_type(expr.expr)
+
+        if not self._is_valid_type(self._resolve(dst_t)):
+            raise LeashError(
+                f"scast cannot target unknown type '{dst_t}'",
+                node=expr,
+                tip="Make sure the target type is defined before using scast.",
+            )
+
+        if src_t and dst_t and self._resolve(src_t) == self._resolve(dst_t):
+            pass
+
+        return dst_t
+
     def _check_tounion(self, expr):
         if expr.union_name not in self.union_types:
             raise LeashError(
@@ -1846,6 +1862,15 @@ class TypeChecker:
             self._infer_type(stmt.expr)
         elif isinstance(stmt, IfStatement):
             self._check_if(stmt)
+        elif isinstance(stmt, WithStatement):
+            for decl in stmt.decls:
+                self._check_var_decl(decl)
+            self._check_statements(stmt.body)
+            # Pop the with-block variables to restore outer scope
+            for decl in stmt.decls:
+                self.var_types.pop(decl.name, None)
+                self.var_immutable.pop(decl.name, None)
+                self.defined_vars.pop(decl.name, None)
         elif isinstance(stmt, WhileStatement):
             self.loop_depth += 1
             self._infer_type(stmt.condition)
@@ -2679,6 +2704,8 @@ class TypeChecker:
             return self._check_enum_member_access(expr)
         elif isinstance(expr, TypeConvExpr):
             return self._check_type_conv(expr)
+        elif isinstance(expr, SafeCastExpr):
+            return self._check_safecast(expr)
         elif isinstance(expr, ToUnionExpr):
             return self._check_tounion(expr)
         elif isinstance(expr, ByteConvExpr):

@@ -72,6 +72,7 @@ class Lexer:
         "else",
         "unless",
         "while",
+        "with",
         "for",
         "do",
         "foreach",

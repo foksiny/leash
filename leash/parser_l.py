@@ -8,6 +8,7 @@ from .ast_nodes import (
     Assignment,
     IfStatement,
     WhileStatement,
+    WithStatement,
     ForStatement,
     LoopStatement,
     ReturnStatement,
@@ -50,6 +51,7 @@ from .ast_nodes import (
     DoWhileStatement,
     FloatLiteral,
     TypeConvExpr,
+    SafeCastExpr,
     ShowStatement,
     ErrorDef,
     ThrowStatement,
@@ -521,6 +523,22 @@ class Parser:
             self.eat("ARROW")
             return_type = self.parse_type()
         return f"fnc({', '.join(param_types)}) : {return_type}"
+
+    def _parse_with_decl(self):
+        """Parse a single declaration inside a 'with' block: name : type = expr"""
+        name = self.eat("IDENT").value
+        if self.current().type == "COLON_ASSIGN":
+            # Auto-type inference: name := expr
+            self.eat("COLON_ASSIGN")
+            expr = self.parse_expression()
+            return VariableDecl(name, None, expr)
+        self.eat("COLON")
+        var_type = self.parse_type()
+        expr = None
+        if self.current().type == "ASSIGN":
+            self.eat("ASSIGN")
+            expr = self.parse_expression()
+        return VariableDecl(name, var_type, expr)
 
     # Type token types that can start a type in a cast
     TYPE_STARTERS = {
@@ -1558,6 +1576,31 @@ class Parser:
                 IfStatement(cond, then_block, also_blocks, else_block, invert=invert), tok
             )
 
+        elif current.type == "WITH":
+            tok = self.current()
+            self.eat("WITH")
+            decls = []
+            if self.current().type == "LBRACE":
+                self.eat("LBRACE")
+                while self.current().type != "RBRACE":
+                    decls.append(self._parse_with_decl())
+                    if self.current().type == "SEMI":
+                        self.eat("SEMI")
+                    elif self.current().type not in ("RBRACE",):
+                        raise LeashError(
+                            "Expected ';' or '}' after with-block declaration",
+                            self.current().line,
+                            self.current().column,
+                        )
+                self.eat("RBRACE")
+            else:
+                decls.append(self._parse_with_decl())
+                if self.current().type == "SEMI":
+                    self.eat("SEMI")
+            self.eat("LBRACE")
+            body = self.parse_block()
+            return self._pos(WithStatement(decls, body), tok)
+
         elif current.type == "WORKS":
             tok = self.current()
             self.eat("WORKS")
@@ -2322,6 +2365,13 @@ class Parser:
                 value = self.parse_expression()
                 self.eat("RPAREN")
                 return self._pos(TypeConvExpr(name, target_type, value), tok)
+            if name == "scast" and self.current().type == "LPAREN":
+                self.eat("LPAREN")
+                target_type = self.parse_type()
+                self.eat("COMMA")
+                value = self.parse_expression()
+                self.eat("RPAREN")
+                return self._pos(SafeCastExpr(target_type, value), tok)
             if name in ("inttobytes", "bytestoint", "floattobytes", "bytestofloat") and self.current().type == "LPAREN":
                 self.eat("LPAREN")
                 size_expr = self.parse_expression()

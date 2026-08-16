@@ -2,7 +2,7 @@
     "name": "leash",
     "displayName": "Leash",
     "description": "Leash Programming Language Support",
-    "version": "0.21.0",
+    "version": "0.22.0",
     "publisher": "leash-lang",
     "engines": {
         "vscode": "^1.75.0"
@@ -10,8 +10,14 @@
     "categories": [
         "Programming Languages"
     ],
+    "keywords": [
+        "leash",
+        "language",
+        "lsp"
+    ],
     "activationEvents": [
-        "onLanguage:leash"
+        "onLanguage:leash",
+        "onStartupFinished"
     ],
     "main": "./out/client/extension.js",
     "contributes": {
@@ -34,13 +40,117 @@
                 "scopeName": "source.leash",
                 "path": "./syntaxes/leash.tmLanguage.json"
             }
-        ]
+        ],
+        "commands": [
+            {
+                "command": "leash.restartServer",
+                "title": "Leash: Restart Language Server",
+                "category": "Leash"
+            },
+            {
+                "command": "leash.checkFile",
+                "title": "Leash: Check File",
+                "category": "Leash"
+            }
+        ],
+        "configuration": {
+            "title": "Leash",
+            "properties": {
+                "leash.lsp.enabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable the Leash language server."
+                },
+                "leash.lsp.executablePath": {
+                    "type": "string",
+                    "default": "leash",
+                    "description": "Path to the Leash compiler executable. Defaults to 'leash' on your PATH."
+                },
+                "leash.lsp.compilerArgs": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    },
+                    "default": [],
+                    "description": "Extra command line arguments passed to the compiler for diagnostics."
+                },
+                "leash.lsp.diagnostics.enabled": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Enable real-time diagnostics from the Leash compiler."
+                },
+                "leash.lsp.diagnostics.mode": {
+                    "type": "string",
+                    "enum": [
+                        "onType",
+                        "onSave",
+                        "onOpen"
+                    ],
+                    "default": "onType",
+                    "description": "When to run compiler checks. 'onType' debounces while typing."
+                },
+                "leash.lsp.diagnostics.debounceMs": {
+                    "type": "number",
+                    "default": 500,
+                    "minimum": 50,
+                    "maximum": 10000,
+                    "description": "Debounce delay for 'onType' diagnostics in milliseconds."
+                },
+                "leash.lsp.diagnostics.verbose": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "Show the compiler's detailed 'masterclass' explanations in the Problems panel."
+                },
+                "leash.lsp.index.workspace": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Index all .lsh files in the workspace for cross-file features (references, definitions, completion)."
+                },
+                "leash.lsp.index.followImports": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Index imported modules (imports/ folders and ~/.leash/libs) outside the workspace."
+                },
+                "leash.lsp.semanticTokens": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Provide semantic tokens for accurate, editor-independent highlighting."
+                },
+                "leash.lsp.inlayHints": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Show inferred types for `:=` declarations and return types as inlay hints."
+                },
+                "leash.lsp.codeLens": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Show reference counts above functions and types."
+                },
+                "leash.lsp.snippets": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Provide code snippets for common constructs (fnc, def, if, foreach, ...)."
+                },
+                "leash.lsp.formatting.indentSize": {
+                    "type": "number",
+                    "default": 4,
+                    "minimum": 1,
+                    "maximum": 16,
+                    "description": "Number of spaces used for one indentation level when formatting."
+                },
+                "leash.lsp.formatting.insertSpaces": {
+                    "type": "boolean",
+                    "default": true,
+                    "description": "Use spaces (true) or tabs (false) when formatting."
+                }
+            }
+        }
     },
     "scripts": {
         "vscode:prepublish": "npm run compile",
         "compile": "tsc -p ./",
         "watch": "tsc -watch -p ./",
-        "package": "vsce package",
+        "package": "vsce package --allow-missing-repository",
         "pretest": "npm run compile && npm run lint",
         "lint": "eslint src --ext ts",
         "test": "node ./out/test/runTest.js"

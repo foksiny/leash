@@ -27,10 +27,12 @@ from .ast_nodes import (
     NumberLiteral, FloatLiteral, StringLiteral, CharLiteral, BoolLiteral,
     NullLiteral, FilePathLiteral, BuiltinVarLiteral, CastExpr, AsExpr,
     TypeConvExpr, ToUnionExpr, ByteConvExpr, SizeofExpr, TypeofExpr, TernaryOp, IsExpr,
+    SafeCastExpr,
     ThisExpr, ThisWorkerExpr, SelfExpr, Lambda, CreateExpr, ThisOpTypeExpr,
     GenericTypeExpr, MultiVariableDecl, MultiAssign,
     ForeachArrayStatement, ForeachVectorStatement, ForeachStringStatement,
     ForeachStructStatement, DelStatement, ASTNode,
+    WithStatement,
 )
 
 __all__ = ["optimize_ast"]
@@ -468,7 +470,7 @@ def _collect_ref_names(node):
             for vt in n.var_types:
                 if isinstance(vt, str):
                     str_attrs.add(vt)
-        if isinstance(n, (CastExpr, AsExpr, TypeConvExpr)):
+        if isinstance(n, (CastExpr, AsExpr, TypeConvExpr, SafeCastExpr)):
             if isinstance(n.target_type, str):
                 str_attrs.add(n.target_type)
         if isinstance(n, ToUnionExpr) and isinstance(n.union_name, str):
@@ -868,28 +870,39 @@ def _constant_propagation(program):
 
     Replacement is scoped: local VariableDecl candidates are only
     replaced within their declaring function (same variable names in
-    other functions or at the top level are NOT affected).
+    other functions or at the top level are NOT affected).  Variables
+    declared in a WithStatement's decl list are scoped to that
+    specific with block: they are only replaced (and removed) inside
+    their own block, while candidates from enclosing scopes remain
+    visible inside the block.
     """
     modified_vars = _collect_all_modified_vars(program)
 
-    # candidates: name -> (value, scope)
-    #   scope = None          → global (GlobalVarDecl)
-    #   scope = "<funcname>"  → local VariableDecl inside that function
+    # candidates: (name, scope) -> value
+    #   scope = None             → global (GlobalVarDecl)
+    #   scope = "<funcname>"     → local VariableDecl inside that function
+    #   scope = <with_id>        → VariableDecl inside a WithStatement's decls
     candidates = {}
 
-    _cp_scope = None  # current scope during collection
+    # with_declared: with_id -> set of names declared in that block's decls
+    # (used to respect shadowing even when the inner decl is not a candidate)
+    with_declared = {}
+
+    _cp_scope = None    # current function scope during collection
+    _cp_with = None     # with block whose decls are being collected
 
     def collect(n):
-        nonlocal _cp_scope
+        nonlocal _cp_scope, _cp_with
         if isinstance(n, VariableDecl) and n.value is not None:
             if n.name not in modified_vars and _is_constant_literal(n.value):
-                candidates[n.name] = (n.value, _cp_scope)
+                scope = _cp_with if _cp_with is not None else _cp_scope
+                candidates[(n.name, scope)] = n.value
         elif isinstance(n, GlobalVarDecl) and n.value is not None:
             if n.name not in modified_vars and _is_constant_literal(n.value):
-                candidates[n.name] = (n.value, None)
+                candidates[(n.name, None)] = n.value
 
     def walk_collect(n):
-        nonlocal _cp_scope
+        nonlocal _cp_scope, _cp_with
         if n is None or isinstance(n, (str, int, float, bool)):
             return
         if isinstance(n, (list, tuple)):
@@ -899,8 +912,21 @@ def _constant_propagation(program):
         if not hasattr(n, "__dict__"):
             return
         old_scope = _cp_scope
+        old_with = _cp_with
         if isinstance(n, Function):
             _cp_scope = n.name
+        if isinstance(n, WithStatement):
+            w_id = id(n)
+            with_declared[w_id] = {d.name for d in n.decls}
+            _cp_with = w_id
+            for d in n.decls:
+                walk_collect(d)
+            _cp_with = None
+            for s in n.body:
+                walk_collect(s)
+            _cp_scope = old_scope
+            _cp_with = old_with
+            return
         collect(n)
         for attr_name in vars(n):
             attr = getattr(n, attr_name)
@@ -910,18 +936,36 @@ def _constant_propagation(program):
             elif hasattr(attr, "__dict__") and not isinstance(attr, (str, int, float, bool)):
                 walk_collect(attr)
         _cp_scope = old_scope
+        _cp_with = old_with
 
     walk_collect(program)
     if not candidates:
         return program
 
     if _opt_verbose:
-        for name, (val, scope) in candidates.items():
+        for (name, scope), val in candidates.items():
             val_str = getattr(val, 'value', val)
-            loc = f" in '{scope}'" if scope else " (global)"
+            if scope is None:
+                loc = " (global)"
+            elif isinstance(scope, int):
+                loc = " (with block)"
+            else:
+                loc = f" in '{scope}'"
             _opt_log("CP", f"inlined compile-time constant '{name}' = {val_str}{loc}")
 
     _cp_replace_scope = None
+    _cp_with_stack = []
+
+    def find_candidate(name):
+        """Return the constant for 'name' visible at the current position,
+        or None if it should not be replaced."""
+        for w_id in reversed(_cp_with_stack):
+            if name in with_declared.get(w_id, ()):
+                return candidates.get((name, w_id))
+        val = candidates.get((name, _cp_replace_scope))
+        if val is not None:
+            return val
+        return candidates.get((name, None))
 
     def replace_in(n):
         nonlocal _cp_replace_scope
@@ -933,32 +977,34 @@ def _constant_propagation(program):
             return n
 
         old_scope = _cp_replace_scope
+        old_with_stack = _cp_with_stack[:]
         if isinstance(n, Function):
             _cp_replace_scope = n.name
+        if isinstance(n, WithStatement):
+            _cp_with_stack.append(id(n))
 
         if isinstance(n, Assignment):
-            if isinstance(n.target, Identifier) and n.target.name in candidates:
-                val, scope = candidates[n.target.name]
-                if scope is None or scope == _cp_replace_scope:
-                    pass  # skip replacing LHS
-                else:
-                    n.target = replace_in(n.target)
+            if isinstance(n.target, Identifier) and find_candidate(n.target.name) is not None:
+                pass  # skip replacing LHS
             else:
                 n.target = replace_in(n.target)
             n.value = replace_in(n.value)
             _cp_replace_scope = old_scope
+            _cp_with_stack[:] = old_with_stack
             return n
 
         if isinstance(n, MultiAssign):
             n.targets = [t if isinstance(t, Identifier) else replace_in(t) for t in n.targets]
             n.value = replace_in(n.value)
             _cp_replace_scope = old_scope
+            _cp_with_stack[:] = old_with_stack
             return n
 
-        if isinstance(n, Identifier) and n.name in candidates:
-            val, scope = candidates[n.name]
-            if scope is None or scope == _cp_replace_scope:
+        if isinstance(n, Identifier):
+            val = find_candidate(n.name)
+            if val is not None:
                 _cp_replace_scope = old_scope
+                _cp_with_stack[:] = old_with_stack
                 return copy.deepcopy(val)
 
         for a in vars(n):
@@ -969,6 +1015,7 @@ def _constant_propagation(program):
                 setattr(n, a, replace_in(attr))
 
         _cp_replace_scope = old_scope
+        _cp_with_stack[:] = old_with_stack
         return n
 
     replace_in(program)
@@ -986,15 +1033,24 @@ def _constant_propagation(program):
         old_scope = _cp_remove_scope
         if isinstance(n, Function):
             _cp_remove_scope = n.name
+        if isinstance(n, WithStatement):
+            w_id = id(n)
+            kept = []
+            for d in n.decls:
+                if isinstance(d, VariableDecl) and (d.name, w_id) in candidates:
+                    continue
+                kept.append(walk_remove(d))
+            n.decls = kept
+            n.body = [walk_remove(s) for s in n.body]
+            _cp_remove_scope = old_scope
+            return n
         for a in vars(n):
             attr = getattr(n, a)
             if isinstance(attr, (list, tuple)):
                 cleaned = []
                 for item in attr:
-                    if isinstance(item, VariableDecl) and item.name in candidates:
-                        val, scope = candidates[item.name]
-                        if scope is not None and scope == _cp_remove_scope:
-                            continue
+                    if isinstance(item, VariableDecl) and (item.name, _cp_remove_scope) in candidates:
+                        continue
                     cleaned.append(walk_remove(item))
                 setattr(n, a, cleaned)
             elif hasattr(attr, "__dict__") and not isinstance(attr, (str, int, float, bool)):
@@ -1004,7 +1060,7 @@ def _constant_propagation(program):
 
     walk_remove(program)
     program.items = [item for item in program.items
-                     if not (isinstance(item, GlobalVarDecl) and item.name in candidates)]
+                     if not (isinstance(item, GlobalVarDecl) and (item.name, None) in candidates)]
     return program
 
 

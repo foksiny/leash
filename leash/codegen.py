@@ -970,6 +970,7 @@ class CodeGen:
             CastExpr,
             AsExpr,
             TypeConvExpr,
+            SafeCastExpr,
             MethodCall,
             ThisExpr,
             UnaryOp,
@@ -1082,6 +1083,8 @@ class CodeGen:
             # 'is' and 'isnt' always return bool
             return "bool"
         elif isinstance(node, TypeConvExpr):
+            return node.target_type
+        elif isinstance(node, SafeCastExpr):
             return node.target_type
         elif isinstance(node, ToUnionExpr):
             return node.union_name
@@ -3964,6 +3967,16 @@ class CodeGen:
                 self.builder.branch(merge_bb)
 
         self.builder.position_at_end(merge_bb)
+
+    def _codegen_WithStatement(self, node):
+        for decl in node.decls:
+            self._codegen(decl)
+        for stmt in node.body:
+            self._codegen(stmt)
+            if self.builder.block.is_terminated:
+                break
+        for decl in node.decls:
+            self.var_symtab.pop(decl.name, None)
 
     def _codegen_SwitchStatement(self, node):
         switch_val = self._codegen(node.expression)
@@ -9171,6 +9184,275 @@ class CodeGen:
             else:
                 return self._emit_cast(val, dst_type)
         return val
+
+    def _codegen_SafeCastExpr(self, node):
+        """scast(TargetType, value) - safe cast between any two types.
+
+        Emits runtime checks (via _emit_runtime_check) that abort with an error
+        message before any potentially lossy conversion executes; in unsafe
+        functions the checks are skipped and this behaves like a raw cast.
+        """
+        val = self._codegen(node.expr)
+        src_l = val.type
+        dst_l = self._get_llvm_type(node.target_type)
+        src_name = self._resolve_type_name(self._get_leash_type_name(node.expr))
+        dst_name = self._resolve_type_name(node.target_type)
+
+        if src_name == dst_name and src_l == dst_l:
+            return val
+        if src_name in self.class_symtab and dst_name in self.class_symtab:
+            return self.builder.bitcast(val, dst_l)
+
+        src_is_int = isinstance(src_l, ir.IntType)
+        dst_is_int = isinstance(dst_l, ir.IntType)
+        src_is_float = isinstance(src_l, (ir.FloatType, ir.DoubleType, ir.HalfType))
+        dst_is_float = isinstance(dst_l, (ir.FloatType, ir.DoubleType, ir.HalfType))
+        src_is_ptr = isinstance(src_l, ir.PointerType)
+        dst_is_ptr = isinstance(dst_l, ir.PointerType)
+
+        # string is i8* at the LLVM level; char[] is {i64, i8*}
+        src_is_string = (
+            src_is_ptr
+            and isinstance(src_l.pointee, ir.IntType)
+            and src_l.pointee.width == 8
+        ) or (
+            isinstance(src_l, ir.LiteralStructType)
+            and len(src_l.elements) == 2
+            and isinstance(src_l.elements[1], ir.PointerType)
+            and isinstance(src_l.elements[1].pointee, ir.IntType)
+            and src_l.elements[1].pointee.width == 8
+        )
+        dst_is_string = (
+            dst_is_ptr
+            and isinstance(dst_l.pointee, ir.IntType)
+            and dst_l.pointee.width == 8
+        )
+
+        err_dst = f"'{dst_name or node.target_type}'"
+
+        # ---- helper: get a raw i8* from a string / char[] value ----
+        def _string_ptr():
+            if (
+                isinstance(val.type, ir.PointerType)
+                and isinstance(val.type.pointee, ir.IntType)
+                and val.type.pointee.width == 8
+            ):
+                return val
+            return self.builder.extract_value(val, 1)
+
+        # ---- int family -> int family: range / signedness check ----
+        if src_is_int and dst_is_int:
+            src_signed = self._leash_type_is_signed(src_name)
+            dst_signed = self._leash_type_is_signed(dst_name)
+            fits = self._scast_int_fits(val, src_l.width, dst_l.width, src_signed, dst_signed)
+            if fits is not None:
+                self._emit_runtime_check(
+                    fits,
+                    f"Runtime error: scast value does not fit safely in target type {err_dst}.\n",
+                )
+            return self._emit_cast(val, dst_l, is_signed=src_signed)
+
+        # ---- int -> float: exactness check via mantissa limit ----
+        if src_is_int and dst_is_float:
+            if isinstance(dst_l, ir.HalfType):
+                mantissa = 10
+            elif isinstance(dst_l, ir.FloatType):
+                mantissa = 23
+            else:
+                mantissa = 52
+            if src_l.width > mantissa:
+                lim = 2 ** mantissa
+                ge = self.builder.icmp_signed(">=", val, ir.Constant(val.type, -lim))
+                le = self.builder.icmp_signed("<=", val, ir.Constant(val.type, lim))
+                self._emit_runtime_check(
+                    self.builder.and_(ge, le),
+                    f"Runtime error: scast loses precision converting integer to {err_dst}.\n",
+                )
+            return self.builder.sitofp(val, dst_l)
+
+        # ---- float -> int: range + integral check ----
+        if src_is_float and dst_is_int:
+            val_f64 = val
+            if isinstance(src_l, (ir.HalfType, ir.FloatType)):
+                val_f64 = self.builder.fpext(val, ir.DoubleType())
+            dst_signed = self._leash_type_is_signed(dst_name)
+            lo, hi = self._scast_float_bounds(dst_l.width, dst_signed)
+            ge = self.builder.fcmp_ordered(">=", val_f64, ir.Constant(ir.DoubleType(), lo))
+            le = self.builder.fcmp_ordered("<=", val_f64, ir.Constant(ir.DoubleType(), hi))
+            if dst_signed:
+                cast_int = self.builder.fptosi(val, dst_l)
+                back = self.builder.sitofp(cast_int, ir.DoubleType())
+            else:
+                cast_int = self.builder.fptoui(val, dst_l)
+                back = self.builder.uitofp(cast_int, ir.DoubleType())
+            exact = self.builder.fcmp_ordered("==", back, val_f64)
+            self._emit_runtime_check(
+                self.builder.and_(self.builder.and_(ge, le), exact),
+                f"Runtime error: scast float value is out of range or fractional for target type {err_dst}.\n",
+            )
+            return cast_int
+
+        # ---- float -> float: precision round-trip check when narrowing ----
+        if src_is_float and dst_is_float:
+            src_bits = {"half": 16, "float": 32, "double": 64}.get(
+                str(src_l).lower(), 64
+            )
+            dst_bits = {"half": 16, "float": 32, "double": 64}.get(
+                str(dst_l).lower(), 64
+            )
+            if dst_bits >= src_bits:
+                return self.builder.fpext(val, dst_l) if dst_bits > src_bits else val
+            narrowed = self.builder.fptrunc(val, dst_l)
+            back = self.builder.fpext(narrowed, src_l)
+            exact = self.builder.fcmp_ordered("==", back, val)
+            self._emit_runtime_check(
+                exact,
+                f"Runtime error: scast loses precision converting to {err_dst}.\n",
+            )
+            return narrowed
+
+        # ---- string -> int / float: strict parsing (+ full consumption) ----
+        if src_is_string and (dst_is_int or dst_is_float):
+            sptr = _string_ptr()
+            endptr = self.builder.alloca(ir.IntType(8).as_pointer())
+            if dst_is_int:
+                res = self.builder.call(
+                    self.func_symtab["strtoll"], [sptr, endptr, ir.Constant(ir.IntType(32), 10)]
+                )
+            else:
+                res = self.builder.call(self.func_symtab["strtod"], [sptr, endptr])
+            end = self.builder.load(endptr)
+            no_conv = self.builder.icmp_signed("==", end, sptr)
+            tail_char = self.builder.load(end)
+            tail_eof = self.builder.icmp_signed("==", tail_char, ir.Constant(ir.IntType(8), 0))
+            valid = self.builder.and_(
+                self.builder.not_(no_conv), tail_eof
+            )
+            if dst_is_int:
+                fits = self._scast_int_fits(res, 64, dst_l.width, True, self._leash_type_is_signed(dst_name))
+                if fits is not None:
+                    valid = self.builder.and_(valid, fits)
+            elif not isinstance(dst_l, ir.DoubleType):
+                narrowed = self.builder.fptrunc(res, dst_l)
+                back = self.builder.fpext(narrowed, ir.DoubleType())
+                exact = self.builder.fcmp_ordered("==", back, res)
+                valid = self.builder.and_(valid, exact)
+                res = narrowed
+            self._emit_runtime_check(
+                valid,
+                f"Runtime error: scast cannot parse value as a valid {err_dst}.\n",
+            )
+            return self._emit_cast(res, dst_l)
+
+        # ---- char -> string: reuse the existing char-to-string alloc path ----
+        if dst_is_string and src_is_int and src_l.width == 8 and src_name == "char":
+            return self._emit_cast(val, dst_l)
+
+        # ---- bool -> string: "true" / "false" ----
+        if dst_is_string and src_is_int and src_l.width == 1:
+            true_str = self._emit_const_str("true")
+            false_str = self._emit_const_str("false")
+            return self.builder.select(val, true_str, false_str)
+
+        # ---- numeric -> string: sprintf into a fresh buffer ----
+        if dst_is_string and src_is_int:
+            if src_name != "char":
+                buf = self.builder.call(self.malloc, [ir.Constant(ir.IntType(64), 64)])
+                self._track_alloc(buf)
+                if self._leash_type_is_signed(src_name):
+                    fmt = self._emit_const_str("%lld")
+                    val64 = self.builder.sext(val, ir.IntType(64)) if src_l.width < 64 else val
+                else:
+                    fmt = self._emit_const_str("%llu")
+                    val64 = self.builder.zext(val, ir.IntType(64)) if src_l.width < 64 else val
+                self.builder.call(self.sprintf, [buf, fmt, val64])
+                return buf
+        if dst_is_string and src_is_float:
+            buf = self.builder.call(self.malloc, [ir.Constant(ir.IntType(64), 64)])
+            self._track_alloc(buf)
+            val64 = self.builder.fpext(val, ir.DoubleType()) if not isinstance(val.type, ir.DoubleType) else val
+            fmt = self._emit_const_str("%f")
+            self.builder.call(self.sprintf, [buf, fmt, val64])
+            return buf
+        if dst_is_string and src_is_ptr:
+            buf = self.builder.call(self.malloc, [ir.Constant(ir.IntType(64), 64)])
+            self._track_alloc(buf)
+            fmt = self._emit_const_str("%p")
+            self.builder.call(self.sprintf, [buf, fmt, val])
+            return buf
+
+        # ---- everything else: raw LLVM cast (ptr<->ptr, ptr<->int, slices, vecs) ----
+        return self._emit_cast(val, dst_l)
+
+    def _leash_type_is_signed(self, type_name):
+        """Heuristic signedness of a Leash type name. char/bool/uint family are unsigned."""
+        if not type_name:
+            return True
+        n = self._resolve_type_name(type_name)
+        if n.startswith("uint"):
+            return False
+        if n in ("char", "bool"):
+            return False
+        return True
+
+    def _scast_int_fits(self, val, src_w, dst_w, src_signed, dst_signed):
+        """Return an i1 condition true iff val (src_w-bit) fits in a dst_w-bit
+        dst_signed/unsigned type, or None if it always fits."""
+        if src_w == dst_w:
+            if src_signed == dst_signed:
+                return None
+            if src_signed:
+                return self.builder.icmp_signed(">=", val, ir.Constant(val.type, 0))
+            return self.builder.icmp_unsigned(
+                "<=", val, ir.Constant(val.type, 2 ** (dst_w - 1) - 1)
+            )
+        if src_w < dst_w:
+            if src_signed and not dst_signed:
+                return self.builder.icmp_signed(
+                    ">=", val, ir.Constant(val.type, 0)
+                )
+            return None
+        if src_signed and dst_signed:
+            lo = ir.Constant(val.type, -(2 ** (dst_w - 1)))
+            hi = ir.Constant(val.type, 2 ** (dst_w - 1) - 1)
+            return self.builder.and_(
+                self.builder.icmp_signed(">=", val, lo),
+                self.builder.icmp_signed("<=", val, hi),
+            )
+        if not src_signed and not dst_signed:
+            return self.builder.icmp_unsigned(
+                "<=", val, ir.Constant(val.type, 2 ** dst_w - 1)
+            )
+        if src_signed and not dst_signed:
+            return self.builder.and_(
+                self.builder.icmp_signed(">=", val, ir.Constant(val.type, 0)),
+                self.builder.icmp_unsigned(
+                    "<=", val, ir.Constant(val.type, 2 ** dst_w - 1)
+                ),
+            )
+        return self.builder.icmp_unsigned(
+            "<=", val, ir.Constant(val.type, 2 ** (dst_w - 1) - 1)
+        )
+
+    def _scast_float_bounds(self, dst_w, dst_signed):
+        """Conservative (lo, hi) float bounds for a dst_w-bit integer type.
+        Conservative = never inside the undefined-behavior zone of
+        fptosi/fptoui, so out-of-range is always caught by the check first."""
+        if dst_signed:
+            lo = -(2.0 ** (dst_w - 1))
+            hi = (
+                2.0 ** (dst_w - 1) - 1.0
+                if dst_w <= 53
+                else 2.0 ** 63 - 1024.0
+            )
+        else:
+            lo = 0.0
+            hi = (
+                2.0 ** dst_w - 1.0
+                if dst_w <= 52
+                else 2.0 ** 64 - 2048.0
+            )
+        return lo, hi
 
     def _codegen_ToUnionExpr(self, node):
         return self._codegen(node.expr)
