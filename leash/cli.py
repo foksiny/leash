@@ -745,17 +745,18 @@ def check_file(input_file, verbose=False, extra_import_dirs=None, opt_verbose=Fa
         if verbose: import traceback; print(f"error: Internal: {e}", file=sys.stderr); traceback.print_exc()
         return errors, warnings
     try:
-        warnings = TypeChecker(check_mode=True).check(ast)
-        ll_errors = LowLevelChecker().check(ast)
-        if ll_errors:
-            for err in ll_errors:
-                if verbose: _print_error(err, input_file, code)
-            errors.extend(ll_errors)
+        tc = TypeChecker(check_mode=True)
+        warnings = tc.check(ast)
     except LeashError as e:
-        if verbose: _print_error(e, input_file, code)
         errors.append(e)
     except Exception as e:
         if verbose: import traceback; print(f"error: Internal: {e}", file=sys.stderr); traceback.print_exc()
+    ll_errors = LowLevelChecker().check(ast)
+    errors.extend(ll_errors)
+    errors.extend(tc.errors)
+    if verbose:
+        for err in errors:
+            _print_error(err, input_file, code)
     return errors, warnings
 
 # Cache target machines to avoid repeated LLVM Target creation (~16ms each)
@@ -781,6 +782,9 @@ def compile_file(input_file, output_name=None, output_type="executable", is_run_
         warnings = tc.check(ast)
         for w in warnings: _print_warning(w, warnings_as_errors, code=code, input_file=input_file)
         if warnings_as_errors and warnings: sys.exit(1)
+        if tc.errors:
+            for err in tc.errors: _print_error(err, input_file, code)
+            sys.exit(1)
         ll_errors = LowLevelChecker().check(ast)
         if ll_errors:
             for err in ll_errors: _print_error(err, input_file, code)
@@ -1012,9 +1016,13 @@ def dump_file(input_file, output_name=None, target_name=None, check_mode=False, 
         lexer = Lexer(code); tokens = lexer.tokenize(); parser = Parser(tokens, input_file); ast = parser.parse()
         ast = resolve_imports(ast, os.path.dirname(os.path.abspath(input_file)) or ".", extra_import_dirs=extra_import_dirs)
         ast = resolve_conditionals(ast, target_config); ast = expand_macros(ast)
-        warnings = TypeChecker(check_mode=check_mode).check(ast)
+        tc = TypeChecker(check_mode=check_mode)
+        warnings = tc.check(ast)
         for w in warnings: _print_warning(w, warnings_as_errors, code=code, input_file=input_file)
         if warnings_as_errors and warnings: sys.exit(1)
+        if tc.errors:
+            for err in tc.errors: _print_error(err, input_file, code)
+            sys.exit(1)
         ll_errors = LowLevelChecker().check(ast)
         if ll_errors:
             for err in ll_errors: _print_error(err, input_file, code)
@@ -1197,7 +1205,7 @@ def update_leash():
     import json
     
     print("Leash Update Checker")
-    print("Current version: 0.22.0 Beta\n")
+    print("Current version: 0.22.1 Beta\n")
     
     try:
         req = urllib.request.Request(
@@ -1252,10 +1260,10 @@ def main():
         sys.exit(1)
     cmd = sys.argv[1]
     if cmd in ("--help", "-h"):
-        print("Leash v0.22.0 Beta\nUsage: leash <command> [options]\nCommands: compile, run, dump, check, install, init, build, runp, update\nRun 'leash <command> --help' for details.\n\nGlobal Options:\n  --verbose/-vb                       Enable highly detailed masterclass error and warning explanations.\n  --optimization-verbosity/-ov      Show optimization pass details.\n  --autofree/-af                      Smart auto-free mode (tracks allocations, frees on scope exit; no GC needed)")
+        print("Leash v0.22.1 Beta\nUsage: leash <command> [options]\nCommands: compile, run, dump, check, install, init, build, runp, update\nRun 'leash <command> --help' for details.\n\nGlobal Options:\n  --verbose/-vb                       Enable highly detailed masterclass error and warning explanations.\n  --optimization-verbosity/-ov      Show optimization pass details.\n  --autofree/-af                      Smart auto-free mode (tracks allocations, frees on scope exit; no GC needed)")
         sys.exit(0)
     if cmd in ("--version", "-v"):
-        print("Leash v0.22.0 Beta\nBuilt on LLVM with custom GC (use --autofree for GC-free auto-free mode)"); sys.exit(0)
+        print("Leash v0.22.1 Beta\nBuilt on LLVM with custom GC (use --autofree for GC-free auto-free mode)"); sys.exit(0)
     if cmd == "check":
         if len(sys.argv) < 3:
             print("Usage: leash check <file.lsh> [options]")

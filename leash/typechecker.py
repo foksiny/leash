@@ -60,6 +60,8 @@ class TypeChecker:
         self.works_error_occured = False  # Flag for errors caught in works block
         self.error_collecting = False  # Whether to collect errors instead of raising
         self.collected_errors = []  # Errors collected in works block
+        self.error_collect_all = False  # Collect all errors instead of raising on the first
+        self.errors = []  # All collected errors
         self.check_mode = check_mode  # Verbose checking mode
         self.defined_vars = {}  # name -> (line, col) for tracking declaration order
         self.shadows = []  # list of shadowing warnings
@@ -81,47 +83,65 @@ class TypeChecker:
 
     def check(self, program):
         """Run type checking on a Program AST node. Returns list of warnings."""
-        # First pass: register all top-level definitions (structs, unions, aliases, functions, templates, global vars)
-        for item in program.items:
-            if isinstance(item, TemplateDef):
-                self._register_template(item)
-            elif isinstance(item, MacroDef):
-                pass  # Macros are expanded before type checking
-            elif isinstance(item, StructDef):
-                self._register_struct(item)
-            elif isinstance(item, UnionDef):
-                self._register_union(item)
-            elif isinstance(item, EnumDef):
-                self._register_enum(item)
-            elif isinstance(item, ErrorDef):
-                self._register_error(item)
-            elif isinstance(item, TypeAlias):
-                self._register_alias(item)
-            elif isinstance(item, ClassDef):
-                self._register_class(item)
-            elif isinstance(item, Function):
-                self._register_function_sig(item)
-            elif isinstance(item, GlobalVarDecl):
-                self._register_global_var(item)
-            elif isinstance(item, NativeImport):
-                self._register_native_import(item)
-            elif isinstance(item, OpDef):
-                self._register_opdef(item)
+        self.error_collect_all = True
+        try:
+            # First pass: register all top-level definitions (structs, unions, aliases, functions, templates, global vars)
+            for item in program.items:
+                try:
+                    self._register_item(item)
+                except LeashError as e:
+                    self.errors.append(e)
 
-        # Second pass: check function bodies and global var initializers
-        for item in program.items:
-            if isinstance(item, Function):
-                self._check_function(item)
-            elif isinstance(item, ErrorDef):
-                self._check_error(item)
-            elif isinstance(item, ClassDef):
-                self._check_class(item)
-            elif isinstance(item, GlobalVarDecl):
-                self._check_global_var(item)
-            elif isinstance(item, OpDef):
-                self._check_opdef(item)
+            # Second pass: check function bodies and global var initializers
+            for item in program.items:
+                try:
+                    self._check_item(item)
+                except LeashError as e:
+                    self.errors.append(e)
+        finally:
+            self.error_collect_all = False
 
         return self.warnings
+
+    def _register_item(self, item):
+        """Register a single top-level definition."""
+        if isinstance(item, TemplateDef):
+            self._register_template(item)
+        elif isinstance(item, MacroDef):
+            pass  # Macros are expanded before type checking
+        elif isinstance(item, StructDef):
+            self._register_struct(item)
+        elif isinstance(item, UnionDef):
+            self._register_union(item)
+        elif isinstance(item, EnumDef):
+            self._register_enum(item)
+        elif isinstance(item, ErrorDef):
+            self._register_error(item)
+        elif isinstance(item, TypeAlias):
+            self._register_alias(item)
+        elif isinstance(item, ClassDef):
+            self._register_class(item)
+        elif isinstance(item, Function):
+            self._register_function_sig(item)
+        elif isinstance(item, GlobalVarDecl):
+            self._register_global_var(item)
+        elif isinstance(item, NativeImport):
+            self._register_native_import(item)
+        elif isinstance(item, OpDef):
+            self._register_opdef(item)
+
+    def _check_item(self, item):
+        """Check a single top-level definition."""
+        if isinstance(item, Function):
+            self._check_function(item)
+        elif isinstance(item, ErrorDef):
+            self._check_error(item)
+        elif isinstance(item, ClassDef):
+            self._check_class(item)
+        elif isinstance(item, GlobalVarDecl):
+            self._check_global_var(item)
+        elif isinstance(item, OpDef):
+            self._check_opdef(item)
 
     def _register_native_import(self, node):
         """Register function, variable, struct, union, enum, and typedef signatures from a native library import."""
@@ -1333,6 +1353,8 @@ class TypeChecker:
                 {"msg": msg, "line": line, "col": col, "tip": tip, "code": code, "file": file}
             )
             self.works_error_occured = True
+        elif self.error_collect_all:
+            self.errors.append(LeashError(msg, line=line, col=col, tip=tip, code=code, file=file))
         else:
             raise LeashError(msg, line=line, col=col, tip=tip, code=code, file=file)
 
@@ -1819,7 +1841,11 @@ class TypeChecker:
                 )
                 break  # Only warn once per block
 
-            self._check_stmt(stmt)
+            try:
+                self._check_stmt(stmt)
+            except LeashError as e:
+                if not (self.in_works_block and self.error_collecting):
+                    self.errors.append(e)
 
             if isinstance(stmt, (ReturnStatement, MultiReturnStatement)):
                 was_returned = True

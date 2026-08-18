@@ -230,15 +230,17 @@ export class DiagnosticsRunner {
             let file = '';
             let lineNo = 0;
             let colNo = 0;
+            const isHeader = (l: string) => /^(error|warning)(?:\s*\[[A-Za-z0-9-]+\])?\s*:/.test(l);
             while (i < n) {
                 const l = lines[i];
+                if (isHeader(l)) break;
                 const loc = /^\s*-->\s*(.*?):(\d+):(\d+)/.exec(l);
                 if (loc) {
                     file = loc[1].trim();
                     lineNo = parseInt(loc[2], 10);
                     colNo = parseInt(loc[3], 10);
                     i++;
-                    while (i < n && !/^(error|warning)[\s\[]/.test(lines[i]) && !/^\s*-->\s*.*:\d+:\d+/.test(lines[i]) && !/^Checking '.*'\.\.\.$/.test(lines[i]) && !/^Summary:/.test(lines[i])) {
+                    while (i < n && !isHeader(lines[i]) && !/^\s*-->\s*.*:\d+:\d+/.test(lines[i]) && !/^Checking '.*'\.\.\.$/.test(lines[i]) && !/^Summary:/.test(lines[i])) {
                         const tip = /^\s*=\s*tip:\s*(.*)/.exec(lines[i]);
                         const note = /^\s*=\s*note:\s*(.*)/.exec(lines[i]);
                         if (tip) {

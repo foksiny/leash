@@ -28,7 +28,7 @@ This extension provides syntax highlighting and a full Language Server for the L
 ## Installation
 
 ### Method 1: Pre-built Extension
-1. Install the `leash-0.22.0.vsix` file in VS Code (Extensions view -> `...` -> `Install from VSIX...`).
+1. Install the `leash-0.22.1.vsix` file in VS Code (Extensions view -> `...` -> `Install from VSIX...`).
 
 ### Method 2: Manual Development Setup
 1. Copy this directory to your VS Code extensions folder.
