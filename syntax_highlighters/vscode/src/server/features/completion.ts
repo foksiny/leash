@@ -6,12 +6,15 @@ import {
     MarkupKind,
     Position
 } from 'vscode-languageserver';
+import * as fs from 'fs';
+import * as path from 'path';
 import { WorkspaceIndex } from '../index';
 import { getTokenContext, TokenContext } from './resolve';
 import { LshSymbol } from '../types';
 import { BUILTIN_DOCS, BUILTIN_FUNCTIONS, BUILTIN_TYPES, KEYWORDS, getBuiltinMembers, KEYWORD_DOCS } from '../builtins';
-import { BUILTIN_TYPE_NAMES } from '../util';
+import { BUILTIN_TYPE_NAMES, Token, uriToFsPath, fsPathToUri } from '../util';
 import { LspSettings } from '../types';
+import { globalLibsDir, readProjectInfo, resolveModuleFile } from '../config';
 
 const KEYWORD_KIND: Record<string, CompletionItemKind> = {
     fnc: CompletionItemKind.Function,
@@ -144,6 +147,13 @@ export function completionHandler(
         if (!prefix) return true;
         return name.startsWith(prefix);
     };
+
+    // ---- Import (use) statement completion
+    const importItems = useImportCompletion(index, uri, ctx, model.text, offset);
+    if (importItems !== null) return importItems;
+
+    // ---- No completion inside comments or string literals
+    if (isInCommentOrString(ctx.tokens, offset)) return { isIncomplete: false, items };
 
     // ---- Member access completion: obj.<TAB> / Type.<TAB>
     if (prevPrev && prevPrev.text === '.' && prevTok) {
@@ -293,6 +303,202 @@ export function completionHandler(
     }
 
     return { isIncomplete: false, items };
+}
+
+function useImportCompletion(
+    index: WorkspaceIndex,
+    uri: string,
+    ctx: TokenContext,
+    text: string,
+    offset: number
+): CompletionList | null {
+    const lineStart = text.lastIndexOf('\n', offset - 1) + 1;
+    const first = lineFirstToken(ctx.tokens, lineStart);
+    if (!first || first.type !== 'ident' || first.text !== 'use') return null;
+
+    let after = text.slice(first.end, offset);
+    let isPriv = false;
+    const privMatch = after.match(/^\s*priv\b/);
+    if (privMatch) {
+        isPriv = true;
+        after = after.slice(privMatch[0].length);
+    }
+    const parts = after.split('::').map(p => p.trim());
+    const trailingColons = /::\s*$/.test(after);
+    const modulePath = parts.slice(0, -1).filter(p => p !== '');
+    const iprefix = parts[parts.length - 1];
+
+    const items: CompletionItem[] = [];
+    const matches = (name: string): boolean => {
+        if (!iprefix) return true;
+        return name.startsWith(iprefix);
+    };
+
+    if (modulePath.length === 0) {
+        if (!trailingColons) collectModuleNames(uri, iprefix, matches, items);
+        return { isIncomplete: false, items };
+    }
+
+    const fsPath = uriToFsPath(uri);
+    const project = readProjectInfo(fsPath);
+    const moduleFile = resolveModuleFile(modulePath, fsPath, project.importsDirs);
+    if (!moduleFile) return { isIncomplete: false, items };
+
+    const seen = new Set<string>();
+    const pushSymbol = (sym: LshSymbol): void => {
+        if (sym.kind === 'field' || sym.kind === 'method') return;
+        if (!isPriv) {
+            if (sym.visibility.includes('priv')) return;
+            // The compiler only exports globals explicitly marked pub
+            // (cli.py: GlobalVarDecl requires visibility == 'pub').
+            if ((sym.kind === 'global' || sym.kind === 'nativeVariable') && !sym.visibility.includes('pub')) return;
+        }
+        if (!matches(sym.name) || seen.has(sym.name)) return;
+        seen.add(sym.name);
+        items.push({
+            label: sym.name,
+            kind: symbolKindToCompletion(sym),
+            detail: sym.signature,
+            sortText: '0',
+            documentation: { kind: MarkupKind.Markdown, value: symbolDoc(sym) }
+        });
+    };
+
+    const moduleUri = fsPathToUri(moduleFile);
+    const moduleModel = index.loadModuleFile(moduleFile);
+    if (moduleModel) {
+        let pubCount = 0;
+        for (const sym of moduleModel.symbols) {
+            if (sym.kind === 'field' || sym.kind === 'method') continue;
+            if (!isPriv && sym.visibility.includes('priv')) continue;
+            pubCount++;
+            pushSymbol(sym);
+        }
+        // Re-export stubs (e.g. ~/.leash/libs/raylib.lsh containing only
+        // `use raylib::draw::*;`) have no own symbols; offer the symbols they
+        // re-export instead.
+        if (pubCount === 0) {
+            for (const use of moduleModel.uses) {
+                const resolved = index.resolveUse(moduleUri, use);
+                if (!resolved) continue;
+                for (const sym of resolved.symbols) pushSymbol(sym);
+            }
+        }
+    }
+
+    const moduleDir = path.dirname(moduleFile);
+    const excluded = new Set(modulePath);
+    // Submodules of a module live in <moduleDir>/<lastSeg>/ (e.g.
+    // ~/.leash/libs/raylib/ for the raylib stub, or ~/.leash/libs/hash/ for
+    // a flat hash.lsh). Listing moduleDir itself would offer unrelated
+    // sibling modules, so only the sibling directory is scanned.
+    const lastSeg = modulePath[modulePath.length - 1];
+    const siblingDir = path.join(moduleDir, lastSeg);
+    if (fs.existsSync(siblingDir)) {
+        for (const stem of listLshStems(siblingDir)) {
+            if (excluded.has(stem)) continue;
+            if (!matches(stem) || seen.has(stem)) continue;
+            seen.add(stem);
+            items.push({
+                label: stem,
+                kind: CompletionItemKind.Module,
+                detail: 'module',
+                sortText: '1'
+            });
+        }
+    }
+
+    if ((trailingColons || iprefix === '*') && matches('*')) {
+        items.push({
+            label: '*',
+            kind: CompletionItemKind.Module,
+            detail: 'import all symbols',
+            sortText: '9'
+        });
+    }
+    return { isIncomplete: false, items };
+}
+
+function lineFirstToken(tokens: Token[], lineStart: number): Token | null {
+    for (const t of tokens) {
+        if (t.start < lineStart) continue;
+        if (t.type === 'comment' || t.type === 'string') return null;
+        return t;
+    }
+    return null;
+}
+
+function isInCommentOrString(tokens: Token[], offset: number): boolean {
+    for (const t of tokens) {
+        if (t.start > offset) break;
+        if ((t.type === 'comment' || t.type === 'string') && t.start < offset && offset <= t.end) {
+            return true;
+        }
+    }
+    return false;
+}
+
+function collectModuleNames(
+    uri: string,
+    prefix: string,
+    matches: (name: string) => boolean,
+    items: CompletionItem[]
+): void {
+    const fsPath = uriToFsPath(uri);
+    const project = readProjectInfo(fsPath);
+    const seen = new Set<string>();
+    const push = (label: string, detail: string): void => {
+        if (!matches(label) || seen.has(label)) return;
+        seen.add(label);
+        items.push({
+            label,
+            kind: CompletionItemKind.Module,
+            detail,
+            sortText: '0'
+        });
+    };
+
+    for (const dir of [path.dirname(fsPath), ...project.importsDirs]) {
+        for (const stem of listLshStems(dir)) push(stem, 'module');
+    }
+
+    const libs = globalLibsDir();
+    if (!fs.existsSync(libs)) return;
+    for (const stem of listLshStems(libs)) push(stem, 'library');
+    const walk = (dir: string): void => {
+        let entries: fs.Dirent[];
+        try {
+            entries = fs.readdirSync(dir, { withFileTypes: true });
+        } catch {
+            return;
+        }
+        for (const entry of entries) {
+            const full = path.join(dir, entry.name);
+            if (entry.isDirectory()) {
+                if (path.dirname(full) === libs && fs.existsSync(path.join(full, entry.name + '.lsh'))) {
+                    push(entry.name, 'library');
+                }
+                walk(full);
+            } else if (entry.isFile() && entry.name.endsWith('.lsh')) {
+                push(entry.name.slice(0, -4), 'library');
+            }
+        }
+    };
+    walk(libs);
+}
+
+function listLshStems(dir: string): string[] {
+    let names: string[];
+    try {
+        names = fs.readdirSync(dir);
+    } catch {
+        return [];
+    }
+    const stems: string[] = [];
+    for (const name of names) {
+        if (name.endsWith('.lsh')) stems.push(name.slice(0, -4));
+    }
+    return stems;
 }
 
 function memberCompletion(

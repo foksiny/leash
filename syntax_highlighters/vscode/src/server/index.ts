@@ -177,23 +177,29 @@ export class WorkspaceIndex {
         this.remove(fsPathToUri(fsPath));
     }
 
+    loadModuleFile(moduleFile: string): DocModel | null {
+        const moduleUri = fsPathToUri(moduleFile);
+        const existing = this.moduleDocs.get(moduleUri) ?? this.docs.get(moduleUri);
+        if (existing) return existing;
+        if (!this.followImports) return null;
+        try {
+            const text = fs.readFileSync(moduleFile, 'utf-8');
+            const model = parseDocument(moduleUri, text);
+            model.version = -1;
+            this.moduleDocs.set(moduleUri, model);
+            return model;
+        } catch {
+            return null;
+        }
+    }
+
     resolveUse(uri: string, use: UseStmt): ResolvedUse | null {
         const fsPath = uriToFsPath(uri);
         const project = readProjectInfo(fsPath);
         const moduleFile = resolveModuleFile(use.modulePath, fsPath, project.importsDirs);
         if (!moduleFile) return null;
         const moduleUri = fsPathToUri(moduleFile);
-        let moduleModel = this.moduleDocs.get(moduleUri) ?? this.docs.get(moduleUri);
-        if (!moduleModel && this.followImports) {
-            try {
-                const text = fs.readFileSync(moduleFile, 'utf-8');
-                moduleModel = parseDocument(moduleUri, text);
-                moduleModel.version = -1;
-                this.moduleDocs.set(moduleUri, moduleModel);
-            } catch {
-                return null;
-            }
-        }
+        const moduleModel = this.loadModuleFile(moduleFile);
         if (!moduleModel) return null;
         if (use.items === null) {
             const symbols = use.isPriv

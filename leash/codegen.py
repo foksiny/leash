@@ -633,7 +633,8 @@ class CodeGen:
         ungetc_ty = ir.FunctionType(i32, [i32, i8ptr])
         self.func_symtab["ungetc"] = ir.Function(self.module, ungetc_ty, name="ungetc")
         puts_ty = ir.FunctionType(i32, [i8ptr])
-        self.func_symtab["puts"] = ir.Function(self.module, puts_ty, name="puts")
+        self.puts = ir.Function(self.module, puts_ty, name="puts")
+        self.func_symtab["puts"] = self.puts
         fputs_ty = ir.FunctionType(i32, [i8ptr, i8ptr])
         self.func_symtab["fputs"] = ir.Function(self.module, fputs_ty, name="fputs")
         perror_ty = ir.FunctionType(ir.VoidType(), [i8ptr])
@@ -880,6 +881,8 @@ class CodeGen:
             return ir.Constant(llvm_type, 0.0)
         if resolved == "bool" or resolved == "char":
             return ir.Constant(llvm_type, 0)
+        if resolved in self.enum_symtab:
+            return ir.Constant(llvm_type, 0)
         if resolved == "string":
             return self._emit_const_str("")
         if resolved.startswith("vec<"):
@@ -905,7 +908,7 @@ class CodeGen:
                 ],
             )
         if resolved.startswith("hash<") and resolved.endswith(">"):
-            # Empty hash: { 0, 0, null } with empty key/value ptr lists
+            # Empty hash: { 0, 0, null }
             ptr_ty = ir.IntType(8).as_pointer()
             result = ir.Constant(
                 llvm_type,
@@ -915,8 +918,6 @@ class CodeGen:
                     ir.Constant(ptr_ty, None),
                 ],
             )
-            result.hash_key_ptrs = []
-            result.hash_value_ptrs = []
             return result
 
         if resolved in self.class_symtab:
@@ -998,6 +999,10 @@ class CodeGen:
                 return self.var_symtab[node.name][1]
             if node.name in self.global_var_ptrs:
                 return self.global_var_ptrs[node.name][1]
+            if node.name in self.class_symtab:
+                return node.name
+            if node.name in self.struct_symtab:
+                return node.name
         elif isinstance(node, BinaryOp):
             lt = self._get_leash_type_name(node.left)
             rt = self._get_leash_type_name(node.right)
@@ -1119,8 +1124,9 @@ class CodeGen:
             if node.name == "normescape":
                 return "string"
             if node.name in self.func_symtab:
-                # We don't store return types in func_symtab currently...
-                pass
+                func = self.func_symtab[node.name]
+                ret_type = func.function_type.return_type
+                return self._llvm_type_to_leash_name(ret_type)
         elif isinstance(node, GenericCall):
             # Return type is stored in the return type of the mangled function
             type_args_str = "_".join(
@@ -1151,6 +1157,25 @@ class CodeGen:
                     return "int"
                 if resolved == "string" and node.method == "replace":
                     return "string"
+            if resolved.startswith("hash<") and resolved.endswith(">"):
+                inner = resolved[5:-1]
+                parts = inner.split(", ")
+                if len(parts) == 2:
+                    key_type, value_type = parts
+                else:
+                    key_type, value_type = "string", "void"
+                if node.method == "size":
+                    return "int"
+                if node.method == "isin":
+                    return "bool"
+                if node.method == "keys":
+                    return f"vec<{key_type}>"
+                if node.method == "values":
+                    return f"vec<{value_type}>"
+                if node.method == "getKey":
+                    return key_type
+                if node.method in ("push", "delete"):
+                    return "void"
             # Handle File static methods
             from .ast_nodes import Identifier, GenericTypeExpr
 
@@ -1207,6 +1232,11 @@ class CodeGen:
         elif isinstance(llvm_type, ir.PointerType):
             if llvm_type.pointee == ir.IntType(8):
                 return "string"
+            # Check if it's a pointer to a class struct
+            if isinstance(llvm_type.pointee, ir.IdentifiedStructType):
+                pointee_name = llvm_type.pointee.name
+                if pointee_name in self.class_symtab:
+                    return pointee_name
             return "ptr"
         elif isinstance(llvm_type, ir.VoidType):
             return "void"
@@ -2803,11 +2833,7 @@ class CodeGen:
         ptr = self.builder.alloca(val.type)
         self.builder.store(val, ptr)
         
-        extra_data = None
-        if hasattr(val, 'hash_key_ptrs') and hasattr(val, 'hash_value_ptrs'):
-            extra_data = (val.hash_key_ptrs, val.hash_value_ptrs)
-        
-        self.var_symtab[node.name] = (ptr, node.var_type, extra_data)
+        self.var_symtab[node.name] = (ptr, node.var_type, None)
 
     def _union_auto_store(self, union_ptr, val, union_info, node=None):
         """Store a value into a union, auto-detecting the matching variant by LLVM type."""
@@ -2936,25 +2962,9 @@ class CodeGen:
                 else:
                     hash_ptr, _ = lvalue_result2
                     extra_data2 = None
-                hash_val = self.builder.load(hash_ptr)
-                size = self.builder.extract_value(hash_val, 0)
-                key_ptrs = []
-                value_ptrs = []
-                if extra_data2:
-                    key_ptrs, value_ptrs = extra_data2
-                elif hasattr(hash_val, 'hash_key_ptrs'):
-                    key_ptrs = getattr(hash_val, 'hash_key_ptrs', [])
-                    value_ptrs = getattr(hash_val, 'hash_value_ptrs', [])
-                new_key_ptr = self.builder.alloca(key_llvm, name="hash_assign_key")
-                self.builder.store(key_val, new_key_ptr)
-                new_value_ptr = self.builder.alloca(value_llvm, name="hash_assign_value")
-                self.builder.store(val, new_value_ptr)
-                key_ptrs.append(new_key_ptr)
-                value_ptrs.append(new_value_ptr)
-                new_size = self.builder.add(size, ir.Constant(ir.IntType(64), 1))
-                new_size.flags = ['nuw']
-                hash_val = self.builder.insert_value(hash_val, new_size, 0)
-                self.builder.store(hash_val, hash_ptr)
+                self._hash_append_entry(
+                    hash_ptr, key_val, val, key_llvm, value_llvm, key_type, value_type
+                )
                 return
 
         # 3. General Assignment (handles Identifiers, IndexAccess, and Struct Members)
@@ -3149,12 +3159,25 @@ class CodeGen:
             resolved = self._resolve_type_name(type_name)
             return ptr, resolved[1:], None
         elif isinstance(node, IndexAccess):
-            lvalue_result = self._codegen_lvalue(node.expr)
-            if len(lvalue_result) == 3:
-                slice_ptr, slice_type_name, extra_data = lvalue_result
-            else:
-                slice_ptr, slice_type_name = lvalue_result
+            try:
+                lvalue_result = self._codegen_lvalue(node.expr)
+            except LeashError as lv_err:
+                if not str(lv_err).startswith("Invalid l-value"):
+                    raise
+                # Base is not an l-value (e.g., string literal or computed
+                # expression). Evaluate it as a value and box it in an alloca
+                # so the indexing logic below works unchanged.
+                rv = self._codegen(node.expr)
+                slice_type_name = self._get_leash_type_name(node.expr)
+                slice_ptr = self.builder.alloca(rv.type)
+                self.builder.store(rv, slice_ptr)
                 extra_data = None
+            else:
+                if len(lvalue_result) == 3:
+                    slice_ptr, slice_type_name, extra_data = lvalue_result
+                else:
+                    slice_ptr, slice_type_name = lvalue_result
+                    extra_data = None
             
             if slice_type_name == "string":
                 str_ptr = self.builder.load(slice_ptr)
@@ -3213,29 +3236,17 @@ class CodeGen:
                 default_val = self._emit_default_value(value_type)
                 self.builder.store(default_val, result_ptr)
                 
-                key_ptrs = []
-                value_ptrs = []
-                if extra_data:
-                    key_ptrs, value_ptrs = extra_data
-                elif hasattr(hash_val, 'hash_key_ptrs'):
-                    key_ptrs = getattr(hash_val, 'hash_key_ptrs', [])
-                    value_ptrs = getattr(hash_val, 'hash_value_ptrs', [])
+                found_ptr, idx_ptr = self._hash_find_by_key(
+                    slice_ptr, key_val, key_llvm, value_llvm, key_type
+                )
                 
-                found_ptr = self.builder.alloca(ir.IntType(1), name="hash_found")
-                self.builder.store(ir.Constant(ir.IntType(1), 0), found_ptr)
-                
-                for k_ptr, v_ptr in zip(key_ptrs, value_ptrs):
-                    stored_key = self.builder.load(k_ptr)
-                    if key_type == "string":
-                        cmp_result = self.builder.call(self.strcmp, [key_val, stored_key])
-                        key_match = self.builder.icmp_signed("==", cmp_result, ir.Constant(ir.IntType(32), 0))
-                    else:
-                        key_match = self.builder.icmp_signed("==", key_val, stored_key)
-                    
-                    with self.builder.if_then(key_match):
-                        stored_value = self.builder.load(v_ptr)
-                        self.builder.store(stored_value, result_ptr)
-                        self.builder.store(ir.Constant(ir.IntType(1), 1), found_ptr)
+                with self.builder.if_then(self.builder.load(found_ptr)):
+                    entry_ptr = self._hash_entry_ptr(
+                        slice_ptr, self.builder.load(idx_ptr), key_llvm, value_llvm
+                    )
+                    entry_val = self.builder.load(entry_ptr)
+                    stored_value = self.builder.extract_value(entry_val, 1)
+                    self.builder.store(stored_value, result_ptr)
                 
                 if not self.in_unsafe_func:
                     was_found = self.builder.load(found_ptr)
@@ -3475,17 +3486,35 @@ class CodeGen:
         return None
 
     def _print_raw(self, text):
-        """Print a raw string via printf."""
-        s = bytearray(text.encode("utf8") + b"\0")
-        c_str = ir.Constant(ir.ArrayType(ir.IntType(8), len(s)), s)
+        """Print a raw string (used for the trailing newline in show())."""
+        self._emit_printf_or_puts(text, [])
+
+    def _emit_printf_or_puts(self, fmt_str, args):
+        """Emit a printf call, or puts when the string is format-free and ends
+        with a newline (puts appends it itself, producing smaller code and no
+        format-string parsing overhead)."""
+        if not args and "%" not in fmt_str and fmt_str.endswith("\n"):
+            s = bytearray(fmt_str[:-1].encode("utf8") + b"\0")
+            c_s = ir.Constant(ir.ArrayType(ir.IntType(8), len(s)), s)
+            g = ir.GlobalVariable(
+                self.module, c_s.type, name=self.module.get_unique_name("raw")
+            )
+            g.linkage = "internal"
+            g.global_constant = True
+            g.initializer = c_s
+            ptr = self.builder.bitcast(g, ir.IntType(8).as_pointer())
+            self.builder.call(self.puts, [ptr])
+            return
+        s = bytearray(fmt_str.encode("utf8") + b"\0")
+        c_s = ir.Constant(ir.ArrayType(ir.IntType(8), len(s)), s)
         g = ir.GlobalVariable(
-            self.module, c_str.type, name=self.module.get_unique_name("raw")
+            self.module, c_s.type, name=self.module.get_unique_name("raw")
         )
         g.linkage = "internal"
         g.global_constant = True
-        g.initializer = c_str
+        g.initializer = c_s
         ptr = self.builder.bitcast(g, ir.IntType(8).as_pointer())
-        self.builder.call(self.printf, [ptr])
+        self.builder.call(self.printf, [ptr] + args)
 
     def _union_show_branched(self, tag_val, data_ptr, union_info):
         """Print the current union value by branching on the tag and calling printf per variant."""
@@ -3647,18 +3676,7 @@ class CodeGen:
         if end:
             format_str += end
 
-        # Create global string for format
-        fmt_bytes = bytearray(format_str.encode("utf8") + b"\0")
-        c_fmt = ir.Constant(ir.ArrayType(ir.IntType(8), len(fmt_bytes)), fmt_bytes)
-        global_fmt = ir.GlobalVariable(
-            self.module, c_fmt.type, name=self.module.get_unique_name("fmt")
-        )
-        global_fmt.linkage = "internal"
-        global_fmt.global_constant = True
-        global_fmt.initializer = c_fmt
-
-        fmt_ptr = self.builder.bitcast(global_fmt, ir.IntType(8).as_pointer())
-        self.builder.call(self.printf, [fmt_ptr] + args)
+        self._emit_printf_or_puts(format_str, args)
 
     def _show_buffer(self, arg_nodes):
         """showb: print elements of vectors and nested vectors in buffer format."""
@@ -3766,16 +3784,7 @@ class CodeGen:
 
     def _print_formatted(self, fmt_str, args):
         """Print using printf with format string."""
-        fmt_bytes = bytearray(fmt_str.encode("utf8") + b"\0")
-        c_fmt = ir.Constant(ir.ArrayType(ir.IntType(8), len(fmt_bytes)), fmt_bytes)
-        global_fmt = ir.GlobalVariable(
-            self.module, c_fmt.type, name=self.module.get_unique_name("fmt")
-        )
-        global_fmt.linkage = "internal"
-        global_fmt.global_constant = True
-        global_fmt.initializer = c_fmt
-        fmt_ptr = self.builder.bitcast(global_fmt, ir.IntType(8).as_pointer())
-        self.builder.call(self.printf, [fmt_ptr] + args)
+        self._emit_printf_or_puts(fmt_str, args)
 
     def _create_showb_helpers(self):
         """Create internal functions for showb buffer management."""
@@ -4782,7 +4791,13 @@ class CodeGen:
             return self.builder.call(func, args)
 
         # Compute right operand (eager for matrix/arithmetic, lazy handled separately for &&/||)
-        right = self._codegen(node.right)
+        # For &&/|| the right side must NOT be codegen'd eagerly: its runtime
+        # safety checks (bounds, null) would run unconditionally and defeat
+        # short-circuiting.
+        if node.op in ("&&", "||"):
+            right = None
+        else:
+            right = self._codegen(node.right)
 
         # Matrix element-wise binary operations (before standard arithmetic)
         left_leash = self._get_leash_type_name(node.left)
@@ -6923,6 +6938,249 @@ class CodeGen:
             f"Matrix method '{method}' not fully implemented yet", node=mat_ptr
         )
 
+    def _hash_entry_type(self, key_llvm, value_llvm):
+        """Entry layout: { key, value, i1 deleted }."""
+        return ir.LiteralStructType([key_llvm, value_llvm, ir.IntType(1)])
+
+    def _hash_entry_ptr(self, hash_ptr, idx, key_llvm, value_llvm):
+        """Return a pointer to the entry struct at runtime index idx."""
+        entry_ty = self._hash_entry_type(key_llvm, value_llvm)
+        hash_val = self.builder.load(hash_ptr)
+        entries = self.builder.extract_value(hash_val, 2)
+        entries_typed = self.builder.bitcast(entries, entry_ty.as_pointer())
+        return self.builder.gep(entries_typed, [idx], inbounds=True)
+
+    def _hash_append_entry(self, hash_ptr, key_val, value_val, key_llvm, value_llvm, key_type_name, value_type_name):
+        """Append a key/value pair to the hash table, growing capacity if needed."""
+        entry_ty = self._hash_entry_type(key_llvm, value_llvm)
+        hash_val = self.builder.load(hash_ptr)
+        size = self.builder.extract_value(hash_val, 0)
+        cap = self.builder.extract_value(hash_val, 1)
+        entries = self.builder.extract_value(hash_val, 2)
+
+        is_full = self.builder.icmp_unsigned(">=", size, cap)
+        with self.builder.if_then(is_full):
+            new_cap = self.builder.add(
+                self.builder.mul(cap, ir.Constant(ir.IntType(64), 2)),
+                ir.Constant(ir.IntType(64), 1),
+            )
+            dummy_ptr = ir.Constant(entry_ty.as_pointer(), None)
+            entry_size = self.builder.ptrtoint(
+                self.builder.gep(dummy_ptr, [ir.Constant(ir.IntType(32), 1)], inbounds=True),
+                ir.IntType(64),
+            )
+            total_bytes = self.builder.mul(new_cap, entry_size)
+            total_bytes.flags = ['nuw']
+            new_bytes = self.builder.call(self.malloc, [total_bytes])
+            self._track_alloc(new_bytes)
+            new_entries = self.builder.bitcast(new_bytes, entry_ty.as_pointer())
+
+            # Mark all new slots deleted so uninitialized regions are skipped by scans
+            default_key = self._emit_default_value(key_type_name)
+            default_value = self._emit_default_value(value_type_name)
+            init_entry = ir.Constant(entry_ty, ir.Undefined)
+            init_entry = self.builder.insert_value(init_entry, default_key, 0)
+            init_entry = self.builder.insert_value(init_entry, default_value, 1)
+            init_entry = self.builder.insert_value(
+                init_entry, ir.Constant(ir.IntType(1), 1), 2
+            )
+            # Runtime loop: mark slots [size, new_cap) as deleted
+            init_cond_bb = self.builder.append_basic_block(name="grow_init_cond")
+            init_body_bb = self.builder.append_basic_block(name="grow_init_body")
+            init_done_bb = self.builder.append_basic_block(name="grow_init_done")
+            j_ptr = self.builder.alloca(ir.IntType(64), name="grow_init_j")
+            self.builder.store(size, j_ptr)
+            self.builder.branch(init_cond_bb)
+            self.builder.position_at_end(init_cond_bb)
+            j_val = self.builder.load(j_ptr)
+            j_lt = self.builder.icmp_unsigned("<", j_val, new_cap)
+            self.builder.cbranch(j_lt, init_body_bb, init_done_bb)
+            self.builder.position_at_end(init_body_bb)
+            slot_ptr = self.builder.gep(new_entries, [j_val], inbounds=True)
+            self.builder.store(init_entry, slot_ptr)
+            j_next = self.builder.add(j_val, ir.Constant(ir.IntType(64), 1))
+            self.builder.store(j_next, j_ptr)
+            self.builder.branch(init_cond_bb)
+            self.builder.position_at_end(init_done_bb)
+
+            old_is_not_null = self.builder.icmp_unsigned(
+                "!=",
+                self.builder.ptrtoint(entries, ir.IntType(64)),
+                ir.Constant(ir.IntType(64), 0),
+            )
+            with self.builder.if_then(old_is_not_null):
+                copy_bytes = self.builder.mul(size, entry_size)
+                copy_bytes.flags = ['nuw']
+                self.builder.call(
+                    self.memmove,
+                    [
+                        new_bytes,
+                        self.builder.bitcast(entries, ir.IntType(8).as_pointer()),
+                        copy_bytes,
+                    ],
+                )
+
+            hash_val2 = self.builder.load(hash_ptr)
+            hash_val2 = self.builder.insert_value(hash_val2, new_cap, 1)
+            hash_val2 = self.builder.insert_value(
+                hash_val2, self.builder.bitcast(new_entries, ir.IntType(8).as_pointer()), 2
+            )
+            self.builder.store(hash_val2, hash_ptr)
+
+        hash_val = self.builder.load(hash_ptr)
+        size = self.builder.extract_value(hash_val, 0)
+        entry_ptr = self._hash_entry_ptr(hash_ptr, size, key_llvm, value_llvm)
+        new_entry = ir.Constant(entry_ty, ir.Undefined)
+        new_entry = self.builder.insert_value(new_entry, key_val, 0)
+        new_entry = self.builder.insert_value(new_entry, value_val, 1)
+        new_entry = self.builder.insert_value(
+            new_entry, ir.Constant(ir.IntType(1), 0), 2
+        )
+        self.builder.store(new_entry, entry_ptr)
+
+        new_size = self.builder.add(size, ir.Constant(ir.IntType(64), 1))
+        new_size.flags = ['nuw']
+        hash_val = self.builder.insert_value(hash_val, new_size, 0)
+        self.builder.store(hash_val, hash_ptr)
+
+    def _hash_find_by_key(self, hash_ptr, search_key, key_llvm, value_llvm, key_type):
+        """Runtime linear search for a key. Returns (found_ptr, idx_ptr)."""
+        return self._hash_find(hash_ptr, search_key, key_llvm, value_llvm, key_type, "key")
+
+    def _hash_find_by_value(self, hash_ptr, search_val, key_llvm, value_llvm, value_type):
+        """Runtime linear search for a value (getKey). Returns (found_ptr, idx_ptr)."""
+        return self._hash_find(hash_ptr, search_val, key_llvm, value_llvm, value_type, "value")
+
+    def _hash_find(self, hash_ptr, search_val, key_llvm, value_llvm, cmp_type, which):
+        """Shared runtime linear search over hash entries.
+        which == "key": compare entry key against search_val.
+        which == "value": compare entry value against search_val.
+        Returns (found_ptr, idx_ptr).
+        """
+        entry_ty = self._hash_entry_type(key_llvm, value_llvm)
+        hash_val = self.builder.load(hash_ptr)
+        scan_limit = self.builder.extract_value(hash_val, 1)  # scan full capacity (entries may exist past size after deletes)
+        entries = self.builder.extract_value(hash_val, 2)
+        entries_typed = self.builder.bitcast(entries, entry_ty.as_pointer())
+
+        found_ptr = self.builder.alloca(ir.IntType(1), name="hash_find_found")
+        self.builder.store(ir.Constant(ir.IntType(1), 0), found_ptr)
+        idx_ptr = self.builder.alloca(ir.IntType(64), name="hash_find_idx")
+        self.builder.store(ir.Constant(ir.IntType(64), 0), idx_ptr)
+        i_ptr = self.builder.alloca(ir.IntType(64), name="hash_find_i")
+        self.builder.store(ir.Constant(ir.IntType(64), 0), i_ptr)
+
+        loop_cond_bb = self.builder.function.append_basic_block("hash_find_cond")
+        loop_body_bb = self.builder.function.append_basic_block("hash_find_body")
+        loop_done_bb = self.builder.function.append_basic_block("hash_find_done")
+        self.builder.branch(loop_cond_bb)
+
+        self.builder.position_at_end(loop_cond_bb)
+        i_val = self.builder.load(i_ptr)
+        i_in_bounds = self.builder.icmp_unsigned("<", i_val, scan_limit)
+        found_flag = self.builder.load(found_ptr)
+        not_found_yet = self.builder.icmp_unsigned(
+            "==", found_flag, ir.Constant(ir.IntType(1), 0)
+        )
+        continue_search = self.builder.and_(i_in_bounds, not_found_yet)
+        self.builder.cbranch(continue_search, loop_body_bb, loop_done_bb)
+
+        self.builder.position_at_end(loop_body_bb)
+        entry_ptr = self.builder.gep(entries_typed, [i_val], inbounds=True)
+        entry_val = self.builder.load(entry_ptr)
+        del_flag = self.builder.extract_value(entry_val, 2)
+        is_live = self.builder.icmp_unsigned(
+            "==", del_flag, ir.Constant(ir.IntType(1), 0)
+        )
+        with self.builder.if_then(is_live):
+            stored_cmp = self.builder.extract_value(
+                entry_val, 0 if which == "key" else 1
+            )
+            if cmp_type == "string":
+                cmp_result = self.builder.call(self.strcmp, [search_val, stored_cmp])
+                match = self.builder.icmp_signed(
+                    "==", cmp_result, ir.Constant(ir.IntType(32), 0)
+                )
+            else:
+                match = self.builder.icmp_signed("==", search_val, stored_cmp)
+            with self.builder.if_then(match):
+                self.builder.store(i_val, idx_ptr)
+                self.builder.store(ir.Constant(ir.IntType(1), 1), found_ptr)
+        next_i = self.builder.add(i_val, ir.Constant(ir.IntType(64), 1))
+        self.builder.store(next_i, i_ptr)
+        self.builder.branch(loop_cond_bb)
+
+        self.builder.position_at_end(loop_done_bb)
+        return found_ptr, idx_ptr
+
+    def _hash_collect(self, hash_ptr, slot, elem_llvm, elem_type, key_llvm, value_llvm):
+        """Build a vec<elem_type> of all live keys (slot=0) or values (slot=1)."""
+        vec_type = self._get_llvm_type(f"vec<{elem_type}>")
+        entry_ty = self._hash_entry_type(key_llvm, value_llvm)
+        hash_val = self.builder.load(hash_ptr)
+        size = self.builder.extract_value(hash_val, 0)
+        scan_limit = self.builder.extract_value(hash_val, 1)
+        entries = self.builder.extract_value(hash_val, 2)
+        entries_typed = self.builder.bitcast(entries, entry_ty.as_pointer())
+
+        result_vec = ir.Constant(vec_type, ir.Undefined)
+        result_vec = self.builder.insert_value(
+            result_vec, ir.Constant(elem_llvm.as_pointer(), None), 0
+        )
+        result_vec = self.builder.insert_value(result_vec, ir.Constant(ir.IntType(64), 0), 1)
+        result_vec = self.builder.insert_value(result_vec, ir.Constant(ir.IntType(64), 0), 2)
+
+        dummy_ptr = ir.Constant(elem_llvm.as_pointer(), None)
+        elem_size = self.builder.ptrtoint(
+            self.builder.gep(dummy_ptr, [ir.Constant(ir.IntType(32), 1)], inbounds=True),
+            ir.IntType(64),
+        )
+        total_bytes = self.builder.mul(size, elem_size)
+        total_bytes.flags = ['nuw']
+        buf_bytes = self.builder.call(self.malloc, [total_bytes])
+        self._track_alloc(buf_bytes)
+        buf = self.builder.bitcast(buf_bytes, elem_llvm.as_pointer())
+
+        cnt_ptr = self.builder.alloca(ir.IntType(64), name="hash_collect_cnt")
+        self.builder.store(ir.Constant(ir.IntType(64), 0), cnt_ptr)
+        i_ptr = self.builder.alloca(ir.IntType(64), name="hash_collect_i")
+        self.builder.store(ir.Constant(ir.IntType(64), 0), i_ptr)
+
+        loop_cond_bb = self.builder.function.append_basic_block("hash_collect_cond")
+        loop_body_bb = self.builder.function.append_basic_block("hash_collect_body")
+        loop_done_bb = self.builder.function.append_basic_block("hash_collect_done")
+        self.builder.branch(loop_cond_bb)
+
+        self.builder.position_at_end(loop_cond_bb)
+        i_val = self.builder.load(i_ptr)
+        i_in_bounds = self.builder.icmp_unsigned("<", i_val, scan_limit)
+        self.builder.cbranch(i_in_bounds, loop_body_bb, loop_done_bb)
+
+        self.builder.position_at_end(loop_body_bb)
+        entry_ptr = self.builder.gep(entries_typed, [i_val], inbounds=True)
+        entry_val = self.builder.load(entry_ptr)
+        del_flag = self.builder.extract_value(entry_val, 2)
+        is_live = self.builder.icmp_unsigned(
+            "==", del_flag, ir.Constant(ir.IntType(1), 0)
+        )
+        with self.builder.if_then(is_live):
+            cnt = self.builder.load(cnt_ptr)
+            store_ptr = self.builder.gep(buf, [cnt], inbounds=True)
+            self.builder.store(self.builder.extract_value(entry_val, slot), store_ptr)
+            next_cnt = self.builder.add(cnt, ir.Constant(ir.IntType(64), 1))
+            next_cnt.flags = ['nuw']
+            self.builder.store(next_cnt, cnt_ptr)
+        next_i = self.builder.add(i_val, ir.Constant(ir.IntType(64), 1))
+        self.builder.store(next_i, i_ptr)
+        self.builder.branch(loop_cond_bb)
+
+        self.builder.position_at_end(loop_done_bb)
+        live_count = self.builder.load(cnt_ptr)
+        result_vec = self.builder.insert_value(result_vec, buf, 0)
+        result_vec = self.builder.insert_value(result_vec, live_count, 1)
+        result_vec = self.builder.insert_value(result_vec, size, 2)
+        return result_vec
+
     def _codegen_hash_method(self, hash_ptr, hash_type_name, method, args, extra_data=None):
         """Handle hash table methods."""
         inner = hash_type_name[5:-1]
@@ -6935,94 +7193,81 @@ class CodeGen:
         value_llvm = self._get_llvm_type(value_type)
         key_llvm = self._get_llvm_type(key_type)
 
-        hash_val = self.builder.load(hash_ptr)
-        size = self.builder.extract_value(hash_val, 0)
-        cap = self.builder.extract_value(hash_val, 1)
-        
-        key_ptrs = []
-        value_ptrs = []
-        if extra_data:
-            key_ptrs, value_ptrs = extra_data
-        elif hasattr(hash_val, 'hash_key_ptrs'):
-            key_ptrs = getattr(hash_val, 'hash_key_ptrs', [])
-            value_ptrs = getattr(hash_val, 'hash_value_ptrs', [])
-
         if method == "size":
+            hash_val = self.builder.load(hash_ptr)
+            size = self.builder.extract_value(hash_val, 0)
             return self.builder.trunc(size, ir.IntType(32))
 
         elif method == "keys":
-            vec_type = self._get_llvm_type(f"vec<{key_type}>")
-            result_vec = ir.Constant(vec_type, ir.Undefined)
-            data_ptr = self.builder.alloca(key_llvm.as_pointer(), name="keys_data")
-            self.builder.store(ir.Constant(key_llvm.as_pointer(), None), data_ptr)
-            result_vec = self.builder.insert_value(result_vec, self.builder.load(data_ptr), 0)
-            result_vec = self.builder.insert_value(result_vec, size, 1)
-            result_vec = self.builder.insert_value(result_vec, cap, 2)
-            return result_vec
+            return self._hash_collect(hash_ptr, 0, key_llvm, key_type, key_llvm, value_llvm)
 
         elif method == "values":
-            vec_type = self._get_llvm_type(f"vec<{value_type}>")
-            result_vec = ir.Constant(vec_type, ir.Undefined)
-            data_ptr = self.builder.alloca(value_llvm.as_pointer(), name="values_data")
-            self.builder.store(ir.Constant(value_llvm.as_pointer(), None), data_ptr)
-            result_vec = self.builder.insert_value(result_vec, self.builder.load(data_ptr), 0)
-            result_vec = self.builder.insert_value(result_vec, size, 1)
-            result_vec = self.builder.insert_value(result_vec, cap, 2)
-            return result_vec
+            return self._hash_collect(hash_ptr, 1, value_llvm, value_type, key_llvm, value_llvm)
 
         elif method == "getKey":
             search_val = self._codegen(args[0])
-            
+            search_val = self._emit_cast(search_val, value_llvm)
+
             result_ptr = self.builder.alloca(key_llvm, name="getKey_result")
             self.builder.store(ir.Constant(key_llvm, None), result_ptr)
-            
-            found_ptr = self.builder.alloca(ir.IntType(1), name="getKey_found")
-            self.builder.store(ir.Constant(ir.IntType(1), 0), found_ptr)
-            
-            if key_ptrs and value_ptrs:
-                for k_ptr, v_ptr in zip(key_ptrs, value_ptrs):
-                    stored_value = self.builder.load(v_ptr)
-                    if value_type == "string":
-                        cmp_result = self.builder.call(self.strcmp, [search_val, stored_value])
-                        value_match = self.builder.icmp_signed("==", cmp_result, ir.Constant(ir.IntType(32), 0))
-                    else:
-                        value_match = self.builder.icmp_signed("==", search_val, stored_value)
-                    
-                    with self.builder.if_then(value_match):
-                        stored_key = self.builder.load(k_ptr)
-                        self.builder.store(stored_key, result_ptr)
-                        self.builder.store(ir.Constant(ir.IntType(1), 1), found_ptr)
-            
+
+            found_ptr, idx_ptr = self._hash_find_by_value(
+                hash_ptr, search_val, key_llvm, value_llvm, value_type
+            )
+
+            with self.builder.if_then(self.builder.load(found_ptr)):
+                entry_ptr = self._hash_entry_ptr(
+                    hash_ptr, self.builder.load(idx_ptr), key_llvm, value_llvm
+                )
+                entry_val = self.builder.load(entry_ptr)
+                stored_key = self.builder.extract_value(entry_val, 0)
+                self.builder.store(stored_key, result_ptr)
+
             if not self.in_unsafe_func:
                 was_found = self.builder.load(found_ptr)
                 self._emit_runtime_check(
                     was_found, "Runtime error: Hash value not found in getKey().\n"
                 )
-            
+
             return self.builder.load(result_ptr)
 
         elif method == "isin":
             if args:
                 search_key = self._codegen(args[0])
-                
-                result_val = ir.Constant(ir.IntType(1), 0)
-                
-                if key_ptrs:
-                    for k_ptr in key_ptrs:
-                        stored_key = self.builder.load(k_ptr)
-                        if key_type == "string":
-                            cmp_result = self.builder.call(self.strcmp, [search_key, stored_key])
-                            key_match = self.builder.icmp_signed("==", cmp_result, ir.Constant(ir.IntType(32), 0))
-                        else:
-                            key_match = self.builder.icmp_signed("==", search_key, stored_key)
-                        
-                        with self.builder.if_then(key_match):
-                            result_val = ir.Constant(ir.IntType(1), 1)
-                
-                return result_val
+                search_key = self._emit_cast(search_key, key_llvm)
+
+                found_ptr, _ = self._hash_find_by_key(
+                    hash_ptr, search_key, key_llvm, value_llvm, key_type
+                )
+
+                return self.builder.load(found_ptr)
             return ir.Constant(ir.IntType(1), 0)
 
         elif method == "delete":
+            if args:
+                search_key = self._codegen(args[0])
+                search_key = self._emit_cast(search_key, key_llvm)
+
+                found_ptr, idx_ptr = self._hash_find_by_key(
+                    hash_ptr, search_key, key_llvm, value_llvm, key_type
+                )
+
+                with self.builder.if_then(self.builder.load(found_ptr)):
+                    entry_ptr = self._hash_entry_ptr(
+                        hash_ptr, self.builder.load(idx_ptr), key_llvm, value_llvm
+                    )
+                    entry_val = self.builder.load(entry_ptr)
+                    entry_val = self.builder.insert_value(
+                        entry_val, ir.Constant(ir.IntType(1), 1), 2
+                    )
+                    self.builder.store(entry_val, entry_ptr)
+
+                    hash_val = self.builder.load(hash_ptr)
+                    size = self.builder.extract_value(hash_val, 0)
+                    new_size = self.builder.sub(size, ir.Constant(ir.IntType(64), 1))
+                    new_size.flags = ['nuw', 'nsw']
+                    hash_val = self.builder.insert_value(hash_val, new_size, 0)
+                    self.builder.store(hash_val, hash_ptr)
             return None
 
         elif method == "push":
@@ -7032,18 +7277,7 @@ class CodeGen:
                 key_val = self._emit_cast(key_val, key_llvm)
                 value_val = self._emit_cast(value_val, value_llvm)
 
-                new_key_ptr = self.builder.alloca(key_llvm, name="hash_push_key")
-                self.builder.store(key_val, new_key_ptr)
-                new_value_ptr = self.builder.alloca(value_llvm, name="hash_push_value")
-                self.builder.store(value_val, new_value_ptr)
-
-                key_ptrs.append(new_key_ptr)
-                value_ptrs.append(new_value_ptr)
-
-                new_size = self.builder.add(size, ir.Constant(ir.IntType(64), 1))
-                new_size.flags = ['nuw']
-                hash_val = self.builder.insert_value(hash_val, new_size, 0)
-                self.builder.store(hash_val, hash_ptr)
+                self._hash_append_entry(hash_ptr, key_val, value_val, key_llvm, value_llvm, key_type, value_type)
             return None
 
         raise LeashError(
@@ -8807,7 +9041,15 @@ class CodeGen:
         if self.current_target_type:
             target_llvm = self._get_llvm_type(self.current_target_type)
             if isinstance(target_llvm, ir.IntType):
-                return ir.Constant(target_llvm, node.value)
+                # Only use the target width if the value fits. Otherwise fall
+                # back to i64 so large literals (e.g. 4096 under a (char) cast
+                # target context) don't get truncated to 0.
+                if target_llvm.width >= 64 or (
+                    node.value >= -(2 ** (target_llvm.width - 1))
+                    and node.value < 2 ** (target_llvm.width - 1)
+                ):
+                    return ir.Constant(target_llvm, node.value)
+                return ir.Constant(ir.IntType(64), node.value)
         # Use i64 if the value doesn't fit in i32
         if isinstance(node.value, int) and (
             node.value > 2147483647 or node.value < -2147483648
@@ -9080,37 +9322,62 @@ class CodeGen:
         value_llvm = self._get_llvm_type(value_type)
         
         num_entries = len(node.entries)
-        
-        key_ptrs = []
-        value_ptrs = []
-        
-        for i, (key_expr, value_expr) in enumerate(node.entries):
-            key_val = self._codegen(key_expr)
-            value_val = self._codegen(value_expr)
-            
-            key_ptr = self.builder.alloca(key_llvm, name=f"hash_key_{i}")
-            self.builder.store(key_val, key_ptr)
-            key_ptrs.append(key_ptr)
-            
-            value_ptr = self.builder.alloca(value_llvm, name=f"hash_value_{i}")
-            self.builder.store(value_val, value_ptr)
-            value_ptrs.append(value_ptr)
+        cap = num_entries * 2 if num_entries > 0 else 0
         
         entries_ptr = ir.Constant(ir.IntType(8).as_pointer(), None)
         
+        if num_entries > 0:
+            entry_ty = self._hash_entry_type(key_llvm, value_llvm)
+            dummy_ptr = ir.Constant(entry_ty.as_pointer(), None)
+            entry_size = self.builder.ptrtoint(
+                self.builder.gep(dummy_ptr, [ir.Constant(ir.IntType(32), 1)], inbounds=True),
+                ir.IntType(64),
+            )
+            total_bytes = self.builder.mul(
+                ir.Constant(ir.IntType(64), cap), entry_size
+            )
+            total_bytes.flags = ['nuw']
+            entries_bytes = self.builder.call(self.malloc, [total_bytes])
+            self._track_alloc(entries_bytes)
+            entries_typed = self.builder.bitcast(entries_bytes, entry_ty.as_pointer())
+            entries_ptr = self.builder.bitcast(entries_typed, ir.IntType(8).as_pointer())
+
+            # Initialize all slots as deleted so uninitialized regions are skipped
+            default_key = self._emit_default_value(key_type)
+            default_value = self._emit_default_value(value_type)
+            for i in range(cap):
+                entry_ptr = self.builder.gep(
+                    entries_typed, [ir.Constant(ir.IntType(64), i)], inbounds=True
+                )
+                init_entry = ir.Constant(entry_ty, ir.Undefined)
+                init_entry = self.builder.insert_value(init_entry, default_key, 0)
+                init_entry = self.builder.insert_value(init_entry, default_value, 1)
+                init_entry = self.builder.insert_value(
+                    init_entry, ir.Constant(ir.IntType(1), 1), 2
+                )
+                self.builder.store(init_entry, entry_ptr)
+
+            for i, (key_expr, value_expr) in enumerate(node.entries):
+                key_val = self._codegen(key_expr)
+                value_val = self._codegen(value_expr)
+                key_val = self._emit_cast(key_val, key_llvm)
+                value_val = self._emit_cast(value_val, value_llvm)
+                entry_ptr = self.builder.gep(
+                    entries_typed, [ir.Constant(ir.IntType(64), i)], inbounds=True
+                )
+                new_entry = ir.Constant(entry_ty, ir.Undefined)
+                new_entry = self.builder.insert_value(new_entry, key_val, 0)
+                new_entry = self.builder.insert_value(new_entry, value_val, 1)
+                new_entry = self.builder.insert_value(
+                    new_entry, ir.Constant(ir.IntType(1), 0), 2
+                )
+                self.builder.store(new_entry, entry_ptr)
+        
         size_val = ir.Constant(ir.IntType(64), num_entries)
-        cap_val = ir.Constant(ir.IntType(64), num_entries * 2 if num_entries > 0 else 0)
+        cap_val = ir.Constant(ir.IntType(64), cap)
         
         hash_type = self._get_llvm_type(f"hash<{key_type}, {value_type}>")
         hash_val = ir.Constant(hash_type, ir.Undefined)
-        hash_val = self.builder.insert_value(hash_val, size_val, 0)
-        hash_val = self.builder.insert_value(hash_val, cap_val, 1)
-        hash_val = self.builder.insert_value(hash_val, entries_ptr, 2)
-        
-        hash_val.hash_key_ptrs = key_ptrs
-        hash_val.hash_value_ptrs = value_ptrs
-        
-        return hash_val
         hash_val = self.builder.insert_value(hash_val, size_val, 0)
         hash_val = self.builder.insert_value(hash_val, cap_val, 1)
         hash_val = self.builder.insert_value(hash_val, entries_ptr, 2)

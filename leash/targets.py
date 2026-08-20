@@ -16,6 +16,8 @@ class TargetConfig:
         linker_flags=None,
         platform_name=None,
         description="",
+        size_flags=None,
+        size_only_flags=None,
     ):
         self.name = name
         self.llvm_triple = llvm_triple
@@ -24,6 +26,10 @@ class TargetConfig:
         self.linker_flags = linker_flags or []
         self.platform_name = platform_name or name
         self.description = description
+        # Always-on flags: link-time dead code elimination + symbol stripping
+        self.size_flags = size_flags or []
+        # Extra flags only applied for -Os/-Oz size-optimized builds
+        self.size_only_flags = size_only_flags or []
 
     def get_output_name(self, base_name):
         """Get the output filename for this target."""
@@ -82,6 +88,13 @@ TARGETS = {
         linker_flags=["-no-pie"],
         platform_name="Linux",
         description="Linux x86_64",
+        size_flags=[
+            "-Wl,--gc-sections",
+            "-Wl,--strip-all",
+            "-Wl,--build-id=none",
+            "-Wl,-O1",
+        ],
+        size_only_flags=["-Wl,--hash-style=gnu"],
     ),
     "linux32": TargetConfig(
         name="linux32",
@@ -90,6 +103,13 @@ TARGETS = {
         linker_flags=["-no-pie"],
         platform_name="Linux",
         description="Linux x86 (32-bit)",
+        size_flags=[
+            "-Wl,--gc-sections",
+            "-Wl,--strip-all",
+            "-Wl,--build-id=none",
+            "-Wl,-O1",
+        ],
+        size_only_flags=["-Wl,--hash-style=gnu"],
     ),
     "win64": TargetConfig(
         name="win64",
@@ -98,6 +118,7 @@ TARGETS = {
         linker_flags=["-mconsole"],
         platform_name="Windows",
         description="Windows x86_64",
+        size_flags=["-Wl,--gc-sections", "-Wl,--strip-all"],
     ),
     "macos": TargetConfig(
         name="macos",
@@ -106,6 +127,7 @@ TARGETS = {
         linker_flags=[],  # No libgc for macOS cross-compilation
         platform_name="macOS",
         description="macOS x86_64",
+        size_flags=["-Wl,-dead_strip", "-Wl,-S"],
     ),
     "macos-arm": TargetConfig(
         name="macos-arm",
@@ -114,6 +136,7 @@ TARGETS = {
         linker_flags=[],  # No libgc for macOS cross-compilation
         platform_name="macOS",
         description="macOS ARM64 (Apple Silicon)",
+        size_flags=["-Wl,-dead_strip", "-Wl,-S"],
     ),
 }
 

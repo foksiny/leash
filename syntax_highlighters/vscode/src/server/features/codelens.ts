@@ -17,7 +17,7 @@ export function codeLensHandler(index: WorkspaceIndex, uri: string): CodeLens[] 
             range: sym.nameRange,
             command: {
                 title: count === 0 ? '0 references' : `${count} reference${count === 1 ? '' : 's'}`,
-                command: 'editor.action.showReferences',
+                command: 'leash.showReferences',
                 arguments: [
                     uri,
                     {

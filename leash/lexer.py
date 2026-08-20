@@ -1,37 +1,77 @@
 import re
 from .errors import LeashError
 
-
-def _leash_escape(raw_text):
-    """Pre-process raw string to replace \{ → \x7b and \} → \x7d
-    so that Python's unicode_escape codec (which on 3.12+ preserves
-    unrecognized escapes) correctly produces { and }."""
-    parts = []
-    i = 0
-    while i < len(raw_text):
-        if raw_text[i] == "\\" and i + 1 < len(raw_text):
-            nxt = raw_text[i + 1]
-            if nxt == "{":
-                parts.append("\\x7b")
-                i += 2
-                continue
-            if nxt == "}":
-                parts.append("\\x7d")
-                i += 2
-                continue
-            parts.append(raw_text[i])
-            parts.append(nxt)
-            i += 2
-            continue
-        parts.append(raw_text[i])
-        i += 1
-    return "".join(parts)
+_LEASH_ESCAPE_MAP = {
+    "n": "\n",
+    "t": "\t",
+    "r": "\r",
+    "0": "\0",
+    "a": "\a",
+    "b": "\b",
+    "f": "\f",
+    "v": "\v",
+    "\\": "\\",
+    '"': '"',
+    "'": "'",
+    "?": "?",
+    "{": "{",
+    "}": "}",
+}
 
 
 def leash_unescape(text):
-    """Unescape a Leash string, handling \{ → { and \} → } on Python 3.12+."""
-    text = _leash_escape(text)
-    return text.encode("utf-8").decode("unicode_escape")
+    """Unescape a Leash string: \\{ -> {, \\} -> }, \\n, \\t, \\uXXXX, \\xNN, etc.
+
+    Unlike Python's unicode_escape codec, this never mangles non-ASCII
+    characters (unicode_escape decodes UTF-8 bytes as Latin-1, corrupting
+    every non-ASCII char in the literal). Unknown escapes keep their
+    backslash, matching Python 3.12+'s unicode_escape behavior.
+    """
+    out = []
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if ch == "\\" and i + 1 < n:
+            nxt = text[i + 1]
+            if nxt in _LEASH_ESCAPE_MAP:
+                out.append(_LEASH_ESCAPE_MAP[nxt])
+                i += 2
+                continue
+            if nxt == "x":
+                digits = text[i + 2 : i + 4]
+                try:
+                    out.append(chr(int(digits, 16)))
+                    i += 4
+                except ValueError:
+                    out.append("\\x")
+                    i += 2
+                continue
+            if nxt == "u":
+                digits = text[i + 2 : i + 6]
+                try:
+                    out.append(chr(int(digits, 16)))
+                    i += 6
+                except ValueError:
+                    out.append("\\u")
+                    i += 2
+                continue
+            if nxt == "U":
+                digits = text[i + 2 : i + 10]
+                try:
+                    out.append(chr(int(digits, 16)))
+                    i += 10
+                except ValueError:
+                    out.append("\\U")
+                    i += 2
+                continue
+            out.append("\\")
+            out.append(nxt)
+            i += 2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
 
 
 class Token:

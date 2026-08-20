@@ -13,7 +13,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v0.22.1 Beta</div>
+        <div class="version">v0.22.2 Beta</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -45,7 +45,7 @@
 
 <h1>Standard Library Reference</h1>
 
-<p>Leash ships with a set of standard libraries in the <code>installthis/</code> directory. These libraries provide common utilities like type aliases for explicit bit-width types, math functions, string manipulation, tuple containers, and a windowing API. Install them globally to make them available from any project via the <code>use</code> statement.</p>
+<p>Leash ships with a set of standard libraries in the <code>installthis/</code> directory. These libraries provide common utilities like type aliases for explicit bit-width types, math functions, string manipulation, tuple containers, JSON, UTF-8, hex, Base64, UUID generation, and a windowing API. Install them globally to make them available from any project via the <code>use</code> statement.</p>
 
 <div class="callout callout-info">The standard libraries are optional &mdash; you can install only the ones you need, or write your own libraries following the same patterns.</div>
 
@@ -189,6 +189,200 @@ leash install installthis/
     parts: <span class="kw">vec</span>&lt;<span class="kw">string</span>&gt; = Str.<span class="fn">split</span>(<span class="str">"hello world"</span>, <span class="str">' '</span>);
     <span class="fn">show</span>(Str.<span class="fn">upper</span>(<span class="str">"hello"</span>));  <span class="cm">// "HELLO"</span>
 }</code></pre>
+
+<h2>JSON Library (<code>json.lsh</code>)</h2>
+
+<p>A full JSON parser, serializer, and pretty-printer built entirely in Leash. It supports objects, arrays, strings (including <code>\uXXXX</code> escapes and surrogate pairs), integers, floats with exponents, booleans, and <code>null</code>. Errors are reported through an <code>ok</code> / <code>err</code> pair instead of crashing, so malformed input is easy to handle gracefully.</p>
+
+<pre><code><span class="kw">use</span> json::*;
+
+<span class="kw">fnc</span> <span class="fn">main</span>() {
+    <span class="kw">let</span> v: JsonValue = Json.<span class="fn">parse</span>(<span class="str">"{\"name\": \"Leash\", \"year\": 2026}"</span>);
+    <span class="kw">if</span> v.ok == <span class="kw">false</span> {
+        <span class="fn">show</span>(<span class="str">"parse error: "</span> + v.err);
+        <span class="kw">return</span>;
+    }
+    <span class="fn">show</span>(v.<span class="fn">get</span>(<span class="str">"name"</span>).<span class="fn">as_string</span>());  <span class="cm">// Leash</span>
+    <span class="fn">show</span>(v.<span class="fn">get</span>(<span class="str">"year"</span>).<span class="fn">as_int</span>());     <span class="cm">// 2026</span>
+    <span class="fn">show</span>(Json.<span class="fn">pretty</span>(v));              <span class="cm">// pretty-printed</span>
+}</code></pre>
+
+<h3>JSON Types</h3>
+<p><code>JsonType</code> is an enum with the values <code>JNULL</code>, <code>JBOOL</code>, <code>JINT</code>, <code>JFLOAT</code>, <code>JSTRING</code>, <code>JARRAY</code>, and <code>JOBJECT</code>.</p>
+
+<h3>The <code>JsonValue</code> Class</h3>
+<p>A <code>JsonValue</code> wraps a single JSON value. It carries a <code>typ</code> field plus a slot for each kind of data, and an <code>ok</code> / <code>err</code> pair for reporting parse or access failures.</p>
+
+<table>
+    <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+    <tr><td><code>.typ</code></td><td><code>JsonType</code></td><td>Kind of value (JNULL, JBOOL, JINT, ...)</td></tr>
+    <tr><td><code>.bval</code></td><td><code>bool</code></td><td>Boolean value</td></tr>
+    <tr><td><code>.ival</code></td><td><code>int&lt;64&gt;</code></td><td>Integer value</td></tr>
+    <tr><td><code>.fval</code></td><td><code>float</code></td><td>Floating-point value</td></tr>
+    <tr><td><code>.sval</code></td><td><code>string</code></td><td>String value</td></tr>
+    <tr><td><code>.arr</code></td><td><code>vec&lt;JsonValue&gt;</code></td><td>Array elements</td></tr>
+    <tr><td><code>.obj</code></td><td><code>hash&lt;string, JsonValue&gt;</code></td><td>Object members</td></tr>
+    <tr><td><code>.ok</code></td><td><code>bool</code></td><td>Parse/access succeeded</td></tr>
+    <tr><td><code>.err</code></td><td><code>string</code></td><td>Error message when <code>.ok</code> is false</td></tr>
+</table>
+
+<h4>Serialization</h4>
+<table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td><code>.stringify()</code></td><td>Compact JSON text (also exposed via <code>VAL_JsonValue</code>)</td></tr>
+    <tr><td><code>.pretty()</code></td><td>Pretty-printed JSON with indentation</td></tr>
+    <tr><td><code>.pretty_at(depth)</code></td><td>Pretty-printed starting at a given indentation depth</td></tr>
+</table>
+
+<h4>Type Checks &amp; Accessors</h4>
+<table>
+    <tr><th>Method</th><th>Returns</th></tr>
+    <tr><td><code>.is_null()</code>, <code>.is_bool()</code>, <code>.is_int()</code>, <code>.is_float()</code>, <code>.is_string()</code>, <code>.is_array()</code>, <code>.is_object()</code></td><td><code>bool</code></td></tr>
+    <tr><td><code>.as_bool()</code></td><td><code>bool</code></td></tr>
+    <tr><td><code>.as_int()</code></td><td><code>int&lt;64&gt;</code></td></tr>
+    <tr><td><code>.as_float()</code></td><td><code>float</code></td></tr>
+    <tr><td><code>.as_string()</code></td><td><code>string</code></td></tr>
+</table>
+
+<h4>Container Access</h4>
+<table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td><code>.get(key)</code></td><td>Get object member <code>key</code> (a <code>JsonValue</code>; check <code>.ok</code> on the result)</td></tr>
+    <tr><td><code>.has(key)</code></td><td><code>bool</code> &mdash; does the object have <code>key</code>?</td></tr>
+    <tr><td><code>.keys()</code></td><td><code>vec&lt;string&gt;</code> &mdash; object member names</td></tr>
+    <tr><td><code>.at(i)</code></td><td>Array element at index <code>i</code> (a <code>JsonValue</code>)</td></tr>
+    <tr><td><code>.size()</code></td><td><code>int&lt;64&gt;</code> &mdash; array length or object member count</td></tr>
+    <tr><td><code>.set(key, value)</code></td><td>Set/add an object member</td></tr>
+    <tr><td><code>.push_back(value)</code></td><td>Append to an array</td></tr>
+</table>
+
+<h3>Building Values from Scratch</h3>
+<p>Construct <code>JsonValue</code>s with struct initialization and compose them with <code>set</code> / <code>push_back</code>:</p>
+
+<pre><code>obj: JsonValue = JsonValue { typ: JsonType::JOBJECT, ok: <span class="kw">true</span> };
+obj.<span class="fn">set</span>(<span class="str">"msg"</span>, JsonValue { typ: JsonType::JSTRING, sval: <span class="str">"built"</span>, ok: <span class="kw">true</span> });
+obj.<span class="fn">set</span>(<span class="str">"count"</span>, JsonValue { typ: JsonType::JINT, ival: 7, ok: <span class="kw">true</span> });
+<span class="fn">show</span>(Json.<span class="fn">stringify</span>(obj));  <span class="cm">// {"msg":"built","count":7}</span></code></pre>
+
+<h3>The <code>Json</code> Class (Statics)</h3>
+<table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td><code>Json.parse(text)</code></td><td>Parse JSON text into a <code>JsonValue</code> (check <code>.ok</code>)</td></tr>
+    <tr><td><code>Json.parse_file(path)</code></td><td>Read a file and parse its contents</td></tr>
+    <tr><td><code>Json.stringify(v)</code></td><td>Compact JSON text for a <code>JsonValue</code></td></tr>
+    <tr><td><code>Json.pretty(v)</code></td><td>Pretty-printed JSON for a <code>JsonValue</code></td></tr>
+    <tr><td><code>Json.save(path, v)</code></td><td>Serialize and write to a file; returns <code>int</code> (&lt; 0 on error)</td></tr>
+</table>
+
+<h2>UTF Library (<code>utils/utf.lsh</code>)</h2>
+
+<p>UTF-8 encoding and decoding utilities. Encoding accepts any code point and produces the canonical UTF-8 byte sequence; decoding validates the input and reports failures through a <code>UtfDecoded</code> struct instead of crashing. Surrogates and out-of-range code points are rejected, and overlong / malformed byte sequences are never accepted.</p>
+
+<pre><code><span class="kw">use</span> utils::utf::*;
+
+<span class="kw">fnc</span> <span class="fn">main</span>() {
+    <span class="fn">show</span>(Utf.<span class="fn">encode</span>(0x1F600));               <span class="cm">// 😀</span>
+    <span class="fn">show</span>(Utf.<span class="fn">length</span>(<span class="str">"Aé😀"</span>));               <span class="cm">// 3 (code points)</span>
+    <span class="fn">show</span>(Utf.<span class="fn">valid</span>(<span class="str">"Aé"</span>));                  <span class="cm">// true</span>
+    cps: <span class="kw">vec</span>&lt;<span class="kw">int</span>&lt;64&gt;&gt; = Utf.<span class="fn">codepoints</span>(<span class="str">"Aé"</span>);
+    <span class="fn">show</span>(Utf.<span class="fn">from_codepoints</span>(cps));          <span class="cm">// "Aé"</span>
+}</code></pre>
+
+<h3>The <code>UtfDecoded</code> Struct</h3>
+<table>
+    <tr><th>Field</th><th>Type</th><th>Description</th></tr>
+    <tr><td><code>.ok</code></td><td><code>bool</code></td><td>Was the byte at <code>i</code> a valid sequence start?</td></tr>
+    <tr><td><code>.cp</code></td><td><code>int&lt;64&gt;</code></td><td>The decoded code point (0 when <code>ok</code> is false)</td></tr>
+    <tr><td><code>.len</code></td><td><code>int</code></td><td>Number of bytes consumed (1&ndash;4)</td></tr>
+</table>
+
+<h3>The <code>Utf</code> Class (Statics)</h3>
+<table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td><code>Utf.encode(cp)</code></td><td>Encode a code point as UTF-8 (<code>string</code>); returns <code>""</code> for surrogates, negatives, or values above U+10FFFF</td></tr>
+    <tr><td><code>Utf.decode_at(s, i)</code></td><td>Decode one code point at index <code>i</code>, returning a <code>UtfDecoded</code></td></tr>
+    <tr><td><code>Utf.valid(s)</code></td><td><code>bool</code> &mdash; is <code>s</code> well-formed UTF-8?</td></tr>
+    <tr><td><code>Utf.length(s)</code></td><td>Number of code points; <code>-1</code> if <code>s</code> is invalid UTF-8</td></tr>
+    <tr><td><code>Utf.codepoints(s)</code></td><td><code>vec&lt;int&lt;64&gt;&gt;</code> of all code points; empty if invalid</td></tr>
+    <tr><td><code>Utf.from_codepoints(cps)</code></td><td>Encode a <code>vec&lt;int&lt;64&gt;&gt;</code> back into a string</td></tr>
+    <tr><td><code>Utf.is_ascii(s)</code></td><td><code>bool</code> &mdash; does <code>s</code> contain only bytes &le; 0x7F?</td></tr>
+    <tr><td><code>Utf.utf16_to_cp(high, low)</code></td><td>Combine a UTF-16 surrogate pair into a code point; <code>-1</code> on invalid input</td></tr>
+</table>
+
+<h2>Hex Library (<code>utils/hex.lsh</code>)</h2>
+
+<p>Hexadecimal conversion utilities: digit mapping, string &harr; bytes, and string &harr; integer conversions. All parsing is case-insensitive and strict &mdash; invalid input yields an empty result or <code>-1</code> instead of crashing.</p>
+
+<pre><code><span class="kw">use</span> utils::hex::Hex;
+
+<span class="kw">fnc</span> <span class="fn">main</span>() {
+    <span class="fn">show</span>(Hex.<span class="fn">from_int</span>(255));               <span class="cm">// "ff"</span>
+    <span class="fn">show</span>(Hex.<span class="fn">to_int</span>(<span class="str">"0xDEADBEEF"</span>));         <span class="cm">// 3735928559</span>
+    <span class="fn">show</span>(Hex.<span class="fn">from_int_pad</span>(255, 8));         <span class="cm">// "000000ff"</span>
+    bytes: <span class="kw">vec</span>&lt;<span class="kw">char</span>&gt; = Hex.<span class="fn">to_bytes</span>(<span class="str">"deadbeef"</span>);
+}</code></pre>
+
+<h3>The <code>Hex</code> Class (Statics)</h3>
+<table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td><code>Hex.chr(d)</code></td><td>Lowercase hex digit for <code>d</code> in 0&ndash;15; <code>'?'</code> outside that range</td></tr>
+    <tr><td><code>Hex.chr_upper(d)</code></td><td>Uppercase hex digit; <code>'?'</code> outside 0&ndash;15</td></tr>
+    <tr><td><code>Hex.val(c)</code></td><td>Numeric value of a hex digit (<code>0&ndash;15</code>); <code>-1</code> if not a digit</td></tr>
+    <tr><td><code>Hex.valid(s)</code></td><td><code>bool</code> &mdash; non-empty, even length, all hex digits</td></tr>
+    <tr><td><code>Hex.from_bytes(bytes)</code></td><td>Lowercase hex string for a <code>vec&lt;char&gt;</code></td></tr>
+    <tr><td><code>Hex.from_bytes_upper(bytes)</code></td><td>Uppercase hex string for a <code>vec&lt;char&gt;</code></td></tr>
+    <tr><td><code>Hex.to_bytes(s)</code></td><td><code>vec&lt;char&gt;</code> of raw bytes; empty for odd length or invalid digits</td></tr>
+    <tr><td><code>Hex.from_int(n)</code></td><td>Lowercase hex string of an <code>int&lt;64&gt;</code></td></tr>
+    <tr><td><code>Hex.from_int_pad(n, width)</code></td><td>Hex string zero-padded to at least <code>width</code> digits</td></tr>
+    <tr><td><code>Hex.to_int(s)</code></td><td>Parse an integer (optional <code>-</code> and <code>0x</code>/<code>0X</code> prefix); <code>-1</code> on invalid input</td></tr>
+</table>
+
+<h2>Base64 Library (<code>utils/base64.lsh</code>)</h2>
+
+<p>Standard Base64 encoding and decoding (RFC 4648 alphabet). Decoding skips whitespace, enforces canonical padding, and rejects non-alphabet characters, leftover bits, and misplaced <code>=</code> signs &mdash; invalid input decodes to an empty result.</p>
+
+<pre><code><span class="kw">use</span> utils::base64::Base64;
+
+<span class="kw">fnc</span> <span class="fn">main</span>() {
+    <span class="fn">show</span>(Base64.<span class="fn">encode</span>(<span class="str">"foobar"</span>));          <span class="cm">// Zm9vYmFy</span>
+    <span class="fn">show</span>(Base64.<span class="fn">decode</span>(<span class="str">"Zm9vYmFy"</span>));          <span class="cm">// foobar</span>
+    bytes: <span class="kw">vec</span>&lt;<span class="kw">char</span>&gt; = Base64.<span class="fn">decode_bytes</span>(<span class="str">"Zg=="</span>);  <span class="cm">// raw bytes of "f"</span>
+}</code></pre>
+
+<h3>The <code>Base64</code> Class (Statics)</h3>
+<table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td><code>Base64.chr(d)</code></td><td>Base64 character for <code>d</code> in 0&ndash;63; <code>'?'</code> outside that range</td></tr>
+    <tr><td><code>Base64.val(c)</code></td><td>Numeric value of a Base64 character; <code>-1</code> if not in the alphabet</td></tr>
+    <tr><td><code>Base64.encode(s)</code></td><td>Base64 text of a string (padded with <code>=</code> as needed)</td></tr>
+    <tr><td><code>Base64.decode_bytes(s)</code></td><td><code>vec&lt;char&gt;</code> of decoded bytes; empty on invalid input</td></tr>
+    <tr><td><code>Base64.decode(s)</code></td><td>Decoded string; <code>""</code> on invalid input</td></tr>
+    <tr><td><code>Base64.valid(s)</code></td><td><code>bool</code> &mdash; is <code>s</code> canonical Base64 (ignoring whitespace)?</td></tr>
+</table>
+
+<h2>UUID Library (<code>utils/uuid.lsh</code>)</h2>
+
+<p>UUID generation and validation. <code>Uuid.v4()</code> produces a random RFC 4122 version-4 UUID using the standard library <code>rand</code> builtin; parsing and validation are strict.</p>
+
+<pre><code><span class="kw">use</span> utils::uuid::Uuid;
+
+<span class="kw">fnc</span> <span class="fn">main</span>() {
+    id: <span class="kw">string</span> = Uuid.<span class="fn">v4</span>();
+    <span class="fn">show</span>(id);                                    <span class="cm">// e.g. 8cd4bd3f-e5ce-429f-9733-f5f981e92e66</span>
+    <span class="kw">if</span> Uuid.<span class="fn">valid</span>(id) == <span class="kw">false</span> { <span class="kw">return</span>; }
+    raw: <span class="kw">vec</span>&lt;<span class="kw">char</span>&gt; = Uuid.<span class="fn">bytes</span>(id);              <span class="cm">// 16 raw bytes</span>
+}</code></pre>
+
+<h3>The <code>Uuid</code> Class (Statics)</h3>
+<table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td><code>Uuid.v4()</code></td><td>Random version-4 UUID string (36 chars, dashes at 8/13/18/23)</td></tr>
+    <tr><td><code>Uuid.zero()</code></td><td>The nil UUID <code>00000000-0000-0000-0000-000000000000</code></td></tr>
+    <tr><td><code>Uuid.format(hex)</code></td><td>Insert dashes into a 32-char hex string; <code>""</code> if the length is not 32</td></tr>
+    <tr><td><code>Uuid.valid(s)</code></td><td><code>bool</code> &mdash; is <code>s</code> a well-formed UUID (dashes and hex digits)?</td></tr>
+    <tr><td><code>Uuid.compact(s)</code></td><td>Strip dashes, yielding the 32-char hex form; <code>""</code> if invalid</td></tr>
+    <tr><td><code>Uuid.bytes(s)</code></td><td><code>vec&lt;char&gt;</code> of the 16 raw bytes; empty if invalid</td></tr>
+</table>
 
 <h2>File I/O</h2>
 

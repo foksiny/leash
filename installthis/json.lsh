@@ -1,0 +1,685 @@
+pub def JsonType : enum {
+    JNULL,
+    JBOOL,
+    JINT,
+    JFLOAT,
+    JSTRING,
+    JARRAY,
+    JOBJECT
+};
+
+pub def JsonValue : class {
+    pub typ: JsonType;
+    pub bval: bool;
+    pub ival: int<64>;
+    pub fval: float;
+    pub sval: string;
+    pub arr: vec<JsonValue>;
+    pub obj: hash<string, JsonValue>;
+    pub ok: bool;
+    pub err: string;
+
+    pub fnc VAL_JsonValue() : string {
+        return this.stringify();
+    }
+
+    pub fnc stringify() : string {
+        if this.typ == JsonType::JNULL {
+            return "null";
+        }
+        if this.typ == JsonType::JBOOL {
+            if this.bval {
+                return "true";
+            }
+            return "false";
+        }
+        if this.typ == JsonType::JINT {
+            return tostring(this.ival);
+        }
+        if this.typ == JsonType::JFLOAT {
+            return JsonValue.trimf(this.fval);
+        }
+        if this.typ == JsonType::JSTRING {
+            return JsonValue.escape(this.sval);
+        }
+        if this.typ == JsonType::JARRAY {
+            out: string = "[";
+            foreach i, e in<vector> this.arr {
+                if i > 0 {
+                    out = out + ",";
+                }
+                out = out + e.stringify();
+            }
+            return out + "]";
+        }
+        out2: string = "\{";
+        ks: vec<string> = this.obj.keys();
+        foreach i, k in<vector> ks {
+            if i > 0 {
+                out2 = out2 + ",";
+            }
+            out2 = out2 + JsonValue.escape(k) + ":" + this.obj[k].stringify();
+        }
+        return out2 + "}";
+    }
+
+    pub fnc pretty() : string {
+        return this.pretty_at(0);
+    }
+
+    pub fnc pretty_at(depth int) : string {
+        if this.typ == JsonType::JARRAY {
+            if this.arr.size == 0 {
+                return "[]";
+            }
+            out: string = "[\n";
+            foreach i, e in<vector> this.arr {
+                out = out + JsonValue.indent(depth + 1) + e.pretty_at(depth + 1);
+                if i < this.arr.size - 1 {
+                    out = out + ",";
+                }
+                out = out + "\n";
+            }
+            return out + JsonValue.indent(depth) + "]";
+        }
+        if this.typ == JsonType::JOBJECT {
+            if this.obj.size == 0 {
+                return "\{\}";
+            }
+            out2: string = "\{\n";
+            ks: vec<string> = this.obj.keys();
+            foreach i, k in<vector> ks {
+                out2 = out2 + JsonValue.indent(depth + 1) + JsonValue.escape(k) + ": " + this.obj[k].pretty_at(depth + 1);
+                if i < this.obj.size - 1 {
+                    out2 = out2 + ",";
+                }
+                out2 = out2 + "\n";
+            }
+            return out2 + JsonValue.indent(depth) + "}";
+        }
+        return this.stringify();
+    }
+
+    pub fnc is_null() : bool {
+        return this.typ == JsonType::JNULL;
+    }
+
+    pub fnc is_bool() : bool {
+        return this.typ == JsonType::JBOOL;
+    }
+
+    pub fnc is_int() : bool {
+        return this.typ == JsonType::JINT;
+    }
+
+    pub fnc is_float() : bool {
+        return this.typ == JsonType::JFLOAT;
+    }
+
+    pub fnc is_string() : bool {
+        return this.typ == JsonType::JSTRING;
+    }
+
+    pub fnc is_array() : bool {
+        return this.typ == JsonType::JARRAY;
+    }
+
+    pub fnc is_object() : bool {
+        return this.typ == JsonType::JOBJECT;
+    }
+
+    pub fnc as_bool() : bool {
+        return this.bval;
+    }
+
+    pub fnc as_int() : int<64> {
+        return this.ival;
+    }
+
+    pub fnc as_float() : float {
+        return this.fval;
+    }
+
+    pub fnc as_string() : string {
+        return this.sval;
+    }
+
+    pub fnc at(i int) : JsonValue {
+        if this.typ != JsonType::JARRAY {
+            return JsonValue { ok: false, err: "json: 'at' called on a non-array value" };
+        }
+        if i < 0 || i >= this.arr.size {
+            return JsonValue { ok: false, err: "json: array index out of bounds" };
+        }
+        return this.arr.get(i);
+    }
+
+    pub fnc get(key string) : JsonValue {
+        if this.typ != JsonType::JOBJECT {
+            return JsonValue { ok: false, err: "json: 'get' called on a non-object value" };
+        }
+        if !this.obj.isin(key) {
+            return JsonValue { ok: false, err: "json: key not found: '" + key + "'" };
+        }
+        return this.obj[key];
+    }
+
+    pub fnc has(key string) : bool {
+        if this.typ != JsonType::JOBJECT {
+            return false;
+        }
+        return this.obj.isin(key);
+    }
+
+    pub fnc keys() : vec<string> {
+        return this.obj.keys();
+    }
+
+    pub fnc size() : int<64> {
+        if this.typ == JsonType::JARRAY {
+            return this.arr.size;
+        }
+        if this.typ == JsonType::JOBJECT {
+            return this.obj.size;
+        }
+        return 0;
+    }
+
+    pub fnc set(key string, v JsonValue) : void {
+        this.obj.push(key, v);
+    }
+
+    pub fnc push_back(v JsonValue) : void {
+        this.arr.pushb(v);
+    }
+
+    static pub fnc trimf(f float) : string {
+        s: string = tostring(f);
+        dot: int<64> = -1;
+        foreach i, c in<string> s {
+            if c == '.' {
+                dot = toint(int<64>, i);
+                stop;
+            }
+        }
+        if dot < 0 {
+            return s;
+        }
+        last: int<64> = s.size - 1;
+        while last > dot && s[last] == '0' {
+            last = last - 1;
+        }
+        if last == dot {
+            last = last - 1;
+        }
+        out: string;
+        for j: int<64> = 0; j <= last; j = j + 1 {
+            out = out + s[j];
+        }
+        return out;
+    }
+
+    static pub fnc escape(s string) : string {
+        out: string = "\"";
+        foreach _, c in<string> s {
+            _ = _ + 1 - 1;
+            if c == '"' {
+                out = out + "\\\"";
+            } also c == '\\' {
+                out = out + "\\\\";
+            } also c == '\n' {
+                out = out + "\\n";
+            } also c == '\t' {
+                out = out + "\\t";
+            } also c == '\r' {
+                out = out + "\\r";
+            } also c == '\b' {
+                out = out + "\\b";
+            } also c == '\f' {
+                out = out + "\\f";
+            } also c < ' ' {
+                v: int = toint(int, c);
+                out = out + "\\u00" + JsonValue.hexch(v / 16) + JsonValue.hexch(v - (v / 16) * 16);
+            } else {
+                out = out + c;
+            }
+        }
+        return out + "\"";
+    }
+
+    static pub fnc hexch(d int) : char {
+        if d < 10 {
+            return (char)('0' + d);
+        }
+        return (char)('a' + d - 10);
+    }
+
+    static pub fnc hexval(c char) : int {
+        if c >= '0' && c <= '9' {
+            return c - '0';
+        }
+        if c >= 'a' && c <= 'f' {
+            return c - 'a' + 10;
+        }
+        if c >= 'A' && c <= 'F' {
+            return c - 'A' + 10;
+        }
+        return -1;
+    }
+
+    static pub fnc utf8(cp int<64>, out string) : string {
+        if cp < 0x80 {
+            return out + (char)cp;
+        }
+        if cp < 0x800 {
+            out = out + (char)(0xC0 | (cp / 64));
+            return out + (char)(0x80 | (cp & 0x3F));
+        }
+        if cp < 0x10000 {
+            out = out + (char)(0xE0 | (cp / 4096));
+            out = out + (char)(0x80 | ((cp / 64) & 0x3F));
+            return out + (char)(0x80 | (cp & 0x3F));
+        }
+        out = out + (char)(0xF0 | (cp / 262144));
+        out = out + (char)(0x80 | ((cp / 4096) & 0x3F));
+        out = out + (char)(0x80 | ((cp / 64) & 0x3F));
+        return out + (char)(0x80 | (cp & 0x3F));
+    }
+
+    static pub fnc ipow10(n int<64>) : float {
+        r: float = 1.0;
+        i: int<64> = 0;
+        while i < n {
+            r = r * 10.0;
+            i = i + 1;
+        }
+        return r;
+    }
+
+    static pub fnc indent(n int) : string {
+        out: string;
+        for i: int = 0; i < n; i = i + 1 {
+            out = out + "  ";
+        }
+        return out;
+    }
+};
+
+pub def JsonParser : class {
+    text: string;
+    pos: int;
+    failed: bool;
+    err: string;
+
+    pub fnc skip_ws() : void {
+        while this.pos < this.text.size {
+            c: char = this.text[this.pos];
+            if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+                this.pos = this.pos + 1;
+            } else {
+                stop;
+            }
+        }
+    }
+
+    pub fnc peek() : char {
+        if this.pos < this.text.size {
+            return this.text[this.pos];
+        }
+        return '\0';
+    }
+
+    pub fnc peek_n(n int) : char {
+        if this.pos + n < this.text.size {
+            return this.text[this.pos + n];
+        }
+        return '\0';
+    }
+
+    pub fnc is_digit(c char) : bool {
+        return c >= '0' && c <= '9';
+    }
+
+    pub fnc fail(msg string) : void {
+        this.failed = true;
+        this.err = msg;
+    }
+
+    pub fnc expect(word string) : bool {
+        w: int = 0;
+        while w < word.size {
+            if this.pos + w >= this.text.size || this.text[this.pos + w] != word[w] {
+                return false;
+            }
+            w = w + 1;
+        }
+        this.pos = this.pos + word.size;
+        return true;
+    }
+
+    pub fnc parse_value() : JsonValue {
+        if this.pos >= this.text.size {
+            return JsonValue { ok: false, err: "json: unexpected end of input" };
+        }
+        c: char = this.text[this.pos];
+        if c == '{' {
+            return this.parse_object();
+        }
+        if c == '[' {
+            return this.parse_array();
+        }
+        if c == '"' {
+            s: string = this.parse_string();
+            if this.failed {
+                return JsonValue { ok: false, err: this.err };
+            }
+            return JsonValue { typ: JsonType::JSTRING, sval: s, ok: true };
+        }
+        if c == 't' {
+            if !this.expect("true") {
+                this.fail("json: expected 'true'");
+                return JsonValue { ok: false, err: this.err };
+            }
+            return JsonValue { typ: JsonType::JBOOL, bval: true, ok: true };
+        }
+        if c == 'f' {
+            if !this.expect("false") {
+                this.fail("json: expected 'false'");
+                return JsonValue { ok: false, err: this.err };
+            }
+            return JsonValue { typ: JsonType::JBOOL, bval: false, ok: true };
+        }
+        if c == 'n' {
+            if !this.expect("null") {
+                this.fail("json: expected 'null'");
+                return JsonValue { ok: false, err: this.err };
+            }
+            return JsonValue { typ: JsonType::JNULL, ok: true };
+        }
+        if c == '-' || (c >= '0' && c <= '9') {
+            return this.parse_number();
+        }
+        return JsonValue { ok: false, err: "json: unexpected character in input" };
+    }
+
+    pub fnc parse_object() : JsonValue {
+        this.pos = this.pos + 1;
+        this.skip_ws();
+        if this.pos < this.text.size && this.text[this.pos] == '}' {
+            this.pos = this.pos + 1;
+            return JsonValue { typ: JsonType::JOBJECT, ok: true };
+        }
+        obj: hash<string, JsonValue>;
+        while this.pos < this.text.size {
+            this.skip_ws();
+            if this.pos >= this.text.size || this.text[this.pos] != '"' {
+                return JsonValue { ok: false, err: "json: expected string key in object" };
+            }
+            key: string = this.parse_string();
+            if this.failed {
+                return JsonValue { ok: false, err: this.err };
+            }
+            this.skip_ws();
+            if this.pos >= this.text.size || this.text[this.pos] != ':' {
+                return JsonValue { ok: false, err: "json: expected ':' after object key" };
+            }
+            this.pos = this.pos + 1;
+            this.skip_ws();
+            v: JsonValue = this.parse_value();
+            if v.ok == false {
+                return v;
+            }
+            obj.push(key, v);
+            this.skip_ws();
+            if this.pos < this.text.size && this.text[this.pos] == ',' {
+                this.pos = this.pos + 1;
+            } also this.pos < this.text.size && this.text[this.pos] == '}' {
+                this.pos = this.pos + 1;
+                return JsonValue { typ: JsonType::JOBJECT, obj: obj, ok: true };
+            } else {
+                return JsonValue { ok: false, err: "json: expected ',' or '}' in object" };
+            }
+        }
+        return JsonValue { ok: false, err: "json: unterminated object" };
+    }
+
+    pub fnc parse_array() : JsonValue {
+        this.pos = this.pos + 1;
+        this.skip_ws();
+        if this.pos < this.text.size && this.text[this.pos] == ']' {
+            this.pos = this.pos + 1;
+            return JsonValue { typ: JsonType::JARRAY, ok: true };
+        }
+        arr: vec<JsonValue>;
+        while this.pos < this.text.size {
+            this.skip_ws();
+            v: JsonValue = this.parse_value();
+            if v.ok == false {
+                return v;
+            }
+            arr.pushb(v);
+            this.skip_ws();
+            if this.pos < this.text.size && this.text[this.pos] == ',' {
+                this.pos = this.pos + 1;
+            } also this.pos < this.text.size && this.text[this.pos] == ']' {
+                this.pos = this.pos + 1;
+                return JsonValue { typ: JsonType::JARRAY, arr: arr, ok: true };
+            } else {
+                return JsonValue { ok: false, err: "json: expected ',' or ']' in array" };
+            }
+        }
+        return JsonValue { ok: false, err: "json: unterminated array" };
+    }
+
+    pub fnc parse_string() : string {
+        this.pos = this.pos + 1;
+        out: string;
+        while this.pos < this.text.size {
+            c: char = this.text[this.pos];
+            if c == '"' {
+                this.pos = this.pos + 1;
+                return out;
+            }
+            if c != '\\' {
+                out = out + c;
+                this.pos = this.pos + 1;
+                continue;
+            }
+            this.pos = this.pos + 1;
+            if this.pos >= this.text.size {
+                this.fail("json: unterminated string");
+                return out;
+            }
+            e: char = this.text[this.pos];
+            if e == '"' {
+                out = out + '"';
+                this.pos = this.pos + 1;
+            } also e == '\\' {
+                out = out + '\\';
+                this.pos = this.pos + 1;
+            } also e == '/' {
+                out = out + '/';
+                this.pos = this.pos + 1;
+            } also e == 'b' {
+                out = out + '\b';
+                this.pos = this.pos + 1;
+            } also e == 'f' {
+                out = out + '\f';
+                this.pos = this.pos + 1;
+            } also e == 'n' {
+                out = out + '\n';
+                this.pos = this.pos + 1;
+            } also e == 'r' {
+                out = out + '\r';
+                this.pos = this.pos + 1;
+            } also e == 't' {
+                out = out + '\t';
+                this.pos = this.pos + 1;
+            } also e == 'u' {
+                this.pos = this.pos + 1;
+                if this.pos + 4 > this.text.size {
+                    this.fail("json: truncated \\u escape");
+                    return out;
+                }
+                cp: int<64> = 0;
+                for h: int = 0; h < 4; h = h + 1 {
+                    hv: int = JsonValue.hexval(this.text[this.pos]);
+                    if hv < 0 {
+                        this.fail("json: invalid \\u hex digit");
+                        return out;
+                    }
+                    cp = cp * 16 + toint(int<64>, hv);
+                    this.pos = this.pos + 1;
+                }
+                if cp >= 0xD800 && cp <= 0xDBFF {
+                    if this.peek() == '\\' && this.peek_n(1) == 'u' {
+                        this.pos = this.pos + 2;
+                        if this.pos + 4 > this.text.size {
+                            this.fail("json: truncated \\u surrogate pair");
+                            return out;
+                        }
+                        lo: int<64> = 0;
+                        for h2: int = 0; h2 < 4; h2 = h2 + 1 {
+                            hv2: int = JsonValue.hexval(this.text[this.pos]);
+                            if hv2 < 0 {
+                                this.fail("json: invalid \\u surrogate hex digit");
+                                return out;
+                            }
+                            lo = lo * 16 + toint(int<64>, hv2);
+                            this.pos = this.pos + 1;
+                        }
+                        if lo >= 0xDC00 && lo <= 0xDFFF {
+                            combined: int<64> = 0x10000 + ((cp - 0xD800) * 1024) + (lo - 0xDC00);
+                            out = JsonValue.utf8(combined, out);
+                        } else {
+                            this.fail("json: unpaired high surrogate");
+                            return out;
+                        }
+                    } else {
+                        this.fail("json: unpaired high surrogate");
+                        return out;
+                    }
+                } else {
+                    out = JsonValue.utf8(cp, out);
+                }
+            } else {
+                this.fail("json: invalid escape sequence");
+                return out;
+            }
+        }
+        this.fail("json: unterminated string");
+        return out;
+    }
+
+    pub fnc parse_number() : JsonValue {
+        neg: bool = false;
+        if this.peek() == '-' {
+            neg = true;
+            this.pos = this.pos + 1;
+        }
+        mant: int<64> = 0;
+        dec: int<64> = 0;
+        expo: int<64> = 0;
+        eneg: bool = false;
+        isf: bool = false;
+        while this.is_digit(this.peek()) {
+            mant = mant * 10 + toint(int<64>, JsonValue.hexval(this.peek()));
+            this.pos = this.pos + 1;
+        }
+        if this.peek() == '.' {
+            isf = true;
+            this.pos = this.pos + 1;
+            if !this.is_digit(this.peek()) {
+                this.fail("json: malformed number (missing fraction digits)");
+                return JsonValue { ok: false, err: this.err };
+            }
+            while this.is_digit(this.peek()) {
+                mant = mant * 10 + toint(int<64>, JsonValue.hexval(this.peek()));
+                dec = dec + 1;
+                this.pos = this.pos + 1;
+            }
+        }
+        if this.peek() == 'e' || this.peek() == 'E' {
+            isf = true;
+            this.pos = this.pos + 1;
+            if this.peek() == '+' {
+                this.pos = this.pos + 1;
+            } also this.peek() == '-' {
+                eneg = true;
+                this.pos = this.pos + 1;
+            }
+            if !this.is_digit(this.peek()) {
+                this.fail("json: malformed number (missing exponent digits)");
+                return JsonValue { ok: false, err: this.err };
+            }
+            while this.is_digit(this.peek()) {
+                expo = expo * 10 + toint(int<64>, JsonValue.hexval(this.peek()));
+                this.pos = this.pos + 1;
+            }
+        }
+        if !isf {
+            if neg {
+                return JsonValue { typ: JsonType::JINT, ival: 0 - mant, ok: true };
+            }
+            return JsonValue { typ: JsonType::JINT, ival: mant, ok: true };
+        }
+        sh: int<64> = dec - expo;
+        if eneg {
+            sh = dec + expo;
+        }
+        d: float = tofloat(float, mant);
+        if sh > 0 {
+            d = d / JsonValue.ipow10(sh);
+        } also sh < 0 {
+            d = d * JsonValue.ipow10(0 - sh);
+        }
+        if neg {
+            d = 0.0 - d;
+        }
+        return JsonValue { typ: JsonType::JFLOAT, fval: d, ok: true };
+    }
+};
+
+pub def Json : class {
+    static pub fnc parse(text string) : JsonValue {
+        p: JsonParser = JsonParser { text: text, pos: 0 };
+        p.skip_ws();
+        v: JsonValue = p.parse_value();
+        if v.ok == false {
+            return v;
+        }
+        p.skip_ws();
+        if p.pos < text.size {
+            return JsonValue { ok: false, err: "json: trailing characters after top-level value" };
+        }
+        return v;
+    }
+
+    static pub fnc parse_file(path string) : JsonValue {
+        f: File = File.open(path, "r");
+        if f == nil {
+            return JsonValue { ok: false, err: "json: cannot open file '" + path + "'" };
+        }
+        content: string = f.read();
+        f.close();
+        return Json.parse(content);
+    }
+
+    static pub fnc stringify(v JsonValue) : string {
+        return v.stringify();
+    }
+
+    static pub fnc pretty(v JsonValue) : string {
+        return v.pretty();
+    }
+
+    static pub fnc save(path string, v JsonValue) : int {
+        f: File = File.open(path, "w");
+        if f == nil {
+            return -1;
+        }
+        r: int = f.write(Json.stringify(v));
+        f.close();
+        return r;
+    }
+};

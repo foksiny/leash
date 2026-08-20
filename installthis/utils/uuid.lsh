@@ -1,0 +1,78 @@
+use utils::hex::Hex;
+
+pub def Uuid : class {
+    static pub fnc zero() : string {
+        return "00000000-0000-0000-0000-000000000000";
+    }
+
+    static pub fnc v4() : string {
+        h: string;
+        for i: int = 0; i < 32; i = i + 1 {
+            if i == 12 {
+                h = h + "4";
+            } also i == 16 {
+                h = h + Hex.chr(rand(8, 11));
+            } else {
+                h = h + Hex.chr(rand(0, 15));
+            }
+        }
+        return Uuid.format(h);
+    }
+
+    static pub fnc format(hex string) : string {
+        if hex.size != 32 {
+            return "";
+        }
+        out: string;
+        hi: int = 0;
+        for i: int = 0; i < 36; i = i + 1 {
+            if i == 8 || i == 13 || i == 18 || i == 23 {
+                out = out + '-';
+            } else {
+                out = out + hex[hi];
+                hi = hi + 1;
+            }
+        }
+        return out;
+    }
+
+    static pub fnc valid(s string) : bool {
+        if s.size != 36 {
+            return false;
+        }
+        for i: int = 0; i < 36; i = i + 1 {
+            if i == 8 || i == 13 || i == 18 || i == 23 {
+                if s[i] != '-' {
+                    return false;
+                }
+            } else {
+                if Hex.val(s[i]) < 0 {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    static pub fnc compact(s string) : string {
+        if Uuid.valid(s) == false {
+            return "";
+        }
+        out: string;
+        foreach _, c in<string> s {
+            _ = _ + 1 - 1;
+            if c != '-' {
+                out = out + c;
+            }
+        }
+        return out;
+    }
+
+    static pub fnc bytes(s string) : vec<char> {
+        if Uuid.valid(s) == false {
+            out: vec<char>;
+            return out;
+        }
+        return Hex.to_bytes(Uuid.compact(s));
+    }
+};

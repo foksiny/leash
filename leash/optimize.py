@@ -102,15 +102,24 @@ def optimize_module(mod_ref, opt_level=0, size_opt=False, target_machine=None, o
         target = llvm.Target.from_triple(triple)
         target_machine = target.create_target_machine(opt=opt_level)
 
-    speed = min(opt_level, 3) if not size_opt else 2
-    size = (size_opt if isinstance(size_opt, int) and size_opt > 1 else 1) if size_opt else 0
+    if isinstance(size_opt, int) and size_opt > 1:
+        # -Oz: cap speed at O1, maximize size reduction
+        speed, size = 1, 2
+    elif size_opt:
+        # -Os: O2 speed ceiling with size level 1
+        speed, size = 2, 1
+    else:
+        speed, size = min(opt_level, 3), 0
 
-    pb = _create_pass_builder(target_machine, speed_level=speed, size_level=size)
+    # Size builds use a low inliner threshold so aggressive inlining doesn't bloat the binary
+    pb = _create_pass_builder(target_machine, speed_level=speed, size_level=size,
+                              inlining_threshold=50 if size_opt else -1)
 
-    if opt_level >= 2:
+    if opt_level >= 2 or size_opt:
         if opt_verbose:
-            print(f"[LLVM Opt] Using LLVM standard pipeline (O2+) with inliner, GVN, loop opts", file=sys.stderr)
-        # First iteration of the standard pipeline at the given speed level
+            print(f"[LLVM Opt] Using LLVM standard pipeline ({'size-aware' if size_opt else 'O2+'}) with inliner, GVN, loop opts", file=sys.stderr)
+        # Standard pipeline at the given speed/size levels (also used for -Oz,
+        # which runs the size-aware standard pipeline capped at speed 1)
         pm = pb.getModulePassManager()
         pm.add_verifier()
         try:
@@ -127,13 +136,13 @@ def optimize_module(mod_ref, opt_level=0, size_opt=False, target_machine=None, o
                 raise RuntimeError(f"LLVM optimization failed: {exc}") from exc
 
         # Apply extra passes that the standard pipeline may not cover
-        if opt_level >= 2:
+        if opt_level >= 2 or size_opt:
             pm_extra = llvm.create_new_module_pass_manager()
             pm_extra.add_sinking_pass()
             pm_extra.add_instruction_combine_pass()
             pm_extra.add_simplify_cfg_pass()
             pm_extra.add_dead_code_elimination_pass()
-            if opt_level >= 3:
+            if opt_level >= 3 and not size_opt:
                 pm_extra.add_aggressive_instcombine_pass()
                 pm_extra.add_new_gvn_pass()
                 pm_extra.add_dead_store_elimination_pass()
@@ -144,7 +153,7 @@ def optimize_module(mod_ref, opt_level=0, size_opt=False, target_machine=None, o
             except Exception:
                 pass
 
-    if opt_level >= 4:
+    if opt_level >= 4 and not size_opt:
         if opt_verbose:
             print(f"[LLVM Opt] Running aggressive O4 pipeline (aggressive inlining + dual pass)", file=sys.stderr)
         # Create a more aggressive PassBuilder for O4 with higher inlining threshold.
@@ -198,7 +207,7 @@ def optimize_module(mod_ref, opt_level=0, size_opt=False, target_machine=None, o
             pm4d.run(mod_ref, pb4)
         except Exception:
             pass
-    elif opt_level == 1:
+    elif opt_level == 1 and not size_opt:
         if opt_verbose:
             print(f"[LLVM Opt] Using O1 manual pass pipeline (instcombine, DCE, SROA, globalopt)", file=sys.stderr)
         pm = llvm.create_new_module_pass_manager()

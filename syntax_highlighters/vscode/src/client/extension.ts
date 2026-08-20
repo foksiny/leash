@@ -4,7 +4,11 @@ import {
     ExtensionContext,
     commands,
     window,
-    ConfigurationChangeEvent
+    ConfigurationChangeEvent,
+    Uri,
+    Position,
+    Range,
+    Location
 } from 'vscode';
 import {
     LanguageClient,
@@ -151,6 +155,36 @@ export function activate(context: ExtensionContext) {
             await client?.sendRequest('leash/checkFile', {
                 uri: editor.document.uri.toString()
             });
+        }),
+
+        commands.registerCommand('leash.showReferences', async (
+            uri: string,
+            position: { line: number; character: number },
+            locations: Array<{
+                uri: string;
+                range: {
+                    start: { line: number; character: number };
+                    end: { line: number; character: number };
+                };
+            }>
+        ) => {
+            const converted = locations.map(l =>
+                new Location(
+                    Uri.parse(l.uri),
+                    new Range(
+                        l.range.start.line,
+                        l.range.start.character,
+                        l.range.end.line,
+                        l.range.end.character
+                    )
+                )
+            );
+            await commands.executeCommand(
+                'editor.action.showReferences',
+                Uri.parse(uri),
+                new Position(position.line, position.character),
+                converted
+            );
         })
     );
 

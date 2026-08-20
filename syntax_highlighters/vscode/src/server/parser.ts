@@ -71,17 +71,33 @@ class Parser {
                 continue;
             }
             const t = tok.text;
-            if (t === 'use') {
-                this.parseUse();
-            } else if (t === 'error') {
-                this.parseErrorDef([]);
-            } else if (t === 'def') {
-                this.parseDef([]);
-            } else if (t === 'fnc' || t === 'worker') {
-                this.parseFunction([]);
-            } else if (t === 'opdef') {
+            let mods: string[] = [];
+            let head = t;
+            if (MODIFIERS.has(t)) {
+                let j = this.i;
+                while (j < this.tokens.length && MODIFIERS.has(this.tokens[j].text) && this.tokens[j].type === 'ident') j++;
+                const nt = this.tokens[j];
+                if (
+                    nt &&
+                    nt.type === 'ident' &&
+                    (nt.text === 'fnc' || nt.text === 'worker' || nt.text === 'def' || nt.text === 'use' || nt.text === 'error' || nt.text === 'opdef')
+                ) {
+                    mods = this.tokens.slice(this.i, j).map(x => x.text);
+                    head = nt.text;
+                    this.i = j;
+                }
+            }
+            if (head === 'use') {
+                this.parseUse(mods);
+            } else if (head === 'error') {
+                this.parseErrorDef(mods);
+            } else if (head === 'def') {
+                this.parseDef(mods);
+            } else if (head === 'fnc' || head === 'worker') {
+                this.parseFunction(mods);
+            } else if (head === 'opdef') {
                 this.parseOpdef();
-            } else if (t === 'if' || t === 'unless' || t === 'also' || t === 'alsou' || t === 'else') {
+            } else if (head === 'if' || head === 'unless' || head === 'also' || head === 'alsou' || head === 'else') {
                 this.parseConditionalDef();
             } else if (MODIFIERS.has(t) && this.isGlobalHeadAhead()) {
                 this.parseGlobal();
@@ -180,9 +196,9 @@ class Parser {
                     j++;
                 }
                 this.i = close + 1;
+                if (this.peek()?.text === ';') this.i++;
             }
         }
-        this.consumeUntil(';');
     }
 
     private peek(n = 0): Token | undefined {
@@ -195,13 +211,13 @@ class Parser {
         while (j < n && MODIFIERS.has(this.tokens[j].text) && this.tokens[j].type === 'ident') j++;
         if (j >= n || this.tokens[j].type !== 'ident') return false;
         const colon = this.tokens[j + 1];
-        return !!colon && colon.text === ':' && colon.type === 'op';
+        return !!colon && colon.text === ':';
     }
 
-    private parseUse(): void {
+    private parseUse(mods: string[] = []): void {
         const startTok = this.tokens[this.i];
         this.i++;
-        let isPriv = false;
+        let isPriv = mods.includes('priv');
         if (this.peek()?.text === 'priv') {
             isPriv = true;
             this.i++;
@@ -1110,7 +1126,7 @@ class Parser {
             if (t.text === ')' || t.text === ']' || t.text === '}') depth--;
             this.i++;
         }
-        const vis = mods.join(' ');
+        const vis = mods.length ? mods.join(' ') : 'pub';
         this.model.symbols.push({
             id: idOf(this.uri, nameTok.text, nameTok.line, nameTok.char, 'global'),
             name: nameTok.text,

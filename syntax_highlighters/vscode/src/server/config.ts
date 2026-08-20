@@ -121,5 +121,33 @@ export function resolveModuleFile(modulePath: string[], fromFile: string, import
     for (const candidate of candidates) {
         if (fs.existsSync(candidate)) return candidate;
     }
+
+    // Fallback mirroring the Leash compiler: recursively search ~/.leash/libs
+    // for a file whose name matches the imported module. Libraries installed
+    // via `leashed install` live in subdirectories (e.g. ~/.leash/libs/raylib/)
+    // plus a top-level <lib>.lsh stub, so the flat/nested checks above are not
+    // enough. If more than one file matches, the module is ambiguous (the
+    // compiler treats that as an error), so return null.
+    if (fs.existsSync(libs)) {
+        const matches: string[] = [];
+        const walk = (dir: string): void => {
+            let entries: fs.Dirent[];
+            try {
+                entries = fs.readdirSync(dir, { withFileTypes: true });
+            } catch {
+                return;
+            }
+            for (const entry of entries) {
+                const full = path.join(dir, entry.name);
+                if (entry.isDirectory()) {
+                    walk(full);
+                } else if (entry.isFile() && entry.name === flatName) {
+                    matches.push(full);
+                }
+            }
+        };
+        walk(libs);
+        if (matches.length === 1) return matches[0];
+    }
     return null;
 }

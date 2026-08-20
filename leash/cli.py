@@ -771,7 +771,7 @@ def _get_target_machine(triple, reloc, opt_level):
         )
     return _target_machine_cache[key]
 
-def compile_file(input_file, output_name=None, output_type="executable", is_run_mode=False, target_name=None, check_mode=False, warnings_as_errors=False, extra_libs=None, opt_level=None, extra_import_dirs=None, opt_verbose=False, no_gc=False, autofree=False):
+def compile_file(input_file, output_name=None, output_type="executable", is_run_mode=False, target_name=None, check_mode=False, warnings_as_errors=False, extra_libs=None, opt_level=None, extra_import_dirs=None, opt_verbose=False, no_gc=False, autofree=False, static=False):
     with open(input_file, "r") as f: code = f.read()
     target_config = get_target(target_name) if target_name else get_native_target()
     try:
@@ -800,7 +800,9 @@ def compile_file(input_file, output_name=None, output_type="executable", is_run_
     triple = target_config.llvm_triple
     if target_config.name == "win64" and os.name == "nt":
         triple = triple + "-elf"
-    tm = _get_target_machine(triple, "static" if target_config.name == "win64" and os.name == "nt" else "default",
+    # Static (non-PIC) reloc model: safe because Linux targets always link -no-pie
+    use_static_reloc = (target_config.name == "win64" and os.name == "nt") or target_config.name in ("linux64", "linux32")
+    tm = _get_target_machine(triple, "static" if use_static_reloc else "default",
                             min(parsed_opt, 3))
     mod.triple = triple
 
@@ -808,7 +810,7 @@ def compile_file(input_file, output_name=None, output_type="executable", is_run_
     optimize_module(mod, opt_level=parsed_opt, size_opt=size_opt, target_machine=tm, opt_verbose=opt_verbose)
     obj_name = output_name + ".o"
     with open(obj_name, "wb") as f: f.write(tm.emit_object(mod))
-    return _link_native(obj_name, output_name, target_config, is_run_mode, output_type, codegen, extra_libs, no_gc=no_gc, autofree=autofree)
+    return _link_native(obj_name, output_name, target_config, is_run_mode, output_type, codegen, extra_libs, no_gc=no_gc, autofree=autofree, size_opt=bool(size_opt), static=static)
 
 def _parse_undefined_symbols(stderr):
     """Parse undefined reference symbols from linker error output."""
@@ -901,19 +903,25 @@ def _link_native(obj_name, output_name, target_config, is_run_mode, output_type,
 # Cache compiled runtime stubs to avoid recompiling gc.c + stubs every link
 _runtime_stub_cache = {}
 
-def _get_runtime_stubs(cc, no_gc=False, autofree=False):
-    """Return list of compiled .o paths for runtime C files, cached by (compiler, mtime)."""
+def _get_runtime_stubs(cc, no_gc=False, autofree=False, size_opt=False):
+    """Return list of compiled .o paths for runtime C files, cached by (compiler, mtime).
+
+    Runtime files are compiled with -O2 (or -Os in size mode) plus
+    -ffunction-sections/-fdata-sections so the linker's --gc-sections can
+    drop unused functions (matrix ops, thread pools, etc.) from the binary.
+    """
     leash_dir = os.path.dirname(os.path.abspath(__file__))
     stub_files = []
+    base_cflags = ["-Os" if size_opt else "-O2", "-ffunction-sections", "-fdata-sections"]
     # Always compile gc.c; in no-gc/autofree mode compile with -DNO_GC (stub mode)
-    gc_cflags = []
+    gc_cflags = list(base_cflags)
     if no_gc or autofree:
-        gc_cflags = ["-DNO_GC"]
+        gc_cflags.append("-DNO_GC")
     stub_files.append(("gc.c", gc_cflags))
     if os.name == "nt":
-        stub_files.append(("windows_stubs.c", []))
+        stub_files.append(("windows_stubs.c", base_cflags))
     else:
-        stub_files.append(("cross_compile_stubs.c", []))
+        stub_files.append(("cross_compile_stubs.c", base_cflags))
 
     result = []
     for sfile, cflags in stub_files:
@@ -949,7 +957,7 @@ def _get_runtime_stubs(cc, no_gc=False, autofree=False):
             result.append(cached_o)
     return result
 
-def _link_native(obj_name, output_name, target_config, is_run_mode, output_type, codegen, extra_libs=None, no_gc=False, autofree=False):
+def _link_native(obj_name, output_name, target_config, is_run_mode, output_type, codegen, extra_libs=None, no_gc=False, autofree=False, size_opt=False, static=False):
     nlib_args = [l[0] for l in codegen.native_libs]
     if extra_libs: nlib_args.extend([f"-l{l}" for l in extra_libs])
     cc = os.environ.get("CC") or target_config.detect_cross_linker()
@@ -962,7 +970,29 @@ def _link_native(obj_name, output_name, target_config, is_run_mode, output_type,
                 print("error: No C compiler found (install gcc or clang, or set CC env var)", file=sys.stderr)
                 sys.exit(1)
 
-    stubs = _get_runtime_stubs(cc, no_gc=no_gc, autofree=autofree)
+    static_flags = []
+    if static:
+        if target_config.name not in ("linux64", "linux32"):
+            print("error: --static is only supported for linux64/linux32 targets", file=sys.stderr)
+            sys.exit(1)
+        if not os.environ.get("CC"):
+            musl_cc = shutil.which("musl-gcc") or shutil.which("musl-clang")
+            if musl_cc:
+                cc = musl_cc
+            elif shutil.which("clang"):
+                cc = "clang"
+                arch = target_config.llvm_triple.split("-")[0]
+                static_flags.append(f"--target={arch}-linux-musl")
+            else:
+                print("error: --static requires musl-gcc, musl-clang, or clang (with musl target support)", file=sys.stderr)
+                sys.exit(1)
+        static_flags.append("-static")
+
+    size_flags = list(target_config.size_flags)
+    if size_opt:
+        size_flags.extend(target_config.size_only_flags)
+
+    stubs = _get_runtime_stubs(cc, no_gc=no_gc, autofree=autofree, size_opt=size_opt)
 
     out = None
     retried = False
@@ -970,7 +1000,7 @@ def _link_native(obj_name, output_name, target_config, is_run_mode, output_type,
         try:
             if output_type == "executable":
                 out = target_config.get_output_name(output_name)
-                result = subprocess.run([cc, obj_name] + stubs + ["-o", out] + target_config.linker_flags + nlib_args, stderr=subprocess.PIPE)
+                result = subprocess.run([cc, obj_name] + stubs + ["-o", out] + target_config.linker_flags + size_flags + static_flags + nlib_args, stderr=subprocess.PIPE)
                 if result.returncode != 0:
                     raise subprocess.CalledProcessError(result.returncode, result.args, stderr=result.stderr)
             elif output_type == "dynamic":
@@ -1042,11 +1072,11 @@ def dump_file(input_file, output_name=None, target_name=None, check_mode=False, 
     with open(output_name, "w") as f: f.write(str(mod))
     print(f"Dumped LLVM IR to '{output_name}'"); return output_name
 
-def run_file(input_file, args=[], target_name=None, check_mode=False, warnings_as_errors=False, extra_libs=None, opt_level=None, extra_import_dirs=None, opt_verbose=False, no_gc=False, autofree=False):
+def run_file(input_file, args=[], target_name=None, check_mode=False, warnings_as_errors=False, extra_libs=None, opt_level=None, extra_import_dirs=None, opt_verbose=False, no_gc=False, autofree=False, static=False):
     import platform, time, uuid, stat, signal
     tcfg = get_target(target_name) if target_name else get_native_target()
     tmp = f".__temp_run_leash_exe_{uuid.uuid4().hex}"
-    out = compile_file(input_file, output_name=tmp, is_run_mode=True, target_name=target_name, check_mode=check_mode, warnings_as_errors=warnings_as_errors, extra_libs=extra_libs, opt_level=opt_level, extra_import_dirs=extra_import_dirs, opt_verbose=opt_verbose, no_gc=no_gc, autofree=autofree)
+    out = compile_file(input_file, output_name=tmp, is_run_mode=True, target_name=target_name, check_mode=check_mode, warnings_as_errors=warnings_as_errors, extra_libs=extra_libs, opt_level=opt_level, extra_import_dirs=extra_import_dirs, opt_verbose=opt_verbose, no_gc=no_gc, autofree=autofree, static=static)
     # Use absolute path to avoid working directory issues
     out_abs = os.path.abspath(out)
     # Ensure binary is executable (important on filesystems like WSL DrvFs)
@@ -1141,17 +1171,18 @@ def resolve_project_deps(config, project_dir, extra_import_dirs=None):
     if opt_level.startswith("O"):
         opt_level = opt_level[1:]
     autofree = config.get("autofree", "false").lower() in ("true", "yes", "1")
-    return all_extra_dirs, extra_libs, opt_level, autofree
+    static = config.get("static", "false").lower() in ("true", "yes", "1")
+    return all_extra_dirs, extra_libs, opt_level, autofree, static
 
 
 def build_project(extra_import_dirs=None):
     """Build the project using config.lshc in the current directory."""
     project_dir = os.getcwd()
     config, project_dir, main_path = read_project_config(project_dir)
-    all_extra_dirs, extra_libs, opt_level, autofree = resolve_project_deps(config, project_dir, extra_import_dirs)
+    all_extra_dirs, extra_libs, opt_level, autofree, static = resolve_project_deps(config, project_dir, extra_import_dirs)
     out_basename = config.get("out_name") or os.path.basename(project_dir)
     out_name = os.path.join(project_dir, "out", out_basename)
-    compile_file(main_path, output_name=out_name, extra_import_dirs=all_extra_dirs, extra_libs=extra_libs, opt_level=opt_level, autofree=autofree)
+    compile_file(main_path, output_name=out_name, extra_import_dirs=all_extra_dirs, extra_libs=extra_libs, opt_level=opt_level, autofree=autofree, static=static)
 
 
 def run_project(prog_args=None, extra_import_dirs=None):
@@ -1159,9 +1190,9 @@ def run_project(prog_args=None, extra_import_dirs=None):
     import platform, time, uuid, stat
     project_dir = os.getcwd()
     config, project_dir, main_path = read_project_config(project_dir)
-    all_extra_dirs, extra_libs, opt_level, autofree = resolve_project_deps(config, project_dir, extra_import_dirs)
+    all_extra_dirs, extra_libs, opt_level, autofree, static = resolve_project_deps(config, project_dir, extra_import_dirs)
     tmp = f".__temp_run_leash_exe_{uuid.uuid4().hex}"
-    out = compile_file(main_path, output_name=tmp, is_run_mode=True, extra_import_dirs=all_extra_dirs, extra_libs=extra_libs, opt_level=opt_level, autofree=autofree)
+    out = compile_file(main_path, output_name=tmp, is_run_mode=True, extra_import_dirs=all_extra_dirs, extra_libs=extra_libs, opt_level=opt_level, autofree=autofree, static=static)
     out_abs = os.path.abspath(out)
     try:
         os.chmod(out_abs, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
@@ -1205,7 +1236,7 @@ def update_leash():
     import json
     
     print("Leash Update Checker")
-    print("Current version: 0.22.1 Beta\n")
+    print("Current version: 0.22.2 Beta\n")
     
     try:
         req = urllib.request.Request(
@@ -1260,10 +1291,10 @@ def main():
         sys.exit(1)
     cmd = sys.argv[1]
     if cmd in ("--help", "-h"):
-        print("Leash v0.22.1 Beta\nUsage: leash <command> [options]\nCommands: compile, run, dump, check, install, init, build, runp, update\nRun 'leash <command> --help' for details.\n\nGlobal Options:\n  --verbose/-vb                       Enable highly detailed masterclass error and warning explanations.\n  --optimization-verbosity/-ov      Show optimization pass details.\n  --autofree/-af                      Smart auto-free mode (tracks allocations, frees on scope exit; no GC needed)")
+        print("Leash v0.22.2 Beta\nUsage: leash <command> [options]\nCommands: compile, run, dump, check, install, init, build, runp, update\nRun 'leash <command> --help' for details.\n\nGlobal Options:\n  --verbose/-vb                       Enable highly detailed masterclass error and warning explanations.\n  --optimization-verbosity/-ov      Show optimization pass details.\n  --autofree/-af                      Smart auto-free mode (tracks allocations, frees on scope exit; no GC needed)")
         sys.exit(0)
     if cmd in ("--version", "-v"):
-        print("Leash v0.22.1 Beta\nBuilt on LLVM with custom GC (use --autofree for GC-free auto-free mode)"); sys.exit(0)
+        print("Leash v0.22.2 Beta\nBuilt on LLVM with custom GC (use --autofree for GC-free auto-free mode)"); sys.exit(0)
     if cmd == "check":
         if len(sys.argv) < 3:
             print("Usage: leash check <file.lsh> [options]")
@@ -1334,12 +1365,13 @@ def main():
             print(f"Usage: leash {cmd} <file.lsh> [options]")
             sys.exit(1)
         if sys.argv[2] in ("--help", "-h"):
-            print(f"Options for {cmd}:\n  --target <target>\n  --check\n  --warnings-as-errors\n  --opt <0,1,2,3,4,s,z>\n  -l<lib>\n  --other-imports/-oi <folder>\n  --no-garbage-collector/-ngc   Disable garbage collector (use C malloc/free everywhere)\n  --autofree/-af                   Smart auto-free mode (tracks allocations and frees on scope exit; no GC needed)\n  --verbose/-vb                       Enable highly detailed masterclass error and warning explanations.\n  --optimization-verbosity/-ov      Show optimization pass details.")
+            print(f"Options for {cmd}:\n  --target <target>\n  --check\n  --warnings-as-errors\n  --opt <0,1,2,3,4,s,z>\n  -l<lib>\n  --other-imports/-oi <folder>\n  --no-garbage-collector/-ngc   Disable garbage collector (use C malloc/free everywhere)\n  --autofree/-af                   Smart auto-free mode (tracks allocations and frees on scope exit; no GC needed)\n  --static/-static                 Fully-static musl-linked binary (linux64/linux32 only)\n  --verbose/-vb                       Enable highly detailed masterclass error and warning explanations.\n  --optimization-verbosity/-ov      Show optimization pass details.")
             sys.exit(0)
         infile = sys.argv[2]
         target, outname, outtype, check, warnerr, elibs, opt = None, None, "executable", False, False, [], "2"
         no_gc = False
         autofree = False
+        static = False
         extra_import_dirs = []
         i = 3
         while i < len(sys.argv):
@@ -1351,6 +1383,9 @@ def main():
                 i += 1
             elif sys.argv[i] == "--warnings-as-errors":
                 warnerr = True
+                i += 1
+            elif sys.argv[i] in ("--static", "-static"):
+                static = True
                 i += 1
             elif sys.argv[i].startswith("-O") and len(sys.argv[i]) > 2:
                 opt = sys.argv[i][2:]  # -O4, -Os, -Oz
@@ -1385,11 +1420,11 @@ def main():
             else:
                 i += 1
         if cmd == "run":
-            run_file(infile, sys.argv[i:], target, check, warnerr, elibs, opt, extra_import_dirs=extra_import_dirs, opt_verbose=OPT_VERBOSE_MODE, no_gc=no_gc, autofree=autofree)
+            run_file(infile, sys.argv[i:], target, check, warnerr, elibs, opt, extra_import_dirs=extra_import_dirs, opt_verbose=OPT_VERBOSE_MODE, no_gc=no_gc, autofree=autofree, static=static)
         elif cmd == "dump":
             dump_file(infile, outname, target, check, warnerr, elibs, opt, extra_import_dirs=extra_import_dirs, opt_verbose=OPT_VERBOSE_MODE, no_gc=no_gc, autofree=autofree)
         else:
-            compile_file(infile, outname, outtype, False, target, check, warnerr, elibs, opt, extra_import_dirs=extra_import_dirs, opt_verbose=OPT_VERBOSE_MODE, no_gc=no_gc, autofree=autofree)
+            compile_file(infile, outname, outtype, False, target, check, warnerr, elibs, opt, extra_import_dirs=extra_import_dirs, opt_verbose=OPT_VERBOSE_MODE, no_gc=no_gc, autofree=autofree, static=static)
     elif cmd == "update":
         update_leash()
         sys.exit(0)

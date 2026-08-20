@@ -1,0 +1,146 @@
+pub def Hex : class {
+    static pub fnc chr(d int) : char {
+        if d < 0 || d > 15 {
+            return '?';
+        }
+        if d < 10 {
+            return (char)('0' + d);
+        }
+        return (char)('a' + d - 10);
+    }
+
+    static pub fnc chr_upper(d int) : char {
+        if d < 0 || d > 15 {
+            return '?';
+        }
+        if d < 10 {
+            return (char)('0' + d);
+        }
+        return (char)('A' + d - 10);
+    }
+
+    static pub fnc val(c char) : int {
+        if c >= '0' && c <= '9' {
+            return c - '0';
+        }
+        if c >= 'a' && c <= 'f' {
+            return c - 'a' + 10;
+        }
+        if c >= 'A' && c <= 'F' {
+            return c - 'A' + 10;
+        }
+        return -1;
+    }
+
+    static pub fnc valid(s string) : bool {
+        if s.size == 0 {
+            return false;
+        }
+        foreach _, c in<string> s {
+            _ = _ + 1 - 1;
+            if Hex.val(c) < 0 {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static pub fnc from_bytes(bytes vec<char>) : string {
+        out: string;
+        for i: int = 0; i < bytes.size; i = i + 1 {
+            b: int = toint(int, bytes.get(i));
+            out = out + Hex.chr(b / 16);
+            out = out + Hex.chr(b % 16);
+        }
+        return out;
+    }
+
+    static pub fnc from_bytes_upper(bytes vec<char>) : string {
+        out: string;
+        for i: int = 0; i < bytes.size; i = i + 1 {
+            b: int = toint(int, bytes.get(i));
+            out = out + Hex.chr_upper(b / 16);
+            out = out + Hex.chr_upper(b % 16);
+        }
+        return out;
+    }
+
+    static pub fnc to_bytes(s string) : vec<char> {
+        out: vec<char>;
+        if s.size % 2 != 0 {
+            return out;
+        }
+        for i: int = 0; i < s.size; i = i + 2 {
+            hi: int = Hex.val(s[i]);
+            lo: int = Hex.val(s[i + 1]);
+            if hi < 0 || lo < 0 {
+                out.clear();
+                return out;
+            }
+            out.pushb((char)(hi * 16 + lo));
+        }
+        return out;
+    }
+
+    static pub fnc from_int(n int<64>) : string {
+        if n == 0 {
+            return "0";
+        }
+        tmp: int<64> = n;
+        digits: int = 1;
+        while tmp >= 16 {
+            tmp = tmp / 16;
+            digits = digits + 1;
+        }
+        out: string;
+        for i: int = 0; i < digits; i = i + 1 {
+            power: int<64> = 1;
+            j: int = 0;
+            while j < digits - i - 1 {
+                power = power * 16;
+                j = j + 1;
+            }
+            d: int = toint(int, (n / power) % 16);
+            out = out + Hex.chr(d);
+        }
+        return out;
+    }
+
+    static pub fnc from_int_pad(n int<64>, width int) : string {
+        out: string = Hex.from_int(n);
+        while out.size < width {
+            out = "0" + out;
+        }
+        return out;
+    }
+
+    static pub fnc to_int(s string) : int<64> {
+        if s.size == 0 {
+            return -1;
+        }
+        neg: bool = false;
+        start: int = 0;
+        if s[0] == '-' {
+            neg = true;
+            start = 1;
+        }
+        if s.size - start >= 2 && s[start] == '0' && (s[start + 1] == 'x' || s[start + 1] == 'X') {
+            start = start + 2;
+        }
+        if start >= s.size {
+            return -1;
+        }
+        n: int<64> = 0;
+        for i: int = start; i < s.size; i = i + 1 {
+            d: int = Hex.val(s[i]);
+            if d < 0 {
+                return -1;
+            }
+            n = n * 16 + toint(int<64>, d);
+        }
+        if neg {
+            return 0 - n;
+        }
+        return n;
+    }
+};

@@ -13,10 +13,9 @@ export const SEMANTIC_TOKEN_TYPES = [
     'enumMember',
     'macro',
     'namespace',
-    'string',
-    'number',
     'comment',
-    'operator'
+    'operator',
+    'decorator'
 ] as const;
 
 export const SEMANTIC_TOKEN_MODIFIERS = [
@@ -40,10 +39,9 @@ const PROP_IDX = SEMANTIC_TOKEN_TYPES.indexOf('property');
 const ENUM_IDX = SEMANTIC_TOKEN_TYPES.indexOf('enumMember');
 const MACRO_IDX = SEMANTIC_TOKEN_TYPES.indexOf('macro');
 const NS_IDX = SEMANTIC_TOKEN_TYPES.indexOf('namespace');
-const STRING_IDX = SEMANTIC_TOKEN_TYPES.indexOf('string');
-const NUMBER_IDX = SEMANTIC_TOKEN_TYPES.indexOf('number');
 const COMMENT_IDX = SEMANTIC_TOKEN_TYPES.indexOf('comment');
 const OP_IDX = SEMANTIC_TOKEN_TYPES.indexOf('operator');
+const DECOR_IDX = SEMANTIC_TOKEN_TYPES.indexOf('decorator');
 
 const DECL_MOD = 1;
 const READONLY_MOD = 2;
@@ -64,8 +62,10 @@ export function semanticTokensHandler(index: WorkspaceIndex, uri: string): Seman
     }
 
     const localNames = new Map<string, number>();
+    const localDecls = new Set<string>();
     for (const local of model.locals) {
         if (!localNames.has(local.name)) localNames.set(local.name, 1);
+        localDecls.add(`${local.range.start.line}:${local.range.start.character}`);
     }
 
     const useRanges: Array<{ start: number; end: number }> = [];
@@ -83,20 +83,28 @@ export function semanticTokensHandler(index: WorkspaceIndex, uri: string): Seman
             case 'comment':
                 typeIdx = COMMENT_IDX;
                 break;
-            case 'string':
-                typeIdx = STRING_IDX;
-                break;
-            case 'number':
-                typeIdx = NUMBER_IDX;
-                break;
             case 'op':
                 typeIdx = OP_IDX;
                 break;
+            case 'at':
+                typeIdx = DECOR_IDX;
+                break;
+            // Strings and numbers are left to the TextMate grammar so that
+            // escape sequences, interpolation and number kinds (hex/binary/
+            // float/...) keep their finer highlighting.
             case 'ident': {
                 const text = t.text;
                 const prev = i > 0 ? tokens[i - 1] : null;
                 const next = i + 1 < tokens.length ? tokens[i + 1] : null;
 
+                if (prev && prev.type === 'at') {
+                    typeIdx = DECOR_IDX;
+                    break;
+                }
+                if (isInUseRange(useRanges, t.start)) {
+                    typeIdx = NS_IDX;
+                    break;
+                }
                 if (KEYWORDS.includes(text)) {
                     typeIdx = KEYWORD_IDX;
                     if (text === 'true' || text === 'false' || text === 'null' || text === 'nil') mods |= READONLY_MOD;
@@ -163,12 +171,12 @@ export function semanticTokensHandler(index: WorkspaceIndex, uri: string): Seman
                     typeIdx = PROP_IDX;
                     break;
                 }
-                if (prev?.text === '::') {
-                    typeIdx = ENUM_IDX;
+                if (prev?.text === '->') {
+                    typeIdx = PROP_IDX;
                     break;
                 }
-                if (isInUseRange(useRanges, t.start)) {
-                    typeIdx = NS_IDX;
+                if (prev?.text === '::') {
+                    typeIdx = ENUM_IDX;
                     break;
                 }
                 if (next?.text === '(') {
@@ -177,6 +185,7 @@ export function semanticTokensHandler(index: WorkspaceIndex, uri: string): Seman
                 }
                 if (localNames.has(text)) {
                     typeIdx = VAR_IDX;
+                    if (localDecls.has(`${t.line}:${t.char}`)) mods |= DECL_MOD;
                     break;
                 }
                 if (prev?.text === ':') {

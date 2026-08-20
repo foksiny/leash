@@ -1,0 +1,169 @@
+pub def UtfDecoded : struct {
+    ok: bool;
+    cp: int<64>;
+    len: int;
+};
+
+pub def Utf : class {
+    static pub fnc encode(cp int<64>) : string {
+        if cp < 0 {
+            return "";
+        }
+        if cp >= 0xD800 && cp <= 0xDFFF {
+            return "";
+        }
+        if cp > 0x10FFFF {
+            return "";
+        }
+        if cp < 0x80 {
+            return "" + (char)cp;
+        }
+        if cp < 0x800 {
+            out: string;
+            out = out + (char)(0xC0 | (cp / 64));
+            out = out + (char)(0x80 | (cp & 0x3F));
+            return out;
+        }
+        if cp < 0x10000 {
+            out2: string;
+            out2 = out2 + (char)(0xE0 | (cp / 4096));
+            out2 = out2 + (char)(0x80 | ((cp / 64) & 0x3F));
+            out2 = out2 + (char)(0x80 | (cp & 0x3F));
+            return out2;
+        }
+        out3: string;
+        out3 = out3 + (char)(0xF0 | (cp / 262144));
+        out3 = out3 + (char)(0x80 | ((cp / 4096) & 0x3F));
+        out3 = out3 + (char)(0x80 | ((cp / 64) & 0x3F));
+        out3 = out3 + (char)(0x80 | (cp & 0x3F));
+        return out3;
+    }
+
+    static pub fnc decode_at(s string, i int) : UtfDecoded {
+        if i < 0 || i >= s.size {
+            return UtfDecoded { ok: false, cp: 0, len: 0 };
+        }
+        b0: int = toint(int, s[i]);
+        if b0 < 0x80 {
+            return UtfDecoded { ok: true, cp: toint(int<64>, b0), len: 1 };
+        }
+        if b0 >= 0xC2 && b0 <= 0xDF {
+            if i + 1 >= s.size {
+                return UtfDecoded { ok: false, cp: 0, len: 0 };
+            }
+            t1: int = toint(int, s[i + 1]);
+            if t1 < 0x80 || t1 > 0xBF {
+                return UtfDecoded { ok: false, cp: 0, len: 0 };
+            }
+            cp2: int<64> = toint(int<64>, (b0 - 0xC0) * 64 + (t1 - 0x80));
+            return UtfDecoded { ok: true, cp: cp2, len: 2 };
+        }
+        if b0 >= 0xE0 && b0 <= 0xEF {
+            if i + 2 >= s.size {
+                return UtfDecoded { ok: false, cp: 0, len: 0 };
+            }
+            u1: int = toint(int, s[i + 1]);
+            u2: int = toint(int, s[i + 2]);
+            if u1 < 0x80 || u1 > 0xBF || u2 < 0x80 || u2 > 0xBF {
+                return UtfDecoded { ok: false, cp: 0, len: 0 };
+            }
+            if b0 == 0xE0 && u1 < 0xA0 {
+                return UtfDecoded { ok: false, cp: 0, len: 0 };
+            }
+            if b0 == 0xED && u1 > 0x9F {
+                return UtfDecoded { ok: false, cp: 0, len: 0 };
+            }
+            cp3: int<64> = toint(int<64>, (b0 - 0xE0) * 4096 + (u1 - 0x80) * 64 + (u2 - 0x80));
+            return UtfDecoded { ok: true, cp: cp3, len: 3 };
+        }
+        if b0 >= 0xF0 && b0 <= 0xF4 {
+            if i + 3 >= s.size {
+                return UtfDecoded { ok: false, cp: 0, len: 0 };
+            }
+            w1: int = toint(int, s[i + 1]);
+            w2: int = toint(int, s[i + 2]);
+            w3: int = toint(int, s[i + 3]);
+            if w1 < 0x80 || w1 > 0xBF || w2 < 0x80 || w2 > 0xBF || w3 < 0x80 || w3 > 0xBF {
+                return UtfDecoded { ok: false, cp: 0, len: 0 };
+            }
+            if b0 == 0xF0 && w1 < 0x90 {
+                return UtfDecoded { ok: false, cp: 0, len: 0 };
+            }
+            if b0 == 0xF4 && w1 > 0x8F {
+                return UtfDecoded { ok: false, cp: 0, len: 0 };
+            }
+            cp4: int<64> = toint(int<64>, (b0 - 0xF0) * 262144 + (w1 - 0x80) * 4096 + (w2 - 0x80) * 64 + (w3 - 0x80));
+            return UtfDecoded { ok: true, cp: cp4, len: 4 };
+        }
+        return UtfDecoded { ok: false, cp: 0, len: 0 };
+    }
+
+    static pub fnc valid(s string) : bool {
+        i: int = 0;
+        while i < s.size {
+            d: UtfDecoded = Utf.decode_at(s, i);
+            if d.ok == false {
+                return false;
+            }
+            i = i + d.len;
+        }
+        return true;
+    }
+
+    static pub fnc length(s string) : int {
+        n: int = 0;
+        i: int = 0;
+        while i < s.size {
+            d: UtfDecoded = Utf.decode_at(s, i);
+            if d.ok == false {
+                return -1;
+            }
+            n = n + 1;
+            i = i + d.len;
+        }
+        return n;
+    }
+
+    static pub fnc codepoints(s string) : vec<int<64>> {
+        out: vec<int<64>>;
+        i: int = 0;
+        while i < s.size {
+            d: UtfDecoded = Utf.decode_at(s, i);
+            if d.ok == false {
+                out.clear();
+                return out;
+            }
+            out.pushb(d.cp);
+            i = i + d.len;
+        }
+        return out;
+    }
+
+    static pub fnc from_codepoints(cps vec<int<64>>) : string {
+        out: string;
+        for i: int = 0; i < cps.size; i = i + 1 {
+            out = out + Utf.encode(cps.get(i));
+        }
+        return out;
+    }
+
+    static pub fnc is_ascii(s string) : bool {
+        foreach _, c in<string> s {
+            _ = _ + 1 - 1;
+            if toint(int, c) > 0x7F {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static pub fnc utf16_to_cp(high int<64>, low int<64>) : int<64> {
+        if high < 0xD800 || high > 0xDBFF {
+            return -1;
+        }
+        if low < 0xDC00 || low > 0xDFFF {
+            return -1;
+        }
+        return 0x10000 + (high - 0xD800) * 1024 + (low - 0xDC00);
+    }
+};
