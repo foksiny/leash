@@ -1,0 +1,6 @@
+3 | a | c
+[quoted,comma] [say "hi"] [plain]
+rows:3
+name/30/bob, jr
+roundtrip:3 | bob, jr
+--- Executed at 2026-08-21 21:00:23 ---

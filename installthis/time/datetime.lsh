@@ -1,0 +1,242 @@
+pub def DateTime : class {
+    static pub fnc is_leap(y int) : bool {
+        return (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+    }
+
+    static pub fnc days_in_month(y int, m int) : int {
+        if m < 1 || m > 12 {
+            return 0;
+        }
+        dm: vec<int>;
+        dm.pushb(31); dm.pushb(28); dm.pushb(31); dm.pushb(30);
+        dm.pushb(31); dm.pushb(30); dm.pushb(31); dm.pushb(31);
+        dm.pushb(30); dm.pushb(31); dm.pushb(30); dm.pushb(31);
+        d: int = dm.get(m - 1);
+        if m == 2 && DateTime.is_leap(y) {
+            d = 29;
+        }
+        return d;
+    }
+
+    static pub fnc now() : int<64> {
+        return toint(int<64>, time(0));
+    }
+
+    static pub fnc days_from_civil(y int, m int, d int) : int<64> {
+        yy: int = y;
+        if m <= 2 {
+            yy = yy - 1;
+        }
+        era: int<64> = toint(int<64>, DateTime.fdiv(yy, 400));
+        yoe: int<64> = toint(int<64>, yy) - era * 400;
+        mp: int<64> = toint(int<64>, m + 9) % 12;
+        doy: int<64> = (153 * mp + 2) / 5 + d - 1;
+        doe: int<64> = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+        return era * 146097 + doe - 719468;
+    }
+
+    static priv fnc fdiv(a int, b int) : int {
+        q: int = a / b;
+        if (a % b != 0) && ((a < 0) != (b < 0)) {
+            q = q - 1;
+        }
+        return q;
+    }
+
+    static priv fnc fmod_i(a int, b int) : int {
+        r: int = a % b;
+        if r != 0 && ((a < 0) != (b < 0)) {
+            r = r + b;
+        }
+        return r;
+    }
+
+    static pub fnc civil_from_days(z_in int<64>) : (int, int, int) {
+        z: int<64> = z_in + 719468;
+        era: int<64> = z / 146097;
+        if z % 146097 < 0 {
+            era = era - 1;
+        }
+        doe: int<64> = z - era * 146097;
+        yoe: int<64> = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+        y: int<64> = yoe + era * 400;
+        doy: int<64> = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        mp: int<64> = (5 * doy + 2) / 153;
+        dd: int<64> = doy - (153 * mp + 2) / 5 + 1;
+        mm: int<64> = mp + 3;
+        if mp >= 10 {
+            mm = mp - 9;
+            y = y + 1;
+        }
+        yi: int = toint(int, y);
+        mi: int = toint(int, mm);
+        di: int = toint(int, dd);
+        return yi, mi, di;
+    }
+
+    static pub fnc weekday(epoch int<64>) : int {
+        days: int<64> = epoch / 86400;
+        w: int = toint(int, days % 7);
+        if w < 0 {
+            w = w + 7;
+        }
+        return (w + 3) % 7;
+    }
+
+    static pub fnc format_epoch(epoch int<64>) : string {
+        secs_of_day: int<64> = epoch % 86400;
+        if secs_of_day < 0 {
+            secs_of_day = secs_of_day + 86400;
+        }
+        days: int<64> = (epoch - secs_of_day) / 86400;
+        y, mo, dd: int, int, int = DateTime.civil_from_days(days);
+
+        hh: int = toint(int, secs_of_day / 3600);
+        mm: int = toint(int, (secs_of_day % 3600) / 60);
+        ss: int = toint(int, secs_of_day % 60);
+        return DateTime.pad4(y) + "-" + DateTime.pad2(mo) + "-" + DateTime.pad2(dd)
+            + " " + DateTime.pad2(hh) + ":" + DateTime.pad2(mm) + ":" + DateTime.pad2(ss);
+    }
+
+    static pub fnc format_date(epoch int<64>) : string {
+        full: string = DateTime.format_epoch(epoch);
+        return DateTime.slice(full, 0, 10);
+    }
+
+    static pub fnc format_time(epoch int<64>) : string {
+        full: string = DateTime.format_epoch(epoch);
+        return DateTime.slice(full, 11, 19);
+    }
+
+    static pub fnc month_name(m int) : string {
+        names: vec<string>;
+        names.pushb("January"); names.pushb("February"); names.pushb("March");
+        names.pushb("April"); names.pushb("May"); names.pushb("June");
+        names.pushb("July"); names.pushb("August"); names.pushb("September");
+        names.pushb("October"); names.pushb("November"); names.pushb("December");
+        if m < 1 || m > 12 {
+            return "";
+        }
+        return names.get(m - 1);
+    }
+
+    static pub fnc day_name(w int) : string {
+        names: vec<string>;
+        names.pushb("Monday"); names.pushb("Tuesday"); names.pushb("Wednesday");
+        names.pushb("Thursday"); names.pushb("Friday"); names.pushb("Saturday");
+        names.pushb("Sunday");
+        ww: int = w % 7;
+        if ww < 0 {
+            ww = ww + 7;
+        }
+        return names.get(ww);
+    }
+
+    static pub fnc add_days(epoch int<64>, n int<64>) : int<64> {
+        return epoch + n * 86400;
+    }
+
+    static pub fnc add_months(epoch int<64>, n int) : int<64> {
+        days: int<64> = epoch / 86400;
+        if epoch % 86400 < 0 {
+            days = days - 1;
+        }
+        time_of_day: int<64> = epoch - days * 86400;
+        y, m, d: int, int, int = DateTime.civil_from_days(days);
+
+        total: int = y * 12 + (m - 1) + n;
+        ny: int = DateTime.fdiv(total, 12);
+        nm: int = DateTime.fmod_i(total, 12) + 1;
+        nd: int = d;
+        dim: int = DateTime.days_in_month(ny, nm);
+        if nd > dim {
+            nd = dim;
+        }
+        return DateTime.days_from_civil(ny, nm, nd) * 86400 + time_of_day;
+    }
+
+    static pub fnc parse_date(s string) : int<64> {
+        if s.size < 10 {
+            return 0 - 1;
+        }
+        y: int = DateTime.parse_int(s, 0, 4);
+        m: int = DateTime.parse_int(s, 5, 7);
+        d: int = DateTime.parse_int(s, 8, 10);
+        if s[4] != '-' || s[7] != '-' {
+            return 0 - 1;
+        }
+        if y < 1 || m < 1 || m > 12 || d < 1 || d > DateTime.days_in_month(y, m) {
+            return 0 - 1;
+        }
+        return DateTime.days_from_civil(y, m, d) * 86400;
+    }
+
+    static pub fnc parse_datetime(s string) : int<64> {
+        base: int<64> = DateTime.parse_date(s);
+        if base < 0 || s.size < 19 {
+            return base;
+        }
+        hh: int = DateTime.parse_int(s, 11, 13);
+        mi: int = DateTime.parse_int(s, 14, 16);
+        ss: int = DateTime.parse_int(s, 17, 19);
+        if s[10] != ' ' && s[10] != 'T' {
+            return 0 - 1;
+        }
+        return base + hh * 3600 + mi * 60 + ss;
+    }
+
+    static pub fnc days_between(a int<64>, b int<64>) : int<64> {
+        da: int<64> = a / 86400;
+        db: int<64> = b / 86400;
+        return db - da;
+    }
+
+    static priv fnc parse_int(s string, from int, to int) : int {
+        v: int = 0;
+        neg: bool = false;
+        i: int = from;
+        if i < to && s[i] == '-' {
+            neg = true;
+            i = i + 1;
+        }
+        while i < to {
+            c: char = s[i];
+            if c < '0' || c > '9' {
+                return 0 - 1;
+            }
+            v = v * 10 + (c - '0');
+            i = i + 1;
+        }
+        if neg {
+            v = 0 - v;
+        }
+        return v;
+    }
+
+    static priv fnc pad4(v int) : string {
+        out: string = tostring(v);
+        while out.size < 4 {
+            out = "0" + out;
+        }
+        if v < 0 {
+            return tostring(v);
+        }
+        return out;
+    }
+
+    static priv fnc pad2(v int) : string {
+        out: string = tostring(v);
+        if out.size < 2 {
+            out = "0" + out;
+        }
+        return out;
+    }
+
+    static priv fnc slice(s string, from int, to int) : string {
+        out: string;
+        for i: int = from; i < to; i = i + 1 {
+            out = out + s[i];
+        }
+        return out;
+    }
+};

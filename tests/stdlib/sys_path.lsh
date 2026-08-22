@@ -1,0 +1,13 @@
+use sys::path::Path;
+
+fnc main() {
+    show(Path.join("a", "b"), " | ", Path.join("a/", "b"), " | ", Path.join("a", "/abs"));
+    show(Path.base_name("/tmp/x/file.txt"));
+    show(Path.dir_name("/tmp/x/file.txt"));
+    show(Path.ext("archive.tar.gz"));
+    show(Path.stem("report.pdf"));
+    show(Path.is_absolute("/x"), Path.is_absolute("x"));
+    show("[", Path.normalize("a/./b/../c//d"), "]");
+    base_no_ext, the_ext: string, string = Path.split_ext("main.lsh");
+    show(base_no_ext, " + ", the_ext);
+}

@@ -3,6 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Crect width=%27100%27 height=%27100%27 rx=%2722%27 fill=%27%237c3aed%27/%3E%3Ctext x=%2750%27 y=%2768%27 font-size=%2752%27 text-anchor=%27middle%27 font-family=%27monospace%27 fill=%27white%27%3EL%3C/text%3E%3C/svg%3E">
 <title>Standard Library - Leash</title>
 <link rel="stylesheet" href="style.css">
 </head>
@@ -13,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v0.22.2 Beta</div>
+        <div class="version">v0.22.3 Beta</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -45,7 +47,7 @@
 
 <h1>Standard Library Reference</h1>
 
-<p>Leash ships with a set of standard libraries in the <code>installthis/</code> directory. These libraries provide common utilities like type aliases for explicit bit-width types, math functions, string manipulation, tuple containers, JSON, UTF-8, hex, Base64, UUID generation, and a windowing API. Install them globally to make them available from any project via the <code>use</code> statement.</p>
+<p>Leash ships with a set of standard libraries in the <code>installthis/</code> directory. These libraries provide common utilities like type aliases for explicit bit-width types, math functions, string manipulation, tuple containers, JSON, UTF-8, hex, Base64, UUID generation, and a windowing API. An extended set covers collections, algorithms, text processing, cryptography, encoding, date/time, math extensions, system helpers, and logging &mdash; see the <a href="#extended">Extended Standard Libraries</a> section below. Install them globally to make them available from any project via the <code>use</code> statement.</p>
 
 <div class="callout callout-info">The standard libraries are optional &mdash; you can install only the ones you need, or write your own libraries following the same patterns.</div>
 
@@ -526,12 +528,292 @@ speed: <span class="kw">int</span> = 5;
 
 <p>Color macros: <code>WHITE()</code>, <code>BLACK()</code>, <code>RED()</code>, <code>GREEN()</code>, <code>BLUE()</code>, <code>YELLOW()</code>, <code>ORANGE()</code>, <code>PURPLE()</code>, <code>RAYWHITE()</code>, <code>GRAY()</code>, and more.</p>
 
+
+<h1 id="extended">Extended Standard Libraries</h1>
+
+<p>Beyond the core modules above, the standard library ships 30 additional modules organized in subfolders. All of them are pure Leash, require no compiler changes, and follow the same conventions: PascalCase classes with static or instance methods, errors reported through sentinel values or result fields instead of crashes.</p>
+
+<div class="callout callout-info">Install them together with the rest of the stdlib via <code>leash install installthis/</code>. Tests for every module live under <code>tests/stdlib/</code> &mdash; run them with <code>python3 scripts/test_stdlib.py test</code>.</div>
+
+<h2>Algorithms (<code>algo::*</code>)</h2>
+
+<h3><code>algo::sort::Sort</code></h3>
+<p>Stable merge sort (O(n log n)) plus helpers, for <code>vec&lt;int&gt;</code>, <code>vec&lt;float&gt;</code> and <code>vec&lt;string&gt;</code> (strings compare byte-wise).</p>
+<table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td><code>ints(v)</code>, <code>floats(v)</code>, <code>strings(v)</code></td><td>In-place ascending sort</td></tr>
+    <tr><td><code>ints_desc(v)</code>, <code>floats_desc(v)</code>, <code>strings_desc(v)</code></td><td>In-place descending sort</td></tr>
+    <tr><td><code>reverse_ints(v)</code>, <code>reverse_floats(v)</code>, <code>reverse_strings(v)</code></td><td>In-place reversal</td></tr>
+    <tr><td><code>is_sorted_ints(v)</code> (+ floats/strings)</td><td>Ascending-order check</td></tr>
+    <tr><td><code>copy_ints(v)</code>, <code>copy_strings(v)</code></td><td>Deep copy helper</td></tr>
+</table>
+
+<h3><code>algo::search::Search</code></h3>
+<table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td><code>binary_ints(v, t)</code> (+ floats/strings)</td><td>Binary search on sorted input; index or -1</td></tr>
+    <tr><td><code>lower_bound_ints(v, t)</code>, <code>upper_bound_ints(v, t)</code></td><td>First index &ge;/&gt; target</td></tr>
+    <tr><td><code>lower_bound_strings(v, t)</code></td><td>Lower bound for strings</td></tr>
+    <tr><td><code>find_ints(v, t)</code> (+ floats/strings)</td><td>Linear search; first index or -1</td></tr>
+    <tr><td><code>count_ints(v, t)</code></td><td>Occurrences of a value</td></tr>
+</table>
+
+<h3><code>algo::random::Rand</code></h3>
+<table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td><code>range(min, max)</code></td><td>Inclusive random integer</td></tr>
+    <tr><td><code>unit()</code></td><td>Random float in [0, 1)</td></tr>
+    <tr><td><code>shuffle_ints(v)</code> (+ floats/strings)</td><td>Fisher&ndash;Yates shuffle</td></tr>
+    <tr><td><code>choice_ints(v)</code>, <code>choice_strings(v)</code></td><td>Pick one element</td></tr>
+    <tr><td><code>sample_ints(v, k)</code></td><td>k unique elements without replacement</td></tr>
+    <tr><td><code>weighted_index(weights)</code></td><td>Index chosen by weight; -1 when total is 0</td></tr>
+</table>
+
+<pre><code><span class="kw">use</span> algo::sort::Sort;
+<span class="kw">use</span> algo::random::Rand;
+
+fnc main() {
+    v: vec&lt;int&gt; = (vec&lt;int&gt;){5, 3, 9, 1};
+    Sort.ints(v);
+    Rand.shuffle_ints(v);
+}</code></pre>
+
+<h2>Collections (<code>collections::*</code>)</h2>
+<p>All generic containers use the same conventions as <code>Tuple&lt;T&gt;</code>: construct with <code>Name.new()</code>, access empties defensively (popping an empty container raises a clean runtime error), and convert back with <code>to_vec()</code>.</p>
+
+<table>
+    <tr><th>Module</th><th>Type</th><th>Highlights</th></tr>
+    <tr><td><code>collections::stack::Stack</code></td><td><code>Stack&lt;T&gt;</code></td><td>LIFO &mdash; push / pop / peek / isin / clear</td></tr>
+    <tr><td><code>collections::queue::Queue</code></td><td><code>Queue&lt;T&gt;</code></td><td>FIFO with O(1) amortized dequeue (head index)</td></tr>
+    <tr><td><code>collections::queue::Deque</code></td><td><code>Deque&lt;T&gt;</code></td><td>Double-ended queue &mdash; push/pop at both ends</td></tr>
+    <tr><td><code>collections::linkedlist::LinkedList</code></td><td><code>LinkedList&lt;T&gt;</code></td><td>Singly linked &mdash; push_front/back, insert_at, remove_at, at(i)</td></tr>
+    <tr><td><code>collections::heap::PriorityQueue</code></td><td><code>PriorityQueue&lt;T&gt;</code></td><td>Binary min-heap keyed by int priority &mdash; push(val, prio), pop(), peek_priority()</td></tr>
+    <tr><td><code>collections::set::Set</code></td><td><code>Set&lt;T&gt;</code></td><td>Unique values &mdash; add/has/remove, combine/common/excluding over vecs, is_subset_of</td></tr>
+    <tr><td><code>collections::ringbuffer::RingBuffer</code></td><td><code>RingBuffer&lt;T&gt;</code></td><td>Fixed capacity &mdash; push fails when full, force_push evicts oldest</td></tr>
+    <tr><td><code>collections::graph::Graph</code></td><td><code>Graph</code></td><td>Directed graph &mdash; bfs/dfs order, shortest_path, topo_sort, has_cycle, has_path</td></tr>
+    <tr><td><code>collections::trie::Trie</code></td><td><code>Trie</code></td><td>Prefix tree &mdash; insert/contains/starts_with/remove, all_words, words_with_prefix</td></tr>
+</table>
+
+<pre><code><span class="kw">use</span> collections::heap::PriorityQueue;
+
+fnc main() {
+    pq: PriorityQueue&lt;string&gt; = PriorityQueue.new();
+    pq.push(<span class="str">"low"</span>, 30);
+    pq.push(<span class="str">"high"</span>, 1);
+    show(pq.pop());   <span class="cm">// high</span>
+}
+
+<span class="kw">use</span> collections::graph::Graph;
+
+fnc main() {
+    g: Graph = Graph.new();
+    a := g.add_vertex();
+    b := g.add_vertex();
+    g.add_edge(a, b);
+    show(g.has_path(a, b));      <span class="cm">// true</span>
+    path: vec&lt;int&gt; = g.shortest_path(a, b);
+}</code></pre>
+
+<div class="callout callout-info">Generic containers delegate element equality to the runtime, which compares value types (ints, floats) reliably. For structural operations they work with any element type.</div>
+
+<h2>Text Processing (<code>text::*</code>)</h2>
+
+<h3><code>text::csv::Csv</code></h3>
+<p>RFC-4180-style parser and writer: quoted fields, escaped quotes, CRLF handling.</p>
+<table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td><code>parse(text)</code></td><td>Full document &rarr; <code>vec&lt;vec&lt;string&gt;&gt;</code></td></tr>
+    <tr><td><code>parse_row(line)</code></td><td>Single row &rarr; <code>vec&lt;string&gt;</code></td></tr>
+    <tr><td><code>row(fields)</code>, <code>stringify(rows)</code></td><td>Serialize (quoting applied automatically)</td></tr>
+    <tr><td><code>load(path)</code>, <code>save(path, rows)</code></td><td>File I/O wrappers (&lt;0 on failure)</td></tr>
+    <tr><td><code>cell(rows, r, c)</code></td><td>Bounds-checked accessor returning "" outside range</td></tr>
+</table>
+
+<h3><code>text::glob::Glob</code></h3>
+<table>
+    <tr><th>Pattern piece</th><th>Matches</th></tr>
+    <tr><td><code>*</code></td><td>Any run of characters except <code>/</code></td></tr>
+    <tr><td><code>**</code></td><td>Anything including <code>/</code></td></tr>
+    <tr><td><code>?</code></td><td>One character except <code>/</code></td></tr>
+    <tr><td><code>[abc]</code>, <code>[a-z]</code>, <code>[!a-z]</code></td><td>Character class (negation with <code>!</code> or <code>^</code>)</td></tr>
+</table>
+<p><code>Glob.match(pattern, text) : bool</code> and <code>Glob.is_pattern(s) : bool</code>.</p>
+
+<h3><code>text::diff::Diff</code></h3>
+<table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td><code>lines(a, b)</code></td><td>LCS line diff; each output line prefixed with <code>' '</code>, <code>'-'</code> or <code>'+'</code></td></tr>
+    <tr><td><code>words(a, b)</code></td><td>Word-level diff using the same markers</td></tr>
+    <tr><td><code>summary(a, b)</code></td><td>Multi-return <code>(added, removed)</code> counts</td></tr>
+</table>
+
+<h3><code>text::markdown::Markdown</code></h3>
+<p>Mini Markdown &rarr; HTML converter. Supports headings (#..######), paragraphs, unordered/ordered lists, blockquotes, fenced code blocks, inline code spans, links, bold and italic, plus HTML escaping.</p>
+<pre><code><span class="kw">use</span> text::markdown::Markdown;
+
+fnc main() {
+    html: string = Markdown.to_html(<span class="str">"# Hi\n\nsome **bold** text"</span>);
+    show(html);   <span class="cm">// &lt;h1&gt;Hi&lt;/h1&gt;\n&lt;p&gt;some &lt;strong&gt;bold&lt;/strong&gt; text&lt;/p&gt;</span>
+}</code></pre>
+
+<h2>Cryptography (<code>crypto::*</code>)</h2>
+
+<h3><code>crypto::sha256::Sha256</code></h3>
+<p>Pure-Leash FIPS 180-4 SHA-256 (verified against the standard test vectors) plus HMAC-SHA256 (RFC 2104).</p>
+<table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td><code>digest(msg)</code></td><td>64-char lowercase hex digest of a string</td></tr>
+    <tr><td><code>digest_bytes(bytes)</code></td><td>Digest of a <code>vec&lt;char&gt;</code></td></tr>
+    <tr><td><code>hmac(key, msg)</code></td><td>HMAC-SHA256 hex digest</td></tr>
+</table>
+
+<h3><code>crypto::crc::Crc</code></h3>
+<table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td><code>crc32(data)</code></td><td>Standard CRC-32 (IEEE 802.3), returned as positive <code>int&lt;64&gt;</code>; "123456789" &rarr; 0xCBF43926</td></tr>
+    <tr><td><code>crc32_bytes(bytes)</code></td><td>CRC-32 over raw bytes</td></tr>
+    <tr><td><code>crc32_hex(data)</code></td><td>8-char lowercase hex form</td></tr>
+    <tr><td><code>crc16_ccitt(data)</code></td><td>CRC-16/CCITT-FALSE; "123456789" &rarr; 0x29B1</td></tr>
+    <tr><td><code>adler32(data)</code></td><td>Adler-32 (zlib-compatible)</td></tr>
+    <tr><td><code>checksum_file(path)</code></td><td>CRC-32 of file contents; -1 if missing</td></tr>
+</table>
+
+<h3><code>crypto::cipher::Cipher</code></h3>
+<table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td><code>xor_enc(data, key)</code></td><td>Repeating-key XOR (symmetric &mdash; same call decrypts)</td></tr>
+    <tr><td><code>xor_hex(data, key)</code> / <code>xor_from_hex(hex, key)</code></td><td>XOR through a hex representation</td></tr>
+    <tr><td><code>caesar(text, shift)</code></td><td>Case-preserving Caesar shift (negative shifts decode)</td></tr>
+    <tr><td><code>rot13(text)</code></td><td>ROT13 shorthand</td></tr>
+    <tr><td><code>vigenere(text, key)</code> / <code>vigenere_dec(text, key)</code></td><td>Classic Vigenère cipher</td></tr>
+</table>
+
+<h2>Encoding (<code>encoding::url::Url</code>)</h2>
+<table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td><code>encode(s)</code> / <code>decode(s)</code></td><td>Percent-encoding of unreserved characters; <code>+</code> decodes to space</td></tr>
+    <tr><td><code>build_query(keys, vals)</code></td><td>application/x-www-form-urlencoded query string</td></tr>
+    <tr><td><code>parse_query(q)</code></td><td>Flattened alternating keys/values, decoded</td></tr>
+    <tr><td><code>query_value(q, key)</code></td><td>Value for one key; "" when absent</td></tr>
+    <tr><td><code>split(url)</code></td><td>Multi-return <code>(scheme, host, path, query)</code></td></tr>
+</table>
+
+<h2>Date &amp; Time (<code>time::datetime::DateTime</code>)</h2>
+<p>Proleptic Gregorian calendar math on Unix epoch seconds (UTC). Uses Howard Hinnant's civil-date algorithms, so conversions are exact across leap years and month lengths.</p>
+<table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td><code>now()</code></td><td>Current epoch seconds</td></tr>
+    <tr><td><code>format_epoch(epoch)</code></td><td>"YYYY-MM-DD HH:MM:SS"</td></tr>
+    <tr><td><code>format_date(epoch)</code> / <code>format_time(epoch)</code></td><td>Half formats</td></tr>
+    <tr><td><code>parse_date(s)</code> / <code>parse_datetime(s)</code></td><td>Parse ISO-like text; -1 on invalid input (e.g. Feb 30)</td></tr>
+    <tr><td><code>days_from_civil(y,m,d)</code> / <code>civil_from_days(z)</code></td><td>Day-number &hArr; calendar date</td></tr>
+    <tr><td><code>add_days(epoch, n)</code> / <code>add_months(epoch, n)</code></td><td>Arithmetic; add_months clamps to month end</td></tr>
+    <tr><td><code>weekday(epoch)</code> / <code>day_name(w)</code> / <code>month_name(m)</code></td><td>0 = Monday</td></tr>
+    <tr><td><code>is_leap(y)</code> / <code>days_in_month(y, m)</code> / <code>days_between(a, b)</code></td><td>Calendar queries</td></tr>
+</table>
+
+<h2>Math Extensions (<code>mathx::*</code>)</h2>
+
+<h3><code>mathx::stats::Stats</code></h3>
+<table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td><code>sum / mean / min / max</code></td><td>On <code>vec&lt;float&gt;</code> (int variants provided)</td></tr>
+    <tr><td><code>variance(xs)</code> / <code>stddev(xs)</code></td><td>Population variance/stddev</td></tr>
+    <tr><td><code>median(xs)</code> / <code>percentile(xs, p)</code></td><td>Rank-based; p in [0,100]</td></tr>
+    <tr><td><code>mode_ints(xs)</code></td><td>Most frequent int</td></tr>
+    <tr><td><code>covariance(x, y)</code> / <code>correlation(x, y)</code></td><td>Pearson machinery</td></tr>
+    <tr><td><code>linreg(x, y)</code></td><td>Least squares; returns <code>(slope, intercept)</code></td></tr>
+</table>
+
+<h3><code>mathx::complex::Complex</code> + <code>Cx</code></h3>
+<p>A <code>Complex</code> struct with static operations on the <code>Cx</code> helper class (add/sub/mul/div/eq, abs, conj, arg, polar, scale, to_string).</p>
+<pre><code><span class="kw">use</span> mathx::complex::*;
+
+fnc main() {
+    z1: Complex = Cx.of(3.0, 4.0);
+    z2: Complex = Cx.of(1.0, -2.0);
+    show(Cx.abs(z1));              <span class="cm">// 5.0</span>
+    show(Cx.to_string(Cx.mul(z1, z2)));
+}</code></pre>
+
+<h3><code>mathx::linalg::Matrix</code></h3>
+<table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td><code>new(r, c)</code> / <code>from(r, c, vals)</code> / <code>identity(n)</code></td><td>Constructors</td></tr>
+    <tr><td><code>add(m)</code> / <code>sub(m)</code> / <code>scale(k)</code> / <code>mul(m)</code></td><td>Arithmetic (nil on shape mismatch)</td></tr>
+    <tr><td><code>transpose()</code> / <code>det()</code></td><td>Transpose; determinant via partial-pivot LU</td></tr>
+    <tr><td><code>inverse()</code> / <code>solve(b)</code></td><td>Gauss-Jordan inverse; nil when singular</td></tr>
+    <tr><td><code>get(i, j)</code> / <code>set(i, j, v)</code> / <code>to_string()</code></td><td>Element access and pretty print</td></tr>
+</table>
+
+<h3><code>mathx::primes::Num</code></h3>
+<table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td><code>gcd(a, b)</code> / <code>lcm(a, b)</code></td><td>Euclid's algorithm</td></tr>
+    <tr><td><code>modpow(b, e, m)</code></td><td>Modular exponentiation (safe mulmod, no overflow)</td></tr>
+    <tr><td><code>is_prime(n)</code></td><td>Deterministic Miller-Rabin, exact for all 64-bit inputs</td></tr>
+    <tr><td><code>sieve(limit)</code></td><td>All primes up to limit</td></tr>
+    <tr><td><code>factorize(n)</code></td><td>Prime factors with repetition</td></tr>
+    <tr><td><code>next_prime(n)</code> / <code>divisors(n)</code></td><td>Search helpers</td></tr>
+</table>
+
+<h2>System Helpers (<code>sys::*</code>)</h2>
+
+<h3><code>sys::path::Path</code></h3>
+<table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td><code>join(a, b)</code></td><td>Separator-aware join; absolute second argument wins</td></tr>
+    <tr><td><code>base_name(p)</code> / <code>dir_name(p)</code></td><td>POSIX-style split</td></tr>
+    <tr><td><code>ext(p)</code> / <code>stem(p)</code> / <code>split_ext(p)</code></td><td>Extension handling (last dot wins for ext)</td></tr>
+    <tr><td><code>is_absolute(p)</code> / <code>normalize(p)</code></td><td>Lexical cleanup of . and .. segments</td></tr>
+</table>
+
+<h3><code>sys::fileutils::FileUtil</code></h3>
+<table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td><code>exists(path)</code></td><td>Probe by opening for read</td></tr>
+    <tr><td><code>read_text / write_text / append_text</code></td><td>Whole-file string I/O (-1 on failure)</td></tr>
+    <tr><td><code>read_lines / write_lines</code></td><td>Newline-split lists (CRLF tolerated)</td></tr>
+    <tr><td><code>copy(src, dst)</code> / <code>move(src, dst)</code> / <code>remove(path)</code> / <code>touch(path)</code></td><td>File management</td></tr>
+    <tr><td><code>size(path)</code></td><td>Byte count; -1 if missing</td></tr>
+</table>
+
+<h3><code>sys::argparse::Args</code></h3>
+<p>Parses <code>main(argv string[])</code>-style arguments into a <code>ParsedArgs</code> struct with <code>flags</code> (boolean), <code>opts</code> (key/value) and <code>positional</code>. Supports <code>--flag</code>, <code>--opt=value</code>, <code>--opt value</code>, short flag clusters like <code>-abc</code>, and <code>--</code> to stop option parsing.</p>
+<pre><code>fnc main(argv string[]) {
+    p := Args.parse(argv);
+    <span class="kw">if</span> Args.get_flag(p, <span class="str">"verbose"</span>) { show(<span class="str">"chatty mode"</span>); }
+    name: string = Args.get_opt(p, <span class="str">"name"</span>);
+}</code></pre>
+
+<h2>Miscellaneous (<code>misc::*</code>)</h2>
+
+<h3><code>misc::bits::Bits</code></h3>
+<table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td><code>get/set/clear/toggle(x, i)</code></td><td>Per-bit operations (guarded against bad indices)</td></tr>
+    <tr><td><code>popcount / clz / ctz</code></td><td>Population count, leading/trailing zeros (64 for 0)</td></tr>
+    <tr><td><code>rotl / rotr</code> (+32-bit variants)</td><td>Rotate with wrap-safe shift amounts</td></tr>
+    <tr><td><code>flip / swap32</code></td><td>Bit inversion, byte-swap of uint&lt;32&gt;</td></tr>
+    <tr><td><code>is_pow2 / next_pow2</code></td><td>Power-of-two checks</td></tr>
+    <tr><td><code>low32 / high32 / join32</code></td><td>64-bit packing helpers</td></tr>
+</table>
+
+<h3><code>misc::color::Color</code></h3>
+<p>ANSI escape helpers (<code>reset/bold/dim/underline</code>, 256-color <code>fg_ansi/bg_ansi</code>, truecolor <code>rgb/bg_rgb</code>, palette shorthands like <code>red()/green()</code>, and <code>paint(s, code)</code>) plus conversion utilities: <code>hex_to_rgb("#RRGGBB")</code> (multi-return, -1 on invalid), <code>rgb_to_hex(r,g,b)</code>, and <code>ansi256(r,g,b)</code> cube approximation.</p>
+
+<h3><code>misc::log::Logger</code></h3>
+<p>Leveled logger backed by console or append-mode file sink. Levels are <code>LogLevel.DEBUG/INFO/WARN/ERROR/OFF</code>; messages below the configured level are dropped. Call <code>close()</code> before reading a log file back from the same program (stdio buffering).</p>
+<pre><code><span class="kw">use</span> misc::log::Logger;
+
+fnc main() {
+    lg := Logger.console(toint(int, LogLevel::INFO));
+    lg.info(<span class="str">"starting"</span>);
+    lg.warn(<span class="str">"low fuel"</span>);
+}
+</code></pre>
 </main>
 
-<script>
-document.querySelectorAll('.sidebar a').forEach(link => {
-    if (link.href === window.location.href) link.classList.add('active');
-});
-</script>
+<script src="docs.js"></script>
 </body>
 </html>

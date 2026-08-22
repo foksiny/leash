@@ -1,0 +1,14 @@
+use collections::queue::Queue;
+use collections::queue::Deque;
+
+fnc main() {
+    q: Queue<int> = Queue.new();
+    q.enqueue(1); q.enqueue(2); q.enqueue(3);
+    show(q.dequeue(), " | ", q.peek(), " | ", q.size());
+    show(q.dequeue(), " | ", q.dequeue(), " | ", q.is_empty());
+
+    d: Deque<string> = Deque.new();
+    d.push_back("m"); d.push_front("f"); d.push_back("b");
+    show(d.front(), " | ", d.back());
+    show(d.pop_front(), " | ", d.pop_back(), " | remaining:", d.size());
+}

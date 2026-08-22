@@ -1,0 +1,17 @@
+use mathx::complex::*;
+use mathx::complex::Cx;
+
+fnc main() {
+    z1: Complex = Cx.of(3.0, 4.0);
+    z2: Complex = Cx.of(1.0, -2.0);
+    s: Complex = Cx.add(z1, z2);
+    p: Complex = Cx.mul(z1, z2);
+    q: Complex = Cx.div(z1, z2);
+    show("sum:", Cx.to_string(s));
+    show("prod:", Cx.to_string(p));
+    show("div:", Cx.to_string(q));
+    show("abs:", Cx.abs(z1));
+    show("conj:", Cx.to_string(Cx.conj(z2)));
+    pol: Complex = Cx.polar(2.0, 0.0);
+    show("polar:", pol.re, " | ", pol.im);
+}

@@ -1,0 +1,156 @@
+use algo::sort::Sort;
+
+pub def Diff : class {
+    static pub fnc split_lines(text string) : vec<string> {
+        lines: vec<string>;
+        cur: string;
+        foreach _, c in<string> text {
+            if c == '\n' {
+                lines.pushb(cur);
+                cur = "";
+            } else {
+                cur = cur + c;
+            }
+        }
+        lines.pushb(cur);
+        return lines;
+    }
+
+    static pub fnc lines(a string, b string) : vec<string> {
+        out: vec<string>;
+        al: vec<string> = Diff.split_lines(a);
+        bl: vec<string> = Diff.split_lines(b);
+        n: int = al.size;
+        m: int = bl.size;
+
+        table: vec<int>;
+        width: int = m + 1;
+        total: int = (n + 1) * width;
+        for fill: int = 0; fill < total; fill = fill + 1 {
+            table.pushb(0);
+        }
+        for ri: int = n - 1; ri >= 0; ri = ri - 1 {
+            for cj2: int = m - 1; cj2 >= 0; cj2 = cj2 - 1 {
+                cell_i: int = ri * width + cj2;
+                diag_v: int = (ri + 1) * width + (cj2 + 1);
+                down_v: int = (ri + 1) * width + cj2;
+                right_v: int = ri * width + (cj2 + 1);
+                if al.get(ri) == bl.get(cj2) {
+                    table.set(cell_i, table.get(diag_v) + 1);
+                } else {
+                    best: int = table.get(down_v);
+                    if table.get(right_v) > best {
+                        best = table.get(right_v);
+                    }
+                    table.set(cell_i, best);
+                }
+            }
+        }
+
+        ci: int = 0;
+        cj: int = 0;
+        while ci < n && cj < m {
+            idx: int = ci * width + cj;
+            diag: int = (ci + 1) * width + (cj + 1);
+            down: int = (ci + 1) * width + cj;
+            right: int = ci * width + (cj + 1);
+            if al.get(ci) == bl.get(cj) {
+                out.pushb(" " + al.get(ci));
+                ci = ci + 1;
+                cj = cj + 1;
+            } also table.get(down) >= table.get(right) {
+                out.pushb("-" + al.get(ci));
+                ci = ci + 1;
+            } else {
+                out.pushb("+" + bl.get(cj));
+                cj = cj + 1;
+            }
+        }
+        while ci < n {
+            out.pushb("-" + al.get(ci));
+            ci = ci + 1;
+        }
+        while cj < m {
+            out.pushb("+" + bl.get(cj));
+            cj = cj + 1;
+        }
+        return out;
+    }
+
+    static pub fnc words(a string, b string) : vec<string> {
+        aw: vec<string> = Diff.tokenize(a);
+        bw: vec<string> = Diff.tokenize(b);
+        joined_a: string = Diff.join(aw, "\n");
+        joined_b: string = Diff.join(bw, "\n");
+        raw: vec<string> = Diff.lines(joined_a, joined_b);
+        out: vec<string>;
+        foreach _, line in<vector> raw {
+            mark: char = line[0];
+            body: string = Diff.drop_first(line);
+            parts: vec<string> = Diff.split_lines(body);
+            foreach _, w in<vector> parts {
+                if mark == ' ' {
+                    out.pushb(" " + w);
+                } else {
+                    out.pushb("" + mark + w);
+                }
+            }
+        }
+        return out;
+    }
+
+    static priv fnc tokenize(s string) : vec<string> {
+        toks: vec<string>;
+        cur: string;
+        foreach _, c in<string> s {
+            if c == ' ' || c == '\t' || c == '\n' {
+                if cur.size > 0 {
+                    toks.pushb(cur);
+                    cur = "";
+                }
+            } else {
+                cur = cur + c;
+            }
+        }
+        if cur.size > 0 {
+            toks.pushb(cur);
+        }
+        return toks;
+    }
+
+    static priv fnc join(parts vec<string>, sep string) : string {
+        out: string;
+        foreach i, p in<vector> parts {
+            if i > 0 {
+                out = out + sep;
+            }
+            out = out + p;
+        }
+        return out;
+    }
+
+    static priv fnc drop_first(s string) : string {
+        out: string;
+        foreach i, c in<string> s {
+            if i > 0 {
+                out = out + c;
+            }
+        }
+        return out;
+    }
+
+    static pub fnc summary(a string, b string) : (int, int) {
+        added: int = 0;
+        removed: int = 0;
+        changes: vec<string> = Diff.lines(a, b);
+        foreach _, line in<vector> changes {
+            _ = _ + 1 - 1;
+            if line[0] == '+' {
+                added = added + 1;
+            } also line[0] == '-' {
+                removed = removed + 1;
+            }
+        }
+        return added, removed;
+    }
+};

@@ -1,0 +1,10 @@
+bfs:0
+bfs:1
+bfs:2
+bfs:3
+bfs:4
+path len:4
+1 | 0 | edges:5
+topo size:5 | cycle?:0
+dag has cycle:1
+--- Executed at 2026-08-21 21:00:07 ---

@@ -1,0 +1,155 @@
+pub def Search : class {
+    static pub fnc binary_ints(v vec<int>, target int) : int {
+        lo: int = 0;
+        hi: int = v.size - 1;
+        while lo <= hi {
+            mid: int = lo + (hi - lo) / 2;
+            if v.get(mid) == target {
+                return mid;
+            }
+            if v.get(mid) < target {
+                lo = mid + 1;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        return 0 - 1;
+    }
+
+    static pub fnc binary_floats(v vec<float>, target float) : int {
+        lo: int = 0;
+        hi: int = v.size - 1;
+        while lo <= hi {
+            mid: int = lo + (hi - lo) / 2;
+            if v.get(mid) == target {
+                return mid;
+            }
+            if v.get(mid) < target {
+                lo = mid + 1;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        return 0 - 1;
+    }
+
+    static pub fnc binary_strings(v vec<string>, target string) : int {
+        lo: int = 0;
+        hi: int = v.size - 1;
+        while lo <= hi {
+            mid: int = lo + (hi - lo) / 2;
+            c: int = Search.scmp(v.get(mid), target);
+            if c == 0 {
+                return mid;
+            }
+            if c < 0 {
+                lo = mid + 1;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        return 0 - 1;
+    }
+
+    static pub fnc lower_bound_ints(v vec<int>, target int) : int {
+        lo: int = 0;
+        hi: int = v.size;
+        while lo < hi {
+            mid: int = lo + (hi - lo) / 2;
+            if v.get(mid) < target {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        return lo;
+    }
+
+    static pub fnc upper_bound_ints(v vec<int>, target int) : int {
+        lo: int = 0;
+        hi: int = v.size;
+        while lo < hi {
+            mid: int = lo + (hi - lo) / 2;
+            if v.get(mid) <= target {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        return lo;
+    }
+
+    static pub fnc lower_bound_strings(v vec<string>, target string) : int {
+        lo: int = 0;
+        hi: int = v.size;
+        while lo < hi {
+            mid: int = lo + (hi - lo) / 2;
+            if Search.scmp(v.get(mid), target) < 0 {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        return lo;
+    }
+
+    static pub fnc find_ints(v vec<int>, target int) : int {
+        foreach i, x in<vector> v {
+            if x == target {
+                return i;
+            }
+        }
+        return 0 - 1;
+    }
+
+    static pub fnc find_floats(v vec<float>, target float) : int {
+        foreach i, x in<vector> v {
+            if x == target {
+                return i;
+            }
+        }
+        return 0 - 1;
+    }
+
+    static pub fnc find_strings(v vec<string>, target string) : int {
+        foreach i, x in<vector> v {
+            if x == target {
+                return i;
+            }
+        }
+        return 0 - 1;
+    }
+
+    static pub fnc count_ints(v vec<int>, target int) : int {
+        n: int = 0;
+        foreach _, x in<vector> v {
+            _ = _ + 1 - 1;
+            if x == target {
+                n = n + 1;
+            }
+        }
+        return n;
+    }
+
+    static priv fnc scmp(a string, b string) : int {
+        n: int = a.size;
+        if b.size < n {
+            n = b.size;
+        }
+        for i: int = 0; i < n; i = i + 1 {
+            if a[i] < b[i] {
+                return 0 - 1;
+            }
+            if a[i] > b[i] {
+                return 1;
+            }
+        }
+        if a.size < b.size {
+            return 0 - 1;
+        }
+        if a.size > b.size {
+            return 1;
+        }
+        return 0;
+    }
+};

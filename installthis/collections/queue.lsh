@@ -1,0 +1,106 @@
+priv def T : template;
+
+pub def Queue : class<T> {
+    priv items: vec<T>;
+    priv head: int;
+
+    static pub fnc new() : Queue {
+        fresh: vec<T>;
+        return Queue { items: fresh, head: 0 };
+    }
+
+    pub fnc enqueue(v T) : void {
+        this.items.pushb(v);
+    }
+
+    pub fnc dequeue() : T {
+        v: T = this.items.get(this.head);
+        this.head = this.head + 1;
+        if this.head == this.items.size {
+            this.items.clear();
+            this.head = 0;
+        }
+        return v;
+    }
+
+    pub fnc peek() : T {
+        return this.items.get(this.head);
+    }
+
+    pub fnc size() : int {
+        return this.items.size - this.head;
+    }
+
+    pub fnc is_empty() : bool {
+        return this.head >= this.items.size;
+    }
+
+    pub fnc clear() : void {
+        this.items.clear();
+        this.head = 0;
+    }
+
+    pub fnc to_vec() : vec<T> {
+        out: vec<T>;
+        i: int = this.head;
+        while i < this.items.size {
+            out.pushb(this.items.get(i));
+            i = i + 1;
+        }
+        return out;
+    }
+};
+
+pub def Deque : class<T> {
+    priv items: vec<T>;
+
+    static pub fnc new() : Deque {
+        fresh: vec<T>;
+        return Deque { items: fresh };
+    }
+
+    pub fnc push_back(v T) : void {
+        this.items.pushb(v);
+    }
+
+    pub fnc push_front(v T) : void {
+        this.items.pushf(v);
+    }
+
+    pub fnc pop_front() : T {
+        return this.items.popf();
+    }
+
+    pub fnc pop_back() : T {
+        return this.items.popb();
+    }
+
+    pub fnc front() : T {
+        return this.items.get(0);
+    }
+
+    pub fnc back() : T {
+        return this.items.get(this.items.size - 1);
+    }
+
+    pub fnc size() : int {
+        return this.items.size;
+    }
+
+    pub fnc is_empty() : bool {
+        return this.items.size == 0;
+    }
+
+    pub fnc clear() : void {
+        this.items.clear();
+    }
+
+    pub fnc to_vec() : vec<T> {
+        out: vec<T>;
+        foreach _, v in<vector> this.items {
+            _ = _ + 1 - 1;
+            out.pushb(v);
+        }
+        return out;
+    }
+};

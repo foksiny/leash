@@ -1,0 +1,13 @@
+use misc::color::Color;
+
+fnc main() {
+    show(Color.rgb_to_hex(255, 128, 0) == "#FF8000");
+    r, g, b: int, int, int = Color.hex_to_rgb("#ff8000");
+    show(r, " ", g, " ", b);
+    r2, g2, b2: int, int, int = Color.hex_to_rgb("#ZZZZZZ");
+    show("invalid hex -> -1s:", r2 == -1 && g2 == -1 && b2 == -1);
+    show("red256:", Color.ansi256(255, 0, 0));
+    painted: string = Color.paint("hi", Color.green());
+    show(painted != "");
+    show(Color.reset() != "", Color.bold() != "");
+}

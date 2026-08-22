@@ -1,0 +1,203 @@
+pub def Url : class {
+    static pub fnc encode(s string) : string {
+        out: string;
+        foreach _, c in<string> s {
+            if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~' {
+                out = out + c;
+            } else {
+                v: int = 0;
+                if c < 0 {
+                    v = c + 256;
+                } else {
+                    v = toint(int, c);
+                }
+                out = out + '%';
+                out = out + Url.hexdigit(v / 16);
+                out = out + Url.hexdigit(v - (v / 16) * 16);
+            }
+        }
+        return out;
+    }
+
+    static priv fnc hexdigit(d int) : char {
+        if d < 10 {
+            return (char)('0' + d);
+        }
+        return (char)('A' + d - 10);
+    }
+
+    static priv fnc hex_val(c char) : int {
+        if c >= '0' && c <= '9' {
+            return c - '0';
+        }
+        if c >= 'a' && c <= 'f' {
+            return c - 'a' + 10;
+        }
+        if c >= 'A' && c <= 'F' {
+            return c - 'A' + 10;
+        }
+        return 0 - 1;
+    }
+
+    static pub fnc decode(s string) : string {
+        out: string;
+        i: int = 0;
+        n: int = s.size;
+        while i < n {
+            c: char = s[i];
+            if c == '%' && i + 2 < n {
+                hi: int = Url.hex_val(s[i + 1]);
+                lo: int = Url.hex_val(s[i + 2]);
+                if hi >= 0 && lo >= 0 {
+                    out = out + (char)(hi * 16 + lo);
+                    i = i + 3;
+                    continue;
+                }
+                out = out + c;
+                i = i + 1;
+                continue;
+            }
+            if c == '+' {
+                out = out + ' ';
+                i = i + 1;
+                continue;
+            }
+            out = out + c;
+            i = i + 1;
+        }
+        return out;
+    }
+
+    static pub fnc build_query(keys vec<string>, vals vec<string>) : string {
+        out: string;
+        count: int = keys.size;
+        if vals.size < count {
+            count = vals.size;
+        }
+        foreach i, k in<vector> keys {
+            if i >= count {
+                stop;
+            }
+            if i > 0 {
+                out = out + '&';
+            }
+            out = out + Url.encode(k) + '=' + Url.encode(vals.get(i));
+        }
+        return out;
+    }
+
+    static pub fnc parse_query(q string) : vec<string> {
+        pairs: vec<string>;
+        cur: string;
+        foreach _, c in<string> q {
+            if c == '&' {
+                pairs.pushb(cur);
+                cur = "";
+            } else {
+                cur = cur + c;
+            }
+        }
+        if cur.size > 0 {
+            pairs.pushb(cur);
+        }
+        flat: vec<string>;
+        foreach _, pair in<vector> pairs {
+            eq: int = -1;
+            foreach i, ch in<string> pair {
+                _ = _ + 1 - 1;
+                if ch == '=' {
+                    eq = i;
+                    stop;
+                }
+            }
+            if eq < 0 {
+                flat.pushb(Url.decode(pair));
+                flat.pushb("");
+            } else {
+                key: string = Url.slice(pair, 0, eq);
+                val: string = Url.slice(pair, eq + 1, pair.size);
+                flat.pushb(Url.decode(key));
+                flat.pushb(Url.decode(val));
+            }
+        }
+        return flat;
+    }
+
+    static pub fnc query_value(q string, key string) : string {
+        flat: vec<string> = Url.parse_query(q);
+        i: int = 0;
+        while i + 1 < flat.size {
+            if flat.get(i) == key {
+                return flat.get(i + 1);
+            }
+            i = i + 2;
+        }
+        return "";
+    }
+
+    static pub fnc split(url string) : (string, string, string, string) {
+        scheme: string = "";
+        rest: string = url;
+        ss: int = Url.find(url, "://");
+        if ss >= 0 {
+            scheme = Url.slice(url, 0, ss);
+            rest = Url.slice(url, ss + 3, url.size);
+        }
+        host: string = "";
+        pathq: string = "";
+        slash: int = -1;
+        foreach i, c in<string> rest {
+            if c == '/' {
+                slash = i;
+                stop;
+            }
+        }
+        if slash < 0 {
+            host = rest;
+        } else {
+            host = Url.slice(rest, 0, slash);
+            pathq = Url.slice(rest, slash, rest.size);
+        }
+        path: string = pathq;
+        query: string = "";
+        qm: int = Url.find(pathq, "?");
+        if qm >= 0 {
+            path = Url.slice(pathq, 0, qm);
+            query = Url.slice(pathq, qm + 1, pathq.size);
+        }
+        return scheme, host, path, query;
+    }
+
+    static priv fnc find(s string, needle string) : int {
+        n: int = s.size;
+        m: int = needle.size;
+        if m == 0 || m > n {
+            return 0 - 1;
+        }
+        for i: int = 0; i <= n - m; i = i + 1 {
+            ok: bool = true;
+            for j: int = 0; j < m; j = j + 1 {
+                if s[i + j] != needle[j] {
+                    ok = false;
+                    stop;
+                }
+            }
+            if ok {
+                return i;
+            }
+        }
+        return 0 - 1;
+    }
+
+    static pub fnc slice(s string, start int, end int) : string {
+        out: string;
+        for i: int = start; i < end; i = i + 1 {
+            out = out + s[i];
+        }
+        return out;
+    }
+
+    static pub fnc is_valid_char(c char) : bool {
+        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~';
+    }
+};

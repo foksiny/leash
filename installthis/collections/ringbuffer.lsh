@@ -1,0 +1,93 @@
+priv def T : template;
+
+pub def RingBuffer : class<T> {
+    priv buf: vec<T>;
+    priv cap: int;
+    priv head: int;
+    priv count: int;
+
+    static pub fnc new(capacity int) : RingBuffer {
+        if capacity < 1 {
+            capacity = 1;
+        }
+        return RingBuffer { cap: capacity, head: 0, count: 0 };
+    }
+
+    pub fnc push(v T) : bool {
+        if this.count == this.cap {
+            return false;
+        }
+        pos: int = (this.head + this.count) % this.cap;
+        if pos < this.buf.size {
+            this.buf.set(pos, v);
+        } else {
+            this.buf.pushb(v);
+        }
+        this.count = this.count + 1;
+        return true;
+    }
+
+    pub fnc force_push(v T) : T {
+        if this.count == this.cap {
+            evicted: T = this.buf.get(this.head);
+            this.buf.set(this.head, v);
+            this.head = (this.head + 1) % this.cap;
+            return evicted;
+        }
+        this.push(v);
+        return v;
+    }
+
+    pub fnc pop() : T {
+        if this.count == 0 {
+            return this.buf.get(0 - 1);
+        }
+        v: T = this.buf.get(this.head);
+        this.head = (this.head + 1) % this.cap;
+        this.count = this.count - 1;
+        return v;
+    }
+
+    pub fnc peek() : T {
+        if this.count == 0 {
+            return this.buf.get(0 - 1);
+        }
+        return this.buf.get(this.head);
+    }
+
+    pub fnc at(i int) : T {
+        if i < 0 || i >= this.count {
+            return this.buf.get(0 - 1);
+        }
+        return this.buf.get((this.head + i) % this.cap);
+    }
+
+    pub fnc capacity() : int {
+        return this.cap;
+    }
+
+    pub fnc size() : int {
+        return this.count;
+    }
+
+    pub fnc is_full() : bool {
+        return this.count == this.cap;
+    }
+
+    pub fnc is_empty() : bool {
+        return this.count == 0;
+    }
+
+    pub fnc clear() : void {
+        this.head = 0;
+        this.count = 0;
+    }
+
+    pub fnc to_vec() : vec<T> {
+        out: vec<T>;
+        for i: int = 0; i < this.count; i = i + 1 {
+            out.pushb(this.at(i));
+        }
+        return out;
+    }
+};

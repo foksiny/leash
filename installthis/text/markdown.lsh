@@ -1,0 +1,321 @@
+pub def Markdown : class {
+    static pub fnc to_html(md string) : string {
+        out: string;
+        lines: vec<string> = Markdown.split_lines(md);
+        in_code: bool = false;
+        list_open: bool = false;
+        ordered_open: bool = false;
+        para_open: bool = false;
+
+        foreach _, line in<vector> lines {
+            if line.size >= 3 && Markdown.starts_triple(line) {
+                if in_code {
+                    out = out + "</code></pre>\n";
+                    in_code = false;
+                } else {
+                    out = out + "<pre><code>";
+                    in_code = true;
+                }
+                continue;
+            }
+            if in_code {
+                out = out + Markdown.escape(line) + '\n';
+                continue;
+            }
+
+            t: string = Markdown.trim_left(line);
+            if t.size == 0 {
+                if list_open {
+                    out = out + "</ul>\n";
+                    list_open = false;
+                }
+                if ordered_open {
+                    out = out + "</ol>\n";
+                    ordered_open = false;
+                }
+                if para_open {
+                    out = out + "</p>\n";
+                    para_open = false;
+                }
+                continue;
+            }
+
+            if Markdown.heading_level(t) > 0 {
+                lvl: int = Markdown.heading_level(t);
+                hbody: string = Markdown.drop(t, lvl + 1);
+                tag_open: string = "<h" + ("" + (char)(48 + lvl)) + ">";
+                tag_close: string = "</h" + ("" + (char)(48 + lvl)) + ">";
+                out = out + tag_open + Markdown.render_inline(hbody) + tag_close + '\n';
+                continue;
+            }
+
+            if Markdown.is_ul_item(t) {
+                if ordered_open {
+                    out = out + "</ol>\n";
+                    ordered_open = false;
+                }
+                if list_open == false {
+                    out = out + "<ul>\n";
+                    list_open = true;
+                }
+                ulbody: string = Markdown.drop(t, 2);
+                out = out + "<li>" + Markdown.render_inline(ulbody) + "</li>\n";
+                continue;
+            }
+
+            if Markdown.is_ol_item(t) {
+                if list_open {
+                    out = out + "</ul>\n";
+                    list_open = false;
+                }
+                if ordered_open == false {
+                    out = out + "<ol>\n";
+                    ordered_open = true;
+                }
+                dot: int = 0;
+                foreach i, c in<string> t {
+                    _ = _ + 1 - 1;
+                    if c == '.' {
+                        dot = i;
+                        stop;
+                    }
+                }
+                olibody: string = Markdown.drop(t, dot + 2);
+                out = out + "<li>" + Markdown.render_inline(olibody) + "</li>\n";
+                continue;
+            }
+
+            if t.size > 1 && t[0] == '>' {
+                qbody: string = Markdown.drop(t, 1);
+                out = out + "<blockquote>" + Markdown.render_inline(qbody) + "</blockquote>\n";
+                continue;
+            }
+
+            if para_open == false {
+                out = out + "<p>";
+                para_open = true;
+            } else {
+                out = out + ' ';
+            }
+            out = out + Markdown.render_inline(Markdown.trim_right(t));
+        }
+        if in_code {
+            out = out + "</code></pre>\n";
+        }
+        if list_open {
+            out = out + "</ul>\n";
+        }
+        if ordered_open {
+            out = out + "</ol>\n";
+        }
+        if para_open {
+            out = out + "</p>\n";
+        }
+        return out;
+    }
+
+    static pub fnc split_lines(text string) : vec<string> {
+        lines: vec<string>;
+        cur: string;
+        foreach _, c in<string> text {
+            if c == '\n' {
+                lines.pushb(cur);
+                cur = "";
+            } else {
+                cur = cur + c;
+            }
+        }
+        if cur.size > 0 || lines.size == 0 {
+            lines.pushb(cur);
+        }
+        return lines;
+    }
+
+    static pub fnc escape(s string) : string {
+        out: string;
+        foreach _, c in<string> s {
+            if c == '&' {
+                out = out + "&amp;";
+            } also c == '<' {
+                out = out + "&lt;";
+            } also c == '>' {
+                out = out + "&gt;";
+            } else {
+                out = out + c;
+            }
+        }
+        return out;
+    }
+
+    static priv fnc starts_triple(line string) : bool {
+        if line.size < 3 {
+            return false;
+        }
+        return line[0] == '`' && line[1] == '`' && line[2] == '`';
+    }
+
+    static pub fnc heading_level(t string) : int {
+        lvl: int = 0;
+        while lvl < t.size && t[lvl] == '#' {
+            lvl = lvl + 1;
+        }
+        if lvl == 0 || lvl > 6 {
+            return 0;
+        }
+        if lvl < t.size && t[lvl] == ' ' {
+            return lvl;
+        }
+        return 0;
+    }
+
+    static priv fnc is_ul_item(t string) : bool {
+        return t.size >= 2 && t[0] == '-' && t[1] == ' ';
+    }
+
+    static priv fnc is_ol_item(t string) : bool {
+        digits: int = 0;
+        foreach i, c in<string> t {
+            if c >= '0' && c <= '9' {
+                digits = digits + 1;
+            } else {
+                if c == '.' && digits > 0 && i + 1 < t.size && t[i + 1] == ' ' {
+                    return true;
+                }
+                return false;
+            }
+        }
+        return false;
+    }
+
+    static pub fnc render_inline(s string) : string {
+        s = Markdown.escape(s);
+        s = Markdown.replace_code_spans(s);
+        s = Markdown.replace_links(s);
+        s = Markdown.replace_delim(s, "**", "strong");
+        s = Markdown.replace_delim(s, "*", "em");
+        return s;
+    }
+
+    static priv fnc replace_code_spans(s string) : string {
+        out: string;
+        i: int = 0;
+        n: int = s.size;
+        while i < n {
+            if s[i] == '`' {
+                close: int = -1;
+                j: int = i + 1;
+                while j < n {
+                    if s[j] == '`' {
+                        close = j;
+                        stop;
+                    }
+                    j = j + 1;
+                }
+                if close > i + 1 {
+                    code: string = Markdown.slice(s, i + 1, close);
+                    out = out + "<code>" + code + "</code>";
+                    i = close + 1;
+                    continue;
+                }
+            }
+            out = out + s[i];
+            i = i + 1;
+        }
+        return out;
+    }
+
+    static priv fnc replace_links(s string) : string {
+        out: string;
+        i: int = 0;
+        n: int = s.size;
+        while i < n {
+            if s[i] == '[' {
+                rb: int = -1;
+                lp: int = -1;
+                j: int = i + 1;
+                while j < n {
+                    if s[j] == ']' {
+                        rb = j;
+                        stop;
+                    }
+                    j = j + 1;
+                }
+                if rb > 0 && rb + 1 < n && s[rb + 1] == '(' {
+                    lp = rb + 1;
+                    rp: int = -1;
+                    k: int = lp + 1;
+                    while k < n {
+                        if s[k] == ')' {
+                            rp = k;
+                            stop;
+                        }
+                        k = k + 1;
+                    }
+                    if rp > lp {
+                        label: string = Markdown.slice(s, i + 1, rb);
+                        url: string = Markdown.slice(s, lp + 1, rp);
+                        out = out + "<a href=\"" + url + "\">" + label + "</a>";
+                        i = rp + 1;
+                        continue;
+                    }
+                }
+            }
+            out = out + s[i];
+            i = i + 1;
+        }
+        return out;
+    }
+
+    static priv fnc replace_delim(s string, delim string, tag string) : string {
+        out: string;
+        i: int = 0;
+        n: int = s.size;
+        open: bool = false;
+        while i < n {
+            if i + delim.size <= n && Markdown.slice(s, i, i + delim.size) == delim {
+                if open {
+                    out = out + "</" + tag + ">";
+                } else {
+                    out = out + "<" + tag + ">";
+                }
+                open = open == false;
+                i = i + delim.size;
+                continue;
+            }
+            out = out + s[i];
+            i = i + 1;
+        }
+        if open {
+            out = out + delim;
+        }
+        return out;
+    }
+
+    static pub fnc slice(s string, start int, end int) : string {
+        out: string;
+        for i: int = start; i < end; i = i + 1 {
+            out = out + s[i];
+        }
+        return out;
+    }
+
+    static pub fnc trim_left(s string) : string {
+        i: int = 0;
+        while i < s.size && (s[i] == ' ' || s[i] == '\t') {
+            i = i + 1;
+        }
+        return Markdown.slice(s, i, s.size);
+    }
+
+    static pub fnc trim_right(s string) : string {
+        e: int = s.size;
+        while e > 0 && (s[e - 1] == ' ' || s[e - 1] == '\t') {
+            e = e - 1;
+        }
+        return Markdown.slice(s, 0, e);
+    }
+
+    static pub fnc drop(s string, count int) : string {
+        return Markdown.slice(s, count, s.size);
+    }
+};

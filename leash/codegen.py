@@ -68,6 +68,7 @@ class CodeGen:
         self.init_func = (
             None  # The _leash_init_globals function if any globals need init
         )
+        self._emitting_global_init = False  # True while codegen'ing _leash_init_globals
         self.printf = None
         self.current_target_type = None
         self.target_platform = target_platform  # Store target platform (e.g., "win64", "linux64")
@@ -1631,6 +1632,7 @@ class CodeGen:
         )
         block = init_func.append_basic_block("entry")
         self.builder = ir.IRBuilder(block)
+        self._emitting_global_init = True
         for gv, init_expr, leash_type in self.global_init_list:
             # Set the target type context so ArrayInit/HashInit can produce vec/hash structs
             old_target = self.current_target_type
@@ -1643,6 +1645,7 @@ class CodeGen:
             self.builder.store(init_val, gv)
         self.builder.ret_void()
         self.builder = None
+        self._emitting_global_init = False
         self.init_func = init_func
 
     def _codegen_instantiated_generics(self):
@@ -9274,7 +9277,13 @@ class CodeGen:
         arr_type = ir.ArrayType(elem_type, length)
 
         is_const = all(isinstance(v, ir.Constant) for v in vals)
-        if is_const:
+        if is_const and self._emitting_global_init:
+            # Only true global initializers may back a literal with a constant
+            # global: allocas would die when the init function returns and the
+            # data must outlive it anyway. Everywhere else the literal gets
+            # writable heap storage -- vectors/arrays share their data pointer
+            # when passed around, so read-only backing would crash on set(),
+            # and stack backing would dangle if the literal escapes (return).
             c_arr = ir.Constant(arr_type, vals)
             global_arr = ir.GlobalVariable(
                 self.module, arr_type, name=self.module.get_unique_name("const_arr")
@@ -9284,11 +9293,23 @@ class CodeGen:
             global_arr.initializer = c_arr
             arr_ptr = global_arr
         else:
-            arr_ptr = self.builder.alloca(arr_type)
+            elem_size_ptr = self.builder.gep(
+                ir.Constant(elem_type.as_pointer(), None),
+                [ir.Constant(ir.IntType(32), 1)], inbounds=True
+            )
+            elem_size = self.builder.ptrtoint(elem_size_ptr, ir.IntType(64))
+            length_val = ir.Constant(ir.IntType(64), length)
+            total_bytes = self.builder.mul(length_val, elem_size)
+            data_bytes = self.builder.call(
+                self.aligned_alloc,
+                [total_bytes, ir.Constant(ir.IntType(64), 64)],
+            )
+            self._track_alloc(data_bytes)
+            arr_ptr = self.builder.bitcast(data_bytes, elem_type.as_pointer())
             for i, v in enumerate(vals):
                 ptr = self.builder.gep(
                     arr_ptr,
-                    [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), i)],
+                    [ir.Constant(ir.IntType(32), i)],
                     inbounds=True,
                 )
                 self.builder.store(v, ptr)

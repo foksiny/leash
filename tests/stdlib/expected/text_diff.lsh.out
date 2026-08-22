@@ -1,0 +1,24 @@
+< alpha>
+<-beta>
+<+beta!>
+< gamma>
+added:1 | removed:1
+{ the}
+{-quick}
+{+slow}
+{ fox}
+--- Executed at 2026-08-21 21:00:25 ---
+warning: Unused local variable 'idx' in function 'lines'
+  --> /home/foksiny/projects/leash/installthis/text/diff.lsh:19:15
+   |
+19 |     static pub fnc lines(a string, b string) : vec<string> {
+   |                ^
+   |
+   = tip: If you don't need this variable, consider removing it.
+warning: Unused local variable 'diag' in function 'lines'
+  --> /home/foksiny/projects/leash/installthis/text/diff.lsh:19:15
+   |
+19 |     static pub fnc lines(a string, b string) : vec<string> {
+   |                ^
+   |
+   = tip: If you don't need this variable, consider removing it.

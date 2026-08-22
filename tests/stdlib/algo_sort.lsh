@@ -1,0 +1,21 @@
+use algo::sort::Sort;
+
+fnc main() {
+    v: vec<int> = (vec<int>){5, 3, 9, 1, 7, 3};
+    Sort.ints(v);
+    foreach i, x in<vector> v {
+        show("i", i, " = ", x);
+    }
+    w: vec<float> = (vec<float>){2.5, 1.5, 3.5};
+    Sort.floats(w);
+    show("f:", w.get(0), " | ", w.get(1), " | ", w.get(2));
+    s: vec<string> = (vec<string>){"pear", "apple", "fig", "banana"};
+    Sort.strings(s);
+    foreach i, x in<vector> s {
+        show("s", i, " = ", x);
+    }
+    d: vec<int> = (vec<int>){1, 3, 2};
+    Sort.ints_desc(d);
+    show("desc:", d.get(0), " | ", d.get(1), " | ", d.get(2));
+    show("sorted?", Sort.is_sorted_ints(v), " | ", Sort.is_sorted_strings(s));
+}

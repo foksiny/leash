@@ -1,0 +1,9 @@
+1 | 0 | 1 | cow:0
+w0 = car
+w1 = card
+w2 = cat
+w3 = dog
+p0 = car
+p1 = card
+1 | card gone:1 | car kept:1 | size:3
+--- Executed at 2026-08-21 21:00:11 ---

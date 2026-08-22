@@ -1,0 +1,56 @@
+priv def T : template;
+
+pub def Stack : class<T> {
+    priv items: vec<T>;
+
+    static pub fnc new() : Stack {
+        fresh: vec<T>;
+        return Stack { items: fresh };
+    }
+
+    static pub fnc from_vals(vals vec<T>) : Stack {
+        built: vec<T>;
+        foreach _, v in<vector> vals {
+            _ = _ + 1 - 1;
+            built.pushb(v);
+        }
+        return Stack { items: built };
+    }
+
+    pub fnc push(v T) : void {
+        this.items.pushb(v);
+    }
+
+    pub fnc pop() : T {
+        return this.items.popb();
+    }
+
+    pub fnc peek() : T {
+        return this.items.get(this.items.size - 1);
+    }
+
+    pub fnc size() : int {
+        return this.items.size;
+    }
+
+    pub fnc is_empty() : bool {
+        return this.items.size == 0;
+    }
+
+    pub fnc isin(v T) : bool {
+        return this.items.isin(v);
+    }
+
+    pub fnc clear() : void {
+        this.items.clear();
+    }
+
+    pub fnc to_vec() : vec<T> {
+        out: vec<T>;
+        foreach _, v in<vector> this.items {
+            _ = _ + 1 - 1;
+            out.pushb(v);
+        }
+        return out;
+    }
+};

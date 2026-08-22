@@ -1,0 +1,99 @@
+pub def ParsedArgs : struct {
+    flags: hash<string, bool>;
+    opts: hash<string, string>;
+    positional: vec<string>;
+    err: string;
+};
+
+pub def Args : class {
+    static pub fnc parse(argv string[]) : ParsedArgs {
+        out: ParsedArgs;
+        nopts: hash<string, string>;
+        nflags: hash<string, bool>;
+        out.opts = nopts;
+        out.flags = nflags;
+
+        i: int = 0;
+        n: int = argv.size;
+        no_more: bool = false;
+        while i < n {
+            a: string = argv[i];
+
+            if no_more {
+                out.positional.pushb(a);
+                i = i + 1;
+                continue;
+            }
+            if a == "--" {
+                no_more = true;
+                i = i + 1;
+                continue;
+            }
+            if a.size >= 3 && a[0] == '-' && a[1] == '-' {
+                body: string = Args.slice(a, 2, a.size);
+                eq: int = -1;
+                foreach k2, c in<string> body {
+                    if c == '=' {
+                        eq = k2;
+                        stop;
+                    }
+                }
+                if eq > 0 {
+                    key: string = Args.slice(body, 0, eq);
+                    val: string = Args.slice(body, eq + 1, body.size);
+                    out.opts.push(key, val);
+                } else {
+                    nxt: int = i + 1;
+                    if nxt < n && Args.is_value(argv[nxt]) {
+                        out.opts.push(body, argv[nxt]);
+                        i = i + 1;
+                    } else {
+                        out.flags.push(body, true);
+                    }
+                }
+                i = i + 1;
+                continue;
+            }
+            if a.size >= 2 && a[0] == '-' && a[1] != '-' {
+                foreach _, c in<string> Args.slice(a, 1, a.size) {
+                    out.flags.push("" + c, true);
+                }
+                i = i + 1;
+                continue;
+            }
+            out.positional.pushb(a);
+            i = i + 1;
+        }
+        return out;
+    }
+
+    static priv fnc is_value(s string) : bool {
+        if s.size == 0 {
+            return false;
+        }
+        return s[0] != '-';
+    }
+
+    static pub fnc get_flag(p ParsedArgs, name string) : bool {
+        return p.flags.isin(name);
+    }
+
+    static pub fnc get_opt(p ParsedArgs, name string) : string {
+        if p.opts.isin(name) {
+            return p.opts[name];
+        }
+        return "";
+    }
+
+    static pub fnc has_opt(p ParsedArgs, name string) : bool {
+        return p.opts.isin(name);
+    }
+
+    static priv fnc slice(s string, from int, to int) : string {
+        out: string;
+        for i: int = from; i < to; i = i + 1 {
+            out = out + s[i];
+        }
+        return out;
+    }
+};

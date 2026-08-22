@@ -1,0 +1,16 @@
+use collections::stack::Stack;
+
+fnc main() {
+    s: Stack<string> = Stack.new();
+    s.push("a");
+    s.push("b");
+    s.push("c");
+    show("size:", s.size());
+    show("pop:", s.pop());
+    show("peek:", s.peek());
+    show("isin b:", s.isin("b"), " | isin z:", s.isin("z"));
+    s.pop();
+    s.pop();
+    show("empty now:", s.is_empty());
+}
+

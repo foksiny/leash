@@ -1,0 +1,105 @@
+pub def Rand : class {
+    static pub fnc range(min int, max int) : int {
+        if max < min {
+            return min;
+        }
+        return rand(min, max);
+    }
+
+    static pub fnc unit() : float {
+        return tofloat(float, Rand.range(0, 999999)) / 1000000.0;
+    }
+
+    static pub fnc shuffle_ints(v vec<int>) : void {
+        i: int = v.size - 1;
+        while i > 0 {
+            j: int = Rand.range(0, i);
+            a: int = v.get(i);
+            v.set(i, v.get(j));
+            v.set(j, a);
+            i = i - 1;
+        }
+    }
+
+    static pub fnc shuffle_floats(v vec<float>) : void {
+        i: int = v.size - 1;
+        while i > 0 {
+            j: int = Rand.range(0, i);
+            a: float = v.get(i);
+            v.set(i, v.get(j));
+            v.set(j, a);
+            i = i - 1;
+        }
+    }
+
+    static pub fnc shuffle_strings(v vec<string>) : void {
+        i: int = v.size - 1;
+        while i > 0 {
+            j: int = Rand.range(0, i);
+            a: string = v.get(i);
+            v.set(i, v.get(j));
+            v.set(j, a);
+            i = i - 1;
+        }
+    }
+
+    static pub fnc choice_ints(v vec<int>) : int {
+        if v.size == 0 {
+            return 0;
+        }
+        return v.get(Rand.range(0, v.size - 1));
+    }
+
+    static pub fnc choice_strings(v vec<string>) : string {
+        if v.size == 0 {
+            return "";
+        }
+        return v.get(Rand.range(0, v.size - 1));
+    }
+
+    static pub fnc sample_ints(v vec<int>, k int) : vec<int> {
+        out: vec<int>;
+        pool: vec<int>;
+        foreach _, x in<vector> v {
+            _ = _ + 1 - 1;
+            pool.pushb(x);
+        }
+        take: int = k;
+        if take > pool.size {
+            take = pool.size;
+        }
+        n: int = pool.size;
+        for s: int = 0; s < take; s = s + 1 {
+            j: int = Rand.range(s, n - 1);
+            a: int = pool.get(s);
+            pool.set(s, pool.get(j));
+            pool.set(j, a);
+            out.pushb(pool.get(s));
+        }
+        return out;
+    }
+
+    static pub fnc weighted_index(weights vec<int>) : int {
+        total: int = 0;
+        foreach _, w in<vector> weights {
+            _ = _ + 1 - 1;
+            if w > 0 {
+                total = total + w;
+            }
+        }
+        if total <= 0 {
+            return 0 - 1;
+        }
+        r: int = Rand.range(1, total);
+        acc: int = 0;
+        foreach i, w in<vector> weights {
+            if w > 0 {
+                acc = acc + w;
+                if r <= acc {
+                    return i;
+                }
+            }
+        }
+        return weights.size - 1;
+    }
+};

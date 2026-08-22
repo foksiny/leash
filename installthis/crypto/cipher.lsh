@@ -1,0 +1,125 @@
+pub def Cipher : class {
+    static pub fnc xor_enc(data string, key string) : string {
+        if key.size == 0 {
+            return data;
+        }
+        out: string;
+        i: int = 0;
+        foreach _, c in<string> data {
+            k: char = key[i % key.size];
+            v: int = (toint(int, c) & 255) ^ (toint(int, k) & 255);
+            out = out + (char)v;
+            i = i + 1;
+        }
+        return out;
+    }
+
+    static pub fnc xor_hex(data string, key string) : string {
+        enc: string = Cipher.xor_enc(data, key);
+        out: string;
+        foreach _, c in<string> enc {
+            b: int = toint(int, c) & 255;
+            hi: int = b / 16;
+            lo: int = b - hi * 16;
+            out = out + Cipher.hexch(hi);
+            out = out + Cipher.hexch(lo);
+        }
+        return out;
+    }
+
+    static pub fnc xor_from_hex(hex string, key string) : string {
+        bytes: vec<char>;
+        i: int = 0;
+        while i + 1 < hex.size {
+            hi: int = Cipher.hexval(hex[i]);
+            lo: int = Cipher.hexval(hex[i + 1]);
+            if hi < 0 || lo < 0 {
+                return "";
+            }
+            bytes.pushb((char)(hi * 16 + lo));
+            i = i + 2;
+        }
+        data: string;
+        foreach _, b in<vector> bytes {
+            _ = _ + 1 - 1;
+            data = data + b;
+        }
+        return Cipher.xor_enc(data, key);
+    }
+
+    static priv fnc hexch(d int) : char {
+        if d < 10 {
+            return (char)('0' + d);
+        }
+        return (char)('a' + d - 10);
+    }
+
+    static priv fnc hexval(c char) : int {
+        if c >= '0' && c <= '9' {
+            return c - '0';
+        }
+        if c >= 'a' && c <= 'f' {
+            return c - 'a' + 10;
+        }
+        return 0 - 1;
+    }
+
+    static priv fnc shift_alpha(c char, shift int) : char {
+        if c >= 'a' && c <= 'z' {
+            sh_lo: int = ((shift % 26) + 26) % 26;
+            return (char)('a' + (c - 'a' + sh_lo) % 26);
+        }
+        if c >= 'A' && c <= 'Z' {
+            sh_up: int = ((shift % 26) + 26) % 26;
+            return (char)('A' + (c - 'A' + sh_up) % 26);
+        }
+        return c;
+    }
+
+    static pub fnc caesar(text string, shift int) : string {
+        out: string;
+        foreach _, c in<string> text {
+            out = out + Cipher.shift_alpha(c, shift);
+        }
+        return out;
+    }
+
+    static pub fnc rot13(text string) : string {
+        return Cipher.caesar(text, 13);
+    }
+
+    static pub fnc vigenere(text string, key string) : string {
+        return Cipher.vigenere_mode(text, key, false);
+    }
+
+    static pub fnc vigenere_dec(text string, key string) : string {
+        return Cipher.vigenere_mode(text, key, true);
+    }
+
+    static priv fnc vigenere_mode(text string, key string, dec bool) : string {
+        if key.size == 0 {
+            return text;
+        }
+        out: string;
+        ki: int = 0;
+        foreach _, c in<string> text {
+            k: char = key[ki % key.size];
+            if (k < 'a' || k > 'z') && (k < 'A' || k > 'Z') {
+                ki = ki + 1;
+                out = out + c;
+                continue;
+            }
+            base: int = toint(int, 'a');
+            if k >= 'A' && k <= 'Z' {
+                base = toint(int, 'A');
+            }
+            shift: int = toint(int, k) - base;
+            if dec {
+                shift = 0 - shift;
+            }
+            out = out + Cipher.shift_alpha(c, shift);
+            ki = ki + 1;
+        }
+        return out;
+    }
+};

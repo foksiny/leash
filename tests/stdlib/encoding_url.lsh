@@ -1,0 +1,16 @@
+use encoding::url::Url;
+
+fnc main() {
+    enc: string = Url.encode("hello world/a?b=c&d=e");
+    show(enc);
+    show(Url.decode(enc));
+    keys: vec<string> = (vec<string>){"name", "msg"};
+    vals: vec<string> = (vec<string>){"ada lovelace", "hi & bye"};
+    qs: string = Url.build_query(keys, vals);
+    show(qs);
+    flat: vec<string> = Url.parse_query(qs);
+    show(flat.size);
+    show(Url.query_value(qs, "msg"));
+    scheme, host, path, query: string, string, string, string = Url.split("https://example.com/docs/guide?page=2");
+    show(scheme, " | ", host, " | ", path, " | ", query);
+}

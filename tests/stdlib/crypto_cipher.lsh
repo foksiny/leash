@@ -1,0 +1,16 @@
+use crypto::cipher::Cipher;
+
+fnc main() {
+    enc: string = Cipher.xor_enc("attack at dawn", "KEY");
+    dec: string = Cipher.xor_enc(enc, "KEY");
+    show(dec == "attack at dawn");
+    xh: string = Cipher.xor_hex("secret", "k");
+    show(xh);
+    show(Cipher.xor_from_hex(xh, "k") == "secret");
+    show(Cipher.caesar("Hello, World!", 3));
+    show(Cipher.caesar("Khoor, Zruog!", 0 - 3));
+    show(Cipher.rot13("GNYP"));
+    v: string = Cipher.vigenere("ATTACKATDAWN", "LEMON");
+    show(v);
+    show(Cipher.vigenere_dec(v, "LEMON"));
+}

@@ -1,0 +1,29 @@
+use collections::graph::Graph;
+
+fnc main() {
+    g: Graph = Graph.new();
+    a: int = g.add_vertex();
+    b: int = g.add_vertex();
+    c: int = g.add_vertex();
+    dd: int = g.add_vertex();
+    e: int = g.add_vertex();
+    g.add_edge(a, b);
+    g.add_edge(a, c);
+    g.add_edge(b, dd);
+    g.add_edge(c, dd);
+    g.add_edge(dd, e);
+    order: vec<int> = g.bfs(a);
+    foreach _, x in<vector> order {
+        show("bfs:", x);
+    }
+    path: vec<int> = g.shortest_path(a, e);
+    show("path len:", path.size);
+    show(g.has_path(a, e), " | ", g.has_path(e, a), " | edges:", g.edge_count());
+    ts: vec<int> = g.topo_sort();
+    show("topo size:", ts.size, " | cycle?:", g.has_cycle());
+
+    cyc: Graph = Graph.new();
+    x0: int = cyc.add_vertex(); x1: int = cyc.add_vertex(); x2: int = cyc.add_vertex();
+    cyc.add_edge(x0, x1); cyc.add_edge(x1, x2); cyc.add_edge(x2, x0);
+    show("dag has cycle:", cyc.has_cycle());
+}

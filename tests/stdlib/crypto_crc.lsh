@@ -1,0 +1,11 @@
+use crypto::crc::Crc;
+
+fnc main() {
+    show(Crc.crc32(""));
+    show(Crc.crc32("123456789") == 0xCBF43926);
+    show(Crc.crc32_hex("123456789"));
+    show(Crc.crc16_ccitt("123456789") == 0x29B1);
+    show(Crc.adler32("") == 1);
+    av: int<64> = Crc.adler32("abc");
+    show(av == 38600999);
+}

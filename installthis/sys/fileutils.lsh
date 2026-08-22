@@ -1,0 +1,123 @@
+pub def FileUtil : class {
+    static pub fnc exists(path string) : bool {
+        f: File = File.open(path, "r");
+        if f == nil {
+            return false;
+        }
+        f.close();
+        return true;
+    }
+
+    static pub fnc read_text(path string) : string {
+        f: File = File.open(path, "r");
+        if f == nil {
+            return "";
+        }
+        content: string = f.read();
+        f.close();
+        return content;
+    }
+
+    static pub fnc write_text(path string, text string) : int {
+        f: File = File.open(path, "w");
+        if f == nil {
+            return 0 - 1;
+        }
+        r: int = f.write(text);
+        f.close();
+        return r;
+    }
+
+    static pub fnc append_text(path string, text string) : int {
+        f: File = File.open(path, "a");
+        if f == nil {
+            return 0 - 1;
+        }
+        r: int = f.write(text);
+        f.close();
+        return r;
+    }
+
+    static pub fnc read_lines(path string) : vec<string> {
+        lines: vec<string>;
+        text: string = FileUtil.read_text(path);
+        cur: string;
+        foreach _, c in<string> text {
+            if c == '\n' {
+                lines.pushb(FileUtil.strip_cr(cur));
+                cur = "";
+            } else {
+                cur = cur + c;
+            }
+        }
+        if cur.size > 0 || (text.size > 0 && text[text.size - 1] == '\n') {
+            if cur.size > 0 {
+                lines.pushb(FileUtil.strip_cr(cur));
+            }
+        }
+        return lines;
+    }
+
+    static priv fnc strip_cr(s string) : string {
+        n: int = s.size;
+        if n > 0 && s[n - 1] == '\r' {
+            out: string;
+            for i: int = 0; i < n - 1; i = i + 1 {
+                out = out + s[i];
+            }
+            return out;
+        }
+        return s;
+    }
+
+    static pub fnc write_lines(path string, lines vec<string>) : int {
+        f: File = File.open(path, "w");
+        if f == nil {
+            return 0 - 1;
+        }
+        total: int = 0;
+        foreach _, l in<vector> lines {
+            r: int = f.write(l);
+            if r >= 0 {
+                total = total + r;
+            }
+            f.write("\n");
+        }
+        f.close();
+        return total;
+    }
+
+    static pub fnc copy(src string, dst string) : int {
+        text: string = FileUtil.read_text(src);
+        if text.size == 0 && FileUtil.exists(src) == false {
+            return 0 - 1;
+        }
+        return FileUtil.write_text(dst, text);
+    }
+
+    static pub fnc move(src string, dst string) : int {
+        if FileUtil.exists(src) == false {
+            return 0 - 1;
+        }
+        return File.rename(src, dst);
+    }
+
+    static pub fnc remove(path string) : int {
+        return File.delete(path);
+    }
+
+    static pub fnc size(path string) : int<64> {
+        if FileUtil.exists(path) == false {
+            return 0 - 1;
+        }
+        text: string = FileUtil.read_text(path);
+        return toint(int<64>, text.size);
+    }
+
+    static pub fnc touch(path string) : int {
+        if FileUtil.exists(path) {
+            return 0;
+        }
+        return FileUtil.write_text(path, "");
+    }
+};

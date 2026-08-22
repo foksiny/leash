@@ -1,0 +1,16 @@
+use collections::set::Set;
+
+fnc main() {
+    st: Set<int> = Set.new();
+    show(st.add(1), " | ", st.add(2), " | dup:", st.add(1));
+    o: Set<int> = Set.from_vals((vec<int>){2, 3, 4});
+    uv: vec<int> = st.combine(o.to_vec());
+    show("union size:", uv.size);
+    nv: vec<int> = st.common(o.to_vec());
+    show("common:", nv.get(0));
+    dv: vec<int> = st.excluding(o.to_vec());
+    show("excluding:", dv.get(0));
+    small: Set<int> = Set.from_vals((vec<int>){1});
+    show("subset:", small.is_subset_of(o.to_vec()));
+    show(st.remove(1), " | has 1:", st.has(1));
+}

@@ -1,0 +1,112 @@
+priv def T : template;
+
+pub def Set : class<T> {
+    priv items: vec<T>;
+
+    static pub fnc new() : Set {
+        fresh: vec<T>;
+        return Set { items: fresh };
+    }
+
+    static pub fnc from_vals(vals vec<T>) : Set {
+        built: vec<T>;
+        foreach _, v in<vector> vals {
+            _ = _ + 1 - 1;
+            if built.isin(v) == false {
+                built.pushb(v);
+            }
+        }
+        return Set { items: built };
+    }
+
+    pub fnc add(v T) : bool {
+        if this.items.isin(v) {
+            return false;
+        }
+        this.items.pushb(v);
+        return true;
+    }
+
+    pub fnc has(v T) : bool {
+        return this.items.isin(v);
+    }
+
+    pub fnc remove(v T) : bool {
+        n: int = this.items.size;
+        for i: int = 0; i < n; i = i + 1 {
+            if this.items.get(i) == v {
+                this.items.remove(i);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    pub fnc size() : int {
+        return this.items.size;
+    }
+
+    pub fnc is_empty() : bool {
+        return this.items.size == 0;
+    }
+
+    pub fnc clear() : void {
+        this.items.clear();
+    }
+
+    pub fnc to_vec() : vec<T> {
+        out: vec<T>;
+        foreach _, v in<vector> this.items {
+            _ = _ + 1 - 1;
+            out.pushb(v);
+        }
+        return out;
+    }
+
+    pub fnc combine(others vec<T>) : vec<T> {
+        merged: vec<T>;
+        foreach _, v in<vector> this.items {
+            _ = _ + 1 - 1;
+            merged.pushb(v);
+        }
+        foreach _, v in<vector> others {
+            _ = _ + 1 - 1;
+            if merged.isin(v) == false {
+                merged.pushb(v);
+            }
+        }
+        return merged;
+    }
+
+    pub fnc common(others vec<T>) : vec<T> {
+        common_vals: vec<T>;
+        foreach _, v in<vector> this.items {
+            _ = _ + 1 - 1;
+            if others.isin(v) {
+                common_vals.pushb(v);
+            }
+        }
+        return common_vals;
+    }
+
+    pub fnc excluding(others vec<T>) : vec<T> {
+        kept: vec<T>;
+        foreach _, v in<vector> this.items {
+            _ = _ + 1 - 1;
+            if others.isin(v) == false {
+                kept.pushb(v);
+            }
+        }
+        return kept;
+    }
+
+    pub fnc is_subset_of(others vec<T>) : bool {
+        foreach _, v in<vector> this.items {
+            _ = _ + 1 - 1;
+            if others.isin(v) == false {
+                return false;
+            }
+        }
+        return true;
+    }
+};

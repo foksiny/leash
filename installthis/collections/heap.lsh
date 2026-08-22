@@ -1,0 +1,85 @@
+priv def T : template;
+
+pub def PriorityQueue : class<T> {
+    priv vals: vec<T>;
+    priv prios: vec<int<64>>;
+
+    static pub fnc new() : PriorityQueue {
+        return PriorityQueue {};
+    }
+
+    pub fnc push(v T, prio int<64>) : void {
+        this.vals.pushb(v);
+        this.prios.pushb(prio);
+        i: int = this.vals.size - 1;
+        while i > 0 {
+            parent: int = (i - 1) / 2;
+            if this.prios.get(parent) <= this.prios.get(i) {
+                stop;
+            }
+            this.swap(i, parent);
+            i = parent;
+        }
+    }
+
+    pub fnc pop() : T {
+        top: T = this.vals.get(0);
+        last: int = this.vals.size - 1;
+        this.swap(0, last);
+        this.vals.popb();
+        this.prios.popb();
+        this.sift_down(0);
+        return top;
+    }
+
+    pub fnc peek() : T {
+        return this.vals.get(0);
+    }
+
+    pub fnc peek_priority() : int<64> {
+        return this.prios.get(0);
+    }
+
+    pub fnc size() : int {
+        return this.vals.size;
+    }
+
+    pub fnc is_empty() : bool {
+        return this.vals.size == 0;
+    }
+
+    pub fnc clear() : void {
+        this.vals.clear();
+        this.prios.clear();
+    }
+
+    priv fnc swap(a int, b int) : void {
+        tv: T = this.vals.get(a);
+        this.vals.set(a, this.vals.get(b));
+        this.vals.set(b, tv);
+        tp: int<64> = this.prios.get(a);
+        this.prios.set(a, this.prios.get(b));
+        this.prios.set(b, tp);
+    }
+
+    priv fnc sift_down(start int) : void {
+        i: int = start;
+        n: int = this.vals.size;
+        while true {
+            l: int = 2 * i + 1;
+            r: int = 2 * i + 2;
+            small: int = i;
+            if l < n && this.prios.get(l) < this.prios.get(small) {
+                small = l;
+            }
+            if r < n && this.prios.get(r) < this.prios.get(small) {
+                small = r;
+            }
+            if small == i {
+                stop;
+            }
+            this.swap(i, small);
+            i = small;
+        }
+    }
+};

@@ -1,0 +1,27 @@
+use sys::fileutils::FileUtil;
+
+fnc main() {
+    p: string = "/tmp/leash_stdlib_fu_test.txt";
+    FileUtil.write_text(p, "line one\nline two\n");
+    show("exists:", FileUtil.exists(p));
+    ls: vec<string> = FileUtil.read_lines(p);
+    foreach i, l in<vector> ls {
+        show("L", i, " = ", l);
+    }
+    FileUtil.append_text(p, "appended");
+    text: string = FileUtil.read_text(p);
+    show(text.size == 21);
+    cp: string = "/tmp/leash_stdlib_fu_copy.txt";
+    cpr: int = FileUtil.copy(p, cp);
+    show("copy ok:", cpr >= 0, " | exists:", FileUtil.exists(cp));
+    show("size>0:", FileUtil.size(cp) > 0);
+    wl: vec<string>;
+    wl.pushb("alpha");
+    wl.pushb("beta");
+    FileUtil.write_lines(cp, wl);
+    rbl: vec<string> = FileUtil.read_lines(cp);
+    show(rbl.size == 2 && rbl.get(1) == "beta");
+    FileUtil.remove(cp);
+    show("gone:", FileUtil.exists(cp) == false);
+    FileUtil.remove(p);
+}

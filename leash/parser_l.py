@@ -95,6 +95,9 @@ class Parser:
         self.tokens = tokens
         self.pos = 0
         self.source_file = source_file  # Store for _FILEPATH/_FILENAME
+        # Journal of '>>' splices: list of (token_index, original_SHR_token).
+        # Used to precisely undo splits when speculative parsing rolls back.
+        self._gt_mutations = []
 
     def _pos(self, node, tok=None):
         """Set line/col on an AST node from a token (defaults to current token)."""
@@ -228,6 +231,45 @@ class Parser:
                 tok.column,
                 tip=tip,
             )
+
+    def _at_gt(self):
+        """True when the current token can close a generic argument list.
+
+        A single '>' is always a close bracket. A '>>' (SHR) may be either a
+        right-shift expression or the last two closing brackets of nested
+        generics (e.g. vec<vec<int>>); the parser decides from context.
+        """
+        return self.current().type in ("GT", "SHR")
+
+    def _eat_gt(self):
+        """Consume exactly one generic-closing '>'.
+
+        If the current token is '>>', it is spliced into two GT tokens and the
+        first is consumed; the splice is journalled so speculative rollbacks
+        can restore the original token stream exactly.
+        """
+        if self.current().type == "SHR":
+            shr = self.current()
+            self._gt_mutations.append((self.pos, shr))
+            first = Token("GT", ">", shr.line, shr.column)
+            second = Token("GT", ">", shr.line, shr.column + 1)
+            self.tokens[self.pos:self.pos + 1] = [first, second]
+        return self.eat("GT")
+
+    def _save(self):
+        """Checkpoint for speculative parsing."""
+        return (self.pos, len(self.tokens), len(self._gt_mutations))
+
+    def _restore(self, checkpoint):
+        pos, ntokens, nmutations = checkpoint
+        # Undo any '>>' splices performed since the checkpoint (newest first).
+        while len(self._gt_mutations) > nmutations:
+            idx, shr = self._gt_mutations.pop()
+            self.tokens[idx:idx + 2] = [shr]
+        # Drop any other tokens inserted after the checkpoint.
+        if len(self.tokens) > ntokens:
+            del self.tokens[ntokens:]
+        self.pos = pos
 
     def _get_smart_tip(self, expected_type, token):
         obs_val = token.value.lower() if isinstance(token.value, str) else str(token.value)
@@ -440,7 +482,7 @@ class Parser:
                     size = self.eat("NUMBER").value
                     base = f"{base}<{size}>"
 
-                self.eat("GT")
+                self._eat_gt()
 
             if self.current().type == "LBRACKET":
                 self.eat("LBRACKET")
@@ -559,7 +601,7 @@ class Parser:
     def _is_cast(self):
         """Look ahead to determine if (type)expr pattern."""
         # Current token is LPAREN. We need to check if the next token(s) form a type, then RPAREN.
-        saved = self.pos
+        saved = self._save()
         try:
             self.eat("LPAREN")
             tok = self.current()
@@ -573,11 +615,11 @@ class Parser:
         except (LeashError, IndexError):
             return False
         finally:
-            self.pos = saved
+            self._restore(saved)
 
     def _is_sizeof_type(self):
         """Look ahead to determine if sizeof(type) pattern."""
-        saved = self.pos
+        saved = self._save()
         try:
             # We are called when current() is LPAREN (after sizeof)
             self.eat("LPAREN")
@@ -594,7 +636,7 @@ class Parser:
         except (LeashError, IndexError):
             return False
         finally:
-            self.pos = saved
+            self._restore(saved)
 
     def parse(self):
         items = []
@@ -1188,11 +1230,11 @@ class Parser:
         # Check for generic parameters: class<T1, T2>
         if self.current().type == "LT":
             self.eat("LT")
-            while self.current().type != "GT":
+            while not self._at_gt():
                 type_params.append(self.eat("IDENT").value)
                 if self.current().type == "COMMA":
                     self.eat("COMMA")
-            self.eat("GT")
+            self._eat_gt()
         # Check for inheritance: class(Parent)
         if self.current().type == "LPAREN":
             self.eat("LPAREN")
@@ -1320,11 +1362,11 @@ class Parser:
         # Check for generic parameters: fnc add<T>(a T, b T)
         if self.current().type == "LT":
             self.eat("LT")
-            while self.current().type != "GT":
+            while not self._at_gt():
                 type_params.append(self.eat("IDENT").value)
                 if self.current().type == "COMMA":
                     self.eat("COMMA")
-            self.eat("GT")
+            self._eat_gt()
         args = []
         if self.current().type == "LPAREN":
             self.eat("LPAREN")
@@ -2383,12 +2425,12 @@ class Parser:
             # Check for generic function call: name<T>(args)
             if self.current().type == "LT":
                 # Look ahead to check if this is a generic call
-                saved_pos = self.pos
+                saved_pos = self._save()
                 try:
                     self.eat("LT")
                     type_args = []
                     # Parse type arguments
-                    while self.current().type != "GT":
+                    while not self._at_gt():
                         # Type can be a simple identifier or a compound type like vec<T>
                         if self.current().type in (
                             "IDENT",
@@ -2403,14 +2445,13 @@ class Parser:
                         ):
                             type_args.append(self.parse_type())
                         else:
-                            # Not a valid type argument, not a generic call
-                            self.pos = saved_pos
                             break
                         if self.current().type == "COMMA":
                             self.eat("COMMA")
-                    else:
-                        self.eat("GT")
+                    if self._at_gt():
+                        self._eat_gt()
                         if self.current().type == "LPAREN":
+                            # Committed: parse args for real
                             self.eat("LPAREN")
                             args = []
                             kwargs = {}
@@ -2425,20 +2466,19 @@ class Parser:
                                     self.eat("COMMA")
                             self.eat("RPAREN")
                             return self._pos(GenericCall(name, type_args, args, kwargs), tok)
-                        else:
-                            # Not a generic call, restore position
-                            self.pos = saved_pos
+                    # Not a generic call, restore position
+                    self._restore(saved_pos)
                 except LeashError:
                     # Not a generic call, restore position
-                    self.pos = saved_pos
+                    self._restore(saved_pos)
 
             # Check for generic type expression: Class<T> (used for static method calls like VecMath<int>.sum(...))
             if self.current().type == "LT":
-                saved_pos = self.pos
+                saved_pos = self._save()
                 try:
                     self.eat("LT")
                     type_args = []
-                    while self.current().type != "GT":
+                    while not self._at_gt():
                         if self.current().type in (
                             "IDENT",
                             "VEC",
@@ -2452,16 +2492,17 @@ class Parser:
                         ):
                             type_args.append(self.parse_type())
                         else:
-                            self.pos = saved_pos
                             break
                         if self.current().type == "COMMA":
                             self.eat("COMMA")
-                    else:
-                        self.eat("GT")
+                    if self._at_gt():
+                        self._eat_gt()
                         # This is a generic type expression - return it and let parse_postfix handle the method call
                         return self._pos(GenericTypeExpr(name, type_args), tok)
+                    # Not a generic type expression, restore position
+                    self._restore(saved_pos)
                 except LeashError:
-                    self.pos = saved_pos
+                    self._restore(saved_pos)
 
             if self.current().type == "LPAREN":
                 self.eat("LPAREN")

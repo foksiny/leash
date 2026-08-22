@@ -1,0 +1,260 @@
+pub def Sort : class {
+    static priv fnc scmp(a string, b string) : int {
+        n: int = a.size;
+        if b.size < n {
+            n = b.size;
+        }
+        for i: int = 0; i < n; i = i + 1 {
+            if a[i] < b[i] {
+                return 0 - 1;
+            }
+            if a[i] > b[i] {
+                return 1;
+            }
+        }
+        if a.size < b.size {
+            return 0 - 1;
+        }
+        if a.size > b.size {
+            return 1;
+        }
+        return 0;
+    }
+
+    static pub fnc ints(v vec<int>) : void {
+        tmp: vec<int>;
+        for i: int = 0; i < v.size; i = i + 1 {
+            tmp.pushb(0);
+        }
+        Sort.ints_rec(v, 0, v.size - 1, tmp);
+    }
+
+    static priv fnc ints_rec(v vec<int>, lo int, hi int, tmp vec<int>) : void {
+        if lo >= hi {
+            return;
+        }
+        mid: int = lo + (hi - lo) / 2;
+        Sort.ints_rec(v, lo, mid, tmp);
+        Sort.ints_rec(v, mid + 1, hi, tmp);
+        Sort.ints_merge(v, lo, mid, hi, tmp);
+    }
+
+    static priv fnc ints_merge(v vec<int>, lo int, mid int, hi int, tmp vec<int>) : void {
+        i: int = lo;
+        j: int = mid + 1;
+        k: int = lo;
+        while i <= mid && j <= hi {
+            if v.get(j) < v.get(i) {
+                tmp.set(k, v.get(j));
+                j = j + 1;
+            } else {
+                tmp.set(k, v.get(i));
+                i = i + 1;
+            }
+            k = k + 1;
+        }
+        while i <= mid {
+            tmp.set(k, v.get(i));
+            i = i + 1;
+            k = k + 1;
+        }
+        while j <= hi {
+            tmp.set(k, v.get(j));
+            j = j + 1;
+            k = k + 1;
+        }
+        for t: int = lo; t <= hi; t = t + 1 {
+            v.set(t, tmp.get(t));
+        }
+    }
+
+    static pub fnc floats(v vec<float>) : void {
+        tmp: vec<float>;
+        for i: int = 0; i < v.size; i = i + 1 {
+            tmp.pushb(0.0);
+        }
+        Sort.floats_rec(v, 0, v.size - 1, tmp);
+    }
+
+    static priv fnc floats_rec(v vec<float>, lo int, hi int, tmp vec<float>) : void {
+        if lo >= hi {
+            return;
+        }
+        mid: int = lo + (hi - lo) / 2;
+        Sort.floats_rec(v, lo, mid, tmp);
+        Sort.floats_rec(v, mid + 1, hi, tmp);
+        Sort.floats_merge(v, lo, mid, hi, tmp);
+    }
+
+    static priv fnc floats_merge(v vec<float>, lo int, mid int, hi int, tmp vec<float>) : void {
+        i: int = lo;
+        j: int = mid + 1;
+        k: int = lo;
+        while i <= mid && j <= hi {
+            if v.get(j) < v.get(i) {
+                tmp.set(k, v.get(j));
+                j = j + 1;
+            } else {
+                tmp.set(k, v.get(i));
+                i = i + 1;
+            }
+            k = k + 1;
+        }
+        while i <= mid {
+            tmp.set(k, v.get(i));
+            i = i + 1;
+            k = k + 1;
+        }
+        while j <= hi {
+            tmp.set(k, v.get(j));
+            j = j + 1;
+            k = k + 1;
+        }
+        for t: int = lo; t <= hi; t = t + 1 {
+            v.set(t, tmp.get(t));
+        }
+    }
+
+    static pub fnc strings(v vec<string>) : void {
+        tmp: vec<string>;
+        for i: int = 0; i < v.size; i = i + 1 {
+            tmp.pushb("");
+        }
+        Sort.strings_rec(v, 0, v.size - 1, tmp);
+    }
+
+    static priv fnc strings_rec(v vec<string>, lo int, hi int, tmp vec<string>) : void {
+        if lo >= hi {
+            return;
+        }
+        mid: int = lo + (hi - lo) / 2;
+        Sort.strings_rec(v, lo, mid, tmp);
+        Sort.strings_rec(v, mid + 1, hi, tmp);
+        Sort.strings_merge(v, lo, mid, hi, tmp);
+    }
+
+    static priv fnc strings_merge(v vec<string>, lo int, mid int, hi int, tmp vec<string>) : void {
+        i: int = lo;
+        j: int = mid + 1;
+        k: int = lo;
+        while i <= mid && j <= hi {
+            if Sort.scmp(v.get(j), v.get(i)) < 0 {
+                tmp.set(k, v.get(j));
+                j = j + 1;
+            } else {
+                tmp.set(k, v.get(i));
+                i = i + 1;
+            }
+            k = k + 1;
+        }
+        while i <= mid {
+            tmp.set(k, v.get(i));
+            i = i + 1;
+            k = k + 1;
+        }
+        while j <= hi {
+            tmp.set(k, v.get(j));
+            j = j + 1;
+            k = k + 1;
+        }
+        for t: int = lo; t <= hi; t = t + 1 {
+            v.set(t, tmp.get(t));
+        }
+    }
+
+    static pub fnc ints_desc(v vec<int>) : void {
+        Sort.ints(v);
+        Sort.reverse_ints(v);
+    }
+
+    static pub fnc floats_desc(v vec<float>) : void {
+        Sort.floats(v);
+        Sort.reverse_floats(v);
+    }
+
+    static pub fnc strings_desc(v vec<string>) : void {
+        Sort.strings(v);
+        Sort.reverse_strings(v);
+    }
+
+    static pub fnc reverse_ints(v vec<int>) : void {
+        i: int = 0;
+        j: int = v.size - 1;
+        while i < j {
+            a: int = v.get(i);
+            v.set(i, v.get(j));
+            v.set(j, a);
+            i = i + 1;
+            j = j - 1;
+        }
+    }
+
+    static pub fnc reverse_floats(v vec<float>) : void {
+        i: int = 0;
+        j: int = v.size - 1;
+        while i < j {
+            a: float = v.get(i);
+            v.set(i, v.get(j));
+            v.set(j, a);
+            i = i + 1;
+            j = j - 1;
+        }
+    }
+
+    static pub fnc reverse_strings(v vec<string>) : void {
+        i: int = 0;
+        j: int = v.size - 1;
+        while i < j {
+            a: string = v.get(i);
+            v.set(i, v.get(j));
+            v.set(j, a);
+            i = i + 1;
+            j = j - 1;
+        }
+    }
+
+    static pub fnc is_sorted_ints(v vec<int>) : bool {
+        for i: int = 1; i < v.size; i = i + 1 {
+            if v.get(i) < v.get(i - 1) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static pub fnc is_sorted_floats(v vec<float>) : bool {
+        for i: int = 1; i < v.size; i = i + 1 {
+            if v.get(i) < v.get(i - 1) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static pub fnc is_sorted_strings(v vec<string>) : bool {
+        for i: int = 1; i < v.size; i = i + 1 {
+            if Sort.scmp(v.get(i), v.get(i - 1)) < 0 {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static pub fnc copy_ints(v vec<int>) : vec<int> {
+        out: vec<int>;
+        foreach _, x in<vector> v {
+            _ = _ + 1 - 1;
+            out.pushb(x);
+        }
+        return out;
+    }
+
+    static pub fnc copy_strings(v vec<string>) : vec<string> {
+        out: vec<string>;
+        foreach _, x in<vector> v {
+            _ = _ + 1 - 1;
+            out.pushb(x);
+        }
+        return out;
+    }
+};

@@ -299,7 +299,6 @@ class Lexer:
         line_num = 1
         line_start = 0
         tokens = []
-        depth = 0
         tokens_append = tokens.append
         keywords = self.KEYWORD_MAP
 
@@ -335,16 +334,10 @@ class Lexer:
                 value = leash_unescape(value)
             elif kind == "IDENT" and value in keywords:
                 kind = keywords[value]
-            elif kind == "SHR" and depth > 0:
-                tokens_append(Token("GT", ">", line_num, column))
-                tokens_append(Token("GT", ">", line_num, column + 1))
-                depth -= 2
-                continue
 
-            if kind == "LT":
-                depth += 1
-            elif kind == "GT":
-                depth -= 1
+            # NOTE: '>>' is always emitted as a single SHR token. Whether it is a
+            # right-shift or the closing brackets of nested generics (e.g.
+            # vec<vec<int>>) is decided by the parser, which can split the token.
 
             tokens_append(Token(kind, value, line_num, column))
 

@@ -1,0 +1,148 @@
+pub def Bits : class {
+    static pub fnc get(x int<64>, i int) : bool {
+        if i < 0 || i > 63 {
+            return false;
+        }
+        return ((x >> i) & 1) == 1;
+    }
+
+    static pub fnc set(x int<64>, i int) : int<64> {
+        if i < 0 || i > 63 {
+            return x;
+        }
+        return x | ((int<64>)1 << i);
+    }
+
+    static pub fnc clear(x int<64>, i int) : int<64> {
+        if i < 0 || i > 63 {
+            return x;
+        }
+        return x & ~((int<64>)1 << i);
+    }
+
+    static pub fnc toggle(x int<64>, i int) : int<64> {
+        if i < 0 || i > 63 {
+            return x;
+        }
+        return x ^ ((int<64>)1 << i);
+    }
+
+    static pub fnc popcount(x int<64>) : int {
+        c: int = 0;
+        for i: int = 0; i < 64; i = i + 1 {
+            if Bits.get(x, i) {
+                c = c + 1;
+            }
+        }
+        return c;
+    }
+
+    static pub fnc clz(x int<64>) : int {
+        if x == 0 {
+            return 64;
+        }
+        n: int = 0;
+        for i: int = 63; i >= 0; i = i - 1 {
+            if Bits.get(x, i) {
+                stop;
+            }
+            n = n + 1;
+        }
+        return n;
+    }
+
+    static pub fnc ctz(x int<64>) : int {
+        if x == 0 {
+            return 64;
+        }
+        n: int = 0;
+        for i: int = 0; i < 64; i = i + 1 {
+            if Bits.get(x, i) {
+                stop;
+            }
+            n = n + 1;
+        }
+        return n;
+    }
+
+    static pub fnc rotl(x int<64>, n int) : int<64> {
+        m: int = ((n % 64) + 64) % 64;
+        if m == 0 {
+            return x;
+        }
+        uv: uint<64> = (uint<64>)x;
+        sh: int = 64 - m;
+        r: uint<64> = (uv << m) | (uv >> sh);
+        return (int<64>)r;
+    }
+
+    static pub fnc rotr(x int<64>, n int) : int<64> {
+        m: int = ((n % 64) + 64) % 64;
+        if m == 0 {
+            return x;
+        }
+        uv: uint<64> = (uint<64>)x;
+        sh: int = 64 - m;
+        r: uint<64> = (uv >> m) | (uv << sh);
+        return (int<64>)r;
+    }
+
+    static pub fnc rotl32(x uint<32>, n int) : uint<32> {
+        m: int = ((n % 32) + 32) % 32;
+        if m == 0 {
+            return x;
+        }
+        return (x << m) | (x >> (32 - m));
+    }
+
+    static pub fnc rotr32(x uint<32>, n int) : uint<32> {
+        m: int = ((n % 32) + 32) % 32;
+        if m == 0 {
+            return x;
+        }
+        return (x >> m) | (x << (32 - m));
+    }
+
+    static pub fnc flip(x int<64>) : int<64> {
+        return ~x;
+    }
+
+    static pub fnc is_pow2(x int<64>) : bool {
+        if x <= 0 {
+            return false;
+        }
+        return (x & (x - 1)) == 0;
+    }
+
+    static pub fnc next_pow2(x int<64>) : int<64> {
+        if x <= 1 {
+            return 1;
+        }
+        p: int<64> = 1;
+        while p < x {
+            p = p << 1;
+        }
+        return p;
+    }
+
+    static pub fnc swap32(x uint<32>) : uint<32> {
+        b0: uint<32> = (x & (uint<32>)0x000000FF) << 24;
+        b1: uint<32> = (x & (uint<32>)0x0000FF00) << 8;
+        b2: uint<32> = (x & (uint<32>)0x00FF0000) >> 8;
+        b3: uint<32> = (x & (uint<32>)0xFF000000) >> 24;
+        return b0 | b1 | b2 | b3;
+    }
+
+    static pub fnc low32(x int<64>) : uint<32> {
+        return (uint<32>)(x & 0xFFFFFFFF);
+    }
+
+    static pub fnc high32(x int<64>) : uint<32> {
+        return (uint<32>)((uint<64>)x >> 32);
+    }
+
+    static pub fnc join32(lo uint<32>, hi uint<32>) : int<64> {
+        uv: uint<64> = ((uint<64>)hi << 32) | (uint<64>)lo;
+        return (int<64>)uv;
+    }
+};

@@ -1,0 +1,14 @@
+use text::diff::Diff;
+
+fnc main() {
+    d: vec<string> = Diff.lines("alpha\nbeta\ngamma", "alpha\nbeta!\ngamma");
+    foreach _, line in<vector> d {
+        show("<", line, ">");
+    }
+    added, removed: int, int = Diff.summary("one\ntwo", "two\nthree");
+    show("added:", added, " | removed:", removed);
+    w: vec<string> = Diff.words("the quick fox", "the slow fox");
+    foreach _, line in<vector> w {
+        show("{", line, "}");
+    }
+}

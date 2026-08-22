@@ -1,0 +1,21 @@
+use text::markdown::Markdown;
+
+fnc main() {
+    md: string = "# Title\n\nsome **bold** and `code` span\n\n- item one\n- item two\n";
+    html: string = Markdown.to_html(md);
+    lines: vec<string>;
+    cur: string;
+    foreach _, c in<string> html {
+        if c == '\n' {
+            lines.pushb(cur);
+            cur = "";
+        } else {
+            cur = cur + c;
+        }
+    }
+    lines.pushb(cur);
+    foreach i, l in<vector> lines {
+        show(i, " = ", l);
+    }
+    show(Markdown.escape("<a & b>"));
+}

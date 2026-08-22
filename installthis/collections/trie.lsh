@@ -1,0 +1,145 @@
+priv def TrieNode : struct {
+    terminal: bool;
+    chs: vec<char>;
+    kids: vec<int>;
+};
+
+pub def Trie : class {
+    priv nodes: vec<TrieNode>;
+    priv words: int;
+
+    static pub fnc new() : Trie {
+        t: Trie = Trie {};
+        root: TrieNode;
+        t.nodes.pushb(root);
+        t.words = 0;
+        return t;
+    }
+
+    pub fnc insert(word string) : void {
+        cur: int = 0;
+        foreach _, c in<string> word {
+            _ = _ + 1 - 1;
+            next: int = this.child(cur, c);
+            if next < 0 {
+                fresh: TrieNode;
+                this.nodes.pushb(fresh);
+                next = this.nodes.size - 1;
+                this.link_sorted(cur, c, next);
+            }
+            cur = next;
+        }
+        if this.nodes.get(cur).terminal == false {
+            node: TrieNode = this.nodes.get(cur);
+            node.terminal = true;
+            this.nodes.set(cur, node);
+            this.words = this.words + 1;
+        }
+    }
+
+    pub fnc contains(word string) : bool {
+        cur: int = this.walk(word);
+        if cur < 0 {
+            return false;
+        }
+        return this.nodes.get(cur).terminal;
+    }
+
+    pub fnc starts_with(prefix string) : bool {
+        return this.walk(prefix) >= 0;
+    }
+
+    pub fnc remove(word string) : bool {
+        cur: int = this.walk(word);
+        if cur < 0 || this.nodes.get(cur).terminal == false {
+            return false;
+        }
+        node: TrieNode = this.nodes.get(cur);
+        node.terminal = false;
+        this.nodes.set(cur, node);
+        this.words = this.words - 1;
+        return true;
+    }
+
+    pub fnc size() : int {
+        return this.words;
+    }
+
+    pub fnc is_empty() : bool {
+        return this.words == 0;
+    }
+
+    pub fnc all_words() : vec<string> {
+        return this.collect(0, "");
+    }
+
+    pub fnc words_with_prefix(prefix string) : vec<string> {
+        start: int = this.walk(prefix);
+        if start < 0 {
+            no_words: vec<string>;
+            return no_words;
+        }
+        return this.collect(start, prefix);
+    }
+
+    priv fnc walk(s string) : int {
+        cur: int = 0;
+        foreach _, c in<string> s {
+            _ = _ + 1 - 1;
+            cur = this.child(cur, c);
+            if cur < 0 {
+                return 0 - 1;
+            }
+        }
+        return cur;
+    }
+
+    priv fnc child(node int, c char) : int {
+        chs: vec<char> = this.nodes.get(node).chs;
+        lo: int = 0;
+        hi: int = chs.size - 1;
+        while lo <= hi {
+            mid: int = (lo + hi) / 2;
+            if chs.get(mid) == c {
+                return this.nodes.get(node).kids.get(mid);
+            }
+            if chs.get(mid) < c {
+                lo = mid + 1;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        return 0 - 1;
+    }
+
+    priv fnc link_sorted(node int, c char, kid int) : void {
+        nd: TrieNode = this.nodes.get(node);
+        pos: int = nd.chs.size;
+        for i: int = 0; i < nd.chs.size; i = i + 1 {
+            if nd.chs.get(i) > c {
+                pos = i;
+                stop;
+            }
+        }
+        nd.chs.insert(pos, c);
+        nd.kids.insert(pos, kid);
+        this.nodes.set(node, nd);
+    }
+
+    priv fnc collect(node int, prefix string) : vec<string> {
+        out: vec<string>;
+        if this.nodes.get(node).terminal {
+            out.pushb(prefix);
+        }
+        chs: vec<char> = this.nodes.get(node).chs;
+        kids: vec<int> = this.nodes.get(node).kids;
+        for i: int = 0; i < chs.size; i = i + 1 {
+            sub: vec<string> = this.collect(kids.get(i), prefix + chs.get(i));
+            foreach _, w in<vector> sub {
+                _ = _ + 1 - 1;
+                out.pushb(w);
+            }
+        }
+        return out;
+    }
+};

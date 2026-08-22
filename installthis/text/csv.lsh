@@ -1,0 +1,177 @@
+pub def Csv : class {
+    static pub fnc parse_row(line string) : vec<string> {
+        fields: vec<string>;
+        cur: string;
+        in_quotes: bool = false;
+        i: int = 0;
+        n: int = line.size;
+        while i < n {
+            c: char = line[i];
+            if in_quotes {
+                if c == '"' {
+                    if i + 1 < n && line[i + 1] == '"' {
+                        cur = cur + '"';
+                        i = i + 1;
+                    } else {
+                        in_quotes = false;
+                    }
+                } else {
+                    cur = cur + c;
+                }
+            } else {
+                if c == '"' {
+                    in_quotes = true;
+                } also c == ',' {
+                    fields.pushb(cur);
+                    cur = "";
+                } else {
+                    cur = cur + c;
+                }
+            }
+            i = i + 1;
+        }
+        fields.pushb(cur);
+        return fields;
+    }
+
+    static pub fnc parse(text string) : vec<vec<string>> {
+        rows: vec<vec<string>>;
+        cur: vec<string>;
+        field: string;
+        in_quotes: bool = false;
+        i: int = 0;
+        n: int = text.size;
+        while i < n {
+            c: char = text[i];
+            if in_quotes {
+                if c == '"' {
+                    if i + 1 < n && text[i + 1] == '"' {
+                        field = field + '"';
+                        i = i + 1;
+                    } else {
+                        in_quotes = false;
+                    }
+                } else {
+                    field = field + c;
+                }
+            } else {
+                if c == '"' {
+                    in_quotes = true;
+                } also c == ',' {
+                    cur.pushb(field);
+                    field = "";
+                } also c == '\n' {
+                    cur.pushb(field);
+                    field = "";
+                    rows.pushb(cur);
+                    fresh: vec<string>;
+                    cur = fresh;
+                    if i > 0 && text[i - 1] == '\r' {
+                        last_row: vec<string> = rows.get(rows.size - 1);
+                        last_field: string = last_row.get(last_row.size - 1);
+                        trimmed: string = Csv.drop_last_char(last_field);
+                        last_row.set(last_row.size - 1, trimmed);
+                        rows.set(rows.size - 1, last_row);
+                    }
+                } else {
+                    field = field + c;
+                }
+            }
+            i = i + 1;
+        }
+        if field.size > 0 || cur.size > 0 {
+            cur.pushb(field);
+            rows.pushb(cur);
+        }
+        return rows;
+    }
+
+    static priv fnc drop_last_char(s string) : string {
+        out: string;
+        foreach i, c in<string> s {
+            if i < s.size - 1 {
+                out = out + c;
+            }
+        }
+        return out;
+    }
+
+    static pub fnc needs_quotes(field string) : bool {
+        foreach _, c in<string> field {
+            _ = _ + 1 - 1;
+            if c == ',' || c == '"' || c == '\n' || c == '\r' {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static pub fnc row(fields vec<string>) : string {
+        out: string;
+        foreach i, f in<vector> fields {
+            if i > 0 {
+                out = out + ',';
+            }
+            if Csv.needs_quotes(f) {
+                out = out + '"';
+                foreach _, c in<string> f {
+                    if c == '"' {
+                        out = out + "\"\"";
+                    } else {
+                        out = out + c;
+                    }
+                }
+                out = out + '"';
+            } else {
+                out = out + f;
+            }
+        }
+        return out;
+    }
+
+    static pub fnc stringify(rows vec<vec<string>>) : string {
+        out: string;
+        foreach i, r in<vector> rows {
+            if i > 0 {
+                out = out + '\n';
+            }
+            out = out + Csv.row(r);
+        }
+        if rows.size > 0 {
+            out = out + '\n';
+        }
+        return out;
+    }
+
+    static pub fnc save(path string, rows vec<vec<string>>) : int {
+        f: File = File.open(path, "w");
+        if f == nil {
+            return 0 - 1;
+        }
+        r: int = f.write(Csv.stringify(rows));
+        f.close();
+        return r;
+    }
+
+    static pub fnc load(path string) : vec<vec<string>> {
+        nothing: vec<vec<string>>;
+        f: File = File.open(path, "r");
+        if f == nil {
+            return nothing;
+        }
+        content: string = f.read();
+        f.close();
+        return Csv.parse(content);
+    }
+
+    static pub fnc cell(rows vec<vec<string>>, r int, c int) : string {
+        if r < 0 || r >= rows.size {
+            return "";
+        }
+        row_v: vec<string> = rows.get(r);
+        if c < 0 || c >= row_v.size {
+            return "";
+        }
+        return row_v.get(c);
+    }
+};

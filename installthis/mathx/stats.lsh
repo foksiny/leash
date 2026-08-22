@@ -1,0 +1,190 @@
+use algo::sort::Sort;
+use algo::search::Search;
+use utils::math::Math;
+
+pub def Stats : class {
+    static pub fnc sum(xs vec<float>) : float {
+        s: float = 0.0;
+        foreach _, x in<vector> xs {
+            _ = _ + 1 - 1;
+            s = s + x;
+        }
+        return s;
+    }
+
+    static pub fnc sum_ints(xs vec<int>) : int<64> {
+        s: int<64> = 0;
+        foreach _, x in<vector> xs {
+            _ = _ + 1 - 1;
+            s = s + x;
+        }
+        return s;
+    }
+
+    static pub fnc mean(xs vec<float>) : float {
+        if xs.size == 0 {
+            return 0.0;
+        }
+        return Stats.sum(xs) / tofloat(float, xs.size);
+    }
+
+    static pub fnc mean_ints(xs vec<int>) : float {
+        if xs.size == 0 {
+            return 0.0;
+        }
+        return tofloat(float, Stats.sum_ints(xs)) / tofloat(float, xs.size);
+    }
+
+    static pub fnc min(xs vec<float>) : float {
+        if xs.size == 0 {
+            return 0.0;
+        }
+        best: float = xs.get(0);
+        foreach _, x in<vector> xs {
+            if x < best {
+                best = x;
+            }
+        }
+        return best;
+    }
+
+    static pub fnc max(xs vec<float>) : float {
+        if xs.size == 0 {
+            return 0.0;
+        }
+        best: float = xs.get(0);
+        foreach _, x in<vector> xs {
+            if x > best {
+                best = x;
+            }
+        }
+        return best;
+    }
+
+    static pub fnc variance(xs vec<float>) : float {
+        n: int = xs.size;
+        if n < 2 {
+            return 0.0;
+        }
+        m: float = Stats.mean(xs);
+        acc: float = 0.0;
+        foreach _, x in<vector> xs {
+            _ = _ + 1 - 1;
+            d: float = x - m;
+            acc = acc + d * d;
+        }
+        return acc / tofloat(float, n);
+    }
+
+    static pub fnc stddev(xs vec<float>) : float {
+        return Math.sqrt(Stats.variance(xs));
+    }
+
+    static pub fnc median(xs vec<float>) : float {
+        n: int = xs.size;
+        if n == 0 {
+            return 0.0;
+        }
+        copy: vec<float>;
+        foreach _, x in<vector> xs {
+            _ = _ + 1 - 1;
+            copy.pushb(x);
+        }
+        Sort.floats(copy);
+        mid: int = n / 2;
+        if n % 2 == 1 {
+            return copy.get(mid);
+        }
+        return (copy.get(mid - 1) + copy.get(mid)) / 2.0;
+    }
+
+    static pub fnc percentile(xs vec<float>, p float) : float {
+        n: int = xs.size;
+        if n == 0 {
+            return 0.0;
+        }
+        copy: vec<float>;
+        foreach _, x in<vector> xs {
+            _ = _ + 1 - 1;
+            copy.pushb(x);
+        }
+        Sort.floats(copy);
+        if p <= 0.0 {
+            return copy.get(0);
+        }
+        if p >= 100.0 {
+            return copy.get(n - 1);
+        }
+        rank: float = p / 100.0 * tofloat(float, n - 1);
+        lo: int = toint(int, rank);
+        hi: int = lo + 1;
+        if hi >= n {
+            return copy.get(n - 1);
+        }
+        frac: float = rank - tofloat(float, lo);
+        return copy.get(lo) * (1.0 - frac) + copy.get(hi) * frac;
+    }
+
+    static pub fnc mode_ints(xs vec<int>) : int {
+        best_val: int = 0;
+        best_count: int = 0;
+        for i: int = 0; i < xs.size; i = i + 1 {
+            cur: int = xs.get(i);
+            c: int = Search.count_ints(xs, cur);
+            if c > best_count {
+                best_count = c;
+                best_val = cur;
+            }
+        }
+        return best_val;
+    }
+
+    static pub fnc covariance(xsv vec<float>, ysv vec<float>) : float {
+        n: int = xsv.size;
+        if n < 2 || ysv.size != n {
+            return 0.0;
+        }
+        mx: float = Stats.mean(xsv);
+        my: float = Stats.mean(ysv);
+        acc: float = 0.0;
+        for i: int = 0; i < n; i = i + 1 {
+            dx: float = xsv.get(i) - mx;
+            dy: float = ysv.get(i) - my;
+            acc = acc + dx * dy;
+        }
+        return acc / tofloat(float, n);
+    }
+
+    static pub fnc correlation(xsv vec<float>, ysv vec<float>) : float {
+        sx: float = Stats.stddev(xsv);
+        sy: float = Stats.stddev(ysv);
+        if sx == 0.0 || sy == 0.0 {
+            return 0.0;
+        }
+        return Stats.covariance(xsv, ysv) / (sx * sy);
+    }
+
+    static pub fnc linreg(xsv vec<float>, ysv vec<float>) : (float, float) {
+        slope: float = 0.0;
+        intercept: float = 0.0;
+        n: int = xsv.size;
+        if n < 2 || ysv.size != n {
+            return slope, intercept;
+        }
+        mx: float = Stats.mean(xsv);
+        my: float = Stats.mean(ysv);
+        num: float = 0.0;
+        den: float = 0.0;
+        for i: int = 0; i < n; i = i + 1 {
+            dx: float = xsv.get(i) - mx;
+            num = num + dx * (ysv.get(i) - my);
+            den = den + dx * dx;
+        }
+        if den == 0.0 {
+            return slope, intercept;
+        }
+        slope = num / den;
+        intercept = my - slope * mx;
+        return slope, intercept;
+    }
+};

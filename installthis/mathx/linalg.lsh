@@ -1,0 +1,230 @@
+use utils::math::Math;
+
+pub def Matrix : class {
+    pub rows: int;
+    pub cols: int;
+    pub data: vec<float>;
+
+    static pub fnc new(rows int, cols int) : Matrix {
+        d: vec<float>;
+        n: int = rows * cols;
+        for i: int = 0; i < n; i = i + 1 {
+            d.pushb(0.0);
+        }
+        return Matrix { rows: rows, cols: cols, data: d };
+    }
+
+    static pub fnc from(rows int, cols int, vals vec<float>) : Matrix {
+        m: Matrix = Matrix.new(rows, cols);
+        count: int = vals.size;
+        if count > rows * cols {
+            count = rows * cols;
+        }
+        for i: int = 0; i < count; i = i + 1 {
+            m.data.set(i, vals.get(i));
+        }
+        return m;
+    }
+
+    static pub fnc identity(n int) : Matrix {
+        m: Matrix = Matrix.new(n, n);
+        for i: int = 0; i < n; i = i + 1 {
+            m.data.set(i * n + i, 1.0);
+        }
+        return m;
+    }
+
+    pub fnc get(r int, c int) : float {
+        return this.data.get(r * this.cols + c);
+    }
+
+    pub fnc set(r int, c int, v float) : void {
+        this.data.set(r * this.cols + c, v);
+    }
+
+    pub fnc add(other Matrix) : Matrix {
+        if other.rows != this.rows || other.cols != this.cols {
+            return nil;
+        }
+        out: Matrix = Matrix.new(this.rows, this.cols);
+        for i: int = 0; i < this.data.size; i = i + 1 {
+            out.data.set(i, this.data.get(i) + other.data.get(i));
+        }
+        return out;
+    }
+
+    pub fnc sub(other Matrix) : Matrix {
+        if other.rows != this.rows || other.cols != this.cols {
+            return nil;
+        }
+        out: Matrix = Matrix.new(this.rows, this.cols);
+        for i: int = 0; i < this.data.size; i = i + 1 {
+            out.data.set(i, this.data.get(i) - other.data.get(i));
+        }
+        return out;
+    }
+
+    pub fnc scale(k float) : Matrix {
+        out: Matrix = Matrix.new(this.rows, this.cols);
+        for i: int = 0; i < this.data.size; i = i + 1 {
+            out.data.set(i, this.data.get(i) * k);
+        }
+        return out;
+    }
+
+    pub fnc mul(other Matrix) : Matrix {
+        if this.cols != other.rows {
+            return nil;
+        }
+        out: Matrix = Matrix.new(this.rows, other.cols);
+        for i: int = 0; i < this.rows; i = i + 1 {
+            for j: int = 0; j < other.cols; j = j + 1 {
+                acc: float = 0.0;
+                for k: int = 0; k < this.cols; k = k + 1 {
+                    acc = acc + this.get(i, k) * other.get(k, j);
+                }
+                out.set(i, j, acc);
+            }
+        }
+        return out;
+    }
+
+    pub fnc transpose() : Matrix {
+        out: Matrix = Matrix.new(this.cols, this.rows);
+        for i: int = 0; i < this.rows; i = i + 1 {
+            for j: int = 0; j < this.cols; j = j + 1 {
+                out.set(j, i, this.get(i, j));
+            }
+        }
+        return out;
+    }
+
+    pub fnc det() : float {
+        if this.rows != this.cols {
+            return 0.0;
+        }
+        n: int = this.rows;
+        if n == 0 {
+            return 1.0;
+        }
+        a: vec<float>;
+        foreach _, v in<vector> this.data {
+            _ = _ + 1 - 1;
+            a.pushb(v);
+        }
+        sign: float = 1.0;
+        result: float = 1.0;
+
+        for col: int = 0; col < n; col = col + 1 {
+            pivot_r: int = col;
+            best: float = Math.fabs(a.get(col * n + col));
+            for r: int = col + 1; r < n; r = r + 1 {
+                mag: float = Math.fabs(a.get(r * n + col));
+                if mag > best {
+                    best = mag;
+                    pivot_r = r;
+                }
+            }
+            if best == 0.0 {
+                return 0.0;
+            }
+            if pivot_r != col {
+                for c2: int = 0; c2 < n; c2 = c2 + 1 {
+                    tmp: float = a.get(col * n + c2);
+                    a.set(col * n + c2, a.get(pivot_r * n + c2));
+                    a.set(pivot_r * n + c2, tmp);
+                }
+                sign = 0.0 - sign;
+            }
+            pv: float = a.get(col * n + col);
+            result = result * pv;
+            for ri: int = col + 1; ri < n; ri = ri + 1 {
+                factor: float = a.get(ri * n + col) / pv;
+                for c3: int = col; c3 < n; c3 = c3 + 1 {
+                    cur: float = a.get(ri * n + c3);
+                    a.set(ri * n + c3, cur - factor * a.get(col * n + c3));
+                }
+            }
+        }
+        return sign * result;
+    }
+
+    pub fnc inverse() : Matrix {
+        if this.rows != this.cols {
+            return nil;
+        }
+        n: int = this.rows;
+        aug: Matrix = Matrix.new(n, 2 * n);
+        for i: int = 0; i < n; i = i + 1 {
+            for j: int = 0; j < n; j = j + 1 {
+                aug.set(i, j, this.get(i, j));
+            }
+            aug.set(i, n + i, 1.0);
+        }
+        for col: int = 0; col < n; col = col + 1 {
+            pivot_r: int = col;
+            best: float = Math.fabs(aug.get(col, col));
+            for r: int = col + 1; r < n; r = r + 1 {
+                mag: float = Math.fabs(aug.get(r, col));
+                if mag > best {
+                    best = mag;
+                    pivot_r = r;
+                }
+            }
+            if best == 0.0 {
+                return nil;
+            }
+            if pivot_r != col {
+                for c2: int = 0; c2 < 2 * n; c2 = c2 + 1 {
+                    tmp: float = aug.get(col, c2);
+                    aug.set(col, c2, aug.get(pivot_r, c2));
+                    aug.set(pivot_r, c2, tmp);
+                }
+            }
+            pv: float = aug.get(col, col);
+            for c3: int = 0; c3 < 2 * n; c3 = c3 + 1 {
+                aug.set(col, c3, aug.get(col, c3) / pv);
+            }
+            for rr: int = 0; rr < n; rr = rr + 1 {
+                if rr != col {
+                    factor: float = aug.get(rr, col);
+                    if factor != 0.0 {
+                        for c4: int = 0; c4 < 2 * n; c4 = c4 + 1 {
+                            aug.set(rr, c4, aug.get(rr, c4) - factor * aug.get(col, c4));
+                        }
+                    }
+                }
+            }
+        }
+        out: Matrix = Matrix.new(n, n);
+        for i2: int = 0; i2 < n; i2 = i2 + 1 {
+            for j2: int = 0; j2 < n; j2 = j2 + 1 {
+                out.set(i2, j2, aug.get(i2, n + j2));
+            }
+        }
+        return out;
+    }
+
+    pub fnc solve(b Matrix) : Matrix {
+        inv: Matrix = this.inverse();
+        if inv == nil {
+            return nil;
+        }
+        return inv.mul(b);
+    }
+
+    pub fnc to_string() : string {
+        out: string;
+        for i: int = 0; i < this.rows; i = i + 1 {
+            out = out + "[";
+            for j: int = 0; j < this.cols; j = j + 1 {
+                if j > 0 {
+                    out = out + " ";
+                }
+                out = out + tostring(this.get(i, j));
+            }
+            out = out + "]\n";
+        }
+        return out;
+    }
+};

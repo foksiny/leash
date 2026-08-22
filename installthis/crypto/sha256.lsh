@@ -1,0 +1,263 @@
+pub def Sha256 : class {
+    static priv fnc k_const(i int) : uint<32> {
+        if i < 16 {
+            k1: vec<int>;
+            k1.pushb(0x428a2f98);
+            k1.pushb(0x71374491);
+            k1.pushb(0xb5c0fbcf);
+            k1.pushb(0xe9b5dba5);
+            k1.pushb(0x3956c25b);
+            k1.pushb(0x59f111f1);
+            k1.pushb(0x923f82a4);
+            k1.pushb(0xab1c5ed5);
+            k1.pushb(0xd807aa98);
+            k1.pushb(0x12835b01);
+            k1.pushb(0x243185be);
+            k1.pushb(0x550c7dc3);
+            k1.pushb(0x72be5d74);
+            k1.pushb(0x80deb1fe);
+            k1.pushb(0x9bdc06a7);
+            k1.pushb(0xc19bf174);
+            return (uint<32>)k1.get(i);
+        }
+        k2: vec<int>;
+        k2.pushb(0xe49b69c1);
+        k2.pushb(0xefbe4786);
+        k2.pushb(0x0fc19dc6);
+        k2.pushb(0x240ca1cc);
+        k2.pushb(0x2de92c6f);
+        k2.pushb(0x4a7484aa);
+        k2.pushb(0x5cb0a9dc);
+        k2.pushb(0x76f988da);
+        k2.pushb(0x983e5152);
+        k2.pushb(0xa831c66d);
+        k2.pushb(0xb00327c8);
+        k2.pushb(0xbf597fc7);
+        k2.pushb(0xc6e00bf3);
+        k2.pushb(0xd5a79147);
+        k2.pushb(0x06ca6351);
+        k2.pushb(0x14292967);
+        k2.pushb(0x27b70a85);
+        k2.pushb(0x2e1b2138);
+        k2.pushb(0x4d2c6dfc);
+        k2.pushb(0x53380d13);
+        k2.pushb(0x650a7354);
+        k2.pushb(0x766a0abb);
+        k2.pushb(0x81c2c92e);
+        k2.pushb(0x92722c85);
+        k2.pushb(0xa2bfe8a1);
+        k2.pushb(0xa81a664b);
+        k2.pushb(0xc24b8b70);
+        k2.pushb(0xc76c51a3);
+        k2.pushb(0xd192e819);
+        k2.pushb(0xd6990624);
+        k2.pushb(0xf40e3585);
+        k2.pushb(0x106aa070);
+        k2.pushb(0x19a4c116);
+        k2.pushb(0x1e376c08);
+        k2.pushb(0x2748774c);
+        k2.pushb(0x34b0bcb5);
+        k2.pushb(0x391c0cb3);
+        k2.pushb(0x4ed8aa4a);
+        k2.pushb(0x5b9cca4f);
+        k2.pushb(0x682e6ff3);
+        k2.pushb(0x748f82ee);
+        k2.pushb(0x78a5636f);
+        k2.pushb(0x84c87814);
+        k2.pushb(0x8cc70208);
+        k2.pushb(0x90befffa);
+        k2.pushb(0xa4506ceb);
+        k2.pushb(0xbef9a3f7);
+        k2.pushb(0xc67178f2);
+        return (uint<32>)k2.get(i - 16);
+    }
+
+    static priv fnc h_init(i int) : uint<32> {
+        hvals: vec<int>;
+        hvals.pushb(0x6a09e667);
+        hvals.pushb(0xbb67ae85);
+        hvals.pushb(0x3c6ef372);
+        hvals.pushb(0xa54ff53a);
+        hvals.pushb(0x510e527f);
+        hvals.pushb(0x9b05688c);
+        hvals.pushb(0x1f83d9ab);
+        hvals.pushb(0x5be0cd19);
+        return (uint<32>)hvals.get(i);
+    }
+
+    static priv fnc rotr(x uint<32>, n int) : uint<32> {
+        return (x >> n) | (x << (32 - n));
+    }
+
+    static pub fnc digest(msg string) : string {
+        bytes: vec<char>;
+        foreach _, c in<string> msg {
+            bytes.pushb(c);
+        }
+        return Sha256.digest_bytes(bytes);
+    }
+
+    static pub fnc digest_bytes(bytes vec<char>) : string {
+        h0: uint<32> = Sha256.h_init(0);
+        h1: uint<32> = Sha256.h_init(1);
+        h2: uint<32> = Sha256.h_init(2);
+        h3: uint<32> = Sha256.h_init(3);
+        h4: uint<32> = Sha256.h_init(4);
+        h5: uint<32> = Sha256.h_init(5);
+        h6: uint<32> = Sha256.h_init(6);
+        h7: uint<32> = Sha256.h_init(7);
+
+        total: int<64> = toint(int<64>, bytes.size);
+        padded: vec<char>;
+        foreach _, b in<vector> bytes {
+            padded.pushb(b);
+        }
+        padded.pushb((char)0x80);
+        rem: int<64> = (total + 1) % 64;
+        zeros: int<64> = 0;
+        if rem <= 56 {
+            zeros = 56 - rem;
+        } else {
+            zeros = 120 - rem;
+        }
+        for z: int<64> = 0; z < zeros; z = z + 1 {
+            padded.pushb((char)0);
+        }
+        bitlen: int<64> = total * 8;
+        for shift: int<64> = 56; shift >= 0; shift = shift - 8 {
+            byte_v: int = toint(int, (bitlen >> shift) & 0xFF);
+            padded.pushb((char)byte_v);
+        }
+
+        w: vec<uint<32>>;
+        for i: int = 0; i < 64; i = i + 1 {
+            w.pushb((uint<32>)0);
+        }
+
+        nblocks: int = toint(int, toint(int<64>, padded.size) / 64);
+        for blk: int = 0; blk < nblocks; blk = blk + 1 {
+            base: int = blk * 64;
+            for t: int = 0; t < 16; t = t + 1 {
+                b0: int = toint(int, padded.get(base + t * 4)) & 255;
+                b1: int = toint(int, padded.get(base + t * 4 + 1)) & 255;
+                b2: int = toint(int, padded.get(base + t * 4 + 2)) & 255;
+                b3: int = toint(int, padded.get(base + t * 4 + 3)) & 255;
+                v: uint<32> = ((uint<32>)b0 << 24) | ((uint<32>)b1 << 16) | ((uint<32>)b2 << 8) | (uint<32>)b3;
+                w.set(t, v);
+            }
+            for t2: int = 16; t2 < 64; t2 = t2 + 1 {
+                s0: uint<32> = Sha256.rotr(w.get(t2 - 15), 7) ^ Sha256.rotr(w.get(t2 - 15), 18) ^ (w.get(t2 - 15) >> 3);
+                s1: uint<32> = Sha256.rotr(w.get(t2 - 2), 17) ^ Sha256.rotr(w.get(t2 - 2), 19) ^ (w.get(t2 - 2) >> 10);
+                w.set(t2, w.get(t2 - 16) + s0 + w.get(t2 - 7) + s1);
+            }
+
+            aa: uint<32> = h0;
+            bb: uint<32> = h1;
+            cc: uint<32> = h2;
+            dd: uint<32> = h3;
+            ee: uint<32> = h4;
+            ff: uint<32> = h5;
+            gg: uint<32> = h6;
+            hh: uint<32> = h7;
+
+            for tt: int = 0; tt < 64; tt = tt + 1 {
+                S1: uint<32> = Sha256.rotr(ee, 6) ^ Sha256.rotr(ee, 11) ^ Sha256.rotr(ee, 25);
+                ch: uint<32> = (ee & ff) ^ ((~ee) & gg);
+                temp1: uint<32> = hh + S1 + ch + Sha256.k_const(tt) + w.get(tt);
+                S0: uint<32> = Sha256.rotr(aa, 2) ^ Sha256.rotr(aa, 13) ^ Sha256.rotr(aa, 22);
+                maj: uint<32> = (aa & bb) ^ (aa & cc) ^ (bb & cc);
+                temp2: uint<32> = S0 + maj;
+
+                hh = gg;
+                gg = ff;
+                ff = ee;
+                ee = dd + temp1;
+                dd = cc;
+                cc = bb;
+                bb = aa;
+                aa = temp1 + temp2;
+            }
+
+            h0 = h0 + aa;
+            h1 = h1 + bb;
+            h2 = h2 + cc;
+            h3 = h3 + dd;
+            h4 = h4 + ee;
+            h5 = h5 + ff;
+            h6 = h6 + gg;
+            h7 = h7 + hh;
+        }
+
+        out: string;
+        out = out + Sha256.word_hex(h0);
+        out = out + Sha256.word_hex(h1);
+        out = out + Sha256.word_hex(h2);
+        out = out + Sha256.word_hex(h3);
+        out = out + Sha256.word_hex(h4);
+        out = out + Sha256.word_hex(h5);
+        out = out + Sha256.word_hex(h6);
+        out = out + Sha256.word_hex(h7);
+        return out;
+    }
+
+    static priv fnc hexval(c char) : int {
+        if c >= '0' && c <= '9' {
+            return c - '0';
+        }
+        if c >= 'a' && c <= 'f' {
+            return c - 'a' + 10;
+        }
+        return 0 - 1;
+    }
+
+    static priv fnc word_hex(x uint<32>) : string {
+        out: string;
+        for shift: int = 28; shift >= 0; shift = shift - 4 {
+            nib: int = toint(int, (x >> shift) & (uint<32>)0xF);
+            if nib < 10 {
+                out = out + (char)('0' + nib);
+            } else {
+                out = out + (char)('a' + nib - 10);
+            }
+        }
+        return out;
+    }
+
+    static pub fnc hmac(key string, msg string) : string {
+        keyb: vec<char>;
+        foreach _, c in<string> key {
+            keyb.pushb(c);
+        }
+        if keyb.size > 64 {
+            inner_key: string = Sha256.digest_bytes(keyb);
+            kb: vec<char>;
+            foreach _, c in<string> inner_key {
+                kb.pushb(c);
+            }
+            keyb = kb;
+        }
+        while keyb.size < 64 {
+            keyb.pushb((char)0);
+        }
+
+        ipad: vec<char>;
+        opad: vec<char>;
+        foreach _, c in<vector> keyb {
+            ipad.pushb((char)(toint(int, c) ^ 0x36));
+            opad.pushb((char)(toint(int, c) ^ 0x5c));
+        }
+        foreach _, c in<string> msg {
+            ipad.pushb(c);
+        }
+
+        inner_hash: string = Sha256.digest_bytes(ipad);
+        hi2: int = 0;
+        while hi2 + 1 < inner_hash.size {
+            h1v: int = Sha256.hexval(inner_hash[hi2]);
+            h2v: int = Sha256.hexval(inner_hash[hi2 + 1]);
+            opad.pushb((char)(h1v * 16 + h2v));
+            hi2 = hi2 + 2;
+        }
+        return Sha256.digest_bytes(opad);
+    }
+};

@@ -1,0 +1,81 @@
+use utils::math::Math;
+
+pub def Complex : struct {
+    re: float;
+    im: float;
+};
+
+pub def Cx : class {
+    static pub fnc of(re float, im float) : Complex {
+        return Complex { re: re, im: im };
+    }
+
+    static pub fnc add(a Complex, b Complex) : Complex {
+        return Complex { re: a.re + b.re, im: a.im + b.im };
+    }
+
+    static pub fnc sub(a Complex, b Complex) : Complex {
+        return Complex { re: a.re - b.re, im: a.im - b.im };
+    }
+
+    static pub fnc mul(a Complex, b Complex) : Complex {
+        return Complex { re: a.re * b.re - a.im * b.im, im: a.re * b.im + a.im * b.re };
+    }
+
+    static pub fnc div(a Complex, b Complex) : Complex {
+        den: float = b.re * b.re + b.im * b.im;
+        if den == 0.0 {
+            return Complex { re: 0.0, im: 0.0 };
+        }
+        return Complex { re: (a.re * b.re + a.im * b.im) / den, im: (a.im * b.re - a.re * b.im) / den };
+    }
+
+    static pub fnc eq(a Complex, b Complex) : bool {
+        return a.re == b.re && a.im == b.im;
+    }
+
+    static pub fnc abs(z Complex) : float {
+        return Math.sqrt(z.re * z.re + z.im * z.im);
+    }
+
+    static pub fnc conj(z Complex) : Complex {
+        return Complex { re: z.re, im: 0.0 - z.im };
+    }
+
+    static pub fnc arg(z Complex) : float {
+        if z.re == 0.0 && z.im == 0.0 {
+            return 0.0;
+        }
+        if z.re > 0.0 {
+            return Math.atan(z.im / z.re);
+        }
+        if z.re < 0.0 && z.im >= 0.0 {
+            return Math.atan(z.im / z.re) + Math.PI;
+        }
+        if z.re < 0.0 {
+            return Math.atan(z.im / z.re) - Math.PI;
+        }
+        if z.im > 0.0 {
+            return Math.HALF_PI;
+        }
+        return 0.0 - Math.HALF_PI;
+    }
+
+    static pub fnc polar(r float, theta float) : Complex {
+        return Complex { re: r * Math.cos(theta), im: r * Math.sin(theta) };
+    }
+
+    static pub fnc scale(z Complex, k float) : Complex {
+        return Complex { re: z.re * k, im: z.im * k };
+    }
+
+    static pub fnc to_string(z Complex) : string {
+        sign: string = "+";
+        im: float = z.im;
+        if im < 0.0 {
+            sign = "-";
+            im = 0.0 - im;
+        }
+        return tostring(z.re) + sign + tostring(im) + "i";
+    }
+};

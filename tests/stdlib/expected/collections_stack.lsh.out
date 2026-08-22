@@ -1,0 +1,6 @@
+size:3
+pop:c
+peek:b
+isin b:0 | isin z:0
+empty now:1
+--- Executed at 2026-08-21 21:00:11 ---

@@ -1,0 +1,113 @@
+pub def Glob : class {
+    static pub fnc match(pattern string, text string) : bool {
+        return Glob.match_at(pattern, 0, text, 0);
+    }
+
+    static priv fnc match_at(p string, pi int, t string, ti int) : bool {
+        while pi < p.size {
+            pc: char = p[pi];
+            if pc == '*' {
+                if pi + 1 < p.size && p[pi + 1] == '*' {
+                    if pi + 2 >= p.size {
+                        return true;
+                    }
+                    k: int = ti;
+                    while k <= t.size {
+                        if Glob.match_at(p, pi + 2, t, k) {
+                            return true;
+                        }
+                        k = k + 1;
+                    }
+                    return false;
+                }
+                np: int = pi + 1;
+                while np < p.size && p[np] == '*' {
+                    np = np + 1;
+                }
+                if np >= p.size {
+                    while ti <= t.size {
+                        if Glob.match_at(p, np, t, ti) {
+                            return true;
+                        }
+                        if ti < t.size && t[ti] == '/' {
+                            return false;
+                        }
+                        ti = ti + 1;
+                    }
+                    return false;
+                }
+                kk: int = ti;
+                while kk <= t.size {
+                    if Glob.match_at(p, np, t, kk) {
+                        return true;
+                    }
+                    if kk < t.size && t[kk] == '/' {
+                        return false;
+                    }
+                    kk = kk + 1;
+                }
+                return false;
+            }
+            if pc == '?' {
+                if ti >= t.size || t[ti] == '/' {
+                    return false;
+                }
+                pi = pi + 1;
+                ti = ti + 1;
+                continue;
+            }
+            if pc == '[' {
+                close: int = pi + 1;
+                negated: bool = false;
+                if close < p.size && (p[close] == '!' || p[close] == '^') {
+                    negated = true;
+                    close = close + 1;
+                }
+                found: bool = false;
+                first: bool = true;
+                while close < p.size && (p[close] != ']' || first) {
+                    first = false;
+                    if close + 2 < p.size && p[close + 1] == '-' && p[close + 2] != ']' {
+                        if t[ti] >= p[close] && t[ti] <= p[close + 2] {
+                            found = true;
+                        }
+                        close = close + 3;
+                    } else {
+                        if ti < t.size && t[ti] == p[close] {
+                            found = true;
+                        }
+                        close = close + 1;
+                    }
+                }
+                if close >= p.size {
+                    return false;
+                }
+                if ti >= t.size || (found == negated) {
+                    return false;
+                }
+                if t[ti] == '/' {
+                    return false;
+                }
+                pi = close + 1;
+                ti = ti + 1;
+                continue;
+            }
+            if ti >= t.size || t[ti] != pc {
+                return false;
+            }
+            pi = pi + 1;
+            ti = ti + 1;
+        }
+        return ti == t.size;
+    }
+
+    static pub fnc is_pattern(s string) : bool {
+        foreach _, c in<string> s {
+            _ = _ + 1 - 1;
+            if c == '*' || c == '?' || c == '[' {
+                return true;
+            }
+        }
+        return false;
+    }
+};

@@ -1,0 +1,220 @@
+pub def Graph : class {
+    priv vcount: int;
+    priv srcs: vec<int>;
+    priv dsts: vec<int>;
+
+    static pub fnc new() : Graph {
+        return Graph {};
+    }
+
+    pub fnc add_vertex() : int {
+        id: int = this.vcount;
+        this.vcount = this.vcount + 1;
+        return id;
+    }
+
+    pub fnc add_edge(a int, b int) : void {
+        this.ensure(a);
+        this.ensure(b);
+        this.srcs.pushb(a);
+        this.dsts.pushb(b);
+    }
+
+    pub fnc add_edge_undirected(a int, b int) : void {
+        this.add_edge(a, b);
+        this.add_edge(b, a);
+    }
+
+    priv fnc ensure(id int) : void {
+        while id >= this.vcount {
+            this.add_vertex();
+        }
+    }
+
+    pub fnc vertex_count() : int {
+        return this.vcount;
+    }
+
+    pub fnc edge_count() : int {
+        return this.srcs.size;
+    }
+
+    pub fnc neighbors(v int) : vec<int> {
+        out: vec<int>;
+        foreach i, s in<vector> this.srcs {
+            if s == v {
+                out.pushb(this.dsts.get(i));
+            }
+        }
+        return out;
+    }
+
+    pub fnc has_edge(a int, b int) : bool {
+        foreach i, s in<vector> this.srcs {
+            if s == a && this.dsts.get(i) == b {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    pub fnc bfs(start int) : vec<int> {
+        order: vec<int>;
+        n: int = this.vcount;
+        if start < 0 || start >= n {
+            return order;
+        }
+        visited: vec<int>;
+        for i: int = 0; i < n; i = i + 1 {
+            visited.pushb(0);
+        }
+        queue: vec<int>;
+        queue.pushb(start);
+        visited.set(start, 1);
+        qi: int = 0;
+        while qi < queue.size {
+            u: int = queue.get(qi);
+            qi = qi + 1;
+            order.pushb(u);
+            nbrs: vec<int> = this.neighbors(u);
+            foreach _, w in<vector> nbrs {
+                _ = _ + 1 - 1;
+                if w >= 0 && w < n && visited.get(w) == 0 {
+                    visited.set(w, 1);
+                    queue.pushb(w);
+                }
+            }
+        }
+        return order;
+    }
+
+    pub fnc dfs(start int) : vec<int> {
+        order: vec<int>;
+        n: int = this.vcount;
+        if start < 0 || start >= n {
+            return order;
+        }
+        visited: vec<int>;
+        for i: int = 0; i < n; i = i + 1 {
+            visited.pushb(0);
+        }
+        stack: vec<int>;
+        stack.pushb(start);
+        while stack.size > 0 {
+            u: int = stack.popb();
+            if visited.get(u) == 1 {
+                continue;
+            }
+            visited.set(u, 1);
+            order.pushb(u);
+            nbrs: vec<int> = this.neighbors(u);
+            for ni: int = nbrs.size - 1; ni >= 0; ni = ni - 1 {
+                w: int = nbrs.get(ni);
+                if w >= 0 && w < n && visited.get(w) == 0 {
+                    stack.pushb(w);
+                }
+            }
+        }
+        return order;
+    }
+
+    pub fnc has_path(a int, b int) : bool {
+        reach: vec<int> = this.bfs(a);
+        foreach _, u in<vector> reach {
+            _ = _ + 1 - 1;
+            if u == b {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    pub fnc shortest_path(a int, b int) : vec<int> {
+        path: vec<int>;
+        n: int = this.vcount;
+        if a < 0 || a >= n || b < 0 || b >= n {
+            return path;
+        }
+        prev: vec<int>;
+        for i: int = 0; i < n; i = i + 1 {
+            prev.pushb(0 - 2);
+        }
+        queue: vec<int>;
+        queue.pushb(a);
+        prev.set(a, 0 - 1);
+        qi: int = 0;
+        found: bool = false;
+        while qi < queue.size && found == false {
+            u: int = queue.get(qi);
+            qi = qi + 1;
+            nbrs: vec<int> = this.neighbors(u);
+            foreach _, w in<vector> nbrs {
+                _ = _ + 1 - 1;
+                if w >= 0 && w < n && prev.get(w) == 0 - 2 {
+                    prev.set(w, u);
+                    queue.pushb(w);
+                    if w == b {
+                        found = true;
+                        stop;
+                    }
+                }
+            }
+        }
+        if prev.get(b) == 0 - 2 {
+            return path;
+        }
+        walk: vec<int>;
+        cur: int = b;
+        while cur >= 0 {
+            walk.pushb(cur);
+            cur = prev.get(cur);
+        }
+        for t: int = walk.size - 1; t >= 0; t = t - 1 {
+            path.pushb(walk.get(t));
+        }
+        return path;
+    }
+
+    pub fnc topo_sort() : vec<int> {
+        order: vec<int>;
+        n: int = this.vcount;
+        indeg: vec<int>;
+        for i: int = 0; i < n; i = i + 1 {
+            indeg.pushb(0);
+        }
+        foreach _, d in<vector> this.dsts {
+            _ = _ + 1 - 1;
+            indeg.set(d, indeg.get(d) + 1);
+        }
+        ready: vec<int>;
+        for vi: int = 0; vi < n; vi = vi + 1 {
+            if indeg.get(vi) == 0 {
+                ready.pushb(vi);
+            }
+        }
+        ri: int = 0;
+        while ri < ready.size {
+            u: int = ready.get(ri);
+            ri = ri + 1;
+            order.pushb(u);
+            nbrs: vec<int> = this.neighbors(u);
+            foreach _, w in<vector> nbrs {
+                _ = _ + 1 - 1;
+                indeg.set(w, indeg.get(w) - 1);
+                if indeg.get(w) == 0 {
+                    ready.pushb(w);
+                }
+            }
+        }
+        if order.size != n {
+            cleared: vec<int>;
+            return cleared;
+        }
+        return order;
+    }
+
+    pub fnc has_cycle() : bool {
+        order: vec<int> = this.topo_sort();
+        return order.size != this.vcount;
+    }
+};

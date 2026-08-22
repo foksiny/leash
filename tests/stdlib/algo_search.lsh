@@ -1,0 +1,12 @@
+use algo::search::Search;
+
+fnc main() {
+    v: vec<int> = (vec<int>){1, 3, 5, 7, 9};
+    show("bin:", Search.binary_ints(v, 7), " | ", Search.binary_ints(v, 4));
+    show("lower:", Search.lower_bound_ints(v, 4), " | upper:", Search.upper_bound_ints(v, 7));
+    show("find:", Search.find_ints(v, 9), " | count:", Search.count_ints((vec<int>){2, 2, 2}, 2));
+    sm: vec<string> = (vec<string>){"ant", "bee", "cat"};
+    show("bstr:", Search.binary_strings(sm, "bee"), " | ", Search.binary_strings(sm, "cow"));
+    fv: vec<float> = (vec<float>){0.5, 1.5, 2.5};
+    show("bf:", Search.binary_floats(fv, 1.5), " | ", Search.binary_floats(fv, 9.9));
+}

@@ -1,0 +1,13 @@
+use collections::linkedlist::LinkedList;
+
+fnc main() {
+    l: LinkedList<int> = LinkedList.new();
+    l.push_back(10); l.push_back(20); l.push_front(5); l.insert_at(2, 15);
+    show(l.at(0), " ", l.at(1), " ", l.at(2), " ", l.at(3), " | size:", l.size());
+    l.remove_at(1);
+    show("after rm:", l.at(0), " ", l.at(1), " ", l.at(2));
+    vv: vec<int> = l.to_vec();
+    foreach i, x in<vector> vv {
+        show("v", i, " = ", x);
+    }
+}

@@ -3,6 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Crect width=%27100%27 height=%27100%27 rx=%2722%27 fill=%27%237c3aed%27/%3E%3Ctext x=%2750%27 y=%2768%27 font-size=%2752%27 text-anchor=%27middle%27 font-family=%27monospace%27 fill=%27white%27%3EL%3C/text%3E%3C/svg%3E">
 <title>Compiler &amp; CLI - Leash</title>
 <link rel="stylesheet" href="style.css">
 </head>
@@ -13,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v0.22.2 Beta</div>
+        <div class="version">v0.22.3 Beta</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -314,10 +316,6 @@ python3 -m leash.cli compile program.lsh --opt 3 --pgo-use</code></pre>
 
 </main>
 
-<script>
-document.querySelectorAll('.sidebar a').forEach(link => {
-    if (link.href === window.location.href) link.classList.add('active');
-});
-</script>
+<script src="docs.js"></script>
 </body>
 </html>

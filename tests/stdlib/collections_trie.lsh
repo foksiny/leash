@@ -1,0 +1,19 @@
+use collections::trie::Trie;
+
+fnc main() {
+    tr: Trie = Trie.new();
+    tr.insert("cat");
+    tr.insert("car");
+    tr.insert("card");
+    tr.insert("dog");
+    show(tr.contains("cat"), " | ", tr.contains("ca"), " | ", tr.starts_with("ca"), " | cow:", tr.contains("cow"));
+    aw: vec<string> = tr.all_words();
+    foreach i, w in<vector> aw {
+        show("w", i, " = ", w);
+    }
+    pw: vec<string> = tr.words_with_prefix("car");
+    foreach i, w in<vector> pw {
+        show("p", i, " = ", w);
+    }
+    show(tr.remove("card"), " | card gone:", tr.contains("card") == false, " | car kept:", tr.contains("car"), " | size:", tr.size());
+}

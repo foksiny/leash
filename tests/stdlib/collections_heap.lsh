@@ -1,0 +1,12 @@
+use collections::heap::PriorityQueue;
+
+fnc main() {
+    pq: PriorityQueue<string> = PriorityQueue.new();
+    pq.push("low", 30);
+    pq.push("high", 1);
+    pq.push("mid", 10);
+    show("top:", pq.peek(), " | prio:", pq.peek_priority());
+    while pq.is_empty() == false {
+        show(pq.pop());
+    }
+}

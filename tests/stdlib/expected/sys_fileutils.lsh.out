@@ -1,0 +1,9 @@
+exists:1
+L0 = line one
+L1 = line two
+0
+copy ok:1 | exists:1
+size>0:1
+1
+gone:1
+--- Executed at 2026-08-21 21:00:22 ---

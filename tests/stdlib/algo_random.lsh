@@ -1,0 +1,37 @@
+use algo::random::Rand;
+
+fnc main() {
+    r: int = Rand.range(1, 6);
+    show("dice in range:", r >= 1 && r <= 6);
+    u: float = Rand.unit();
+    show("unit in [0,1):", u >= 0.0 && u < 1.0);
+    cards: vec<int> = (vec<int>){1, 2, 3, 4, 5, 6, 7, 8};
+    Rand.shuffle_ints(cards);
+    sum: int = 0;
+    asc: int = 0;
+    prev: int = 0;
+    foreach _, x in<vector> cards {
+        sum = sum + x;
+        if x > prev {
+            asc = asc + 1;
+        }
+        prev = x;
+    }
+    show("shuffle preserves sum:", sum == 36);
+    samp: vec<int> = Rand.sample_ints(cards, 3);
+    show("sample size:", samp.size);
+    seen: hash<int, bool>;
+    uniq: bool = true;
+    foreach _, x in<vector> samp {
+        if seen.isin(x) {
+            uniq = false;
+        }
+        seen.push(x, true);
+    }
+    show("sample unique:", uniq);
+    wi: vec<int> = (vec<int>){1, 0, 3};
+    idx: int = Rand.weighted_index(wi);
+    show("weighted valid:", idx >= 0 && idx <= 2);
+    ew: vec<int>;
+    show("empty weighted:", Rand.weighted_index(ew) == -1);
+}

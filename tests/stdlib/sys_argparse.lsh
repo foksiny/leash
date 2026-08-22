@@ -1,0 +1,13 @@
+use sys::argparse::Args;
+
+fnc main() {
+    argv: string[] = {"--verbose", "-abc", "--name=ada", "--city", "oslo", "input.txt", "--", "--not-a-flag"};
+    p := Args.parse(argv);
+    show("verbose:", Args.get_flag(p, "verbose"));
+    show("abc:", Args.get_flag(p, "a"), " | ", Args.get_flag(p, "b"), " | ", Args.get_flag(p, "c"));
+    show("name:", Args.get_opt(p, "name"));
+    show("city:", Args.get_opt(p, "city"));
+    show("missing opt:", Args.has_opt(p, "missing") == false);
+    show("positional:", p.positional.size, " | ", p.positional.get(0), " | ", p.positional.get(1));
+    show("-- stops flags:", Args.get_flag(p, "not-a-flag") == false);
+}

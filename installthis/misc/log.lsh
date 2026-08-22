@@ -1,0 +1,78 @@
+use time::datetime::DateTime;
+
+pub def LogLevel : enum {
+    DEBUG,
+    INFO,
+    WARN,
+    ERROR,
+    OFF
+};
+
+pub def Logger : class {
+    pub level: int;
+    pub sink: File;
+    pub show_stamp: bool;
+    priv start: float;
+
+    static pub fnc console(lvl int) : Logger {
+        lg: Logger = Logger { level: lvl, sink: nil, show_stamp: true, start: timepass() };
+        return lg;
+    }
+
+    static pub fnc to_file(lvl int, path string) : Logger {
+        f: File = File.open(path, "a");
+        lg: Logger = Logger { level: lvl, sink: f, show_stamp: true, start: timepass() };
+        return lg;
+    }
+
+    static pub fnc quiet() : Logger {
+        lg: Logger = Logger { level: toint(int, LogLevel::OFF), sink: nil, show_stamp: false, start: timepass() };
+        return lg;
+    }
+
+    pub fnc set_level(lvl int) : void {
+        this.level = lvl;
+    }
+
+    pub fnc close() : void {
+        if this.sink != nil {
+            this.sink.close();
+            this.sink = nil;
+        }
+    }
+
+    pub fnc debug(msg string) : void {
+        this.log(toint(int, LogLevel::DEBUG), "DEBUG", msg);
+    }
+
+    pub fnc info(msg string) : void {
+        this.log(toint(int, LogLevel::INFO), "INFO ", msg);
+    }
+
+    pub fnc warn(msg string) : void {
+        this.log(toint(int, LogLevel::WARN), "WARN ", msg);
+    }
+
+    pub fnc err(msg string) : void {
+        this.log(toint(int, LogLevel::ERROR), "ERROR", msg);
+    }
+
+    pub fnc log(lvl int, tag string, msg string) : void {
+        if lvl < this.level {
+            return;
+        }
+        line: string = "";
+        if this.show_stamp {
+            elapsed: float = timepass() - this.start;
+            ms: int = toint(int, elapsed * 1000.0);
+            line = "[" + DateTime.format_time(0) + " ." + tostring(ms) + "] ";
+        }
+        line = line + tag + ": " + msg + "\n";
+
+        if this.sink != nil {
+            this.sink.write(line);
+        } else {
+            show(line);
+        }
+    }
+};

@@ -1,0 +1,21 @@
+use mathx::primes::Num;
+
+fnc main() {
+    show("gcd:", Num.gcd(48, 18), " | lcm:", Num.lcm(4, 6));
+    show("prime97/91/1:", Num.is_prime(97), " | ", Num.is_prime(91), " | ", Num.is_prime(1));
+    show("modpow:", Num.modpow(2, 10, 1000));
+    pr: vec<int> = Num.sieve(30);
+    line: string;
+    foreach _, p in<vector> pr {
+        line = line + tostring(p) + " ";
+    }
+    show(line);
+    fac: vec<int<64>> = Num.factorize(360);
+    fline: string;
+    foreach _, f in<vector> fac {
+        fline = fline + tostring(f) + "*";
+    }
+    show(fline);
+    dv: vec<int<64>> = Num.divisors(12);
+    show("next100:", Num.next_prime(100), " | divisors12:", dv.size);
+}

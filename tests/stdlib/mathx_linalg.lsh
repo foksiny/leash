@@ -1,0 +1,21 @@
+use mathx::linalg::Matrix;
+
+fnc main() {
+    m1: Matrix = Matrix.from(2, 2, (vec<float>){1.0, 2.0, 3.0, 4.0});
+    i2: Matrix = Matrix.identity(2);
+    prod: Matrix = m1.mul(i2);
+    show("I*M diag:", prod.get(0, 0), " | ", prod.get(1, 1));
+    sq: Matrix = Matrix.from(3, 3, (vec<float>){4.0, 7.0, 2.0, 3.0, 6.0, 1.0, 2.0, 5.0, 3.0});
+    show("det:", sq.det());
+    invm: Matrix = sq.inverse();
+    if invm == nil {
+        show("singular");
+    } else {
+        chk: Matrix = sq.mul(invm);
+        show("inv ok:", chk.get(0, 0), " | ", chk.get(1, 1), " | ", chk.get(2, 2));
+    }
+    tr: Matrix = m1.transpose();
+    show("t01/t10:", tr.get(0, 1), " | ", tr.get(1, 0));
+    sing: Matrix = Matrix.from(2, 2, (vec<float>){1.0, 2.0, 2.0, 4.0});
+    show("singular det:", sing.det(), " | inv nil?", sing.inverse() == nil);
+}

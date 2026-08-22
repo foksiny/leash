@@ -1,0 +1,147 @@
+pub def Color : class {
+    static priv fnc esc() : string {
+        e: char = (char)27;
+        return "" + e + "[";
+    }
+
+    static pub fnc reset() : string {
+        return Color.esc() + "0m";
+    }
+
+    static pub fnc bold() : string {
+        return Color.esc() + "1m";
+    }
+
+    static pub fnc dim() : string {
+        return Color.esc() + "2m";
+    }
+
+    static pub fnc underline() : string {
+        return Color.esc() + "4m";
+    }
+
+    static pub fnc fg_ansi(code int) : string {
+        return Color.esc() + "38;5;" + tostring(code) + "m";
+    }
+
+    static pub fnc bg_ansi(code int) : string {
+        return Color.esc() + "48;5;" + tostring(code) + "m";
+    }
+
+    static pub fnc rgb(r int, g int, b int) : string {
+        return Color.esc() + "38;2;" + tostring(r) + ";" + tostring(g) + ";" + tostring(b) + "m";
+    }
+
+    static pub fnc bg_rgb(r int, g int, b int) : string {
+        return Color.esc() + "48;2;" + tostring(r) + ";" + tostring(g) + ";" + tostring(b) + "m";
+    }
+
+    static pub fnc red() : string { return Color.rgb(220, 50, 50); }
+    static pub fnc green() : string { return Color.rgb(60, 200, 80); }
+    static pub fnc yellow() : string { return Color.rgb(230, 210, 50); }
+    static pub fnc blue() : string { return Color.rgb(70, 130, 240); }
+    static pub fnc magenta() : string { return Color.rgb(200, 80, 200); }
+    static pub fnc cyan() : string { return Color.rgb(70, 200, 200); }
+    static pub fnc gray() : string { return Color.rgb(140, 140, 140); }
+
+    static pub fnc paint(s string, color_code string) : string {
+        return color_code + s + Color.reset();
+    }
+
+    static pub fnc hex_to_rgb(s string) : (int, int, int) {
+        h: string = s;
+        if h.size > 0 && h[0] == '#' {
+            h = Color.slice(h, 1, h.size);
+        }
+        if h.size != 6 {
+            return 0 - 1, 0 - 1, 0 - 1;
+        }
+        r: int = Color.hex_pair(h[0], h[1]);
+        g: int = Color.hex_pair(h[2], h[3]);
+        b: int = Color.hex_pair(h[4], h[5]);
+        if r < 0 || g < 0 || b < 0 {
+            return 0 - 1, 0 - 1, 0 - 1;
+        }
+        return r, g, b;
+    }
+
+    static priv fnc hex_pair(a char, b char) : int {
+        hi: int = Color.hexval(a);
+        lo: int = Color.hexval(b);
+        if hi < 0 || lo < 0 {
+            return 0 - 1;
+        }
+        return hi * 16 + lo;
+    }
+
+    static priv fnc hexval(c char) : int {
+        if c >= '0' && c <= '9' {
+            return c - '0';
+        }
+        if c >= 'a' && c <= 'f' {
+            return c - 'a' + 10;
+        }
+        if c >= 'A' && c <= 'F' {
+            return c - 'A' + 10;
+        }
+        return 0 - 1;
+    }
+
+    static pub fnc rgb_to_hex(r int, g int, b int) : string {
+        out: string = "#";
+        out = out + Color.hex2(r);
+        out = out + Color.hex2(g);
+        out = out + Color.hex2(b);
+        return out;
+    }
+
+    static priv fnc hex2(v int) : string {
+        hi: int = v / 16;
+        lo: int = v - hi * 16;
+        a: char;
+        b: char;
+        if hi < 10 {
+            a = (char)('0' + hi);
+        } else {
+            a = (char)('A' + hi - 10);
+        }
+        if lo < 10 {
+            b = (char)('0' + lo);
+        } else {
+            b = (char)('A' + lo - 10);
+        }
+        return "" + a + b;
+    }
+
+    static pub fnc ansi256(r int, g int, b int) : int {
+        rr: int = Color.cube_level(r);
+        gg: int = Color.cube_level(g);
+        bb: int = Color.cube_level(b);
+        return 16 + 36 * rr + 6 * gg + bb;
+    }
+
+    static priv fnc cube_level(v int) : int {
+        if v < 48 {
+            return 0;
+        }
+        if v < 115 {
+            return 1;
+        }
+        level: int = (v - 35) / 40;
+        if level > 5 {
+            level = 5;
+        }
+        if level < 0 {
+            level = 0;
+        }
+        return level;
+    }
+
+    static priv fnc slice(s string, from int, to int) : string {
+        out: string;
+        for i: int = from; i < to; i = i + 1 {
+            out = out + s[i];
+        }
+        return out;
+    }
+};

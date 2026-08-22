@@ -1,0 +1,10 @@
+use collections::ringbuffer::RingBuffer;
+
+fnc main() {
+    rb: RingBuffer<int> = RingBuffer.new(3);
+    show(rb.push(1), " | ", rb.push(2), " | ", rb.push(3), " | full push:", rb.push(4));
+    show(rb.is_full(), " | at0:", rb.at(0), " | at2:", rb.at(2));
+    ev: int = rb.force_push(5);
+    show("evicted:", ev, " | new front:", rb.peek());
+    show(rb.pop(), " | ", rb.pop(), " | ", rb.pop(), " | empty:", rb.is_empty());
+}

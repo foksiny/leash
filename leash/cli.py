@@ -1236,7 +1236,7 @@ def update_leash():
     import json
     
     print("Leash Update Checker")
-    print("Current version: 0.22.2 Beta\n")
+    print("Current version: 0.22.3 Beta\n")
     
     try:
         req = urllib.request.Request(
@@ -1260,6 +1260,131 @@ def update_leash():
         print("Update complete.")
     else:
         print("Update failed.")
+
+
+VERSION_STRING = "v0.22.3 Beta"
+
+MAIN_HELP = f"""Leash {VERSION_STRING} - LLVM-powered compiled programming language
+
+Usage:
+  leash <command> [arguments] [options]
+
+Commands:
+  compile <file.lsh>    Compile to an executable binary
+  run <file.lsh>        Compile and immediately execute
+  dump <file.lsh>       Dump generated LLVM IR instead of linking
+  check <file.lsh>      Type-check only; report errors and warnings
+  init [dir]            Scaffold a new Leash project (default: .)
+  build                 Compile the project described by config.lshc
+  runp                  Build and run the project described by config.lshc
+  install <path>...     Install libraries into ~/.leash/libs/
+  update                Check for updates and pull the latest source
+  help [command]        Show help, optionally for one command
+
+Global Options:
+  --verbose / -vb                     Highly detailed error and warning explanations
+  --optimization-verbosity / -ov      Show optimization pass details
+  --autofree / -af                    Smart auto-free mode (tracks allocations, frees on scope exit; no GC needed)
+  --version / -v                      Print version information
+  --help / -h                         Show this help, or 'leash help <command>' for details
+
+Run 'leash <command> --help' for command-specific options."""
+
+_SHARED_COMPILE_OPTIONS = """  --target <target>                Cross-compile target: linux64, linux32, win64, macos, macos-arm
+  --check                          Type-check only, do not produce output
+  --warnings-as-errors             Treat warnings as errors
+  --opt <level> / -O<level>        Optimization level: 0, 1, 2, 3, 4, s (size), z (aggressive size)
+  -l<lib>                          Link a native library (repeatable), e.g. -lraylib
+  --other-imports / -oi <folder>   Extra module search directory (repeatable)
+  --no-garbage-collector / -ngc    Disable garbage collector (use C malloc/free everywhere)
+  --autofree / -af                 Smart auto-free mode (tracks allocations, frees on scope exit; no GC needed)
+  --static / -static               Fully-static musl-linked binary (linux64/linux32 only)
+  --verbose / -vb                  Highly detailed error and warning explanations
+  --optimization-verbosity / -ov   Show optimization pass details"""
+
+COMMAND_HELP = {
+    "compile": f"""Compile a Leash source file into an executable binary.
+
+Usage:
+  leash compile <file.lsh> [to <name>] [to-dynamic | to-static] [options]
+
+Output options:
+  to <name>                        Write output to <name>
+  to-dynamic                       Produce a dynamically-linked binary (default)
+  to-static                        Produce a statically-linked binary
+
+Options:
+{_SHARED_COMPILE_OPTIONS}""",
+    "run": f"""Compile a Leash source file and immediately execute it.
+
+Usage:
+  leash run <file.lsh> [options] [-- program-args]
+
+Any arguments after '--' (and any unrecognized trailing arguments) are
+passed through to the running program.
+
+Options:
+{_SHARED_COMPILE_OPTIONS}""",
+    "dump": f"""Compile a Leash source file and dump the generated LLVM IR
+instead of producing a linked binary.
+
+Usage:
+  leash dump <file.lsh> [to <name>] [options]
+
+Options:
+{_SHARED_COMPILE_OPTIONS}""",
+    "check": """Type-check a Leash source file without compiling. Reports all
+errors and warnings found in the file.
+
+Usage:
+  leash check <file.lsh> [options]
+
+Options:
+  --other-imports / -oi <folder>   Extra module search directory (repeatable)
+  --verbose / -vb                  Highly detailed error and warning explanations""",
+    "init": """Scaffold a new Leash project with a standard directory layout:
+src/main.lsh entry point, imports/ directory, out/ directory and a
+config.lshc project file.
+
+Usage:
+  leash init [project_dir]     (default: current directory)""",
+    "build": """Compile the project described by config.lshc in the current
+directory. Run 'leash init' first to create a project.
+
+Usage:
+  leash build [options]
+
+Options:
+  --other-imports / -oi <folder>   Extra module search directory (repeatable)""",
+    "runp": """Build the project from config.lshc and run its output binary.
+
+Usage:
+  leash runp [options] [-- program-args]
+
+Options:
+  --other-imports / -oi <folder>   Extra module search directory (repeatable)
+
+Arguments after '--' are passed through to the running program.""",
+    "install": """Install one or more libraries (files or directories of .lsh files)
+into ~/.leash/libs/ so they can be imported from any project.
+
+Usage:
+  leash install <path> [path...]
+
+Example:
+  leash install installthis/""",
+    "update": """Check GitHub for a newer Leash release and pull the latest
+source into the current repository.
+
+Usage:
+  leash update""",
+}
+
+KNOWN_COMMANDS = tuple(COMMAND_HELP.keys())
+
+
+def _print_main_help():
+    print(MAIN_HELP)
 
 
 def main():
@@ -1286,22 +1411,30 @@ def main():
                 pass
 
     if len(sys.argv) < 2:
-        print("Usage: leash <compile|run|dump|check|install|init|build|runp|update> ... [options]")
-        print("Global Options:\n  --verbose/-vb                       Enable highly detailed masterclass error and warning explanations.\n  --optimization-verbosity/-ov      Show optimization pass details.")
+        _print_main_help()
         sys.exit(1)
     cmd = sys.argv[1]
-    if cmd in ("--help", "-h"):
-        print("Leash v0.22.2 Beta\nUsage: leash <command> [options]\nCommands: compile, run, dump, check, install, init, build, runp, update\nRun 'leash <command> --help' for details.\n\nGlobal Options:\n  --verbose/-vb                       Enable highly detailed masterclass error and warning explanations.\n  --optimization-verbosity/-ov      Show optimization pass details.\n  --autofree/-af                      Smart auto-free mode (tracks allocations, frees on scope exit; no GC needed)")
+    if cmd in ("--help", "-h", "help"):
+        if cmd == "help" and len(sys.argv) > 2:
+            topic = sys.argv[2]
+            if topic in COMMAND_HELP:
+                print(COMMAND_HELP[topic])
+                sys.exit(0)
+            print(f"Unknown command: '{topic}'. Run 'leash --help' for a list of commands.")
+            sys.exit(1)
+        _print_main_help()
         sys.exit(0)
     if cmd in ("--version", "-v"):
-        print("Leash v0.22.2 Beta\nBuilt on LLVM with custom GC (use --autofree for GC-free auto-free mode)"); sys.exit(0)
+        print(f"Leash {VERSION_STRING}\nBuilt on LLVM with custom GC (use --autofree for GC-free auto-free mode)"); sys.exit(0)
+    # Per-command help: intercept '-h'/'--help'/'help' as the first argument
+    # after the command name, before any command tries to interpret it.
+    if cmd in KNOWN_COMMANDS and len(sys.argv) > 2 and sys.argv[2] in ("-h", "--help", "help"):
+        print(COMMAND_HELP[cmd])
+        sys.exit(0)
     if cmd == "check":
         if len(sys.argv) < 3:
-            print("Usage: leash check <file.lsh> [options]")
+            print(COMMAND_HELP["check"])
             sys.exit(1)
-        if sys.argv[2] in ("--help", "-h"):
-            print("Options for check:\n  --other-imports/-oi <folder>\n  --verbose/-vb        Enable highly detailed masterclass error and warning explanations.")
-            sys.exit(0)
         if not os.path.exists(sys.argv[2]):
             print(f"error: Not found: {sys.argv[2]}", file=sys.stderr)
             sys.exit(1)
@@ -1362,11 +1495,8 @@ def main():
         sys.exit(0)
     if cmd in ("compile", "run", "dump"):
         if len(sys.argv) < 3:
-            print(f"Usage: leash {cmd} <file.lsh> [options]")
+            print(COMMAND_HELP[cmd])
             sys.exit(1)
-        if sys.argv[2] in ("--help", "-h"):
-            print(f"Options for {cmd}:\n  --target <target>\n  --check\n  --warnings-as-errors\n  --opt <0,1,2,3,4,s,z>\n  -l<lib>\n  --other-imports/-oi <folder>\n  --no-garbage-collector/-ngc   Disable garbage collector (use C malloc/free everywhere)\n  --autofree/-af                   Smart auto-free mode (tracks allocations and frees on scope exit; no GC needed)\n  --static/-static                 Fully-static musl-linked binary (linux64/linux32 only)\n  --verbose/-vb                       Enable highly detailed masterclass error and warning explanations.\n  --optimization-verbosity/-ov      Show optimization pass details.")
-            sys.exit(0)
         infile = sys.argv[2]
         target, outname, outtype, check, warnerr, elibs, opt = None, None, "executable", False, False, [], "2"
         no_gc = False
@@ -1430,11 +1560,12 @@ def main():
         sys.exit(0)
     elif cmd == "install":
         if len(sys.argv) < 3:
-            print("Usage: leash install <path> ...")
+            print(COMMAND_HELP["install"])
             sys.exit(1)
         install_libraries(sys.argv[2:])
     else:
         print(f"Unknown command: {cmd}")
+        print("Run 'leash --help' for a list of commands.")
         sys.exit(1)
 
 if __name__ == "__main__": main()

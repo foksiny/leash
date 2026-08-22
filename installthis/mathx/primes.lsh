@@ -1,0 +1,219 @@
+pub def Num : class {
+    static pub fnc gcd(a int<64>, b int<64>) : int<64> {
+        if a < 0 {
+            a = 0 - a;
+        }
+        if b < 0 {
+            b = 0 - b;
+        }
+        while b > 0 {
+            t: int<64> = b;
+            b = a % b;
+            a = t;
+        }
+        return a;
+    }
+
+    static pub fnc lcm(a int<64>, b int<64>) : int<64> {
+        if a == 0 || b == 0 {
+            return 0;
+        }
+        la: int<64> = a;
+        lb: int<64> = b;
+        if la < 0 {
+            la = 0 - la;
+        }
+        if lb < 0 {
+            lb = 0 - lb;
+        }
+        return (la / Num.gcd(la, lb)) * lb;
+    }
+
+    static priv fnc addmod(a int<64>, b int<64>, mod int<64>) : int<64> {
+        a = a % mod;
+        b = b % mod;
+        r: int<64> = a + b;
+        if r >= mod || r < 0 {
+            r = r - mod;
+        }
+        if r < 0 {
+            r = r + mod;
+        }
+        return r;
+    }
+
+    static priv fnc mulmod(a int<64>, b int<64>, mod int<64>) : int<64> {
+        if a < 0 {
+            a = a % mod + mod;
+        }
+        if b < 0 {
+            b = b % mod + mod;
+        }
+        r: int<64> = 0;
+        while b > 0 {
+            if (b & 1) == 1 {
+                r = Num.addmod(r, a, mod);
+            }
+            a = Num.addmod(a, a, mod);
+            b = b >> 1;
+        }
+        return r % mod;
+    }
+
+    static pub fnc modpow(base int<64>, exp int<64>, mod int<64>) : int<64> {
+        if mod <= 0 {
+            return 0;
+        }
+        if exp < 0 {
+            return 0;
+        }
+        result: int<64> = 1;
+        b: int<64> = base % mod;
+        if b < 0 {
+            b = b + mod;
+        }
+        e: int<64> = exp;
+        while e > 0 {
+            if (e & 1) == 1 {
+                result = Num.mulmod(result, b, mod);
+            }
+            b = Num.mulmod(b, b, mod);
+            e = e >> 1;
+        }
+        return result;
+    }
+
+    static pub fnc is_prime(n int<64>) : bool {
+        if n < 2 {
+            return false;
+        }
+        small: vec<int>;
+        small.pushb(2); small.pushb(3); small.pushb(5); small.pushb(7);
+        small.pushb(11); small.pushb(13); small.pushb(17); small.pushb(19);
+        small.pushb(23); small.pushb(29); small.pushb(31); small.pushb(37);
+        foreach _, p in<vector> small {
+            _ = _ + 1 - 1;
+            if n == p {
+                return true;
+            }
+            if n % p == 0 {
+                return false;
+            }
+        }
+        d: int<64> = n - 1;
+        r: int = 0;
+        while (d & 1) == 0 {
+            d = d >> 1;
+            r = r + 1;
+        }
+        foreach _, a in<vector> small {
+            _ = _ + 1 - 1;
+            av: int<64> = a;
+            x: int<64> = Num.modpow(av, d, n);
+            if x == 1 || x == n - 1 {
+                continue;
+            }
+            composite: bool = true;
+            for rr: int = 1; rr < r; rr = rr + 1 {
+                x = Num.mulmod(x, x, n);
+                if x == n - 1 {
+                    composite = false;
+                    stop;
+                }
+            }
+            if composite {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static pub fnc sieve(limit int) : vec<int> {
+        out: vec<int>;
+        if limit < 2 {
+            return out;
+        }
+        flags: vec<int>;
+        for i: int = 0; i <= limit; i = i + 1 {
+            flags.pushb(1);
+        }
+        flags.set(0, 0);
+        flags.set(1, 0);
+        p: int = 2;
+        while p * p <= limit {
+            if flags.get(p) == 1 {
+                j: int = p * p;
+                while j <= limit {
+                    flags.set(j, 0);
+                    j = j + p;
+                }
+            }
+            p = p + 1;
+        }
+        for k: int = 2; k <= limit; k = k + 1 {
+            if flags.get(k) == 1 {
+                out.pushb(k);
+            }
+        }
+        return out;
+    }
+
+    static pub fnc factorize(n int<64>) : vec<int<64>> {
+        factors: vec<int<64>>;
+        remaining: int<64> = n;
+        d: int<64> = 2;
+        while d * d <= remaining {
+            while remaining % d == 0 {
+                factors.pushb(d);
+                remaining = remaining / d;
+            }
+            d = d + 1;
+        }
+        if remaining > 1 {
+            factors.pushb(remaining);
+        }
+        return factors;
+    }
+
+    static pub fnc next_prime(n int<64>) : int<64> {
+        cand: int<64> = n + 1;
+        while Num.is_prime(cand) == false {
+            cand = cand + 1;
+        }
+        return cand;
+    }
+
+    static pub fnc divisors(n int<64>) : vec<int<64>> {
+        out: vec<int<64>>;
+        if n <= 0 {
+            return out;
+        }
+        d: int<64> = 1;
+        while d * d <= n {
+            if n % d == 0 {
+                out.pushb(d);
+                q: int<64> = n / d;
+                if q != d {
+                    out.pushb(q);
+                }
+            }
+            d = d + 1;
+        }
+        Num.sort_i64(out);
+        return out;
+    }
+
+    static pub fnc sort_i64(v vec<int<64>>) : void {
+        i: int = 1;
+        while i < v.size {
+            key: int<64> = v.get(i);
+            j: int = i - 1;
+            while j >= 0 && v.get(j) > key {
+                v.set(j + 1, v.get(j));
+                j = j - 1;
+            }
+            v.set(j + 1, key);
+            i = i + 1;
+        }
+    }
+};

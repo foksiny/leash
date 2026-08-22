@@ -1,0 +1,14 @@
+use text::csv::Csv;
+
+fnc main() {
+    r: vec<string> = Csv.parse_row("a,b,c");
+    show(r.size, " | ", r.get(0), " | ", r.get(2));
+    q: vec<string> = Csv.parse_row("\"quoted,comma\",\"say \"\"hi\"\"\",plain");
+    show("[", q.get(0), "] [", q.get(1), "] [", q.get(2), "]");
+    rows: vec<vec<string>> = Csv.parse("name,age\nalice,30\n\"bob, jr\",25");
+    show("rows:", rows.size);
+    show(Csv.cell(rows, 0, 0), "/", Csv.cell(rows, 1, 1), "/", Csv.cell(rows, 2, 0));
+    ser: string = Csv.stringify(rows);
+    rt: vec<vec<string>> = Csv.parse(ser);
+    show("roundtrip:", rt.size, " | ", Csv.cell(rt, 2, 0));
+}

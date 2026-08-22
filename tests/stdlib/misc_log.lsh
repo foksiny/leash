@@ -1,0 +1,39 @@
+use misc::log::Logger;
+use sys::fileutils::FileUtil;
+
+fnc main() {
+    lg := Logger.console(toint(int, LogLevel::DEBUG));
+    lg.show_stamp = false;
+    lg.debug("debug message");
+    lg.info("info message");
+    lg.warn("warn message");
+    lg.err("error message");
+
+    quiet_lg := Logger.quiet();
+    quiet_lg.info("SHOULD NOT APPEAR");
+
+    lp: string = "/tmp/leash_stdlib_app.log";
+    lf := Logger.to_file(toint(int, LogLevel::WARN), lp);
+    lf.debug("filtered out");
+    lf.warn("only warnings and up");
+    log_text: string = FileUtil.read_text(lp);
+    show("file has content:", log_text.size > 0);
+    has_warn: bool = false;
+    has_dbg: bool = false;
+    i: int = 0;
+    while i + 4 <= log_text.size {
+        chunk: string = "";
+        for j: int = 0; j < 4; j = j + 1 {
+            chunk = chunk + log_text[i + j];
+        }
+        if chunk == "WARN" {
+            has_warn = true;
+        }
+        if chunk == "DEBU" {
+            has_dbg = true;
+        }
+        i = i + 1;
+    }
+    show("warn in file:", has_warn, " | debug filtered:", has_dbg == false);
+    FileUtil.remove(lp);
+}

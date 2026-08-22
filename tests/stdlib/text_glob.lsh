@@ -1,0 +1,10 @@
+use text::glob::Glob;
+
+fnc main() {
+    show(Glob.match("*.lsh", "main.lsh"), " | ", Glob.match("*.lsh", "main.c"));
+    show(Glob.match("src/**/*.c", "src/a/b/c.c"), " | ", Glob.match("src/**/*.c", "src/c.c"));
+    show(Glob.match("**/build", "a/b/build"));
+    show(Glob.match("?at", "cat"), " | ", Glob.match("?at", "at"));
+    show(Glob.match("[ch]at", "bat"), " | ", Glob.match("[ch]at", "hat"));
+    show(Glob.is_pattern("file?.txt"), " | ", Glob.is_pattern("plain.txt"));
+}

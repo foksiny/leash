@@ -1,0 +1,15 @@
+use misc::bits::Bits;
+
+fnc main() {
+    show("get:", Bits.get(11, 2));
+    show("set:", Bits.set(0, 5) == 32);
+    show("clear:", Bits.clear(32, 5) == 0);
+    show("toggle:", Bits.toggle(8, 3) == 0);
+    show("popcount:", Bits.popcount(255), " | ", Bits.popcount(0), " | ", Bits.popcount(-1));
+    show("clz/ctz:", Bits.clz(16), " | ", Bits.ctz(16));
+    show("rotl:", Bits.rotl(1, 1) == 2);
+    show("rotr:", Bits.rotr(4, 1) == 2);
+    show("is_pow2:", Bits.is_pow2(64), " | ", Bits.is_pow2(63));
+    show("next_pow2:", Bits.next_pow2(65));
+    show("swap32:", Bits.swap32((uint<32>)0x11223344) == (uint<32>)0x44332211);
+}

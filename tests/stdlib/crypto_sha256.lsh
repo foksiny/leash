@@ -1,0 +1,9 @@
+use crypto::sha256::Sha256;
+
+fnc main() {
+    show(Sha256.digest(""));
+    show(Sha256.digest("hello world"));
+    show(Sha256.digest("The quick brown fox jumps over the lazy dog"));
+    show(Sha256.hmac("key", "The quick brown fox jumps over the lazy dog"));
+    show(Sha256.hmac("", ""));
+}

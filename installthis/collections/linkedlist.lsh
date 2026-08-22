@@ -1,0 +1,129 @@
+priv def T : template;
+
+pub def LinkedList : class<T> {
+    priv vals: vec<T>;
+    priv nexts: vec<int>;
+    priv head: int;
+    priv tail: int;
+    priv count: int;
+
+    static pub fnc new() : LinkedList {
+        fresh_vals: vec<T>;
+        fresh_nexts: vec<int>;
+        return LinkedList { vals: fresh_vals, nexts: fresh_nexts, head: 0 - 1, tail: 0 - 1, count: 0 };
+    }
+
+    pub fnc push_back(v T) : void {
+        idx: int = this.vals.size;
+        this.vals.pushb(v);
+        this.nexts.pushb(0 - 1);
+        if this.tail < 0 {
+            this.head = idx;
+        } else {
+            this.nexts.set(this.tail, idx);
+        }
+        this.tail = idx;
+        this.count = this.count + 1;
+    }
+
+    pub fnc push_front(v T) : void {
+        idx: int = this.vals.size;
+        this.vals.pushb(v);
+        this.nexts.pushb(this.head);
+        if this.head < 0 {
+            this.tail = idx;
+        }
+        this.head = idx;
+        this.count = this.count + 1;
+    }
+
+    pub fnc at(pos int) : T {
+        i: int = 0;
+        cur: int = this.head;
+        while cur >= 0 {
+            if i == pos {
+                return this.vals.get(cur);
+            }
+            cur = this.nexts.get(cur);
+            i = i + 1;
+        }
+        return this.vals.get(0 - 1);
+    }
+
+    pub fnc remove_at(pos int) : bool {
+        if pos < 0 || pos >= this.count {
+            return false;
+        }
+        if pos == 0 {
+            nxt: int = this.nexts.get(this.head);
+            this.head = nxt;
+            if nxt < 0 {
+                this.tail = 0 - 1;
+            }
+            this.count = this.count - 1;
+            return true;
+        }
+        prev: int = this.head;
+        i: int = 0;
+        while i < pos - 1 {
+            prev = this.nexts.get(prev);
+            i = i + 1;
+        }
+        target: int = this.nexts.get(prev);
+        this.nexts.set(prev, this.nexts.get(target));
+        if target == this.tail {
+            this.tail = prev;
+        }
+        this.count = this.count - 1;
+        return true;
+    }
+
+    pub fnc insert_at(pos int, v T) : bool {
+        if pos <= 0 {
+            this.push_front(v);
+            return true;
+        }
+        if pos >= this.count {
+            this.push_back(v);
+            return true;
+        }
+        prev: int = this.head;
+        i: int = 0;
+        while i < pos - 1 {
+            prev = this.nexts.get(prev);
+            i = i + 1;
+        }
+        idx: int = this.vals.size;
+        this.vals.pushb(v);
+        this.nexts.pushb(this.nexts.get(prev));
+        this.nexts.set(prev, idx);
+        this.count = this.count + 1;
+        return true;
+    }
+
+    pub fnc size() : int {
+        return this.count;
+    }
+
+    pub fnc is_empty() : bool {
+        return this.count == 0;
+    }
+
+    pub fnc clear() : void {
+        this.vals.clear();
+        this.nexts.clear();
+        this.head = 0 - 1;
+        this.tail = 0 - 1;
+        this.count = 0;
+    }
+
+    pub fnc to_vec() : vec<T> {
+        out: vec<T>;
+        cur: int = this.head;
+        while cur >= 0 {
+            out.pushb(this.vals.get(cur));
+            cur = this.nexts.get(cur);
+        }
+        return out;
+    }
+};

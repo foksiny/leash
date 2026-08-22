@@ -1,0 +1,156 @@
+pub def Path : class {
+    static pub fnc sep() : char {
+        return '/';
+    }
+
+    static pub fnc join(a string, b string) : string {
+        if b.size > 0 && b[0] == '/' {
+            return b;
+        }
+        if a.size == 0 {
+            return b;
+        }
+        if a[a.size - 1] == '/' {
+            return a + b;
+        }
+        return a + "/" + b;
+    }
+
+    static pub fnc base_name(p string) : string {
+        end: int = p.size;
+        while end > 0 && p[end - 1] == '/' {
+            end = end - 1;
+        }
+        if end == 0 {
+            return "/";
+        }
+        start: int = end;
+        while start > 0 && p[start - 1] != '/' {
+            start = start - 1;
+        }
+        return Path.slice(p, start, end);
+    }
+
+    static pub fnc dir_name(p string) : string {
+        end: int = p.size;
+        while end > 0 && p[end - 1] == '/' {
+            end = end - 1;
+        }
+        i: int = end;
+        while i > 0 && p[i - 1] != '/' {
+            i = i - 1;
+        }
+        if i == 0 {
+            return ".";
+        }
+        j: int = i;
+        while j > 1 && p[j - 2] == '/' {
+            j = j - 1;
+        }
+        return Path.slice(p, 0, i);
+    }
+
+    static pub fnc ext(p string) : string {
+        base: string = Path.base_name(p);
+        dot: int = -1;
+        foreach i, c in<string> base {
+            if c == '.' {
+                dot = i;
+            }
+        }
+        if dot <= 0 {
+            return "";
+        }
+        return Path.slice(base, dot, base.size);
+    }
+
+    static pub fnc stem(p string) : string {
+        base: string = Path.base_name(p);
+        dot: int = -1;
+        foreach i, c in<string> base {
+            if c == '.' {
+                dot = i;
+                stop;
+            }
+        }
+        if dot <= 0 {
+            return base;
+        }
+        return Path.slice(base, 0, dot);
+    }
+
+    static pub fnc is_absolute(p string) : bool {
+        return p.size > 0 && p[0] == '/';
+    }
+
+    static pub fnc normalize(p string) : string {
+        parts: vec<string>;
+        cur: string;
+        absolute: bool = Path.is_absolute(p);
+        foreach _, c in<string> p {
+            if c == '/' {
+                if cur.size > 0 {
+                    parts.pushb(cur);
+                    cur = "";
+                }
+            } else {
+                cur = cur + c;
+            }
+        }
+        if cur.size > 0 {
+            parts.pushb(cur);
+        }
+
+        out: vec<string>;
+        foreach _, part in<vector> parts {
+            if part == "." {
+                continue;
+            }
+            if part == ".." {
+                can_pop: bool = out.size > 0 && out.get(out.size - 1) != "..";
+                if absolute == false && can_pop == false {
+                    out.pushb("..");
+                    continue;
+                }
+                if can_pop {
+                    out.popb();
+                }
+                continue;
+            }
+            out.pushb(part);
+        }
+        res: string;
+        if absolute {
+            res = "/";
+        }
+        oi: int = 0;
+        while oi < out.size {
+            res = res + out.get(oi);
+            if oi < out.size - 1 {
+                res = res + "/";
+            }
+            oi = oi + 1;
+        }
+        if res.size == 0 {
+            return ".";
+        }
+        return res;
+    }
+
+
+    static pub fnc split_ext(p string) : (string, string) {
+        e: string = Path.ext(p);
+        if e.size == 0 {
+            return p, "";
+        }
+        return Path.slice(p, 0, p.size - e.size), e;
+    }
+
+    static priv fnc slice(s string, from int, to int) : string {
+        out: string;
+        for i: int = from; i < to; i = i + 1 {
+            out = out + s[i];
+        }
+        return out;
+    }
+};

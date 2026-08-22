@@ -1,0 +1,23 @@
+use time::datetime::DateTime;
+
+fnc main() {
+    e: int<64> = DateTime.days_from_civil(2026, 8, 21) * 86400;
+    show(DateTime.format_date(e));
+    show(DateTime.format_time(e + 45296));
+    y, m, d: int, int, int = DateTime.civil_from_days(e / 86400);
+    show(y, "-", m, "-", d);
+    show("leap:", DateTime.is_leap(2024), " | ", DateTime.is_leap(1900), " | ", DateTime.is_leap(2000));
+    show("dim:", DateTime.days_in_month(2024, 2), " | ", DateTime.days_in_month(2023, 2));
+    w: int = DateTime.weekday(e);
+    show(w, " = ", DateTime.day_name(w));
+    plus30: int<64> = DateTime.add_days(e, 30);
+    show(DateTime.format_date(plus30));
+    parsed: int<64> = DateTime.parse_datetime("2026-08-21 12:34:56");
+    show("parsed ok:", parsed == e + 45296);
+    bad: int<64> = DateTime.parse_date("2026-02-30");
+    show(bad == -1);
+    mo: string = DateTime.month_name(8);
+    show(mo);
+    epoch_zero: int<64> = 0;
+    show(DateTime.format_epoch(epoch_zero));
+}

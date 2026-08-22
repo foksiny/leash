@@ -1,0 +1,8 @@
+verbose:1
+abc:1 | 1 | 1
+name:ada
+city:oslo
+missing opt:1
+positional:2 | input.txt | --not-a-flag
+-- stops flags:1
+--- Executed at 2026-08-21 21:00:22 ---
