@@ -1,12 +1,13 @@
-# Validates every pull request that touches index.json and merges it
-# automatically when all self-service publishing rules pass.
+# Validates every pull request that touches index.json against the
+# self-service publishing rules. On success, a companion workflow
+# (merge.yml, triggered via workflow_run) merges the PR automatically.
 #
 # One-time repo setup (see README.md):
-#   1. Settings -> General -> Pull Requests: enable "Allow auto-merge"
-#   2. Settings -> Actions -> General -> Workflow permissions: "Read and write"
-#   3. Create the label "validation-failed" (or let step 'Report failures' fail silently)
-#   4. Branch protection on main: require status check "Validate registry changes",
-#      do NOT require human approvals.
+#   1. Settings -> Actions -> General -> Workflow permissions: "Read and write"
+#      and "Allow GitHub Actions to create and approve pull requests"
+#   2. Branch protection on main: require status check "Validate registry changes",
+#      do NOT require human approvals. (Auto-merge is not used; the merge
+#      workflow merges directly once this check passes.)
 
 name: Validate registry changes
 
@@ -25,6 +26,7 @@ concurrency:
 
 jobs:
   validate:
+    name: Validate registry changes
     runs-on: ubuntu-latest
     steps:
       - name: Checkout PR merge commit
@@ -49,30 +51,12 @@ jobs:
             --pr-author "$PR_AUTHOR" \
             --report validation_report.md
 
-      - name: Approve and enable auto-merge
-        if: success()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          gh pr review "$PR_NUMBER" --approve || true
-          gh pr merge "$PR_NUMBER" --auto --squash
-
       - name: Report failures
         if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          gh pr comment "$PR_NUMBER" --body-file validation_report.md || true
-          gh pr edit "$PR_NUMBER" --add-label "validation-failed" || true
-
-      - name: Post success summary
-        if: success()
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
-        run: |
-          gh pr comment "$PR_NUMBER" \
-            --body "✅ Validation passed — merging automatically. Your package is now live in the registry. Thanks for publishing!" \
-            || true
+          REPO="${{ github.repository }}"
+          gh pr comment "$PR_NUMBER" -R "$REPO" --body-file validation_report.md || true
+          gh pr edit "$PR_NUMBER" -R "$REPO" --add-label "validation-failed" || true

@@ -46,17 +46,22 @@ leashed install someone/somelib        # shorthand for github.com
 
 ## One-time setup checklist (registry maintainers)
 
-1. Copy `.github/workflows/validate.yml` and `scripts/validate_index.py`
-   into this repository.
-2. **Settings → General → Pull Requests**: enable **Allow auto-merge**.
-3. **Settings → Actions → General → Workflow permissions**: select
+1. Copy `.github/workflows/validate.yml`, `.github/workflows/merge.yml`, and
+   `scripts/validate_index.py` into this repository.
+2. **Settings → Actions → General → Workflow permissions**: select
    **Read and write permissions**.
-4. Branches → Branch protection rules for `main`:
+3. Branches → Branch protection rules for `main`:
    - Require status check **"Validate registry changes"**
-   - Do **not** require human approvals (the bot approves)
+   - Do **not** require human approvals
    - Allow forks to pull requests (default)
-5. Create the label `validation-failed` (Issues → Labels).
-6. Optionally star/watch PRs if you want visibility — nothing needs approval.
+4. Create the label `validation-failed` (Issues → Labels).
+5. Optionally star/watch PRs if you want visibility — nothing needs approval.
+
+> How it works: `validate.yml` runs on every `index.json` PR and exits green
+> or red. When it passes, GitHub fires `merge.yml` (`workflow_run`), which
+> squash-merges the PR directly — the GITHUB_TOKEN cannot enable classic
+> auto-merge, but it *can* merge once its own check has finished. No personal
+> access tokens involved.
 
 ## Manual overrides
 

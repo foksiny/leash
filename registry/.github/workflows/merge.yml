@@ -1,0 +1,57 @@
+# Merges a registry PR after the "Validate registry changes" check passes.
+#
+# Why two workflows: the GITHUB_TOKEN cannot enable auto-merge (GitHub
+# restricts the enablePullRequestAutoMerge mutation), and a pull_request
+# workflow cannot merge its own still-running required check. A
+# workflow_run workflow starts *after* validation finishes, so it can
+# merge directly — no personal access token required.
+
+name: Merge validated registry changes
+
+on:
+  workflow_run:
+    workflows: ["Validate registry changes"]
+    types: [completed]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  merge:
+    runs-on: ubuntu-latest
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request'
+    steps:
+      - name: Merge the validated PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          PR=$(gh api "repos/$REPO/pulls?state=open&sort=created&direction=desc" \
+                --jq ".[] | select(.head.sha==\"$HEAD_SHA\") | .number" | head -1)
+          if [ -z "$PR" ]; then
+            echo "No open PR for head $HEAD_SHA (already merged or closed)"
+            exit 0
+          fi
+          gh pr merge "$PR" -R "$REPO" --squash
+          gh pr comment "$PR" -R "$REPO" \
+            --body "✅ Validation passed — merged automatically. Your package is now live in the registry. Thanks for publishing!" \
+            || true
+
+      - name: Report merge conflicts
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          PR=$(gh api "repos/$REPO/pulls?state=open&sort=created&direction=desc" \
+                --jq ".[] | select(.head.sha==\"$HEAD_SHA\") | .number" | head -1)
+          if [ -n "$PR" ]; then
+            gh pr comment "$PR" -R "$REPO" \
+              --body "⚠️ Validation passed but the merge failed (usually a conflict with another publish that landed first). Run \`leashed publish\` again to retry." \
+              || true
+          fi
