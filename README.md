@@ -49,7 +49,7 @@ leash runp
 - **Strongly typed** with full type inference and explicit bit-width integers/floats
 - **LLVM-powered** compilation with optimization levels O0-O4, LTO, and PGO
 - **Built-in garbage collector** with optional `nogc` manual mode
-- **Package manager** (`leashed`) for publishing and installing libraries
+- **Package manager** (`leashed`) with fully self-service publishing — registry updates are validated and merged by a bot, no human review; install from the index or any git URL
 - **Concurrency model** with workers, `shared` and `fusion` variables
 - **Cross-platform** compilation for Linux, Windows, and macOS
 - **Rich standard library** with vectors, matrices, hash tables, file I/O, math, and windowing

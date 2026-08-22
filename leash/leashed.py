@@ -11,11 +11,19 @@ import stat
 import urllib.request
 import urllib.error
 
-LEASHED_VERSION = "0.1.0"
-REGISTRY_REPO = "foksiny/leash-packages"
+LEASHED_VERSION = "0.2.0"
+
+def _env(name, default):
+    v = os.environ.get(name)
+    return v if v else default
+
+DEFAULT_REGISTRY_REPO = "foksiny/leash-packages"
+# Anyone can host their own registry by overriding these.
+REGISTRY_REPO = _env("LEASHED_REGISTRY_REPO", DEFAULT_REGISTRY_REPO)
 REGISTRY_OWNER = REGISTRY_REPO.split("/")[0]
-REGISTRY_URL = f"https://raw.githubusercontent.com/{REGISTRY_REPO}/main/index.json"
-REGISTRY_GIT = f"https://github.com/{REGISTRY_REPO}.git"
+REGISTRY_URL = _env("LEASHED_REGISTRY_URL",
+                    f"https://raw.githubusercontent.com/{REGISTRY_REPO}/main/index.json")
+REGISTRY_GIT = _env("LEASHED_REGISTRY_GIT", f"https://github.com/{REGISTRY_REPO}.git")
 LEASH_LIBS_DIR = os.path.expanduser("~/.leash/libs")
 LEASHED_CONFIG = "leash-pkg.lshc"
 PACKAGE_CONFIG = "package.lshc"
@@ -33,6 +41,61 @@ def validate_name(name):
         eprint(f"error: Invalid name '{name}'. Must start with a letter or underscore and contain only letters, digits, hyphens, and underscores.")
         sys.exit(1)
     return name
+
+
+# ------------------------------------------------------------- semver ----
+
+SEMVER_RE = re.compile(r'^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?$')
+
+
+def parse_version(v):
+    """Parse 'X.Y.Z' or 'X.Y.Z-prerelease'. Returns tuple or None."""
+    if not isinstance(v, str):
+        return None
+    m = SEMVER_RE.match(v.strip())
+    if not m:
+        return None
+    return int(m.group(1)), int(m.group(2)), int(m.group(3)), m.group(4)
+
+
+def validate_version(v):
+    return parse_version(v) is not None
+
+
+def _pre_key(pre):
+    # Releases sort after prereleases of the same X.Y.Z (semver 2.0.0 rule 11)
+    if pre is None:
+        return (1,)
+    parts = []
+    for p in pre.split('.'):
+        if p.isdigit():
+            parts.append((0, int(p), ""))
+        else:
+            parts.append((1, 0, p))
+    return (0,) + tuple(parts)
+
+
+def version_key(v):
+    parsed = parse_version(v)
+    if parsed is None:
+        return None
+    maj, mino, pat, pre = parsed
+    return (maj, mino, pat, _pre_key(pre))
+
+
+def is_newer_version(a, b):
+    """True if semver a is strictly greater than semver b."""
+    ka, kb = version_key(a), version_key(b)
+    if ka is None or kb is None:
+        return False
+    return ka > kb
+
+
+def sorted_versions(versions):
+    """Sort an iterable of version strings newest-first; invalid ones go last."""
+    valid = [v for v in versions if validate_version(v)]
+    invalid = [v for v in versions if not validate_version(v)]
+    return sorted(valid, key=version_key, reverse=True) + sorted(invalid)
 
 
 def _del_rw(action, name, exc):
@@ -123,9 +186,17 @@ def read_pkg_config(path):
             s = line.strip()
             if not s or s.startswith("#"):
                 continue
-            ci = s.find(" #")
-            if ci >= 0:
-                s = s[:ci].strip()
+            # Strip inline comments (' #' outside of double quotes)
+            cut = None
+            in_q = False
+            for i, c in enumerate(s):
+                if c == '"':
+                    in_q = not in_q
+                elif c == "#" and not in_q and i > 0 and s[i - 1] in (" ", "\t"):
+                    cut = i
+                    break
+            if cut is not None:
+                s = s[:cut].strip()
             if ":" not in s:
                 continue
             k, _, v = s.partition(":")
@@ -249,7 +320,10 @@ def cmd_publish(args):
             eprint(f"error: '{key}' not set in {LEASHED_CONFIG}")
             sys.exit(1)
     name = validate_name(config["name"])
-    version = config["version"]
+    version = config["version"].strip()
+    if not validate_version(version):
+        eprint(f"error: Invalid version '{version}'. Use semantic versioning: X.Y.Z (optionally -prerelease)")
+        sys.exit(1)
     author = config["author"]
     description = config.get("description", "")
     main_file = config.get("main", "")
@@ -274,6 +348,23 @@ def cmd_publish(args):
     # Make relative paths absolute from project_dir
     if extra_import_dirs:
         extra_import_dirs = [os.path.join(project_dir, d) if not os.path.isabs(d) else d for d in extra_import_dirs]
+
+    # Pre-flight registry check: ownership + strictly increasing version.
+    # Fails fast before any compiling/pushing so mistakes cost nothing.
+    index = fetch_index()
+    libs = index.get("libraries", {})
+    existing_entry = libs.get(name)
+    if existing_entry:
+        reg_owner = existing_entry.get("publisher") or existing_entry.get("author", "")
+        if reg_owner not in (publisher, author):
+            eprint(f"error: Library '{name}' is already registered by '{reg_owner}'.")
+            eprint("  Only the original owner can update a package. Pick another name.")
+            sys.exit(1)
+        old_version = existing_entry.get("version", "0.0.0")
+        if not is_newer_version(version, old_version):
+            eprint(f"error: Version {version} is not greater than the published version {old_version}.")
+            eprint("  Bump the 'version' field in leash-pkg.lshc and try again.")
+            sys.exit(1)
 
     print(f"[leashed] Publishing '{name}' v{version} by {author}")
     print(f"[leashed] Publisher: {publisher}")
@@ -431,6 +522,14 @@ def cmd_publish(args):
         tmp_cleanup(repo_tmp)
         sys.exit(1)
 
+    # Tag this release so `leashed install name@version` can fetch it
+    tag = f"v{version}"
+    run_git(["tag", "-f", tag], cwd=repo_tmp)
+    rc, _, err = run_git(["push", "--force", "origin", tag], cwd=repo_tmp)
+    if rc != 0:
+        eprint(f"warning: Could not push version tag '{tag}': {err}")
+        eprint("  The library was published; installing by exact version may not work.")
+
     print(f"[leashed] Successfully published '{name}' v{version}!")
     print(f"[leashed]   Repo: {repo_url}")
 
@@ -474,7 +573,7 @@ def cmd_publish(args):
                 else:
                     push_branch = "main"
     else:
-        # Non-owner: fork + PR flow
+        # Non-owner: fork + PR flow (a bot auto-merges the PR if it validates)
         rc, _, err = run_gh(["repo", "fork", REGISTRY_REPO, "--clone=false"])
         if rc != 0:
             eprint(f"error: Failed to fork registry: {err}")
@@ -484,6 +583,10 @@ def cmd_publish(args):
             tmp_cleanup(repo_tmp)
             tmp_cleanup(reg_tmp)
             sys.exit(1)
+
+        # Sync the fork with upstream so the PR only contains our change
+        run_gh(["repo", "sync", f"{gh_user}/{REGISTRY_REPO.split('/')[1]}",
+                "--source", REGISTRY_REPO], required=False)
 
         fork_url = f"https://github.com/{gh_user}/leash-packages.git"
         rc, _, err = run_git(["clone", "--depth", "1", fork_url, reg_tmp])
@@ -536,11 +639,22 @@ def cmd_publish(args):
 
     if "libraries" not in index:
         index["libraries"] = {}
+    # Keep all previously published versions so `install name@version` works
+    old_versions = {}
+    if existing_entry:
+        old_versions = existing_entry.get("versions", {}) or {}
+    old_versions[version] = {
+        "repo": repo_url,
+        "tag": tag,
+        "published_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
     index["libraries"][name] = {
         "repo": repo_url,
         "description": description,
         "author": author,
-        "version": version
+        "publisher": publisher,
+        "version": version,
+        "versions": old_versions,
     }
 
     with open(index_path, "w", encoding="utf-8") as f:
@@ -605,7 +719,8 @@ def cmd_publish(args):
         if rc == 0:
             pr_url = out.strip()
             print(f"[leashed] Registration PR created: {pr_url}")
-            print("[leashed] A maintainer will review and merge it.")
+            print("[leashed] A validation bot will review it automatically —")
+            print("[leashed]   if all checks pass, the PR merges itself within a minute.")
         else:
             eprint(f"warning: Failed to create PR: {err}")
             eprint(f"  Submit a PR manually to {REGISTRY_REPO} updating index.json.")
@@ -615,76 +730,263 @@ def cmd_publish(args):
     tmp_cleanup(reg_tmp)
 
 
+def _read_installed_pkg_config(dest_root):
+    """Read package.lshc from an installed library directory."""
+    pkg_config_path = os.path.join(dest_root, PACKAGE_CONFIG)
+    pkg = {}
+    if os.path.exists(pkg_config_path):
+        try:
+            with open(pkg_config_path, "r", encoding="utf-8") as f:
+                pkg = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            pass
+    return pkg
+
+
+def _write_stub(libname, version, author, desc, dest_root):
+    entry_main = _read_installed_pkg_config(dest_root).get("main", "src/main.lsh")
+    # The main file path in config is relative to project dir, but files are
+    # copied to the library root (subdirectory stripped). Use just the filename.
+    entry_module = os.path.splitext(os.path.basename(entry_main))[0]
+    stub_path = os.path.join(LEASH_LIBS_DIR, f"{libname}.lsh")
+    with open(stub_path, "w", encoding="utf-8") as f:
+        f.write(f"// {libname} {version} by {author}\n")
+        if desc:
+            f.write(f"// {desc}\n")
+        f.write(f"use {libname}::{entry_module}::*;\n")
+
+
+def _looks_like_git_target(target):
+    if "://" in target or target.endswith(".git"):
+        return True
+    # user/repo shorthand for github
+    return bool(re.match(r'^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$', target)) and "::" not in target
+
+
+def _install_from_repo(repo_url, requested_version=None, libname=None):
+    """Clone a library repo and install it into ~/.leash/libs.
+
+    Works both for registry-published repos (library/ layout) and any plain
+    git repo containing a package.lshc or .lsh sources at its root.
+    """
+    repo_tmp = tempfile.mkdtemp(prefix="leashed_repo_")
+    try:
+        clone_cmd = ["clone", "--depth", "1"]
+        if requested_version:
+            clone_cmd += ["--branch", f"v{requested_version}"]
+        clone_cmd += [repo_url, repo_tmp]
+        rc, _, err = run_git(clone_cmd)
+        if rc != 0:
+            if requested_version:
+                eprint(f"error: Version v{requested_version} not found in '{repo_url}' ({err})")
+            else:
+                eprint(f"error: Failed to clone repository: {err}")
+            sys.exit(1)
+
+        src = os.path.join(repo_tmp, LIBRARY_DIR)
+        fallback_root = False
+        if not os.path.exists(src):
+            src = repo_tmp
+            fallback_root = True
+
+        pkg = _read_installed_pkg_config(src) if not fallback_root else {}
+        if not pkg:
+            pkg = _read_installed_pkg_config(repo_tmp)
+        if not libname:
+            libname = pkg.get("name", "")
+        if not libname:
+            base = os.path.basename(repo_url.rstrip("/"))
+            if base.endswith(".git"):
+                base = base[:-4]
+            libname = re.sub(r'[^a-zA-Z0-9_-]', '_', base)
+        libname = validate_name(libname)
+
+        version = pkg.get("version", requested_version or "?")
+        author = pkg.get("author", "?")
+        desc = pkg.get("description", "")
+
+        print(f"[leashed] Installing '{libname}' v{version} from {repo_url}")
+        os.makedirs(LEASH_LIBS_DIR, exist_ok=True)
+        dest_root = os.path.join(LEASH_LIBS_DIR, libname)
+        if os.path.exists(dest_root):
+            shutil.rmtree(dest_root, onerror=_del_rw)
+        shutil.copytree(src, dest_root)
+
+        _write_stub(libname, version, author, desc, dest_root)
+        print(f"[leashed] Successfully installed '{libname}' v{version}")
+        return libname, version
+    finally:
+        tmp_cleanup(repo_tmp)
+
+
 def cmd_install(args):
     if len(args) < 1:
-        eprint("Usage: leashed install <library_name>")
+        eprint("Usage: leashed install <library_name>[@<version> | <git-url> | <user>/<repo>]")
+        sys.exit(1)
+    target = args[0].strip()
+
+    # 1) Direct git URL or user/repo shorthand — decentralized, no registry needed
+    if _looks_like_git_target(target):
+        url = target
+        if "://" not in url and not url.endswith(".git"):
+            url = f"https://github.com/{url}.git"
+        _install_from_repo(url)
+        return
+
+    # 2) Registry lookup: name or name@version
+    if "@" in target:
+        libname, _, req_version = target.partition("@")
+        libname = validate_name(libname.strip())
+        if not validate_version(req_version):
+            eprint(f"error: Invalid version '{req_version}'. Use semver: X.Y.Z")
+            sys.exit(1)
+    else:
+        libname = validate_name(target)
+        req_version = None
+
+    print(f"[leashed] Looking up '{libname}'...")
+    index = fetch_index()
+    libs = index.get("libraries", {})
+    if libname not in libs:
+        eprint(f"error: Library '{libname}' not found in the package index")
+        eprint("  Run 'leashed search' to find available libraries.")
+        eprint("  Or install directly from a URL: leashed install https://github.com/user/lib.git")
+        sys.exit(1)
+
+    entry = libs[libname]
+    ver = entry.get("version", "?")
+    desc = entry.get("description", "")
+    author = entry.get("author", "?")
+
+    if req_version:
+        versions = entry.get("versions", {})
+        info = versions.get(req_version)
+        if info is None and req_version != ver:
+            available = ", ".join(sorted_versions(list(versions.keys()))[:10]) or "none"
+            eprint(f"error: '{libname}' has no published version {req_version}")
+            eprint(f"  Available versions: {available}")
+            sys.exit(1)
+        repo_url = (info or {}).get("repo") or entry.get("repo", "")
+        _install_from_repo(repo_url, requested_version=req_version, libname=libname)
+        return
+
+    print(f"[leashed] Found {libname} v{ver} by {author}")
+    if desc:
+        print(f"  {desc}")
+    _install_from_repo(entry.get("repo", ""), libname=libname)
+
+
+def cmd_uninstall(args):
+    if len(args) < 1:
+        eprint("Usage: leashed uninstall <library_name>")
         sys.exit(1)
     libname = validate_name(args[0])
-    print(f"[leashed] Installing '{libname}'...")
+    dest_root = os.path.join(LEASH_LIBS_DIR, libname)
+    stub_path = os.path.join(LEASH_LIBS_DIR, f"{libname}.lsh")
+    if not os.path.exists(dest_root) and not os.path.exists(stub_path):
+        eprint(f"error: Library '{libname}' is not installed")
+        sys.exit(1)
+    if os.path.exists(dest_root):
+        shutil.rmtree(dest_root, onerror=_del_rw)
+    if os.path.exists(stub_path):
+        os.remove(stub_path)
+    print(f"[leashed] Uninstalled '{libname}'")
 
+
+def cmd_list(args):
+    if not os.path.isdir(LEASH_LIBS_DIR):
+        print("[leashed] No libraries installed (~/.leash/libs does not exist)")
+        return
+    entries = []
+    for name in sorted(os.listdir(LEASH_LIBS_DIR)):
+        dest_root = os.path.join(LEASH_LIBS_DIR, name)
+        if not os.path.isdir(dest_root):
+            continue
+        pkg = _read_installed_pkg_config(dest_root)
+        version = pkg.get("version", "?")
+        desc = pkg.get("description", "")
+        entries.append((name, version, desc))
+    if not entries:
+        print("[leashed] No libraries installed")
+        return
+    print(f"[leashed] Installed libraries in {LEASH_LIBS_DIR}:")
+    for name, version, desc in entries:
+        print(f"  - {name} v{version}" + (f"  {desc}" if desc else ""))
+
+
+def cmd_info(args):
+    if len(args) < 1:
+        eprint("Usage: leashed info <library_name>")
+        sys.exit(1)
+    libname = validate_name(args[0])
+    index = fetch_index()
+    libs = index.get("libraries", {})
+    if libname not in libs:
+        eprint(f"error: Library '{libname}' not found in the package index")
+        sys.exit(1)
+    e = libs[libname]
+    print(f"{libname}")
+    print(f"  Latest version: {e.get('version', '?')}")
+    print(f"  Author:         {e.get('author', '?')}")
+    if e.get("publisher") and e["publisher"] != e.get("author"):
+        print(f"  Publisher:      {e['publisher']}")
+    if e.get("description"):
+        print(f"  Description:    {e['description']}")
+    print(f"  Repo:           {e.get('repo', '?')}")
+    versions = sorted_versions(list((e.get("versions") or {}).keys()))
+    if versions:
+        print(f"  Versions:       {', '.join(versions)}")
+    else:
+        print(f"  Versions:       {e.get('version', '?')} (index predates version history)")
+
+
+def cmd_update(args):
+    project_dir = os.getcwd()
+    config_path = os.path.join(project_dir, LEASHED_CONFIG)
+    in_project = os.path.exists(config_path)
+
+    targets = list(args)
+    update_deps_field = False
+    if not targets:
+        if not in_project:
+            eprint("Usage: leashed update [<name> ...]")
+            eprint("  (run inside a project to update all of its dependencies)")
+            sys.exit(1)
+        config = read_pkg_config(config_path)
+        deps = config.get("dependencies", "")
+        targets = [d.split("@", 1)[0].strip() for d in deps.split(",") if d.strip()]
+        update_deps_field = bool(targets)
+        if not targets:
+            print("[leashed] Project has no dependencies to update")
+            return
+        print(f"[leashed] Updating all project dependencies: {', '.join(targets)}")
+
+    new_versions = {}
+    for t in targets:
+        if "@" in t:
+            t = t.split("@", 1)[0]
+        libname = validate_name(t.strip())
+        _, version = _install_from_repo_by_index(libname)
+        new_versions[libname] = version
+
+    if update_deps_field:
+        config = read_pkg_config(config_path)
+        config["dependencies"] = ", ".join(
+            f"{n}@{new_versions[n]}" for n in new_versions if new_versions[n] != "?")
+        write_pkg_config(config_path, config)
+        print(f"[leashed] Updated dependencies in {LEASHED_CONFIG}")
+
+
+def _install_from_repo_by_index(libname):
+    """Resolve a library through the registry and install its latest version."""
     index = fetch_index()
     libs = index.get("libraries", {})
     if libname not in libs:
         eprint(f"error: Library '{libname}' not found in the package index")
         eprint("  Run 'leashed search' to find available libraries.")
         sys.exit(1)
-
     entry = libs[libname]
-    repo_url = entry.get("repo", "")
-    if not repo_url:
-        eprint(f"error: Library '{libname}' has no repo URL in the index")
-        sys.exit(1)
-
-    ver = entry.get("version", "?")
-    desc = entry.get("description", "")
-    author = entry.get("author", "?")
-    print(f"[leashed] {libname} v{ver} by {author}")
-    if desc:
-        print(f"  {desc}")
-
-    os.makedirs(LEASH_LIBS_DIR, exist_ok=True)
-    repo_tmp = tempfile.mkdtemp(prefix="leashed_repo_")
-
-    rc, _, err = run_git(["clone", "--depth", "1", repo_url, repo_tmp])
-    if rc != 0:
-        eprint(f"error: Failed to clone library repository: {err}")
-        tmp_cleanup(repo_tmp)
-        sys.exit(1)
-
-    src = os.path.join(repo_tmp, LIBRARY_DIR)
-    if not os.path.exists(src):
-        eprint(f"error: Library '{libname}' has no '{LIBRARY_DIR}/' directory")
-        tmp_cleanup(repo_tmp)
-        sys.exit(1)
-
-    dest_root = os.path.join(LEASH_LIBS_DIR, libname)
-    if os.path.exists(dest_root):
-        shutil.rmtree(dest_root)
-    shutil.copytree(src, dest_root)
-
-    stub_path = os.path.join(LEASH_LIBS_DIR, f"{libname}.lsh")
-    # Read actual main from the installed package config
-    pkg_config_path = os.path.join(dest_root, "package.lshc")
-    entry_main = "src/main.lsh"
-    if os.path.exists(pkg_config_path):
-        import json as _json
-        with open(pkg_config_path, "r", encoding="utf-8") as _f:
-            try:
-                _pkg = _json.load(_f)
-                if "main" in _pkg:
-                    entry_main = _pkg["main"]
-            except:
-                pass
-    # The main file path in config is relative to project dir, but files are
-    # copied to the library root (subdirectory stripped). Use just the filename.
-    entry_module = os.path.splitext(os.path.basename(entry_main))[0]
-    with open(stub_path, "w", encoding="utf-8") as f:
-        f.write(f"// {libname} {ver} by {author}\n")
-        f.write(f"// {desc}\n")
-        f.write(f"use {libname}::{entry_module}::*;\n")
-
-    print(f"[leashed] Successfully installed '{libname}'")
-    tmp_cleanup(repo_tmp)
+    return _install_from_repo(entry.get("repo", ""), libname=libname)
 
 
 def cmd_add(args):
@@ -775,12 +1077,24 @@ def usage():
     print("Commands:")
     print("  init <path>       Initialize a new leash package project")
     print("  publish           Compile and publish the current package")
-    print("  install <name>    Install a library globally (~/.leash/libs)")
+    print("                    (registered automatically, no human review)")
+    print("  install <target>  Install a library globally (~/.leash/libs)")
+    print("                    <name>, <name>@1.2.3, <user>/<repo> or a git URL")
+    print("  uninstall <name>  Remove an installed library")
+    print("  list              List installed libraries")
+    print("  info <name>       Show registry metadata for a library")
+    print("  update [names]    Update installed libs / all project dependencies")
     print("  add <name>        Add a library to the current project")
     print("  search <query>    Search for libraries")
     print()
     print("Global Options:")
     print("  --verbose/-vb     Enable verbose output")
+    print()
+    print("Environment:")
+    print("  LEASHED_REGISTRY_REPO   Use a custom registry (owner/repo)")
+    print(f"                          (default: {DEFAULT_REGISTRY_REPO})")
+    print("  LEASHED_REGISTRY_URL    Custom index.json URL")
+    print("  LEASHED_REGISTRY_GIT    Custom registry git URL")
 
 
 def main():
@@ -804,6 +1118,10 @@ def main():
         "init": cmd_init,
         "publish": cmd_publish,
         "install": cmd_install,
+        "uninstall": cmd_uninstall,
+        "list": cmd_list,
+        "info": cmd_info,
+        "update": cmd_update,
         "add": cmd_add,
         "search": cmd_search,
     }
