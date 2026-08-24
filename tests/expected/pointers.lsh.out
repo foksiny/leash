@@ -1,4 +1,4 @@
-p: 0x7fff3187d2ac
+p: 0x7ffdadd97eb4
 *p: 10
 a: 11
 a: 10
@@ -8,3 +8,4 @@ p.y: 20
 p.x: 10
 p.y: 20
 e
+--- Executed at 2026-08-24 00:15:42 ---

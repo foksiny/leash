@@ -1,0 +1,83 @@
+// Struct and class l-value showcase: nested field writes, whole-value
+// assignment, safe-pointer parameters, and value vs reference semantics.
+def Point : struct {
+    x: int;
+    y: int;
+};
+
+def Segment : struct {
+    start: Point;
+    end: Point;
+};
+
+// Safe-pointer parameter: mutate the caller's struct with plain '.'
+fnc translate(p : &Point, dx : int, dy : int) : void {
+    p.x += dx;
+    p.y = p.y + dy;
+}
+
+// Value parameter: mutations stay local (copy semantics)
+fnc scaled(p : Point, k : int) : Point {
+    p.x = p.x * k;
+    p.y = p.y * k;
+    return p;
+}
+
+// Recursive function over struct values
+fnc chebyshev(p : Point) : int {
+    ax := p.x;
+    if ax < 0 { ax = 0 - ax; }
+    ay := p.y;
+    if ay < 0 { ay = 0 - ay; }
+    if ax > ay { return ax; }
+    return ay;
+}
+
+def Marker : class {
+    pub pos: Point;
+    pub label: string;
+
+    pub Marker(label : string) {
+        this.pos = Point { x: 0, y: 0 };
+        this.label = label;
+    }
+
+    pub fnc move_to(x : int, y : int) : void {
+        this.pos.x = x;
+        this.pos.y = y;
+    }
+};
+
+fnc main() : void {
+    // nested struct l-values
+    seg: Segment = Segment { start: Point { x: 1, y: 2 }, end: Point { x: 3, y: 4 } };
+    seg.start.x = 10;
+    seg.end.y += 40;
+    show("seg=(", seg.start.x, ",", seg.start.y, ") (", seg.end.x, ",", seg.end.y, ")");
+
+    // swap two fields holding structs
+    tmp: Point = seg.start;
+    seg.start = seg.end;
+    seg.end = tmp;
+    show("swapped start=(", seg.start.x, ",", seg.start.y, ")");
+
+    // reference vs value semantics
+    p: Point = Point { x: 1, y: 1 };
+    translate(p, 5, 5);
+    show("translated=", p.x, ",", p.y);
+    q: Point = scaled(p, 3);
+    show("scaled=", q.x, ",", q.y, " original=", p.x, ",", p.y);
+
+    // recursion over struct values
+    show("cheb(q)=", chebyshev(q));
+
+    // class instances are references: mutating through one alias is
+    // visible through another
+    m: Marker = create Marker("home");
+    m.pos.x = 7;
+    n: Marker = m;
+    n.pos.y = 8;
+    show("m=(", m.pos.x, ",", m.pos.y, ")");
+    m.move_to(-1, 2);
+    show("n via method=(", n.pos.x, ",", n.pos.y, ")");
+}

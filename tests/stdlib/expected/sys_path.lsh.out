@@ -3,7 +3,7 @@ file.txt
 /tmp/x/
 .gz
 report
-10
+truefalse
 [a/c/d]
 main + .lsh
---- Executed at 2026-08-21 21:00:23 ---
+--- Executed at 2026-08-24 04:46:21 ---

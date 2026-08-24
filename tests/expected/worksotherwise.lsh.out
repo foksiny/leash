@@ -1,8 +1,8 @@
 Error: Undefined variable: 'unknown_var'
 After 'works'
---- Executed at 2026-07-09 19:41:54 ---
+--- Executed at 2026-08-24 00:15:31 ---
 warning: Unused local variable 'a' in function 'main'
-  --> examples\worksotherwise.lsh:1:0
+  --> /home/foksiny/projects/leash/examples/worksotherwise.lsh:1:0
   |
 1 | fnc main() : void {
   | ^

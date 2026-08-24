@@ -1,7 +1,7 @@
-1
+true
 255 128 0
-invalid hex -> -1s:1
+invalid hex -> -1s:true
 red256:196
-1
-11
---- Executed at 2026-08-21 21:00:20 ---
+true
+truetrue
+--- Executed at 2026-08-24 04:46:19 ---

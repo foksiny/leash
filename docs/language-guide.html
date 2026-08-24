@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v0.22.3 Beta</div>
+        <div class="version">v0.23.0 Beta</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -282,6 +282,21 @@ grid.<span class="fn">pushb</span>((<span class="kw">vec</span>&lt;<span class="
     <span class="fn">showb</span>(<span class="str">"\n"</span>);      <span class="cm">// manual newline</span>
 }
 <span class="cm">// Output: 101\n010</span></code></pre>
+
+<h4>Structured Printing</h4>
+<p><code>show()</code> understands container types and prints them structurally: vectors, matrices and arrays print as <code>[a, b, c]</code> (recursively for nested containers), structs print as <code>{ name = apple, qty = 3 }</code>, and <code>bool</code> values print as <code>true</code>/<code>false</code>. Integers of any supported width (1 to 512 bits, see the numeric types table) are printed exactly &mdash; values wider than 64 bits are converted with full precision by the runtime.</p>
+
+<pre><code>v: <span class="kw">vec</span>&lt;<span class="kw">int</span>&gt;;
+v.<span class="fn">pushb</span>(1);
+v.<span class="fn">pushb</span>(2);
+<span class="fn">show</span>(v);                       <span class="cm">// [1, 2]</span>
+
+big: <span class="kw">uint</span>&lt;<span class="kw">512</span>&gt; = 13407807929942597099574024998205846127479365820592393377723561443721764030073546976801874298166903427690031858186486050853753882811946569946433649006084095;
+<span class="fn">show</span>(big);                     <span class="cm">// exact decimal digits, no truncation</span>
+
+t: <span class="kw">bool</span> = 1 &lt; 2;
+<span class="fn">show</span>(t);                       <span class="cm">// true</span></code></pre>
+<p>String interpolation (<code>"val={x}"</code>) uses the same formatting rules as <code>show()</code>.</p>
 
 <h3>Inline Functions</h3>
 <p>Functions marked with <code>inline</code> suggest the compiler should insert the function body at the call site instead of generating a function call. This can improve performance for small, frequently-called functions.</p>

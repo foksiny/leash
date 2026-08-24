@@ -1,7 +1,7 @@
 gcd:6 | lcm:12
-prime97/91/1:1 | 0 | 0
+prime97/91/1:true | false | false
 modpow:24
 2 3 5 7 11 13 17 19 23 29 
 2*2*2*3*3*5*
 next100:101 | divisors12:6
---- Executed at 2026-08-21 21:00:17 ---
+--- Executed at 2026-08-24 04:46:17 ---

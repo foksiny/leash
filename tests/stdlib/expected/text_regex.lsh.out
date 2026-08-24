@@ -1,0 +1,44 @@
+== literals, classes, quantifiers ==
+true | false
+true | false
+true | false
+true | false
+true | true
+6
+<a> | <a><b>
+1
+== groups and backreferences ==
+true | 2026-08-24 | 2026 | 08 | 24
+12 | 30 | true
+true | false
+true | 2
+false | true
+== anchors ==
+true | 4 | 7
+true | true | false
+true | false
+== lookaround, atomic, possessive ==
+true | false
+false | true
+true | false
+true
+true
+true
+true
+== keep-out and flags ==
+true | 42 | 6
+true | true
+true
+true
+== search, split, replace ==
+findall: ['-5', '12', '0']
+split: ['a', 'b', 'c', 'd']
+hello big world
+exe:bob zip:sue
+a<1> b<22>
+a\.b\*c | true
+== errors and compiled reuse ==
+false | unmatched closing parenthesis
+true | true | 3 | 0
+false | true
+--- Executed at 2026-08-24 04:46:26 ---

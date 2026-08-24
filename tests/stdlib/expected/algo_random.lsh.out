@@ -1,8 +1,8 @@
-dice in range:1
-unit in [0,1):1
-shuffle preserves sum:1
+dice in range:true
+unit in [0,1):true
+shuffle preserves sum:true
 sample size:3
-sample unique:1
-weighted valid:1
-empty weighted:1
---- Executed at 2026-08-21 21:00:04 ---
+sample unique:true
+weighted valid:true
+empty weighted:true
+--- Executed at 2026-08-24 04:46:09 ---

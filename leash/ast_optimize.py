@@ -126,21 +126,32 @@ def _deep_fold(node):
 
         if isinstance(l, NumberLiteral) and isinstance(r, NumberLiteral):
             lv, rv = l.value, r.value
+            # Preserve a common declared type hint across the fold
+            hint = getattr(l, "leash_type_hint", None)
+            if hint != getattr(r, "leash_type_hint", None):
+                hint = None
+
+            def _mk(v):
+                lit = NumberLiteral(v)
+                if hint:
+                    lit.leash_type_hint = hint
+                return lit
+
             if node.op == "+":
                 _opt_log("CF", f"folded '{lv} + {rv}' -> {lv + rv}", node)
-                return NumberLiteral(lv + rv)
+                return _mk(lv + rv)
             if node.op == "-":
                 _opt_log("CF", f"folded '{lv} - {rv}' -> {lv - rv}", node)
-                return NumberLiteral(lv - rv)
+                return _mk(lv - rv)
             if node.op == "*":
                 _opt_log("CF", f"folded '{lv} * {rv}' -> {lv * rv}", node)
-                return NumberLiteral(lv * rv)
+                return _mk(lv * rv)
             if node.op == "/" and rv != 0:
                 _opt_log("CF", f"folded '{lv} / {rv}' -> {lv // rv}", node)
-                return NumberLiteral(lv // rv)
+                return _mk(lv // rv)
             if node.op == "%":
                 _opt_log("CF", f"folded '{lv} % {rv}' -> {lv % rv}", node)
-                return NumberLiteral(lv % rv)
+                return _mk(lv % rv)
             if node.op == "==":
                 _opt_log("CF", f"folded '{lv} == {rv}' -> {lv == rv}", node)
                 return BoolLiteral(lv == rv)
@@ -229,7 +240,11 @@ def _deep_fold(node):
             return BoolLiteral(not e.value)
         if node.op == "-" and isinstance(e, NumberLiteral):
             _opt_log("CF", f"folded '-{e.value}' -> {-e.value}", node)
-            return NumberLiteral(-e.value)
+            neg = NumberLiteral(-e.value)
+            hint = getattr(e, "leash_type_hint", None)
+            if hint:
+                neg.leash_type_hint = hint
+            return neg
         if node.op == "-" and isinstance(e, FloatLiteral):
             _opt_log("CF", f"folded '-{e.value}' -> {-e.value}", node)
             return FloatLiteral(-e.value)
@@ -556,6 +571,10 @@ def _dead_code_elimination(program):
         if name in always_keep:
             return True
         if isinstance(item, (NativeImport, TemplateDef, ImportStmt, ConditionalDef)):
+            return True
+        # Type aliases are used inside type strings (e.g. "vec<u33>") that the
+        # reference collector cannot see into; keep them all — they are free.
+        if isinstance(item, TypeAlias):
             return True
         if isinstance(item, MacroDef):
             return True
@@ -896,10 +915,12 @@ def _constant_propagation(program):
         if isinstance(n, VariableDecl) and n.value is not None:
             if n.name not in modified_vars and _is_constant_literal(n.value):
                 scope = _cp_with if _cp_with is not None else _cp_scope
-                candidates[(n.name, scope)] = n.value
+                # Keep the declared type so later stages (codegen) keep
+                # signedness/width information (e.g. uint<128>).
+                candidates[(n.name, scope)] = (n.value, getattr(n, "var_type", None))
         elif isinstance(n, GlobalVarDecl) and n.value is not None:
             if n.name not in modified_vars and _is_constant_literal(n.value):
-                candidates[(n.name, None)] = n.value
+                candidates[(n.name, None)] = (n.value, getattr(n, "var_type", None))
 
     def walk_collect(n):
         nonlocal _cp_scope, _cp_with
@@ -943,7 +964,8 @@ def _constant_propagation(program):
         return program
 
     if _opt_verbose:
-        for (name, scope), val in candidates.items():
+        for (name, scope), entry in candidates.items():
+            val = entry[0] if isinstance(entry, tuple) else entry
             val_str = getattr(val, 'value', val)
             if scope is None:
                 loc = " (global)"
@@ -1001,11 +1023,17 @@ def _constant_propagation(program):
             return n
 
         if isinstance(n, Identifier):
-            val = find_candidate(n.name)
-            if val is not None:
+            entry = find_candidate(n.name)
+            if entry is not None:
+                val, declared_type = entry if isinstance(entry, tuple) else (entry, None)
                 _cp_replace_scope = old_scope
                 _cp_with_stack[:] = old_with_stack
-                return copy.deepcopy(val)
+                dup = copy.deepcopy(val)
+                if declared_type:
+                    # Preserve the declared type on the folded literal so
+                    # signedness/width (int<N>, uint<N>, float<N>) survives.
+                    dup.leash_type_hint = declared_type.split("[")[0].strip()
+                return dup
 
         for a in vars(n):
             attr = getattr(n, a)

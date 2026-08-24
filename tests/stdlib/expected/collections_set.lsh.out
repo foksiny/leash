@@ -1,7 +1,7 @@
-1 | 1 | dup:0
+true | true | dup:false
 union size:4
 common:2
 excluding:1
-subset:0
-1 | has 1:0
---- Executed at 2026-08-21 21:00:10 ---
+subset:false
+true | has 1:false
+--- Executed at 2026-08-24 04:46:13 ---

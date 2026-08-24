@@ -1,0 +1,63 @@
+// ============================================================================
+// Big integers — int<N> / uint<N> up to 512 bits
+// ============================================================================
+//
+// Leash integers support any bit width from 1 to 512:
+//   int<N>   -> signed N-bit integer
+//   uint<N>  -> unsigned N-bit integer
+// show(), showb(), string interpolation and tostring() print them exactly,
+// no matter how large. Arithmetic (+ - * / % << >> & | ^) works natively.
+//
+// ============================================================================
+
+fnc main() : void {
+    // ---- 128-bit ----
+    i128min: int<128>  = -170141183460469231731687303715884105728;
+    u128max: uint<128> = 340282366920938463463374607431768211455;
+    show("i128 min : ", i128min);
+    show("u128 max : ", u128max);
+    show("u128 / 3 : ", u128max / 3);
+
+    // ---- 256-bit ----
+    p255m1: uint<256> = 57896044618658097711785492504343953926634992332820282019728792003956564819967;
+    one: uint<256>    = 1;
+    show("2^255-1  : ", p255m1);
+    show("2^255    : ", p255m1 + one);
+
+    // ---- 512-bit ----
+    u512max: uint<512> = 13407807929942597099574024998205846127479365820592393377723561443721764030073546976801874298166903427690031858186486050853753882811946569946433649006084095;
+    show("u512 max : ", u512max);
+
+    // ---- odd widths work too ----
+    tiny: uint<7> = 127;
+    odd: int<33>  = -4294967296;
+    show("u7 max   : ", tiny);
+    show("i33 min  : ", odd);
+
+    // ---- unsigned wrap-around at 64-bit ----
+    umax: uint<64> = 18446744073709551615;
+    show("u64 max  : ", umax);
+
+    // ---- shifts stay exact at width ----
+    shifted: uint<128> = 1;
+    show("2^100    : ", shifted << 100);
+
+    // ---- vectors of wide ints ----
+    v: vec<uint<128>>;
+    v.pushb(u128max);
+    v.pushb(12345);
+    show("vec      : ", v);
+
+    // ---- buffered output unpacks without separators ----
+    showb("showb    : ");
+    showb(v);
+    showb("\n");
+
+    // ---- string conversion keeps full precision ----
+    s: string = "val={i128min}";
+    show(s);
+
+    // ---- parsing from strings (toint) ----
+    parsed: int<128> = toint(int<128>, "-170141183460469231731687303715884105727");
+    show("parsed   : ", parsed);
+}

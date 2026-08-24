@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v0.22.3 Beta</div>
+        <div class="version">v0.23.0 Beta</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -655,6 +655,60 @@ fnc main() {
     html: string = Markdown.to_html(<span class="str">"# Hi\n\nsome **bold** text"</span>);
     show(html);   <span class="cm">// &lt;h1&gt;Hi&lt;/h1&gt;\n&lt;p&gt;some &lt;strong&gt;bold&lt;/strong&gt; text&lt;/p&gt;</span>
 }</code></pre>
+
+<h3><code>text::regex::Regex</code></h3>
+<p>A pure-Leash backtracking regular-expression engine with several features Python's <code>re</code> lacks: <strong>possessive quantifiers</strong> (<code>a++</code>, <code>a*+</code>), <strong>atomic groups</strong> (<code>(?&gt;...)</code>), <strong>variable-length lookbehind</strong> (<code>(?&lt;=a+)b</code>), the <strong><code>\K</code> keep-out marker</strong>, scoped inline flags (<code>(?i:...)</code>), free-spacing mode with comments (<code>?x</code>), POSIX classes (<code>[[:alpha:]]</code>), and <code>\h</code>/horizontal-whitespace shorthands. Patterns are written as ordinary Leash strings; because Leash interpolates <code>{expr}</code>, write bounded repeats with escaped braces like <code>"\\d\{2,4\}"</code>.</p>
+
+<h4>Syntax quick reference</h4>
+<table>
+    <tr><th>Syntax</th><td>Matches</td></tr>
+    <tr><td><code>. ^ $ \A \z \Z \b \B</code></td><td>Any char (not <code>\n</code> unless <code>s</code> flag), anchors; <code>^/$</code> are line anchors under <code>m</code>; <code>\z</code> is strict end, <code>\Z</code> allows a trailing newline</td></tr>
+    <tr><td><code>[abc] [a-z] [^...] [[:digit:]]</code></td><td>Character classes with ranges, negation, POSIX names and shorthands <code>\d \D \w \W \s \S \h \H</code></td></tr>
+    <tr><td><code>* + ? {n} {n,} {n,m}</code></td><td>Quantifiers; append <code>?</code> for lazy, <code>+</code> for possessive</td></tr>
+    <tr><td><code>(...) (?&gt;...) (?=...) (?!...) (?&lt;=...) (?&lt;!...)</code></td><td>Capture, atomic group, lookahead / negative lookahead, lookbehind / negative lookbehind (lookbehind may be variable-length)</td></tr>
+    <tr><td><code>(?&lt;name&gt;...) (?'name'...)</code></td><td>Named groups; reference via <code>\k&lt;name&gt;</code>, <code>\g&lt;name&gt;</code> or <code>${name}</code> in replacements</td></tr>
+    <tr><td><code>(?i) (?m) (?s) (?x)</code></td><td>Inline flags (case-insensitive, multiline, dot-all, free-spacing); scoped form <code>(?i:...)</code>; <code>-</code> clears, e.g. <code>(?i-ms)</code>; <code>(?#comment)</code> comments</td></tr>
+    <tr><td><code>\1..\99 \g{n} \K</code></td><td>Backreferences and the keep-out marker that excludes everything matched so far from the reported match start</td></tr>
+</table>
+
+<h4>One-shot static functions (compile on each call)</h4>
+<table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td><code>is_match(pattern, text)</code></td><td><code>true</code> if the pattern matches anywhere</td></tr>
+    <tr><td><code>find(pattern, text)</code></td><td>First match as a <code>Match</code> (check <code>.matched</code>)</td></tr>
+    <tr><td><code>find_all(pattern, text)</code></td><td>All matches as <code>vec&lt;string&gt;</code> of group 0</td></tr>
+    <tr><td><code>all_matches(pattern, text)</code></td><td>All matches as <code>vec&lt;Match&gt;</code></td></tr>
+    <tr><td><code>count_matches(pattern, text)</code></td><td>Number of non-overlapping matches</td></tr>
+    <tr><td><code>split_text(pattern, text)</code></td><td>Split on matches (captured groups are not spliced in)</td></tr>
+    <tr><td><code>sub(pattern, text, repl)</code></td><td>Replace with template: <code>$0..$9</code>, <code>${name}</code>, <code>$1</code>-style groups, <code>$$</code> for a literal <code>$</code></td></tr>
+    <tr><td><code>sub_lit(pattern, text, lit)</code></td><td>Replace with a literal string (no template expansion)</td></tr>
+    <tr><td><code>valid(pattern)</code> / <code>error_msg(pattern)</code></td><td>Syntax validation; error description or ""</td></tr>
+    <tr><td><code>escape(s)</code></td><td>Quote all metacharacters for literal matching</td></tr>
+</table>
+
+<h4>Compiled patterns and matches</h4>
+<p>For repeated use, compile once with <code>Regex.compile(pattern)</code> and call the instance forms: <code>test(text)</code>, <code>scan(text)</code> / <code>scan_from(text, start)</code>, <code>findall(text)</code>, <code>matches(text)</code>, <code>count(text)</code>, <code>split(text)</code>, <code>replace(text, repl)</code>, plus introspection via <code>group_count()</code>, <code>has_name(name)</code> and <code>source()</code>. A compiled regex reports syntax problems through its <code>ok</code> and <code>err</code> fields instead of failing at runtime.</p>
+<table>
+    <tr><th>Match member</th><th>Description</th></tr>
+    <tr><td><code>matched</code></td><td><code>false</code> when no match was found</td></tr>
+    <tr><td><code>group(i)</code> / <code>group_named(name)</code></td><td>Group text ("" when absent); group 0 is the whole match</td></tr>
+    <tr><td><code>start(i)</code> / <code>end(i)</code> / <code>span(i)</code></td><td>Offsets (-1 when the group did not participate; <code>span</code> is multi-return)</td></tr>
+    <tr><td><code>has_group(i)</code> / <code>has_group_idx(i)</code></td><td>Whether a named / numbered group participated</td></tr>
+</table>
+<pre><code><span class="kw">use</span> text::regex::Regex;
+
+fnc main() {
+    m: Match = Regex.find(<span class="str">"(?&lt;year&gt;\\d\\{4\\})-(?&lt;month&gt;\\d\\{2\\})"</span>, <span class="str">"dated 2026-08-24"</span>);
+    <span class="kw">if</span> m.matched {
+        show(m.group_named(<span class="str">"year"</span>), <span class="str">"-"</span>, m.group_named(<span class="str">"month"</span>));   <span class="cm">// 2026-08</span>
+    }
+
+    re: Regex = Regex.compile(<span class="str">"\\s+"</span>);
+    parts: vec&lt;string&gt; = re.split(<span class="str">"a  b c"</span>);
+    show(parts.size);                          <span class="cm">// 3</span>
+    show(re.replace(<span class="str">"too    much"</span>, <span class="str">" "</span>));       <span class="cm">// too much</span>
+}</code></pre>
+<div class="callout callout-info">Matching is byte/ASCII-oriented (like Python's <code>re.ASCII</code>): <code>\w</code>, <code>\d</code> and case-insensitive folding cover ASCII letters only. A step limit guards against pathological backtracking; possessive quantifiers and atomic groups keep common worst cases linear.</div>
 
 <h2>Cryptography (<code>crypto::*</code>)</h2>
 

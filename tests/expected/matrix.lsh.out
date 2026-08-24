@@ -4,9 +4,9 @@
 size after pushb: 4
 m1.get(1): 2.100000
 m1.get(1) after set: 99.900000
-99.9 isin m1: -1
-42.0 isin m1: 0
+99.9 isin m1: true
+42.0 isin m1: false
 popped: 4.000000
 size after popb: 3
 size after clear: 0
---- Executed at 2026-07-08 05:33:51 ---
+--- Executed at 2026-08-24 00:15:31 ---

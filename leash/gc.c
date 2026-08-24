@@ -1141,3 +1141,197 @@ void leash_gc_shutdown(void) {
 }
 
 #endif /* NO_GC */
+
+/* =========================================================================
+ * Wide integer formatting (any bit width, 1..512+ bits)
+ *
+ * The compiler emits little-endian raw byte representations of arbitrary
+ * precision integers (LLVM `iN` values stored to stack) and calls:
+ *
+ *   void leash_bigint_fmt(char *out, const unsigned char *bytes,
+ *                         unsigned bitwidth, int is_signed);
+ *
+ * `out` must have room for at least (bitwidth / 3 + 4) bytes, which covers
+ * the maximum decimal digit count of any N-bit integer plus a sign and a
+ * NUL terminator. The value is written as a NUL-terminated C string.
+ *
+ * `bitwidth` is the EXACT integer width: for widths not divisible by 8,
+ * LLVM leaves the padding bits above bit (bitwidth-1) undefined, so they
+ * are explicitly masked off here.
+ * ========================================================================= */
+
+/* Divide the limb array by 10, in place. Returns the remainder digit.
+ * Limbs are base-2^64, little-endian order (limbs[0] = least significant).
+ * `rem` is always < 10 between iterations, so the 32-bit half-limb path
+ * below never overflows. */
+static unsigned long long leash_bigint_divmod10(unsigned long long *limbs,
+                                                unsigned nlimbs) {
+    unsigned long long rem = 0;
+    int i;
+    for (i = (int)nlimbs - 1; i >= 0; --i) {
+#if defined(__SIZEOF_INT128__)
+        unsigned __int128 cur = ((unsigned __int128)rem << 64) | limbs[i];
+        limbs[i] = (unsigned long long)(cur / 10u);
+        rem = (unsigned long long)(cur % 10u);
+#else
+        unsigned long long n = limbs[i];
+        unsigned long long hi = (rem << 32) | (n >> 32);
+        unsigned long long qh = hi / 10u;
+        unsigned long long lo = ((hi % 10u) << 32) | (n & 0xFFFFFFFFULL);
+        limbs[i] = (qh << 32) | (lo / 10u);
+        rem = lo % 10u;
+#endif
+    }
+    return rem;
+}
+
+void leash_bigint_fmt(char *out, const unsigned char *bytes, unsigned bitwidth,
+                      int is_signed) {
+    unsigned long long limbs[16]; /* supports up to 1024 bits */
+    unsigned nbytes, nlimbs, top_bits, i, ndig = 0, j = 0;
+    unsigned total_bits;
+    int neg = 0;
+    char tmp[400];
+
+    if (!out || !bytes || bitwidth == 0) {
+        if (out) { out[0] = '0'; out[1] = '\0'; }
+        return;
+    }
+    if (bitwidth > sizeof(limbs) * 8u)
+        bitwidth = sizeof(limbs) * 8u; /* hard cap: 1024 bits */
+
+    nbytes = (bitwidth + 7u) / 8u;
+    nlimbs = (nbytes + 7u) / 8u;
+    for (i = 0; i < nlimbs; ++i) limbs[i] = 0;
+    for (i = 0; i < nbytes; ++i)
+        limbs[i / 8u] |= (unsigned long long)bytes[i] << ((i % 8u) * 8u);
+
+    total_bits = bitwidth;
+    top_bits = total_bits % 64u;
+    if (top_bits != 0u)
+        limbs[nlimbs - 1u] &= (1ULL << top_bits) - 1ULL;
+
+    if (is_signed) {
+        unsigned limb_i = (total_bits - 1u) / 64u;
+        unsigned off = (total_bits - 1u) % 64u;
+        if ((limbs[limb_i] >> off) & 1ULL) {
+            neg = 1;
+            /* Two's-complement negate modulo 2^total_bits */
+            for (i = 0; i < nlimbs; ++i) limbs[i] = ~limbs[i];
+            for (i = 0; i < nlimbs; ++i) {
+                limbs[i] += 1ULL;
+                if (limbs[i] != 0ULL) break; /* carry absorbed */
+            }
+            if (top_bits != 0u)
+                limbs[nlimbs - 1u] &= (1ULL << top_bits) - 1ULL;
+        }
+    }
+
+    /* Extract decimal digits by repeated division by 10 */
+    for (;;) {
+        int zero = 1;
+        for (i = 0; i < nlimbs; ++i)
+            if (limbs[i] != 0ULL) { zero = 0; break; }
+        if (zero && ndig > 0) break;
+        tmp[ndig++] = (char)('0' + (int)leash_bigint_divmod10(limbs, nlimbs));
+        if (ndig >= sizeof(tmp)) break; /* unreachable safety net */
+    }
+
+    if (neg) out[j++] = '-';
+    while (ndig > 0) out[j++] = tmp[--ndig];
+    out[j] = '\0';
+}
+
+/* Parse a decimal string into an arbitrary-width integer.
+ * Returns 1 on success, 0 on syntax error or range overflow.
+ * The result is written little-endian into `out` (ceil(bitwidth/8) bytes),
+ * masked to exactly `bitwidth` bits. Range rules follow two's complement:
+ *   unsigned : magnitude must be < 2^bitwidth
+ *   signed   : magnitude must be <= 2^(bitwidth-1); equality only with '-' */
+int leash_bigint_parse(const char *s, unsigned bitwidth, int is_signed,
+                       unsigned char *out) {
+    unsigned l32[64]; /* base-2^32 limbs; supports up to 2048 bits */
+    unsigned nl32, i;
+    int neg = 0, any_digit = 0;
+
+    if (!s || !out || bitwidth == 0) return 0;
+    if (bitwidth > sizeof(l32) * 32u) bitwidth = sizeof(l32) * 32u;
+    nl32 = (bitwidth + 31u) / 32u;
+
+    for (i = 0; i < nl32; ++i) l32[i] = 0;
+
+    while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r') ++s;
+    if (*s == '+') { ++s; }
+    else if (*s == '-') { neg = 1; ++s; }
+
+    while (*s >= '0' && *s <= '9') {
+        unsigned carry = (unsigned)(*s - '0');
+        any_digit = 1;
+        for (i = 0; i < nl32; ++i) {
+            unsigned long long cur =
+                (unsigned long long)l32[i] * 10ULL + carry;
+            l32[i] = (unsigned)cur;
+            carry = (unsigned)(cur >> 32);
+        }
+        if (carry != 0u) return 0; /* exceeded capacity -> out of range */
+        ++s;
+    }
+    if (!any_digit) return 0;
+    while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r') ++s;
+    if (*s != '\0') return 0; /* trailing garbage */
+
+    /* Magnitude must fit in bitwidth bits */
+    for (i = bitwidth; i < nl32 * 32u; ++i)
+        if ((l32[i / 32u] >> (i % 32u)) & 1u) return 0;
+
+    if (is_signed && !neg) {
+        /* non-negative: sign bit must be clear */
+        if ((l32[(bitwidth - 1u) / 32u] >> ((bitwidth - 1u) % 32u)) & 1u)
+            return 0;
+    } else if (is_signed && neg) {
+        /* negative: magnitude must be <= 2^(bitwidth-1) */
+        unsigned hb = (bitwidth - 1u);
+        unsigned high_word = l32[hb / 32u], high_bit_off = hb % 32u;
+        unsigned masked_high = high_word & ~((1u << high_bit_off) - 1u);
+        if (masked_high != 0u) {
+            /* equals exactly 2^(bitwidth-1)? then remaining low bits are 0 */
+            unsigned j2;
+            int rest_zero = ((high_word & ~(1u << high_bit_off)) == 0u);
+            if (rest_zero)
+                for (j2 = 0; j2 < hb / 32u; ++j2)
+                    if (l32[j2] != 0u) { rest_zero = 0; break; }
+            if (!rest_zero) return 0;
+        }
+    }
+
+    /* Write out little-endian */
+    {
+        unsigned nbytes = (bitwidth + 7u) / 8u;
+        if (neg) {
+            /* Two's-complement negate modulo 2^bitwidth */
+            unsigned long long carry = 1ULL;
+            unsigned w;
+            for (w = 0; w < nl32; ++w) {
+                unsigned long long cur =
+                    (unsigned long long)(~l32[w]) + carry;
+                l32[w] = (unsigned)cur;
+                carry = cur >> 32;
+            }
+        }
+        /* Mask to exact width and store */
+        {
+            unsigned w;
+            for (w = 0; w < nl32; ++w) {
+                unsigned base = w * 32u;
+                if (base + 32u > bitwidth) {
+                    unsigned valid = bitwidth - base;
+                    if (valid < 32u)
+                        l32[w] &= (valid == 0u) ? 0u : ((1u << valid) - 1u);
+                }
+            }
+        }
+        for (i = 0; i < nbytes; ++i)
+            out[i] = (unsigned char)((l32[i / 4u] >> ((i % 4u) * 8u)) & 0xFFu);
+    }
+    return 1;
+}

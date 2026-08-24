@@ -1,8 +1,8 @@
-verbose:1
-abc:1 | 1 | 1
+verbose:true
+abc:true | true | true
 name:ada
 city:oslo
-missing opt:1
+missing opt:true
 positional:2 | input.txt | --not-a-flag
--- stops flags:1
---- Executed at 2026-08-21 21:00:22 ---
+-- stops flags:true
+--- Executed at 2026-08-24 04:46:20 ---

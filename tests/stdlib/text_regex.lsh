@@ -1,0 +1,77 @@
+use text::regex::Regex;
+
+fnc showv(label string, v vec<string>) {
+    line: string = label + " [";
+    foreach i, s in<vector> v {
+        if i > 0 {
+            line = line + ", ";
+        }
+        line = line + "'" + s + "'";
+    }
+    show(line + "]");
+}
+
+fnc main() {
+    show("== literals, classes, quantifiers ==");
+    show(Regex.is_match("\\d+", "abc123"), " | ", Regex.is_match("\\d+", "xyz"));
+    show(Regex.is_match("^abc$", "abc"), " | ", Regex.is_match("^abc$", "abcd"));
+    show(Regex.is_match("a.c", "abc"), " | ", Regex.is_match("a.c", "a\nc"));
+    show(Regex.is_match("[a-c]+", "abbcbba"), " | ", Regex.is_match("[^a-c]+", "abbcbba"));
+    show(Regex.is_match("[[:digit:][:alpha:]]+", "a1!"), " | ", Regex.is_match("^[[:digit:]]+$", "123"));
+    show(Regex.count_matches("\\d", "a1b22c333"));
+    show(Regex.find("<.+?>", "<a><b>").group(0), " | ", Regex.find("<.*>", "<a><b>").group(0));
+    lazy_words: vec<string> = Regex.find_all("a++", "aaa b");
+    show(lazy_words.size);
+
+    show("== groups and backreferences ==");
+    g: Match = Regex.find("(\\d\{4\\})-(\\d\{2\\})-(\\d\{2\\})", "on 2026-08-24 ok");
+    show(g.matched, " | ", g.group(0), " | ", g.group(1), " | ", g.group(2), " | ", g.group(3));
+    n: Match = Regex.find("(?<year>\\d+)/(?<month>\\d+)", "12/30");
+    show(n.group_named("year"), " | ", n.group_named("month"), " | ", n.has_group("year"));
+    show(Regex.is_match("(hello) \\1", "hello hello"), " | ", Regex.is_match("(hello) \\1", "hello world"));
+    kn: Match = Regex.find("(?<w>ab)\\k<w>", "xyabab");
+    show(kn.matched, " | ", kn.start(0));
+    opt: Match = Regex.find("(a)|(b)", "b");
+    show(opt.has_group_idx(1), " | ", opt.has_group_idx(2));
+
+    show("== anchors ==");
+    ml: string = "one\ntwo\nthree";
+    mm: Match = Regex.find("(?m)^two$", ml);
+    show(mm.matched, " | ", mm.start(0), " | ", mm.end(0));
+    show(Regex.is_match("\\Aone", ml), " | ", Regex.is_match("three\\Z", ml), " | ", Regex.is_match("three\\z", "three\n"));
+    show(Regex.is_match("\\bword\\b", "a word here"), " | ", Regex.is_match("\\bword\\b", "swordfish"));
+
+    show("== lookaround, atomic, possessive ==");
+    show(Regex.is_match("\\d+(?= dollars)", "100 dollars"), " | ", Regex.is_match("\\d+(?= euros)", "100 dollars"));
+    show(Regex.is_match("foo(?!bar)", "foobar"), " | ", Regex.is_match("foo(?!bar)", "foobaz"));
+    show(Regex.is_match("(?<=@)gmail", "bob@gmail"), " | ", Regex.is_match("(?<=#)gmail", "bob@gmail"));
+    vl: Match = Regex.find("(?<=a+)b", "aaab");
+    show(vl.matched);
+    show(Regex.is_match("(?>a*)a", "aaa") == false);
+    show(Regex.is_match("a*+a", "aaa") == false);
+    show(Regex.is_match("(a+)+$", "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaab") == false);
+
+    show("== keep-out and flags ==");
+    k: Match = Regex.find("prefix\\K\\d+", "prefix42");
+    show(k.matched, " | ", k.group(0), " | ", k.start(0));
+    show(Regex.is_match("(?i)HELLO", "hello"), " | ", Regex.is_match("(?i:ABC)def", "abcdef"));
+    dt: Match = Regex.find("(?s)a.b", "a\nb");
+    show(dt.matched);
+    show(Regex.is_match("(?x) a  # comment\n b c", "abc"));
+
+    show("== search, split, replace ==");
+    showv("findall:", Regex.find_all("-?\\d+", "x=-5, y=12; z=0"));
+    showv("split:", Regex.split_text("[,;]\\s*", "a, b;c,d"));
+    show(Regex.sub("\\s+", "hello   big   world", " "));
+    show(Regex.sub("(\\w+)@(\\w+)", "bob@exe sue@zip", "${2}:${1}"));
+    show(Regex.sub("(?<num>\\d+)", "a1 b22", "<$0>"));
+    esc: string = Regex.escape("a.b*c");
+    show(esc, " | ", Regex.is_match(esc, "a.b*c"));
+
+    show("== errors and compiled reuse ==");
+    show(Regex.valid("a(b"), " | ", Regex.error_msg("a)b"));
+    re: Regex = Regex.compile("\\d+");
+    show(re.ok, " | ", re.test("77"), " | ", re.count("1 22 333"), " | ", re.group_count());
+    bad: Regex = Regex.compile("([unclosed");
+    show(bad.ok, " | ", bad.err.size > 0);
+}

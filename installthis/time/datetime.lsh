@@ -19,7 +19,7 @@ pub def DateTime : class {
     }
 
     static pub fnc now() : int<64> {
-        return toint(int<64>, time(0));
+        return toint(int<64>, time(null));
     }
 
     static pub fnc days_from_civil(y int, m int, d int) : int<64> {

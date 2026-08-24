@@ -1,0 +1,2394 @@
+pub def RxKind : enum {
+    RK_SKIP,
+    RK_LIT,
+    RK_ANY,
+    RK_CLS,
+    RK_BOL,
+    RK_EOL,
+    RK_BOS,
+    RK_EOS,
+    RK_EOSNL,
+    RK_WORDB,
+    RK_NWORDB,
+    RK_KEEP,
+    RK_CAP,
+    RK_NONCAP,
+    RK_ATOMIC,
+    RK_LA,
+    RK_NLA,
+    RK_LB,
+    RK_NLB,
+    RK_CAT,
+    RK_ALT,
+    RK_REP,
+    RK_REF,
+    RK_NREF,
+    RK_EMPTY
+};
+
+pub def RxOp : enum {
+    RI_CHAR,
+    RI_ANY,
+    RI_CLASS,
+    RI_MATCH,
+    RI_JMP,
+    RI_SPLIT,
+    RI_SAVE,
+    RI_BOL,
+    RI_EOL,
+    RI_BOS,
+    RI_EOS,
+    RI_EOSNL,
+    RI_WORD,
+    RI_NWORD,
+    RI_REF,
+    RI_ATOMIC,
+    RI_LOOK,
+    RI_KEEP,
+    RI_PROGRESS,
+    RI_ITEM_RNG,
+    RI_ITEM_PRED,
+    RI_CLS_END
+};
+
+pub def RxItem : class {
+    pub is_range: bool;
+    pub lo: char;
+    pub hi: char;
+    pub code: int;
+    pub nxt: RxItem;
+};
+
+pub def RxNode : class {
+    pub kind: RxKind;
+    pub ch: char;
+    pub ci: bool;
+    pub dotall: bool;
+    pub multi: bool;
+    pub neg: bool;
+    pub min: int;
+    pub max: int;
+    pub lazy: bool;
+    pub poss: bool;
+    pub num: int;
+    pub name: string;
+    pub kids: vec<RxNode>;
+    pub branches: vec<RxNode>;
+    pub items: RxItem;
+};
+
+pub def RxIns : class {
+    pub op: RxOp;
+    pub ch: char;
+    pub ch2: char;
+    pub a: int;
+    pub b: int;
+    pub ci: bool;
+    pub neg: bool;
+    pub behind: bool;
+};
+
+pub def RxProg : class {
+    pub code: vec<RxIns>;
+    pub nmarks: int;
+};
+
+pub def Match : class {
+    pub matched: bool;
+    pub ngroups: int;
+    pub txt: string;
+    pub caps: vec<int>;
+    pub names: hash<string, int>;
+
+    pub fnc group(idx int) : string {
+        if !this.matched || idx < 0 || idx > this.ngroups {
+            return "";
+        }
+        s: int = this.caps.get(idx * 2);
+        e: int = this.caps.get(idx * 2 + 1);
+        if s < 0 || e < s {
+            return "";
+        }
+        return Match.substr(this.txt, s, e - s);
+    }
+
+    pub fnc group_named(name string) : string {
+        if this.names.isin(name) {
+            return this.group(this.names[name]);
+        }
+        return "";
+    }
+
+    pub fnc start(idx int) : int {
+        if !this.matched || idx < 0 || idx > this.ngroups {
+            return 0 - 1;
+        }
+        return this.caps.get(idx * 2);
+    }
+
+    pub fnc end(idx int) : int {
+        if !this.matched || idx < 0 || idx > this.ngroups {
+            return 0 - 1;
+        }
+        return this.caps.get(idx * 2 + 1);
+    }
+
+    pub fnc span(idx int) : (int, int) {
+        return this.start(idx), this.end(idx);
+    }
+
+    pub fnc has_group_idx(idx int) : bool {
+        if !this.matched || idx < 0 || idx > this.ngroups {
+            return false;
+        }
+        return this.caps.get(idx * 2) >= 0;
+    }
+
+    pub fnc has_group(name string) : bool {
+        if this.names.isin(name) {
+            return this.has_group_idx(this.names[name]);
+        }
+        return false;
+    }
+
+    pub fnc VAL_Match() : string {
+        if !this.matched {
+            return "<no match>";
+        }
+        return "<match " + tostring(this.start(0)) + ".." + tostring(this.end(0)) + " '" + this.group(0) + "'>";
+    }
+
+    static pub fnc substr(s string, from int, count int) : string {
+        out: string;
+        i: int = from;
+        while i < from + count && i < s.size {
+            out = out + s[i];
+            i = i + 1;
+        }
+        return out;
+    }
+};
+
+pub def RegexUtil : class {
+    static pub fnc is_digit(c char) : bool {
+        return c >= '0' && c <= '9';
+    }
+
+    static pub fnc is_word(c char) : bool {
+        if RegexUtil.is_digit(c) {
+            return true;
+        }
+        if c >= 'a' && c <= 'z' {
+            return true;
+        }
+        if c >= 'A' && c <= 'Z' {
+            return true;
+        }
+        return c == '_';
+    }
+
+    static pub fnc is_space(c char) : bool {
+        return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f';
+    }
+
+    static pub fnc is_hspace(c char) : bool {
+        return c == ' ' || c == '\t';
+    }
+
+    static pub fnc lower(c char) : char {
+        if c >= 'A' && c <= 'Z' {
+            return (char)(c + 32);
+        }
+        return c;
+    }
+
+    static pub fnc upper(c char) : char {
+        if c >= 'a' && c <= 'z' {
+            return (char)(c - 32);
+        }
+        return c;
+    }
+
+    static pub fnc hex_val(c char) : int {
+        if c >= '0' && c <= '9' {
+            return c - '0';
+        }
+        if c >= 'a' && c <= 'f' {
+            return c - 'a' + 10;
+        }
+        if c >= 'A' && c <= 'F' {
+            return c - 'A' + 10;
+        }
+        return 0 - 1;
+    }
+
+    static pub fnc pred_id(c char) : int {
+        if c == 'd' || c == 'D' {
+            return 0;
+        }
+        if c == 'w' || c == 'W' {
+            return 1;
+        }
+        if c == 's' || c == 'S' {
+            return 2;
+        }
+        return 3;
+    }
+
+    static pub fnc is_pred_letter(c char) : bool {
+        return c == 'd' || c == 'D' || c == 'w' || c == 'W' || c == 's' || c == 'S' || c == 'h' || c == 'H';
+    }
+
+    static pub fnc posix_id(name string) : int {
+        if name == "alpha" {
+            return 10;
+        }
+        if name == "digit" {
+            return 11;
+        }
+        if name == "alnum" {
+            return 12;
+        }
+        if name == "upper" {
+            return 13;
+        }
+        if name == "lower" {
+            return 14;
+        }
+        if name == "space" {
+            return 15;
+        }
+        if name == "blank" {
+            return 16;
+        }
+        if name == "punct" {
+            return 17;
+        }
+        if name == "word" {
+            return 18;
+        }
+        if name == "xdigit" {
+            return 19;
+        }
+        if name == "cntrl" {
+            return 20;
+        }
+        if name == "print" {
+            return 21;
+        }
+        if name == "graph" {
+            return 22;
+        }
+        return 0 - 1;
+    }
+
+    static pub fnc pred_test(cid int, c char) : bool {
+        if cid == 0 {
+            return RegexUtil.is_digit(c);
+        }
+        if cid == 1 {
+            return RegexUtil.is_word(c);
+        }
+        if cid == 2 {
+            return RegexUtil.is_space(c);
+        }
+        if cid == 3 {
+            return RegexUtil.is_hspace(c);
+        }
+        if cid == 10 {
+            return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+        }
+        if cid == 11 {
+            return RegexUtil.is_digit(c);
+        }
+        if cid == 12 {
+            return RegexUtil.is_word(c) && c != '_';
+        }
+        if cid == 13 {
+            return c >= 'A' && c <= 'Z';
+        }
+        if cid == 14 {
+            return c >= 'a' && c <= 'z';
+        }
+        if cid == 15 {
+            return RegexUtil.is_space(c);
+        }
+        if cid == 16 {
+            return RegexUtil.is_hspace(c);
+        }
+        if cid == 17 {
+            return (c >= '!' && c <= '/') || (c >= ':' && c <= '@') || (c >= '[' && c <= '`') || (c >= '{' && c <= '~');
+        }
+        if cid == 18 {
+            return RegexUtil.is_word(c);
+        }
+        if cid == 19 {
+            return RegexUtil.is_digit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+        }
+        if cid == 20 {
+            return (c >= '\0' && c <= '\x1f') || c == '\x7f';
+        }
+        if cid == 21 {
+            return c >= ' ' && c <= '~';
+        }
+        if cid == 22 {
+            return c >= '!' && c <= '~';
+        }
+        return false;
+    }
+
+    static pub fnc class_char(e char) : char {
+        if e == 'n' {
+            return '\n';
+        }
+        if e == 't' {
+            return '\t';
+        }
+        if e == 'r' {
+            return '\r';
+        }
+        if e == 'f' {
+            return '\f';
+        }
+        if e == 'a' {
+            return '\a';
+        }
+        if e == 'e' {
+            return (char)27;
+        }
+        if e == '0' {
+            return '\0';
+        }
+        if e == 'b' {
+            return '\b';
+        }
+        return e;
+    }
+
+    static pub fnc pred_code(cid int, neg bool) : int {
+        code: int = cid * 2;
+        if neg {
+            code = code + 1;
+        }
+        return code;
+    }
+
+    static pub fnc ord(c char) : int {
+        return toint(int, c);
+    }
+
+    static pub fnc add_item(nd RxNode, is_range bool, lo char, hi char, code int) {
+        it: RxItem;
+        it.is_range = is_range;
+        it.lo = lo;
+        it.hi = hi;
+        it.code = code;
+        if nd.items == null {
+            nd.items = it;
+            return;
+        }
+        cur: RxItem = nd.items;
+        while cur.nxt != null {
+            cur = cur.nxt;
+        }
+        cur.nxt = it;
+    }
+
+    static pub fnc pred_node(c char, fi bool) : RxNode {
+        n: RxNode;
+        n.kind = RxKind::RK_CLS;
+        n.ci = fi;
+        RegexUtil.add_item(n, false, '\0', '\0', RegexUtil.pred_code(RegexUtil.pred_id(c), c == 'D' || c == 'W' || c == 'S' || c == 'H'));
+        return n;
+    }
+
+    static pub fnc is_numeric(key string) : bool {
+        if key.size == 0 {
+            return false;
+        }
+        foreach _, ch in<string> key {
+            _ = _ + 1 - 1;
+            if !RegexUtil.is_digit(ch) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    static pub fnc parse_num(key string) : int {
+        num: int = 0;
+        foreach _, ch in<string> key {
+            _ = _ + 1 - 1;
+            d: int = ch - '0';
+            num = num * 10 + d;
+        }
+        return num;
+    }
+};
+
+pub def RxParser : class {
+    pub pat: string;
+    pub pos: int;
+    pub ok: bool;
+    pub err: string;
+    pub ncap: int;
+    pub names: hash<string, int>;
+    pub fi: bool;
+    pub fm: bool;
+    pub fs: bool;
+    pub fx: bool;
+
+    static pub fnc make(pattern string) : RxParser {
+        p: RxParser;
+        p.pat = pattern;
+        p.pos = 0;
+        p.ok = true;
+        p.err = "";
+        p.ncap = 0;
+        return p;
+    }
+
+    pub fnc fail(msg string) : RxNode {
+        if this.ok {
+            this.ok = false;
+            this.err = msg;
+        }
+        dead: RxNode;
+        dead.kind = RxKind::RK_EMPTY;
+        return dead;
+    }
+
+    pub fnc eof() : bool {
+        return this.pos >= this.pat.size;
+    }
+
+    pub fnc peek() : char {
+        return this.pat[this.pos];
+    }
+
+    pub fnc peek_at(k int) : char {
+        if this.pos + k < this.pat.size {
+            return this.pat[this.pos + k];
+        }
+        return '\0';
+    }
+
+    pub fnc nextc() : char {
+        c: char = this.pat[this.pos];
+        this.pos = this.pos + 1;
+        return c;
+    }
+
+    pub fnc skipx() {
+        while !this.eof() {
+            c: char = this.peek();
+            if this.fx && (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+                this.pos = this.pos + 1;
+                continue;
+            }
+            if this.fx && c == '#' {
+                while !this.eof() && this.peek() != '\n' {
+                    this.pos = this.pos + 1;
+                }
+                continue;
+            }
+            stop;
+        }
+    }
+
+    pub fnc parse() : RxNode {
+        root: RxNode = this.p_alt();
+        if !this.ok {
+            return root;
+        }
+        this.skipx();
+        if !this.eof() {
+            if this.peek() == ')' {
+                return this.fail("unmatched closing parenthesis");
+            }
+            return this.fail("unexpected trailing input in pattern");
+        }
+        return root;
+    }
+
+    pub fnc p_alt() : RxNode {
+        first: RxNode = this.p_concat();
+        if !this.ok {
+            return first;
+        }
+        branches: vec<RxNode>;
+        branches.pushb(first);
+        only: bool = true;
+        while !this.eof() && this.peek() == '|' {
+            only = false;
+            this.pos = this.pos + 1;
+            b: RxNode = this.p_concat();
+            if !this.ok {
+                return b;
+            }
+            branches.pushb(b);
+        }
+        if only {
+            return first;
+        }
+        alt: RxNode;
+        alt.kind = RxKind::RK_ALT;
+        alt.branches = branches;
+        return alt;
+    }
+
+    pub fnc p_concat() : RxNode {
+        cat: RxNode;
+        cat.kind = RxKind::RK_CAT;
+        while true {
+            this.skipx();
+            if this.eof() || this.peek() == '|' || this.peek() == ')' {
+                stop;
+            }
+            a: RxNode = this.p_atom();
+            if !this.ok {
+                return a;
+            }
+            q: RxNode = this.p_quant(a);
+            if !this.ok {
+                return q;
+            }
+            if q.kind == RxKind::RK_SKIP {
+                continue;
+            }
+            cat.kids.pushb(q);
+        }
+        if cat.kids.size == 1 {
+            return cat.kids.get(0);
+        }
+        if cat.kids.size == 0 {
+            empty_node: RxNode;
+            empty_node.kind = RxKind::RK_EMPTY;
+            return empty_node;
+        }
+        return cat;
+    }
+
+    pub fnc unquantifiable(nd RxNode) : bool {
+        k: RxKind = nd.kind;
+        return k == RxKind::RK_BOL || k == RxKind::RK_EOL || k == RxKind::RK_BOS || k == RxKind::RK_EOS || k == RxKind::RK_EOSNL || k == RxKind::RK_WORDB || k == RxKind::RK_NWORDB || k == RxKind::RK_KEEP || k == RxKind::RK_EMPTY;
+    }
+
+    pub fnc bound_ahead() : bool {
+        i: int = this.pos + 1;
+        if i < this.pat.size && RegexUtil.is_digit(this.pat[i]) {
+            return true;
+        }
+        return false;
+    }
+
+    pub fnc try_bound() : (bool, int, int) {
+        save: int = this.pos;
+        this.pos = this.pos + 1;
+        min_v: int = 0;
+        got_min: bool = false;
+        while !this.eof() && RegexUtil.is_digit(this.peek()) {
+            d: int = this.nextc() - '0';
+            min_v = min_v * 10 + d;
+            got_min = true;
+        }
+        if !got_min {
+            if !this.eof() && this.peek() == ',' {
+                min_v = 0;
+            } else {
+                this.pos = save;
+                return false, 0, 0;
+            }
+        }
+        max_v: int = min_v;
+        open_ended: bool = false;
+        if !this.eof() && this.peek() == ',' {
+            this.pos = this.pos + 1;
+            max_v = 0;
+            open_ended = true;
+            got_max: bool = false;
+            while !this.eof() && RegexUtil.is_digit(this.peek()) {
+                d2: int = this.nextc() - '0';
+                max_v = max_v * 10 + d2;
+                got_max = true;
+            }
+            if !got_max {
+                max_v = 0 - 1;
+            }
+        }
+        if this.eof() || this.peek() != '}' {
+            this.pos = save;
+            return false, 0, 0;
+        }
+        this.pos = this.pos + 1;
+        if !open_ended {
+            max_v = min_v;
+        }
+        if max_v >= 0 && max_v < min_v {
+            this.ok = false;
+            this.err = "repeat range out of order";
+            return true, min_v, max_v;
+        }
+        if min_v > 4096 || (max_v >= 0 && max_v > 4096) {
+            this.ok = false;
+            this.err = "repeat count too large";
+            return true, min_v, max_v;
+        }
+        return true, min_v, max_v;
+    }
+
+    pub fnc p_quant(base RxNode) : RxNode {
+        cur: RxNode = base;
+        while true {
+            this.skipx();
+            if this.eof() {
+                return cur;
+            }
+            c: char = this.peek();
+            min: int = 0;
+            max: int = 0;
+            got: bool = false;
+            if c == '*' {
+                min = 0;
+                max = 0 - 1;
+                got = true;
+                this.pos = this.pos + 1;
+            } also c == '+' {
+                min = 1;
+                max = 0 - 1;
+                got = true;
+                this.pos = this.pos + 1;
+            } also c == '?' {
+                min = 0;
+                max = 1;
+                got = true;
+                this.pos = this.pos + 1;
+            } also c == '{' {
+                got_b, bmin, bmax: bool, int, int = this.try_bound();
+                if !this.ok {
+                    return this.fail(this.err);
+                }
+                if got_b {
+                    min = bmin;
+                    max = bmax;
+                    got = true;
+                }
+            }
+            if !got {
+                return cur;
+            }
+            lazy: bool = false;
+            poss: bool = false;
+            if !this.eof() && this.peek() == '?' {
+                lazy = true;
+                this.pos = this.pos + 1;
+            } also !this.eof() && this.peek() == '+' {
+                poss = true;
+                this.pos = this.pos + 1;
+            }
+            if !this.eof() {
+                nc: char = this.peek();
+                if nc == '*' || nc == '+' || nc == '?' {
+                    return this.fail("multiple repeat markers in a row");
+                }
+                if nc == '{' && this.bound_ahead() {
+                    return this.fail("multiple repeat markers in a row");
+                }
+            }
+            if cur.kind == RxKind::RK_REP {
+                return this.fail("nested quantifier without a group");
+            }
+            if this.unquantifiable(cur) {
+                return this.fail("quantifier applied to an anchor or assertion");
+            }
+            rep: RxNode;
+            rep.kind = RxKind::RK_REP;
+            rep.min = min;
+            rep.max = max;
+            rep.lazy = lazy;
+            rep.poss = poss;
+            rep.kids.pushb(cur);
+            cur = rep;
+        }
+        return cur;
+    }
+
+    pub fnc p_atom() : RxNode {
+        this.skipx();
+        if this.eof() {
+            return this.fail("unexpected end of pattern");
+        }
+        c: char = this.peek();
+        if c == '(' {
+            return this.p_group();
+        }
+        if c == '[' {
+            this.pos = this.pos + 1;
+            return this.p_class();
+        }
+        if c == '.' {
+            this.pos = this.pos + 1;
+            n: RxNode;
+            n.kind = RxKind::RK_ANY;
+            n.dotall = this.fs;
+            return n;
+        }
+        if c == '^' {
+            this.pos = this.pos + 1;
+            n2: RxNode;
+            n2.kind = RxKind::RK_BOL;
+            n2.multi = this.fm;
+            return n2;
+        }
+        if c == '$' {
+            this.pos = this.pos + 1;
+            n3: RxNode;
+            n3.kind = RxKind::RK_EOL;
+            n3.multi = this.fm;
+            return n3;
+        }
+        if c == '*' || c == '+' || c == '?' {
+            return this.fail("nothing to repeat");
+        }
+        if c == ')' {
+            return this.fail("unmatched closing parenthesis");
+        }
+        if c == '\\' {
+            this.pos = this.pos + 1;
+            return this.p_esc_atom();
+        }
+        this.pos = this.pos + 1;
+        lit: RxNode;
+        lit.kind = RxKind::RK_LIT;
+        lit.ch = c;
+        lit.ci = this.fi;
+        return lit;
+    }
+
+    pub fnc take_name(endc char) : string {
+        name: string = "";
+        while !this.eof() && this.peek() != endc {
+            ch: char = this.nextc();
+            if !RegexUtil.is_word(ch) {
+                return "";
+            }
+            name = name + ch;
+        }
+        if this.eof() || name.size == 0 {
+            return "";
+        }
+        this.pos = this.pos + 1;
+        return name;
+    }
+
+    pub fnc claim_group(name string) : int {
+        this.ncap = this.ncap + 1;
+        if name.size > 0 {
+            if this.names.isin(name) {
+                this.ok = false;
+                this.err = "duplicate group name";
+                return 0 - 1;
+            }
+            this.names.push(name, this.ncap);
+        }
+        return this.ncap;
+    }
+
+    pub fnc read_flags() : (bool, bool, bool, bool) {
+        ci := this.fi;
+        cm := this.fm;
+        cs := this.fs;
+        cx := this.fx;
+        sign: int = 1;
+        while !this.eof() {
+            f: char = this.peek();
+            if f == 'i' {
+                ci = sign > 0;
+                this.pos = this.pos + 1;
+                continue;
+            }
+            if f == 'm' {
+                cm = sign > 0;
+                this.pos = this.pos + 1;
+                continue;
+            }
+            if f == 's' {
+                cs = sign > 0;
+                this.pos = this.pos + 1;
+                continue;
+            }
+            if f == 'x' {
+                cx = sign > 0;
+                this.pos = this.pos + 1;
+                continue;
+            }
+            if f == '-' && sign > 0 {
+                sign = 0 - 1;
+                this.pos = this.pos + 1;
+                continue;
+            }
+            stop;
+        }
+        return ci, cm, cs, cx;
+    }
+
+    pub fnc finish_named_body(name string) : RxNode {
+        idx: int = this.claim_group(name);
+        if idx < 0 {
+            return this.fail(this.err);
+        }
+        nbody: RxNode = this.p_alt();
+        if !this.ok {
+            return nbody;
+        }
+        if this.eof() || this.peek() != ')' {
+            return this.fail("missing closing parenthesis for named group");
+        }
+        this.pos = this.pos + 1;
+        cap2: RxNode;
+        cap2.kind = RxKind::RK_CAP;
+        cap2.num = idx;
+        cap2.name = name;
+        cap2.kids.pushb(nbody);
+        return cap2;
+    }
+
+    pub fnc p_group() : RxNode {
+        this.pos = this.pos + 1;
+        if this.eof() || this.peek() != '?' {
+            idx: int = this.claim_group("");
+            if idx < 0 {
+                return this.fail(this.err);
+            }
+            body: RxNode = this.p_alt();
+            if !this.ok {
+                return body;
+            }
+            if this.eof() || this.peek() != ')' {
+                return this.fail("missing closing parenthesis for capture group");
+            }
+            this.pos = this.pos + 1;
+            cap: RxNode;
+            cap.kind = RxKind::RK_CAP;
+            cap.num = idx;
+            cap.kids.pushb(body);
+            return cap;
+        }
+        this.pos = this.pos + 1;
+        if this.eof() {
+            return this.fail("unexpected end of pattern after (?");
+        }
+        t: char = this.peek();
+        if t == '#' {
+            while !this.eof() && this.peek() != ')' {
+                this.pos = this.pos + 1;
+            }
+            if this.eof() {
+                return this.fail("unterminated comment");
+            }
+            this.pos = this.pos + 1;
+            skip_node: RxNode;
+            skip_node.kind = RxKind::RK_SKIP;
+            return skip_node;
+        }
+        if t == ':' {
+            this.pos = this.pos + 1;
+            body2: RxNode = this.p_alt();
+            if !this.ok {
+                return body2;
+            }
+            if this.eof() || this.peek() != ')' {
+                return this.fail("missing closing parenthesis for non-capturing group");
+            }
+            this.pos = this.pos + 1;
+            ncg: RxNode;
+            ncg.kind = RxKind::RK_NONCAP;
+            ncg.kids.pushb(body2);
+            return ncg;
+        }
+        if t == '>' {
+            this.pos = this.pos + 1;
+            body3: RxNode = this.p_alt();
+            if !this.ok {
+                return body3;
+            }
+            if this.eof() || this.peek() != ')' {
+                return this.fail("missing closing parenthesis for atomic group");
+            }
+            this.pos = this.pos + 1;
+            at: RxNode;
+            at.kind = RxKind::RK_ATOMIC;
+            at.kids.pushb(body3);
+            return at;
+        }
+        if t == '=' || t == '!' {
+            pos_look := t == '=';
+            this.pos = this.pos + 1;
+            la_body: RxNode = this.p_alt();
+            if !this.ok {
+                return la_body;
+            }
+            if this.eof() || this.peek() != ')' {
+                return this.fail("missing closing parenthesis for lookahead");
+            }
+            this.pos = this.pos + 1;
+            la: RxNode;
+            if pos_look {
+                la.kind = RxKind::RK_LA;
+            } else {
+                la.kind = RxKind::RK_NLA;
+            }
+            la.kids.pushb(la_body);
+            return la;
+        }
+        if t == '<' {
+            this.pos = this.pos + 1;
+            if !this.eof() && (this.peek() == '=' || this.peek() == '!') {
+                neg_lb := this.peek() == '!';
+                this.pos = this.pos + 1;
+                lb_body: RxNode = this.p_alt();
+                if !this.ok {
+                    return lb_body;
+                }
+                if this.eof() || this.peek() != ')' {
+                    return this.fail("missing closing parenthesis for lookbehind");
+                }
+                this.pos = this.pos + 1;
+                lb: RxNode;
+                if neg_lb {
+                    lb.kind = RxKind::RK_NLB;
+                } else {
+                    lb.kind = RxKind::RK_LB;
+                }
+                lb.kids.pushb(lb_body);
+                return lb;
+            }
+            name: string = this.take_name('>');
+            if name.size == 0 {
+                return this.fail("invalid group name");
+            }
+            return this.finish_named_body(name);
+        }
+        if t == '\'' {
+            this.pos = this.pos + 1;
+            name2: string = this.take_name('\'');
+            if name2.size == 0 {
+                return this.fail("invalid group name");
+            }
+            return this.finish_named_body(name2);
+        }
+        sv_ci := this.fi;
+        sv_cm := this.fm;
+        sv_cs := this.fs;
+        sv_cx := this.fx;
+        flags_ci, flags_cm, flags_cs, flags_fx: bool, bool, bool, bool = this.read_flags();
+        scoped: bool = false;
+        if !this.eof() && this.peek() == ':' {
+            scoped = true;
+            this.pos = this.pos + 1;
+        } also !this.eof() && this.peek() == ')' {
+            this.pos = this.pos + 1;
+        } else {
+            return this.fail("unrecognized construct after (?");
+        }
+        this.fi = flags_ci;
+        this.fm = flags_cm;
+        this.fs = flags_cs;
+        this.fx = flags_fx;
+        if !scoped {
+            sk: RxNode;
+            sk.kind = RxKind::RK_SKIP;
+            return sk;
+        }
+        inner: RxNode = this.p_alt();
+        if !this.ok {
+            return inner;
+        }
+        if this.eof() || this.peek() != ')' {
+            return this.fail("missing closing parenthesis for flag group");
+        }
+        this.pos = this.pos + 1;
+        this.fi = sv_ci;
+        this.fm = sv_cm;
+        this.fs = sv_cs;
+        this.fx = sv_cx;
+        wrap: RxNode;
+        wrap.kind = RxKind::RK_NONCAP;
+        wrap.kids.pushb(inner);
+        return wrap;
+    }
+
+    pub fnc p_esc_atom() : RxNode {
+        if this.eof() {
+            return this.fail("trailing backslash");
+        }
+        c: char = this.nextc();
+        if c == 'd' || c == 'D' || c == 'w' || c == 'W' || c == 's' || c == 'S' || c == 'h' || c == 'H' {
+            return RegexUtil.pred_node(c, this.fi);
+        }
+        if c == 'b' {
+            wb: RxNode;
+            wb.kind = RxKind::RK_WORDB;
+            return wb;
+        }
+        if c == 'B' {
+            nwb: RxNode;
+            nwb.kind = RxKind::RK_NWORDB;
+            return nwb;
+        }
+        if c == 'A' {
+            bos: RxNode;
+            bos.kind = RxKind::RK_BOS;
+            return bos;
+        }
+        if c == 'z' {
+            eos: RxNode;
+            eos.kind = RxKind::RK_EOS;
+            return eos;
+        }
+        if c == 'Z' {
+            eosnl: RxNode;
+            eosnl.kind = RxKind::RK_EOSNL;
+            return eosnl;
+        }
+        if c == 'K' {
+            kp: RxNode;
+            kp.kind = RxKind::RK_KEEP;
+            return kp;
+        }
+        if c == 'k' {
+            if this.eof() || (this.peek() != '<' && this.peek() != '\'') {
+                return this.fail("expected '<name>' after backreference escape");
+            }
+            open_c: char = this.nextc();
+            close_c: char = open_c;
+            if open_c == '<' {
+                close_c = '>';
+            }
+            name: string = this.take_name(close_c);
+            if name.size == 0 {
+                return this.fail("invalid named backreference");
+            }
+            nr: RxNode;
+            nr.kind = RxKind::RK_NREF;
+            nr.name = name;
+            nr.ci = this.fi;
+            return nr;
+        }
+        if c == 'g' {
+            if !this.eof() && this.peek() == '{' {
+                this.pos = this.pos + 1;
+                num: int = 0;
+                any_d: bool = false;
+                while !this.eof() && RegexUtil.is_digit(this.peek()) {
+                    gd: int = this.nextc() - '0';
+                    num = num * 10 + gd;
+                    any_d = true;
+                }
+                if !any_d || this.eof() || this.peek() != '}' {
+                    return this.fail("invalid numbered backreference");
+                }
+                this.pos = this.pos + 1;
+                gr: RxNode;
+                gr.kind = RxKind::RK_REF;
+                gr.num = num;
+                gr.ci = this.fi;
+                return gr;
+            }
+            if !this.eof() && this.peek() == '<' {
+                this.pos = this.pos + 1;
+                gname: string = this.take_name('>');
+                if gname.size == 0 {
+                    return this.fail("invalid named backreference");
+                }
+                gnr: RxNode;
+                gnr.kind = RxKind::RK_NREF;
+                gnr.name = gname;
+                gnr.ci = this.fi;
+                return gnr;
+            }
+            return this.fail("unsupported escape");
+        }
+        if c == 'p' || c == 'P' {
+            return this.fail("unicode property classes are not supported");
+        }
+        ctrl: RxNode;
+        ctrl.kind = RxKind::RK_LIT;
+        ctrl.ci = this.fi;
+        if c == 'n' {
+            ctrl.ch = '\n';
+            return ctrl;
+        }
+        if c == 't' {
+            ctrl.ch = '\t';
+            return ctrl;
+        }
+        if c == 'r' {
+            ctrl.ch = '\r';
+            return ctrl;
+        }
+        if c == 'f' {
+            ctrl.ch = '\f';
+            return ctrl;
+        }
+        if c == 'v' {
+            ctrl.ch = '\v';
+            return ctrl;
+        }
+        if c == 'a' {
+            ctrl.ch = '\a';
+            return ctrl;
+        }
+        if c == 'e' {
+            ctrl.ch = (char)27;
+            return ctrl;
+        }
+        if c == '0' {
+            ctrl.ch = '\0';
+            return ctrl;
+        }
+        if c == 'x' || c == 'u' {
+            want: int = 2;
+            if c == 'u' {
+                want = 4;
+            }
+            v: int = 0;
+            k: int = 0;
+            while k < want && !this.eof() {
+                hx: int = RegexUtil.hex_val(this.peek());
+                if hx < 0 {
+                    stop;
+                }
+                v = v * 16 + hx;
+                this.pos = this.pos + 1;
+                k = k + 1;
+            }
+            if k == 0 {
+                return this.fail("invalid hex escape");
+            }
+            ctrl.ch = (char)v;
+            return ctrl;
+        }
+        if RegexUtil.is_digit(c) {
+            num2: int = c - '0';
+            while !this.eof() && RegexUtil.is_digit(this.peek()) {
+                md: int = this.nextc() - '0';
+                num2 = num2 * 10 + md;
+            }
+            refn: RxNode;
+            refn.kind = RxKind::RK_REF;
+            refn.num = num2;
+            refn.ci = this.fi;
+            return refn;
+        }
+        if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+            return this.fail("unknown escape sequence");
+        }
+        ctrl.ch = c;
+        return ctrl;
+    }
+
+    pub fnc p_class() : RxNode {
+        node: RxNode;
+        node.kind = RxKind::RK_CLS;
+        node.ci = this.fi;
+        if !this.eof() && this.peek() == '^' {
+            node.neg = true;
+            this.pos = this.pos + 1;
+        }
+        first: bool = true;
+        while true {
+            if this.eof() {
+                return this.fail("missing closing bracket for character class");
+            }
+            if this.peek() == ']' && !first {
+                this.pos = this.pos + 1;
+                stop;
+            }
+            first = false;
+            if this.peek() == '[' && this.peek_at(1) == ':' {
+                this.parse_posix(node);
+                if !this.ok {
+                    dead2: RxNode;
+                    dead2.kind = RxKind::RK_EMPTY;
+                    return dead2;
+                }
+                continue;
+            }
+            lo: char = '\0';
+            if this.peek() == '\\' {
+                this.pos = this.pos + 1;
+                if this.eof() {
+                    return this.fail("trailing backslash in character class");
+                }
+                e: char = this.nextc();
+                if RegexUtil.is_pred_letter(e) {
+                    pid: int = RegexUtil.pred_id(e);
+                    pneg: bool = e == 'D' || e == 'W' || e == 'S' || e == 'H';
+                    RegexUtil.add_item(node, false, '\0', '\0', RegexUtil.pred_code(pid, pneg));
+                    continue;
+                }
+                lo = RegexUtil.class_char(e);
+            } else {
+                lo = this.nextc();
+            }
+            if !this.eof() && this.peek() == '-' && this.pos + 1 < this.pat.size && this.pat[this.pos + 1] != ']' {
+                this.pos = this.pos + 1;
+                if this.eof() {
+                    return this.fail("trailing backslash in character class");
+                }
+                hi: char = '\0';
+                if this.peek() == '\\' {
+                    this.pos = this.pos + 1;
+                    if this.eof() {
+                        return this.fail("trailing backslash in character class");
+                    }
+                    e2: char = this.nextc();
+                    if RegexUtil.is_pred_letter(e2) {
+                        return this.fail("class shorthand cannot be used as a range endpoint");
+                    }
+                    hi = RegexUtil.class_char(e2);
+                } else {
+                    hi = this.nextc();
+                }
+                if hi < lo {
+                    return this.fail("character class range out of order");
+                }
+                RegexUtil.add_item(node, true, lo, hi, 0);
+                continue;
+            }
+            RegexUtil.add_item(node, true, lo, lo, 0);
+        }
+        return node;
+    }
+
+    pub fnc parse_posix(node RxNode) {
+        this.pos = this.pos + 2;
+        neg := false;
+        if !this.eof() && this.peek() == '^' {
+            neg = true;
+            this.pos = this.pos + 1;
+        }
+        name: string = "";
+        while !this.eof() && this.peek() != ':' && !(this.peek() == ']' ) {
+            name = name + this.nextc();
+        }
+        if this.eof() || this.peek() != ':' || this.peek_at(1) != ']' {
+            this.ok = false;
+            this.err = "malformed POSIX class";
+            return;
+        }
+        this.pos = this.pos + 2;
+        cid: int = RegexUtil.posix_id(name);
+        if cid < 0 {
+            this.ok = false;
+            this.err = "unknown POSIX class name";
+            return;
+        }
+        RegexUtil.add_item(node, false, '\0', '\0', RegexUtil.pred_code(cid, neg));
+        return;
+    }
+};
+
+pub def Regex : class {
+    pub src_pattern: string;
+    pub ok: bool;
+    pub err: string;
+    pub ncap: int;
+    pub names: hash<string, int>;
+    pub main_prog: RxProg;
+    pub subs: vec<RxProg>;
+    pub sub_wmin: vec<int>;
+    pub sub_wmax: vec<int>;
+
+    priv txt: string;
+    priv tn: int;
+    priv caps: vec<int>;
+    priv marks: vec<int>;
+    priv cur: RxProg;
+    priv match_end: int;
+    priv keep_pos: int;
+    priv steps: int;
+    priv emit_prog: RxProg;
+
+    pub fnc VAL_Regex() : string {
+        if !this.ok {
+            return "<invalid regex: " + this.err + ">";
+        }
+        return "/" + this.src_pattern + "/";
+    }
+
+    pub fnc source() : string {
+        return this.src_pattern;
+    }
+
+    pub fnc group_count() : int {
+        return this.ncap;
+    }
+
+    pub fnc has_name(name string) : bool {
+        return this.names.isin(name);
+    }
+
+    static pub fnc compile(pattern string) : Regex {
+        r: Regex;
+        r.src_pattern = pattern;
+        r.ok = false;
+        r.err = "";
+        norm: string = Regex.unbrace(pattern);
+        p: RxParser = RxParser.make(norm);
+        root: RxNode = p.parse();
+        if !p.ok {
+            r.err = p.err;
+            return r;
+        }
+        bad: string = Regex.check_refs(root, p.ncap, p.names);
+        if bad.size > 0 {
+            r.err = bad;
+            return r;
+        }
+        r.ncap = p.ncap;
+        r.names = p.names;
+        main_p: RxProg;
+        r.emit_prog = main_p;
+        sv0: RxIns;
+        sv0.op = RxOp::RI_SAVE;
+        sv0.a = 0;
+        r.emit(sv0);
+        r.c_node(root);
+        sv1: RxIns;
+        sv1.op = RxOp::RI_SAVE;
+        sv1.a = 1;
+        r.emit(sv1);
+        m: RxIns;
+        m.op = RxOp::RI_MATCH;
+        r.emit_prog.code.pushb(m);
+        r.main_prog = r.emit_prog;
+        r.ok = true;
+        return r;
+    }
+
+    static pub fnc check_refs(nd RxNode, ncap int, names hash<string, int>) : string {
+        if nd.num > 0 && nd.num > ncap {
+            return "backreference to nonexistent group";
+        }
+        if nd.kind == RxKind::RK_NREF && !names.isin(nd.name) {
+            return "backreference to unknown group name";
+        }
+        foreach ki, _kid in<vector> nd.kids {
+            msg: string = Regex.check_refs(nd.kids.get(ki), ncap, names);
+            if msg.size > 0 {
+                return msg;
+            }
+        }
+        foreach bi2, _br in<vector> nd.branches {
+            msg2: string = Regex.check_refs(nd.branches.get(bi2), ncap, names);
+            if msg2.size > 0 {
+                return msg2;
+            }
+        }
+        return "";
+    }
+
+    static pub fnc valid(pattern string) : bool {
+        r: Regex = Regex.compile(pattern);
+        return r.ok;
+    }
+
+    static pub fnc error_msg(pattern string) : string {
+        r: Regex = Regex.compile(pattern);
+        if r.ok {
+            return "";
+        }
+        return r.err;
+    }
+
+    static pub fnc is_match(pattern string, text string) : bool {
+        r: Regex = Regex.compile(pattern);
+        unless r.ok {
+            return false;
+        }
+        return r.test(text);
+    }
+
+    static pub fnc find(pattern string, text string) : Match {
+        r: Regex = Regex.compile(pattern);
+        unless r.ok {
+            nm: Match;
+            return nm;
+        }
+        return r.scan(text);
+    }
+
+    static pub fnc find_all(pattern string, text string) : vec<string> {
+        r: Regex = Regex.compile(pattern);
+        out: vec<string>;
+        unless r.ok {
+            return out;
+        }
+        return r.findall(text);
+    }
+
+    static pub fnc all_matches(pattern string, text string) : vec<Match> {
+        r: Regex = Regex.compile(pattern);
+        out: vec<Match>;
+        unless r.ok {
+            return out;
+        }
+        return r.matches(text);
+    }
+
+    static pub fnc count_matches(pattern string, text string) : int {
+        r: Regex = Regex.compile(pattern);
+        unless r.ok {
+            return 0;
+        }
+        return r.count(text);
+    }
+
+    static pub fnc split_text(pattern string, text string) : vec<string> {
+        r: Regex = Regex.compile(pattern);
+        out: vec<string>;
+        unless r.ok {
+            out.pushb(text);
+            return out;
+        }
+        return r.split(text);
+    }
+
+    static pub fnc sub(pattern string, text string, repl string) : string {
+        r: Regex = Regex.compile(pattern);
+        unless r.ok {
+            return text;
+        }
+        return r.replace(text, repl);
+    }
+
+    static pub fnc sub_lit(pattern string, text string, lit string) : string {
+        r: Regex = Regex.compile(pattern);
+        unless r.ok {
+            return text;
+        }
+        return r.replace_lit(text, lit);
+    }
+
+    static pub fnc unbrace(s string) : string {
+        out: string;
+        i: int = 0;
+        n: int = s.size;
+        while i < n {
+            c: char = s[i];
+            if c == '\\' && i + 1 < n && (s[i + 1] == '{' || s[i + 1] == '}') {
+                out = out + s[i + 1];
+                i = i + 2;
+                continue;
+            }
+            out = out + c;
+            i = i + 1;
+        }
+        return out;
+    }
+
+    static pub fnc escape(s string) : string {
+        out: string;
+        foreach _, c in<string> s {
+            _ = _ + 1 - 1;
+            if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' {
+                out = out + c;
+            } else {
+                out = out + '\\';
+                out = out + c;
+            }
+        }
+        return out;
+    }
+
+    pub fnc test(text string) : bool {
+        m: Match = this.scan(text);
+        return m.matched;
+    }
+
+    pub fnc scan(text string) : Match {
+        return this.scan_from(text, 0);
+    }
+
+    pub fnc scan_from(text string, start int) : Match {
+        this.txt = text;
+        this.tn = text.size;
+        total: int = (this.ncap + 1) * 2;
+        caps0: vec<int>;
+        for i: int = 0; i < total; i = i + 1 {
+            caps0.pushb(0 - 1);
+        }
+        this.caps = caps0;
+        this.keep_pos = 0 - 1;
+        this.steps = 0;
+        this.cur = this.main_prog;
+        marks0: vec<int>;
+        for i2: int = 0; i2 < this.main_prog.nmarks; i2 = i2 + 1 {
+            marks0.pushb(0 - 1);
+        }
+        this.marks = marks0;
+        s: int = start;
+        while s <= this.tn {
+            for j: int = 0; j < total; j = j + 1 {
+                this.caps.set(j, 0 - 1);
+            }
+            this.keep_pos = 0 - 1;
+            for j2: int = 0; j2 < this.marks.size; j2 = j2 + 1 {
+                this.marks.set(j2, 0 - 1);
+            }
+            if this.run(0, s, 0 - 1) {
+                if this.keep_pos >= 0 {
+                    this.caps.set(0, this.keep_pos);
+                    this.keep_pos = 0 - 1;
+                }
+                res: Match;
+                res.matched = true;
+                res.ngroups = this.ncap;
+                res.txt = text;
+                for ci3: int = 0; ci3 < total; ci3 = ci3 + 1 {
+                    res.caps.pushb(this.caps.get(ci3));
+                }
+                res.names = this.names;
+                return res;
+            }
+            s = s + 1;
+        }
+        no: Match;
+        no.matched = false;
+        no.ngroups = this.ncap;
+        no.txt = text;
+        no.names = this.names;
+        return no;
+    }
+
+    pub fnc findall(text string) : vec<string> {
+        ms: vec<Match> = this.matches(text);
+        out: vec<string>;
+        foreach _, m in<vector> ms {
+            out.pushb(m.group(0));
+        }
+        return out;
+    }
+
+    pub fnc matches(text string) : vec<Match> {
+        out: vec<Match>;
+        b: int = 0;
+        while b <= text.size {
+            m: Match = this.scan_from(text, b);
+            unless m.matched {
+                stop;
+            }
+            out.pushb(m);
+            if m.end(0) > m.start(0) {
+                b = m.end(0);
+            } else {
+                b = m.end(0) + 1;
+            }
+        }
+        return out;
+    }
+
+    pub fnc count(text string) : int {
+        ms: vec<Match> = this.matches(text);
+        return ms.size;
+    }
+
+    pub fnc split(text string) : vec<string> {
+        out: vec<string>;
+        last: int = 0;
+        b: int = 0;
+        while b <= text.size {
+            m: Match = this.scan_from(text, b);
+            unless m.matched {
+                stop;
+            }
+            out.pushb(Match.substr(text, last, m.start(0) - last));
+            last = m.end(0);
+            if m.end(0) > m.start(0) {
+                b = m.end(0);
+            } else {
+                b = m.end(0) + 1;
+            }
+        }
+        out.pushb(Match.substr(text, last, text.size - last));
+        return out;
+    }
+
+    pub fnc replace(text string, repl string) : string {
+        out: string;
+        last: int = 0;
+        b: int = 0;
+        while b <= text.size {
+            m: Match = this.scan_from(text, b);
+            unless m.matched {
+                stop;
+            }
+            out = out + Match.substr(text, last, m.start(0) - last);
+            out = out + this.expand(m, repl);
+            last = m.end(0);
+            if m.end(0) > m.start(0) {
+                b = m.end(0);
+            } else {
+                b = m.end(0) + 1;
+            }
+        }
+        out = out + Match.substr(text, last, text.size - last);
+        return out;
+    }
+
+    pub fnc replace_lit(text string, lit string) : string {
+        return this.replace(text, lit);
+    }
+
+    priv fnc expand(m Match, tpl string) : string {
+        out: string;
+        i: int = 0;
+        n: int = tpl.size;
+        while i < n {
+            c: char = tpl[i];
+            if c == '$' {
+                if i + 1 < n && tpl[i + 1] == '$' {
+                    out = out + '$';
+                    i = i + 2;
+                    continue;
+                }
+                if i + 1 < n && tpl[i + 1] == '{' {
+                    close: int = i + 2;
+                    while close < n && tpl[close] != '}' {
+                        close = close + 1;
+                    }
+                    if close < n {
+                        inner: string = Match.substr(tpl, i + 2, close - i - 2);
+                        if this.ref_ok(inner) {
+                            out = out + this.lookup(m, inner);
+                            i = close + 1;
+                            continue;
+                        }
+                        out = out + Match.substr(tpl, i, close - i + 1);
+                        i = close + 1;
+                        continue;
+                    }
+                    out = out + '$';
+                    i = i + 1;
+                    continue;
+                }
+                if i + 1 < n && RegexUtil.is_digit(tpl[i + 1]) {
+                    num: int = 0;
+                    j: int = i + 1;
+                    while j < n && RegexUtil.is_digit(tpl[j]) && (j - i) <= 2 {
+                        dd: int = tpl[j] - '0';
+                        num = num * 10 + dd;
+                        j = j + 1;
+                    }
+                    if num <= m.ngroups {
+                        out = out + m.group(num);
+                        i = j;
+                        continue;
+                    }
+                    out = out + '$';
+                    i = i + 1;
+                    continue;
+                }
+                out = out + '$';
+                i = i + 1;
+                continue;
+            }
+            if c == '\\' {
+                if i + 1 < n {
+                    nc: char = tpl[i + 1];
+                    if nc == '\\' {
+                        out = out + '\\';
+                        i = i + 2;
+                        continue;
+                    }
+                    if RegexUtil.is_digit(nc) {
+                        num2: int = 0;
+                        j2: int = i + 1;
+                        while j2 < n && RegexUtil.is_digit(tpl[j2]) && (j2 - i) <= 2 {
+                            dd2: int = tpl[j2] - '0';
+                            num2 = num2 * 10 + dd2;
+                            j2 = j2 + 1;
+                        }
+                        if num2 <= m.ngroups {
+                            out = out + m.group(num2);
+                            i = j2;
+                            continue;
+                        }
+                        out = out + '\\';
+                        out = out + nc;
+                        i = i + 2;
+                        continue;
+                    }
+                    if nc == 'k' && i + 2 < n && (tpl[i + 2] == '<' || tpl[i + 2] == '\'') {
+                        endc: char = tpl[i + 2];
+                        close2: int = i + 3;
+                        while close2 < n && tpl[close2] != endc {
+                            close2 = close2 + 1;
+                        }
+                        if close2 < n {
+                            kname: string = Match.substr(tpl, i + 3, close2 - i - 3);
+                            if m.names.isin(kname) {
+                                out = out + m.group_named(kname);
+                                i = close2 + 1;
+                                continue;
+                            }
+                        }
+                    }
+                    if nc == 'g' && i + 2 < n && tpl[i + 2] == '<' {
+                        close3: int = i + 3;
+                        while close3 < n && tpl[close3] != '>' {
+                            close3 = close3 + 1;
+                        }
+                        if close3 < n {
+                            gname: string = Match.substr(tpl, i + 3, close3 - i - 3);
+                            if this.ref_ok(gname) {
+                                out = out + this.lookup(m, gname);
+                                i = close3 + 1;
+                                continue;
+                            }
+                        }
+                    }
+                    out = out + tpl[i];
+                    out = out + tpl[i + 1];
+                    i = i + 2;
+                    continue;
+                }
+                out = out + '\\';
+                i = i + 1;
+                continue;
+            }
+            out = out + c;
+            i = i + 1;
+        }
+        return out;
+    }
+
+    priv fnc lookup(m Match, key string) : string {
+        if RegexUtil.is_numeric(key) {
+            num: int = RegexUtil.parse_num(key);
+            if num <= m.ngroups {
+                return m.group(num);
+            }
+            return "";
+        }
+        return m.group_named(key);
+    }
+
+    priv fnc ref_ok(key string) : bool {
+        if RegexUtil.is_numeric(key) {
+            num: int = RegexUtil.parse_num(key);
+            return num <= this.ncap;
+        }
+        return this.names.isin(key);
+    }
+
+    priv fnc emit(ins RxIns) : int {
+        this.emit_prog.code.pushb(ins);
+        return this.emit_prog.code.size - 1;
+    }
+
+    priv fnc fresh_ins(op RxOp) : RxIns {
+        ins: RxIns;
+        ins.op = op;
+        return ins;
+    }
+
+    priv fnc c_node(nd RxNode) {
+        k: RxKind = nd.kind;
+        if k == RxKind::RK_EMPTY || k == RxKind::RK_SKIP {
+            return;
+        }
+        if k == RxKind::RK_CAT {
+            foreach ci2, _kid in<vector> nd.kids {
+                this.c_node(nd.kids.get(ci2));
+            }
+            return;
+        }
+        if k == RxKind::RK_ALT {
+            jmps: vec<int>;
+            nb: int = nd.branches.size;
+            foreach bi, _ in<vector> nd.branches {
+                _ = _ + 1 - 1;
+                if bi < nb - 1 {
+                    sp: RxIns = this.fresh_ins(RxOp::RI_SPLIT);
+                    sp.a = this.emit_prog.code.size + 1;
+                    sp_idx: int = this.emit(sp);
+                    this.c_node(nd.branches.get(bi));
+                    jm_idx: int = this.emit(this.fresh_ins(RxOp::RI_JMP));
+                    jmps.pushb(jm_idx);
+                    this.emit_prog.code.get(sp_idx).b = this.emit_prog.code.size;
+                } else {
+                    this.c_node(nd.branches.get(bi));
+                }
+            }
+            target: int = this.emit_prog.code.size;
+            foreach ji2, _j in<vector> jmps {
+                this.emit_prog.code.get(jmps.get(ji2)).a = target;
+            }
+            return;
+        }
+        if k == RxKind::RK_REP {
+            this.c_rep(nd);
+            return;
+        }
+        if k == RxKind::RK_CAP {
+            sv: RxIns = this.fresh_ins(RxOp::RI_SAVE);
+            sv.a = nd.num * 2;
+            this.emit(sv);
+            this.c_node(nd.kids.get(0));
+            sv2: RxIns = this.fresh_ins(RxOp::RI_SAVE);
+            sv2.a = nd.num * 2 + 1;
+            this.emit(sv2);
+            return;
+        }
+        if k == RxKind::RK_NONCAP {
+            this.c_node(nd.kids.get(0));
+            return;
+        }
+        if k == RxKind::RK_ATOMIC {
+            subid: int = this.build_sub(nd.kids.get(0));
+            ai: RxIns = this.fresh_ins(RxOp::RI_ATOMIC);
+            ai.a = subid;
+            this.emit(ai);
+            return;
+        }
+        if k == RxKind::RK_LA || k == RxKind::RK_NLA || k == RxKind::RK_LB || k == RxKind::RK_NLB {
+            subid2: int = this.build_sub(nd.kids.get(0));
+            wmin, wmax: int, int = this.width(nd.kids.get(0));
+            li: RxIns = this.fresh_ins(RxOp::RI_LOOK);
+            li.a = subid2;
+            li.behind = k == RxKind::RK_LB || k == RxKind::RK_NLB;
+            li.neg = k == RxKind::RK_NLA || k == RxKind::RK_NLB;
+            this.sub_wmin.pushb(wmin);
+            this.sub_wmax.pushb(wmax);
+            this.emit(li);
+            return;
+        }
+        if k == RxKind::RK_LIT {
+            li2: RxIns = this.fresh_ins(RxOp::RI_CHAR);
+            li2.ch = nd.ch;
+            li2.ci = nd.ci;
+            this.emit(li2);
+            return;
+        }
+        if k == RxKind::RK_ANY {
+            an: RxIns = this.fresh_ins(RxOp::RI_ANY);
+            an.ci = nd.dotall;
+            this.emit(an);
+            return;
+        }
+        if k == RxKind::RK_CLS {
+            cur_it: RxItem = nd.items;
+            while cur_it != null {
+                if cur_it.is_range {
+                    rng: RxIns = this.fresh_ins(RxOp::RI_ITEM_RNG);
+                    rng.ch = cur_it.lo;
+                    rng.ch2 = cur_it.hi;
+                    rng.ci = nd.ci;
+                    this.emit(rng);
+                } else {
+                    prd: RxIns = this.fresh_ins(RxOp::RI_ITEM_PRED);
+                    prd.b = cur_it.code;
+                    this.emit(prd);
+                }
+                cur_it = cur_it.nxt;
+            }
+            endi: RxIns = this.fresh_ins(RxOp::RI_CLS_END);
+            endi.neg = nd.neg;
+            endi.ci = nd.ci;
+            this.emit(endi);
+            return;
+        }
+        if k == RxKind::RK_BOL {
+            simple: RxIns = this.fresh_ins(RxOp::RI_BOL);
+            simple.neg = nd.multi;
+            this.emit(simple);
+            return;
+        }
+        if k == RxKind::RK_EOL {
+            simple2: RxIns = this.fresh_ins(RxOp::RI_EOL);
+            simple2.neg = nd.multi;
+            this.emit(simple2);
+            return;
+        }
+        if k == RxKind::RK_BOS {
+            this.emit(this.fresh_ins(RxOp::RI_BOS));
+            return;
+        }
+        if k == RxKind::RK_EOS {
+            this.emit(this.fresh_ins(RxOp::RI_EOS));
+            return;
+        }
+        if k == RxKind::RK_EOSNL {
+            this.emit(this.fresh_ins(RxOp::RI_EOSNL));
+            return;
+        }
+        if k == RxKind::RK_WORDB {
+            this.emit(this.fresh_ins(RxOp::RI_WORD));
+            return;
+        }
+        if k == RxKind::RK_NWORDB {
+            this.emit(this.fresh_ins(RxOp::RI_NWORD));
+            return;
+        }
+        if k == RxKind::RK_KEEP {
+            this.emit(this.fresh_ins(RxOp::RI_KEEP));
+            return;
+        }
+        if k == RxKind::RK_REF {
+            rf: RxIns = this.fresh_ins(RxOp::RI_REF);
+            rf.a = nd.num;
+            rf.ci = nd.ci;
+            this.emit(rf);
+            return;
+        }
+        if k == RxKind::RK_NREF {
+            rf2: RxIns = this.fresh_ins(RxOp::RI_REF);
+            rf2.a = this.names[nd.name];
+            rf2.ci = nd.ci;
+            this.emit(rf2);
+            return;
+        }
+        return;
+    }
+
+    priv fnc c_rep(nd RxNode) {
+        child: RxNode = nd.kids.get(0);
+        if nd.poss {
+            inner_rep: RxNode;
+            inner_rep.kind = RxKind::RK_REP;
+            inner_rep.min = nd.min;
+            inner_rep.max = nd.max;
+            inner_rep.lazy = nd.lazy;
+            inner_rep.poss = false;
+            inner_rep.kids.pushb(child);
+            subid: int = this.build_sub(inner_rep);
+            ai: RxIns = this.fresh_ins(RxOp::RI_ATOMIC);
+            ai.a = subid;
+            this.emit(ai);
+            return;
+        }
+        copies: int = 0;
+        while copies < nd.min {
+            this.c_node(child);
+            copies = copies + 1;
+        }
+        if nd.max < 0 {
+            pid: int = this.emit_prog.nmarks;
+            this.emit_prog.nmarks = pid + 1;
+            l1: int = this.emit_prog.code.size;
+            sp: RxIns = this.fresh_ins(RxOp::RI_SPLIT);
+            sp.a = l1 + 1;
+            sp_idx: int = this.emit(sp);
+            pg: RxIns = this.fresh_ins(RxOp::RI_PROGRESS);
+            pg.a = pid;
+            this.emit(pg);
+            this.c_node(child);
+            bk: RxIns = this.fresh_ins(RxOp::RI_JMP);
+            bk.a = l1;
+            this.emit(bk);
+            this.emit_prog.code.get(sp_idx).b = this.emit_prog.code.size;
+            if nd.lazy {
+                tmp: int = this.emit_prog.code.get(sp_idx).a;
+                this.emit_prog.code.get(sp_idx).a = this.emit_prog.code.get(sp_idx).b;
+                this.emit_prog.code.get(sp_idx).b = tmp;
+            }
+            return;
+        }
+        extra: int = nd.max - nd.min;
+        splits: vec<int>;
+        e: int = 0;
+        while e < extra {
+            sp2: RxIns = this.fresh_ins(RxOp::RI_SPLIT);
+            sp2.a = this.emit_prog.code.size + 1;
+            sp2_idx: int = this.emit(sp2);
+            splits.pushb(sp2_idx);
+            this.c_node(child);
+            e = e + 1;
+        }
+        target: int = this.emit_prog.code.size;
+        foreach si2, _s in<vector> splits {
+            ins: RxIns = this.emit_prog.code.get(splits.get(si2));
+            if nd.lazy {
+                ins.b = ins.a;
+                ins.a = target;
+            } else {
+                ins.b = target;
+            }
+        }
+    }
+
+    priv fnc build_sub(nd RxNode) : int {
+        sub_p: RxProg;
+        old: RxProg = this.emit_prog;
+        this.emit_prog = sub_p;
+        this.c_node(nd);
+        this.emit(this.fresh_ins(RxOp::RI_MATCH));
+        this.emit_prog = old;
+        this.subs.pushb(sub_p);
+        return this.subs.size - 1;
+    }
+
+    priv fnc width(nd RxNode) : (int, int) {
+        UNB: int = 0 - 1;
+        k: RxKind = nd.kind;
+        if k == RxKind::RK_LIT || k == RxKind::RK_ANY || k == RxKind::RK_CLS || k == RxKind::RK_REF || k == RxKind::RK_NREF {
+            return 1, 1;
+        }
+        if k == RxKind::RK_CAT {
+            tmin: int = 0;
+            tmax: int = 0;
+            unbounded: bool = false;
+            foreach _ci, _ in<vector> nd.kids {
+                cmin, cmax: int, int = this.width(nd.kids.get(_ci));
+                tmin = tmin + cmin;
+                if unbounded || cmax < 0 {
+                    unbounded = true;
+                } else {
+                    tmax = tmax + cmax;
+                }
+            }
+            if unbounded {
+                tmax = UNB;
+            }
+            return tmin, tmax;
+        }
+        if k == RxKind::RK_ALT {
+            amin: int = 0 - 1;
+            amax: int = 0 - 1;
+            foreach _bi, _b in<vector> nd.branches {
+                bmin, bmax: int, int = this.width(nd.branches.get(_bi));
+                if amin < 0 || bmin < amin {
+                    amin = bmin;
+                }
+                if amax < 0 {
+                    amax = bmax;
+                } also bmax < 0 {
+                    amax = UNB;
+                } also bmax > amax {
+                    amax = bmax;
+                }
+            }
+            if amin < 0 {
+                amin = 0;
+            }
+            return amin, amax;
+        }
+        if k == RxKind::RK_REP {
+            cmin2, cmax2: int, int = this.width(nd.kids.get(0));
+            rmin: int = cmin2 * nd.min;
+            if nd.max < 0 {
+                return rmin, UNB;
+            }
+            if cmax2 < 0 {
+                if nd.max == nd.min {
+                    return rmin, rmin;
+                }
+                return rmin, UNB;
+            }
+            return rmin, cmax2 * nd.max;
+        }
+        if k == RxKind::RK_CAP || k == RxKind::RK_NONCAP || k == RxKind::RK_ATOMIC {
+            return this.width(nd.kids.get(0));
+        }
+        return 0, 0;
+    }
+
+    priv fnc run(pc int, pos int, req int) : bool {
+        this.steps = this.steps + 1;
+        if this.steps > 2000000 {
+            return false;
+        }
+        code: vec<RxIns> = this.cur.code;
+        p: int = pc;
+        cur_pos: int = pos;
+        while p < code.size {
+            ins: RxIns = code.get(p);
+            op: RxOp = ins.op;
+            if op == RxOp::RI_CHAR {
+                if cur_pos < this.tn && this.ceq(this.txt[cur_pos], ins.ch, ins.ci) {
+                    p = p + 1;
+                    cur_pos = cur_pos + 1;
+                    continue;
+                }
+                return false;
+            }
+            if op == RxOp::RI_ANY {
+                if cur_pos < this.tn && (ins.ci || this.txt[cur_pos] != '\n') {
+                    p = p + 1;
+                    cur_pos = cur_pos + 1;
+                    continue;
+                }
+                return false;
+            }
+            if op == RxOp::RI_ITEM_RNG || op == RxOp::RI_ITEM_PRED {
+                hit_any: bool = false;
+                done_items: bool = false;
+                while !done_items {
+                    ins2: RxIns = code.get(p);
+                    if ins2.op == RxOp::RI_CLS_END {
+                        done_items = true;
+                    } else {
+                        if ins2.op == RxOp::RI_ITEM_RNG {
+                            if cur_pos < this.tn && this.range_hit(ins2.ch, ins2.ch2, this.txt[cur_pos], ins2.ci) {
+                                hit_any = true;
+                            }
+                        } else {
+                            meta2: int = ins2.b;
+                            cid2: int = meta2 / 2;
+                            neg2: bool = meta2 - cid2 * 2 == 1;
+                            probe: char = '\0';
+                            if cur_pos < this.tn {
+                                probe = this.txt[cur_pos];
+                            }
+                            if cur_pos < this.tn && RegexUtil.pred_test(cid2, probe) != neg2 {
+                                hit_any = true;
+                            }
+                        }
+                        p = p + 1;
+                    }
+                }
+                end_ins: RxIns = code.get(p);
+                if cur_pos < this.tn && hit_any != end_ins.neg {
+                    p = p + 1;
+                    cur_pos = cur_pos + 1;
+                    continue;
+                }
+                return false;
+            }
+            if op == RxOp::RI_JMP {
+                p = ins.a;
+                continue;
+            }
+            if op == RxOp::RI_SPLIT {
+                if this.run(ins.a, cur_pos, req) {
+                    return true;
+                }
+                p = ins.b;
+                continue;
+            }
+            if op == RxOp::RI_PROGRESS {
+                if this.marks.get(ins.a) == cur_pos {
+                    return false;
+                }
+                this.marks.set(ins.a, cur_pos);
+                p = p + 1;
+                continue;
+            }
+            if op == RxOp::RI_SAVE {
+                old: int = this.caps.get(ins.a);
+                this.caps.set(ins.a, cur_pos);
+                if this.run(p + 1, cur_pos, req) {
+                    return true;
+                }
+                this.caps.set(ins.a, old);
+                return false;
+            }
+            if op == RxOp::RI_KEEP {
+                saved_kp: int = this.keep_pos;
+                this.keep_pos = cur_pos;
+                if this.run(p + 1, cur_pos, req) {
+                    return true;
+                }
+                this.keep_pos = saved_kp;
+                return false;
+            }
+            if op == RxOp::RI_BOL {
+                good: bool = cur_pos == 0;
+                if ins.neg && cur_pos > 0 && this.txt[cur_pos - 1] == '\n' {
+                    good = true;
+                }
+                if good {
+                    p = p + 1;
+                    continue;
+                }
+                return false;
+            }
+            if op == RxOp::RI_EOL {
+                good2: bool = cur_pos == this.tn;
+                if ins.neg && cur_pos < this.tn && this.txt[cur_pos] == '\n' {
+                    good2 = true;
+                }
+                if good2 {
+                    p = p + 1;
+                    continue;
+                }
+                return false;
+            }
+            if op == RxOp::RI_BOS {
+                if cur_pos == 0 {
+                    p = p + 1;
+                    continue;
+                }
+                return false;
+            }
+            if op == RxOp::RI_EOS {
+                if cur_pos == this.tn {
+                    p = p + 1;
+                    continue;
+                }
+                return false;
+            }
+            if op == RxOp::RI_EOSNL {
+                if cur_pos == this.tn || (cur_pos == this.tn - 1 && this.txt[cur_pos] == '\n') {
+                    p = p + 1;
+                    continue;
+                }
+                return false;
+            }
+            if op == RxOp::RI_WORD || op == RxOp::RI_NWORD {
+                before: bool = cur_pos > 0 && RegexUtil.is_word(this.txt[cur_pos - 1]);
+                after: bool = cur_pos < this.tn && RegexUtil.is_word(this.txt[cur_pos]);
+                boundary: bool = before != after;
+                if boundary == (op == RxOp::RI_WORD) {
+                    p = p + 1;
+                    continue;
+                }
+                return false;
+            }
+            if op == RxOp::RI_REF {
+                gs: int = this.caps.get(ins.a * 2);
+                ge: int = this.caps.get(ins.a * 2 + 1);
+                if gs < 0 || ge < gs {
+                    p = p + 1;
+                    continue;
+                }
+                len: int = ge - gs;
+                if cur_pos + len > this.tn {
+                    return false;
+                }
+                ok2: bool = true;
+                for d: int = 0; d < len; d = d + 1 {
+                    if !this.ceq(this.txt[cur_pos + d], this.txt[gs + d], ins.ci) {
+                        ok2 = false;
+                        stop;
+                    }
+                }
+                if ok2 {
+                    cur_pos = cur_pos + len;
+                    p = p + 1;
+                    continue;
+                }
+                return false;
+            }
+            if op == RxOp::RI_ATOMIC {
+                snap: vec<int>;
+                for sc: int = 0; sc < this.caps.size; sc = sc + 1 {
+                    snap.pushb(this.caps.get(sc));
+                }
+                r: int = this.subrun(ins.a, cur_pos, 0 - 1);
+                if r < 0 {
+                    this.restore_caps(snap);
+                    return false;
+                }
+                cur_pos = r;
+                p = p + 1;
+                continue;
+            }
+            if op == RxOp::RI_LOOK {
+                snap2: vec<int>;
+                for sc2: int = 0; sc2 < this.caps.size; sc2 = sc2 + 1 {
+                    snap2.pushb(this.caps.get(sc2));
+                }
+                hit: bool = false;
+                if ins.behind {
+                    wmin: int = this.sub_wmin.get(ins.a);
+                    wmax: int = this.sub_wmax.get(ins.a);
+                    s: int = cur_pos - wmin;
+                    if s < 0 {
+                        s = 0;
+                    }
+                    low: int = 0;
+                    if wmax >= 0 {
+                        low = cur_pos - wmax;
+                        if low < 0 {
+                            low = 0;
+                        }
+                    }
+                    while s >= low {
+                        this.restore_caps(snap2);
+                        if this.subrun(ins.a, s, cur_pos) >= 0 {
+                            hit = true;
+                            stop;
+                        }
+                        s = s - 1;
+                    }
+                } else {
+                    if this.subrun(ins.a, cur_pos, 0 - 1) >= 0 {
+                        hit = true;
+                    }
+                }
+                if ins.neg {
+                    this.restore_caps(snap2);
+                    if hit {
+                        return false;
+                    }
+                    p = p + 1;
+                    continue;
+                }
+                if hit {
+                    p = p + 1;
+                    continue;
+                }
+                this.restore_caps(snap2);
+                return false;
+            }
+            if op == RxOp::RI_MATCH {
+                if req < 0 || cur_pos == req {
+                    this.match_end = cur_pos;
+                    return true;
+                }
+                return false;
+            }
+            return false;
+        }
+        return false;
+    }
+
+    priv fnc restore_caps(snap vec<int>) {
+        foreach si3, sv in<vector> snap {
+            this.caps.set(si3, sv);
+        }
+    }
+
+    priv fnc subrun(subid int, start int, req int) : int {
+        sub: RxProg = this.subs.get(subid);
+        old_cur: RxProg = this.cur;
+        old_marks: vec<int> = this.marks;
+        this.cur = sub;
+        fresh: vec<int>;
+        for i: int = 0; i < sub.nmarks; i = i + 1 {
+            fresh.pushb(0 - 1);
+        }
+        this.marks = fresh;
+        res: int = 0 - 1;
+        if this.run(0, start, req) {
+            res = this.match_end;
+        }
+        this.cur = old_cur;
+        this.marks = old_marks;
+        return res;
+    }
+
+    priv fnc ceq(a char, b char, ci bool) : bool {
+        if ci {
+            return RegexUtil.lower(a) == RegexUtil.lower(b);
+        }
+        return a == b;
+    }
+
+    priv fnc range_hit(lo char, hi char, c char, ci bool) : bool {
+        inr: bool = c >= lo && c <= hi;
+        if !inr && ci {
+            lc: char = RegexUtil.lower(c);
+            inr = lc >= lo && lc <= hi;
+            if !inr {
+                uc: char = RegexUtil.upper(c);
+                inr = uc >= lo && uc <= hi;
+            }
+        }
+        return inr;
+    }
+};

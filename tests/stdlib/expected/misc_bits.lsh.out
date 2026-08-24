@@ -1,12 +1,12 @@
-get:0
-set:1
-clear:1
-toggle:1
+get:false
+set:true
+clear:true
+toggle:true
 popcount:8 | 0 | 64
 clz/ctz:59 | 4
-rotl:1
-rotr:1
-is_pow2:1 | 0
+rotl:true
+rotr:true
+is_pow2:true | false
 next_pow2:128
-swap32:1
---- Executed at 2026-08-21 21:00:19 ---
+swap32:true
+--- Executed at 2026-08-24 04:46:18 ---

@@ -321,7 +321,13 @@ class Lexer:
                 raise LeashError(f"Unexpected character: {value}", line_num, column)
             if kind == "STRING":
                 raw = value[1:-1]
-                t = Token(kind, leash_unescape(raw), line_num, column)
+                text = leash_unescape(raw)
+                if "\x00" in text:
+                    raise LeashError(
+                        "NUL byte ('\\0') is not allowed inside string literals: Leash strings cannot hold embedded NULs.",
+                        line_num, column,
+                    )
+                t = Token(kind, text, line_num, column)
                 t.raw = raw
                 tokens_append(t)
                 continue
@@ -332,6 +338,11 @@ class Lexer:
             elif kind in ("MLSTRING_D", "MLSTRING_S"):
                 value = value[3:-3]
                 value = leash_unescape(value)
+                if "\x00" in value:
+                    raise LeashError(
+                        "NUL byte ('\\0') is not allowed inside string literals: Leash strings cannot hold embedded NULs.",
+                        line_num, column,
+                    )
             elif kind == "IDENT" and value in keywords:
                 kind = keywords[value]
 

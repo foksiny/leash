@@ -6,12 +6,6 @@ WARN : warn message
 
 ERROR: error message
 
-file has content:0
-warn in file:0 | debug filtered:1
---- Executed at 2026-08-21 21:00:21 ---
-warning: Argument 1 of 'time' expects '*char' but got 'int'.
-  --> /home/foksiny/projects/leash/installthis/time/datetime.lsh:22:30
-   |
-22 |         return toint(int<64>, time(0));
-   |                               ^
-   |
+file has content:false
+warn in file:false | debug filtered:true
+--- Executed at 2026-08-24 04:46:20 ---

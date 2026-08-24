@@ -19,13 +19,16 @@ class TypeChecker:
     # Class-level storage for instantiated generics (shared with code generator)
     instantiated_func_nodes = {}  # mangled_name -> Function node
     instantiated_class_nodes = {}  # mangled_name -> ClassDef node
+    last_instance = None  # most recent TypeChecker instance (lets codegen consult declared return types)
 
     def __init__(self, check_mode=False):
+        TypeChecker.last_instance = self
         self.var_types = {}  # name -> type string (local variables)
         self.var_immutable = {}  # name -> bool (True if immutable)
         self.func_types = {}  # name -> (arg_types, return_type)
         self.struct_types = {}  # name -> {field: type}
         self.union_types = {}  # name -> {variant: type}
+        self.forward_declared_types = set()  # names of structs/unions declared in the current compilation unit (validates recursive field types before full registration)
         self.enum_types = {}  # name -> list of member names
         self.error_types = {}  # name -> (args, message_expr, visibility)
         self.type_aliases = {}  # name -> resolved type string
@@ -51,6 +54,15 @@ class TypeChecker:
         self.current_return_type = None
         self.used_vars = set()  # name
         self.used_params = set()  # name
+        # Implicit borrow checker state: variables destroyed via `del` in the
+        # current function. `deleted_vars` is order-sensitive (textual point of
+        # del onward); `loop_deleted` poisons for the whole function because a
+        # del inside a loop may run before a later textual use on iteration 2.
+        self.deleted_vars = set()
+        self.loop_deleted = set()
+        # Implicit borrow checker: array parameters passed without '&' are
+        # read-only borrows of the caller's storage (arrays are not copied).
+        self.readonly_borrows = set()
         self.current_func_params = set()
         self.loop_depth = 0  # Track nesting depth of loops for stop/continue
         self.global_vars = {}  # name -> (type, visibility) for module-level variables
@@ -85,12 +97,27 @@ class TypeChecker:
         """Run type checking on a Program AST node. Returns list of warnings."""
         self.error_collect_all = True
         try:
+            # Zeroth pass: forward-declare struct and union names so that
+            # recursive (self-referential) and mutually recursive definitions
+            # validate their field types. e.g. `def Node : struct { next: *Node; };`
+            for item in program.items:
+                if isinstance(item, (StructDef, UnionDef)):
+                    if item.name not in self.struct_types and item.name not in self.union_types:
+                        self.forward_declared_types.add(item.name)
+
             # First pass: register all top-level definitions (structs, unions, aliases, functions, templates, global vars)
             for item in program.items:
                 try:
                     self._register_item(item)
                 except LeashError as e:
                     self.errors.append(e)
+
+            # Reject structs/unions that contain themselves by value (infinite size).
+            # Recursive data types must go through a pointer: `next: *Node`.
+            try:
+                self._check_recursive_value_types()
+            except LeashError as e:
+                self.errors.append(e)
 
             # Second pass: check function bodies and global var initializers
             for item in program.items:
@@ -656,6 +683,86 @@ class TypeChecker:
         self.union_types[node.name] = variants
         self.union_types_vis[node.name] = getattr(node, "visibility", "pub")
 
+    def _by_value_contained_types(self, type_name):
+        """Yield names of structs/unions embedded by value inside `type_name`.
+
+        Pointer/reference indirection terminates containment; array elements
+        and multi-type groups are still embedded by value. Generic containers
+        (vec/hash/matrix) store elements behind indirection, so they don't
+        contribute to a type's size.
+        """
+        t = self._strip_imut(type_name)
+        t = self._resolve(t)
+        if not isinstance(t, str) or not t:
+            return
+        if t.startswith("*") or t.startswith("&"):
+            return
+        if self._is_function_pointer_type(t):
+            return
+        if t.endswith("]") and "[" in t:
+            base = t.split("[")[0].strip()
+            yield from self._by_value_contained_types(base)
+            return
+        if t.startswith("(") and t.endswith(")"):
+            for part in t[1:-1].split(","):
+                yield from self._by_value_contained_types(part.strip())
+            return
+        if "<" in t and t.endswith(">"):
+            return
+        if t in self.struct_types or t in self.union_types:
+            yield t
+
+    def _check_recursive_value_types(self):
+        """Detect structs/unions that contain themselves by value (directly or
+        indirectly). Such types would have infinite size; recursive data types
+        must reference themselves through a pointer instead."""
+        graph = {}
+        for sname, fields in self.struct_types.items():
+            edges = set()
+            for ftype in fields.values():
+                edges.update(self._by_value_contained_types(ftype))
+            graph[sname] = edges
+        for uname, variants in self.union_types.items():
+            edges = graph.setdefault(uname, set())
+            for vtype in variants.values():
+                edges.update(self._by_value_contained_types(vtype))
+
+        WHITE, GRAY, BLACK = 0, 1, 2
+        # A struct/union may be shadowed by a same-named non-aggregate;
+        # only walk names that are still registered aggregate types.
+        color = {
+            n: WHITE
+            for n in graph
+            if n in self.struct_types or n in self.union_types
+        }
+
+        stack = []
+        def visit(node):
+            color[node] = GRAY
+            stack.append(node)
+            for nxt in sorted(graph.get(node, ())):
+                c = color.get(nxt, BLACK)
+                if c == GRAY:
+                    chain_start = stack.index(nxt)
+                    chain = " -> ".join(stack[chain_start:] + [nxt])
+                    raise LeashError(
+                        f"Type '{nxt}' contains itself by value "
+                        f"(directly or indirectly): {chain}",
+                        tip=(
+                            "A value-embedded cycle would make the type "
+                            "infinitely large. Store a pointer instead: "
+                            "`next: *Node;`."
+                        ),
+                    )
+                if c == WHITE:
+                    visit(nxt)
+            stack.pop()
+            color[node] = BLACK
+
+        for name in sorted(color):
+            if color[name] == WHITE:
+                visit(name)
+
     def _register_enum(self, node):
         seen = set()
         members_info = {}  # name -> (type, value_expr)
@@ -1185,6 +1292,9 @@ class TypeChecker:
             or t in self.class_types
         ):
             return True
+        # Forward-declared struct/union names (supports recursive definitions)
+        if t in self.forward_declared_types:
+            return True
         # Check for instantiated generic classes
         if t in [name for (name, _), _ in self.instantiated_classes.items()]:
             return True
@@ -1669,8 +1779,19 @@ class TypeChecker:
         saved_func = self.current_func
         saved_func_node = self.current_func_node
         saved_return = self.current_return_type
+        saved_deleted = self.deleted_vars.copy()
+        saved_borrows = self.readonly_borrows.copy()
 
         self.current_func = node.name
+        self.deleted_vars = set()
+        self.loop_deleted = set()
+        self.readonly_borrows = set()
+        # Implicit borrow checker: array parameters passed without '&' are
+        # read-only borrows of the caller's storage (arrays are not copied).
+        self.readonly_borrows = set()
+        # A `del` anywhere inside a loop invalidates the variable for the whole
+        # function: on a second iteration any use is a use-after-free.
+        self._collect_loop_dels(node.body, 0)
         self.current_func_node = node
         self.current_return_type = node.return_type
         self.used_vars = set()
@@ -1718,6 +1839,11 @@ class TypeChecker:
             self.var_types[arg_name] = bare_type
             self.var_immutable[arg_name] = is_imut
             self.current_func_params.add(arg_name)
+            # Arrays are not copied on parameter passing: they alias the
+            # caller's storage. Without an explicit '&' the callee gets a
+            # read-only borrow; mutation requires `&T`.
+            if not arg_type.startswith("&") and "[" in bare_type and bare_type.endswith("]") and "vec<" not in bare_type:
+                self.readonly_borrows.add(arg_name)
 
         # Register 'this' for struct functions
         if getattr(node, 'struct_type', None):
@@ -1782,6 +1908,78 @@ class TypeChecker:
         self.current_func = saved_func
         self.current_func_node = saved_func_node
         self.current_return_type = saved_return
+        self.deleted_vars = saved_deleted
+        self.readonly_borrows = saved_borrows
+
+    def _collect_loop_dels(self, statements, depth):
+        """Find `del x` statements nested in loops so those variables can be
+        poisoned for the entire function (a later textual use can still run
+        before the del on a subsequent iteration)."""
+        from .ast_nodes import (
+            Identifier,
+            DelStatement,
+            IfStatement,
+            WhileStatement,
+            LoopStatement,
+            ForStatement,
+            DoWhileStatement,
+            ForeachStructStatement,
+            ForeachArrayStatement,
+            ForeachStringStatement,
+            ForeachVectorStatement,
+            ForeachMatrixStatement,
+            WithStatement,
+        )
+        for st in statements or []:
+            if isinstance(st, DelStatement):
+                if depth > 0 and isinstance(st.target, Identifier):
+                    self.loop_deleted.add(st.target.name)
+            elif isinstance(st, (WhileStatement, LoopStatement, ForStatement, DoWhileStatement)):
+                body = getattr(st, "body", None) or []
+                self._collect_loop_dels(body, depth + 1)
+                step = getattr(st, "step", None)
+                if step is not None:
+                    self._collect_loop_dels([step], depth + 1)
+            elif isinstance(st, (ForeachStructStatement, ForeachArrayStatement, ForeachStringStatement, ForeachVectorStatement, ForeachMatrixStatement)):
+                self._collect_loop_dels(getattr(st, "body", []) or [], depth + 1)
+            elif isinstance(st, IfStatement):
+                self._collect_loop_dels(st.then_block or [], depth)
+                for _cond, block, _inv in getattr(st, "also_blocks", []) or []:
+                    self._collect_loop_dels(block or [], depth)
+                if st.else_block:
+                    self._collect_loop_dels(st.else_block or [], depth)
+            elif isinstance(st, WithStatement):
+                self._collect_loop_dels(st.body or [], depth)
+
+    def _root_identifier(self, expr):
+        """Return the name of the identifier at the root of a member/index
+        access chain, or None."""
+        from .ast_nodes import Identifier, MemberAccess, IndexAccess
+        while isinstance(expr, (MemberAccess, IndexAccess)):
+            expr = expr.expr
+        if isinstance(expr, Identifier):
+            return expr.name
+        return None
+
+    def _frame_escape_in(self, expr):
+        """If expr contains an address-of operation rooted at a local variable
+        (i.e. a value living in the current call frame), return that variable's
+        name; otherwise None. Used to reject returns that would dangle."""
+        from .ast_nodes import UnaryOp, TernaryOp, BinaryOp
+        if expr is None:
+            return None
+        if isinstance(expr, UnaryOp) and expr.op == "&":
+            root = self._root_identifier(expr.expr)
+            if root and root in self.var_types:
+                return root
+            return None
+        if isinstance(expr, TernaryOp):
+            a = self._frame_escape_in(expr.true_expr)
+            return a or self._frame_escape_in(expr.false_expr)
+        if isinstance(expr, BinaryOp):
+            a = self._frame_escape_in(expr.left)
+            return a or self._frame_escape_in(expr.right)
+        return None
 
     def _check_class(self, node):
         self.current_class = node.name
@@ -1871,19 +2069,10 @@ class TypeChecker:
                 if t:
                     resolved = self._resolve(t)
                     if not is_buffer:
-                        if "[" in resolved and "]" in resolved:
-                            if resolved != "char[]":
-                                self._error(
-                                    f"Argument {i + 1} of show() is an array ('{t}'), which is not supported.",
-                                    node=arg,
-                                    tip="To print an array, use a `foreach` loop to iterate over its elements: `foreach i, v in<array> my_arr { show(v); }`",
-                                )
-                        if resolved in self.struct_types:
-                            self._error(
-                                f"Argument {i + 1} of show() is a struct ('{resolved}'), which is not supported.",
-                                node=arg,
-                                tip='To print a struct, use a `foreach` loop to iterate over its members: `foreach k, v in<struct> my_struct { show(k, ": ", v); }`',
-                            )
+                        # Arrays, structs, vecs and matrices are all printed
+                        # structurally by show() (e.g. "[1, 2, 3]"), so they
+                        # are fully supported now.
+                        pass
         elif isinstance(stmt, ExpressionStatement):
             self._infer_type(stmt.expr)
         elif isinstance(stmt, IfStatement):
@@ -2040,8 +2229,20 @@ class TypeChecker:
 
     def _check_del(self, stmt):
         """Type check a del statement - verify the target is a valid class instance."""
+        from .ast_nodes import Identifier
+        if isinstance(stmt.target, Identifier):
+            name = stmt.target.name
+            if name in self.deleted_vars or name in self.loop_deleted:
+                self._error(
+                    f"Double delete: '{name}' has already been deleted.",
+                    node=stmt,
+                    tip="Deleting the same instance twice is undefined behavior. Delete it exactly once.",
+                    code="LEASH-E008",
+                )
+                return
         target_type = self._infer_type(stmt.target)
         if target_type:
+            resolved = self._resolve(target_type)
             resolved = self._resolve(target_type)
             if resolved not in self.class_types:
                 self._error(
@@ -2049,6 +2250,8 @@ class TypeChecker:
                     node=stmt,
                     tip="The 'del' keyword can only be used to delete class instances.",
                 )
+        if isinstance(stmt.target, Identifier):
+            self.deleted_vars.add(stmt.target.name)
 
     def _check_var_decl(self, stmt):
         if stmt.name in self.var_types:
@@ -2190,7 +2393,32 @@ class TypeChecker:
             )
 
     def _check_assignment(self, stmt):
-        from .ast_nodes import Identifier
+        from .ast_nodes import Identifier, IndexAccess, MemberAccess
+
+        # Strings are immutable: reject element writes like s[0] = 'x'.
+        if isinstance(stmt.target, IndexAccess):
+            base_t = self._infer_type(stmt.target.expr)
+            if base_t:
+                base_resolved = self._resolve(self._strip_imut(base_t))
+                if base_resolved == "string":
+                    self._error(
+                        "Strings are immutable: individual characters cannot be assigned.",
+                        node=stmt,
+                        tip="Build a new string instead, e.g. with concatenation or a helper from utils::str::Str.",
+                        code="LEASH-E013",
+                    )
+
+        # Implicit borrow check: element/field writes through an array
+        # parameter passed without '&' mutate the caller's storage.
+        if isinstance(stmt.target, (IndexAccess, MemberAccess)):
+            root = self._root_identifier(stmt.target)
+            if root and root in self.readonly_borrows:
+                self._error(
+                    f"Cannot mutate '{root}': array parameters are read-only borrows.",
+                    node=stmt,
+                    tip=f"Arrays are not copied when passed. Declare the parameter as '&{self.var_types.get(root, 'T[]')}' to allow mutation of the caller's array, or copy the elements you need.",
+                    code="LEASH-E012",
+                )
 
         if isinstance(stmt.target, Identifier):
             if self.var_immutable.get(stmt.target.name, False):
@@ -2234,6 +2462,14 @@ class TypeChecker:
 
     def _check_return(self, stmt):
         val_type = self._infer_type(stmt.value)
+        offender = self._frame_escape_in(stmt.value)
+        if offender:
+            self._error(
+                f"Cannot return the address of local '{offender}': it lives on the current call frame and would dangle.",
+                node=stmt,
+                tip="Return the value itself (Leash copies it), or move ownership by returning the class instance instead of its address.",
+                code="LEASH-E010",
+            )
         bare_ret = (
             self._strip_imut(self.current_return_type)
             if self.current_return_type
@@ -2287,6 +2523,17 @@ class TypeChecker:
         # Extract individual return types
         inner = bare_ret[1:-1]
         expected_types = [t.strip() for t in inner.split(",")]
+
+        for rv in stmt.values:
+            off = self._frame_escape_in(rv)
+            if off:
+                self._error(
+                    f"Cannot return the address of local '{off}': it lives on the current call frame and would dangle.",
+                    node=stmt,
+                    tip="Return the value itself, or restructure so no address escapes the frame.",
+                    code="LEASH-E010",
+                )
+                break
 
         if len(stmt.values) != len(expected_types):
             self._error(
@@ -2658,6 +2905,20 @@ class TypeChecker:
             return "string"
         elif isinstance(expr, Identifier):
             if expr.name in self.var_types:
+                if expr.name in self.deleted_vars:
+                    self._error(
+                        f"Use of deleted variable '{expr.name}': it was already destroyed with 'del'.",
+                        node=expr,
+                        tip="After `del x` the instance is gone; keep a reference to the data you still need before deleting.",
+                        code="LEASH-E009",
+                    )
+                elif expr.name in self.loop_deleted:
+                    self._error(
+                        f"Variable '{expr.name}' is used where it may already have been deleted by the 'del' inside a loop.",
+                        node=expr,
+                        tip="On iterations after the 'del' runs, this access reads freed memory. Allocate a fresh instance inside the loop instead.",
+                        code="LEASH-E009",
+                    )
                 if expr.name in self.current_func_params:
                     self.used_params.add(expr.name)
                 else:
@@ -2822,10 +3083,21 @@ class TypeChecker:
             left_b = self._base_type(left_t)
             right_b = self._base_type(right_t)
 
-            # Pointer arithmetic
-            if (left_b == "ptr" or left_b == "sptr") and right_b == "int":
-                return left_t
-            if left_b == "int" and (right_b == "ptr" or right_b == "sptr"):
+            # Raw-pointer arithmetic walks unchecked memory: require unsafe.
+            # Safe references ('&T', base 'sptr') auto-deref to values and are exempt.
+            if (left_b == "ptr" and right_b == "int") or (
+                left_b == "int" and right_b == "ptr"
+            ):
+                if not self.in_unsafe_func:
+                    bad_t = left_t if left_b == "ptr" else right_t
+                    raise LeashError(
+                        f"Pointer arithmetic on '{bad_t}' requires an `unsafe fnc`.",
+                        node=expr,
+                        tip="Raw-pointer math can walk outside valid memory. Use an `unsafe fnc`, a safe '&T' reference, or bounds-checked arrays/vectors.",
+                        code="LEASH-E011",
+                    )
+                if left_b == "ptr":
+                    return left_t
                 return right_t
 
             # Redundancy checks
@@ -3583,6 +3855,7 @@ class TypeChecker:
                 node=expr,
                 tip="Make sure the function is defined before calling it.",
             )
+            return "int"
 
         expected_args, return_type, arg_names, arg_defaults = sig
 
@@ -3885,6 +4158,14 @@ class TypeChecker:
 
         if base_type:
             resolved = self._resolve(base_type)
+            # Raw-pointer indexing is unchecked memory access: require unsafe.
+            if resolved.startswith("*") and not self.in_unsafe_func:
+                raise LeashError(
+                    f"Indexing a raw pointer ('{base_type}') requires an `unsafe fnc`.",
+                    node=expr,
+                    tip="Raw pointers have no bounds information. Wrap the access in an `unsafe fnc`, or use arrays/vectors which are bounds-checked.",
+                    code="LEASH-E011",
+                )
             # Handle hash table index access
             if resolved.startswith("hash<") and resolved.endswith(">"):
                 # Extract key and value types from hash<K, V>

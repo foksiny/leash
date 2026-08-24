@@ -1,6 +1,6 @@
-1 | 1 | 1 | full push:0
-1 | at0:1 | at2:3
+true | true | true | full push:false
+true | at0:1 | at2:3
 evicted:1 | new front:2
-2 | 3 | 5 | empty:1
---- Executed at 2026-08-21 21:00:09 ---
+2 | 3 | 5 | empty:true
+--- Executed at 2026-08-24 04:46:12 ---
 warning: Vector method 'pushb' expects argument of type 'T' but got '_T'

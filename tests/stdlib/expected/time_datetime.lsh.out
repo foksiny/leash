@@ -1,18 +1,12 @@
 2026-08-21
 12:34:56
 2026-8-21
-leap:1 | 0 | 1
+leap:true | false | true
 dim:29 | 28
 4 = Friday
 2026-09-20
-parsed ok:1
-1
+parsed ok:true
+true
 August
 1970-01-01 00:00:00
---- Executed at 2026-08-21 21:00:27 ---
-warning: Argument 1 of 'time' expects '*char' but got 'int'.
-  --> /home/foksiny/projects/leash/installthis/time/datetime.lsh:22:30
-   |
-22 |         return toint(int<64>, time(0));
-   |                               ^
-   |
+--- Executed at 2026-08-24 04:46:26 ---

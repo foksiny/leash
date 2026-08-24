@@ -1,6 +1,6 @@
 size:3
 pop:c
 peek:b
-isin b:0 | isin z:0
-empty now:1
---- Executed at 2026-08-21 21:00:11 ---
+isin b:false | isin z:false
+empty now:true
+--- Executed at 2026-08-24 04:46:13 ---

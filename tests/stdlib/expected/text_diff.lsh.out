@@ -7,7 +7,7 @@ added:1 | removed:1
 {-quick}
 {+slow}
 { fox}
---- Executed at 2026-08-21 21:00:25 ---
+--- Executed at 2026-08-24 04:46:22 ---
 warning: Unused local variable 'idx' in function 'lines'
   --> /home/foksiny/projects/leash/installthis/text/diff.lsh:19:15
    |

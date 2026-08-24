@@ -55,6 +55,11 @@ def normalize_pointers(text):
     text = re.sub(r"\b[0-9A-Fa-f]{12,16}\b", "0xPOINTER", text)
     # Normalize rand.lsh output FIRST
     text = re.sub(r"[A-Z][a-z]+ [A-Z][a-z]+ -?\d+ \d+\.\d+", "RANDOM_OUTPUT", text)
+    # Normalize multithread race-condition output: worker progress lines
+    # interleave and their counts vary with thread scheduling.
+    text = re.sub(r"^counter incremented to: \d+\n?", "", text, flags=re.M)
+    text = re.sub(r"^calculate updated result to: \d+\n?", "", text, flags=re.M)
+    text = re.sub(r"^result:\d+ counter:\d+\n?", "", text, flags=re.M)
     # Normalize float precision differences
     text = re.sub(r"(\d+\.\d+?)0+", r"\1", text)
     # Normalize warning order
@@ -72,7 +77,11 @@ def normalize_pointers(text):
     # Normalize path differences - DO ARGS NORMALIZATION FIRST
     # Normalize args.lsh output pattern for all platforms
     text = re.sub(r"0: Z:.*", "0: ./.__temp_run_leash_exe", text)
-    text = re.sub(r"0: .*\.__temp_run_leash_exe", "0: ./.__temp_run_leash_exe", text)
+    text = re.sub(
+        r"0: .*\.__temp_run_leash_exe[_A-Za-z0-9]*",
+        "0: ./.__temp_run_leash_exe",
+        text,
+    )
     # Handle new unique filename format with timestamp and UUID suffix
     text = re.sub(r"0: \.\S+\.exe", "0: ./.__temp_run_leash_exe", text)
     text = re.sub(r"\d+\n0: .+\n1: .+", "1\n0: ./.__temp_run_leash_exe", text)

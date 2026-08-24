@@ -1,0 +1,44 @@
+// Recursive classes: a linked chain of class instances.
+// Class fields may reference the class being defined, and instances
+// can be passed to (recursive) functions by reference.
+def Item : class {
+    pub name: string;
+    pub next: Item;
+
+    pub Item(name : string) {
+        this.name = name;
+        this.next = null;
+    }
+};
+
+// Recursive function taking a class instance.
+fnc count(i : Item) : int {
+    if i == null { return 0; }
+    return 1 + count(i.next);
+}
+
+fnc collect(i : Item) : string {
+    if i == null { return ""; }
+    if i.next == null { return i.name; }
+    return i.name + " -> " + collect(i.next);
+}
+
+fnc main() : void {
+    c: Item = create Item("c");
+    b: Item = create Item("b");
+    a: Item = create Item("a");
+
+    // link them up with field l-values
+    a.next = b;
+    b.next = c;
+
+    show("count=", count(a));
+    show(collect(a));
+
+    // re-linking through nested member l-values
+    d: Item = create Item("z");
+    b.next = d;
+    d.next = c;
+    show(collect(a));
+    show("count=", count(a));
+}

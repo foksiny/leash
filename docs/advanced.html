@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v0.22.3 Beta</div>
+        <div class="version">v0.23.0 Beta</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -146,6 +146,28 @@ autofree: true</code></pre>
 <h2>Error Handling &amp; Safety</h2>
 
 <p>Leash prioritises developer experience with helpful error reporting and safety features including static type checking, smart error tips, runtime union checks, and unique error codes for every warning.</p>
+
+<h3>The Implicit Borrow Checker</h3>
+<p>Leash gives you Rust-class memory safety without annotating lifetimes or writing <code>borrow</code>/<code>mut</code>. The garbage collector removes use-after-free for heap values, and the compiler adds an <em>implicit borrow checker</em>: ordinary code needs no extra syntax, but any operation that could dangle or corrupt memory is rejected at compile time with a unique error code.</p>
+<table>
+    <tr><th>Rule</th><th>Catch</th></tr>
+    <tr><td>No stack escape</td><td><code>E010</code> &mdash; returning an address taken from a local (<code>return &amp;v;</code>) is rejected: the value lives on the current call frame and would dangle.</td></tr>
+    <tr><td>No use after delete</td><td><code>E009</code> &mdash; using a variable after <code>del</code> is an error. A <code>del</code> anywhere inside a loop poisons the variable for the whole function, because a later textual use can still run first on the next iteration.</td></tr>
+    <tr><td>No double delete</td><td><code>E008</code> &mdash; deleting the same instance twice is rejected.</td></tr>
+    <tr><td>Read-only array borrows</td><td><code>E012</code> &mdash; arrays are not copied when passed to functions: they alias the caller's storage. Without an explicit <code>&amp;</code> the parameter is a read-only borrow; mutating it requires declaring the parameter as <code>&amp;T</code>.</td></tr>
+    <tr><td>Unsafe containment</td><td><code>E011</code> &mdash; raw-pointer indexing (<code>p[i]</code>) and pointer arithmetic (<code>p + n</code>) require an <code>unsafe fnc</code>, just like dereferencing. Safe references (<code>&amp;T</code>) auto-dereference and are exempt.</td></tr>
+    <tr><td>Immutable strings</td><td><code>E013</code> &mdash; character assignment through a string index is rejected; build a new string instead.</td></tr>
+    <tr><td>No hidden NULs</td><td>NUL bytes cannot be embedded in strings (rejected in literals at compile time and in computed chars at runtime), so concatenation can never silently truncate.</td></tr>
+</table>
+<pre><code>fnc broken() : *<span class="kw">int</span> {
+    v: <span class="kw">int</span> = 42;
+    <span class="kw">return</span> &amp;v;   <span class="cm">// error [LEASH-E010]: would dangle</span>
+}
+
+fnc fill(a &amp;<span class="kw">int</span>[3]) {   <span class="cm">// '&amp;' declares a mutable borrow</span>
+    a[0] = 999;
+}</code></pre>
+<div class="callout callout-info">The result: safe Leash code cannot form a dangling reference, read freed memory, or mutate through an implicit borrow &mdash; checked at compile time, with zero annotation burden. Raw pointers remain available as an explicit opt-in inside <code>unsafe fnc</code>, exactly like Rust's <code>unsafe</code> blocks.</div>
 
 <h3>Custom Error Definitions</h3>
 <p>Leash allows you to define custom errors with the <code>error</code> keyword. Errors can take arguments and have a message expression that is evaluated when the error is thrown. When an error is thrown, the message is printed along with file, line, and column info, and the program terminates with exit code 1 (unless caught in a <code>works</code> block).</p>

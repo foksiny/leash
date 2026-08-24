@@ -1,4 +1,3 @@
-This is Windows!
 if _PLATFORM == "win64" {
     fnc main() : void {
         show("This is Windows!");
@@ -14,4 +13,4 @@ if _PLATFORM == "win64" {
     }
 }
 
---- Executed at 2026-05-01 18:37:42 ---
+--- Executed at 2026-08-24 00:15:34 ---

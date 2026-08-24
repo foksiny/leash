@@ -1,0 +1,6 @@
+len=3
+sum=60
+b.value=99
+copy.value=1234 b.value=99
+b.value=100
+--- Executed at 2026-08-24 00:15:42 ---

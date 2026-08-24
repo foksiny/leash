@@ -1,9 +1,9 @@
-exists:1
+exists:true
 L0 = line one
 L1 = line two
-0
-copy ok:1 | exists:1
-size>0:1
-1
-gone:1
---- Executed at 2026-08-21 21:00:22 ---
+false
+copy ok:true | exists:true
+size>0:true
+true
+gone:true
+--- Executed at 2026-08-24 04:46:20 ---

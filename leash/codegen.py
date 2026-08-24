@@ -250,6 +250,36 @@ class CodeGen:
         )
         self.sprintf = ir.Function(self.module, sprintf_ty, name="sprintf")
 
+        # C runtime helper (gc.c): format an arbitrary-width integer
+        # void leash_bigint_fmt(char* out, i8* bytes, i32 bitwidth, i32 is_signed)
+        bigint_fmt_ty = ir.FunctionType(
+            ir.VoidType(),
+            [
+                ir.IntType(8).as_pointer(),
+                ir.IntType(8).as_pointer(),
+                ir.IntType(32),
+                ir.IntType(32),
+            ],
+        )
+        self.bigint_fmt_fn = ir.Function(
+            self.module, bigint_fmt_ty, name="leash_bigint_fmt"
+        )
+
+        # C runtime helper (gc.c): parse a decimal string into a wide integer
+        # i32 leash_bigint_parse(i8* s, i32 bitwidth, i32 is_signed, i8* out)
+        bigint_parse_ty = ir.FunctionType(
+            ir.IntType(32),
+            [
+                ir.IntType(8).as_pointer(),
+                ir.IntType(32),
+                ir.IntType(32),
+                ir.IntType(8).as_pointer(),
+            ],
+        )
+        self.bigint_parse_fn = ir.Function(
+            self.module, bigint_parse_ty, name="leash_bigint_parse"
+        )
+
         memmove_ty = ir.FunctionType(
             ir.IntType(8).as_pointer(),
             [ir.IntType(8).as_pointer(), ir.IntType(8).as_pointer(), ir.IntType(64)],
@@ -703,7 +733,7 @@ class CodeGen:
         global_fmt.initializer = c_fmt
         return self.builder.bitcast(global_fmt, ir.IntType(8).as_pointer())
 
-    def _emit_tostring(self, val, llvm_ty):
+    def _emit_tostring(self, val, llvm_ty, type_name=None):
         """Convert any basic value to a Leash string (i8*). Allocation via GC_malloc."""
         # Buffer for conversion (64 bytes is plenty for any numeric)
         buf = self.builder.call(self.malloc, [ir.Constant(ir.IntType(64), 64)])
@@ -717,8 +747,24 @@ class CodeGen:
                 true_str = self._emit_const_str("true")
                 false_str = self._emit_const_str("false")
                 return self.builder.select(val, true_str, false_str)
-            elif llvm_ty.width == 8:  # char
-                # Create a string of length 1
+            elif llvm_ty.width > 64:
+                # Arbitrary-precision integers (int<N>/uint<N>, N up to 512):
+                # delegate to the C runtime for exact decimal conversion.
+                return self._emit_wide_int_string(val, type_name)
+            elif llvm_ty.width == 8 and not self._is_uint_type_name(type_name) and (
+                type_name is None or type_name == "char"
+            ):
+                # char: create a string of length 1.
+                # Reject NUL: Leash strings are C strings under the hood, an
+                # embedded NUL would be silently truncated by concatenation.
+                if not self.in_unsafe_func:
+                    nonzero = self.builder.icmp_unsigned(
+                        "!=", val, ir.Constant(ir.IntType(8), 0)
+                    )
+                    self._emit_runtime_check(
+                        nonzero,
+                        "Runtime error: cannot embed NUL byte ('\\0') in a Leash string.\n",
+                    )
                 self.builder.store(
                     val, self.builder.gep(buf, [ir.Constant(ir.IntType(32), 0)])
                 )
@@ -728,16 +774,33 @@ class CodeGen:
                 )
                 return buf
             elif llvm_ty.width == 64:
-                fmt = "%lld"
+                if self._is_uint_type_name(type_name):
+                    fmt = "%llu"
+                else:
+                    fmt = "%lld"
             elif llvm_ty.width < 32:
                 fmt = "%d"
-                casted_val = self.builder.sext(val, ir.IntType(32))
-            elif llvm_ty.width <= 64:
-                fmt = "%lld"
-                casted_val = self.builder.sext(val, ir.IntType(64))
+                casted_val = (
+                    self.builder.zext(val, ir.IntType(32))
+                    if (self._is_uint_type_name(type_name) or type_name == "bool")
+                    else self.builder.sext(val, ir.IntType(32))
+                )
             else:
-                fmt = "%lld"
-                casted_val = self.builder.trunc(val, ir.IntType(64))
+                # 32 < width < 64 (e.g. int<33>, uint<48>)
+                if self._is_uint_type_name(type_name):
+                    fmt = "%llu"
+                    casted_val = (
+                        self.builder.zext(val, ir.IntType(64))
+                        if llvm_ty.width < 64
+                        else val
+                    )
+                else:
+                    fmt = "%lld"
+                    casted_val = (
+                        self.builder.sext(val, ir.IntType(64))
+                        if llvm_ty.width < 64
+                        else val
+                    )
         elif isinstance(llvm_ty, (ir.HalfType, ir.FloatType, ir.DoubleType)):
             fmt = "%f"
             if not isinstance(llvm_ty, ir.DoubleType):
@@ -748,6 +811,131 @@ class CodeGen:
         fmt_ptr = self._emit_const_str(fmt)
         self.builder.call(self.sprintf, [buf, fmt_ptr, casted_val])
         return buf
+
+    def _value_to_display_string(self, val, resolved):
+        """Convert any value to its human-readable show() string.
+
+        Handles containers recursively:
+          vec<T>/matrix<T> -> "[a, b, c]"   hash<K,V> -> "<hash>"
+          T[N] slices      -> "[a, b, c]"   char[]    -> raw text
+        Structs print as "{f = v, ...}". Scalars delegate to _emit_tostring.
+        """
+        # Dynamic containers (vec and matrix share {data, size, cap} layout)
+        if resolved.startswith("vec<") and resolved.endswith(">"):
+            data = self.builder.extract_value(val, 0)
+            size = self.builder.extract_value(val, 1)
+            return self._join_bracketed_string(data, size, resolved[4:-1])
+        if resolved.startswith("matrix<") and resolved.endswith(">"):
+            data = self.builder.extract_value(val, 0)
+            size = self.builder.extract_value(val, 1)
+            return self._join_bracketed_string(data, size, resolved[7:-1])
+        if resolved.startswith("hash<") and resolved.endswith(">"):
+            return self._emit_const_str("<hash>")
+
+        # Named structs first: "{field = value, ...}"
+        if resolved in self.struct_symtab:
+            return self._struct_to_braced_string(val, resolved)
+
+        # Fixed-size arrays / slices: {i64 len, T* data} (char slices stay raw)
+        if (
+            isinstance(val.type, ir.LiteralStructType)
+            and len(val.type.elements) == 2
+            and isinstance(val.type.elements[0], ir.IntType)
+            and isinstance(val.type.elements[1], ir.PointerType)
+        ):
+            base_resolved = self._resolve_type_name(resolved.split("[")[0])
+            if base_resolved == "char":
+                # Raw character data, NUL-terminated copy
+                length = self.builder.extract_value(val, 0)
+                data = self.builder.extract_value(val, 1)
+                out = self.builder.call(self.malloc, [self.builder.add(length, ir.Constant(ir.IntType(64), 1))])
+                self._track_alloc(out)
+                self.builder.call(self.func_symtab["memcpy"], [out, data, length])
+                self.builder.store(
+                    ir.Constant(ir.IntType(8), 0),
+                    self.builder.gep(out, [length]),
+                )
+                return out
+            length = self.builder.extract_value(val, 0)
+            data = self.builder.extract_value(val, 1)
+            return self._join_bracketed_string(data, length, resolved.split("[")[0])
+
+        # Scalars
+        llvm_ty = val.type
+        if isinstance(llvm_ty, ir.PointerType):
+            return val  # strings pass through
+        return self._emit_tostring(val, llvm_ty, resolved)
+
+    def _join_bracketed_string(self, data_ptr, size_val, elem_type_name):
+        """Build "[e0, e1, ...]" from a data pointer and element count."""
+        elem_resolved = self._resolve_type_name(elem_type_name.split("[")[0])
+        acc_ptr = self.builder.alloca(
+            ir.IntType(8).as_pointer(), name="join_acc"
+        )
+        idx_ptr = self.builder.alloca(ir.IntType(64), name="join_idx")
+        self.builder.store(self._emit_const_str("["), acc_ptr)
+        self.builder.store(ir.Constant(ir.IntType(64), 0), idx_ptr)
+
+        cond_bb = self.builder.function.append_basic_block("join_cond")
+        body_bb = self.builder.function.append_basic_block("join_body")
+        done_bb = self.builder.function.append_basic_block("join_done")
+        self.builder.branch(cond_bb)
+        self.builder.position_at_end(cond_bb)
+        i = self.builder.load(idx_ptr)
+        cont = self.builder.icmp_unsigned("<", i, size_val)
+        self.builder.cbranch(cont, body_bb, done_bb)
+
+        self.builder.position_at_end(body_bb)
+        elem_ptr = self.builder.gep(data_ptr, [i], inbounds=True)
+        elem_val = self.builder.load(elem_ptr)
+        elem_str = self._value_to_display_string(elem_val, elem_resolved)
+        acc = self.builder.load(acc_ptr)
+        need_sep = self.builder.icmp_signed("!=", i, ir.Constant(ir.IntType(64), 0))
+        with self.builder.if_then(need_sep):
+            sep_acc = self._concat_strings(acc, self._emit_const_str(", "))
+            self.builder.store(sep_acc, acc_ptr)
+        acc = self.builder.load(acc_ptr)
+        new_acc = self._concat_strings(acc, elem_str)
+        self.builder.store(new_acc, acc_ptr)
+        next_i = self.builder.add(i, ir.Constant(ir.IntType(64), 1))
+        self.builder.store(next_i, idx_ptr)
+        self.builder.branch(cond_bb)
+
+        self.builder.position_at_end(done_bb)
+        final = self._concat_strings(
+            self.builder.load(acc_ptr), self._emit_const_str("]")
+        )
+        return final
+
+    def _struct_to_braced_string(self, val, sname):
+        """Build "{f = v, ...}" for a struct value."""
+        info = self.struct_symtab[sname]
+        fields = list(info["fields"].items())
+        acc_ptr = self.builder.alloca(
+            ir.IntType(8).as_pointer(), name="brace_acc"
+        )
+        first = True
+        for fname, idx in fields:
+            ftype = info["field_types"].get(fname, "int")
+            fval = self.builder.extract_value(val, idx)
+            fstr = self._value_to_display_string(
+                fval, self._resolve_type_name(ftype)
+            )
+            if first:
+                piece = self._concat_strings(self._emit_const_str("{ "), self._emit_const_str(f"{fname} = "))
+                piece = self._concat_strings(piece, fstr)
+                first = False
+            else:
+                piece = self._concat_strings(
+                    self.builder.load(acc_ptr),
+                    self._emit_const_str(f", {fname} = "),
+                )
+                piece = self._concat_strings(piece, fstr)
+            self.builder.store(piece, acc_ptr)
+        closing = self._concat_strings(
+            self.builder.load(acc_ptr), self._emit_const_str(" }")
+        )
+        return closing
 
     def _concat_strings(self, left_ptr, right_ptr):
         left_len = self.builder.call(self.strlen, [left_ptr])
@@ -760,10 +948,42 @@ class CodeGen:
         self.builder.call(self.strcat, [result, right_ptr])
         return result
 
-    def _ensure_string(self, val, llvm_ty):
+    def _ensure_string(self, val, llvm_ty, type_name=None):
         if isinstance(val.type, ir.PointerType) and val.type.pointee == ir.IntType(8):
             return val
-        return self._emit_tostring(val, llvm_ty)
+        return self._emit_tostring(val, llvm_ty, type_name)
+
+    def _is_uint_type_name(self, type_name):
+        tn = (type_name or "").strip()
+        return tn.startswith("uint")
+
+    def _emit_wide_int_string(self, val, leash_type_name=None):
+        """Convert an integer wider than 64 bits into a decimal string (i8*).
+
+        The value is spilled to a stack slot and passed as a little-endian
+        byte buffer to the C runtime helper leash_bigint_fmt(), which owns
+        none of the memory: we allocate the output buffer through the same
+        allocator every other Leash string uses (GC/malloc + autofree track).
+        """
+        width = val.type.width
+        is_signed = not self._is_uint_type_name(leash_type_name)
+        # ceil(width * log10(2)) digits max + sign + NUL; width//3+4 always fits
+        buf_bytes = width // 3 + 4
+        buf = self.builder.call(self.malloc, [ir.Constant(ir.IntType(64), buf_bytes)])
+        self._track_alloc(buf)
+        slot = self.builder.alloca(val.type, name="bigint_slot")
+        self.builder.store(val, slot)
+        bytes_ptr = self.builder.bitcast(slot, ir.IntType(8).as_pointer())
+        self.builder.call(
+            self.bigint_fmt_fn,
+            [
+                buf,
+                bytes_ptr,
+                ir.Constant(ir.IntType(32), width),
+                ir.Constant(ir.IntType(32), 1 if is_signed else 0),
+            ],
+        )
+        return buf
 
     def _track_alloc(self, ptr):
         """Track a heap allocation for later cleanup.
@@ -961,6 +1181,7 @@ class CodeGen:
             raise NotImplementedError(f"No codegen for {type(node).__name__}")
 
     def _get_leash_type_name(self, node):
+
         """Helper to try and get the Leash type name for an AST node during codegen."""
         from .ast_nodes import (
             Identifier,
@@ -1015,9 +1236,9 @@ class CodeGen:
         elif isinstance(node, StructInit):
             return node.name
         elif isinstance(node, NumberLiteral):
-            return "int"
+            return getattr(node, "leash_type_hint", None) or "int"
         elif isinstance(node, FloatLiteral):
-            return "float"
+            return getattr(node, "leash_type_hint", None) or "float"
         elif isinstance(node, StringLiteral):
             return "string"
         elif isinstance(node, InterpolatedString):
@@ -1125,6 +1346,15 @@ class CodeGen:
             if node.name == "normescape":
                 return "string"
             if node.name in self.func_symtab:
+                # Prefer the declared Leash return type from the type checker;
+                # the LLVM-type reverse mapping cannot name container types
+                # (vec<...>, hash<...>) and falls back to 'int'.
+                from .typechecker import TypeChecker
+                tc = getattr(TypeChecker, "last_instance", None)
+                if tc is not None and node.name in tc.func_types:
+                    ret = tc.func_types[node.name][1]
+                    if ret and ret != "void":
+                        return ret
                 func = self.func_symtab[node.name]
                 ret_type = func.function_type.return_type
                 return self._llvm_type_to_leash_name(ret_type)
@@ -1313,7 +1543,22 @@ class CodeGen:
         # Create showb helpers
         self._create_showb_helpers()
 
-        # First pass: register type aliases and struct/enum definitions
+        # First pass: register type aliases and struct/enum definitions.
+        # Structs are pre-declared as identified (opaque) LLVM types first so
+        # recursive (`next: *Node`) and mutually recursive fields resolve to
+        # real pointer types instead of silently falling back to i32, and so
+        # definition order never matters. Bodies are filled in by
+        # _codegen_StructDef below.
+        for item in node.items:
+            if isinstance(item, StructDef) and item.name not in self.struct_symtab:
+                st = self.module.context.get_identified_type(item.name)
+                self.struct_symtab[item.name] = {
+                    "type": st,
+                    "fields": {},
+                    "field_types": {},
+                    "field_defaults": {},
+                    "methods": {},
+                }
         for item in node.items:
             if isinstance(item, TypeAlias):
                 self._codegen(item)
@@ -1325,7 +1570,11 @@ class CodeGen:
                 self._codegen(item)
             elif isinstance(item, UnionDef):
                 self._codegen(item)
-            elif isinstance(item, NativeImport):
+
+        # Native imports may reference user-defined structs/unions/enums, so
+        # they are declared only after all of those have complete bodies.
+        for item in node.items:
+            if isinstance(item, NativeImport):
                 self._codegen(item)
 
         # Second pass: global variable declarations
@@ -1492,10 +1741,8 @@ class CodeGen:
 
     def _is_hfa_struct(self, llvm_type):
         """Check if a struct type is a Homogeneous Float Aggregate (all fields same float type, ≤4)."""
-        if not isinstance(llvm_type, ir.LiteralStructType):
-            return False
-        elems = llvm_type.elements
-        if len(elems) == 0 or len(elems) > 4:
+        elems = getattr(llvm_type, "elements", None)
+        if not elems or len(elems) > 4:
             return False
         float_types = (ir.FloatType, ir.DoubleType, ir.HalfType)
         first_is_float = isinstance(elems[0], float_types)
@@ -1505,10 +1752,11 @@ class CodeGen:
 
     def _struct_bit_size(self, llvm_type):
         """Get total bit size of a struct's fields."""
-        if not isinstance(llvm_type, ir.LiteralStructType):
+        elems = getattr(llvm_type, "elements", None)
+        if elems is None:
             return 0
         total = 0
-        for e in llvm_type.elements:
+        for e in elems:
             if isinstance(e, ir.IntType):
                 total += e.width
             elif isinstance(e, (ir.FloatType, ir.DoubleType, ir.HalfType)):
@@ -1519,7 +1767,8 @@ class CodeGen:
 
     def _flatten_struct_type(self, llvm_type):
         """For non-HFA small structs (≤64 bits), return the equivalent integer type."""
-        if not isinstance(llvm_type, ir.LiteralStructType):
+        elems = getattr(llvm_type, "elements", None)
+        if not elems:
             return llvm_type
         if self._is_hfa_struct(llvm_type):
             return llvm_type
@@ -1815,14 +2064,29 @@ class CodeGen:
                 field_defaults[fname] = fdefault
             llvm_types.append(self._get_llvm_type(ftype))
 
-        struct_type = ir.LiteralStructType(llvm_types)
-        self.struct_symtab[node.name] = {
-            "type": struct_type,
-            "fields": fields,
-            "field_types": field_types,
-            "field_defaults": field_defaults,
-            "methods": {},
-        }
+        info = self.struct_symtab.get(node.name)
+        if isinstance(info, dict) and isinstance(
+            info.get("type"), ir.IdentifiedStructType
+        ):
+            # Pre-declared in _codegen_Program for recursion support; fill in
+            # the real body now that all field types are known.
+            struct_type = info["type"]
+            if not struct_type.is_opaque:
+                raise LeashError(f"Redefinition of struct '{node.name}'")
+            struct_type.set_body(*llvm_types)
+            info["fields"] = fields
+            info["field_types"] = field_types
+            info["field_defaults"] = field_defaults
+            info["methods"] = {}
+        else:
+            struct_type = ir.LiteralStructType(llvm_types)
+            self.struct_symtab[node.name] = {
+                "type": struct_type,
+                "fields": fields,
+                "field_types": field_types,
+                "field_defaults": field_defaults,
+                "methods": {},
+            }
 
     def _codegen_TypeAlias(self, node):
         self.type_aliases[node.name] = node.target_type
@@ -3007,6 +3271,7 @@ class CodeGen:
             UnaryOp,
             PointerMemberAccess,
             MethodCall,
+            Call,
         )
 
         if isinstance(node, Identifier):
@@ -3131,6 +3396,15 @@ class CodeGen:
                         node=node
                     )
             else:
+                if resolved.startswith("*"):
+                    raise LeashError(
+                        f"Cannot access member '{node.member}' through a raw pointer ('{type_name}')",
+                        node=node,
+                        tip=(
+                            "Use '->' inside an `unsafe fnc` to dereference a raw pointer, "
+                            "or pass the value as a safe '&T' parameter to use '.' without unsafe."
+                        ),
+                    )
                 raise LeashError(
                     f"Cannot access member '{node.member}': '{type_name}' is not a struct or union",
                     node=node
@@ -3259,6 +3533,31 @@ class CodeGen:
                 
                 return (result_ptr, value_type, None)
             
+            # Vector index access: layout is { T* data, i64 size, i64 capacity }
+            if resolved.startswith("vec<") and resolved.endswith(">"):
+                inner_type = resolved[4:-1]
+                vec_val = self.builder.load(slice_ptr)
+                data_ptr = self.builder.extract_value(vec_val, 0)
+                vec_size = self.builder.extract_value(vec_val, 1)
+                idx_val = self._codegen(node.index)
+                idx64 = self._emit_cast(idx_val, ir.IntType(64))
+                # Normalize negative index: idx = idx < 0 ? idx + size : idx
+                is_negative = self.builder.icmp_signed("<", idx64, ir.Constant(ir.IntType(64), 0))
+                wrapped = self.builder.add(idx64, vec_size)
+                idx64 = self.builder.select(is_negative, wrapped, idx64)
+                if not self.in_unsafe_func:
+                    idx_nonneg = self.builder.icmp_signed(">=", idx64, ir.Constant(ir.IntType(64), 0))
+                    idx_in_bounds = self.builder.icmp_unsigned("<", idx64, vec_size)
+                    in_bounds = self.builder.and_(idx_nonneg, idx_in_bounds)
+                    self._emit_runtime_check(
+                        in_bounds, "Runtime error: Vector index out of bounds.\n"
+                    )
+                elem_llvm = self._get_llvm_type(inner_type)
+                ptr = self.builder.gep(
+                    data_ptr, [idx64], inbounds=not self.in_unsafe_func
+                )
+                return (ptr, inner_type, None)
+
             # Array/slice index access
             slice_val = self.builder.load(slice_ptr)
             slice_size = self.builder.extract_value(slice_val, 0)
@@ -3306,6 +3605,15 @@ class CodeGen:
             type_name = self._get_leash_type_name(node)
             resolved = self._resolve_type_name(type_name)
             # Allocate temporary to hold the method result
+            ptr = self.builder.alloca(val.type)
+            self.builder.store(val, ptr)
+            return ptr, resolved, None
+        elif isinstance(node, Call):
+            # Handle free-function call as l-value (e.g., getvec().size or f().field)
+            # Same strategy as MethodCall: materialize the result into a temp slot.
+            val = self._codegen(node)
+            type_name = self._get_leash_type_name(node)
+            resolved = self._resolve_type_name(type_name)
             ptr = self.builder.alloca(val.type)
             self.builder.store(val, ptr)
             return ptr, resolved, None
@@ -3548,7 +3856,7 @@ class CodeGen:
             loaded = self.builder.load(typed_ptr)
 
             # Determine format
-            fmt, val = self._format_value(loaded)
+            fmt, val = self._format_value(loaded, vdata.get("type_name"))
             fmt_bytes = bytearray(fmt.encode("utf8") + b"\0")
             c_fmt = ir.Constant(ir.ArrayType(ir.IntType(8), len(fmt_bytes)), fmt_bytes)
             g_fmt = ir.GlobalVariable(
@@ -3563,8 +3871,9 @@ class CodeGen:
 
         self.builder.position_at_end(merge_bb)
 
-    def _format_value(self, val):
+    def _format_value(self, val, type_name=None):
         """Return (format_str, possibly_cast_val) for a single value."""
+        is_unsigned = self._is_uint_type_name(type_name)
         if isinstance(val.type, ir.IntType):
             width = val.type.width
             if width == 1:
@@ -3572,15 +3881,34 @@ class CodeGen:
                 false_str = self._emit_const_str("false")
                 casted = self.builder.select(val, true_str, false_str)
                 return ("%s", casted)
-            if width == 8:
+            if width == 8 and type_name == "char":
                 return ("%c", val)
+            if width > 64:
+                return ("%s", self._emit_wide_int_string(val, type_name))
             if width <= 32:
-                casted = self.builder.zext(val, ir.IntType(32)) if width < 32 else val
+                if width < 32:
+                    casted = (
+                        self.builder.zext(val, ir.IntType(32))
+                        if (is_unsigned or type_name == "bool")
+                        else self.builder.sext(val, ir.IntType(32))
+                    )
+                else:
+                    casted = val
                 return ("%d", casted)
             elif width == 64:
-                return ("%lld", val)
+                return ("%llu", val) if is_unsigned else ("%lld", val)
             else:
-                casted = self.builder.trunc(val, ir.IntType(64))
+                # 33..63-bit ints
+                if is_unsigned:
+                    casted = (
+                        self.builder.zext(val, ir.IntType(64))
+                        if width < 64
+                        else val
+                    )
+                    return ("%llu", casted)
+                casted = (
+                    self.builder.sext(val, ir.IntType(64)) if width < 64 else val
+                )
                 return ("%lld", casted)
         elif isinstance(val.type, (ir.HalfType, ir.FloatType)):
             val = self.builder.fpext(val, ir.DoubleType())
@@ -3642,13 +3970,45 @@ class CodeGen:
                     format_str += "%s"
                     args.append(str_val)
                     continue
+                # Class without a VAL_ method: print a stable placeholder
+                format_str += "%s"
+                args.append(self._emit_const_str(f"<{base_class}>"))
+                continue
+
+            # Smart structured printing for containers and structs
+            if (
+                arg_resolved.startswith("vec<")
+                or arg_resolved.startswith("matrix<")
+                or arg_resolved.startswith("hash<")
+                or arg_resolved in self.struct_symtab
+                or (
+                    isinstance(val.type, ir.LiteralStructType)
+                    and len(val.type.elements) == 2
+                    and isinstance(val.type.elements[0], ir.IntType)
+                    and isinstance(val.type.elements[1], ir.PointerType)
+                )
+            ):
+                format_str += "%s"
+                args.append(self._value_to_display_string(val, arg_resolved))
+                continue
 
             if isinstance(val.type, ir.IntType):
                 width = val.type.width
-                arg_type = self._get_leash_type_name(arg_node)
                 is_unsigned = (arg_type.startswith("uint") or arg_type == "uint")
-                if width == 8:
+                if width == 1:
+                    # bools print as true/false
+                    true_str = self._emit_const_str("true")
+                    false_str = self._emit_const_str("false")
+                    format_str += "%s"
+                    args.append(self.builder.select(val, true_str, false_str))
+                    continue
+                if width == 8 and not is_unsigned and arg_type == "char":
                     format_str += "%c"
+                elif width > 64:
+                    # Arbitrary-precision ints (128/256/512 bits): exact decimal
+                    format_str += "%s"
+                    args.append(self._emit_wide_int_string(val, arg_type))
+                    continue
                 elif width <= 32:
                     if width < 32:
                         # Use zext for unsigned and bool types, sext for signed
@@ -3658,7 +4018,23 @@ class CodeGen:
                             val = self.builder.sext(val, ir.IntType(32))
                     format_str += "%d"
                 elif width == 64:
-                    format_str += "%lld"
+                    format_str += "%llu" if is_unsigned else "%lld"
+                elif width > 32:
+                    # 33..63-bit ints (e.g. int<33>, uint<48>)
+                    if is_unsigned:
+                        val = (
+                            self.builder.zext(val, ir.IntType(64))
+                            if width < 64
+                            else val
+                        )
+                        format_str += "%llu"
+                    else:
+                        val = (
+                            self.builder.sext(val, ir.IntType(64))
+                            if width < 64
+                            else val
+                        )
+                        format_str += "%lld"
                 else:
                     val = self.builder.trunc(val, ir.IntType(64))
                     format_str += "%lld"
@@ -3691,10 +4067,13 @@ class CodeGen:
             if resolved.startswith("vec<") and resolved.endswith(">"):
                 inner_type = resolved[4:-1]
                 self._print_vec_buffer(val, inner_type)
+            elif resolved.startswith("matrix<") and resolved.endswith(">"):
+                inner_type = resolved[7:-1]
+                self._print_vec_buffer(val, inner_type)
             elif resolved == "string":
                 self.builder.call(self.showb_append_str_fn, [val])
             else:
-                self._print_value_buffered(val)
+                self._print_value_buffered(val, resolved)
 
     def _print_vec_buffer(self, vec_val, inner_type):
         """Print a vector in buffer format (elements without separators)."""
@@ -3744,16 +4123,19 @@ class CodeGen:
         if resolved.startswith("vec<") and resolved.endswith(">"):
             inner_inner = resolved[4:-1]
             self._print_vec_buffer(elem_val, inner_inner)
+        elif resolved.startswith("matrix<") and resolved.endswith(">"):
+            inner_inner = resolved[7:-1]
+            self._print_vec_buffer(elem_val, inner_inner)
         elif resolved == "string":
             self.builder.call(self.showb_append_str_fn, [elem_val])
         else:
-            self._print_value_buffered(elem_val)
+            self._print_value_buffered(elem_val, resolved)
 
-    def _print_value_buffered(self, val):
+    def _print_value_buffered(self, val, type_name=None):
         """Print a value to the internal showb buffer."""
         # For buffered output, we first convert everything to string then append
         # This is simpler than implementing full buffered printf logic
-        str_val = self._emit_tostring(val, val.type)
+        str_val = self._emit_tostring(val, val.type, type_name)
         self.builder.call(self.showb_append_str_fn, [str_val])
 
     def _print_value(self, val):
@@ -5041,10 +5423,14 @@ class CodeGen:
         ):
             # Convert non-strings to strings
             if not (is_string_l or is_slice_l):
-                left = self._emit_tostring(left, left.type)
+                left = self._emit_tostring(
+                    left, left.type, self._get_leash_type_name(node.left)
+                )
                 is_string_l = True
             if not (is_string_r or is_slice_r):
-                right = self._emit_tostring(right, right.type)
+                right = self._emit_tostring(
+                    right, right.type, self._get_leash_type_name(node.right)
+                )
                 is_string_r = True
 
             len_l = None
@@ -8529,6 +8915,12 @@ class CodeGen:
                 ):
                     try:
                         v, _, _ = self._codegen_lvalue(arg_expr)
+                        if resolved_src in self.class_symtab:
+                            # Classes are reference types: the l-value cell
+                            # holds the instance pointer, so load it to pass
+                            # the object itself (required for correct method
+                            # field access and recursion through classes).
+                            v = self.builder.load(v)
                     except:
                         v = self._codegen(arg_expr)
                 else:
@@ -9041,24 +9433,76 @@ class CodeGen:
         return val
 
     def _codegen_NumberLiteral(self, node):
+        value = node.value
         if self.current_target_type:
             target_llvm = self._get_llvm_type(self.current_target_type)
             if isinstance(target_llvm, ir.IntType):
+                width = target_llvm.width
+                is_unsigned = self._is_uint_type_name(self.current_target_type)
                 # Only use the target width if the value fits. Otherwise fall
                 # back to i64 so large literals (e.g. 4096 under a (char) cast
                 # target context) don't get truncated to 0.
-                if target_llvm.width >= 64 or (
-                    node.value >= -(2 ** (target_llvm.width - 1))
-                    and node.value < 2 ** (target_llvm.width - 1)
-                ):
-                    return ir.Constant(target_llvm, node.value)
-                return ir.Constant(ir.IntType(64), node.value)
+                fits = (
+                    -(2 ** (width - 1)) <= value < 2 ** width
+                    if width > 1
+                    else value in (0, 1)
+                )
+                if width >= 64 and not fits:
+                    raise LeashError(
+                        f"Integer literal '{value}' does not fit in type "
+                        f"'{self.current_target_type.split('[')[0]}'"
+                        + (
+                            f" (max {2 ** width - 1})"
+                            if is_unsigned and width > 1
+                            else (
+                                f" (range {-(2 ** (width - 1))}..{2 ** (width - 1) - 1})"
+                                if width > 1
+                                else ""
+                            )
+                        ),
+                        node=node,
+                    )
+                if width >= 64 or fits:
+                    return ir.Constant(target_llvm, value)
+                return ir.Constant(ir.IntType(64), value)
+        # A constant-propagated literal may carry its variable's declared
+        # type (e.g. uint<128>): size the constant accordingly so wide
+        # arithmetic isn't done in a narrower type.
+        hint = getattr(node, "leash_type_hint", None)
+        if hint:
+            try:
+                hinted = self._get_llvm_type(hint.split("[")[0].strip())
+            except Exception:
+                hinted = None
+            if isinstance(hinted, ir.IntType):
+                hw = hinted.width
+                if self._is_uint_type_name(hint):
+                    hfits = 0 <= value <= 2 ** hw - 1 if hw > 1 else value in (0, 1)
+                else:
+                    hfits = (
+                        -(2 ** (hw - 1)) <= value <= 2 ** hw - 1
+                        if hw > 1
+                        else value in (0, -1)
+                    )
+                if hfits:
+                    return ir.Constant(hinted, value)
+            elif isinstance(hinted, (ir.HalfType, ir.FloatType, ir.DoubleType)):
+                return ir.Constant(hinted, value)
         # Use i64 if the value doesn't fit in i32
-        if isinstance(node.value, int) and (
-            node.value > 2147483647 or node.value < -2147483648
+        if isinstance(value, int) and (
+            value > 2147483647 or value < -2147483648
         ):
-            return ir.Constant(ir.IntType(64), node.value)
-        return ir.Constant(ir.IntType(32), node.value)
+            # Widen to the smallest standard wide type that can hold it so
+            # int<128>/uint<128>... literals work even without a target type.
+            for w in (64, 128, 256, 512, 1024):
+                if -(2 ** (w - 1)) <= value <= 2 ** w - 1:
+                    return ir.Constant(ir.IntType(w), value)
+            raise LeashError(
+                f"Integer literal '{value}' is too large "
+                f"(maximum supported size is 1024 bits)",
+                node=node,
+            )
+        return ir.Constant(ir.IntType(32), value)
 
     def _codegen_FloatLiteral(self, node):
         if self.current_target_type:
@@ -9135,14 +9579,18 @@ class CodeGen:
             result = self._emit_const_str(first_lit)
         else:
             val = self._codegen(first_expr)
-            result = self._ensure_string(val, val.type)
+            result = self._ensure_string(
+                val, val.type, self._get_leash_type_name(first_expr)
+            )
 
         for lit, expr_node in parts[1:]:
             if lit is not None:
                 right = self._emit_const_str(lit)
             else:
                 val = self._codegen(expr_node)
-                right = self._ensure_string(val, val.type)
+                right = self._ensure_string(
+                    val, val.type, self._get_leash_type_name(expr_node)
+                )
             result = self._concat_strings(result, right)
 
         return result
@@ -9461,6 +9909,31 @@ class CodeGen:
 
         if node.name == "toint":
             if src_is_str:
+                if isinstance(dst_type, ir.IntType) and dst_type.width > 64:
+                    # Wide target: parse with the C runtime big-int parser so
+                    # values beyond i64 are exact (with range checking).
+                    out_slot = self.builder.alloca(dst_type, name="bigint_parse")
+                    out_ptr = self.builder.bitcast(
+                        out_slot, ir.IntType(8).as_pointer()
+                    )
+                    is_signed = not self._is_uint_type_name(node.target_type)
+                    ok = self.builder.call(
+                        self.bigint_parse_fn,
+                        [
+                            val,
+                            ir.Constant(ir.IntType(32), dst_type.width),
+                            ir.Constant(ir.IntType(32), 1 if is_signed else 0),
+                            out_ptr,
+                        ],
+                    )
+                    ok_bool = self.builder.icmp_signed(
+                        "!=", ok, ir.Constant(ir.IntType(32), 0)
+                    )
+                    self._emit_runtime_check(
+                        ok_bool,
+                        f"Runtime error: '{node.target_type}' value out of range or invalid\n",
+                    )
+                    return self.builder.load(out_slot)
                 res64 = self.builder.call(self.atoll, [val])
                 return self._emit_cast(res64, dst_type)
             else:
