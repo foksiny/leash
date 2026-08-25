@@ -1,0 +1,11 @@
+if _PLATFORM == "win64" {
+    pub use win::main::*;
+} also _PLATFORM == "linux64" {
+    pub use linux::main::*;
+} also _PLATFORM == "linux32" {
+    pub use linux::main::*;
+} also _PLATFORM == "macos" {
+    pub use macos::main::*;
+} also _PLATFORM == "macos-arm" {
+    pub use macos::main::*;
+}

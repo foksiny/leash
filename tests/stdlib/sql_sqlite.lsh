@@ -1,0 +1,64 @@
+use sql::sql::*;
+
+fnc main() {
+    db: Db = Db.open_memory();
+    show(db.ok);
+    show(db.exec("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT, score REAL, note TEXT)"));
+
+    // prepared statement with typed bindings
+    ins: Stmt = db.prepare("INSERT INTO users (name, score, note) VALUES (?, ?, ?)");
+    show(ins.ok);
+
+    ins.bind_text(1, "alice");
+    ins.bind_float(2, 91.5);
+    ins.bind_text(3, "first");
+    while ins.step() { empty; }
+
+    ins.reset();
+    ins.bind_text(1, "bob");
+    ins.bind_float(2, 77.0);
+    ins.bind_null(3);
+    while ins.step() { empty; }
+
+    ins.reset();
+    ins.bind_text(1, "carol");
+    ins.bind_float(2, 84.25);
+    ins.bind_null(3);
+    while ins.step() { empty; }
+    show(ins.err == "");
+    ins.finalize();
+
+    show(db.changes() == 1);
+    show(db.last_insert_rowid() == 3);
+
+    // query and typed access
+    res: QueryResult = db.query("SELECT id, name, score, note FROM users ORDER BY id");
+    show(res.ok, res.row_count(), res.cols.size);
+    show(res.at(0, 0).as_int());
+    show(res.get(0, "name").as_text());
+    show(res.at(0, 2).is_float());
+    show(res.get(1, "note").is_null());
+
+    // parameter binding through text args
+    upd: bool = db.exec_args("UPDATE users SET score = ? WHERE name = ?", (vec<string>){"99.5", "bob"});
+    show(upd);
+    chk: QueryResult = db.query_args("SELECT score FROM users WHERE score > ? ORDER BY score DESC", (vec<string>){"90"});
+    show(chk.row_count());
+    show(chk.at(0, 0).as_float() == 99.5);
+
+    // transactions commit and roll back
+    good: bool = db.transaction((vec<string>){"INSERT INTO users (name) VALUES ('eve')", "INSERT INTO users (name) VALUES ('frank')"});
+    show(good);
+    bad: bool = db.transaction((vec<string>){"INSERT INTO users (name) VALUES ('ghost')", "NOT VALID SQL"});
+    show(bad == false);
+    cnt: QueryResult = db.query("SELECT COUNT(*) FROM users");
+    show(cnt.at(0, 0).as_int());
+
+    // errors are surfaced, not fatal
+    failq: QueryResult = db.query("SELECT * FROM missing_table");
+    show(failq.ok == false);
+    faile: bool = db.exec("INSERT INTO users VALUES (1)");
+    show(faile == false);
+
+    db.close();
+}

@@ -1,0 +1,50 @@
+use utils::utf::Utf;
+
+fnc main() {
+    // ASCII round trip
+    show(Utf.is_ascii("hello!"));
+    show(Utf.is_ascii("héllo"));
+    show(Utf.valid("hello!"));
+    show(Utf.length("hello!"));
+
+    // multi-byte encoding
+    e: string = Utf.encode(233);        // é
+    show(e.size);
+    show(Utf.valid(e));
+    show(Utf.length(e));
+    d: UtfDecoded = Utf.decode_at(e, 0);
+    show(d.ok, d.cp == 233, d.len == 2);
+
+    // three-byte codepoint
+    e3: string = Utf.encode(0x20AC);    // €
+    show(e3.size);
+    d3: UtfDecoded = Utf.decode_at(e3, 0);
+    show(d3.ok, d3.cp == 8364, d3.len == 3);
+
+    // four-byte codepoint
+    e4: string = Utf.encode(0x1F600);   // emoji plane
+    show(e4.size);
+    d4: UtfDecoded = Utf.decode_at(e4, 0);
+    show(d4.ok, d4.len == 4);
+
+    // surrogate halves and out-of-range are rejected
+    show(Utf.encode(0xD800) == "");
+    show(Utf.encode(0x110000) == "");
+    show(Utf.encode(-5) == "");
+
+    // mixed string: length counts characters, not bytes
+    mixed: string = "a" + e + e3 + e4;
+    show(mixed.size);
+    show(Utf.length(mixed));
+
+    cps: vec<int<64>> = Utf.codepoints("ab" + e);
+    show(cps.size, cps.get(0), cps.get(2) == 233);
+
+    rebuilt: string = Utf.from_codepoints(cps);
+    show(rebuilt == "ab" + e);
+
+    // invalid continuation byte
+    badseq: string = "" + (char)0xFF;
+    dbad: UtfDecoded = Utf.decode_at(badseq, 0);
+    show(dbad.ok);
+}

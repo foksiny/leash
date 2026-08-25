@@ -1,0 +1,36 @@
+use utils::uuid::Uuid;
+
+fnc main() {
+    // Deterministic values
+    z: string = Uuid.zero();
+    show(z);
+    show(Uuid.valid(z));
+
+    // format() inserts dashes at the right places and validates round-trips
+    h: string = Uuid.format("0123456789abcdef0123456789abcdef");
+    show(h.size);
+    show(h[8] == '-' && h[13] == '-' && h[18] == '-' && h[23] == '-');
+    show(Uuid.valid(h));
+    c: string = Uuid.compact(h);
+    show(c == "0123456789abcdef0123456789abcdef");
+
+    // invalid inputs produce empty results
+    show(Uuid.format("short") == "");
+    show(Uuid.compact("not-a-uuid") == "");
+    show(Uuid.valid("00000000-0000-0000-0000-00000000000"));
+    b: vec<char> = Uuid.bytes("nope");
+    show(b.size == 0);
+
+    // v4 output is random, so only check invariants (never print it)
+    g: string = Uuid.v4();
+    show(g.size == 36);
+    show(Uuid.valid(g));
+    show(g[14] == '4');
+    show(g[19] >= '8' && g[19] <= 'b');
+    g2: string = Uuid.v4();
+    show(g2 != g);
+
+    // bytes() decodes 16 raw bytes from a valid UUID
+    raw: vec<char> = Uuid.bytes(z);
+    show(raw.size == 16);
+}

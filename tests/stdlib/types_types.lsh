@@ -1,0 +1,23 @@
+use types::*;
+
+fnc main() {
+    a: int64 = 9007199254740993;
+    show(a);
+    b: double = 2.5;
+    show(b + 0.5 == 3.0);
+    u: uint8 = 255;
+    show(u);
+    s: int16 = -300;
+    show(s);
+    f: float64 = 1.5;
+    show(f * 2.0 == 3.0);
+
+    big: int128 = toint(int128, 1) + toint(int128, 2);
+    show(big == toint(int128, 3));
+
+    // aliases behave like their underlying types in arithmetic
+    sum: int64 = a + 7;
+    show(sum == 9007199254741000);
+    prod: double = b * 4.0;
+    show(prod);
+}

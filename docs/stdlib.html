@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v0.23.0 Beta</div>
+        <div class="version">v0.23.1 Beta</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -47,7 +47,7 @@
 
 <h1>Standard Library Reference</h1>
 
-<p>Leash ships with a set of standard libraries in the <code>installthis/</code> directory. These libraries provide common utilities like type aliases for explicit bit-width types, math functions, string manipulation, tuple containers, JSON, UTF-8, hex, Base64, UUID generation, and a windowing API. An extended set covers collections, algorithms, text processing, cryptography, encoding, date/time, math extensions, system helpers, and logging &mdash; see the <a href="#extended">Extended Standard Libraries</a> section below. Install them globally to make them available from any project via the <code>use</code> statement.</p>
+<p>Leash ships with a set of standard libraries in the <code>installthis/</code> directory. These libraries provide common utilities like type aliases for explicit bit-width types, math functions, string manipulation, tuple containers, JSON, UTF-8, hex, Base64, UUID generation, and a windowing API. An extended set covers collections, algorithms, text processing, cryptography, encoding, native HTTP/HTTPS networking, embedded SQL (SQLite), date/time, math extensions, system helpers, and logging &mdash; see the <a href="#extended">Extended Standard Libraries</a> section below. Install them globally to make them available from any project via the <code>use</code> statement.</p>
 
 <div class="callout callout-info">The standard libraries are optional &mdash; you can install only the ones you need, or write your own libraries following the same patterns.</div>
 
@@ -531,7 +531,7 @@ speed: <span class="kw">int</span> = 5;
 
 <h1 id="extended">Extended Standard Libraries</h1>
 
-<p>Beyond the core modules above, the standard library ships 30 additional modules organized in subfolders. All of them are pure Leash, require no compiler changes, and follow the same conventions: PascalCase classes with static or instance methods, errors reported through sentinel values or result fields instead of crashes.</p>
+<p>Beyond the core modules above, the standard library ships 32 additional modules organized in subfolders. Most of them are pure Leash, require no compiler changes, and follow the same conventions: PascalCase classes with static or instance methods, errors reported through sentinel values or result fields instead of crashes. The <code>http</code> and <code>sql</code> modules additionally bundle native FFI libraries (see their sections below).</p>
 
 <div class="callout callout-info">Install them together with the rest of the stdlib via <code>leash install installthis/</code>. Tests for every module live under <code>tests/stdlib/</code> &mdash; run them with <code>python3 scripts/test_stdlib.py test</code>.</div>
 
@@ -750,6 +750,111 @@ fnc main() {
     <tr><td><code>parse_query(q)</code></td><td>Flattened alternating keys/values, decoded</td></tr>
     <tr><td><code>query_value(q, key)</code></td><td>Value for one key; "" when absent</td></tr>
     <tr><td><code>split(url)</code></td><td>Multi-return <code>(scheme, host, path, query)</code></td></tr>
+</table>
+
+<h2>HTTP Client (<code>http::http</code>)</h2>
+
+<p>A native HTTP/1.1 client with HTTPS (TLS) support, built on a small C shim bound via the <code>@from</code> FFI directive. Linux bundles OpenSSL statically into <code>linux/liblshhttp.a</code> (no extra packages needed); Windows uses the built-in WinHTTP API; macOS users can rebuild the shim with Homebrew OpenSSL in one command (see <code>installthis/http/README.md</code>). Responses follow redirects automatically, decode chunked transfer encoding, and honor per-request timeouts.</p>
+
+<pre><code><span class="kw">use</span> http::http::*;
+
+<span class="kw">fnc</span> <span class="fn">main</>() {
+    r: HttpResponse = Http.<span class="fn">get</span>(<span class="str">"https://example.com/"</span>);
+    <span class="kw">if</span> r.<span class="fn">success</span>() {
+        show(<span class="str">"status: "</span>, r.status);
+        show(<span class="str">"server: "</span>, r.<span class="fn">header</span>(<span class="str">"Server"</span>));
+        show(r.body);
+    } <span class="kw">else</span> {
+        show(<span class="str">"failed: "</span>, r.err);
+    }
+}</code></pre>
+
+<h3><code>Http</code></h3>
+<table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td><code>get(url)</code> / <code>delete(url)</code> / <code>head(url)</code></td><td>Bodyless requests</td></tr>
+    <tr><td><code>post(url, body)</code> / <code>put(url, body)</code> / <code>patch(url, body)</code></td><td>Requests with a body</td></tr>
+    <tr><td><code>request(method, url, body, headers)</code></td><td>Full control; extra <code>headers</code> are LF-separated lines</td></tr>
+    <tr><td><code>request_ex(..., timeout_ms, max_redirects, verify_tls)</code></td><td>Tunable variant of <code>request</code></td></tr>
+    <tr><td><code>download(url, path)</code> / <code>download_ex(...)</code></td><td>Stream any payload straight to a file &mdash; binary-safe (images, zips)</td></tr>
+    <tr><td><code>form_encode(keys, vals)</code> / <code>form_content_type()</code></td><td>Percent-encoded form bodies</td></tr>
+    <tr><td><code>json_header()</code></td><td>"Content-Type: application/json" helper for POST/PUT bodies</td></tr>
+    <tr><td><code>version()</code> / <code>strerror(code)</code></td><td>Diagnostics</td></tr>
+</table>
+
+<div class="callout callout-info">Defaults: 30&nbsp;s timeout, up to 10 redirects followed, TLS certificate verification enabled (pass <code>verify_tls = false</code> to opt out, like <code>curl -k</code>).</div>
+
+<h3><code>HttpResponse</code></h3>
+<table>
+    <tr><th>Member</th><th>Description</th></tr>
+    <tr><td><code>status: int</code></td><td>HTTP status code on success (200, 404, ...), negative error code otherwise (-2 DNS, -3 connect, -4 TLS, -7 timeout, -9 too many redirects)</td></tr>
+    <tr><td><code>ok: bool</code></td><td>True when a response arrived at all; <code>success()</code> narrows it to 2xx</td></tr>
+    <tr><td><code>body: string</code></td><td>Response text (use <code>Http.download</code> for binary data)</td></tr>
+    <tr><td><code>header(name): string</code></td><td>Case-insensitive header lookup; "" when absent</td></tr>
+    <tr><td><code>headers: string</code></td><td>Full response head, one header per line</td></tr>
+    <tr><td><code>err: string</code></td><td>Human-readable failure reason; "" on success</td></tr>
+</table>
+
+<pre><code><span class="kw">use</span> http::http::*;
+<span class="kw">use</span> encoding::url::Url;
+
+<span class="kw">fnc</span> <span class="fn">main</>() {
+    <span class="cm">// POST JSON</span>
+    body := <span class="str">"\{\"name\": \"leash\"}"</span>;
+    r := Http.<span class="fn">request</span>(<span class="str">"POST"</span>, <span class="str">"https://api.example.com/v1/things"</span>, body, Http.<span class="fn">json_header</span>());
+
+    <span class="cm">// Download a file (binary-safe)</span>
+    dl := Http.<span class="fn">download</span>(<span class="str">"https://example.com/archive.zip"</span>, <span class="str">"/tmp/archive.zip"</span>);
+}</code></pre>
+
+<h2>SQL Database (<code>sql::sql</code>)</h2>
+
+<p>An embedded, zero-configuration SQL database powered by <a href="https://www.sqlite.org/">SQLite</a>, bound through the <code>@from</code> FFI directive. The SQLite amalgamation is vendored into the package and statically compiled into each platform archive (<code>linux/liblshsql.a</code>, <code>win/liblshsql.a</code>), so nothing external needs to be installed. Databases are single files (or in-memory), with prepared statements, typed bindings, and transactions.</p>
+
+<pre><code><span class="kw">use</span> sql::sql::*;
+
+<span class="kw">fnc</span> <span class="fn">main</span>() {
+    db: Db = Db.<span class="fn">open</span>(<span class="str">"app.db"</span>);
+    db.<span class="fn">exec</span>(<span class="str">"CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, name TEXT, score REAL)"</span>);
+
+    ins: Stmt = db.<span class="fn">prepare</span>(<span class="str">"INSERT INTO users (name, score) VALUES (?, ?)"</span>);
+    ins.<span class="fn">bind_text</span>(1, <span class="str">"alice"</span>);
+    ins.<span class="fn">bind_float</span>(2, 91.5);
+    <span class="kw">while</span> ins.<span class="fn">step</span>() { <span class="kw">empty</span>; }
+    ins.<span class="fn">finalize</span>();
+
+    res: QueryResult = db.<span class="fn">query</span>(<span class="str">"SELECT id, name FROM users"</span>);
+    <span class="kw">foreach</span> _, row <span class="kw">in&lt;vector&gt;</span> res.rows {
+        show(row.<span class="fn">get</span>(0).<span class="fn">as_int</span>(), row.<span class="fn">get</span>(1).<span class="fn">as_text</span>());
+    }
+    db.<span class="fn">close</span>();
+}</code></pre>
+
+<h3><code>Db</code></h3>
+<table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td><code>open(path)</code> / <code>open_memory()</code></td><td>Open or create a database file / transient in-memory DB; check <code>.ok</code></td></tr>
+    <tr><td><code>exec(sql)</code></td><td>Run DDL/DML without results; false + <code>last_error()</code> on failure</td></tr>
+    <tr><td><code>prepare(sql)</code></td><td>Compile a statement for binding and manual stepping</td></tr>
+    <tr><td><code>exec_args(sql, args)</code> / <code>query_args(sql, args)</code></td><td>Convenience calls with all parameters bound as text</td></tr>
+    <tr><td><code>query(sql)</code></td><td>Fetch all rows of a query</td></tr>
+    <tr><td><code>transaction(stmts)</code></td><td>BEGIN/&hellip;/COMMIT with automatic ROLLBACK on failure</td></tr>
+    <tr><td><code>changes()</code> / <code>last_insert_rowid()</code></td><td>Last statement's affected row count / generated rowid</td></tr>
+    <tr><td><code>close()</code></td><td>Release the handle</td></tr>
+</table>
+
+<div class="callout callout-info">WAL journaling and a 5&nbsp;s busy timeout are configured automatically on every opened database.</div>
+
+<h3><code>Stmt</code>, <code>QueryResult</code> &amp; <code>SqlValue</code></h3>
+<table>
+    <tr><th>Member</th><th>Description</th></tr>
+    <tr><td><code>Stmt.bind_int / bind_float / bind_text / bind_null(idx, v)</code></td><td>Bind 1-based parameters</td></tr>
+    <tr><td><code>Stmt.step()</code></td><td>True while a row is available</td></tr>
+    <tr><td><code>Stmt.int_at / float_at / text_at(i)</code>, <code>row()</code>, <code>query()</code></td><td>Typed cell access; whole-row or whole-result fetch</td></tr>
+    <tr><td><code>Stmt.reset() / finalize()</code></td><td>Reuse with new bindings / release (idempotent)</td></tr>
+    <tr><td><code>QueryResult.cols</code> / <code>rows</code></td><td>Column names and rows of typed cells</td></tr>
+    <tr><td><code>QueryResult.at(r, c)</code> / <code>get(r, name)</code></td><td>Cell by index or column name</td></tr>
+    <tr><td><code>SqlValue.as_int() / as_float() / as_text() / is_null()</code></td><td>Typed conversion (NULL cells convert to zero values)</td></tr>
 </table>
 
 <h2>Date &amp; Time (<code>time::datetime::DateTime</code>)</h2>

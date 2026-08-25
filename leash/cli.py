@@ -523,11 +523,10 @@ def resolve_imports(program, base_path, extra_import_dirs=None):
                 def _collect_items(mod_items):
                     for mod_item in mod_items:
                         if isinstance(mod_item, ConditionalDef):
-                            _collect_items(mod_item.then_block)
-                            for c, b, inv in getattr(mod_item, 'also_blocks', []):
-                                _collect_items(b)
-                            if mod_item.else_block:
-                                _collect_items(mod_item.else_block)
+                            # Conditional branches are resolved later (after
+                            # _PLATFORM is known) by resolve_conditionals; do
+                            # not merge every branch into `available`, or the
+                            # winning branch's items get defined twice.
                             continue
                         if not is_priv_import and hasattr(mod_item, "visibility") and mod_item.visibility == "priv":
                             if isinstance(mod_item, (StructDef, UnionDef, EnumDef, ClassDef, TypeAlias, ErrorDef)): internal_types[mod_item.name] = mod_item
@@ -845,6 +844,9 @@ _LINUX_SYMBOL_LIBS = {
     "XMapWindow": "X11", "XFlush": "X11",
     "glXSwapBuffers": "GL", "glXMakeCurrent": "GL",
     "dlopen": "dl", "dlsym": "dl", "dlclose": "dl",
+    "pthread_create": "pthread", "pthread_join": "pthread",
+    "pthread_mutex_init": "pthread", "pthread_mutex_lock": "pthread",
+    "pthread_cond_wait": "pthread",
     "sincosf": "m", "sincos": "m",
     "fmaxf": "m", "fmax": "m", "fminf": "m", "fmin": "m",
     "atan2f": "m", "atan2": "m",
@@ -1236,7 +1238,7 @@ def update_leash():
     import json
     
     print("Leash Update Checker")
-    print("Current version: 0.23.0 Beta\n")
+    print("Current version: 0.23.1 Beta\n")
     
     try:
         req = urllib.request.Request(
@@ -1262,7 +1264,7 @@ def update_leash():
         print("Update failed.")
 
 
-VERSION_STRING = "v0.23.0 Beta"
+VERSION_STRING = "v0.23.1 Beta"
 
 MAIN_HELP = f"""Leash {VERSION_STRING} - LLVM-powered compiled programming language
 

@@ -2291,6 +2291,11 @@ class TypeChecker:
             decl_type = inferred_type
             stmt.var_type = inferred_type  # Store for codegen
         else:
+            # Specialize `Template.new(...)` initializers against the declared
+            # concrete type BEFORE inferring the value, so static calls on
+            # generic classes resolve to the right instantiation even when
+            # several exist (e.g. Tuple<int> and Tuple<string>).
+            self._maybe_specialize_generic_new(stmt.value, self._strip_imut(stmt.var_type))
             decl_type = stmt.var_type
         is_imut = self._is_imut(decl_type)
         bare_decl_type = self._strip_imut(decl_type)
@@ -2392,6 +2397,39 @@ class TypeChecker:
                 code="LEASH-E004",
             )
 
+    def _maybe_specialize_generic_new(self, value_expr, declared_type):
+        """Rewrite `Template.new(args)` to `Template<T1, T2>.new(args)` when the
+        assignment context declares a concrete instantiation of that template.
+
+        Without this, codegen resolves the bare template name to an arbitrary
+        instantiation, which miscompiles programs using two instantiations of
+        the same generic class.
+        """
+        from .ast_nodes import MethodCall, Identifier, GenericTypeExpr
+
+        try:
+            if not isinstance(value_expr, MethodCall):
+                return
+            if not isinstance(declared_type, str):
+                return
+            if "<" not in declared_type or not declared_type.endswith(">"):
+                return
+            base = declared_type.split("<")[0]
+            if base not in self.generic_classes:
+                return
+            if not (
+                isinstance(value_expr.expr, Identifier)
+                and value_expr.expr.name == base
+            ):
+                return
+            type_args_str = declared_type[len(base) + 1 : -1]
+            type_args = [a.strip() for a in type_args_str.split(",")]
+            if any(not a or a.startswith("_") for a in type_args):
+                return
+            value_expr.expr = GenericTypeExpr(base, type_args)
+        except Exception:
+            pass
+
     def _check_assignment(self, stmt):
         from .ast_nodes import Identifier, IndexAccess, MemberAccess
 
@@ -2440,6 +2478,10 @@ class TypeChecker:
                 )
 
         target_type = self._infer_type(stmt.target)
+        # Specialize `Template.new(...)` against the target's declared type
+        # (same disambiguation as declarations, for reassignment).
+        if isinstance(stmt.target, Identifier) and stmt.target.name in self.var_types:
+            self._maybe_specialize_generic_new(stmt.value, self._strip_imut(self.var_types[stmt.target.name]))
         val_type = self._infer_type(stmt.value)
 
         if isinstance(stmt.target, Identifier) and val_type and self._is_imut(val_type):

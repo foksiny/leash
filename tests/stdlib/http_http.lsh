@@ -1,0 +1,29 @@
+use http::http::*;
+
+fnc main() {
+    // library identity
+    show(Http.version() == "leash-http/1.0");
+
+    // error descriptions are stable strings (no platform detail)
+    show(Http.strerror(-1));
+    show(Http.strerror(-9) == "too many redirects");
+    show(Http.strerror(200) == "no error");
+
+    // malformed URL fails fast with LSH_E_URL (-1)
+    bad: HttpResponse = Http.get("notaurl");
+    show(bad.ok == false);
+    show(bad.status == -1);
+    show(bad.err != "");
+
+    // unsupported scheme is also a URL error
+    ftp: HttpResponse = Http.get("ftp://example.com/file");
+    show(ftp.ok == false);
+    show(ftp.status == -1);
+
+    // nothing listens on port 1 -> connection failure (-3), not a crash
+    dead: HttpResponse = Http.get("http://127.0.0.1:1/nope");
+    show(dead.ok == false);
+    show(dead.status == -3);
+    show(dead.success() == false);
+    show(dead.body == "");
+}

@@ -1,0 +1,23 @@
+use tuple::Tuple;
+
+fnc main() {
+    t: Tuple<int> = Tuple.new({1, 2, 3});
+    show(t.size);
+    a: int = t.get(0);
+    b: int = t.get(1);
+    c: int = t.get(2);
+    show(a, b, c);
+    show(t.isin(2));
+    show(t.isin(9));
+
+    words: Tuple<string> = Tuple.new({"alpha", "beta"});
+    show(words.size);
+    second: string = words.get(1);
+    show(second);
+    show(words.isin("alpha"));
+    show(words.isin("gamma"));
+
+    // zero-size tuple is allowed
+    mt: Tuple<int> = Tuple.new({});
+    show(mt.size == 0);
+}

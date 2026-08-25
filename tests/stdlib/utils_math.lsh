@@ -1,0 +1,29 @@
+use utils::math::*;
+
+fnc main() {
+    show(max(3, 7), min(3, 7));
+    show(Math.PI > 3.14 && Math.PI < 3.15);
+    show(Math.E > 2.71 && Math.E < 2.72);
+
+    show(Math.floor(2.7), Math.floor(-2.2));
+    show(Math.ceil(2.1));
+    show(Math.fmod(7.0, 3.0) < 0.000001);
+    show(Math.fmod(7.5, 2.0) - 1.5 < 0.000001);
+
+    sq: double = Math.sqrt(144.0);
+    show(sq == 12.0);
+    show(Math.sqrt(2.0) - 1.41421356 < 0.00001);
+    show(Math.sqrt(0.0) == 0.0);
+
+    e1: double = Math.exp(1.0);
+    show(e1 - Math.E < 0.00001);
+    show(Math.exp(0.0) == 1.0);
+
+    l: double = Math.log(Math.E);
+    show(l - 1.0 < 0.00001);
+
+    s: double = Math.sin(0.0);
+    show(s == 0.0);
+    half_pi_sin: double = Math.sin(Math.HALF_PI);
+    show(half_pi_sin - 1.0 < 0.0001);
+}

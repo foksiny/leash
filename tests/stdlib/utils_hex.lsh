@@ -1,0 +1,32 @@
+use utils::hex::Hex;
+
+fnc main() {
+    show(Hex.chr(0), Hex.chr(10), Hex.chr(15));
+    show(Hex.chr_upper(10), Hex.chr_upper(15));
+    show(Hex.chr(-1), Hex.chr(16));
+
+    show(Hex.val('0'), Hex.val('9'), Hex.val('a'), Hex.val('f'), Hex.val('F'));
+    show(Hex.val('g'));
+
+    show(Hex.valid("deadBEEF01"));
+    show(Hex.valid("xyz"), Hex.valid(""));
+
+    bytes: vec<char> = Hex.to_bytes("4c65617368");
+    out: string;
+    for i: int = 0; i < bytes.size; i = i + 1 {
+        out = out + bytes.get(i);
+    }
+    show(out);
+    show(Hex.from_bytes(bytes));
+
+    upper: string = Hex.from_bytes_upper(bytes);
+    show(upper);
+
+    bad: vec<char> = Hex.to_bytes("zz");
+    show(bad.size == 0);
+
+    show(Hex.from_int(255), Hex.from_int(4096), Hex.from_int(0));
+    show(Hex.from_int_pad(255, 8));
+    show(Hex.to_int("ff"), Hex.to_int("0xff"), Hex.to_int("FF"));
+    show(Hex.to_int("-1a"), Hex.to_int("nope"));
+}

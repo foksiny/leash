@@ -1,0 +1,24 @@
+use utils::str::Str;
+
+fnc main() {
+    parts: vec<string> = Str.split("a,b,c", ',');
+    show(parts.size, parts.get(0), parts.get(2));
+
+    multi: vec<string> = Str.splits("one;two three", "; ");
+    show(multi.size);
+    show(multi.get(1));
+
+    show(Str.starts("hello world", "hell"));
+    show(Str.starts("hi", "hello"));
+    show(Str.ends("report.pdf", ".pdf"));
+    show(Str.ends("report.pdf", ".doc"));
+
+    show(Str.upper("MiXeD 42"));
+    show(Str.lower("MiXeD 42"));
+    show(Str.reversed("leash"));
+
+    show(Str.digit("12345"), Str.digit("12a45"));
+    show(Str.alpha("abcXYZ"), Str.alpha("ab3"));
+    show(Str.alnum("a1b2"), Str.alnum("1abc"), Str.alnum("a-b"));
+    show(Str.ident("_private"), Str.ident("var_1"), Str.ident("9start"));
+}

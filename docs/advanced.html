@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v0.23.0 Beta</div>
+        <div class="version">v0.23.1 Beta</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -261,6 +261,8 @@ gcc -shared -fPIC math_utils.c -o libmath.so</code></pre>
     <li>Initializers are not supported for variable declarations</li>
     <li>Only basic struct/union/enum fields supported</li>
 </ul>
+
+<div class="callout callout-info">For a complete real-world example of an FFI-backed standard library &mdash; including platform dispatch (<code>_PLATFORM</code>), out-parameters, and bundling prebuilt <code>.a</code> archives per platform &mdash; see the HTTP client in <a href="stdlib.html#extended"><code>installthis/http</code></a>.</div>
 
 <h2>Program Termination</h2>
 <pre><code><span class="fn">exit</span>(1);  <span class="cm">// terminates immediately with exit code</span></code></pre>

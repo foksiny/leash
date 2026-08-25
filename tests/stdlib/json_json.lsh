@@ -1,0 +1,43 @@
+use json::*;
+
+fnc main() {
+    v: JsonValue = Json.parse("{\"name\": \"Leash\", \"year\": 2026, \"pi\": 3.5, \"ok\": true, \"none\": null}");
+    show(v.ok);
+    show(v.get("name").as_string());
+    show(v.get("year").as_int());
+    show(v.get("year").is_int());
+    show(v.get("pi").as_float());
+    show(v.get("pi").is_float());
+    show(v.get("ok").as_bool());
+    show(v.get("none").is_null());
+    show(v.has("name"), v.has("missing"));
+
+    // nested arrays and objects
+    n: JsonValue = Json.parse("{\"list\": [10, 20, 30], \"sub\": {\"k\": \"v\"}}");
+    lst: JsonValue = n.get("list");
+    show(lst.is_array(), lst.size());
+    show(lst.at(1).as_int());
+    sub: JsonValue = n.get("sub");
+    show(sub.is_object(), sub.get("k").as_string());
+
+    // stringify round-trip
+    s: string = Json.stringify(n);
+    back: JsonValue = Json.parse(s);
+    show(back.ok, Json.stringify(back) == s);
+
+    // escaping
+    esc: string = Json.stringify(Json.parse("\"quote\\newline\""));
+    show(esc);
+
+    // pretty printing shape
+    p: string = Json.pretty(Json.parse("[1, 2]"));
+    show(p == "[\n  1,\n  2\n]");
+
+    // error handling
+    bad: JsonValue = Json.parse("{\"a\": }");
+    show(bad.ok);
+    trail: JsonValue = Json.parse("{} extra");
+    show(trail.ok);
+    empty_arr: JsonValue = Json.parse("[]");
+    show(empty_arr.is_array(), empty_arr.size() == 0);
+}

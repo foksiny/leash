@@ -1,0 +1,489 @@
+@from("liblshsql.a") {
+
+    //====================================================
+    // Database handles
+    //====================================================
+
+    // Opens (creating if needed) an embedded SQLite database file.
+    fnc lsql_open(path string) : pointer<void>;
+    fnc lsql_close(db pointer<void>) : void;
+    fnc lsql_exec(db pointer<void>, sql string) : int;
+    fnc lsql_errmsg(db pointer<void>) : string;
+    fnc lsql_changes(db pointer<void>) : int<64>;
+    fnc lsql_last_insert_rowid(db pointer<void>) : int<64>;
+
+    //====================================================
+    // Prepared statements
+    //====================================================
+
+    fnc lsql_prepare(db pointer<void>, sql string) : pointer<void>;
+    fnc lsql_bind_int(st pointer<void>, idx int, v int<64>) : int;
+    fnc lsql_bind_float(st pointer<void>, idx int, v float) : int;
+    fnc lsql_bind_text(st pointer<void>, idx int, v string) : int;
+    fnc lsql_bind_null(st pointer<void>, idx int) : int;
+    fnc lsql_step(st pointer<void>) : int;
+    fnc lsql_reset(st pointer<void>) : int;
+    fnc lsql_finalize(st pointer<void>) : int;
+
+    //====================================================
+    // Column access
+    //====================================================
+
+    fnc lsql_column_count(st pointer<void>) : int;
+    fnc lsql_column_name(st pointer<void>, i int) : string;
+    fnc lsql_column_type(st pointer<void>, i int) : int;
+    fnc lsql_column_int(st pointer<void>, i int) : int<64>;
+    fnc lsql_column_float(st pointer<void>, i int) : float;
+    fnc lsql_column_text(st pointer<void>, i int) : string;
+};
+
+// SQLite result codes used across the binding.
+pub def SQLITE_ROW : macro() |> 100;
+pub def SQLITE_DONE : macro() |> 101;
+
+// Type of one cell in a query result.
+pub def SqlType : enum {
+    SINT,
+    SFLOAT,
+    STEXT,
+    SBLOB,
+    SNULL
+};
+
+pub def SqlValue : class {
+    pub typ: SqlType;
+    pub ival: int<64>;
+    pub fval: float;
+    pub sval: string;
+
+    pub fnc VAL_SqlValue() : string {
+        return this.stringify();
+    }
+
+    pub fnc stringify() : string {
+        if this.typ == SqlType::SNULL {
+            return "NULL";
+        }
+        if this.typ == SqlType::SINT {
+            return tostring(this.ival);
+        }
+        if this.typ == SqlType::SFLOAT {
+            return tostring(this.fval);
+        }
+        return this.sval;
+    }
+
+    pub fnc is_null() : bool {
+        return this.typ == SqlType::SNULL;
+    }
+
+    pub fnc is_int() : bool {
+        return this.typ == SqlType::SINT;
+    }
+
+    pub fnc is_float() : bool {
+        return this.typ == SqlType::SFLOAT;
+    }
+
+    pub fnc is_text() : bool {
+        return this.typ == SqlType::STEXT || this.typ == SqlType::SBLOB;
+    }
+
+    // Value as integer (0 for NULL; floats truncate).
+    pub fnc as_int() : int<64> {
+        if this.typ == SqlType::SFLOAT {
+            return toint(int<64>, this.fval);
+        }
+        return this.ival;
+    }
+
+    // Value as float (0.0 for NULL; ints convert exactly).
+    pub fnc as_float() : float {
+        if this.typ == SqlType::SINT {
+            return tofloat(float, this.ival);
+        }
+        return this.fval;
+    }
+
+    // Value as text ("" for NULL; numbers render as their literal form).
+    pub fnc as_text() : string {
+        if this.typ == SqlType::SINT {
+            return tostring(this.ival);
+        }
+        if this.typ == SqlType::SFLOAT {
+            return tostring(this.fval);
+        }
+        return this.sval;
+    }
+
+    static pub fnc from_int(v int<64>) : SqlValue {
+        return SqlValue { typ: SqlType::SINT, ival: v };
+    }
+
+    static pub fnc from_float(v float) : SqlValue {
+        return SqlValue { typ: SqlType::SFLOAT, fval: v };
+    }
+
+    static pub fnc from_text(s string) : SqlValue {
+        return SqlValue { typ: SqlType::STEXT, sval: s };
+    }
+
+    static pub fnc null_value() : SqlValue {
+        return SqlValue { typ: SqlType::SNULL };
+    }
+};
+
+pub def QueryResult : class {
+    pub cols: vec<string>;
+    pub rows: vec<vec<SqlValue>>;
+    pub ok: bool;
+    pub err: string;
+
+    pub fnc VAL_QueryResult() : string {
+        if !this.ok {
+            return "QueryResult{err: " + this.err + "}";
+        }
+        return "QueryResult{" + tostring(this.rows.size) + " rows}";
+    }
+
+    pub fnc row_count() : int {
+        return this.rows.size;
+    }
+
+    pub fnc column_index(name string) : int {
+        foreach i, c in<vector> this.cols {
+            if c == name {
+                return i;
+            }
+        }
+        return 0 - 1;
+    }
+
+    // Cell at (row, col); nil when out of range.
+    pub fnc at(r int, c int) : SqlValue {
+        if r < 0 || r >= this.rows.size {
+            return SqlValue.null_value();
+        }
+        cells: vec<SqlValue> = this.rows.get(r);
+        if c < 0 || c >= cells.size {
+            return SqlValue.null_value();
+        }
+        return cells.get(c);
+    }
+
+    // Cell by column name; nil-when-absent rules of column_index apply.
+    pub fnc get(r int, name string) : SqlValue {
+        return this.at(r, this.column_index(name));
+    }
+};
+
+// A prepared SQL statement bound to its Db.
+pub def Stmt : class {
+    priv handle: pointer<void>;
+    priv db_handle: pointer<void>;
+    priv finalized: bool;
+
+    pub ok: bool;
+    pub err: string;
+
+    pub Stmt(h pointer<void>, dbh pointer<void>) {
+        this.handle = h;
+        this.db_handle = dbh;
+        this.finalized = false;
+        this.ok = true;
+        this.err = "";
+    }
+
+    // Factory used by Db: wraps an allocated sqlite3_stmt.
+    static pub fnc of(h pointer<void>, dbh pointer<void>) : Stmt {
+        return Stmt { handle: h, db_handle: dbh, finalized: false, ok: true, err: "" };
+    }
+
+    // Factory used by Db: prepare/bind-time failure without a live statement.
+    static pub fnc failed(dbh pointer<void>, msg string) : Stmt {
+        return Stmt { handle: nil, db_handle: dbh, finalized: true, ok: false, err: msg };
+    }
+
+    // Binds a 1-based parameter position.
+    pub fnc bind_int(idx int, v int<64>) : void {
+        rc: int = lsql_bind_int(this.handle, idx, v);
+        if rc != 0 {
+            this.ok = false;
+            this.err = lsql_errmsg(this.db_handle);
+        }
+    }
+
+    pub fnc bind_float(idx int, v float) : void {
+        rc: int = lsql_bind_float(this.handle, idx, v);
+        if rc != 0 {
+            this.ok = false;
+            this.err = lsql_errmsg(this.db_handle);
+        }
+    }
+
+    pub fnc bind_text(idx int, v string) : void {
+        rc: int = lsql_bind_text(this.handle, idx, v);
+        if rc != 0 {
+            this.ok = false;
+            this.err = lsql_errmsg(this.db_handle);
+        }
+    }
+
+    pub fnc bind_null(idx int) : void {
+        rc: int = lsql_bind_null(this.handle, idx);
+        if rc != 0 {
+            this.ok = false;
+            this.err = lsql_errmsg(this.db_handle);
+        }
+    }
+
+    // Advances to the next row. True while a row is available.
+    pub fnc step() : bool {
+        rc: int = lsql_step(this.handle);
+        if rc == SQLITE_ROW {
+            return true;
+        }
+        if rc != SQLITE_DONE {
+            this.ok = false;
+            this.err = lsql_errmsg(this.db_handle);
+        }
+        return false;
+    }
+
+    pub fnc reset() : void {
+        lsql_reset(this.handle);
+        this.ok = true;
+        this.err = "";
+    }
+
+    pub fnc column_count() : int {
+        return lsql_column_count(this.handle);
+    }
+
+    pub fnc column_name(i int) : string {
+        return lsql_column_name(this.handle, i);
+    }
+
+    pub fnc column_type(i int) : SqlType {
+        t: int = lsql_column_type(this.handle, i);
+        if t == 2 {
+            return SqlType::SFLOAT;
+        }
+        if t == 3 {
+            return SqlType::STEXT;
+        }
+        if t == 4 {
+            return SqlType::SBLOB;
+        }
+        if t == 5 {
+            return SqlType::SNULL;
+        }
+        return SqlType::SINT;
+    }
+
+    pub fnc int_at(i int) : int<64> {
+        return lsql_column_int(this.handle, i);
+    }
+
+    pub fnc float_at(i int) : float {
+        return lsql_column_float(this.handle, i);
+    }
+
+    pub fnc text_at(i int) : string {
+        return lsql_column_text(this.handle, i);
+    }
+
+    // The whole current row as typed values.
+    pub fnc row() : vec<SqlValue> {
+        cells: vec<SqlValue>;
+        n: int = this.column_count();
+        for i: int = 0; i < n; i = i + 1 {
+            t: SqlType = this.column_type(i);
+            if t == SqlType::SINT {
+                cells.pushb(SqlValue.from_int(this.int_at(i)));
+            } also t == SqlType::SFLOAT {
+                cells.pushb(SqlValue.from_float(this.float_at(i)));
+            } also t == SqlType::SNULL {
+                cells.pushb(SqlValue.null_value());
+            } else {
+                cells.pushb(SqlValue.from_text(this.text_at(i)));
+            }
+        }
+        return cells;
+    }
+
+    // Fetches every remaining row into a QueryResult.
+    pub fnc query() : QueryResult {
+        res: QueryResult = QueryResult { ok: true, err: "" };
+        nc: int = this.column_count();
+        for i: int = 0; i < nc; i = i + 1 {
+            res.cols.pushb(this.column_name(i));
+        }
+        while this.step() {
+            res.rows.pushb(this.row());
+        }
+        if !this.ok {
+            res.ok = false;
+            res.err = this.err;
+        }
+        return res;
+    }
+
+    // Releases the statement. Safe to call more than once.
+    pub fnc finalize() : void {
+        if !this.finalized && this.handle != nil {
+            lsql_finalize(this.handle);
+            this.finalized = true;
+        }
+    }
+};
+
+pub def Db : class {
+    priv handle: pointer<void>;
+
+    pub ok: bool;
+    pub err: string;
+
+    pub Db(h pointer<void>) {
+        this.handle = h;
+        this.ok = true;
+        this.err = "";
+    }
+
+    // Opens or creates an embedded database file.
+    static pub fnc open(path string) : Db {
+        h: pointer<void> = lsql_open(path);
+        if h == nil {
+            d: Db = Db { handle: nil, ok: false, err: "cannot open database '" + path + "'" };
+            return d;
+        }
+        return Db { handle: h, ok: true, err: "" };
+    }
+
+    // In-memory database, lives until close().
+    static pub fnc open_memory() : Db {
+        return Db.open(":memory:");
+    }
+
+    pub fnc is_open() : bool {
+        if this.handle == nil {
+            return false;
+        }
+        return true;
+    }
+
+    // Runs DDL/DML that returns no rows. False + error() on failure.
+    pub fnc exec(sql string) : bool {
+        if !this.is_open() {
+            this.err = "database is closed";
+            return false;
+        }
+        rc: int = lsql_exec(this.handle, sql);
+        if rc == 0 {
+            this.err = "";
+            return true;
+        }
+        this.err = lsql_errmsg(this.handle);
+        return false;
+    }
+
+    // Prepares a statement for parameter binding and manual stepping.
+    pub fnc prepare(sql string) : Stmt {
+        if !this.is_open() {
+            return Stmt.failed(nil, "database is closed");
+        }
+        h: pointer<void> = lsql_prepare(this.handle, sql);
+        if h == nil {
+            return Stmt.failed(this.handle, lsql_errmsg(this.handle));
+        }
+        return Stmt.of(h, this.handle);
+    }
+
+    // Convenience: run `sql` with all parameters bound as text values.
+    pub fnc exec_args(sql string, args vec<string>) : bool {
+        st: Stmt = this.prepare(sql);
+        if !st.ok {
+            this.err = st.err;
+            return false;
+        }
+        foreach i, v in<vector> args {
+            st.bind_text(i + 1, v);
+        }
+        while st.step() {
+            empty;
+        }
+        ok: bool = st.ok;
+        if !ok {
+            this.err = st.err;
+        } else {
+            this.err = "";
+        }
+        st.finalize();
+        return ok;
+    }
+
+    // Convenience: query without parameters.
+    pub fnc query(sql string) : QueryResult {
+        st: Stmt = this.prepare(sql);
+        if !st.ok {
+            return QueryResult { ok: false, err: st.err };
+        }
+        res: QueryResult = st.query();
+        st.finalize();
+        return res;
+    }
+
+    // Convenience: query with all parameters bound as text values.
+    pub fnc query_args(sql string, args vec<string>) : QueryResult {
+        st: Stmt = this.prepare(sql);
+        if !st.ok {
+            res: QueryResult = QueryResult { ok: false, err: st.err };
+            return res;
+        }
+        foreach i, v in<vector> args {
+            st.bind_text(i + 1, v);
+        }
+        out: QueryResult = st.query();
+        st.finalize();
+        return out;
+    }
+
+    pub fnc changes() : int<64> {
+        if !this.is_open() {
+            return 0 - 1;
+        }
+        return lsql_changes(this.handle);
+    }
+
+    pub fnc last_insert_rowid() : int<64> {
+        if !this.is_open() {
+            return 0 - 1;
+        }
+        return lsql_last_insert_rowid(this.handle);
+    }
+
+    pub fnc last_error() : string {
+        return this.err;
+    }
+
+    // Wraps the calls in a transaction; commit on success, rollback otherwise.
+    pub fnc transaction(stmts vec<string>) : bool {
+        if !this.exec("BEGIN") {
+            return false;
+        }
+        foreach _, sql in<vector> stmts {
+            if !this.exec(sql) {
+                this.exec("ROLLBACK");
+                return false;
+            }
+        }
+        return this.exec("COMMIT");
+    }
+
+    pub fnc close() : void {
+        if this.handle != nil {
+            lsql_close(this.handle);
+            this.handle = nil;
+        }
+    }
+};

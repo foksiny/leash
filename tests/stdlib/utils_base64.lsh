@@ -1,0 +1,28 @@
+use utils::base64::Base64;
+
+fnc main() {
+    show(Base64.encode("hello"));
+    show(Base64.encode("hel"));
+    show(Base64.encode("he"));
+    show(Base64.encode("h"));
+
+    show(Base64.decode("aGVsbG8=") == "hello");
+    show(Base64.decode("aGVsbG8") == "hello");
+    show(Base64.decode("aGU=") == "he");
+
+    // whitespace is tolerated
+    show(Base64.decode("aGVs\nbG8=") == "hello");
+
+    // round trip
+    msg: string = "The quick brown fox jumps over the lazy dog 0123456789";
+    enc: string = Base64.encode(msg);
+    show(Base64.decode(enc) == msg);
+
+    show(Base64.valid(enc));
+    show(Base64.valid("a=b"), Base64.valid("a!b"));
+
+    bad: vec<char> = Base64.decode_bytes("!!!!");
+    show(bad.size == 0);
+    blank: string = Base64.encode("");
+    show(blank == "");
+}
