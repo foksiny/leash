@@ -7,6 +7,11 @@
  * making the binary independent of the GC runtime.
  */
 
+/* Must be defined before any system header so posix_memalign is declared. */
+#ifndef _POSIX_C_SOURCE
+#define _POSIX_C_SOURCE 200809L
+#endif
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -24,6 +29,11 @@ void* leash_gc_malloc(size_t size) {
     if (!p) { fprintf(stderr, "Leash: Out of memory!\n"); abort(); }
     memset(p, 0, size);
     return p;
+}
+
+void* leash_gc_malloc_ex(size_t size, unsigned int flags) {
+    (void)flags; /* no GC scanning in stub mode, so the ATOMIC flag is unused */
+    return leash_gc_malloc(size);
 }
 
 void* leash_gc_realloc(void* ptr, size_t new_size) {
@@ -92,9 +102,9 @@ struct gc_object {
     struct gc_object* prev;
 };
 
-/* Flag bits */
-#define FLAG_MARKED     0x01
-#define FLAG_ATOMIC     0x02
+/* Flag bits (unsigned so bitwise ops stay unsigned and avoid sign-conversion) */
+#define FLAG_MARKED     0x01U
+#define FLAG_ATOMIC     0x02U
 
 /* GC State */
 static struct {
@@ -137,8 +147,25 @@ void leash_gc_init(void) {
 }
 
 /* Allocation */
+/* Forward declaration: leash_gc_malloc_ex is defined just below.
+   Must NOT be static: GCC -O2 performs constant propagation and would
+   otherwise specialize/remove the generic symbol that the generated
+   LLVM code links against. */
+void* leash_gc_malloc_ex(size_t size, unsigned int flags);
+
 void* leash_gc_malloc(size_t size) {
+    return leash_gc_malloc_ex(size, 0);
+}
+
+void* leash_gc_malloc_ex(size_t size, unsigned int flags) {
     if (size == 0) return NULL;
+
+    /* Guard against size_t overflow: total_size must not wrap around, or we
+       would allocate a tiny block and then memset `size` bytes past it. */
+    if (size > SIZE_MAX - sizeof(struct gc_object)) {
+        fprintf(stderr, "Leash GC: allocation too large!\n");
+        abort();
+    }
 
     GC_LOCK();
 
@@ -151,7 +178,12 @@ void* leash_gc_malloc(size_t size) {
     }
 
     obj->size = size;
-    obj->flags = 0;
+    /* Only the ATOMIC flag is meaningful here; it tells the marker that this
+       object's payload contains no GC pointers and must not be scanned. This
+       is the key to avoiding conservative false-retention of unrelated
+       objects whose addresses happen to appear as raw bytes (e.g. strings,
+       numeric vectors). */
+    obj->flags = (flags & FLAG_ATOMIC);
     obj->next = gc.object_list;
     obj->prev = NULL;
 
@@ -173,17 +205,35 @@ void* leash_gc_malloc(size_t size) {
 
 void* leash_gc_realloc(void* ptr, size_t new_size) {
     if (!ptr) return leash_gc_malloc(new_size);
-    if (new_size == 0) return NULL;
+    if (new_size == 0) {
+        /* Mirror the NO_GC stub: free the object instead of leaking it. */
+        GC_LOCK();
+        struct gc_object* obj = ((struct gc_object*)ptr) - 1;
+        if (obj->prev) obj->prev->next = obj->next;
+        if (obj->next) obj->next->prev = obj->prev;
+        if (gc.object_list == obj) gc.object_list = obj->next;
+        gc.total_allocated -= obj->size;
+        gc.object_count--;
+        free(obj);
+        GC_UNLOCK();
+        return NULL;
+    }
 
     GC_LOCK();
 
     struct gc_object* obj = ((struct gc_object*)ptr) - 1;
     if (obj->size >= new_size) {
+        obj->size = new_size;
         GC_UNLOCK();
         return ptr;
     }
 
     /* Allocate new block, copy, link, unlink old */
+    if (new_size > SIZE_MAX - sizeof(struct gc_object)) {
+        fprintf(stderr, "Leash GC: allocation too large!\n");
+        GC_UNLOCK();
+        abort();
+    }
     size_t total_size = sizeof(struct gc_object) + new_size;
     struct gc_object* new_obj = (struct gc_object*)malloc(total_size);
     if (!new_obj) {
@@ -205,6 +255,13 @@ void* leash_gc_realloc(void* ptr, size_t new_size) {
     void* old_user = (void*)(obj + 1);
     void* new_user = (void*)(new_obj + 1);
     memcpy(new_user, old_user, obj->size < new_size ? obj->size : new_size);
+
+    /* The object moved, so any root that referenced the old user pointer is
+       now dangling. Repoint those roots at the new location; otherwise the
+       root would keep pointing at freed memory (use-after-free). */
+    for (size_t i = 0; i < gc.root_count; i++) {
+        if (gc.roots[i] == old_user) gc.roots[i] = new_user;
+    }
 
     /* Unlink old object */
     if (obj->prev) obj->prev->next = obj->next;
@@ -229,8 +286,12 @@ void leash_gc_register_root(void* ptr) {
         size_t new_cap = gc.root_capacity * 2;
         void** new_roots = (void**)realloc(gc.roots, new_cap * sizeof(void*));
         if (!new_roots) {
+            /* Cannot grow the root set: dropping the root would let the
+               referenced object be collected and later used after free. Treat
+               this as an unrecoverable OOM, consistent with the rest of the GC. */
+            fprintf(stderr, "Leash GC: Out of memory (root set)!\n");
             GC_UNLOCK();
-            return;
+            abort();
         }
         gc.roots = new_roots;
         memset(gc.roots + gc.root_capacity, 0, (new_cap - gc.root_capacity) * sizeof(void*));
@@ -315,7 +376,6 @@ static void sweep(void) {
             }
             gc.total_allocated -= obj->size;
             gc.object_count--;
-            gc.alloc_count++;
             free(obj);
         } else {
             obj->flags &= ~FLAG_MARKED;
@@ -335,10 +395,18 @@ void leash_gc_collect(void) {
 
 /* Utility Functions */
 void* leash_gc_alloc_string(size_t len) {
+    if (len > SIZE_MAX - 1) {
+        fprintf(stderr, "Leash GC: string allocation too large!\n");
+        abort();
+    }
     return leash_gc_malloc(len + 1);
 }
 
 void* leash_gc_alloc_vector_data(size_t elem_size, size_t capacity) {
+    if (elem_size != 0 && capacity > SIZE_MAX / elem_size) {
+        fprintf(stderr, "Leash GC: vector allocation too large!\n");
+        abort();
+    }
     return leash_gc_malloc(elem_size * capacity);
 }
 
@@ -542,7 +610,7 @@ static void vec_i32_div(int32_t* restrict res, const int32_t* restrict a, const 
         res[i+3] = a[i+3] / b[i+3];
     }
     i32_div_fallback:
-    for (; i < n; i++) res[i] = a[i] / b[i];
+    for (; i < n; i++) res[i] = (b[i] == 0) ? 0 : (a[i] / b[i]);
 }
 
 static i32_binop_fn i32_ops[4] = {vec_i32_add, vec_i32_sub, vec_i32_mul, vec_i32_div};
@@ -602,7 +670,7 @@ static void vec_i64_div(int64_t* restrict res, const int64_t* restrict a, const 
         res[i+3] = a[i+3] / b[i+3];
     }
     i64_div_fallback:
-    for (; i < n; i++) res[i] = a[i] / b[i];
+    for (; i < n; i++) res[i] = (b[i] == 0) ? 0 : (a[i] / b[i]);
 }
 
 static i64_binop_fn i64_ops[4] = {vec_i64_add, vec_i64_sub, vec_i64_mul, vec_i64_div};
@@ -661,12 +729,14 @@ typedef struct {
     int64_t end;
     int op;
     int elem_size;
+    int is_int;
     volatile int done;
 } thread_task;
 
 static thread_task g_tasks[MAX_POOL_THREADS];
 static int g_pool_initialized = 0;
 static int g_num_threads = 0;
+static int g_dispatch_is_int = 0;
 
 static DWORD WINAPI pool_worker(LPVOID arg) {
     int tid = (int)(intptr_t)arg;
@@ -676,7 +746,21 @@ static DWORD WINAPI pool_worker(LPVOID arg) {
         if (ta->start == -1 && ta->end == -1) return 0;
         int64_t n = ta->end - ta->start;
         if (n <= 0) { ta->done = 0; continue; }
-        if (ta->elem_size == 4) {
+        if (ta->is_int) {
+            if (ta->elem_size == 4) {
+                leash_matrix_binary_op_int32(
+                    (int32_t*)ta->res + ta->start,
+                    (const int32_t*)ta->a + ta->start,
+                    (const int32_t*)ta->b + ta->start,
+                    n, ta->op);
+            } else if (ta->elem_size == 8) {
+                leash_matrix_binary_op_int64(
+                    (int64_t*)ta->res + ta->start,
+                    (const int64_t*)ta->a + ta->start,
+                    (const int64_t*)ta->b + ta->start,
+                    n, ta->op);
+            }
+        } else if (ta->elem_size == 4) {
             leash_matrix_binary_op_float(
                 (float*)ta->res + ta->start,
                 (const float*)ta->a + ta->start,
@@ -716,9 +800,15 @@ static void parallel_dispatch(void* res, const void* a, const void* b,
 {
     if (!g_pool_initialized) init_thread_pool();
     int num_workers = g_num_threads;
+    int is_int = g_dispatch_is_int;
     if (num_workers < 2 || n < 1024) {
-        if (elem_size == 4) leash_matrix_binary_op_float((float*)res, (const float*)a, (const float*)b, n, op);
-        else leash_matrix_binary_op_double((double*)res, (const double*)a, (const double*)b, n, op);
+        if (is_int) {
+            if (elem_size == 4) leash_matrix_binary_op_int32((int32_t*)res, (const int32_t*)a, (const int32_t*)b, n, op);
+            else leash_matrix_binary_op_int64((int64_t*)res, (const int64_t*)a, (const int64_t*)b, n, op);
+        } else {
+            if (elem_size == 4) leash_matrix_binary_op_float((float*)res, (const float*)a, (const float*)b, n, op);
+            else leash_matrix_binary_op_double((double*)res, (const double*)a, (const double*)b, n, op);
+        }
         return;
     }
     int64_t chunk = (n + num_workers - 1) / num_workers;
@@ -731,20 +821,14 @@ static void parallel_dispatch(void* res, const void* a, const void* b,
         if (g_tasks[t].end > n) g_tasks[t].end = n;
         g_tasks[t].op = op;
         g_tasks[t].elem_size = elem_size;
+        g_tasks[t].is_int = is_int;
         g_tasks[t].done = 1;
         _ReadWriteBarrier();
     }
     /* Main thread helps with last chunk */
-    int64_t h_start = (num_workers - 1) * chunk;
-    if (h_start < n) {
-        if (elem_size == 4) leash_matrix_binary_op_float(
-            (float*)res + h_start, (const float*)a + h_start, (const float*)b + h_start,
-            n - h_start, op);
-        else leash_matrix_binary_op_double(
-            (double*)res + h_start, (const double*)a + h_start, (const double*)b + h_start,
-            n - h_start, op);
-    }
-    /* Wait for workers */
+    /* Worker num_workers-1 already covers [(num_workers-1)*chunk, n); the main
+       thread must NOT also process that range or the last chunk is written
+       twice. The main thread simply waits for all workers to finish. */
     for (int t = 0; t < num_workers; t++) {
         while (g_tasks[t].done) { Sleep(0); }
     }
@@ -753,12 +837,14 @@ static void parallel_dispatch(void* res, const void* a, const void* b,
 void leash_matrix_parallel_op_float(
     float* res, const float* a, const float* b, int64_t n, int op)
 {
+    g_dispatch_is_int = 0;
     parallel_dispatch(res, a, b, n, op, 4);
 }
 
 void leash_matrix_parallel_op_double(
     double* res, const double* a, const double* b, int64_t n, int op)
 {
+    g_dispatch_is_int = 0;
     parallel_dispatch(res, a, b, n, op, 8);
 }
 
@@ -766,6 +852,7 @@ void leash_matrix_parallel_op_int32(
     int32_t* res, const int32_t* a, const int32_t* b, int64_t n, int op)
 {
     if (n < 1024) { leash_matrix_binary_op_int32(res, a, b, n, op); return; }
+    g_dispatch_is_int = 1;
     parallel_dispatch(res, a, b, n, op, 4);
 }
 
@@ -773,6 +860,7 @@ void leash_matrix_parallel_op_int64(
     int64_t* res, const int64_t* a, const int64_t* b, int64_t n, int op)
 {
     if (n < 1024) { leash_matrix_binary_op_int64(res, a, b, n, op); return; }
+    g_dispatch_is_int = 1;
     parallel_dispatch(res, a, b, n, op, 8);
 }
 
@@ -790,6 +878,7 @@ typedef struct {
     int64_t end;
     int op;
     int elem_size;
+    int is_int;
     volatile int done;
 } thread_task;
 
@@ -797,16 +886,34 @@ static thread_task g_tasks[MAX_POOL_THREADS];
 static pthread_t g_threads[MAX_POOL_THREADS];
 static int g_pool_initialized = 0;
 static int g_num_threads = 0;
+static int g_dispatch_is_int = 0;
+static pthread_mutex_t g_pool_init_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 static void* pool_worker(void* arg) {
     int tid = (int)(intptr_t)arg;
     thread_task* ta = &g_tasks[tid];
     while (1) {
         while (!ta->done) { sched_yield(); }
+        /* Acquire barrier: ensure task fields are visible before we read them. */
+        __sync_synchronize();
         if (ta->start == -1 && ta->end == -1) return NULL;
         int64_t n = ta->end - ta->start;
         if (n <= 0) { __sync_synchronize(); ta->done = 0; continue; }
-        if (ta->elem_size == 4) {
+        if (ta->is_int) {
+            if (ta->elem_size == 4) {
+                leash_matrix_binary_op_int32(
+                    (int32_t*)ta->res + ta->start,
+                    (const int32_t*)ta->a + ta->start,
+                    (const int32_t*)ta->b + ta->start,
+                    n, ta->op);
+            } else if (ta->elem_size == 8) {
+                leash_matrix_binary_op_int64(
+                    (int64_t*)ta->res + ta->start,
+                    (const int64_t*)ta->a + ta->start,
+                    (const int64_t*)ta->b + ta->start,
+                    n, ta->op);
+            }
+        } else if (ta->elem_size == 4) {
             leash_matrix_binary_op_float(
                 (float*)ta->res + ta->start,
                 (const float*)ta->a + ta->start,
@@ -826,15 +933,43 @@ static void* pool_worker(void* arg) {
 }
 
 static void init_thread_pool(void) {
-    if (g_pool_initialized) return;
+    pthread_mutex_lock(&g_pool_init_mutex);
+    if (g_pool_initialized) { pthread_mutex_unlock(&g_pool_init_mutex); return; }
     g_num_threads = (int)sysconf(_SC_NPROCESSORS_ONLN);
     if (g_num_threads < 2) g_num_threads = 2;
     if (g_num_threads > MAX_POOL_THREADS) g_num_threads = MAX_POOL_THREADS;
+    int ok = 1;
     for (int i = 0; i < g_num_threads; i++) {
         g_tasks[i].done = 0;
-        pthread_create(&g_threads[i], NULL, pool_worker, (void*)(intptr_t)i);
+        g_tasks[i].is_int = 0;
+        if (pthread_create(&g_threads[i], NULL, pool_worker, (void*)(intptr_t)i) != 0) { ok = 0; break; }
     }
-    g_pool_initialized = 1;
+    if (ok) {
+        g_pool_initialized = 1;
+    } else {
+        /* Could not spawn the worker pool: shut down the threads we did start
+           (via the exit sentinel) and fall back to sequential execution. */
+        for (int i = 0; i < g_num_threads; i++) {
+            g_tasks[i].start = -1; g_tasks[i].end = -1;
+            __sync_synchronize();
+            g_tasks[i].done = 1;
+            pthread_join(g_threads[i], NULL);
+        }
+        g_num_threads = 0;
+        g_pool_initialized = 1; /* sequential mode; never retry */
+    }
+    pthread_mutex_unlock(&g_pool_init_mutex);
+}
+
+static void sequential_matrix_op(void* res, const void* a, const void* b,
+                                 int64_t n, int op, int elem_size, int is_int) {
+    if (is_int) {
+        if (elem_size == 4) leash_matrix_binary_op_int32((int32_t*)res, (const int32_t*)a, (const int32_t*)b, n, op);
+        else leash_matrix_binary_op_int64((int64_t*)res, (const int64_t*)a, (const int64_t*)b, n, op);
+    } else {
+        if (elem_size == 4) leash_matrix_binary_op_float((float*)res, (const float*)a, (const float*)b, n, op);
+        else leash_matrix_binary_op_double((double*)res, (const double*)a, (const double*)b, n, op);
+    }
 }
 
 static void parallel_dispatch(void* res, const void* a, const void* b,
@@ -842,9 +977,9 @@ static void parallel_dispatch(void* res, const void* a, const void* b,
 {
     if (!g_pool_initialized) init_thread_pool();
     int num_workers = g_num_threads;
+    int is_int = g_dispatch_is_int;
     if (num_workers < 2 || n < 1024) {
-        if (elem_size == 4) leash_matrix_binary_op_float((float*)res, (const float*)a, (const float*)b, n, op);
-        else leash_matrix_binary_op_double((double*)res, (const double*)a, (const double*)b, n, op);
+        sequential_matrix_op(res, a, b, n, op, elem_size, is_int);
         return;
     }
     int64_t chunk = (n + num_workers - 1) / num_workers;
@@ -857,18 +992,13 @@ static void parallel_dispatch(void* res, const void* a, const void* b,
         if (g_tasks[t].end > n) g_tasks[t].end = n;
         g_tasks[t].op = op;
         g_tasks[t].elem_size = elem_size;
+        g_tasks[t].is_int = is_int;
         __sync_synchronize();
         g_tasks[t].done = 1;
     }
-    int64_t h_start = (num_workers - 1) * chunk;
-    if (h_start < n) {
-        if (elem_size == 4) leash_matrix_binary_op_float(
-            (float*)res + h_start, (const float*)a + h_start, (const float*)b + h_start,
-            n - h_start, op);
-        else leash_matrix_binary_op_double(
-            (double*)res + h_start, (const double*)a + h_start, (const double*)b + h_start,
-            n - h_start, op);
-    }
+    /* Worker num_workers-1 already covers [(num_workers-1)*chunk, n); the main
+       thread must NOT also process that range or the last chunk is written
+       twice. The main thread simply waits for all workers to finish. */
     for (int t = 0; t < num_workers; t++) {
         while (g_tasks[t].done) { sched_yield(); }
     }
@@ -877,12 +1007,14 @@ static void parallel_dispatch(void* res, const void* a, const void* b,
 void leash_matrix_parallel_op_float(
     float* res, const float* a, const float* b, int64_t n, int op)
 {
+    g_dispatch_is_int = 0;
     parallel_dispatch(res, a, b, n, op, 4);
 }
 
 void leash_matrix_parallel_op_double(
     double* res, const double* a, const double* b, int64_t n, int op)
 {
+    g_dispatch_is_int = 0;
     parallel_dispatch(res, a, b, n, op, 8);
 }
 
@@ -890,6 +1022,7 @@ void leash_matrix_parallel_op_int32(
     int32_t* res, const int32_t* a, const int32_t* b, int64_t n, int op)
 {
     if (n < 1024) { leash_matrix_binary_op_int32(res, a, b, n, op); return; }
+    g_dispatch_is_int = 1;
     parallel_dispatch(res, a, b, n, op, 4);
 }
 
@@ -897,6 +1030,7 @@ void leash_matrix_parallel_op_int64(
     int64_t* res, const int64_t* a, const int64_t* b, int64_t n, int op)
 {
     if (n < 1024) { leash_matrix_binary_op_int64(res, a, b, n, op); return; }
+    g_dispatch_is_int = 1;
     parallel_dispatch(res, a, b, n, op, 8);
 }
 
@@ -920,19 +1054,37 @@ void leash_vec_batch_pushb(void* vec_ptr, const void* elements, int64_t count, i
 }
 
 void leash_vec_bulk_copy(void* restrict dst, const void* restrict src, int64_t n, int64_t elem_size) {
+    if (n <= 0 || elem_size <= 0) return;
+    /* Guard against signed overflow of the byte count. */
+    if (n > (int64_t)(SIZE_MAX / (size_t)elem_size)) {
+        fprintf(stderr, "Leash: vector copy too large!\n");
+        abort();
+    }
     memcpy(dst, src, (size_t)(n * elem_size));
 }
 
 void leash_vec_reverse(void* data, int64_t size, int64_t elem_size) {
-    /* Optimization 16: In-place vector reverse */
+    /* Optimization 16: In-place vector reverse.
+       Note: the swap scratch buffer must hold a full element. A fixed 64-byte
+       stack buffer would overflow for element sizes > 64 (e.g. vectors of
+       large structs), so fall back to a heap buffer when needed. */
     char* d = (char*)data;
-    char tmp[64];
+    void* tmp;
+    char small_tmp[64];
+    int use_heap = (elem_size > (int64_t)sizeof(small_tmp));
+    if (use_heap) {
+        tmp = malloc((size_t)elem_size);
+        if (!tmp) return; /* nothing useful we can do on OOM */
+    } else {
+        tmp = small_tmp;
+    }
     int64_t i, j;
     for (i = 0, j = size - 1; i < j; i++, j--) {
         memcpy(tmp, d + i * elem_size, (size_t)elem_size);
         memcpy(d + i * elem_size, d + j * elem_size, (size_t)elem_size);
         memcpy(d + j * elem_size, tmp, (size_t)elem_size);
     }
+    if (use_heap) free(tmp);
 }
 
 /* Optimization 17: Quicksort for int32 vectors */
@@ -1045,7 +1197,6 @@ void* leash_tlab_alloc(size_t size) {
 /* Fast mark with bitmap (global, protected by GC mutex) */
 static size_t* gc_mark_bitmap = NULL;
 static size_t gc_bitmap_capacity = 0;
-static size_t gc_index_map = 0;
 
 void leash_gc_bitmap_init(size_t max_objects) {
     size_t words = (max_objects + BITS_PER_WORD - 1) / BITS_PER_WORD;
@@ -1067,6 +1218,14 @@ static inline void bitmap_clear(size_t idx) {
 
 /* Optimization 22: Fast sequential memory copy with prefetch */
 void leash_fast_memcpy(void* restrict dst, const void* restrict src, size_t n) {
+    /* The word-copy loop below requires size_t-aligned pointers. If either
+       operand isn't aligned, fall back to a plain memcpy (which handles
+       arbitrary alignment) instead of invoking undefined behaviour. */
+    if (((uintptr_t)dst % sizeof(size_t)) != 0 ||
+        ((uintptr_t)src % sizeof(size_t)) != 0) {
+        memcpy(dst, src, n);
+        return;
+    }
     size_t i = 0;
     size_t* d = (size_t*)dst;
     const size_t* s = (const size_t*)src;
@@ -1170,9 +1329,12 @@ static unsigned long long leash_bigint_divmod10(unsigned long long *limbs,
     int i;
     for (i = (int)nlimbs - 1; i >= 0; --i) {
 #if defined(__SIZEOF_INT128__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpedantic"
         unsigned __int128 cur = ((unsigned __int128)rem << 64) | limbs[i];
         limbs[i] = (unsigned long long)(cur / 10u);
         rem = (unsigned long long)(cur % 10u);
+#pragma GCC diagnostic pop
 #else
         unsigned long long n = limbs[i];
         unsigned long long hi = (rem << 32) | (n >> 32);

@@ -1,5 +1,6 @@
 import sys
 import os
+import re
 import llvmlite.ir as ir
 import llvmlite.binding as llvm
 from .errors import LeashError
@@ -57,6 +58,7 @@ class CodeGen:
             pass
         self.builder = None
         self.func_symtab = {}
+        self._func_counter = 0  # for mangling user functions that shadow builtins
         self.var_symtab = {}
         self.struct_symtab = {}
         self.type_aliases = {}  # name -> resolved type string
@@ -145,6 +147,26 @@ class CodeGen:
         self.showb_cap_gv.initializer = ir.Constant(ir.IntType(64), 0)
 
         self.setup_builtins()
+        # Names registered by the compiler as C builtins. A user-defined
+        # function may legitimately shadow one of these (e.g. defining `abs`);
+        # we must not let the builtin stub prevent the user function from being
+        # declared. Captured once so it survives across programs.
+        self.builtin_func_names = set(self.func_symtab.keys())
+
+    def _declare_user_function(self, name, func_type):
+        """Create an LLVM function for a user (or method/worker) definition.
+
+        When `name` collides with a compiler C builtin (e.g. a user defines
+        `abs`), the symbol is mangled to a unique name so the real C stub is
+        left intact and the user body is emitted into its own function. The
+        mapping in func_symtab always uses the original Leash name, so call
+        sites resolve correctly."""
+        if name in self.builtin_func_names:
+            llvm_name = f"{name}__u{self._func_counter}"
+            self._func_counter += 1
+        else:
+            llvm_name = name
+        return ir.Function(self.module, func_type, name=llvm_name)
 
     def setup_builtins(self):
         printf_ty = ir.FunctionType(
@@ -200,6 +222,15 @@ class CodeGen:
 
         gc_malloc_ty = ir.FunctionType(ir.IntType(8).as_pointer(), [ir.IntType(64)])
         self.malloc = ir.Function(self.module, gc_malloc_ty, name="leash_gc_malloc")
+
+        # Allocation with explicit GC flags (used to mark pointer-free payloads
+        # ATOMIC so the conservative marker doesn't false-retain objects).
+        gc_malloc_ex_ty = ir.FunctionType(
+            ir.IntType(8).as_pointer(), [ir.IntType(64), ir.IntType(32)]
+        )
+        self.malloc_ex = ir.Function(
+            self.module, gc_malloc_ex_ty, name="leash_gc_malloc_ex"
+        )
 
         gc_realloc_ty = ir.FunctionType(
             ir.IntType(8).as_pointer(), [ir.IntType(8).as_pointer(), ir.IntType(64)]
@@ -736,7 +767,7 @@ class CodeGen:
     def _emit_tostring(self, val, llvm_ty, type_name=None):
         """Convert any basic value to a Leash string (i8*). Allocation via GC_malloc."""
         # Buffer for conversion (64 bytes is plenty for any numeric)
-        buf = self.builder.call(self.malloc, [ir.Constant(ir.IntType(64), 64)])
+        buf = self._gc_alloc_string(ir.Constant(ir.IntType(64), 64))
         self._track_alloc(buf)
 
         fmt = ""
@@ -848,7 +879,7 @@ class CodeGen:
                 # Raw character data, NUL-terminated copy
                 length = self.builder.extract_value(val, 0)
                 data = self.builder.extract_value(val, 1)
-                out = self.builder.call(self.malloc, [self.builder.add(length, ir.Constant(ir.IntType(64), 1))])
+                out = self._gc_alloc_string(self.builder.add(length, ir.Constant(ir.IntType(64), 1)))
                 self._track_alloc(out)
                 self.builder.call(self.func_symtab["memcpy"], [out, data, length])
                 self.builder.store(
@@ -942,7 +973,7 @@ class CodeGen:
         right_len = self.builder.call(self.strlen, [right_ptr])
         total = self.builder.add(left_len, right_len)
         total_plus_1 = self.builder.add(total, ir.Constant(ir.IntType(64), 1))
-        result = self.builder.call(self.malloc, [total_plus_1])
+        result = self._gc_alloc_string(total_plus_1)
         self._track_alloc(result)
         self.builder.call(self.strcpy, [result, left_ptr])
         self.builder.call(self.strcat, [result, right_ptr])
@@ -969,7 +1000,7 @@ class CodeGen:
         is_signed = not self._is_uint_type_name(leash_type_name)
         # ceil(width * log10(2)) digits max + sign + NUL; width//3+4 always fits
         buf_bytes = width // 3 + 4
-        buf = self.builder.call(self.malloc, [ir.Constant(ir.IntType(64), buf_bytes)])
+        buf = self._gc_alloc_string(ir.Constant(ir.IntType(64), buf_bytes))
         self._track_alloc(buf)
         slot = self.builder.alloca(val.type, name="bigint_slot")
         self.builder.store(val, slot)
@@ -1014,6 +1045,46 @@ class CodeGen:
                 self.builder.store(new_count, count_ptr)
             self.af_is_return_value.append(False)
         return ptr
+
+    # Matches LEASH_GC_FLAG_ATOMIC in gc.h. Allocations marked ATOMIC are not
+    # scanned by the conservative marker, eliminating false-retention of
+    # unrelated objects whose addresses coincidentally appear as raw bytes.
+    LEASH_GC_FLAG_ATOMIC = 0x02
+
+    def _gc_alloc(self, size_ir, atomic=False):
+        """Allocate a GC-managed buffer of `size_ir` bytes.
+
+        When `atomic` is true (the payload provably contains no GC pointers --
+        e.g. strings, numeric vectors) the object is marked ATOMIC so the
+        conservative marker skips scanning it. In autofree / no-gc modes there
+        is no scanning, so a plain malloc is used and `atomic` is ignored.
+        """
+        if self.autofree or self.no_gc:
+            return self.builder.call(self.malloc, [size_ir])
+        flags = ir.Constant(ir.IntType(32), self.LEASH_GC_FLAG_ATOMIC if atomic else 0)
+        return self.builder.call(self.malloc_ex, [size_ir, flags])
+
+    def _gc_alloc_string(self, size_ir):
+        # A string is a pure byte sequence and can never hold a GC pointer, so
+        # it is always allocated ATOMIC. This is the single biggest source of
+        # conservative false-retention in real programs.
+        return self._gc_alloc(size_ir, atomic=True)
+
+    @staticmethod
+    def _type_contains_pointers(llvm_type):
+        """Return True if `llvm_type` (or any aggregate element) can hold a GC
+        pointer. Used to decide whether a heap payload must be scanned."""
+        if isinstance(llvm_type, ir.PointerType):
+            return True
+        if isinstance(llvm_type, (ir.LiteralStructType, ir.IdentifiedStructType)):
+            return any(
+                CodeGen._type_contains_pointers(e) for e in llvm_type.elements
+            )
+        if isinstance(llvm_type, ir.ArrayType):
+            return CodeGen._type_contains_pointers(llvm_type.element)
+        if hasattr(ir, "VectorType") and isinstance(llvm_type, ir.VectorType):
+            return CodeGen._type_contains_pointers(llvm_type.element)
+        return False
 
     def _mark_as_return_value(self, ptr):
         """Mark a tracked pointer as the return value so _emit_cleanup skips it."""
@@ -1151,6 +1222,11 @@ class CodeGen:
             return ir.Constant(
                 llvm_type, [ir.Constant(ir.IntType(64), 0), ir.Constant(ptr_ty, None)]
             )
+
+        # Pointer and function-pointer types have no `.elements`; the only sane
+        # default is a null pointer.
+        if isinstance(llvm_type, ir.PointerType) or isinstance(llvm_type, ir.FunctionType):
+            return ir.Constant(llvm_type, None)
 
         return ir.Constant(
             llvm_type,
@@ -1519,6 +1595,20 @@ class CodeGen:
         if prefix:
             return f"{prefix}{type_name}"
         return type_name
+
+    def _is_fixed_array_type(self, type_name):
+        """Return True if `type_name` is a fixed-size array like `int[3]` or
+        `char[10]` (as opposed to a slice `int[]` or a `vec<T>`)."""
+        if not isinstance(type_name, str):
+            return False
+        return bool(re.match(r"^.*\[\d+\]$", type_name.strip()))
+
+    def _unwrap_cast_expr(self, expr):
+        """Peel `CastExpr`/`AsExpr` wrappers to reach the underlying expression,
+        so a fixed-size array is still detected even when wrapped in `as vec<T>`."""
+        while expr is not None and type(expr).__name__ in ("CastExpr", "AsExpr"):
+            expr = getattr(expr, "expr", None)
+        return expr
 
     def _is_function_pointer_type(self, type_name):
         """Check if a type string represents a function pointer type."""
@@ -2560,7 +2650,12 @@ class CodeGen:
 
     def _codegen_predeclare_function(self, node):
         """Pre-declare a function so it's available in func_symtab before body codegen."""
-        if node.name in self.func_symtab:
+        # If this name already maps to a *user* function we declared earlier in
+        # this pass, skip to avoid declaring the same function twice. Builtins,
+        # however, must yield to a user definition that shares the name (e.g. a
+        # user `abs`); llvmlite auto-renames the duplicate symbol so the body is
+        # emitted into a fresh function instead of corrupting the C stub.
+        if node.name in self.func_symtab and node.name not in self.builtin_func_names:
             return
         if node.name == "main":
             return
@@ -2568,7 +2663,7 @@ class CodeGen:
         if is_worker:
             void_ptr = ir.IntType(8).as_pointer()
             func_type = ir.FunctionType(void_ptr, [void_ptr])
-            func = ir.Function(self.module, func_type, name=node.name)
+            func = self._declare_user_function(node.name, func_type)
             self.func_symtab[node.name] = func
             return
         arg_types = []
@@ -2581,7 +2676,7 @@ class CodeGen:
             arg_types.append(llvm_arg_type)
         ret_type = self._get_llvm_type(node.return_type, is_return=True)
         func_type = ir.FunctionType(ret_type, arg_types)
-        func = ir.Function(self.module, func_type, name=node.name)
+        func = self._declare_user_function(node.name, func_type)
         self.func_symtab[node.name] = func
         if struct_type_name and struct_type_name in self.struct_symtab:
             self.struct_symtab[struct_type_name]["methods"][node.name] = func
@@ -2657,7 +2752,7 @@ class CodeGen:
 
         func = self.func_symtab.get(name)
         if func is None:
-            func = ir.Function(self.module, func_type, name=name)
+            func = self._declare_user_function(name, func_type)
             self.func_symtab[name] = func
 
         self._codegen_Function_body(node, func, is_main_with_args=is_main_with_args)
@@ -3096,6 +3191,33 @@ class CodeGen:
 
         # If the declared type maps to a different LLVM type, cast
         target_llvm = self._get_llvm_type(node.var_type)
+
+        # Reject assigning a fixed-size array (e.g. `int[3]`) to a `vec<T>`.
+        # A fixed array and a vec have incompatible layouts/lifetimes: the vec
+        # would alias (possibly stack) array storage, which is unsound. Slices
+        # and array literals (which copy/own their data) are still allowed.
+        if node.value is not None and self._resolve_type_name(
+            node.var_type
+        ).startswith("vec<"):
+            try:
+                src_leash = self._get_leash_type_name(
+                    self._unwrap_cast_expr(node.value)
+                )
+            except Exception:
+                src_leash = None
+            if src_leash and self._is_fixed_array_type(src_leash):
+                raise LeashError(
+                    f"cannot assign a fixed-size array '{src_leash}' to a 'vec' value",
+                    node=node.value,
+                    tip=(
+                        "A `vec<T>` is a dynamically-sized container with a "
+                        "different layout than a fixed-size array `T[N]`. To build "
+                        "a vec from a fixed array, copy the elements explicitly "
+                        "(e.g. with a loop or `pushb`), or use a slice/array "
+                        "literal `{ ... }` which converts to a vec."
+                    ),
+                )
+
         val = self._emit_cast(val, target_llvm)
         ptr = self.builder.alloca(val.type)
         self.builder.store(val, ptr)
@@ -3144,7 +3266,11 @@ class CodeGen:
             inbounds=True,
         )
         typed_ptr = self.builder.bitcast(data_ptr, val.type.as_pointer())
-        self.builder.store(val, typed_ptr)
+        # The data region is an [max_size x i8] array, so variant pointers
+        # derived from it may be under-aligned for the variant's natural
+        # alignment. Mark the access explicitly unaligned to avoid UB / SIGBUS
+        # on strict-alignment targets.
+        self.builder.store(val, typed_ptr, align=1)
 
     def _codegen_Assignment(self, node):
         from .ast_nodes import MemberAccess, Identifier
@@ -3194,7 +3320,7 @@ class CodeGen:
                         typed_ptr = self.builder.bitcast(
                             data_ptr, vdata["llvm_type"].as_pointer()
                         )
-                        self.builder.store(val, typed_ptr)
+                        self.builder.store(val, typed_ptr, align=1)
                         return
                     elif member == "cur":
                         raise LeashError(
@@ -3259,6 +3385,29 @@ class CodeGen:
         self.current_target_type = old_target
 
         target_llvm = self._get_llvm_type(target_type_name)
+
+        # Reject assigning a fixed-size array (e.g. `int[3]`) to a `vec<T>`
+        # variable for the same unsoundness reason as in VariableDecl/CastExpr.
+        if resolved_target_type.startswith("vec<"):
+            try:
+                src_leash = self._get_leash_type_name(
+                    self._unwrap_cast_expr(node.value)
+                )
+            except Exception:
+                src_leash = None
+            if src_leash and self._is_fixed_array_type(src_leash):
+                raise LeashError(
+                    f"cannot assign a fixed-size array '{src_leash}' to a 'vec' value",
+                    node=node.value,
+                    tip=(
+                        "A `vec<T>` is a dynamically-sized container with a "
+                        "different layout than a fixed-size array `T[N]`. To build "
+                        "a vec from a fixed array, copy the elements explicitly "
+                        "(e.g. with a loop or `pushb`), or use a slice/array "
+                        "literal `{ ... }` which converts to a vec."
+                    ),
+                )
+
         val = self._emit_cast(val, target_llvm)
         self.builder.store(val, ptr)
 
@@ -3853,7 +4002,7 @@ class CodeGen:
         for i, (vname, vdata) in enumerate(variants):
             self.builder.position_at_end(var_bbs[i])
             typed_ptr = self.builder.bitcast(data_ptr, vdata["llvm_type"].as_pointer())
-            loaded = self.builder.load(typed_ptr)
+            loaded = self.builder.load(typed_ptr, align=1)
 
             # Determine format
             fmt, val = self._format_value(loaded, vdata.get("type_name"))
@@ -5499,7 +5648,7 @@ class CodeGen:
             total_len_plus_1 = self.builder.add(
                 total_len, ir.Constant(ir.IntType(64), 1)
             )
-            new_str = self.builder.call(self.malloc, [total_len_plus_1])
+            new_str = self._gc_alloc_string(total_len_plus_1)
             self._track_alloc(new_str)  # TRACK THIS ALLOCATION
 
             # Copy left
@@ -5632,7 +5781,7 @@ class CodeGen:
                 new_len_plus_1 = self.builder.add(
                     new_len, ir.Constant(ir.IntType(64), 1)
                 )
-                res_found = self.builder.call(self.malloc, [new_len_plus_1])
+                res_found = self._gc_alloc_string(new_len_plus_1)
                 self._track_alloc(res_found)  # TRACK
 
                 self.builder.call(self.strncpy, [res_found, left, prefix_len])
@@ -5646,7 +5795,7 @@ class CodeGen:
                 self.builder.position_at_end(not_found_bb)
                 len_l2 = self.builder.call(self.strlen, [left])
                 len_l2_plus_1 = self.builder.add(len_l2, ir.Constant(ir.IntType(64), 1))
-                res_not_found = self.builder.call(self.malloc, [len_l2_plus_1])
+                res_not_found = self._gc_alloc_string(len_l2_plus_1)
                 self._track_alloc(res_not_found)  # TRACK
                 self.builder.call(self.strcpy, [res_not_found, left])
                 self.builder.branch(merge_bb)
@@ -5762,12 +5911,20 @@ class CodeGen:
         elif node.op == ">>":
             return self.builder.lshr(left, right) if is_unsigned else self.builder.ashr(left, right)
         elif node.op == "==":
+            if isinstance(left.type, (ir.LiteralStructType, ir.IdentifiedStructType, ir.ArrayType, ir.VectorType)):
+                raise LeashError(
+                    f"cannot compare aggregate values with '=='", node=node
+                )
             return (
                 self.builder.fcmp_ordered("==", left, right)
                 if is_float
                 else self.builder.icmp_signed("==", left, right)
             )
         elif node.op == "!=":
+            if isinstance(left.type, (ir.LiteralStructType, ir.IdentifiedStructType, ir.ArrayType, ir.VectorType)):
+                raise LeashError(
+                    f"cannot compare aggregate values with '!='", node=node
+                )
             return (
                 self.builder.fcmp_ordered("!=", left, right)
                 if is_float
@@ -5904,7 +6061,7 @@ class CodeGen:
         buffer_ptr_ptr = self.builder.alloca(
             ir.IntType(8).as_pointer(), name="input_buf_ptr"
         )
-        initial_buf = self.builder.call(self.malloc, [ir.Constant(ir.IntType(64), 256)])
+        initial_buf = self._gc_alloc_string(ir.Constant(ir.IntType(64), 256))
         self.builder.store(initial_buf, buffer_ptr_ptr)
 
         # 3. Read loop
@@ -6442,7 +6599,12 @@ class CodeGen:
         total_bytes = self.builder.mul(new_cap, elem_size)
         total_bytes.flags = ['nuw']
 
-        new_data_bytes = self.builder.call(self.malloc, [total_bytes])
+        # Mark ATOMIC when the element type cannot hold GC pointers, so the
+        # conservative marker doesn't false-retain objects whose addresses
+        # coincidentally appear inside numeric/char vector payloads.
+        new_data_bytes = self._gc_alloc(
+            total_bytes, atomic=not self._type_contains_pointers(elem_llvm)
+        )
         self._track_alloc(new_data_bytes)
 
         # Copy old data
@@ -7526,7 +7688,11 @@ class CodeGen:
         )
         total_bytes = self.builder.mul(size, elem_size)
         total_bytes.flags = ['nuw']
-        buf_bytes = self.builder.call(self.malloc, [total_bytes])
+        # ATOMIC when the element type holds no GC pointers (numeric/char
+        # vectors/arrays), so the conservative marker doesn't false-retain.
+        buf_bytes = self._gc_alloc(
+            total_bytes, atomic=not self._type_contains_pointers(elem_llvm)
+        )
         self._track_alloc(buf_bytes)
         buf = self.builder.bitcast(buf_bytes, elem_llvm.as_pointer())
 
@@ -7789,7 +7955,7 @@ class CodeGen:
 
             # Allocate buffer for file content + null terminator
             buffer_size = self.builder.add(file_size, ir.Constant(ir.IntType(64), 1))
-            buffer = self.builder.call(self.malloc, [buffer_size])
+            buffer = self._gc_alloc_string(buffer_size)
             self._track_alloc(buffer)
 
             # Read the file
@@ -7856,7 +8022,7 @@ class CodeGen:
             self.builder.call(self.frewind, [file_handle])
 
             # Allocate buffer
-            buffer = self.builder.call(self.malloc, [file_size])
+            buffer = self._gc_alloc_string(file_size)
             self._track_alloc(buffer)
 
             # Read the file
@@ -7878,8 +8044,8 @@ class CodeGen:
             # readln() -> string: Read a line from file (strips trailing newline)
             # Allocate a buffer for reading
             buffer_size = 4096
-            buffer = self.builder.call(
-                self.malloc, [ir.Constant(ir.IntType(64), buffer_size)]
+            buffer = self._gc_alloc_string(
+                ir.Constant(ir.IntType(64), buffer_size)
             )
             self._track_alloc(buffer)
 
@@ -7924,8 +8090,8 @@ class CodeGen:
         elif method == "readlnb":
             # readlnb() -> char[]: Read a line as bytes (strips trailing newline)
             buffer_size = 4096
-            buffer = self.builder.call(
-                self.malloc, [ir.Constant(ir.IntType(64), buffer_size)]
+            buffer = self._gc_alloc_string(
+                ir.Constant(ir.IntType(64), buffer_size)
             )
             self._track_alloc(buffer)
 
@@ -7969,7 +8135,7 @@ class CodeGen:
             # If null, return empty slice
             zero_len = ir.Constant(ir.IntType(64), 0)
             final_len = self.builder.select(is_null, zero_len, str_len)
-            empty_buf = self.builder.call(self.malloc, [ir.Constant(ir.IntType(64), 1)])
+            empty_buf = self._gc_alloc_string(ir.Constant(ir.IntType(64), 1))
             self.builder.store(ir.Constant(ir.IntType(8), 0), empty_buf)
             final_buf = self.builder.select(is_null, empty_buf, buffer)
             slice_val = self.builder.insert_value(slice_val, final_len, 0)
@@ -8058,7 +8224,7 @@ class CodeGen:
 
         # Allocate buffer for file content + null terminator
         buffer_size = self.builder.add(file_size, ir.Constant(ir.IntType(64), 1))
-        buffer = self.builder.call(self.malloc, [buffer_size])
+        buffer = self._gc_alloc_string(buffer_size)
         self._track_alloc(buffer)
 
         # Read file into buffer
@@ -8072,14 +8238,17 @@ class CodeGen:
         old_len = self.builder.call(self.strlen, [old_str])
         new_len = self.builder.call(self.strlen, [new_str])
 
-        # Allocate result buffer (worst case: all characters replaced could be larger)
-        # We need enough space for the worst case where every character is replaced
-        # Estimate: original size * (new_len / old_len) + extra buffer
+        # Allocate result buffer.
+        # Worst case: every input byte is a standalone match of old_str
+        # (old_len == 1) replaced by the full new_str, so the output is at most
+        # file_size * new_len bytes plus the NUL terminator. The previous
+        # estimate (file_size * 4 + 4096) overflowed the buffer whenever
+        # new_len > 4, corrupting the heap via strcpy.
         result_size = self.builder.add(
-            self.builder.mul(file_size, ir.Constant(ir.IntType(64), 4)),
-            ir.Constant(ir.IntType(64), 4096),
+            self.builder.mul(file_size, new_len),
+            ir.Constant(ir.IntType(64), 1),
         )
-        result = self.builder.call(self.malloc, [result_size])
+        result = self._gc_alloc_string(result_size)
         self._track_alloc(result)
 
         if replace_all:
@@ -8287,7 +8456,7 @@ class CodeGen:
             )
             ptr = self.builder.extract_value(arg_val, 1)
             length_plus_1 = self.builder.add(length, ir.Constant(ir.IntType(64), 1))
-            new_str = self.builder.call(self.malloc, [length_plus_1])
+            new_str = self._gc_alloc_string(length_plus_1)
             self._track_alloc(new_str)
             self.builder.call(self.strncpy, [new_str, ptr, length])
             null_ptr = self.builder.gep(new_str, [length], inbounds=True)
@@ -8314,24 +8483,33 @@ class CodeGen:
                     else:
                         return self.builder.call(val_func, [])
             # format based on type
-            # allocate 64 bytes for the result string
-            buf = self.builder.call(self.malloc, [ir.Constant(ir.IntType(64), 64)])
-            self._track_alloc(buf)
-
             if isinstance(arg_val.type, ir.IntType):
+                # Integers wider than 64 bits overflow a 64-byte buffer and must
+                # not be passed to sprintf's variadic %lld (ABI mismatch).
+                if arg_val.type.width > 64:
+                    return self._emit_wide_int_string(
+                        arg_val, self._get_leash_type_name(node.args[0]))
+                buf = self._gc_alloc_string(ir.Constant(ir.IntType(64), 64))
+                self._track_alloc(buf)
                 fmt = self._emit_const_str("%lld")
                 # cast if needed
                 if arg_val.type.width < 64:
                     arg_val = self.builder.sext(arg_val, ir.IntType(64))
                 self.builder.call(self.sprintf, [buf, fmt, arg_val])
+                return buf
             elif isinstance(arg_val.type, (ir.FloatType, ir.DoubleType, ir.HalfType)):
-                fmt = self._emit_const_str("%f")
+                # "%f" can exceed 64 bytes for large/small doubles.
+                buf = self._gc_alloc_string(ir.Constant(ir.IntType(64), 400))
+                self._track_alloc(buf)
                 if not isinstance(arg_val.type, ir.DoubleType):
                     arg_val = self.builder.fpext(arg_val, ir.DoubleType())
-                self.builder.call(self.sprintf, [buf, fmt, arg_val])
+                fmt = self._emit_const_str("%f")
+                self.builder.call(
+                    self.func_symtab["snprintf"],
+                    [buf, ir.Constant(ir.IntType(64), 400), fmt, arg_val])
+                return buf
             else:
                 return arg_val
-            return buf
 
         if node.name == "rand":
             # rand(min, max) - returns random int in [min, max]
@@ -8550,14 +8728,14 @@ class CodeGen:
             self.builder.cbranch(is_null, null_bb, nonnull_bb)
 
             self.builder.position_at_end(null_bb)
-            null_buf = self.builder.call(self.malloc, [ir.Constant(i64, 1)])
+            null_buf = self._gc_alloc_string(ir.Constant(i64, 1))
             self.builder.store(ir.Constant(i8, 0), null_buf)
             self.builder.branch(merge_bb)
 
             self.builder.position_at_end(nonnull_bb)
             input_len = self.builder.call(self.strlen, [input_str])
             alloc_size = self.builder.add(input_len, ir.Constant(i64, 1))
-            output_buf = self.builder.call(self.malloc, [alloc_size])
+            output_buf = self._gc_alloc_string(alloc_size)
 
             i_ptr = self.builder.alloca(i64)
             j_ptr = self.builder.alloca(i64)
@@ -9338,7 +9516,7 @@ class CodeGen:
         if len(variants) == 1:
             vname, vdata = variants[0]
             typed_ptr = self.builder.bitcast(data_ptr, vdata["llvm_type"].as_pointer())
-            return self.builder.load(typed_ptr)
+            return self.builder.load(typed_ptr, align=1)
 
         # Determine the common type to promote all variants into
         has_float = any(
@@ -9380,7 +9558,7 @@ class CodeGen:
         for i, (vname, vdata) in enumerate(variants):
             self.builder.position_at_end(var_bbs[i])
             typed_ptr = self.builder.bitcast(data_ptr, vdata["llvm_type"].as_pointer())
-            loaded = self.builder.load(typed_ptr)
+            loaded = self.builder.load(typed_ptr, align=1)
 
             # Convert to common type
             converted = self._convert_to_common(loaded, common_type)
@@ -10118,7 +10296,13 @@ class CodeGen:
         # ---- numeric -> string: sprintf into a fresh buffer ----
         if dst_is_string and src_is_int:
             if src_name != "char":
-                buf = self.builder.call(self.malloc, [ir.Constant(ir.IntType(64), 64)])
+                # Integers wider than 64 bits don't fit in a single i64, so they
+                # cannot be passed to sprintf's %lld/%llu (variadic ABI mismatch)
+                # and would overflow a 64-byte buffer. Route them through the
+                # arbitrary-width decimal formatter instead.
+                if src_l.width > 64:
+                    return self._emit_wide_int_string(val, src_name)
+                buf = self._gc_alloc_string(ir.Constant(ir.IntType(64), 64))
                 self._track_alloc(buf)
                 if self._leash_type_is_signed(src_name):
                     fmt = self._emit_const_str("%lld")
@@ -10129,14 +10313,19 @@ class CodeGen:
                 self.builder.call(self.sprintf, [buf, fmt, val64])
                 return buf
         if dst_is_string and src_is_float:
-            buf = self.builder.call(self.malloc, [ir.Constant(ir.IntType(64), 64)])
+            # "%f" can emit up to ~309 significant digits plus 6 fractional for a
+            # double, so a 64-byte buffer overflows for large/small magnitudes.
+            buf = self._gc_alloc_string(ir.Constant(ir.IntType(64), 400))
             self._track_alloc(buf)
             val64 = self.builder.fpext(val, ir.DoubleType()) if not isinstance(val.type, ir.DoubleType) else val
             fmt = self._emit_const_str("%f")
-            self.builder.call(self.sprintf, [buf, fmt, val64])
+            self.builder.call(
+                self.func_symtab["snprintf"],
+                [buf, ir.Constant(ir.IntType(64), 400), fmt, val64],
+            )
             return buf
         if dst_is_string and src_is_ptr:
-            buf = self.builder.call(self.malloc, [ir.Constant(ir.IntType(64), 64)])
+            buf = self._gc_alloc_string(ir.Constant(ir.IntType(64), 64))
             self._track_alloc(buf)
             fmt = self._emit_const_str("%p")
             self.builder.call(self.sprintf, [buf, fmt, val])
@@ -10221,64 +10410,132 @@ class CodeGen:
     def _codegen_ByteConvExpr(self, node):
         size_val = self._codegen(node.size_expr)
 
+        # Resolve the requested byte count. Keep a 64-bit value (the old code
+        # truncated runtime sizes to i32, losing high bits) and remember whether
+        # it was a compile-time constant.
         if isinstance(size_val, ir.Constant):
-            size = size_val.constant
+            size_is_const = True
+            size_int_const = int(size_val.constant)
+            size_ir = ir.Constant(ir.IntType(64), size_int_const)
         else:
-            size = self.builder.zext(size_val, ir.IntType(64))
-            size = self.builder.trunc(size, ir.IntType(32))
-
-        if isinstance(size, int):
-            size_int = size
-            size_ir = ir.Constant(ir.IntType(64), size)
-        else:
-            size_int = 4
-            size_ir = self.builder.zext(size, ir.IntType(64))
+            size_is_const = False
+            if isinstance(size_val.type, ir.IntType):
+                size_ir = (
+                    self.builder.zext(size_val, ir.IntType(64))
+                    if size_val.type.width <= 64
+                    else self.builder.trunc(size_val, ir.IntType(64))
+                )
+            else:
+                size_ir = size_val
 
         value_val = self._codegen(node.value_expr)
+        value_byte_size = self._type_byte_size(value_val.type)
+
+        def _clamp_copy():
+            """Never copy more bytes than the value actually occupies (that would
+            read past the value's alloca). The destination buffer is allocated to
+            the *requested* size, so any high bytes stay zero -- a zero-extended
+            representation of the value rather than an out-of-bounds read."""
+            if size_is_const:
+                return ir.Constant(ir.IntType(64), min(size_int_const, value_byte_size))
+            copy = self.builder.select(
+                self.builder.icmp_unsigned("<=", size_ir, ir.Constant(ir.IntType(64), value_byte_size)),
+                size_ir,
+                ir.Constant(ir.IntType(64), value_byte_size),
+            )
+            self._emit_runtime_check(
+                self.builder.icmp_unsigned("!=", size_ir, ir.Constant(ir.IntType(64), 0)),
+                "Runtime error: byte count must be > 0 for " + node.name + ".\n",
+            )
+            return copy
+
+        def _check_positive():
+            if size_is_const and size_int_const <= 0:
+                raise LeashError(
+                    f"{node.name} byte count must be > 0 (got {size_int_const})", node=node)
 
         if node.name == "inttobytes":
-            mem = self.builder.call(self.malloc, [size_ir])
+            _check_positive()
+            copy_ir = _clamp_copy()
+            mem = self._gc_alloc_string(size_ir)
             val_ptr = self.builder.alloca(value_val.type)
             self.builder.store(value_val, val_ptr)
             self.builder.call(
                 self.memmove,
-                [mem, self.builder.bitcast(val_ptr, ir.IntType(8).as_pointer()), size_ir],
+                [mem, self.builder.bitcast(val_ptr, ir.IntType(8).as_pointer()), copy_ir],
             )
             slice_type = ir.LiteralStructType([ir.IntType(64), ir.IntType(8).as_pointer()])
             slice_val = ir.Constant(slice_type, ir.Undefined)
-            slice_val = self.builder.insert_value(slice_val, ir.Constant(ir.IntType(64), size_int), 0)
+            slice_val = self.builder.insert_value(slice_val, size_ir, 0)
             slice_val = self.builder.insert_value(slice_val, mem, 1)
             return slice_val
         elif node.name == "bytestoint":
+            # The result width is dynamic, which LLVM cannot represent, so the
+            # byte count must be a compile-time constant and must not be 0 (which
+            # would create an invalid ir.IntType(0) and crash codegen).
+            if not size_is_const:
+                raise LeashError(
+                    "bytestoint requires a compile-time constant byte count", node=node)
+            if size_is_const and (size_int_const <= 0 or size_int_const > 64):
+                raise LeashError(
+                    f"bytestoint byte count {size_int_const} out of range (must be 1..64, 1..512 bits)",
+                    node=node)
+            slice_len = self.builder.extract_value(value_val, 0)
+            self._emit_runtime_check(
+                self.builder.icmp_unsigned(">=", slice_len, ir.Constant(ir.IntType(64), size_int_const)),
+                "Runtime error: bytestoint source buffer too small.\n",
+            )
             ptr = self.builder.extract_value(value_val, 1)
-            int_type = ir.IntType(size_int * 8)
+            int_type = ir.IntType(size_int_const * 8)
             result_ptr = self.builder.alloca(int_type)
             self.builder.call(
                 self.memmove,
-                [self.builder.bitcast(result_ptr, ir.IntType(8).as_pointer()), ptr, size_ir],
+                [self.builder.bitcast(result_ptr, ir.IntType(8).as_pointer()), ptr,
+                 ir.Constant(ir.IntType(64), size_int_const)],
             )
             return self.builder.load(result_ptr)
         elif node.name == "floattobytes":
-            mem = self.builder.call(self.malloc, [size_ir])
+            _check_positive()
+            copy_ir = _clamp_copy()
+            mem = self._gc_alloc_string(size_ir)
             val_ptr = self.builder.alloca(value_val.type)
             self.builder.store(value_val, val_ptr)
             self.builder.call(
                 self.memmove,
-                [mem, self.builder.bitcast(val_ptr, ir.IntType(8).as_pointer()), size_ir],
+                [mem, self.builder.bitcast(val_ptr, ir.IntType(8).as_pointer()), copy_ir],
             )
             slice_type = ir.LiteralStructType([ir.IntType(64), ir.IntType(8).as_pointer()])
             slice_val = ir.Constant(slice_type, ir.Undefined)
-            slice_val = self.builder.insert_value(slice_val, ir.Constant(ir.IntType(64), size_int), 0)
+            slice_val = self.builder.insert_value(slice_val, size_ir, 0)
             slice_val = self.builder.insert_value(slice_val, mem, 1)
             return slice_val
         elif node.name == "bytestofloat":
+            # Result is always a double (8 bytes); never copy more than that and
+            # never read past the source slice.
+            _check_positive()
+            if size_is_const and size_int_const > 8:
+                raise LeashError(
+                    f"bytestofloat byte count {size_int_const} out of range (double needs <= 8 bytes)",
+                    node=node)
+            if size_is_const:
+                copy_ir = ir.Constant(ir.IntType(64), size_int_const)
+            else:
+                copy_ir = self.builder.select(
+                    self.builder.icmp_unsigned("<=", size_ir, ir.Constant(ir.IntType(64), 8)),
+                    size_ir, ir.Constant(ir.IntType(64), 8))
+                self._emit_runtime_check(
+                    self.builder.icmp_unsigned("!=", size_ir, ir.Constant(ir.IntType(64), 0)),
+                    "Runtime error: bytestofloat byte count must be > 0.\n")
             slice_len = self.builder.extract_value(value_val, 0)
+            self._emit_runtime_check(
+                self.builder.icmp_unsigned(">=", slice_len, copy_ir),
+                "Runtime error: bytestofloat source buffer too small.\n")
             ptr = self.builder.extract_value(value_val, 1)
             result_type = ir.DoubleType()
             result_ptr = self.builder.alloca(result_type)
             self.builder.call(
                 self.memmove,
-                [self.builder.bitcast(result_ptr, ir.IntType(8).as_pointer()), ptr, size_ir],
+                [self.builder.bitcast(result_ptr, ir.IntType(8).as_pointer()), ptr, copy_ir],
             )
             return self.builder.load(result_ptr)
         return value_val
@@ -10311,33 +10568,23 @@ class CodeGen:
             target_type = self._get_llvm_type(node.target_type)
             return self.builder.bitcast(val, target_type)
 
-        # Handle casting from slice (e.g., {i64, ptr}) to vec (e.g., {ptr, i64, i64})
+        # Reject casting a fixed-size array (e.g. `int[3]`) to a `vec<T>`: the
+        # vec would alias (possibly stack) array storage, which is unsound.
+        # Slices and array literals are still convertible to a vec.
+        if dst_resolved.startswith("vec<") and self._is_fixed_array_type(src_resolved):
+            raise LeashError(
+                f"cannot cast a fixed-size array '{src_resolved}' to a 'vec' value",
+                node=node.expr,
+                tip=(
+                    "A `vec<T>` is a dynamically-sized container with a different "
+                    "layout than a fixed-size array `T[N]`. To build a vec from a "
+                    "fixed array, copy the elements explicitly (e.g. with a loop or "
+                    "`pushb`), or use a slice/array literal `{ ... }` which converts "
+                    "to a vec."
+                ),
+            )
+
         target_type = self._get_llvm_type(node.target_type)
-        src = val.type
-
-        if (
-            isinstance(src, ir.LiteralStructType)
-            and len(src.elements) == 2
-            and isinstance(src.elements[0], ir.IntType)
-            and isinstance(src.elements[1], ir.PointerType)
-            and dst_resolved.startswith("vec<")
-            and dst_resolved.endswith(">")
-        ):
-            # Convert slice {length, ptr} to vec {ptr, size, cap}
-            length = self.builder.extract_value(val, 0)
-            data_ptr = self.builder.extract_value(val, 1)
-
-            # Bitcast the data pointer to the expected element pointer type
-            expected_ptr_type = target_type.elements[0]
-            data_ptr = self.builder.bitcast(data_ptr, expected_ptr_type)
-
-            vec_type = target_type
-            vec_val = ir.Constant(vec_type, ir.Undefined)
-            vec_val = self.builder.insert_value(vec_val, data_ptr, 0)
-            vec_val = self.builder.insert_value(vec_val, length, 1)
-            vec_val = self.builder.insert_value(vec_val, length, 2)
-            return vec_val
-
         return self._emit_cast(val, target_type)
 
     def _codegen_AsExpr(self, node):
@@ -10539,7 +10786,7 @@ class CodeGen:
         elif src_is_int and dst_is_ptr:
             # char (i8) -> string (i8*): allocate 2 bytes, store char + null terminator
             if src.width == 8 and isinstance(dst.pointee, ir.IntType) and dst.pointee.width == 8:
-                ptr = self.builder.call(self.malloc, [ir.Constant(ir.IntType(64), 2)])
+                ptr = self._gc_alloc_string(ir.Constant(ir.IntType(64), 2))
                 self._track_alloc(ptr)
                 self.builder.store(val, ptr)
                 null_ptr = self.builder.gep(ptr, [ir.Constant(ir.IntType(64), 1)])
@@ -10609,6 +10856,32 @@ class CodeGen:
                     new_vec = self.builder.insert_value(new_vec, size_val, 1)
                     new_vec = self.builder.insert_value(new_vec, cap_val, 2)
                     return new_vec
+
+            # slice/array (2-elem {i64 length, T* ptr}) -> vec (3-elem
+            # {T* ptr, i64 size, i64 cap}). This is the legitimate conversion used
+            # for array/slice literals ({1, 2, 3}) and `as vec<T>` from a slice.
+            # A *fixed-size* array (e.g. `int[3]`) is rejected earlier, at the
+            # declaration/assignment/cast site, because its pointer aliases stack
+            # storage and would make the vec unsafe.
+            if (
+                isinstance(src, ir.LiteralStructType)
+                and len(src.elements) == 2
+                and isinstance(src.elements[0], ir.IntType)
+                and isinstance(src.elements[1], ir.PointerType)
+                and isinstance(dst, ir.LiteralStructType)
+                and len(dst.elements) == 3
+                and isinstance(dst.elements[0], ir.PointerType)
+                and isinstance(dst.elements[1], ir.IntType)
+                and isinstance(dst.elements[2], ir.IntType)
+            ):
+                length = self.builder.extract_value(val, 0)
+                data_ptr = self.builder.extract_value(val, 1)
+                new_data_ptr = self.builder.bitcast(data_ptr, dst.elements[0])
+                new_vec = ir.Constant(dst, ir.Undefined)
+                new_vec = self.builder.insert_value(new_vec, new_data_ptr, 0)
+                new_vec = self.builder.insert_value(new_vec, length, 1)
+                new_vec = self.builder.insert_value(new_vec, length, 2)
+                return new_vec
 
         # Helper to get bit width of primitive types
         def _field_width(typ):
@@ -10715,7 +10988,7 @@ class CodeGen:
         result_len = self.builder.add(prefix_len, new_len)
         result_len = self.builder.add(result_len, suffix_len)
         result_len_plus_1 = self.builder.add(result_len, ir.Constant(ir.IntType(64), 1))
-        result = self.builder.call(self.malloc, [result_len_plus_1])
+        result = self._gc_alloc_string(result_len_plus_1)
         self._track_alloc(result)
 
         # Copy prefix
@@ -10735,7 +11008,7 @@ class CodeGen:
 
         self.builder.position_at_end(not_found_bb)
         str_len_plus_1 = self.builder.add(str_len, ir.Constant(ir.IntType(64), 1))
-        result_copy = self.builder.call(self.malloc, [str_len_plus_1])
+        result_copy = self._gc_alloc_string(str_len_plus_1)
         self._track_alloc(result_copy)
         self.builder.call(self.strcpy, [result_copy, str_val])
         self.builder.branch(merge_bb)

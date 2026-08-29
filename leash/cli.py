@@ -1238,7 +1238,7 @@ def update_leash():
     import json
     
     print("Leash Update Checker")
-    print("Current version: 0.23.1 Beta\n")
+    print("Current version: 0.23.2 Beta\n")
     
     try:
         req = urllib.request.Request(
@@ -1264,7 +1264,7 @@ def update_leash():
         print("Update failed.")
 
 
-VERSION_STRING = "v0.23.1 Beta"
+VERSION_STRING = "v0.23.2 Beta"
 
 MAIN_HELP = f"""Leash {VERSION_STRING} - LLVM-powered compiled programming language
 
