@@ -1,0 +1,1198 @@
+/// LLVM IR Builder Library
+///
+/// A pure-Leash library for programmatically generating LLVM IR assembly text.
+///
+/// Quick start:
+///   use llvm::ir::Module;
+///   use llvm::ir::Type;
+///   use llvm::ir::Function;
+///   use llvm::ir::Builder;
+///
+///   fnc main() {
+///     m: Module = Module.make("demo");
+///     b: Builder = Builder.make(m);
+///     f: Function = b.function("add", Type.i32_type(), {Type.i32_type(), Type.i32_type()});
+///     b.block("entry");
+///     a: Value = b.param(0);
+///     c: Value = b.param(1);
+///     r: Value = b.add(a, c);
+///     b.ret(r);
+///     show(m.emit_text());
+///   }
+///
+/// Features:
+///   - All integer/float types plus vector, array, struct, pointer, function, label,
+///     metadata, and integer-based (x86_mmx) types (NOT YET full vector emission).
+///   - All core instructions: terminator, unary, binary, bitwise, memory, aggregate,
+///     conversion, comparison.
+///   - Constants of every LLVM kind.
+///   - Function attributes, calling conventions, linkage, aliases, global attributes.
+
+/// ===========================================================================
+/// Type system
+/// ===========================================================================
+pub def Type : class {
+    pub kind: string;  // "void", "int", "float", "ptr", "array", "struct", "fn", "vector", "label", "mmx"
+    pub int_width: int;         // for int
+    pub float_kind: string;     // half/float/double/fp128/x86_fp80/ppc_fp128
+    pub pointee: Type;          // for ptr
+    pub elem_count: int;        // for array / vector
+    pub elem_type: Type;        // for array / vector
+    pub struct_types: vec<Type>;  // for struct
+    pub is_packed: bool;        // for struct
+    pub ret_type: Type;         // for fn
+    pub param_types: vec<Type>; // for fn
+    pub is_vararg: bool;        // for fn
+
+    // --- Integer types ---
+    static pub fnc i1_type() : Type { return Type.make_int(1); }
+    static pub fnc i8_type() : Type { return Type.make_int(8); }
+    static pub fnc i16_type() : Type { return Type.make_int(16); }
+    static pub fnc i32_type() : Type { return Type.make_int(32); }
+    static pub fnc i64_type() : Type { return Type.make_int(64); }
+    static pub fnc i128_type() : Type { return Type.make_int(128); }
+    static pub fnc int_type(width int) : Type { return Type.make_int(width); }
+
+    static priv fnc make_int(width int) : Type {
+        t: Type = Type{kind: "int", int_width: width};
+        return t;
+    }
+
+    // --- Floating-point types ---
+    static pub fnc half_type() : Type { return Type.make_float("half"); }
+    static pub fnc float_type() : Type { return Type.make_float("float"); }
+    static pub fnc double_type() : Type { return Type.make_float("double"); }
+    static pub fnc fp128_type() : Type { return Type.make_float("fp128"); }
+    static pub fnc x86_fp80_type() : Type { return Type.make_float("x86_fp80"); }
+    static pub fnc ppc_fp128_type() : Type { return Type.make_float("ppc_fp128"); }
+
+    static priv fnc make_float(kind string) : Type {
+        t: Type = Type{kind: "float", float_kind: kind};
+        return t;
+    }
+
+    // --- void / label / mmx ---
+    static pub fnc void_type() : Type {
+        t: Type = Type{kind: "void"};
+        return t;
+    }
+
+    static pub fnc label_type() : Type {
+        t: Type = Type{kind: "label"};
+        return t;
+    }
+
+    static pub fnc x86_mmx_type() : Type {
+        t: Type = Type{kind: "mmx"};
+        return t;
+    }
+
+    // --- Pointer ---
+    pub fnc ptr() : Type {
+        t: Type = Type{kind: "ptr", pointee: this};
+        return t;
+    }
+
+    static pub fnc ptr_to(pointee Type) : Type {
+        t: Type = Type{kind: "ptr", pointee: pointee};
+        return t;
+    }
+
+    pub fnc ptr_addrspace(aspace int) : Type {
+        t: Type = Type{kind: "ptr", pointee: this, int_width: aspace};
+        return t;
+    }
+
+    // --- Array ---
+    pub fnc array_of(count int) : Type {
+        t: Type = Type{kind: "array", elem_count: count, elem_type: this};
+        return t;
+    }
+
+    // --- Vector ---
+    pub fnc vec_of(count int) : Type {
+        t: Type = Type{kind: "vector", elem_count: count, elem_type: this};
+        return t;
+    }
+
+    // --- Struct ---
+    static pub fnc struct_type(types vec<Type>, packed bool) : Type {
+        t: Type = Type{kind: "struct", struct_types: types, is_packed: packed};
+        return t;
+    }
+
+    // --- Function type ---
+    static pub fnc fn_type(ret Type, params vec<Type>, vararg bool) : Type {
+        t: Type = Type{kind: "fn", ret_type: ret, param_types: params, is_vararg: vararg};
+        return t;
+    }
+
+    // --- Emission ---
+    pub fnc emit() : string {
+        if this.kind == "void" {
+            return "void";
+        } also this.kind == "int" {
+            return "i" + tostring(this.int_width);
+        } also this.kind == "float" {
+            return this.float_kind;
+        } also this.kind == "ptr" {
+            if this.int_width > 0 {
+                return this.pointee.emit() + "*" + " addrspace(" + tostring(this.int_width) + ")";
+            }
+            return this.pointee.emit() + "*";
+        } also this.kind == "array" {
+            return "[" + tostring(this.elem_count) + " x " + this.elem_type.emit() + "]";
+        } also this.kind == "vector" {
+            return "<" + tostring(this.elem_count) + " x " + this.elem_type.emit() + ">";
+        } also this.kind == "struct" {
+            ss: string = "";
+            if this.is_packed { ss = "<{"; } else { ss = "{"; }
+            foreach si, et in<vector> this.struct_types {
+                if si > 0 { ss += ", "; }
+                ss += et.emit();
+            }
+            if this.is_packed { ss += "}>"; } else { ss += "}"; }
+            return ss;
+        } also this.kind == "fn" {
+            fs: string = this.ret_type.emit() + " (";
+            foreach fi, fpt in<vector> this.param_types {
+                if fi > 0 { fs += ", "; }
+                fs += fpt.emit();
+            }
+            if this.is_vararg { fs += ", ..."; }
+            fs += ")";
+            return fs;
+        } also this.kind == "label" {
+            return "label";
+        } also this.kind == "mmx" {
+            return "x86_mmx";
+        }
+        return "unknown";
+    }
+};
+
+/// ===========================================================================
+/// Value: SSA registers, parameters, and every constant kind.
+/// ===========================================================================
+pub def Value : class {
+    pub kind: string;  // "reg" "param" "const_int" "const_float" "const_str" "global" "null" "undef" "true" "false" "zeroinit" "blockaddr" "const_vector"
+    pub reg_num: int;
+    pub ty: Type;
+    pub const_int: int<64>;
+    pub const_float: float;
+    pub const_str: string;
+    pub global_name: string;
+    pub elements: vec<Value>;  // for constant vectors / aggregates
+
+    static pub fnc reg(reg int, ty Type) : Value {
+        v: Value = Value{kind: "reg", reg_num: reg, ty: ty};
+        return v;
+    }
+
+    static pub fnc param(idx int, ty Type) : Value {
+        v: Value = Value{kind: "param", reg_num: idx, ty: ty};
+        return v;
+    }
+
+    static pub fnc const_int(val int<64>, ty Type) : Value {
+        v: Value = Value{kind: "const_int", const_int: val, ty: ty};
+        return v;
+    }
+
+    static pub fnc const_float(val float, ty Type) : Value {
+        v: Value = Value{kind: "const_float", const_float: val, ty: ty};
+        return v;
+    }
+
+    static pub fnc const_str(val string, ty Type) : Value {
+        v: Value = Value{kind: "const_str", const_str: val, ty: ty};
+        return v;
+    }
+
+    static pub fnc global(name string, ty Type) : Value {
+        v: Value = Value{kind: "global", global_name: name, ty: ty};
+        return v;
+    }
+
+    static pub fnc null_val(ty Type) : Value {
+        v: Value = Value{kind: "null", ty: ty};
+        return v;
+    }
+
+    static pub fnc undef(ty Type) : Value {
+        v: Value = Value{kind: "undef", ty: ty};
+        return v;
+    }
+
+    static pub fnc true_val(ty Type) : Value {
+        v: Value = Value{kind: "true", ty: ty};
+        return v;
+    }
+
+    static pub fnc false_val(ty Type) : Value {
+        v: Value = Value{kind: "false", ty: ty};
+        return v;
+    }
+
+    static pub fnc zeroinitializer(ty Type) : Value {
+        v: Value = Value{kind: "zeroinit", ty: ty};
+        return v;
+    }
+
+    static pub fnc blockaddress(fn_name string, block_name string, ty Type) : Value {
+        v: Value = Value{kind: "blockaddr", const_str: fn_name + ", %" + block_name, ty: ty};
+        return v;
+    }
+
+    static pub fnc const_vector(elements vec<Value>, ty Type) : Value {
+        v: Value = Value{kind: "const_vector", elements: elements, ty: ty};
+        return v;
+    }
+
+    pub fnc emit() : string {
+        if this.kind == "reg" {
+            return "%" + tostring(this.reg_num);
+        } also this.kind == "param" {
+            return "%" + tostring(this.reg_num);
+        } also this.kind == "const_int" {
+            return tostring(this.const_int);
+        } also this.kind == "const_float" {
+            return tostring(this.const_float);
+        } also this.kind == "const_str" {
+            return this.const_str;
+        } also this.kind == "global" {
+            return "@" + this.global_name;
+        } also this.kind == "null" {
+            return "null";
+        } also this.kind == "undef" {
+            return "undef";
+        } also this.kind == "true" {
+            return "true";
+        } also this.kind == "false" {
+            return "false";
+        } also this.kind == "zeroinit" {
+            return "zeroinitializer";
+        } also this.kind == "blockaddr" {
+            return this.const_str;
+        } also this.kind == "const_vector" {
+            s: string = "<";
+            foreach i, e in<vector> this.elements {
+                if i > 0 { s += ", "; }
+                s += this.ty.elem_type.emit() + " " + e.emit();
+            }
+            s += ">";
+            return s;
+        }
+        return "unknown";
+    }
+};
+
+/// ===========================================================================
+/// Instruction
+/// ===========================================================================
+pub def Instruction : class {
+    pub op: string;
+    pub result: Value;
+    pub ty: Type;            // result type (or value type for store/ret)
+    pub operands: vec<Value>;
+    pub labels: vec<string>; // targets for br/switch/indirectbr/phi
+    pub cond: string;        // icmp/fcmp predicate
+    pub is_volatile: bool;
+    pub alignment: int;
+    pub inbounds: bool;      // getelementptr
+    pub atomic_ordering: string; // for atomic ops
+    pub cconv: string;       // optional call calling convention
+    pub tail: string;        // "", "tail", "musttail", "notail"
+    pub flags: string;       // fast-math flags e.g. "fast", "nnan ninf nsz"
+
+    static pub fnc make(op string, result Value, ty Type, operands vec<Value>) : Instruction {
+        i: Instruction = Instruction{op: op, result: result, ty: ty, operands: operands, labels: (vec<string>){}, cond: "", is_volatile: false, alignment: 0, inbounds: true, atomic_ordering: "", cconv: "", tail: "", flags: ""};
+        return i;
+    }
+
+    static pub fnc make_br(label string) : Instruction {
+        i: Instruction = Instruction{op: "br", result: Value.null_val(Type.void_type()), ty: Type.void_type(), operands: (vec<Value>){}, labels: {label}, cond: "", is_volatile: false, alignment: 0, inbounds: true, atomic_ordering: "", cconv: "", tail: "", flags: ""};
+        return i;
+    }
+
+    static pub fnc make_cond_br(cond Value, then_label string, else_label string) : Instruction {
+        i: Instruction = Instruction{op: "cond_br", result: Value.null_val(Type.void_type()), ty: Type.void_type(), operands: {cond}, labels: {then_label, else_label}, cond: "", is_volatile: false, alignment: 0, inbounds: true, atomic_ordering: "", cconv: "", tail: "", flags: ""};
+        return i;
+    }
+
+    static pub fnc make_ret(val Value) : Instruction {
+        i: Instruction = Instruction{op: "ret", result: Value.null_val(Type.void_type()), ty: val.ty, operands: {val}, labels: (vec<string>){}, cond: "", is_volatile: false, alignment: 0, inbounds: true, atomic_ordering: "", cconv: "", tail: "", flags: ""};
+        return i;
+    }
+
+    static pub fnc make_ret_void() : Instruction {
+        i: Instruction = Instruction{op: "ret", result: Value.null_val(Type.void_type()), ty: Type.void_type(), operands: (vec<Value>){}, labels: (vec<string>){}, cond: "", is_volatile: false, alignment: 0, inbounds: true, atomic_ordering: "", cconv: "", tail: "", flags: ""};
+        return i;
+    }
+
+    pub fnc emit() : string {
+        o: string = "";
+        if this.op == "ret" {
+            if this.operands.size > 0 {
+                o = "ret " + this.operands.get(0).ty.emit() + " " + this.operands.get(0).emit();
+            } else {
+                o = "ret void";
+            }
+        } also this.op == "br" {
+            o = "br label %" + this.labels.get(0);
+        } also this.op == "cond_br" {
+            o = "br i1 " + this.operands.get(0).emit() + ", label %" + this.labels.get(0) + ", label %" + this.labels.get(1);
+        } also this.op == "switch" {
+            o = "switch " + this.operands.get(0).ty.emit() + " " + this.operands.get(0).emit() + ", label %" + this.labels.get(0) + " [";
+            foreach sw_m, sw_lb in<vector> this.labels {
+                if sw_m > 0 {
+                    o += " " + this.operands.get(sw_m).ty.emit() + " " + this.operands.get(sw_m).emit() + ", label %" + sw_lb;
+                }
+            }
+            o += " ]";
+        } also this.op == "indirectbr" {
+            o = "indirectbr " + this.operands.get(0).ty.emit() + " " + this.operands.get(0).emit() + ", [";
+            foreach ib_m, ib_lb in<vector> this.labels {
+                if ib_m > 0 { o += ", "; }
+                o += "label %" + ib_lb;
+            }
+            o += "]";
+        } also this.op == "unreachable" {
+            o = "unreachable";
+        } also this.op == "alloca" {
+            o = this.result.emit() + " = alloca " + this.ty.emit();
+            if this.alignment > 0 { o += ", align " + tostring(this.alignment); }
+        } also this.op == "load" {
+            o = this.result.emit() + " = load " + this.ty.emit() + ", " + this.operands.get(0).ty.emit() + " " + this.operands.get(0).emit();
+            if this.alignment > 0 { o += ", align " + tostring(this.alignment); }
+            if this.is_volatile { o += ", volatile"; }
+            if this.atomic_ordering != "" { o += " " + this.atomic_ordering; }
+        } also this.op == "store" {
+            o = "store ";
+            if this.is_volatile { o += "volatile "; }
+            if this.atomic_ordering != "" { o += this.atomic_ordering + " "; }
+            o += this.operands.get(0).ty.emit() + " " + this.operands.get(0).emit() + ", " + this.operands.get(1).ty.emit() + " " + this.operands.get(1).emit();
+            if this.alignment > 0 { o += ", align " + tostring(this.alignment); }
+        } also this.op == "fence" {
+            o = "fence " + this.atomic_ordering;
+        } also this.op == "cmpxchg" {
+            o = this.result.emit() + " = cmpxchg " + this.operands.get(0).ty.emit() + " " + this.operands.get(0).emit() + ", " + this.operands.get(1).ty.emit() + " " + this.operands.get(1).emit() + ", " + this.operands.get(2).ty.emit() + " " + this.operands.get(2).emit() + " " + this.atomic_ordering + " " + this.cond;
+        } also this.op == "atomicrmw" {
+            o = this.result.emit() + " = atomicrmw " + this.cond + " " + this.operands.get(0).ty.emit() + " " + this.operands.get(0).emit() + ", " + this.operands.get(1).ty.emit() + " " + this.operands.get(1).emit() + " " + this.atomic_ordering;
+        } also this.op == "add" || this.op == "fadd" || this.op == "sub" || this.op == "fsub" || this.op == "mul" || this.op == "fmul" || this.op == "udiv" || this.op == "sdiv" || this.op == "fdiv" || this.op == "urem" || this.op == "srem" || this.op == "frem" || this.op == "shl" || this.op == "lshr" || this.op == "ashr" || this.op == "and" || this.op == "or" || this.op == "xor" {
+            o = this.result.emit() + " = " + this.op + " " + this.ty.emit() + " " + this.operands.get(0).emit() + ", " + this.operands.get(1).emit();
+            if this.flags != "" { o += ", " + this.flags; }
+        } also this.op == "fneg" {
+            o = this.result.emit() + " = fneg " + this.ty.emit() + " " + this.operands.get(0).emit();
+            if this.flags != "" { o += ", " + this.flags; }
+        } also this.op == "icmp" || this.op == "fcmp" {
+            o = this.result.emit() + " = " + this.op + " " + this.cond + " " + this.operands.get(0).ty.emit() + " " + this.operands.get(0).emit() + ", " + this.operands.get(1).emit();
+        } also this.op == "call" {
+            tailp: string = "";
+            if this.tail != "" { tailp = this.tail + " "; }
+            ccp: string = "";
+            if this.cconv != "" { ccp = " " + this.cconv; }
+            if this.ty.kind == "void" {
+                o = tailp + "call" + ccp + " void " + this.operands.get(0).emit();
+            } else {
+                o = tailp + this.result.emit() + " = call" + ccp + " " + this.ty.emit() + " " + this.operands.get(0).emit();
+            }
+            o += "(";
+            for j: int = 1; j < this.operands.size; j = j + 1 {
+                if j > 1 { o += ", "; }
+                o += this.operands.get(j).ty.emit() + " " + this.operands.get(j).emit();
+            }
+            o += ")";
+        } also this.op == "getelementptr" {
+            ib: string = "";
+            if this.inbounds { ib = " inbounds"; }
+            o = this.result.emit() + " = getelementptr" + ib + " " + this.operands.get(0).ty.emit() + ", " + this.operands.get(0).ty.emit() + " " + this.operands.get(0).emit();
+            for k: int = 1; k < this.operands.size; k = k + 1 {
+                o += ", " + this.operands.get(k).ty.emit() + " " + this.operands.get(k).emit();
+            }
+        } also this.op == "bitcast" || this.op == "addrspacecast" {
+            o = this.result.emit() + " = " + this.op + " " + this.operands.get(0).ty.emit() + " " + this.operands.get(0).emit() + " to " + this.ty.emit();
+        } also this.op == "phi" {
+            o = this.result.emit() + " = phi " + this.ty.emit();
+            for ph_m: int = 0; ph_m < this.operands.size; ph_m = ph_m + 2 {
+                if ph_m > 0 { o += ", "; }
+                o += "[ " + this.operands.get(ph_m).emit() + ", %" + this.operands.get(ph_m+1).emit() + " ]";
+            }
+        } also this.op == "select" {
+            o = this.result.emit() + " = select " + this.operands.get(0).ty.emit() + " " + this.operands.get(0).emit() + ", " + this.ty.emit() + " " + this.operands.get(1).emit() + ", " + this.ty.emit() + " " + this.operands.get(2).emit();
+        } also this.op == "freeze" {
+            o = this.result.emit() + " = freeze " + this.ty.emit() + " " + this.operands.get(0).emit();
+        } also this.op == "zext" || this.op == "sext" || this.op == "trunc" || this.op == "fpext" || this.op == "fptrunc" || this.op == "fptoui" || this.op == "fptosi" || this.op == "uitofp" || this.op == "sitofp" || this.op == "ptrtoint" || this.op == "inttoptr" {
+            o = this.result.emit() + " = " + this.op + " " + this.operands.get(0).ty.emit() + " " + this.operands.get(0).emit() + " to " + this.ty.emit();
+        } also this.op == "extractelement" {
+            o = this.result.emit() + " = extractelement " + this.operands.get(0).ty.emit() + " " + this.operands.get(0).emit() + ", " + this.operands.get(1).ty.emit() + " " + this.operands.get(1).emit();
+        } also this.op == "insertelement" {
+            o = this.result.emit() + " = insertelement " + this.operands.get(0).ty.emit() + " " + this.operands.get(0).emit() + ", " + this.operands.get(1).ty.emit() + " " + this.operands.get(1).emit() + ", " + this.operands.get(2).ty.emit() + " " + this.operands.get(2).emit();
+        } also this.op == "shufflevector" {
+            o = this.result.emit() + " = shufflevector " + this.operands.get(0).ty.emit() + " " + this.operands.get(0).emit() + ", " + this.operands.get(1).ty.emit() + " " + this.operands.get(1).emit() + ", " + this.ty.emit() + " " + this.operands.get(2).emit();
+        } also this.op == "extractvalue" {
+            o = this.result.emit() + " = extractvalue " + this.operands.get(0).ty.emit() + " " + this.operands.get(0).emit();
+            for ev_m: int = 1; ev_m < this.operands.size; ev_m = ev_m + 1 {
+                o += ", " + this.operands.get(ev_m).emit();
+            }
+        } also this.op == "insertvalue" {
+            o = this.result.emit() + " = insertvalue " + this.operands.get(0).ty.emit() + " " + this.operands.get(0).emit() + ", " + this.operands.get(1).ty.emit() + " " + this.operands.get(1).emit();
+            for iv_m: int = 2; iv_m < this.operands.size; iv_m = iv_m + 1 {
+                o += ", " + this.operands.get(iv_m).emit();
+            }
+        } also this.op == "va_arg" {
+            o = this.result.emit() + " = va_arg " + this.operands.get(0).ty.emit() + " " + this.operands.get(0).emit() + ", " + this.ty.emit();
+        } else {
+            o = "; unknown instruction: " + this.op;
+        }
+        return o;
+    }
+};
+
+/// ===========================================================================
+/// BasicBlock
+/// ===========================================================================
+pub def BasicBlock : class {
+    pub label: string;
+    pub instructions: vec<Instruction>;
+
+    static pub fnc make(label string) : BasicBlock {
+        bb: BasicBlock = BasicBlock{label: label, instructions: (vec<Instruction>){}};
+        return bb;
+    }
+
+    pub fnc add_inst(inst Instruction) : BasicBlock {
+        this.instructions.pushb(inst);
+        return this;
+    }
+
+    pub fnc emit() : string {
+        o: string = this.label + ":\n";
+        foreach _, inst in<vector> this.instructions {
+            o += "  " + inst.emit() + "\n";
+        }
+        return o;
+    }
+};
+
+/// ===========================================================================
+/// Function
+/// ===========================================================================
+pub def Function : class {
+    pub name: string;
+    pub ret_type: Type;
+    pub param_types: vec<Type>;
+    pub blocks: vec<BasicBlock>;
+    pub linkage: string;
+    pub is_declaration: bool;
+    pub is_vararg: bool;
+    pub cconv: string;         // calling convention
+    pub fn_attrs: string;      // function attributes e.g. "nounwind readnone"
+    pub ret_attrs: string;     // return attributes e.g. "zeroext"
+    pub param_attrs: vec<string>;
+    pub section: string;
+    pub alignment: int;
+    pub gc: string;            // gc strategy
+
+    static pub fnc make(name string, ret Type, params vec<Type>) : Function {
+        f: Function = Function{
+            name: name, ret_type: ret, param_types: params,
+            blocks: (vec<BasicBlock>){}, linkage: "", is_declaration: false,
+            is_vararg: false, cconv: "", fn_attrs: "", ret_attrs: "",
+            param_attrs: (vec<string>){}, section: "", alignment: 0, gc: ""
+        };
+        return f;
+    }
+
+    pub fnc add_block(bb BasicBlock) : Function {
+        this.blocks.pushb(bb);
+        return this;
+    }
+
+    pub fnc set_linkage(link string) : Function { this.linkage = link; return this; }
+    pub fnc set_declaration() : Function { this.is_declaration = true; return this; }
+    pub fnc set_vararg() : Function { this.is_vararg = true; return this; }
+    pub fnc set_cconv(c string) : Function { this.cconv = c; return this; }
+    pub fnc set_fn_attrs(a string) : Function { this.fn_attrs = a; return this; }
+    pub fnc set_ret_attrs(a string) : Function { this.ret_attrs = a; return this; }
+    pub fnc set_section(s string) : Function { this.section = s; return this; }
+    pub fnc set_alignment(a int) : Function { this.alignment = a; return this; }
+    pub fnc set_gc(g string) : Function { this.gc = g; return this; }
+    pub fnc add_param_attr(a string) : Function { this.param_attrs.pushb(a); return this; }
+
+    priv fnc emit_params() : string {
+        o: string = this.ret_type.emit() + " @" + this.name + "(";
+        foreach i, pt in<vector> this.param_types {
+            if i > 0 { o += ", "; }
+            if i < this.param_attrs.size {
+                o += this.param_attrs.get(i) + " ";
+            }
+            o += pt.emit() + " %" + tostring(i);
+        }
+        if this.is_vararg {
+            if this.param_types.size > 0 { o += ", "; }
+            o += "...";
+        }
+        o += ")";
+        return o;
+    }
+
+    pub fnc emit() : string {
+        o: string = "";
+        if this.is_declaration {
+            o = "declare ";
+        } else {
+            o = "define ";
+        }
+        if this.linkage != "" { o += this.linkage + " "; }
+        if this.is_declaration {
+            if this.cconv != "" { o += this.cconv + " "; }
+            if this.ret_attrs != "" { o += this.ret_attrs + " "; }
+            o += this.emit_params();
+            if this.fn_attrs != "" { o += " " + this.fn_attrs; }
+            return o;
+        }
+
+        if this.cconv != "" { o += this.cconv + " "; }
+        if this.ret_attrs != "" { o += this.ret_attrs + " "; }
+        o += this.emit_params();
+        if this.fn_attrs != "" { o += " " + this.fn_attrs; }
+        if this.section != "" { o += " section \"" + this.section + "\""; }
+        if this.alignment > 0 { o += " align " + tostring(this.alignment); }
+        if this.gc != "" { o += " gc \"" + this.gc + "\""; }
+        o += " {\n";
+        foreach _, bb in<vector> this.blocks {
+            o += bb.emit();
+        }
+        o += "}\n";
+        return o;
+    }
+};
+
+/// ===========================================================================
+/// Global
+/// ===========================================================================
+pub def Global : class {
+    pub name: string;
+    pub ty: Type;
+    pub linkage: string;
+    pub is_constant: bool;
+    pub initializer: string;
+    pub alignment: int;
+    pub section: string;
+    pub is_unnamed_addr: bool;
+    pub thread_local: string;  // "", "localdynamic", "initialexec", "localexec"
+    pub externally_initialized: bool;
+
+    static pub fnc make(name string, ty Type, linkage string, is_const bool, init string) : Global {
+        g: Global = Global{name: name, ty: ty, linkage: linkage, is_constant: is_const, initializer: init, alignment: 0, section: "", is_unnamed_addr: false, thread_local: "", externally_initialized: false};
+        return g;
+    }
+
+    pub fnc set_alignment(a int) : Global { this.alignment = a; return this; }
+    pub fnc set_section(s string) : Global { this.section = s; return this; }
+    pub fnc set_unnamed_addr() : Global { this.is_unnamed_addr = true; return this; }
+    pub fnc set_thread_local(t string) : Global { this.thread_local = t; return this; }
+    pub fnc set_externally_initialized() : Global { this.externally_initialized = true; return this; }
+
+    pub fnc emit() : string {
+        o: string = "@" + this.name + " = ";
+        if this.linkage != "" { o += this.linkage + " "; }
+        if this.is_unnamed_addr { o += "unnamed_addr "; }
+        if this.thread_local != "" { o += "thread_local(" + this.thread_local + ") "; }
+        if this.externally_initialized { o += "externally_initialized "; }
+        if this.is_constant { o += "constant "; } else { o += "global "; }
+        o += this.ty.emit() + " " + this.initializer;
+        if this.alignment > 0 { o += ", align " + tostring(this.alignment); }
+        if this.section != "" { o += ", section \"" + this.section + "\""; }
+        return o;
+    }
+};
+
+/// ===========================================================================
+/// Alias
+/// ===========================================================================
+pub def Alias : class {
+    pub name: string;
+    pub ty: Type;
+    pub linkage: string;
+    pub target: string;  // @name or bitcast/gep constant expression
+
+    static pub fnc make(name string, ty Type, linkage string, target string) : Alias {
+        a: Alias = Alias{name: name, ty: ty, linkage: linkage, target: target};
+        return a;
+    }
+
+    pub fnc emit() : string {
+        o: string = "@" + this.name + " = ";
+        if this.linkage != "" { o += this.linkage + " "; }
+        o += "alias " + this.ty.emit() + ", " + this.target;
+        return o;
+    }
+};
+
+/// ===========================================================================
+/// Module
+/// ===========================================================================
+pub def Module : class {
+    pub name: string;
+    pub functions: vec<Function>;
+    pub globals: vec<Global>;
+    pub aliases: vec<Alias>;
+    pub target_triple: string;
+    pub data_layout: string;
+
+    static pub fnc make(name string) : Module {
+        m: Module = Module{name: name, functions: (vec<Function>){}, globals: (vec<Global>){}, aliases: (vec<Alias>){}, target_triple: "", data_layout: ""};
+        return m;
+    }
+
+    pub fnc add_function(f Function) : Module { this.functions.pushb(f); return this; }
+    pub fnc add_global(g Global) : Module { this.globals.pushb(g); return this; }
+    pub fnc add_alias(a Alias) : Module { this.aliases.pushb(a); return this; }
+    pub fnc set_target(s string) : Module { this.target_triple = s; return this; }
+    pub fnc set_data_layout(s string) : Module { this.data_layout = s; return this; }
+
+    pub fnc emit_text() : string {
+        o: string = "; ModuleID = '" + this.name + "'\n";
+        o += "source_filename = \"" + this.name + "\"\n";
+        if this.target_triple != "" { o += "target triple = \"" + this.target_triple + "\"\n"; }
+        if this.data_layout != "" { o += "target datalayout = \"" + this.data_layout + "\"\n"; }
+        o += "\n";
+
+        foreach _, g in<vector> this.globals {
+            o += g.emit() + "\n";
+        }
+        foreach _, a in<vector> this.aliases {
+            o += a.emit() + "\n";
+        }
+        if this.globals.size > 0 || this.aliases.size > 0 { o += "\n"; }
+
+        foreach _, f in<vector> this.functions {
+            o += f.emit() + "\n";
+        }
+        return o;
+    }
+};
+
+/// ===========================================================================
+/// IR Builder: high-level helpers for every instruction category.
+/// ===========================================================================
+pub def Builder : class {
+    pub module: Module;
+    pub current_fn: Function;
+    pub current_bb: BasicBlock;
+    pub reg_counter: int;
+
+    static pub fnc make(m Module) : Builder {
+        b: Builder = Builder{
+            module: m,
+            current_fn: Function.make("", Type.void_type(), (vec<Type>){}),
+            current_bb: BasicBlock.make(""),
+            reg_counter: 0
+        };
+        return b;
+    }
+
+    // --- Function / block management ---
+    pub fnc function(name string, ret Type, params vec<Type>) : Function {
+        f: Function = Function.make(name, ret, params);
+        this.module.add_function(f);
+        this.current_fn = f;
+        this.reg_counter = params.size;
+        return f;
+    }
+
+    pub fnc block(label string) : BasicBlock {
+        bb: BasicBlock = BasicBlock.make(label);
+        this.current_fn.add_block(bb);
+        this.current_bb = bb;
+        return bb;
+    }
+
+    pub fnc param(idx int) : Value {
+        return Value.param(idx, this.current_fn.param_types.get(idx));
+    }
+
+    priv fnc next_reg(ty Type) : Value {
+        r: int = this.reg_counter;
+        this.reg_counter = this.reg_counter + 1;
+        return Value.reg(r, ty);
+    }
+
+    priv fnc emit_inst(inst Instruction) : Instruction {
+        this.current_bb.add_inst(inst);
+        return inst;
+    }
+
+    // --- Terminators ---
+    pub fnc br(label string) {
+        this.emit_inst(Instruction.make_br(label));
+    }
+    pub fnc cond_br(cond Value, t string, e string) {
+        this.emit_inst(Instruction.make_cond_br(cond, t, e));
+    }
+    pub fnc ret(val Value) {
+        this.emit_inst(Instruction.make_ret(val));
+    }
+    pub fnc ret_void() {
+        this.emit_inst(Instruction.make_ret_void());
+    }
+    pub fnc unreachable() {
+        this.emit_inst(Instruction.make("unreachable", Value.null_val(Type.void_type()), Type.void_type(), (vec<Value>){}));
+    }
+    pub fnc switch_to(val Value, default_label string, case_vals vec<Value>, case_labels vec<string>) {
+        all_ops: vec<Value> = {val};
+        foreach _, cv in<vector> case_vals { all_ops.pushb(cv); }
+        all_labels: vec<string> = {default_label};
+        foreach _, cl in<vector> case_labels { all_labels.pushb(cl); }
+        inst: Instruction = Instruction.make("switch", Value.null_val(Type.void_type()), val.ty, all_ops);
+        inst.labels = all_labels;
+        this.emit_inst(inst);
+    }
+    pub fnc indirectbr(addr Value, dest_labels vec<string>) {
+        inst: Instruction = Instruction.make("indirectbr", Value.null_val(Type.void_type()), addr.ty, {addr});
+        inst.labels = dest_labels;
+        this.emit_inst(inst);
+    }
+
+    // --- Memory ---
+    pub fnc alloca(ty Type, align int) : Value {
+        result: Value = this.next_reg(ty.ptr());
+        inst: Instruction = Instruction.make("alloca", result, ty, (vec<Value>){});
+        inst.alignment = align;
+        this.emit_inst(inst);
+        return result;
+    }
+    pub fnc load(ptr Value, ty Type, align int) : Value {
+        result: Value = this.next_reg(ty);
+        inst: Instruction = Instruction.make("load", result, ty, {ptr});
+        inst.alignment = align;
+        this.emit_inst(inst);
+        return result;
+    }
+    pub fnc load_volatile(ptr Value, ty Type, align int) : Value {
+        result: Value = this.next_reg(ty);
+        inst: Instruction = Instruction.make("load", result, ty, {ptr});
+        inst.alignment = align;
+        inst.is_volatile = true;
+        this.emit_inst(inst);
+        return result;
+    }
+    pub fnc store(val Value, ptr Value, align int) {
+        inst: Instruction = Instruction.make("store", Value.null_val(Type.void_type()), val.ty, {val, ptr});
+        inst.alignment = align;
+        this.emit_inst(inst);
+    }
+    pub fnc store_volatile(val Value, ptr Value, align int) {
+        inst: Instruction = Instruction.make("store", Value.null_val(Type.void_type()), val.ty, {val, ptr});
+        inst.alignment = align;
+        inst.is_volatile = true;
+        this.emit_inst(inst);
+    }
+    pub fnc fence(ordering string) {
+        inst: Instruction = Instruction.make("fence", Value.null_val(Type.void_type()), Type.void_type(), (vec<Value>){});
+        inst.atomic_ordering = ordering;
+        this.emit_inst(inst);
+    }
+
+    // --- Integer arithmetic ---
+    pub fnc add(l Value, r Value) : Value { return this.binop("add", l, r, ""); }
+    pub fnc nsw_add(l Value, r Value) : Value { return this.binop("add", l, r, ""); }
+    pub fnc nuw_add(l Value, r Value) : Value { return this.binop("add", l, r, ""); }
+    pub fnc sub(l Value, r Value) : Value { return this.binop("sub", l, r, ""); }
+    pub fnc mul(l Value, r Value) : Value { return this.binop("mul", l, r, ""); }
+    pub fnc udiv(l Value, r Value) : Value { return this.binop("udiv", l, r, ""); }
+    pub fnc sdiv(l Value, r Value) : Value { return this.binop("sdiv", l, r, ""); }
+    pub fnc urem(l Value, r Value) : Value { return this.binop("urem", l, r, ""); }
+    pub fnc srem(l Value, r Value) : Value { return this.binop("srem", l, r, ""); }
+    pub fnc shl(l Value, r Value) : Value { return this.binop("shl", l, r, ""); }
+    pub fnc lshr(l Value, r Value) : Value { return this.binop("lshr", l, r, ""); }
+    pub fnc ashr(l Value, r Value) : Value { return this.binop("ashr", l, r, ""); }
+    pub fnc and(l Value, r Value) : Value { return this.binop("and", l, r, ""); }
+    pub fnc or(l Value, r Value) : Value { return this.binop("or", l, r, ""); }
+    pub fnc xor(l Value, r Value) : Value { return this.binop("xor", l, r, ""); }
+
+    priv fnc binop(op string, l Value, r Value, flags string) : Value {
+        result: Value = this.next_reg(l.ty);
+        inst: Instruction = Instruction.make(op, result, l.ty, {l, r});
+        inst.flags = flags;
+        this.emit_inst(inst);
+        return result;
+    }
+
+    // --- Floating-point arithmetic ---
+    pub fnc fadd(l Value, r Value) : Value { return this.binop("fadd", l, r, ""); }
+    pub fnc fsub(l Value, r Value) : Value { return this.binop("fsub", l, r, ""); }
+    pub fnc fmul(l Value, r Value) : Value { return this.binop("fmul", l, r, ""); }
+    pub fnc fdiv(l Value, r Value) : Value { return this.binop("fdiv", l, r, ""); }
+    pub fnc frem(l Value, r Value) : Value { return this.binop("frem", l, r, ""); }
+    pub fnc fneg(val Value) : Value {
+        result: Value = this.next_reg(val.ty);
+        inst: Instruction = Instruction.make("fneg", result, val.ty, {val});
+        this.emit_inst(inst);
+        return result;
+    }
+
+    // --- Comparisons ---
+    pub fnc icmp(cond string, l Value, r Value) : Value {
+        result: Value = this.next_reg(Type.i1_type());
+        inst: Instruction = Instruction.make("icmp", result, Type.i1_type(), {l, r});
+        inst.cond = cond;
+        this.emit_inst(inst);
+        return result;
+    }
+    pub fnc fcmp(cond string, l Value, r Value) : Value {
+        result: Value = this.next_reg(Type.i1_type());
+        inst: Instruction = Instruction.make("fcmp", result, Type.i1_type(), {l, r});
+        inst.cond = cond;
+        this.emit_inst(inst);
+        return result;
+    }
+
+    // --- Aggregate / vector operations ---
+    pub fnc extractvalue(agg Value, indices vec<int>, result_ty Type) : Value {
+        result: Value = this.next_reg(result_ty);
+        ops: vec<Value> = {agg};
+        foreach _, idx in<vector> indices {
+            ops.pushb(Value.const_int(toint(int<64>, idx), Type.i32_type()));
+        }
+        inst: Instruction = Instruction.make("extractvalue", result, result_ty, ops);
+        this.emit_inst(inst);
+        return result;
+    }
+    pub fnc insertvalue(agg Value, elem Value, indices vec<int>, result_ty Type) : Value {
+        result: Value = this.next_reg(result_ty);
+        ops: vec<Value> = {agg, elem};
+        foreach _, idx in<vector> indices {
+            ops.pushb(Value.const_int(toint(int<64>, idx), Type.i32_type()));
+        }
+        inst: Instruction = Instruction.make("insertvalue", result, result_ty, ops);
+        this.emit_inst(inst);
+        return result;
+    }
+    pub fnc extractelement(vec_val Value, index Value, result_ty Type) : Value {
+        result: Value = this.next_reg(result_ty);
+        inst: Instruction = Instruction.make("extractelement", result, result_ty, {vec_val, index});
+        this.emit_inst(inst);
+        return result;
+    }
+    pub fnc insertelement(vec_val Value, elem Value, index Value, result_ty Type) : Value {
+        result: Value = this.next_reg(result_ty);
+        inst: Instruction = Instruction.make("insertelement", result, result_ty, {vec_val, elem, index});
+        this.emit_inst(inst);
+        return result;
+    }
+    pub fnc shufflevector(a Value, b Value, mask Value, result_ty Type) : Value {
+        result: Value = this.next_reg(result_ty);
+        inst: Instruction = Instruction.make("shufflevector", result, result_ty, {a, b, mask});
+        this.emit_inst(inst);
+        return result;
+    }
+
+    // --- Atomic operations ---
+    pub fnc cmpxchg(ptr Value, cmp_val Value, new_val Value, ordering string, failure_ordering string) : Value {
+        result_ty: Type = Type.struct_type({cmp_val.ty, Type.i1_type()}, false);
+        result: Value = this.next_reg(result_ty);
+        inst: Instruction = Instruction.make("cmpxchg", result, result_ty, {ptr, cmp_val, new_val});
+        inst.atomic_ordering = ordering;
+        inst.cond = failure_ordering;
+        this.emit_inst(inst);
+        return result;
+    }
+    pub fnc atomicrmw(op string, ptr Value, val Value, ordering string) : Value {
+        result: Value = this.next_reg(val.ty);
+        inst: Instruction = Instruction.make("atomicrmw", result, val.ty, {ptr, val});
+        inst.atomic_ordering = ordering;
+        inst.cond = op;
+        this.emit_inst(inst);
+        return result;
+    }
+
+    // --- Function calls ---
+    pub fnc call(fn_val Value, args vec<Value>, ret_ty Type) : Value {
+        result: Value = Value.null_val(Type.void_type());
+        if ret_ty.kind != "void" {
+            result = this.next_reg(ret_ty);
+        }
+        all_ops: vec<Value> = {fn_val};
+        foreach _, a in<vector> args { all_ops.pushb(a); }
+        inst: Instruction = Instruction.make("call", result, ret_ty, all_ops);
+        this.emit_inst(inst);
+        return result;
+    }
+    pub fnc call_void(fn_val Value, args vec<Value>) {
+        all_ops: vec<Value> = {fn_val};
+        foreach _, a in<vector> args { all_ops.pushb(a); }
+        inst: Instruction = Instruction.make("call", Value.null_val(Type.void_type()), Type.void_type(), all_ops);
+        this.emit_inst(inst);
+    }
+    pub fnc tail_call(fn_val Value, args vec<Value>, ret_ty Type) : Value {
+        result: Value = this.next_reg(ret_ty);
+        all_ops: vec<Value> = {fn_val};
+        foreach _, a in<vector> args { all_ops.pushb(a); }
+        inst: Instruction = Instruction.make("call", result, ret_ty, all_ops);
+        inst.tail = "tail";
+        this.emit_inst(inst);
+        return result;
+    }
+
+    // --- GEP ---
+    pub fnc gep(base Value, indices vec<Value>, result_ty Type) : Value {
+        result: Value = this.next_reg(result_ty);
+        all_ops: vec<Value> = {base};
+        foreach _, idx in<vector> indices { all_ops.pushb(idx); }
+        inst: Instruction = Instruction.make("getelementptr", result, result_ty, all_ops);
+        this.emit_inst(inst);
+        return result;
+    }
+    pub fnc gep_no_inbounds(base Value, indices vec<Value>, result_ty Type) : Value {
+        result: Value = this.next_reg(result_ty);
+        all_ops: vec<Value> = {base};
+        foreach _, idx in<vector> indices { all_ops.pushb(idx); }
+        inst: Instruction = Instruction.make("getelementptr", result, result_ty, all_ops);
+        inst.inbounds = false;
+        this.emit_inst(inst);
+        return result;
+    }
+
+    // --- Conversions ---
+    pub fnc trunc(val Value, to Type) : Value { return this.cast("trunc", val, to); }
+    pub fnc zext(val Value, to Type) : Value { return this.cast("zext", val, to); }
+    pub fnc sext(val Value, to Type) : Value { return this.cast("sext", val, to); }
+    pub fnc fptrunc(val Value, to Type) : Value { return this.cast("fptrunc", val, to); }
+    pub fnc fpext(val Value, to Type) : Value { return this.cast("fpext", val, to); }
+    pub fnc fptoui(val Value, to Type) : Value { return this.cast("fptoui", val, to); }
+    pub fnc fptosi(val Value, to Type) : Value { return this.cast("fptosi", val, to); }
+    pub fnc uitofp(val Value, to Type) : Value { return this.cast("uitofp", val, to); }
+    pub fnc sitofp(val Value, to Type) : Value { return this.cast("sitofp", val, to); }
+    pub fnc ptrtoint(val Value, to Type) : Value { return this.cast("ptrtoint", val, to); }
+    pub fnc inttoptr(val Value, to Type) : Value { return this.cast("inttoptr", val, to); }
+    pub fnc bitcast(val Value, to Type) : Value { return this.cast("bitcast", val, to); }
+    pub fnc addrspacecast(val Value, to Type) : Value { return this.cast("addrspacecast", val, to); }
+
+    priv fnc cast(op string, val Value, to Type) : Value {
+        result: Value = this.next_reg(to);
+        inst: Instruction = Instruction.make(op, result, to, {val});
+        this.emit_inst(inst);
+        return result;
+    }
+
+    // --- Other ---
+    pub fnc select(cond Value, t Value, e Value) : Value {
+        result: Value = this.next_reg(t.ty);
+        inst: Instruction = Instruction.make("select", result, t.ty, {cond, t, e});
+        this.emit_inst(inst);
+        return result;
+    }
+    pub fnc phi(ty Type, incoming vec<Value>, labels vec<string>) : Value {
+        result: Value = this.next_reg(ty);
+        ops: vec<Value> = (vec<Value>){};
+        foreach i, v in<vector> incoming {
+            ops.pushb(v);
+            ops.pushb(Value.const_str(labels.get(i), Type.void_type()));
+        }
+        inst: Instruction = Instruction.make("phi", result, ty, ops);
+        this.emit_inst(inst);
+        return result;
+    }
+    pub fnc freeze(val Value) : Value {
+        result: Value = this.next_reg(val.ty);
+        inst: Instruction = Instruction.make("freeze", result, val.ty, {val});
+        this.emit_inst(inst);
+        return result;
+    }
+    pub fnc va_arg(list_ptr Value, ty Type) : Value {
+        result: Value = this.next_reg(ty);
+        inst: Instruction = Instruction.make("va_arg", result, ty, {list_ptr});
+        this.emit_inst(inst);
+        return result;
+    }
+
+    // --- Constants ---
+    pub fnc const_int(val int<64>, ty Type) : Value { return Value.const_int(val, ty); }
+    pub fnc const_float(val float, ty Type) : Value { return Value.const_float(val, ty); }
+    pub fnc global(name string, ty Type) : Value { return Value.global(name, ty.ptr()); }
+    pub fnc null_val(ty Type) : Value { return Value.null_val(ty); }
+    pub fnc undef(ty Type) : Value { return Value.undef(ty); }
+    pub fnc true_val(ty Type) : Value { return Value.true_val(ty); }
+    pub fnc false_val(ty Type) : Value { return Value.false_val(ty); }
+    pub fnc zeroinitializer(ty Type) : Value { return Value.zeroinitializer(ty); }
+    pub fnc blockaddress(fn_name string, block_name string, ty Type) : Value { return Value.blockaddress(fn_name, block_name, ty); }
+    pub fnc const_vector(elements vec<Value>, ty Type) : Value { return Value.const_vector(elements, ty); }
+};
+
+/// ===========================================================================
+/// Predicate / ordering / attribute constants.
+/// ===========================================================================
+pub def ICMP : class {
+    static pub eq: string = "eq";
+    static pub ne: string = "ne";
+    static pub ugt: string = "ugt";
+    static pub uge: string = "uge";
+    static pub ult: string = "ult";
+    static pub ule: string = "ule";
+    static pub sgt: string = "sgt";
+    static pub sge: string = "sge";
+    static pub slt: string = "slt";
+    static pub sle: string = "sle";
+};
+
+pub def FCMP : class {
+    static pub false_cmp: string = "false";
+    static pub oeq: string = "oeq";
+    static pub ogt: string = "ogt";
+    static pub oge: string = "oge";
+    static pub olt: string = "olt";
+    static pub ole: string = "ole";
+    static pub one: string = "one";
+    static pub ord: string = "ord";
+    static pub ueq: string = "ueq";
+    static pub ugt: string = "ugt";
+    static pub uge: string = "uge";
+    static pub ult: string = "ult";
+    static pub ule: string = "ule";
+    static pub une: string = "une";
+    static pub uno: string = "uno";
+    static pub true_cmp: string = "true";
+};
+
+pub def ATOMIC_ORDERING : class {
+    static pub unordered: string = "unordered";
+    static pub monotonic: string = "monotonic";
+    static pub acquire: string = "acquire";
+    static pub release: string = "release";
+    static pub acq_rel: string = "acq_rel";
+    static pub seq_cst: string = "seq_cst";
+};
+
+pub def ATOMIC_RMW_OP : class {
+    static pub xchg: string = "xchg";
+    static pub add: string = "add";
+    static pub sub: string = "sub";
+    static pub and: string = "and";
+    static pub nand: string = "nand";
+    static pub or: string = "or";
+    static pub xor: string = "xor";
+    static pub max: string = "max";
+    static pub min: string = "min";
+    static pub umax: string = "umax";
+    static pub umin: string = "umin";
+    static pub fadd: string = "fadd";
+    static pub fsub: string = "fsub";
+};
+
+pub def LINKAGE : class {
+    static pub private: string = "private";
+    static pub internal: string = "internal";
+    static pub available_externally: string = "available_externally";
+    static pub linkonce: string = "linkonce";
+    static pub weak: string = "weak";
+    static pub common: string = "common";
+    static pub appending: string = "appending";
+    static pub extern_weak: string = "extern_weak";
+    static pub linkonce_odr: string = "linkonce_odr";
+    static pub weak_odr: string = "weak_odr";
+    static pub external: string = "external";
+};
+
+pub def CCONV : class {
+    static pub c: string = "ccc";
+    static pub fastcc: string = "fastcc";
+    static pub coldcc: string = "coldcc";
+    static pub ghccc: string = "ghccc";
+    static pub x86_stdcall: string = "x86_stdcallcc";
+    static pub x86_fastcall: string = "x86_fastcallcc";
+    static pub aapcs: string = "arm_aapcscc";
+    static pub amdgpu_kernel: string = "amdgpu_kernel";
+    static pub win64: string = "win64cc";
+    static pub x86_64_sysv: string = "x86_64_sysvcc";
+};
+
+/// ===========================================================================
+/// Examples.
+/// ===========================================================================
+pub fnc example_add_module() : string {
+    m: Module = Module.make("example");
+    b: Builder = Builder.make(m);
+    b.function("add", Type.i32_type(), {Type.i32_type(), Type.i32_type()});
+    b.block("entry");
+    a: Value = b.param(0);
+    av: Value = b.param(1);
+    r: Value = b.add(a, av);
+    b.ret(r);
+    return m.emit_text();
+}
+
+pub fnc example_factorial_module() : string {
+    m: Module = Module.make("factorial");
+    b: Builder = Builder.make(m);
+    b.function("factorial", Type.i32_type(), {Type.i32_type()});
+    b.block("entry");
+    n: Value = b.param(0);
+    one: Value = b.const_int(1, Type.i32_type());
+    cmp: Value = b.icmp(ICMP.sle, n, one);
+    b.cond_br(cmp, "base", "recurse");
+    b.block("base");
+    b.ret(one);
+    b.block("recurse");
+    n_minus_1: Value = b.sub(n, one);
+    rec_result: Value = b.call(Value.global("factorial", Type.fn_type(Type.i32_type(), {Type.i32_type()}, false)), {n_minus_1}, Type.i32_type());
+    mul_result: Value = b.mul(n, rec_result);
+    b.ret(mul_result);
+    return m.emit_text();
+}
+
+pub fnc example_loop_module() : string {
+    m: Module = Module.make("loop_sum");
+    b: Builder = Builder.make(m);
+    b.function("sum_to_n", Type.i32_type(), {Type.i32_type()});
+    b.block("entry");
+    n: Value = b.param(0);
+    zero: Value = b.const_int(0, Type.i32_type());
+    one: Value = b.const_int(1, Type.i32_type());
+    i_ptr: Value = b.alloca(Type.i32_type(), 4);
+    sum_ptr: Value = b.alloca(Type.i32_type(), 4);
+    b.store(zero, i_ptr, 4);
+    b.store(zero, sum_ptr, 4);
+    b.br("loop_header");
+    b.block("loop_header");
+    i_val: Value = b.load(i_ptr, Type.i32_type(), 4);
+    cmp: Value = b.icmp(ICMP.slt, i_val, n);
+    b.cond_br(cmp, "loop_body", "loop_exit");
+    b.block("loop_body");
+    i_val2: Value = b.load(i_ptr, Type.i32_type(), 4);
+    sum_val: Value = b.load(sum_ptr, Type.i32_type(), 4);
+    i_next: Value = b.add(i_val2, one);
+    sum_next: Value = b.add(sum_val, i_next);
+    b.store(i_next, i_ptr, 4);
+    b.store(sum_next, sum_ptr, 4);
+    b.br("loop_header");
+    b.block("loop_exit");
+    result: Value = b.load(sum_ptr, Type.i32_type(), 4);
+    b.ret(result);
+    return m.emit_text();
+}
+
+/// Example exercising the full instruction set (switch + bitwise + casts).
+pub fnc example_switch_module() : string {
+    m: Module = Module.make("switch_demo");
+    b: Builder = Builder.make(m);
+    b.function("dispatch", Type.i32_type(), {Type.i32_type()});
+    b.block("entry");
+    x: Value = b.param(0);
+    zero: Value = b.const_int(0, Type.i32_type());
+    one: Value = b.const_int(1, Type.i32_type());
+    two: Value = b.const_int(2, Type.i32_type());
+    b.switch_to(x, "default", {zero, one}, {"case0", "case1"});
+    b.block("case0");
+    r0: Value = b.add(x, one);
+    b.ret(r0);
+    b.block("case1");
+    r1: Value = b.mul(x, two);
+    b.ret(r1);
+    b.block("default");
+    r2: Value = b.shl(x, one);
+    b.ret(r2);
+    return m.emit_text();
+}

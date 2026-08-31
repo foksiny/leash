@@ -134,6 +134,7 @@ class Lexer:
         "template",
         "nil",
         "use",
+        "alias",
         "works",
         "otherwise",
         "switch",

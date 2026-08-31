@@ -527,7 +527,7 @@ class GlobalVarDecl(ASTNode):
 class ImportStmt(ASTNode):
     """Represents an import statement like 'use hash::Hash;' or 'use subfolder::module::Item;'"""
 
-    def __init__(self, module_path, imported_items, visibility="pub"):
+    def __init__(self, module_path, imported_items, visibility="pub", alias=None):
         super().__init__()
         # module_path is a list: ["hash"] or ["subfolder", "helpers"]
         self.module_path = module_path
@@ -535,6 +535,7 @@ class ImportStmt(ASTNode):
             imported_items  # list of item names to import, or None for all
         )
         self.visibility = visibility  # 'pub' or 'priv'
+        self.alias = alias  # optional alias name: "use mod alias foo;" or "use mod::Item alias Foo;"
 
     @property
     def module_name(self):

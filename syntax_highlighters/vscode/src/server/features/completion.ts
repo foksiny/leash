@@ -528,6 +528,43 @@ function memberCompletion(
     if (receiverIdents.length === 0) return { isIncomplete: false, items };
     const base = receiverIdents[0];
 
+    // Handle module alias: `use some_mod alias base;` -> `base.item` completion
+    {
+        const model = index.getModel(uri);
+        if (model) {
+            for (const use of model.uses) {
+                if (use.alias === base) {
+                    const resolved = index.resolveUse(uri, use);
+                    if (resolved) {
+                        const collected = new Set<string>();
+                        const pushAliasMember = (sym: LshSymbol): void => {
+                            if (!matches(sym.name) || collected.has(sym.name)) return;
+                            collected.add(sym.name);
+                            const item: CompletionItem = {
+                                label: sym.name,
+                                kind: symbolKindToCompletion(sym),
+                                detail: sym.signature,
+                                documentation: { kind: MarkupKind.Markdown, value: symbolDoc(sym) }
+                            };
+                            if (sym.kind === 'method' || sym.kind === 'function' || sym.kind === 'opdef') {
+                                if (sym.params && sym.params.length > 0) {
+                                    item.insertText = `${sym.name}(${sym.params.map((_, i) => `\${${i + 1}}`).join(', ')})`;
+                                    item.insertTextFormat = InsertTextFormat.Snippet;
+                                }
+                            }
+                            items.push(item);
+                        };
+                        for (const sym of resolved.symbols) {
+                            if (sym.kind === 'field' || sym.kind === 'method') continue;
+                            pushAliasMember(sym);
+                        }
+                        return { isIncomplete: false, items };
+                    }
+                }
+            }
+        }
+    }
+
     let typeName: string | null = null;
     if (base === 'this') {
         const fnc = index.findEnclosingFunction(uri, ctx.pos.positionAt(tokens[dotIdx].start));

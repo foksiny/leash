@@ -1,6 +1,6 @@
 " Vim syntax file for Leash (.lsh)
 " Language: Leash - A strongly-typed compiled language on LLVM
-" Version: 0.22.2 Beta
+" Version: 0.23.3 Beta
 " Maintainer: foksiny <foksiny@github.com>
 " Last Updated: 2026
 
@@ -11,7 +11,7 @@ endif
 " Keywords -------------------------------------------------------------------
 syn keyword leashKeyword	fnc def struct union enum class type template macro opdef
 syn keyword leashKeyword	return if also else unless alsou while with for do loop in
-syn keyword leashKeyword	imut pub priv static stop continue empty ignore use works otherwise
+syn keyword leashKeyword	imut pub priv static stop continue empty ignore use alias works otherwise
 syn keyword leashKeyword	switch case default unsafe nogc as inline defer throw error create del
 syn keyword leashKeyword	worker spawn shared fusion thisworker extern sizeof typeof
 syn keyword leashKeyword	cstr lstr normescape toint tofloat tostring tounion scast

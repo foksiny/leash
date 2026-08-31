@@ -1,0 +1,157 @@
+=== LLVM IR Builder Library Test ===
+
+--- Test 1: Basic add function ---
+; ModuleID = 'example'
+source_filename = "example"
+
+define i32 @add(i32 %0, i32 %1) {
+entry:
+  %2 = add i32 %0, %1
+  ret i32 %2
+}
+
+
+--- Test 2: Factorial function ---
+; ModuleID = 'factorial'
+source_filename = "factorial"
+
+define i32 @factorial(i32 %0) {
+entry:
+  %1 = icmp sle i32 %0, 1
+  br i1 %1, label %base, label %recurse
+base:
+  ret i32 1
+recurse:
+  %2 = sub i32 %0, 1
+  %3 = call i32 @factorial(i32 %2)
+  %4 = mul i32 %0, %3
+  ret i32 %4
+}
+
+
+--- Test 3: Loop sum function ---
+; ModuleID = 'loop_sum'
+source_filename = "loop_sum"
+
+define i32 @sum_to_n(i32 %0) {
+entry:
+  %1 = alloca i32, align 4
+  %2 = alloca i32, align 4
+  store i32 0, i32* %1, align 4
+  store i32 0, i32* %2, align 4
+  br label %loop_header
+loop_header:
+  %3 = load i32, i32* %1, align 4
+  %4 = icmp slt i32 %3, %0
+  br i1 %4, label %loop_body, label %loop_exit
+loop_body:
+  %5 = load i32, i32* %1, align 4
+  %6 = load i32, i32* %2, align 4
+  %7 = add i32 %5, 1
+  %8 = add i32 %6, %7
+  store i32 %7, i32* %1, align 4
+  store i32 %8, i32* %2, align 4
+  br label %loop_header
+loop_exit:
+  %9 = load i32, i32* %2, align 4
+  ret i32 %9
+}
+
+
+--- Test 4: Manual module with globals ---
+; ModuleID = 'manual_test'
+source_filename = "manual_test"
+
+@global_counter = internal global i32 0
+@msg = private constant [12 x i8] c"Hello, LLVM\00"
+
+define i32 @increment_and_get() {
+entry:
+  %0 = load i32, i32* @global_counter, align 4
+  %1 = add i32 %0, 1
+  store i32 %1, i32* @global_counter, align 4
+  ret i32 %1
+}
+
+
+--- Test 5: Type emission ---
+i32: i32
+i64: i64
+double: float
+i32*: i32*
+[10 x i32]: [10 x i32]
+{i32, double}: {i32, float}
+<{i8, i32}>: <{i8, i32}>
+fn(i32, i32) -> i32: i32 (i32, i32)
+<4 x i32>: <4 x i32>
+half: half
+x86_fp80: x86_fp80
+--- Test 6: Value emission ---
+reg %5: %5
+param %0: %0
+const 42: 42
+const 3.14: 3.140000
+global @foo: @foo
+null i32*: null
+undef: undef
+true: true
+false: false
+zeroinit: zeroinitializer
+--- Test 7: Instruction emission ---
+add: %0 = add i32 %1, %2
+ret: ret i32 %0
+br: br label %loop
+cond_br: br i1 %0, label %then, label %else
+alloca: %0 = alloca i32*, align 4
+--- Test 8: Bitwise and conversions ---
+; ModuleID = 'bits_casts'
+source_filename = "bits_casts"
+
+define i32 @bits(i32 %0) {
+entry:
+  %1 = shl i32 %0, 3
+  %2 = or i32 %1, 3
+  %3 = and i32 %2, 3
+  %4 = sext i32 %3 to i64
+  %5 = trunc i64 %4 to i32
+  ret i32 %5
+}
+
+
+--- Test 9: Switch statement ---
+; ModuleID = 'switch_demo'
+source_filename = "switch_demo"
+
+define i32 @dispatch(i32 %0) {
+entry:
+  switch i32 %0, label %default [ i32 0, label %case0 i32 1, label %case1 ]
+case0:
+  %1 = add i32 %0, 1
+  ret i32 %1
+case1:
+  %2 = mul i32 %0, 2
+  ret i32 %2
+default:
+  %3 = shl i32 %0, 1
+  ret i32 %3
+}
+
+
+--- Test 10: Attributes, linkage, aliases ---
+; ModuleID = 'attrs'
+source_filename = "attrs"
+target triple = "x86_64-unknown-linux-gnu"
+target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
+
+declare external zeroext i32 @external_fn() nounwind
+define i32 @main_fn() {
+entry:
+  %0 = call i32 @external_fn()
+  ret i32 %0
+}
+
+
+
+=== All tests completed ===
+18 | fnc main() {
+   = tip: If you don't need this variable, consider removing it.

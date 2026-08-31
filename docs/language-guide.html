@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v0.23.2 Beta</div>
+        <div class="version">v0.23.3 Beta</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -372,6 +372,45 @@ result: <span class="kw">vec</span>&lt;<span class="kw">int</span>&gt; = vec1 + 
 <pre><code>a: <span class="kw">int</span> = 10;                    <span class="cm">// public (default)</span>
 <span class="kw">pub</span> b: <span class="kw">string</span> = <span class="str">"hello"</span>;         <span class="cm">// explicitly public</span>
 <span class="kw">priv</span> secret: <span class="kw">int</span> = 42;          <span class="cm">// module-private</span></code></pre>
+
+<h2>Imports &amp; Aliases (<code>use</code> / <code>alias</code>)</h2>
+<p>Leash organizes reusable code into modules (<code>.lsh</code> files). The <code>use</code> statement imports public definitions from another module. By default you select items with <code>::</code> or import everything with <code>::*</code>. The <code>alias</code> keyword gives the imported module (or a single item) a local name, so you can qualify accesses as <code>alias.item</code> without polluting the global namespace.</p>
+
+<pre><code><span class="kw">use</span> hash::Hash;                 <span class="cm">// import single type</span>
+<span class="kw">use</span> math::*;                    <span class="cm">// import all public items</span>
+<span class="kw">use</span> utils::helpers::capitalize;   <span class="cm">// nested module path</span></code></pre>
+
+<h3>Module Alias</h3>
+<p>Use <code>alias</code> to import an entire module under a short local name. This avoids <code>::*</code> and keeps the imported symbols namespaced. Access functions, types, globals and constants via <code>alias.item</code> (dot).</p>
+
+<pre><code><span class="cm">// alias_tst.lsh</span>
+<span class="kw">fnc</span> <span class="fn">add</span>(a <span class="kw">int</span>, b <span class="kw">int</span>) : <span class="kw">int</span> { <span class="kw">return</span> a + b; }
+<span class="kw">fnc</span> <span class="fn">sub</span>(a <span class="kw">int</span>, b <span class="kw">int</span>) : <span class="kw">int</span> { <span class="kw">return</span> a - b; }
+
+<span class="cm">// main.lsh</span>
+<span class="kw">use</span> alias_tst <span class="kw">alias</span> math;  <span class="cm">// import whole module as `math`</span>
+
+<span class="kw">fnc</span> <span class="fn">main</span> {
+    <span class="fn">show</span>(math.<span class="fn">add</span>(10, 20));  <span class="cm">// 30</span>
+    <span class="fn">show</span>(math.<span class="fn">sub</span>(20, 10));  <span class="cm">// 10</span>
+}</code></pre>
+
+<div class="callout callout-info">A module alias is a wildcard import under the hood &mdash; all public items from the module become available both as <code>alias.item</code> <em>and</em> as bare <code>item</code>. Use the qualified form to keep code explicit.</div>
+
+<h3>Single-Item Alias</h3>
+<p>You can also rename a single imported item. This is useful for avoiding name collisions or shortening a long name:</p>
+
+<pre><code><span class="kw">use</span> hash::Hash <span class="kw">alias</span> MyHash;
+<span class="kw">use</span> math::operations::long_function_name <span class="kw">alias</span> short;
+
+<span class="kw">fnc</span> <span class="fn">main</span> {
+    m: MyHash&lt;<span class="kw">string</span>, <span class="kw">int</span>&gt; = {<span class="str">"a"</span>: 1};
+    <span class="fn">show</span>(short(10, 20));
+}</code></pre>
+
+<h3>Visibility</h3>
+<p>Like regular imports, aliases respect <code>pub</code> / <code>priv</code> visibility: only <code>pub</code> definitions from the target module are imported unless you write <code>priv use ... alias ...;</code>.</p>
+<pre><code><span class="kw">priv</span> <span class="kw">use</span> secret::internal <span class="kw">alias</span> hidden;</code></pre>
 
 <h2>Control Flow</h2>
 

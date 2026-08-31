@@ -1,0 +1,6 @@
+use alias_tst alias math; // this allows not needing ::*
+
+fnc main {
+    show(math.add(10, 20));
+    show(math.sub(20, 10));
+}

@@ -111,7 +111,7 @@
                 },
                 {
                     "name": "keyword.declaration.leash",
-                    "match": "\\b(fnc|def|struct|union|enum|class|type|template|macro|opdef|error|pub|priv|static|pubif|unsafe|nogc|as|inline|imut|create|del|extern|use|worker|shared|fusion)\\b"
+                    "match": "\\b(fnc|def|struct|union|enum|class|type|template|macro|opdef|error|pub|priv|static|pubif|unsafe|nogc|as|inline|imut|create|del|extern|use|alias|worker|shared|fusion)\\b"
                 },
                 {
                     "name": "keyword.other.leash",

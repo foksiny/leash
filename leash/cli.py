@@ -481,6 +481,8 @@ def resolve_imports(program, base_path, extra_import_dirs=None):
     loaded_modules = set()
     global_libs_dir = os.path.expanduser("~/.leash/libs")
     extra_dirs = extra_import_dirs or []
+    # alias -> set(names) for rewriting qualified accesses like alias.item
+    alias_maps = {}
     def find_module_file(module_path, search_path):
         path_str = os.path.join(*module_path)
         module_name = module_path[-1]
@@ -539,12 +541,55 @@ def resolve_imports(program, base_path, extra_import_dirs=None):
                         if hasattr(it, 'type_params') and it.type_params:
                             for tp in it.type_params:
                                 if tp in all_templates and tp not in available: available[tp] = all_templates[tp]
+                # Handle alias cases
+                alias = getattr(item, 'alias', None)
+                if alias:
+                    if item.imported_items is not None and len(item.imported_items) >= 1:
+                        # Single-item alias rename: use orig as alias
+                        # e.g. use hash::Hash alias MyHash;
+                        if len(item.imported_items) != 1:
+                            raise LeashError(f"Alias can only be used with a single imported item or whole-module import, got {item.imported_items}", node=item)
+                        orig = item.imported_items[0]
+                        if orig not in available:
+                            raise LeashError(f"Imported item '{orig}' not found in module", node=item)
+                        import copy as _copy
+                        cloned = _copy.deepcopy(available[orig])
+                        cloned.name = alias
+                        # Preserve visibility of original
+                        if hasattr(cloned, 'visibility'):
+                            cloned.visibility = cloned.visibility
+                        new_items.append(cloned)
+                        # Also add internal/private types if needed
+                        for name, mod_item in internal_types.items(): new_items.append(mod_item)
+                        for mod_item in module_ast.items:
+                            if isinstance(mod_item, NativeImport): new_items.append(mod_item)
+                            if isinstance(mod_item, ConditionalDef): new_items.append(mod_item)
+                        loaded_modules.add(module_file_abs)
+                        continue
+                    else:
+                        # Module alias: use mod alias local; -> import all under namespace
+                        # Record mapping for rewriting alias.item -> item
+                        alias_maps[alias] = set(available.keys()) | set(internal_types.keys())
+                        # Still import items flat so they are available (both qualified and unqualified work)
+                        if is_priv_import:
+                            for mod_item in module_ast.items: new_items.append(mod_item)
+                        else:
+                            for name, mod_item in available.items(): new_items.append(mod_item)
+                            for name, mod_item in internal_types.items(): new_items.append(mod_item)
+                            for mod_item in module_ast.items:
+                                if isinstance(mod_item, NativeImport): new_items.append(mod_item)
+                                if isinstance(mod_item, ConditionalDef): new_items.append(mod_item)
+                        loaded_modules.add(module_file_abs)
+                        continue
                 if is_priv_import:
                     for mod_item in module_ast.items: new_items.append(mod_item)
                 else:
                     if item.imported_items is not None:
                         for name in item.imported_items:
                             if name not in available: raise LeashError(f"Imported item '{name}' not found in module", node=item)
+                        # If specific items requested, only add those (preserve old behavior of adding all? but respect request)
+                        # For compatibility we still add all, but to be precise we add only requested plus internal types.
+                        # To keep previous behavior (adds all), we add all; requested check ensures existence.
                     for name, mod_item in available.items(): new_items.append(mod_item)
                     for name, mod_item in internal_types.items(): new_items.append(mod_item)
                     for mod_item in module_ast.items:
@@ -559,7 +604,108 @@ def resolve_imports(program, base_path, extra_import_dirs=None):
                 new_items.append(item)
             else: new_items.append(item)
         return Program(new_items)
-    return _expand_items(program.items, base_path)
+    expanded = _expand_items(program.items, base_path)
+    if alias_maps:
+        _rewrite_alias_accesses(expanded, alias_maps)
+    return expanded
+
+def _rewrite_alias_accesses(program, alias_maps):
+    """Rewrite qualified accesses like alias.item -> item for module alias imports."""
+    import copy
+    from .ast_nodes import Identifier, MemberAccess, MethodCall, Call, GenericCall, EnumMemberAccess
+    def rewrite_type_str(t):
+        if not isinstance(t, str):
+            return t
+        # Handle alias prefix in type strings: "alias.Type" or "alias::Type" -> "Type"
+        for alias, names in alias_maps.items():
+            for prefix in (alias + ".", alias + "::"):
+                if t.startswith(prefix):
+                    rest = t[len(prefix):]
+                    # rest may be "Type<..." - extract base
+                    base = rest.split("<")[0].split("[")[0].strip()
+                    if base in names:
+                        t = rest
+                        return t
+            # Also handle generic wrapper like "vec<alias.Type>"
+            for alias2 in alias_maps:
+                if alias2 + "." in t or alias2 + "::" in t:
+                    t = t.replace(alias2 + ".", "").replace(alias2 + "::", "")
+        return t
+    def rewrite_node(node):
+        if node is None or isinstance(node, (str, int, float, bool)):
+            return node
+        if isinstance(node, (list, tuple)):
+            return type(node)(rewrite_node(x) for x in node) if isinstance(node, tuple) else [rewrite_node(x) for x in node]
+        if not hasattr(node, '__dict__'):
+            return node
+        # Rewrite MemberAccess alias.item -> Identifier(item)
+        if isinstance(node, MemberAccess):
+            if isinstance(node.expr, Identifier) and node.expr.name in alias_maps and node.member in alias_maps[node.expr.name]:
+                return Identifier(node.member)
+        if isinstance(node, MethodCall):
+            if isinstance(node.expr, Identifier) and node.expr.name in alias_maps and node.method in alias_maps[node.expr.name]:
+                # Convert to plain Call
+                return Call(node.method, node.args)
+        if isinstance(node, EnumMemberAccess):
+            if node.enum_name in alias_maps and node.member_name in alias_maps[node.enum_name]:
+                # Enum access via alias namespace: alias::MEMBER -> keep but enum_name should be resolved
+                # EnumMemberAccess expects enum_name; if alias maps, we keep as is but type may be alias prefix?
+                # Actually EnumMemberAccess(enum_name, member) - if enum_name is alias, it should become actual enum type?
+                # For now, leave as is; type checker will resolve via alias mapping of types.
+                pass
+        # Rewrite type strings on nodes that carry them
+        for attr in ('var_type', 'target_type', 'return_type', 'type_params'):
+            if hasattr(node, attr):
+                val = getattr(node, attr)
+                if isinstance(val, str):
+                    setattr(node, attr, rewrite_type_str(val))
+                elif isinstance(val, list) and val and isinstance(val[0], str):
+                    setattr(node, attr, [rewrite_type_str(v) if isinstance(v, str) else v for v in val])
+        # Handle Function/OpDef/ClassField type strings inside args/fields tuples
+        from .ast_nodes import Function as _Func, OpDef as _OpDef, ClassDef as _ClassDef, ClassField as _ClassField
+        if isinstance(node, (_Func, _OpDef)) and hasattr(node, 'args') and isinstance(node.args, list):
+            new_args = []
+            for aname, atype, adefault in node.args:
+                if isinstance(atype, str):
+                    atype = rewrite_type_str(atype)
+                new_args.append((aname, atype, rewrite_node(adefault) if adefault else adefault))
+            node.args = new_args
+        if hasattr(node, 'fields') and isinstance(node.fields, list):
+            # For StructDef, ClassDef.fields, etc. may contain tuples (name, type, default)
+            # Only rewrite if first element looks like a field tuple
+            new_fields = []
+            changed = False
+            for f in node.fields:
+                if isinstance(f, tuple) and len(f) == 3 and isinstance(f[1], str):
+                    n, t, d = f
+                    t = rewrite_type_str(t)
+                    new_fields.append((n, t, rewrite_node(d) if d else d))
+                    changed = True
+                elif hasattr(f, 'var_type') and isinstance(getattr(f, 'var_type', None), str):
+                    # ClassField object
+                    f.var_type = rewrite_type_str(f.var_type)
+                    if getattr(f, 'value', None):
+                        f.value = rewrite_node(f.value)
+                    new_fields.append(f)
+                    changed = True
+                else:
+                    new_fields.append(f)
+            if changed:
+                node.fields = new_fields
+        # Recursively walk children
+        for attr_name in list(vars(node).keys()):
+            if attr_name.startswith('_'):
+                continue
+            val = getattr(node, attr_name)
+            if isinstance(val, list):
+                setattr(node, attr_name, [rewrite_node(x) for x in val])
+            elif isinstance(val, tuple):
+                setattr(node, attr_name, tuple(rewrite_node(x) for x in val))
+            elif hasattr(val, '__dict__') and not isinstance(val, (str, int, float, bool)):
+                setattr(node, attr_name, rewrite_node(val))
+        return node
+    for it in program.items:
+        rewrite_node(it)
 
 def expand_macros(program):
     from .ast_nodes import Identifier, ExpressionStatement, ReturnStatement
@@ -1238,7 +1384,7 @@ def update_leash():
     import json
     
     print("Leash Update Checker")
-    print("Current version: 0.23.2 Beta\n")
+    print("Current version: 0.23.3 Beta\n")
     
     try:
         req = urllib.request.Request(
@@ -1264,7 +1410,7 @@ def update_leash():
         print("Update failed.")
 
 
-VERSION_STRING = "v0.23.2 Beta"
+VERSION_STRING = "v0.23.3 Beta"
 
 MAIN_HELP = f"""Leash {VERSION_STRING} - LLVM-powered compiled programming language
 

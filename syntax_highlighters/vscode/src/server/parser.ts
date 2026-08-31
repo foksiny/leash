@@ -224,6 +224,7 @@ class Parser {
         }
         const modulePath: string[] = [];
         let items: string[] | null = null;
+        let alias: string | null = null;
         const first = this.tokens[this.i];
         if (first && first.type === 'ident') {
             modulePath.push(first.text);
@@ -241,17 +242,26 @@ class Parser {
                 this.i++;
                 continue;
             }
+            // If next ident is 'alias', this is a module alias like "use mod alias foo;" - don't treat alias as item
+            if (after.text === 'alias') break;
             const afterAfter = this.peek(2);
             if (afterAfter && afterAfter.text === '::') {
                 modulePath.push(after.text);
                 this.i += 2;
                 continue;
             }
+            // Check if after ident is followed by alias: "use mod::Item alias Foo;"
+            if (afterAfter && afterAfter.text === 'alias') {
+                this.i += 2;
+                items = [];
+                items.push(after.text);
+                break;
+            }
             this.i += 2;
             items = [];
             items.push(after.text);
-            if (this.tokens[this.i] && this.tokens[this.i].text !== ';') {
-                this.i++;
+            if (this.tokens[this.i] && this.tokens[this.i].text !== ';' && this.tokens[this.i].text !== 'alias' && this.tokens[this.i].text !== ',') {
+                // Might be stray token before alias, ignore
             }
             while (this.peek()?.text === ',') {
                 this.i++;
@@ -263,12 +273,22 @@ class Parser {
             }
             break;
         }
+        // Check for alias clause: "alias <name>"
+        if (this.peek()?.text === 'alias') {
+            this.i++;
+            const aTok = this.tokens[this.i];
+            if (aTok && aTok.type === 'ident') {
+                alias = aTok.text;
+                this.i++;
+            }
+        }
         while (this.peek()?.text !== ';' && this.i < this.tokens.length) this.i++;
         if (this.peek()?.text === ';') this.i++;
         const endTok = this.tokens[this.i - 1];
         this.model.uses.push({
             modulePath,
             items,
+            alias,
             isPriv,
             range: {
                 start: this.p(startTok.start),

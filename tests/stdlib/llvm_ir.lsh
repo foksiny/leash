@@ -1,0 +1,133 @@
+/// Test for LLVM IR builder library
+use llvm::ir::Module;
+use llvm::ir::Type;
+use llvm::ir::Function;
+use llvm::ir::Builder;
+use llvm::ir::Value;
+use llvm::ir::Instruction;
+use llvm::ir::BasicBlock;
+use llvm::ir::Global;
+use llvm::ir::Alias;
+use llvm::ir::ICMP;
+use llvm::ir::FCMP;
+use llvm::ir::example_add_module;
+use llvm::ir::example_factorial_module;
+use llvm::ir::example_loop_module;
+use llvm::ir::example_switch_module;
+
+fnc main() {
+    show("=== LLVM IR Builder Library Test ===");
+    show("");
+
+    // Test 1: Basic add function
+    show("--- Test 1: Basic add function ---");
+    add_ir: string = example_add_module();
+    show(add_ir);
+
+    // Test 2: Factorial function (recursive)
+    show("--- Test 2: Factorial function ---");
+    fact_ir: string = example_factorial_module();
+    show(fact_ir);
+
+    // Test 3: Loop sum function
+    show("--- Test 3: Loop sum function ---");
+    loop_ir: string = example_loop_module();
+    show(loop_ir);
+
+    // Test 4: Manual module construction
+    show("--- Test 4: Manual module with globals ---");
+    m: Module = Module.make("manual_test");
+    g: Global = Global.make("global_counter", Type.i32_type(), "internal", false, "0");
+    m.add_global(g);
+    str_global: Global = Global.make("msg", Type.i8_type().array_of(12), "private", true, "c\"Hello, LLVM\\00\"");
+    m.add_global(str_global);
+    b: Builder = Builder.make(m);
+    b.function("increment_and_get", Type.i32_type(), (vec<Type>){});
+    b.block("entry");
+    counter_ptr: Value = b.global("global_counter", Type.i32_type());
+    old_val: Value = b.load(counter_ptr, Type.i32_type(), 4);
+    one: Value = b.const_int(1, Type.i32_type());
+    new_val: Value = b.add(old_val, one);
+    b.store(new_val, counter_ptr, 4);
+    b.ret(new_val);
+    show(m.emit_text());
+
+    // Test 5: Type emission
+    show("--- Test 5: Type emission ---");
+    show("i32: " + Type.i32_type().emit());
+    show("i64: " + Type.i64_type().emit());
+    show("double: " + Type.float_type().emit());
+    show("i32*: " + Type.i32_type().ptr().emit());
+    show("[10 x i32]: " + Type.i32_type().array_of(10).emit());
+    show("{i32, double}: " + Type.struct_type({Type.i32_type(), Type.float_type()}, false).emit());
+    show("<{i8, i32}>: " + Type.struct_type({Type.i8_type(), Type.i32_type()}, true).emit());
+    show("fn(i32, i32) -> i32: " + Type.fn_type(Type.i32_type(), {Type.i32_type(), Type.i32_type()}, false).emit());
+    show("<4 x i32>: " + Type.i32_type().vec_of(4).emit());
+    show("half: " + Type.half_type().emit());
+    show("x86_fp80: " + Type.x86_fp80_type().emit());
+
+    // Test 6: Value emission
+    show("--- Test 6: Value emission ---");
+    show("reg %5: " + Value.reg(5, Type.i32_type()).emit());
+    show("param %0: " + Value.param(0, Type.i64_type()).emit());
+    show("const 42: " + Value.const_int(42, Type.i32_type()).emit());
+    show("const 3.14: " + Value.const_float(3.14, Type.float_type()).emit());
+    show("global @foo: " + Value.global("foo", Type.i32_type()).emit());
+    show("null i32*: " + Value.null_val(Type.i32_type().ptr()).emit());
+    show("undef: " + Value.undef(Type.i32_type()).emit());
+    show("true: " + Value.true_val(Type.i1_type()).emit());
+    show("false: " + Value.false_val(Type.i1_type()).emit());
+    show("zeroinit: " + Value.zeroinitializer(Type.i32_type().array_of(4)).emit());
+
+    // Test 7: Instruction emission
+    show("--- Test 7: Instruction emission ---");
+    i1: Instruction = Instruction.make("add", Value.reg(0, Type.i32_type()), Type.i32_type(), {Value.reg(1, Type.i32_type()), Value.reg(2, Type.i32_type())});
+    show("add: " + i1.emit());
+    i2: Instruction = Instruction.make_ret(Value.reg(0, Type.i32_type()));
+    show("ret: " + i2.emit());
+    i3: Instruction = Instruction.make_br("loop");
+    show("br: " + i3.emit());
+    i4: Instruction = Instruction.make_cond_br(Value.reg(0, Type.i1_type()), "then", "else");
+    show("cond_br: " + i4.emit());
+    i5: Instruction = Instruction.make("alloca", Value.reg(0, Type.i32_type().ptr()), Type.i32_type().ptr(), (vec<Value>){});
+    i5.alignment = 4;
+    show("alloca: " + i5.emit());
+
+    // Test 8: Bitwise and cast instructions
+    show("--- Test 8: Bitwise and conversions ---");
+    m8: Module = Module.make("bits_casts");
+    b8: Builder = Builder.make(m8);
+    b8.function("bits", Type.i32_type(), {Type.i32_type()});
+    b8.block("entry");
+    x8: Value = b8.param(0);
+    y8: Value = b8.const_int(3, Type.i32_type());
+    s8: Value = b8.shl(x8, y8);
+    o8: Value = b8.or(s8, y8);
+    a8: Value = b8.and(o8, y8);
+    z8: Value = b8.sext(a8, Type.i64_type());
+    t8: Value = b8.trunc(z8, Type.i32_type());
+    b8.ret(t8);
+    show(m8.emit_text());
+
+    // Test 9: Switch statement
+    show("--- Test 9: Switch statement ---");
+    switch_ir: string = example_switch_module();
+    show(switch_ir);
+
+    // Test 10: Attributes and linkage
+    show("--- Test 10: Attributes, linkage, aliases ---");
+    m10: Module = Module.make("attrs");
+    m10.set_target("x86_64-unknown-linux-gnu");
+    m10.set_data_layout("e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128");
+    f10: Function = Function.make("external_fn", Type.i32_type(), (vec<Type>){}).set_declaration().set_linkage("external").set_fn_attrs("nounwind").set_ret_attrs("zeroext");
+    m10.add_function(f10);
+    b10: Builder = Builder.make(m10);
+    fmain: Function = b10.function("main_fn", Type.i32_type(), (vec<Type>){});
+    b10.block("entry");
+    r10: Value = b10.call(Value.global("external_fn", Type.fn_type(Type.i32_type(), (vec<Type>){}, false)), (vec<Value>){}, Type.i32_type());
+    b10.ret(r10);
+    show(m10.emit_text());
+
+    show("");
+    show("=== All tests completed ===");
+}

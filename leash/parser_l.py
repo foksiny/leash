@@ -723,7 +723,9 @@ class Parser:
         return Program(items)
 
     def parse_import(self, visibility="pub"):
-        """Parse a use statement: use module::item; or use subfolder::module::item;"""
+        """Parse a use statement: use module::item; or use subfolder::module::item;
+        Supports alias syntax: use module alias local; or use module::item alias local;
+        """
         tok = self.current()
         self.eat("USE")
 
@@ -733,6 +735,8 @@ class Parser:
         #   - path: ["math", "operations"], item: "add"
         # e.g., use math::add;
         #   - path: ["math"], item: "add"
+        # With alias: use alias_tst alias math;
+        #   - path: ["alias_tst"], alias: "math" (wildcard)
         module_path = []
         module_path.append(self.eat("IDENT").value)
 
@@ -750,8 +754,13 @@ class Parser:
             if self.peek().type != "IDENT":
                 break
 
+            # Check if next IDENT is followed by alias or semicolon (module alias case)
+            # e.g. "use foo alias bar;" should not treat alias as path segment
+            if self.peek().value == "alias" or self.peek().type == "ALIAS":
+                break
+
             # Look further ahead: if we see IDENT::IDENT or IDENT, then the first IDENT
-            # is part of the path. If we see IDENT followed by comma/semi, it's an item.
+            # is part of the path. If we see IDENT followed by comma/semi/alias, it's an item.
             # For simplicity: if we see IDENT::IDENT, then first is path segment
             if (
                 self.peek(2)
@@ -763,37 +772,53 @@ class Parser:
                 self.eat("DCOLON")
                 module_path.append(self.eat("IDENT").value)
             else:
-                # This is ::IDENT followed by comma/semi - stop parsing path
+                # This is ::IDENT followed by comma/semi/alias - stop parsing path
                 break
 
-        # Now we should have :: followed by either * or item name(s)
-        if self.current().type != "DCOLON":
+        imported_items = None
+        alias = None
+        had_dcolon = False
+
+        # Parse optional :: items section (only if :: present)
+        if self.current().type == "DCOLON":
+            had_dcolon = True
+            self.eat("DCOLON")
+            # Check for wildcard import
+            if self.current().type == "MUL":
+                self.eat("MUL")
+                imported_items = None  # wildcard means import all
+            else:
+                # Parse specific item(s)
+                imported_items = []
+                while True:
+                    item_name = self.eat("IDENT").value
+                    imported_items.append(item_name)
+                    if self.current().type == "COMMA":
+                        self.eat("COMMA")
+                        continue
+                    else:
+                        break
+        else:
+            # No :: section - this is either "use mod alias foo;" (module alias wildcard)
+            # or an error if no alias follows. For alias form we keep items=None (wildcard)
+            imported_items = None
+
+        # Check for optional alias clause: "alias <name>"
+        if self.current().type == "ALIAS":
+            self.eat("ALIAS")
+            alias = self.eat("IDENT").value
+
+        # Validate: must have either :: items or alias, otherwise original syntax required ::
+        if not had_dcolon and alias is None:
             raise LeashError(
                 f"Expected '::' after module path in import statement",
                 self.current().line,
                 self.current().column,
-                tip="Use 'use module::Item;' or 'use path::to::module::Item;' syntax",
+                tip="Use 'use module::Item;' or 'use module alias Local;' syntax",
             )
-        self.eat("DCOLON")
-
-        imported_items = []
-        # Check for wildcard import
-        if self.current().type == "MUL":
-            self.eat("MUL")
-            imported_items = None  # wildcard means import all
-        else:
-            # Parse specific item(s)
-            while True:
-                item_name = self.eat("IDENT").value
-                imported_items.append(item_name)
-                if self.current().type == "COMMA":
-                    self.eat("COMMA")
-                    continue
-                else:
-                    break
 
         self.eat("SEMI")
-        return self._pos(ImportStmt(module_path, imported_items, visibility), tok)
+        return self._pos(ImportStmt(module_path, imported_items, visibility, alias), tok)
 
     def parse_top_level_item(self):
         """Parse a single top-level item (used inside conditional branches)."""

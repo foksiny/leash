@@ -223,7 +223,23 @@ export class WorkspaceIndex {
         for (const use of model.uses) {
             const resolved = this.resolveUse(uri, use);
             if (!resolved) continue;
+            // Handle single-item alias: use mod::Orig alias Alias; -> lookup Alias
+            if (use.alias && use.items && use.items.length === 1) {
+                if (name !== use.alias) continue;
+                // Check that the original item exists in resolved
+                const wantedOrig = use.items[0];
+                for (const sym of resolved.symbols) {
+                    if (sym.name === wantedOrig && !seen.has(sym.id)) {
+                        seen.add(sym.id);
+                        // Return a synthetic alias symbol with alias name but same target
+                        const aliased: LshSymbol = { ...sym, name: use.alias, id: sym.id + '|alias:' + use.alias };
+                        results.push(aliased);
+                    }
+                }
+                continue;
+            }
             if (use.items !== null && !use.items.includes(name)) continue;
+            // For module alias wildcard, both bare name and alias.member are supported; bare works here
             for (const sym of resolved.symbols) {
                 if (sym.name === name && !seen.has(sym.id)) {
                     seen.add(sym.id);

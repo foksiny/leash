@@ -52,6 +52,7 @@ export interface LocalSymbol {
 export interface UseStmt {
     modulePath: string[];
     items: string[] | null;
+    alias: string | null;
     isPriv: boolean;
     range: Range;
     fullRange: Range;
