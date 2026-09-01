@@ -47,7 +47,7 @@
 
 <h1>Standard Library Reference</h1>
 
-<p>Leash ships with a set of standard libraries in the <code>installthis/</code> directory. These libraries provide common utilities like type aliases for explicit bit-width types, math functions, string manipulation, tuple containers, JSON, UTF-8, hex, Base64, UUID generation, and a windowing API. An extended set covers collections, algorithms, text processing, cryptography, encoding, native HTTP/HTTPS networking, embedded SQL (SQLite), date/time, math extensions, system helpers, and logging &mdash; see the <a href="#extended">Extended Standard Libraries</a> section below. Install them globally to make them available from any project via the <code>use</code> statement.</p>
+<p>Leash ships with a set of standard libraries in the <code>installthis/</code> directory. These libraries provide common utilities like type aliases for explicit bit-width types, math functions, string manipulation, tuple containers, JSON, UTF-8, hex, Base64, UUID generation, and a windowing API. An extended set covers collections, algorithms, text processing, cryptography, encoding, native HTTP/HTTPS networking, embedded SQL (SQLite), date/time, math extensions, system helpers, logging, and a programmatic <a href="#llvm-ir-builder">LLVM IR builder</a> for generating assembly text from within Leash itself &mdash; see the sections below. Install them globally to make them available from any project via the <code>use</code> statement.</p>
 
 <div class="callout callout-info">The standard libraries are optional &mdash; you can install only the ones you need, or write your own libraries following the same patterns.</div>
 
@@ -527,6 +527,89 @@ speed: <span class="kw">int</span> = 5;
 <p>Pre-defined key constants: <code>KEY_W</code>, <code>KEY_A</code>, <code>KEY_S</code>, <code>KEY_D</code>, <code>KEY_SPACE</code>, <code>KEY_ESCAPE</code>, <code>KEY_ENTER</code>, <code>KEY_UP</code>, <code>KEY_DOWN</code>, <code>KEY_LEFT</code>, <code>KEY_RIGHT</code>, and more.</p>
 
 <p>Color macros: <code>WHITE()</code>, <code>BLACK()</code>, <code>RED()</code>, <code>GREEN()</code>, <code>BLUE()</code>, <code>YELLOW()</code>, <code>ORANGE()</code>, <code>PURPLE()</code>, <code>RAYWHITE()</code>, <code>GRAY()</code>, and more.</p>
+
+<h2 id="llvm-ir-builder">LLVM IR Builder (<code>llvm::ir</code>)</h2>
+
+<div class="callout callout-info">A pure-Leash library for <b>programmatically generating LLVM IR assembly text</b>. Because it is written entirely in Leash (no FFI), it runs anywhere the stdlib does, and the emitted text can be handed straight to <code>llvm-as</code>, <code>llc</code>, or <code>clang</code>. It is a great fit for writing JIT stubs, experimenting with codegen, generating test IR, or building small DSL compilers entirely inside a Leash program.</div>
+
+<p>You build a <code>Module</code> with a <code>Builder</code>, then call <code>m.emit_text()</code> to produce the full assembly. The builder tracks registers, basic blocks, and types for you, so the fluent API reads like an instruction stream.</p>
+
+<pre><code><span class="kw">use</span> llvm::ir::Module;
+<span class="kw">use</span> llvm::ir::Type;
+<span class="kw">use</span> llvm::ir::Builder;
+<span class="kw">use</span> llvm::ir::ICMP;
+
+<span class="kw">fnc</span> <span class="fn">main</span>() {
+    m: Module = Module.<span class="fn">make</span>(<span class="str">"demo"</span>);
+    b: Builder = Builder.<span class="fn">make</span>(m);
+    b.<span class="fn">function</span>(<span class="str">"add"</span>, Type.i32_type(), {Type.i32_type(), Type.i32_type()});
+    b.<span class="fn">block</span>(<span class="str">"entry"</span>);
+    a: Value = b.<span class="fn">param</span>(0);
+    c: Value = b.<span class="fn">param</span>(1);
+    r: Value = b.<span class="fn">add</span>(a, c);
+    b.<span class="fn">ret</span>(r);
+    <span class="fn">show</span>(m.<span class="fn">emit_text</span>());
+}</code></pre>
+
+<p>Which emits:</p>
+<pre><code>; ModuleID = 'demo'
+source_filename = "demo"
+
+define i32 @add(i32 %0, i32 %1) {
+entry:
+  %2 = add i32 %0, %1
+  ret i32 %2
+}</code></pre>
+
+<h3>Types</h3>
+<p>The <code>Type</code> class builds and renders LLVM types. Integer and float helpers handle every bit width, and composite types compose naturally (note: scenario-specific names avoid the Leash <code>int</code>/<code>float</code>/<code>struct</code>/<code>array</code>/<code>null</code> keywords).</p>
+<table>
+    <tr><th>Method</th><th>Produces</th></tr>
+    <tr><td><code>Type.i1_type()..i128_type()</code></td><td><code>i1</code> .. <code>i128</code> integers</td></tr>
+    <tr><td><code>Type.int_type(n)</code></td><td>Arbitrary-width integer <code>iN</code></td></tr>
+    <tr><td><code>Type.half/_float/double/fp128/x86_fp80/ppc_fp128</code></td><td>Floating-point types</td></tr>
+    <tr><td><code>Type.void_type()</code> / <code>label_type()</code> / <code>x86_mmx_type()</code></td><td><code>void</code>, <code>label</code>, <code>x86_mmx</code></td></tr>
+    <tr><td><code>ty.ptr()</code> / <code>Type.ptr_to(p)</code></td><td>Pointer <code>p*</code></td></tr>
+    <tr><td><code>ty.array_of(n)</code></td><td>Array <code>[n x ty]</code></td></tr>
+    <tr><td><code>ty.vec_of(n)</code></td><td>Vector <code>&lt;n x ty&gt;</code></td></tr>
+    <tr><td><code>Type.struct_type([...], packed)</code></td><td>Struct <code>{...}</code> / packed <code>&lt;{...}&gt;</code></td></tr>
+    <tr><td><code>Type.fn_type(ret, [params], vararg)</code></td><td>Function type</td></tr>
+</table>
+
+<h3>Values &amp; Constants</h3>
+<p><code>Value</code> represents an SSA register, a function parameter, or one of the LLVM constant kinds. The static factories include <code>reg</code>, <code>param</code>, <code>const_int</code>, <code>const_float</code>, <code>const_str</code>, <code>global</code>, <code>null_val</code>, <code>undef</code>, <code>true_val</code>, <code>false_val</code>, <code>zeroinitializer</code>, <code>blockaddress</code>, and <code>const_vector</code>. Most are also exposed as builder shortcuts (e.g. <code>b.const_int(42, Type.i32_type())</code>).</p>
+
+<h3>Builder Instructions</h3>
+<p>The <code>Builder</code> produces a result <code>Value</code> for every instruction that has a destination and appends it to the current block automatically.</p>
+<table>
+    <tr><th>Category</th><th>Methods</th></tr>
+    <tr><td>Function setup</td><td><code>function / block / param</code></td></tr>
+    <tr><td>Terminators</td><td><code>br / cond_br / ret / ret_void / unreachable / switch_to / indirectbr</code></td></tr>
+    <tr><td>Memory</td><td><code>alloca / load / load_volatile / store / store_volatile / fence / gep / gep_no_inbounds</code></td></tr>
+    <tr><td>Integer arithmetic</td><td><code>add / sub / mul / udiv / sdiv / urem / srem / shl / lshr / ashr / and / or / xor</code></td></tr>
+    <tr><td>Floating-point</td><td><code>fadd / fsub / fmul / fdiv / frem / fneg</code></td></tr>
+    <tr><td>Comparison</td><td><code>icmp(pred, ...) / fcmp(pred, ...)</code></td></tr>
+    <tr><td>Calls</td><td><code>call / call_void / tail_call</code></td></tr>
+    <tr><td>Aggregate / vector</td><td><code>extractvalue / insertvalue / extractelement / insertelement / shufflevector</code></td></tr>
+    <tr><td>Atomics</td><td><code>cmpxchg / atomicrmw</code></td></tr>
+    <tr><td>Conversions</td><td><code>trunc / zext / sext / fptrunc / fpext / fptoui / fptosi / uitofp / sitofp / ptrtoint / inttoptr / bitcast / addrspacecast</code></td></tr>
+    <tr><td>Other</td><td><code>phi / select / freeze / va_arg</code></td></tr>
+</table>
+
+<h3>Predicates &amp; Attributes</h3>
+<p>Convenience constant classes keep LLVM's spelled-out strings self-documenting:</p>
+<ul>
+    <li><code>ICMP</code> &mdash; <code>eq, ne, ugt, uge, ult, ule, sgt, sge, slt, sle</code></li>
+    <li><code>FCMP</code> &mdash; <code>oeq, ogt, oge, olt, ole, one, ord, ueq, ule, une, uno, true, false, ...</code></li>
+    <li><code>ATOMIC_ORDERING</code> &mdash; <code>unordered, monotonic, acquire, release, acq_rel, seq_cst</code></li>
+    <li><code>ATOMIC_RMW_OP</code> &mdash; <code>xchg, add, sub, and, nand, or, xor, max, min, umax, umin, fadd, fsub</code></li>
+    <li><code>LINKAGE</code> &mdash; <code>private, internal, weak, linkonce_odr, external, ...</code></li>
+    <li><code>CCONV</code> &mdash; <code>ccc, fastcc, coldcc, x86_stdcallcc, win64cc, amdgpu_kernel, ...</code></li>
+</ul>
+<p>Functions can carry linkage, a calling convention, return/fn/parameter attributes, a section, alignment, a GC strategy, and variadic arguments (<code>.set_linkage(...)</code>, <code>.set_cconv(...)</code>, <code>.set_fn_attrs("nounwind")</code>, <code>.set_ret_attrs("zeroext")</code>, <code>.add_param_attr(...)</code>, <code>.set_section(...)</code>, <code>.set_alignment(...)</code>, <code>.set_gc(...)</code>, <code>.set_vararg()</code>). Globals support alignment, sections, <code>unnamed_addr</code>, <code>thread_local</code>, and <code>externally_initialized</code>; modules support aliases, a target triple, and a data layout.</p>
+
+<h3>Verification</h3>
+<p>The test suite under <code>tests/stdlib/llvm_ir.lsh</code> builds an add function, a recursive factorial, a loop, a module with globals, a switch, bitwise/cast chains, and a function declaring attributes &mdash; and every emitted module is verified to assemble via <code>llvm-as</code>.</p>
 
 
 <h1 id="extended">Extended Standard Libraries</h1>
