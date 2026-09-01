@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v0.23.3 Beta</div>
+        <div class="version">v0.23.4 Beta</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -113,7 +113,7 @@ leashed --version</code></pre>
 
 <h2>Running Leash Programs</h2>
 
-<p>You can run Leash files (<code>.lsh</code>) directly using the <code>run</code> command, or compile them to a native executable using the <code>compile</code> command. Leash also supports project-level workflows with <code>init</code>, <code>build</code>, and <code>runp</code> for larger projects with configuration files.</p>
+<p>You can run Leash files (<code>.lsh</code>) directly using the <code>run</code> command, or compile them to a native executable using the <code>compile</code> command. Leash also supports project-level workflows with <code>init</code>, <code>build</code>, and <code>run</code> (without a file) for larger projects with configuration files. The old <code>runp</code> command is deprecated and now an alias for <code>run</code> without a file.</p>
 
 <h3>Direct Execution</h3>
 <p>To execute a Leash program without creating an output binary executable (and optionally pass command line arguments):</p>
@@ -171,23 +171,26 @@ opt_level: <span class="str">"O3"</span></code></pre>
 leash build --other-imports path/to/imports
 leash build -oi path/to/imports</code></pre>
 
-<h3>Project Run (<code>runp</code>)</h3>
-<p>The <code>runp</code> command compiles and runs a project in one step, using <code>config.lshc</code>. The output binary is temporary and cleaned up after execution, making it ideal for development and testing.</p>
-<pre><code><span class="cm"># Compile and run</span>
-leash runp
+<h3>Project Run (<code>run</code> without file)</h3>
+<p>The <code>run</code> command without a file argument compiles and runs a project in one step, using <code>config.lshc</code>. The output binary is temporary and cleaned up after execution, making it ideal for development and testing. The previous <code>runp</code> command is deprecated and remains as an alias for this mode.</p>
+<pre><code><span class="cm"># Compile and run project (project mode)</span>
+leash run
 
 <span class="cm"># Pass arguments to the program (after --)</span>
-leash runp -- arg1 arg2 arg3
+leash run -- arg1 arg2 arg3
 
 <span class="cm"># With additional import directories</span>
-leash runp --other-imports path/to/imports -- arg1 arg2</code></pre>
+leash run --other-imports path/to/imports -- arg1 arg2
+
+<span class="cm"># Run a single file (file mode)</span>
+leash run src/main.lsh -- arg1 arg2</code></pre>
 
 <h2>Updating Leash</h2>
 <p>The <code>update</code> command checks for new releases on the Leash GitHub repository and pulls the latest changes. It fetches the latest release tag from <code>github.com/foksiny/leash</code> via the GitHub API, then runs <code>git pull</code> to update your local clone to the latest commit. Requires Git to be installed and the Leash repo to have been cloned from GitHub.</p>
 <pre><code>leash update</code></pre>
 
 <h2>Additional Import Paths</h2>
-<p>The <code>--other-imports</code> (or <code>-oi</code>) flag adds extra directories to the module search path for <code>use ...;</code> statements. This is available on <code>compile</code>, <code>run</code>, <code>dump</code>, <code>build</code>, and <code>runp</code>. These directories are searched before <code>~/.leash/libs/</code>, making it useful when working outside a project setup or when you need to import from non-standard locations.</p>
+<p>The <code>--other-imports</code> (or <code>-oi</code>) flag adds extra directories to the module search path for <code>use ...;</code> statements. This is available on <code>compile</code>, <code>run</code>, <code>dump</code>, and <code>build</code> (and the deprecated <code>runp</code> alias). These directories are searched before <code>~/.leash/libs/</code>, making it useful when working outside a project setup or when you need to import from non-standard locations.</p>
 <pre><code>leash compile program.lsh --other-imports mylibs/
 leash run program.lsh -oi mylibs/ -oi other_libs/</code></pre>
 

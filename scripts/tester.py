@@ -1,3 +1,4 @@
+import shutil
 import subprocess
 import os
 import sys
@@ -41,6 +42,87 @@ def get_current_platform():
         else:
             return "macos"
     return "linux64"  # fallback
+
+
+def _wsl_available():
+    """Return True if WSL is installed and has a usable distro."""
+    if pyplatform.system().lower() != "windows":
+        return False
+    if not shutil.which("wsl"):
+        return False
+    try:
+        res = subprocess.run(["wsl", "-l", "-q"], capture_output=True, text=True, timeout=10)
+        if res.returncode == 0:
+            return True
+        res = subprocess.run(["wsl", "--status"], capture_output=True, text=True, timeout=10)
+        return res.returncode == 0
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+
+
+def check_cross_prerequisites(target):
+    """Check whether the toolchain required to test `target` from the current host is present.
+
+    Returns (ok, reason). If ok is False, `reason` is a human-readable hint
+    explaining what is missing.
+    """
+    if not target:
+        return True, None
+    current = get_current_platform()
+    if target == current:
+        return True, None
+
+    # --- win64 on Linux/macOS: needs MinGW cross-compiler + wine ---
+    if target == "win64" and current in ("linux64", "linux32"):
+        has_mingw = bool(
+            shutil.which("x86_64-w64-mingw32-gcc") or shutil.which("x86_64-w64-mingw32-clang")
+        )
+        if not has_mingw:
+            return False, "MinGW cross-compiler not installed (sudo apt install gcc-mingw-w64-x86-64)"
+        if not shutil.which("wine"):
+            return False, "wine not installed (sudo apt install wine) — needed to run win64 binaries on Linux"
+        return True, None
+
+    # --- Linux targets on Windows: needs WSL ---
+    if target in ("linux64", "linux32") and current == "win64":
+        if not _wsl_available():
+            return False, "WSL not installed — install it (wsl --install) with a distro that has gcc"
+        return True, None
+
+    # --- linux32 on linux64: needs 32-bit cross toolchain ---
+    if target == "linux32" and current == "linux64":
+        if not shutil.which("i686-linux-gnu-gcc"):
+            return False, "i686 cross-compiler not installed (sudo apt install gcc-multilib or gcc-i686-linux-gnu)"
+        return True, None
+
+    # --- macOS on non-macOS: can compile but not run ---
+    if target in ("macos", "macos-arm") and current not in ("macos", "macos-arm"):
+        return False, "macOS binaries cannot be executed on non-macOS hosts (compile-only; no runner)"
+
+    # Other cross combinations: assume unsupported for `leash run`
+    if target != current:
+        return False, f"Cross-compilation from {current} to {target} has no runner on this host"
+
+    return True, None
+
+
+def describe_cross_mode(target):
+    """Return a human-readable cross-compilation description, or None if native."""
+    if not target:
+        return None
+    current = get_current_platform()
+    if target == current:
+        return None
+    runners = {
+        ("linux64", "win64"): "MinGW + wine",
+        ("linux32", "win64"): "MinGW + wine",
+        ("win64", "linux64"): "WSL",
+        ("win64", "linux32"): "WSL",
+    }
+    runner = runners.get((current, target))
+    if runner:
+        return f"Cross-compiling {current} -> {target} via {runner}"
+    return f"Cross-compiling {current} -> {target}"
 
 
 def normalize_pointers(text):
@@ -111,8 +193,9 @@ def normalize_pointers(text):
     text = re.sub(r"Hello World\n\n", "Hello World\n0\n", text)
     # Normalize input.lsh
     text = re.sub(r"What's your name\? Hello, !", "ERROR: Program timed out!", text)
-    # Normalize cross-compiler message
+    # Normalize cross-compiler messages
     text = re.sub(r"Using cross-compiler: .+\n?", "", text)
+    text = re.sub(r"Using WSL cross-compiler for '.+' target\n?", "", text)
     # Normalize Wine stack overflow
     text = re.sub(r".*stack overflow.*\n?", "", text)
 
@@ -128,39 +211,41 @@ def normalize_pointers(text):
 
 
 def run_leash(file_path, target=None):
-    """Run a leash file and return its combined output (stdout and stderr)."""
+    """Run a leash file and return its combined output (stdout and stderr).
+
+    Cross targets that use an emulator (win64 via wine) are slower to start,
+    so the timeout is relaxed for those cases.  The function also correctly
+    handles subprocess.TimeoutExpired from subprocess.run (which carries
+    stdout/stderr on the exception, not a child Popen).
+    """
+    # Wine emulation is measurably slower (~1-2 s startup per invocation)
+    timeout = 20 if target == "win64" else 10
     try:
         cmd = LEASH_RUN_CMD + [str(file_path)]
-        if target and target != "linux64":
+        if target:
             cmd += ["--target", target]
         result = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
             cwd=WORKSPACE_DIR,
-            timeout=10,
+            timeout=timeout,
         )
         return result.stdout + result.stderr, result.returncode
     except subprocess.TimeoutExpired as e:
-        if sys.platform != "win32":
-            e.process.send_signal(signal.SIGINT)
-        else:
-            e.process.send_signal(signal.CTRL_BREAK_EVENT)
-        try:
-            e.process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            e.process.kill()
-            e.process.wait()
+        # subprocess.run kills the child on timeout; capture whatever it emitted
         output = ""
-        if e.process.stdout:
-            output += e.process.stdout.read()
-        if e.process.stderr:
-            output += e.process.stderr.read()
-        if e.process.stdout:
-            e.process.stdout.close()
-        if e.process.stderr:
-            e.process.stderr.close()
-        return output, e.process.returncode
+        if getattr(e, "stdout", None):
+            output += e.stdout
+        if getattr(e, "stderr", None):
+            output += e.stderr
+        cur = e.stdout if hasattr(e, "stdout") else None
+        # Fallback for older Python where TimeoutExpired.output holds combined
+        if not output and getattr(e, "output", None):
+            output = e.output if isinstance(e.output, str) else ""
+        if not output:
+            output = f"ERROR: Program timed out after {timeout}s"
+        return output, 124
     except Exception as e:
         return f"ERROR: Running leash failed: {e}", 1
 
@@ -184,6 +269,15 @@ def record_outputs(files, target=None):
     """Record current outputs as the expected baseline."""
     os.makedirs(EXPECTED_DIR, exist_ok=True)
 
+    # Cross-compilation awareness
+    cross_info = describe_cross_mode(target)
+    if cross_info:
+        print(f"[INFO] {cross_info}")
+    ok, reason = check_cross_prerequisites(target)
+    if not ok:
+        print(f"[WARN] Cross toolchain missing for target '{target}': {reason}")
+        print("       Recording anyway — outputs may not be runnable.")
+
     target_label = f" (target: {target})" if target else ""
     print(f"--- Recording expected outputs for {len(files)} files{target_label} ---")
 
@@ -203,6 +297,17 @@ def test_files(files, target=None):
     passed = 0
     failed = 0
     ignored = 0
+
+    # Cross-compilation awareness
+    cross_info = describe_cross_mode(target)
+    if cross_info:
+        print(f"[INFO] {cross_info}")
+    ok, reason = check_cross_prerequisites(target)
+    if not ok:
+        current = get_current_platform()
+        print(f"[SKIP] Cross toolchain missing for target '{target}' on {current}: {reason}")
+        print(f"       Skipping all {len(files)} tests (install the toolchain to enable).")
+        return
 
     target_label = f" (target: {target})" if target else ""
     print(f"--- Testing {len(files)} files{target_label} ---")

@@ -1,6 +1,6 @@
 # Leash Programming Language
 
-**Version 0.23.3 Beta**
+**Version 0.23.4 Beta**
 
 Leash is a strongly-typed, modern compiled programming language built on LLVM. It features an intuitive syntax and native performance with a built-in garbage collector, package manager, and cross-platform support.
 
@@ -41,7 +41,7 @@ python3 -m leash.cli compile hello.lsh
 ```bash
 leash init my_project
 leash build
-leash runp
+leash run
 ```
 
 ## Key Features

@@ -33,7 +33,7 @@ from .ast_nodes import (
     NativeImport,
     Call
 )
-from .targets import get_target, get_native_target, list_targets, TargetConfig
+from .targets import get_target, get_native_target, list_targets, TargetConfig, wsl_available
 from .optimize import optimize_module, parse_opt_level
 from .ast_optimize import optimize_ast
 from .hoist_allocas import hoist_allocas
@@ -1035,28 +1035,24 @@ def _match_symbols_to_libs(symbols, target_name):
     return deps
 
 
-def _link_native(obj_name, output_name, target_config, is_run_mode, output_type, codegen, extra_libs=None):
-    nlib_args = [l[0] for l in codegen.native_libs]
-    if extra_libs: nlib_args.extend([f"-l{l}" for l in extra_libs])
-    cc = os.environ.get("CC") or target_config.detect_cross_linker()
-    if not cc:
-        if os.name == "nt":
-            cc = "gcc" if shutil.which("gcc") else "clang"
-        else:
-            cc = shutil.which("gcc") or shutil.which("clang")
-            if not cc:
-                print("error: No C compiler found (install gcc or clang, or set CC env var)", file=sys.stderr)
-                sys.exit(1)
+def _flatten_cc(cc):
+    """Return a compiler invocation as a flat command list (handles WSL cmds)."""
+    return list(cc) if isinstance(cc, (list, tuple)) else [cc]
+
 
 # Cache compiled runtime stubs to avoid recompiling gc.c + stubs every link
 _runtime_stub_cache = {}
 
-def _get_runtime_stubs(cc, no_gc=False, autofree=False, size_opt=False):
-    """Return list of compiled .o paths for runtime C files, cached by (compiler, mtime).
+def _get_runtime_stubs(cc, target_config, no_gc=False, autofree=False, size_opt=False):
+    """Return list of compiled .o paths for runtime C files, cached by (cc, target, mtime).
 
     Runtime files are compiled with -O2 (or -Os in size mode) plus
     -ffunction-sections/-fdata-sections so the linker's --gc-sections can
     drop unused functions (matrix ops, thread pools, etc.) from the binary.
+
+    The OS-specific stub file is chosen by the *target* platform (not the host),
+    so cross-compiling win64 from Linux uses the Windows stubs and compiling
+    linux64 from Windows (via WSL) uses the POSIX stubs.
     """
     leash_dir = os.path.dirname(os.path.abspath(__file__))
     stub_files = []
@@ -1066,49 +1062,81 @@ def _get_runtime_stubs(cc, no_gc=False, autofree=False, size_opt=False):
     if no_gc or autofree:
         gc_cflags.append("-DNO_GC")
     stub_files.append(("gc.c", gc_cflags))
-    if os.name == "nt":
+    if target_config.name == "win64":
         stub_files.append(("windows_stubs.c", base_cflags))
     else:
         stub_files.append(("cross_compile_stubs.c", base_cflags))
 
+    cc_key = tuple(cc) if isinstance(cc, (list, tuple)) else cc
+    cc_cmd = _flatten_cc(cc)
+    import hashlib
+    cc_tag = hashlib.sha1(repr(cc_key).encode("utf-8")).hexdigest()[:10]
     result = []
     for sfile, cflags in stub_files:
         spath = os.path.join(leash_dir, sfile)
         if not os.path.exists(spath):
             continue
         mtime = os.path.getmtime(spath)
-        key = (cc, sfile, tuple(cflags), mtime)
-        if key not in _runtime_stub_cache:
-            cached_o = os.path.join(leash_dir, f".cached_{os.name}_{sfile}{"_".join(cflags)}.o")
-            key = (os.name, cc, sfile, tuple(cflags), mtime)
-            # Check on-disk cache first, then in-memory
-            if key in _runtime_stub_cache:
-                result.append(_runtime_stub_cache[key])
+        key = (cc_key, target_config.name, sfile, tuple(cflags), mtime)
+        if key in _runtime_stub_cache:
+            result.append(_runtime_stub_cache[key])
+            continue
+        cached_o = os.path.join(
+            leash_dir, f".cached_{target_config.name}_{cc_tag}_{sfile}_{'_'.join(cflags)}.o")
+        if os.path.exists(cached_o):
+            # If the cached .o is older than the source, recompile
+            if os.path.getmtime(cached_o) >= mtime:
+                _runtime_stub_cache[key] = cached_o
+                result.append(cached_o)
                 continue
-            if os.path.exists(cached_o):
-                # Verify mtime matches - if the source has changed, recompile
-                cached_mtime = os.path.getmtime(cached_o)
-                # We can't store the source mtime in the .o file, so use a simple heuristic:
-                # if the .o is older than the source, recompile
-                if cached_mtime >= mtime:
-                    _runtime_stub_cache[key] = cached_o
-                    result.append(cached_o)
-                    continue
-            cmd = [cc, "-c", spath, "-o", cached_o] + cflags
-            res = subprocess.run(cmd,
-                                 stderr=subprocess.PIPE, stdout=subprocess.PIPE)
-            if res.returncode != 0:
-                err = res.stderr.decode("utf-8", errors="replace").strip()
-                print(f"warning: failed to compile {sfile}: {err}", file=sys.stderr)
-                continue
-            _runtime_stub_cache[key] = cached_o
-            result.append(cached_o)
+        cmd = cc_cmd + ["-c", spath, "-o", cached_o] + cflags
+        res = subprocess.run(cmd,
+                             stderr=subprocess.PIPE, stdout=subprocess.PIPE)
+        if res.returncode != 0:
+            err = res.stderr.decode("utf-8", errors="replace").strip()
+            print(f"warning: failed to compile {sfile}: {err}", file=sys.stderr)
+            continue
+        _runtime_stub_cache[key] = cached_o
+        result.append(cached_o)
     return result
+
+
+def _win_to_wsl_path(path):
+    """Convert a Windows path to the corresponding WSL path (e.g. C:\\x -> /mnt/c/x)."""
+    path_abs = os.path.abspath(path)
+    try:
+        res = subprocess.run(
+            ["wsl", "wslpath", "-a", path_abs],
+            capture_output=True, text=True, timeout=30)
+        if res.returncode == 0 and res.stdout.strip():
+            return res.stdout.strip()
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        pass
+    p = path_abs.replace("\\", "/")
+    if len(p) >= 2 and p[1] == ":":
+        drive = p[0].lower()
+        return "/mnt/" + drive + p[2:]
+    return p
+
 
 def _link_native(obj_name, output_name, target_config, is_run_mode, output_type, codegen, extra_libs=None, no_gc=False, autofree=False, size_opt=False, static=False):
     nlib_args = [l[0] for l in codegen.native_libs]
     if extra_libs: nlib_args.extend([f"-l{l}" for l in extra_libs])
-    cc = os.environ.get("CC") or target_config.detect_cross_linker()
+    cc = os.environ.get("CC")
+    if not cc:
+        if target_config.uses_wsl():
+            # Linux target from a Windows host: link through WSL.
+            if not wsl_available():
+                print("error: Cross-compiling to Linux on Windows requires WSL with a C compiler.", file=sys.stderr)
+                print("  Install WSL (wsl --install) and run: sudo apt install gcc", file=sys.stderr)
+                sys.exit(1)
+            cc = ["wsl", "gcc"]
+            if not is_run_mode:
+                print(f"Using WSL cross-compiler for '{target_config.name}' target", file=sys.stderr)
+        else:
+            cc = target_config.detect_cross_linker()
+            if cc and not is_run_mode:
+                print(f"Using cross-compiler: {cc}", file=sys.stderr)
     if not cc:
         if os.name == "nt":
             cc = "gcc" if shutil.which("gcc") else "clang"
@@ -1124,23 +1152,40 @@ def _link_native(obj_name, output_name, target_config, is_run_mode, output_type,
             print("error: --static is only supported for linux64/linux32 targets", file=sys.stderr)
             sys.exit(1)
         if not os.environ.get("CC"):
-            musl_cc = shutil.which("musl-gcc") or shutil.which("musl-clang")
-            if musl_cc:
-                cc = musl_cc
-            elif shutil.which("clang"):
-                cc = "clang"
-                arch = target_config.llvm_triple.split("-")[0]
-                static_flags.append(f"--target={arch}-linux-musl")
+            if isinstance(cc, list) and cc[0] == "wsl":
+                # Probe for a musl toolchain inside the WSL distro.
+                def _wsl_which(name):
+                    r = subprocess.run(cc + ["which", name], capture_output=True, text=True)
+                    return r.returncode == 0 and bool(r.stdout.strip())
+                if _wsl_which("musl-gcc"):
+                    cc = ["wsl", "musl-gcc"]
+                elif _wsl_which("musl-clang"):
+                    cc = ["wsl", "musl-clang"]
+                elif _wsl_which("clang"):
+                    cc = ["wsl", "clang"]
+                    arch = target_config.llvm_triple.split("-")[0]
+                    static_flags.append(f"--target={arch}-linux-musl")
+                else:
+                    print("error: --static requires musl-gcc, musl-clang, or clang installed inside WSL", file=sys.stderr)
+                    sys.exit(1)
             else:
-                print("error: --static requires musl-gcc, musl-clang, or clang (with musl target support)", file=sys.stderr)
-                sys.exit(1)
+                musl_cc = shutil.which("musl-gcc") or shutil.which("musl-clang")
+                if musl_cc:
+                    cc = musl_cc
+                elif shutil.which("clang"):
+                    cc = "clang"
+                    arch = target_config.llvm_triple.split("-")[0]
+                    static_flags.append(f"--target={arch}-linux-musl")
+                else:
+                    print("error: --static requires musl-gcc, musl-clang, or clang (with musl target support)", file=sys.stderr)
+                    sys.exit(1)
         static_flags.append("-static")
 
     size_flags = list(target_config.size_flags)
     if size_opt:
         size_flags.extend(target_config.size_only_flags)
 
-    stubs = _get_runtime_stubs(cc, no_gc=no_gc, autofree=autofree, size_opt=size_opt)
+    stubs = _get_runtime_stubs(cc, target_config, no_gc=no_gc, autofree=autofree, size_opt=size_opt)
 
     out = None
     retried = False
@@ -1148,12 +1193,12 @@ def _link_native(obj_name, output_name, target_config, is_run_mode, output_type,
         try:
             if output_type == "executable":
                 out = target_config.get_output_name(output_name)
-                result = subprocess.run([cc, obj_name] + stubs + ["-o", out] + target_config.linker_flags + size_flags + static_flags + nlib_args, stderr=subprocess.PIPE)
+                result = subprocess.run(_flatten_cc(cc) + [obj_name] + stubs + ["-o", out] + target_config.linker_flags + size_flags + static_flags + nlib_args, stderr=subprocess.PIPE)
                 if result.returncode != 0:
                     raise subprocess.CalledProcessError(result.returncode, result.args, stderr=result.stderr)
             elif output_type == "dynamic":
                 out = output_name + (".dll" if os.name == "nt" else ".so")
-                subprocess.run([cc, "-shared", obj_name, "-o", out, "-fPIC"] + nlib_args, stderr=subprocess.PIPE, check=True)
+                subprocess.run(_flatten_cc(cc) + ["-shared", obj_name, "-o", out, "-fPIC"] + nlib_args, stderr=subprocess.PIPE, check=True)
             elif output_type == "static":
                 out = output_name + (".lib" if os.name == "nt" else ".a")
                 subprocess.run(["ar", "rcs", out, obj_name], check=True)
@@ -1237,6 +1282,16 @@ def run_file(input_file, args=[], target_name=None, check_mode=False, warnings_a
         if res.returncode != 0:
             print("error: Cannot run Win64 binary on non-Windows without wine"); sys.exit(1)
         cmd = ["wine", out] + args
+    elif tcfg.name in ("linux64", "linux32") and sys_name == "windows":
+        # Linux target on a Windows host: run through WSL.
+        if not wsl_available():
+            print("error: Cannot run Linux binary on Windows without WSL"); sys.exit(1)
+        out_wsl = _win_to_wsl_path(out_abs)
+        try:
+            subprocess.run(["wsl", "chmod", "+x", out_wsl], capture_output=True, timeout=30)
+        except OSError:
+            pass
+        cmd = ["wsl", out_wsl] + args
     elif tcfg.name in ("macos", "macos-arm") and sys_name != "darwin":
         print("error: Cannot run macOS binary on non-macOS"); sys.exit(1)
     proc = None
@@ -1384,7 +1439,7 @@ def update_leash():
     import json
     
     print("Leash Update Checker")
-    print("Current version: 0.23.3 Beta\n")
+    print("Current version: 0.23.4 Beta\n")
     
     try:
         req = urllib.request.Request(
@@ -1410,7 +1465,7 @@ def update_leash():
         print("Update failed.")
 
 
-VERSION_STRING = "v0.23.3 Beta"
+VERSION_STRING = "v0.23.4 Beta"
 
 MAIN_HELP = f"""Leash {VERSION_STRING} - LLVM-powered compiled programming language
 
@@ -1419,24 +1474,32 @@ Usage:
 
 Commands:
   compile <file.lsh>    Compile to an executable binary
-  run <file.lsh>        Compile and immediately execute
+  run [<file.lsh>]      Compile and immediately execute (file or project)
   dump <file.lsh>       Dump generated LLVM IR instead of linking
   check <file.lsh>      Type-check only; report errors and warnings
   init [dir]            Scaffold a new Leash project (default: .)
   build                 Compile the project described by config.lshc
-  runp                  Build and run the project described by config.lshc
   install <path>...     Install libraries into ~/.leash/libs/
   update                Check for updates and pull the latest source
   help [command]        Show help, optionally for one command
 
 Global Options:
-  --verbose / -vb                     Highly detailed error and warning explanations
-  --optimization-verbosity / -ov      Show optimization pass details
-  --autofree / -af                    Smart auto-free mode (tracks allocations, frees on scope exit; no GC needed)
-  --version / -v                      Print version information
-  --help / -h                         Show this help, or 'leash help <command>' for details
+  --target <target>                Cross-compile target: linux64, linux32, win64, macos, macos-arm
+  --check                          Type-check only, do not produce output
+  --warnings-as-errors             Treat warnings as errors
+  --opt <level> / -O<level>        Optimization level: 0, 1, 2, 3, 4, s (size), z (aggressive size)
+  -l<lib>                          Link a native library (repeatable), e.g. -lraylib
+  --other-imports / -oi <folder>   Extra module search directory (repeatable)
+  --no-garbage-collector / -ngc    Disable garbage collector (use C malloc/free everywhere)
+  --autofree / -af                 Smart auto-free mode (tracks allocations, frees on scope exit; no GC needed)
+  --static / -static               Fully-static musl-linked binary (linux64/linux32 only)
+  --verbose / -vb                  Highly detailed error and warning explanations
+  --optimization-verbosity / -ov   Show optimization pass details
+  --version / -v                   Print version information
+  --help / -h                      Show this help, or 'leash help <command>' for details
 
-Run 'leash <command> --help' for command-specific options."""
+Run 'leash <command> --help' for command-specific options.
+Note: 'runp' is deprecated -- use 'leash run' without a file to run the current project."""
 
 _SHARED_COMPILE_OPTIONS = """  --target <target>                Cross-compile target: linux64, linux32, win64, macos, macos-arm
   --check                          Type-check only, do not produce output
@@ -1463,16 +1526,32 @@ Output options:
 
 Options:
 {_SHARED_COMPILE_OPTIONS}""",
-    "run": f"""Compile a Leash source file and immediately execute it.
+    "run": f"""Compile and immediately execute a Leash program (file or project).
 
 Usage:
-  leash run <file.lsh> [options] [-- program-args]
+  leash run [<file.lsh>] [options] [-- program-args]
 
-Any arguments after '--' (and any unrecognized trailing arguments) are
-passed through to the running program.
+  With <file.lsh>: compile and run that file (file mode).
+    Any arguments after '--' are passed to the program.
 
-Options:
-{_SHARED_COMPILE_OPTIONS}""",
+  Without <file.lsh>: run the project described by config.lshc
+    in the current directory (project mode, same as deprecated 'runp').
+    Project options are read from config.lshc.
+
+File mode options:
+{_SHARED_COMPILE_OPTIONS}
+
+Project mode options:
+  --other-imports / -oi <folder>   Extra module search directory (repeatable)
+
+Arguments after '--' are passed through to the running program.
+
+Examples:
+  leash run program.lsh
+  leash run program.lsh -- arg1 arg2
+  leash run                        # run project (config.lshc)
+  leash run -- arg1 arg2           # run project with args
+  leash run --other-imports mylibs/ -- arg1""",
     "dump": f"""Compile a Leash source file and dump the generated LLVM IR
 instead of producing a linked binary.
 
@@ -1508,6 +1587,9 @@ Options:
 
 Usage:
   leash runp [options] [-- program-args]
+
+Deprecated: use 'leash run' without a file argument instead.
+This alias will be removed in a future version.
 
 Options:
   --other-imports / -oi <folder>   Extra module search directory (repeatable)
@@ -1623,25 +1705,137 @@ def main():
         build_project(extra_import_dirs)
         sys.exit(0)
     if cmd == "runp":
+        print("warning: 'runp' is deprecated; use 'leash run' without a file instead", file=sys.stderr)
         extra_import_dirs = []
         prog_args = []
-        i = 2
-        found_sep = False
-        while i < len(sys.argv):
-            if sys.argv[i] == "--":
-                found_sep = True
-                i += 1
-                break
-            if sys.argv[i] in ("--other-imports", "-oi") and i + 1 < len(sys.argv):
-                extra_import_dirs.append(os.path.abspath(sys.argv[i + 1]))
-                i += 2
-            else:
-                i += 1
-        if found_sep:
-            prog_args = sys.argv[i:]
+        if "--" in sys.argv:
+            sep = sys.argv.index("--")
+            opts = sys.argv[2:sep]
+            prog_args = sys.argv[sep + 1:]
+            i = 0
+            while i < len(opts):
+                if opts[i] in ("--other-imports", "-oi") and i + 1 < len(opts):
+                    extra_import_dirs.append(os.path.abspath(opts[i + 1]))
+                    i += 2
+                else:
+                    i += 1
+        else:
+            i = 2
+            while i < len(sys.argv):
+                if sys.argv[i] in ("--other-imports", "-oi") and i + 1 < len(sys.argv):
+                    extra_import_dirs.append(os.path.abspath(sys.argv[i + 1]))
+                    i += 2
+                else:
+                    i += 1
         run_project(prog_args, extra_import_dirs)
         sys.exit(0)
-    if cmd in ("compile", "run", "dump"):
+    if cmd == "run":
+        # Merged: 'leash run [<file.lsh>]' -- file mode if a file is given, otherwise project mode
+        if len(sys.argv) < 3:
+            # No file -> project mode (like old runp)
+            run_project([], [])
+            sys.exit(0)
+        first = sys.argv[2]
+        # 'run --help' already handled above, but keep for safety
+        if first in ("-h", "--help", "help"):
+            print(COMMAND_HELP["run"])
+            sys.exit(0)
+        is_project = False
+        if first == "--":
+            is_project = True
+        elif first.startswith("-"):
+            is_project = True
+        elif first.endswith(".lsh") or os.path.isfile(first):
+            is_project = False
+        else:
+            # Heuristic: if config.lshc exists in cwd, treat bare non-file arg as project invocation
+            if os.path.exists(os.path.join(os.getcwd(), "config.lshc")):
+                is_project = True
+            else:
+                is_project = False
+        if is_project:
+            extra_import_dirs = []
+            prog_args = []
+            try:
+                sep_idx = sys.argv.index("--", 2)
+                opts_part = sys.argv[2:sep_idx]
+                prog_args = sys.argv[sep_idx + 1:]
+            except ValueError:
+                opts_part = sys.argv[2:]
+                prog_args = []
+            i = 0
+            while i < len(opts_part):
+                if opts_part[i] in ("--other-imports", "-oi") and i + 1 < len(opts_part):
+                    extra_import_dirs.append(os.path.abspath(opts_part[i + 1]))
+                    i += 2
+                else:
+                    i += 1
+            run_project(prog_args, extra_import_dirs)
+            sys.exit(0)
+        # File mode
+        infile = sys.argv[2]
+        if "--" in sys.argv:
+            sep_idx = sys.argv.index("--", 3)
+            compile_argv = sys.argv[3:sep_idx]
+            prog_args = sys.argv[sep_idx + 1:]
+        else:
+            compile_argv = sys.argv[3:]
+            prog_args = []
+        target, outname, outtype, check, warnerr, elibs, opt = None, None, "executable", False, False, [], "2"
+        no_gc = False
+        autofree = False
+        static = False
+        extra_import_dirs = []
+        i = 0
+        while i < len(compile_argv):
+            arg = compile_argv[i]
+            if arg == "--target" and i + 1 < len(compile_argv):
+                target = compile_argv[i + 1]
+                i += 2
+            elif arg == "--check":
+                check = True
+                i += 1
+            elif arg == "--warnings-as-errors":
+                warnerr = True
+                i += 1
+            elif arg in ("--static", "-static"):
+                static = True
+                i += 1
+            elif arg.startswith("-O") and len(arg) > 2:
+                opt = arg[2:]
+                i += 1
+            elif arg.startswith("--opt="):
+                opt = arg[6:]
+                i += 1
+            elif (arg == "--opt" or arg == "-O") and i + 1 < len(compile_argv):
+                opt = compile_argv[i + 1]
+                i += 2
+            elif arg.startswith("-l"):
+                elibs.append(arg[2:])
+                i += 1
+            elif arg == "to" and i + 1 < len(compile_argv):
+                outname = compile_argv[i + 1]
+                i += 2
+            elif arg == "to-dynamic":
+                outtype = "dynamic"
+                i += 1
+            elif arg == "to-static":
+                outtype = "static"
+                i += 1
+            elif arg in ("--other-imports", "-oi") and i + 1 < len(compile_argv):
+                extra_import_dirs.append(os.path.abspath(compile_argv[i + 1]))
+                i += 2
+            elif arg in ("--no-garbage-collector", "-ngc"):
+                no_gc = True
+                i += 1
+            elif arg in ("--autofree", "-af"):
+                autofree = True
+                i += 1
+            else:
+                i += 1
+        run_file(infile, prog_args, target, check, warnerr, elibs, opt, extra_import_dirs=extra_import_dirs, opt_verbose=OPT_VERBOSE_MODE, no_gc=no_gc, autofree=autofree, static=static)
+        sys.exit(0)
+    if cmd in ("compile", "dump"):
         if len(sys.argv) < 3:
             print(COMMAND_HELP[cmd])
             sys.exit(1)
@@ -1697,9 +1891,7 @@ def main():
                 i += 1
             else:
                 i += 1
-        if cmd == "run":
-            run_file(infile, sys.argv[i:], target, check, warnerr, elibs, opt, extra_import_dirs=extra_import_dirs, opt_verbose=OPT_VERBOSE_MODE, no_gc=no_gc, autofree=autofree, static=static)
-        elif cmd == "dump":
+        if cmd == "dump":
             dump_file(infile, outname, target, check, warnerr, elibs, opt, extra_import_dirs=extra_import_dirs, opt_verbose=OPT_VERBOSE_MODE, no_gc=no_gc, autofree=autofree)
         else:
             compile_file(infile, outname, outtype, False, target, check, warnerr, elibs, opt, extra_import_dirs=extra_import_dirs, opt_verbose=OPT_VERBOSE_MODE, no_gc=no_gc, autofree=autofree, static=static)

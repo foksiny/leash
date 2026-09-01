@@ -4,6 +4,29 @@ import platform
 import os
 
 
+def wsl_available():
+    """Return True if Windows Subsystem for Linux (WSL) is installed and usable.
+
+    WSL is required to build and run Linux targets from a Windows host when no
+    Linux cross-compiler is installed.
+    """
+    if os.name != "nt":
+        return False
+    import shutil
+    import subprocess
+
+    if not shutil.which("wsl"):
+        return False
+    try:
+        res = subprocess.run(["wsl", "-l", "-q"], capture_output=True, text=True, timeout=15)
+        if res.returncode == 0:
+            return True
+        res = subprocess.run(["wsl", "--status"], capture_output=True, text=True, timeout=15)
+        return res.returncode == 0
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+
+
 class TargetConfig:
     """Configuration for a compilation target."""
 
@@ -54,9 +77,17 @@ class TargetConfig:
         cmd.extend(native_libs)
         return cmd
 
+    def uses_wsl(self):
+        """Return True if this target must be built/run through WSL on Windows."""
+        return os.name == "nt" and self.name in ("linux64", "linux32")
+
     def detect_cross_linker(self):
         """Try to detect an appropriate cross-compiler for this target."""
         if self.name == "win64" and os.name == "nt":
+            return None
+        # Linux targets on a Windows host are built through WSL (there is no
+        # usable native Linux cross-toolchain), so no cross-compiler name.
+        if self.uses_wsl():
             return None
 
         cross_compilers = {
@@ -149,6 +180,11 @@ def get_target(name):
     return TARGETS[name]
 
 
+def get_native_target_name():
+    """Detect the native target name without constructing a full config."""
+    return get_native_target().name
+
+
 def get_native_target():
     """Detect the native target."""
     system = platform.system().lower()
@@ -177,3 +213,8 @@ def list_targets():
     for name, config in TARGETS.items():
         result.append((name, config.description))
     return result
+
+
+def needs_cross_compile(target_name):
+    """Return True if `target_name` differs from the native host target."""
+    return target_name != get_native_target_name()

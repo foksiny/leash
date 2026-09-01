@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v0.23.3 Beta</div>
+        <div class="version">v0.23.4 Beta</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -54,12 +54,11 @@
 <table>
     <tr><th>Command</th><th>Description</th></tr>
     <tr><td><code>leash compile &lt;file&gt;</code></td><td>Compile to a native executable</td></tr>
-    <tr><td><code>leash run &lt;file&gt;</code></td><td>Run directly without creating a binary</td></tr>
+    <tr><td><code>leash run [&lt;file&gt;]</code></td><td>Run file or project (without file, runs <code>config.lshc</code> project)</td></tr>
     <tr><td><code>leash dump &lt;file&gt;</code></td><td>Dump LLVM IR to a <code>.ll</code> file</td></tr>
     <tr><td><code>leash check &lt;file&gt;</code></td><td>Static analysis without compiling</td></tr>
     <tr><td><code>leash init [dir]</code></td><td>Scaffold a new project</td></tr>
     <tr><td><code>leash build</code></td><td>Build project from <code>config.lshc</code></td></tr>
-    <tr><td><code>leash runp</code></td><td>Compile and run project from <code>config.lshc</code></td></tr>
     <tr><td><code>leash install &lt;path&gt;</code></td><td>Install library to <code>~/.leash/libs/</code></td></tr>
     <tr><td><code>leash update</code></td><td>Update Leash to the latest version</td></tr>
 </table>
