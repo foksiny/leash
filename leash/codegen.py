@@ -3227,10 +3227,37 @@ class CodeGen:
     def _union_auto_store(self, union_ptr, val, union_info, node=None):
         """Store a value into a union, auto-detecting the matching variant by LLVM type."""
         matched_idx = None
-        for vname, vdata in union_info["variants"].items():
-            if vdata["llvm_type"] == val.type:
-                matched_idx = vdata["index"]
-                break
+
+        # Prefer a variant whose Leash type name matches the source value's own
+        # type name. Two variants can share an identical LLVM layout (int and uint
+        # are both 32-bit), so matching on LLVM type alone would silently tag the
+        # first such variant and change the union's `.cur` semantics / signedness.
+        src_type = None
+        src_value_node = getattr(node, "value", None) if node is not None else None
+        if src_value_node is not None:
+            try:
+                src_type = self._get_leash_type_name(src_value_node)
+            except Exception:
+                src_type = None
+        if src_type:
+            try:
+                src_base = self._resolve_type_name(src_type)
+            except Exception:
+                src_base = None
+            if src_base:
+                for vname, vdata in union_info["variants"].items():
+                    vbase = self._resolve_type_name(vdata["type_name"])
+                    if vbase == src_base:
+                        val = self._emit_cast(val, vdata["llvm_type"])
+                        matched_idx = vdata["index"]
+                        break
+
+        # Fallback: exact LLVM type match
+        if matched_idx is None:
+            for vname, vdata in union_info["variants"].items():
+                if vdata["llvm_type"] == val.type:
+                    matched_idx = vdata["index"]
+                    break
         # Fallback: try to match int types by checking if both are IntType
         if matched_idx is None:
             for vname, vdata in union_info["variants"].items():
@@ -3873,7 +3900,15 @@ class CodeGen:
         is_buffer = getattr(node, "is_buffer", False)
 
         if is_buffer:
-            self._show_buffer(node.args)
+            # showb: buffer each arg. Union args must be dispatched at runtime
+            # so whichever variant is currently active prints in the right
+            # format/size, just like any other value.
+            for arg_node in node.args:
+                union_name = self._get_union_type_for_node(arg_node)
+                if union_name:
+                    self._union_show_dispatch(arg_node, union_name, emit_to_buffer=True)
+                else:
+                    self._show_buffer([arg_node])
             return
 
         end = getattr(node, "end", "\n")
@@ -3889,33 +3924,7 @@ class CodeGen:
         for i, arg_node in enumerate(node.args):
             union_name = self._get_union_type_for_node(arg_node)
             if union_name:
-                union_info = self.union_symtab[union_name]
-
-                if isinstance(arg_node, Identifier):
-                    ptr = self.var_symtab[arg_node.name][0]
-                elif (
-                    isinstance(arg_node, MemberAccess)
-                    and arg_node.member == "cur"
-                    and isinstance(arg_node.expr, Identifier)
-                ):
-                    ptr = self.var_symtab[arg_node.expr.name][0]
-                else:
-                    self._show_standard([arg_node], end="")
-                    continue
-
-                tag_ptr = self.builder.gep(
-                    ptr,
-                    [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)],
-                    inbounds=True,
-                )
-                tag_val = self.builder.load(tag_ptr)
-                data_ptr = self.builder.gep(
-                    ptr,
-                    [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)],
-                    inbounds=True,
-                )
-
-                self._union_show_branched(tag_val, data_ptr, union_info)
+                self._union_show_dispatch(arg_node, union_name, emit_to_buffer=False)
             else:
                 self._show_standard([arg_node], end="")
 
@@ -3976,8 +3985,47 @@ class CodeGen:
         ptr = self.builder.bitcast(g, ir.IntType(8).as_pointer())
         self.builder.call(self.printf, [ptr] + args)
 
-    def _union_show_branched(self, tag_val, data_ptr, union_info):
-        """Print the current union value by branching on the tag and calling printf per variant."""
+    def _union_show_dispatch(self, arg_node, union_name, emit_to_buffer):
+        """Print a union variable's *current* value with the correct format and
+        width for whichever variant is active at runtime, unifying show/showb.
+
+        The union's layout is { iN tag, [max_size x i8] }. We branch on the tag
+        and, for each possibility, bitcast the data region to the variant's type
+        and format it through the shared display-string path. ``emit_to_buffer``
+        routes the result into the showb buffer (for showb), otherwise it is
+        printed immediately (for show)."""
+        from .ast_nodes import Identifier, MemberAccess
+
+        union_info = self.union_symtab[union_name]
+
+        if isinstance(arg_node, Identifier):
+            ptr = self.var_symtab[arg_node.name][0]
+        elif (
+            isinstance(arg_node, MemberAccess)
+            and arg_node.member == "cur"
+            and isinstance(arg_node.expr, Identifier)
+        ):
+            ptr = self.var_symtab[arg_node.expr.name][0]
+        else:
+            # Not a plain union variable / `.cur`: fall back to generic handling.
+            if emit_to_buffer:
+                self._show_buffer([arg_node])
+            else:
+                self._show_standard([arg_node], end="")
+            return
+
+        tag_ptr = self.builder.gep(
+            ptr,
+            [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)],
+            inbounds=True,
+        )
+        tag_val = self.builder.load(tag_ptr)
+        data_ptr = self.builder.gep(
+            ptr,
+            [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 1)],
+            inbounds=True,
+        )
+
         variants = list(union_info["variants"].items())
         merge_bb = self.builder.function.append_basic_block("union_show_merge")
 
@@ -3986,10 +4034,11 @@ class CodeGen:
             bb = self.builder.function.append_basic_block(f"union_show_{vname}")
             var_bbs.append(bb)
 
-        # Build if-else chain
+        # Build if-else chain on the tag (match the tag's own integer width).
         for i, (vname, vdata) in enumerate(variants[:-1]):
+            tag_ty = tag_val.type
             cmp = self.builder.icmp_signed(
-                "==", tag_val, ir.Constant(ir.IntType(64), vdata["index"])
+                "==", tag_val, ir.Constant(tag_ty, vdata["index"])
             )
             next_check = self.builder.function.append_basic_block(
                 f"union_show_check_{i + 1}"
@@ -3998,75 +4047,21 @@ class CodeGen:
             self.builder.position_at_end(next_check)
         self.builder.branch(var_bbs[-1])
 
-        # In each variant BB, printf the loaded value with appropriate format
+        # Each variant: load the typed value and emit its display string.
         for i, (vname, vdata) in enumerate(variants):
             self.builder.position_at_end(var_bbs[i])
             typed_ptr = self.builder.bitcast(data_ptr, vdata["llvm_type"].as_pointer())
             loaded = self.builder.load(typed_ptr, align=1)
 
-            # Determine format
-            fmt, val = self._format_value(loaded, vdata.get("type_name"))
-            fmt_bytes = bytearray(fmt.encode("utf8") + b"\0")
-            c_fmt = ir.Constant(ir.ArrayType(ir.IntType(8), len(fmt_bytes)), fmt_bytes)
-            g_fmt = ir.GlobalVariable(
-                self.module, c_fmt.type, name=self.module.get_unique_name("ufmt")
-            )
-            g_fmt.linkage = "internal"
-            g_fmt.global_constant = True
-            g_fmt.initializer = c_fmt
-            fmt_ptr = self.builder.bitcast(g_fmt, ir.IntType(8).as_pointer())
-            self.builder.call(self.printf, [fmt_ptr, val])
+            resolved_vtype = self._resolve_type_name(vdata.get("type_name"))
+            str_val = self._value_to_display_string(loaded, resolved_vtype)
+            if emit_to_buffer:
+                self.builder.call(self.showb_append_str_fn, [str_val])
+            else:
+                self._emit_printf_or_puts("%s", [str_val])
             self.builder.branch(merge_bb)
 
         self.builder.position_at_end(merge_bb)
-
-    def _format_value(self, val, type_name=None):
-        """Return (format_str, possibly_cast_val) for a single value."""
-        is_unsigned = self._is_uint_type_name(type_name)
-        if isinstance(val.type, ir.IntType):
-            width = val.type.width
-            if width == 1:
-                true_str = self._emit_const_str("true")
-                false_str = self._emit_const_str("false")
-                casted = self.builder.select(val, true_str, false_str)
-                return ("%s", casted)
-            if width == 8 and type_name == "char":
-                return ("%c", val)
-            if width > 64:
-                return ("%s", self._emit_wide_int_string(val, type_name))
-            if width <= 32:
-                if width < 32:
-                    casted = (
-                        self.builder.zext(val, ir.IntType(32))
-                        if (is_unsigned or type_name == "bool")
-                        else self.builder.sext(val, ir.IntType(32))
-                    )
-                else:
-                    casted = val
-                return ("%d", casted)
-            elif width == 64:
-                return ("%llu", val) if is_unsigned else ("%lld", val)
-            else:
-                # 33..63-bit ints
-                if is_unsigned:
-                    casted = (
-                        self.builder.zext(val, ir.IntType(64))
-                        if width < 64
-                        else val
-                    )
-                    return ("%llu", casted)
-                casted = (
-                    self.builder.sext(val, ir.IntType(64)) if width < 64 else val
-                )
-                return ("%lld", casted)
-        elif isinstance(val.type, (ir.HalfType, ir.FloatType)):
-            val = self.builder.fpext(val, ir.DoubleType())
-            return ("%f", val)
-        elif isinstance(val.type, ir.DoubleType):
-            return ("%f", val)
-        elif isinstance(val.type, ir.PointerType):
-            return ("%s", val)
-        return ("%s", val)
 
     def _show_standard(self, arg_nodes, end="\n"):
         """Standard show() implementation for non-union args."""
@@ -4159,13 +4154,19 @@ class CodeGen:
                     args.append(self._emit_wide_int_string(val, arg_type))
                     continue
                 elif width <= 32:
-                    if width < 32:
-                        # Use zext for unsigned and bool types, sext for signed
-                        if is_unsigned or arg_type == "bool":
-                            val = self.builder.zext(val, ir.IntType(32))
-                        else:
+                    # Zero-extend unsigned values to 64 bits and print with
+                    # %llu: %d on a full 32-bit unsigned value (e.g. uint =
+                    # 0xFFFFFFFF) would print it as its signed -1 (and char is
+                    # handled above). Narrow unsigned values (<32 bits) are
+                    # non-negative, so %d after zext is fine, but %llu is
+                    # equally correct and uniform.
+                    if is_unsigned or arg_type == "bool":
+                        val = self.builder.zext(val, ir.IntType(64))
+                        format_str += "%llu"
+                    else:
+                        if width < 32:
                             val = self.builder.sext(val, ir.IntType(32))
-                    format_str += "%d"
+                        format_str += "%d"
                 elif width == 64:
                     format_str += "%llu" if is_unsigned else "%lld"
                 elif width > 32:
@@ -9532,8 +9533,6 @@ class CodeGen:
         else:
             common_type = ir.IntType(64)
 
-        merge_bb = self.builder.function.append_basic_block("union_cur_merge")
-
         var_bbs = []
         for vname, vdata in variants:
             bb = self.builder.function.append_basic_block(f"union_cur_{vname}")
@@ -9552,6 +9551,12 @@ class CodeGen:
 
         # Default: last variant
         self.builder.branch(var_bbs[-1])
+
+        # The merge block must be created LAST so it is emitted after the
+        # variant blocks above: the phi that materialises the selected variant
+        # references the loads inside those blocks, and LLVM's textual parser
+        # rejects a phi whose operands are defined after it in the text.
+        merge_bb = self.builder.function.append_basic_block("union_cur_merge")
 
         # In each variant BB: load, convert to common type, branch to merge
         incoming = []
@@ -9604,9 +9609,35 @@ class CodeGen:
         elif src_is_ptr and dst_is_ptr:
             return self.builder.bitcast(val, dst)
         elif src_is_int and dst_is_ptr:
+            # Nudge the integer to pointer width before inttoptr (the source
+            # may be i1/i8/i32 for bool/char/small-int variants).
+            if src.width < 64:
+                val = self.builder.zext(val, ir.IntType(64))
+            elif src.width > 64:
+                val = self.builder.trunc(val, ir.IntType(64))
             return self.builder.inttoptr(val, dst)
         elif src_is_ptr and dst_is_int:
-            return self.builder.ptrtoint(val, dst)
+            int_val = self.builder.ptrtoint(val, ir.IntType(64))
+            if dst.width < 64:
+                return self.builder.trunc(int_val, dst)
+            elif dst.width > 64:
+                return self.builder.zext(int_val, dst)
+            return int_val
+        elif src_is_float and dst_is_ptr:
+            # float/double -> pointer: bitcast through pointer-width int, then
+            # inttoptr. Only reachable for mixed unions where one variant is a
+            # pointer; the resulting pointer is used at the call site (often
+            # only discarded, e.g. a bare `u.cur;`).
+            if not isinstance(src, ir.DoubleType):
+                val = self.builder.fpext(val, ir.DoubleType())
+            as_int = self.builder.bitcast(val, ir.IntType(64))
+            return self.builder.inttoptr(as_int, dst)
+        elif src_is_ptr and dst_is_float:
+            as_int = self.builder.ptrtoint(val, ir.IntType(64))
+            as_float = self.builder.bitcast(as_int, ir.DoubleType())
+            if not isinstance(dst, ir.DoubleType):
+                return self.builder.fptrunc(as_float, dst)
+            return as_float
 
         return val
 

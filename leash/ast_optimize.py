@@ -826,6 +826,54 @@ def _is_constant_literal(node):
                             BoolLiteral, CharLiteral, NullLiteral))
 
 
+def _collect_union_and_alias_info(node):
+    """Return ``(union_typenames, type_aliases)`` discovered in the program.
+
+    Constant propagation must never inline a union-typed variable: unions carry
+    a runtime tag and special member semantics (``.cur``, variant access,
+    address-of), all of which break if the variable is replaced by its initial
+    scalar literal (e.g. ``u: Value = 1.5; show(u.cur)`` would be folded into
+    ``show(1.5.cur)``)."""
+    union_names = set()
+    aliases = {}
+
+    def walk(n):
+        if n is None or isinstance(n, (str, int, float, bool)):
+            return
+        if isinstance(n, (list, tuple)):
+            for item in n:
+                walk(item)
+            return
+        if not hasattr(n, "__dict__"):
+            return
+        if isinstance(n, UnionDef):
+            union_names.add(n.name)
+        elif isinstance(n, TypeAlias):
+            aliases[n.name] = n.target_type
+        for a in vars(n):
+            attr = getattr(n, a)
+            if isinstance(attr, (list, tuple)):
+                for item in attr:
+                    walk(item)
+            elif hasattr(attr, "__dict__") and not isinstance(attr, (str, int, float, bool)):
+                walk(attr)
+
+    walk(node)
+    return union_names, aliases
+
+
+def _resolves_to_union(type_name, union_names, aliases):
+    """Return True if *type_name* names a union, chasing type aliases."""
+    if not type_name:
+        return False
+    base = type_name.strip().split("[")[0].strip()
+    seen = set()
+    while base in aliases and base not in seen:
+        seen.add(base)
+        base = aliases[base].strip().split("[")[0].strip()
+    return base in union_names
+
+
 def _collect_all_modified_vars(node):
     """Return a set of variable names that are ever assigned to / mutated."""
     modified = set()
@@ -896,6 +944,7 @@ def _constant_propagation(program):
     visible inside the block.
     """
     modified_vars = _collect_all_modified_vars(program)
+    union_names, type_aliases = _collect_union_and_alias_info(program)
 
     # candidates: (name, scope) -> value
     #   scope = None             → global (GlobalVarDecl)
@@ -914,12 +963,19 @@ def _constant_propagation(program):
         nonlocal _cp_scope, _cp_with
         if isinstance(n, VariableDecl) and n.value is not None:
             if n.name not in modified_vars and _is_constant_literal(n.value):
+                # Never fold union-typed variables: they carry a runtime tag and
+                # `.cur`/variant/address-of semantics that a scalar literal can't
+                # reproduce (folding `u.cur` into `1.5.cur` is invalid code).
+                if _resolves_to_union(getattr(n, "var_type", None), union_names, type_aliases):
+                    return
                 scope = _cp_with if _cp_with is not None else _cp_scope
                 # Keep the declared type so later stages (codegen) keep
                 # signedness/width information (e.g. uint<128>).
                 candidates[(n.name, scope)] = (n.value, getattr(n, "var_type", None))
         elif isinstance(n, GlobalVarDecl) and n.value is not None:
             if n.name not in modified_vars and _is_constant_literal(n.value):
+                if _resolves_to_union(getattr(n, "var_type", None), union_names, type_aliases):
+                    return
                 candidates[(n.name, None)] = (n.value, getattr(n, "var_type", None))
 
     def walk_collect(n):
