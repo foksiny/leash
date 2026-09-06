@@ -1,0 +1,29 @@
+// you can now do vector add, sub, mul and div (with scalar broadcasting)
+
+def MAX : macro(a, b) |> a > b ? a : b;
+
+fnc relu(x: float<32>) : float<32> {
+    return MAX(0.0, x);
+}
+
+fnc forward(x: vec<float<32>>, w: vec<float<32>>, bias: float<32>) : vec<float<32>> {
+    z: vec<float<32>> = x * w + bias;
+    return z;
+}
+
+fnc main {
+    x: vec<float<32>> = {randf(0.0, 1.0), randf(0.0, 1.0)};
+    w: vec<float<32>> = {randf(0.0, 1.0), randf(0.0, 1.0)};
+    bias: float<32> = 0.4;
+
+    z: vec<float<32>> = forward(x, w, bias);
+
+    z_sub: vec<float<32>> = z - bias;       // de-bias
+    z_div: vec<float<32>> = z / 2.0;        // scale down
+    z_mix: vec<float<32>> = z + w - x;      // combine
+
+    show(z);
+    show(z_sub + bias);  // == z
+    show(z_div);
+    show(z_mix);
+}

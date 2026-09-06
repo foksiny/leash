@@ -1,6 +1,6 @@
 " Vim syntax file for Leash (.lsh)
 " Language: Leash - A strongly-typed compiled language on LLVM
-" Version: 0.23.5 Beta
+" Version: 0.23.6 Beta
 " Maintainer: foksiny <foksiny@github.com>
 " Last Updated: 2026
 

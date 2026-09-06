@@ -3335,6 +3335,50 @@ class TypeChecker:
                         node=expr,
                     )
 
+            # Vector arithmetic (element-wise) with scalar broadcasting
+            if (left_b == "vec" and right_b == "vec") or (
+                left_b == "vec" and right_b in ("int", "uint", "float")
+            ) or (
+                right_b == "vec" and left_b in ("int", "uint", "float")
+            ):
+                if expr.op in ("+", "-", "*", "/"):
+                    if left_b == "vec" and right_b == "vec":
+                        if not self._types_compatible(left_t, right_t):
+                            raise LeashError(
+                                f"Cannot apply operator '{expr.op}' to vectors of different types: '{left_t}' and '{right_t}'",
+                                node=expr,
+                            )
+                        return left_t
+                    elif left_b == "vec":
+                        inner_t = left_t[4:-1]
+                        if not self._types_compatible(right_t, inner_t):
+                            raise LeashError(
+                                f"Cannot apply operator '{expr.op}' to vector '{left_t}' with incompatible scalar type '{right_t}'",
+                                node=expr,
+                            )
+                        return left_t
+                    else:
+                        inner_t = right_t[4:-1]
+                        if not self._types_compatible(left_t, inner_t):
+                            raise LeashError(
+                                f"Cannot apply operator '{expr.op}' to scalar type '{left_t}' with vector '{right_t}'",
+                                node=expr,
+                            )
+                        return right_t
+                elif expr.op in ("==", "!="):
+                    if left_b == "vec" and right_b == "vec":
+                        if not self._types_compatible(left_t, right_t):
+                            raise LeashError(
+                                f"Cannot compare vectors of different types: '{left_t}' and '{right_t}'",
+                                node=expr,
+                            )
+                        return "bool"
+                else:
+                    raise LeashError(
+                        f"Operator '{expr.op}' is not supported for vector types",
+                        node=expr,
+                    )
+
             # OpDef operator overload lookup
             if left_b == right_b:
                 opdef_key = (left_b, expr.op)

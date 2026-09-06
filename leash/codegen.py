@@ -1306,6 +1306,12 @@ class CodeGen:
             rt = self._get_leash_type_name(node.right)
             if node.op in ("==", "!=", "<", "<=", ">", ">=", "&&", "||"):
                 return "bool"
+            lt_base = self._resolve_type_name(lt)
+            rt_base = self._resolve_type_name(rt)
+            lt_is_vec = lt_base.startswith("vec<") and lt_base.endswith(">")
+            rt_is_vec = rt_base.startswith("vec<") and rt_base.endswith(">")
+            if lt_is_vec or rt_is_vec:
+                return lt_base if lt_is_vec else rt_base
             if lt == "float" or rt == "float":
                 return "float"
             return lt
@@ -5450,6 +5456,160 @@ class CodeGen:
             result_val = self.builder.insert_value(result_val, left_size, 1)
             result_val = self.builder.insert_value(result_val, left_size, 2)
             return result_val
+
+        # Vector element-wise binary operations (with scalar broadcasting)
+        if node.op not in ("&&", "||"):
+            left_leash_v = self._get_leash_type_name(node.left)
+            right_leash_v = self._get_leash_type_name(node.right)
+            left_resolved_v = self._resolve_type_name(left_leash_v)
+            right_resolved_v = self._resolve_type_name(right_leash_v)
+            left_is_vec = (
+                left_resolved_v.startswith("vec<") and left_resolved_v.endswith(">")
+            )
+            right_is_vec = (
+                right_resolved_v.startswith("vec<") and right_resolved_v.endswith(">")
+            )
+            if left_is_vec or right_is_vec:
+                vec_leash = left_resolved_v if left_is_vec else right_resolved_v
+                is_vec_vec = left_is_vec and right_is_vec
+                inner_type_name = vec_leash[4:-1]
+                inner_llvm = self._get_llvm_type(inner_type_name)
+                vec_llvm = ir.LiteralStructType(
+                    [inner_llvm.as_pointer(), ir.IntType(64), ir.IntType(64)]
+                )
+
+                if is_vec_vec:
+                    left_data = self.builder.extract_value(left, 0)
+                    left_size = self.builder.extract_value(left, 1)
+                    right_data = self.builder.extract_value(right, 0)
+                    right_size = self.builder.extract_value(right, 1)
+
+                    sizes_match = self.builder.icmp_signed("==", left_size, right_size)
+                    self._emit_runtime_check(
+                        sizes_match,
+                        "Runtime error: Vector size mismatch in binary operation.\n",
+                    )
+                else:
+                    # Scalar broadcasting: one operand is a scalar cast to the inner type
+                    scalar_on_left = not left_is_vec
+                    vec_val = left if left_is_vec else right
+                    scalar_val = right if left_is_vec else left
+                    scalar_node = node.left if left_is_vec else node.right
+                    left_data = self.builder.extract_value(vec_val, 0)
+                    left_size = self.builder.extract_value(vec_val, 1)
+                    if scalar_val.type != inner_llvm:
+                        is_uint_scalar = self._get_leash_type_name(scalar_node).startswith("uint")
+                        scalar_val = self._emit_cast(
+                            scalar_val, inner_llvm, is_signed=not is_uint_scalar, node=node
+                        )
+
+                op_code = {
+                    "+": 0, "-": 1, "*": 2, "/": 3
+                }.get(node.op, -1)
+                if op_code < 0:
+                    raise LeashError(
+                        f"Operator '{node.op}' is not supported for vector types",
+                        node=node,
+                    )
+
+                # Allocate result buffer
+                i32 = ir.IntType(32)
+                i64 = ir.IntType(64)
+                dummy_ptr = ir.Constant(inner_llvm.as_pointer(), None)
+                elem_size_val = self.builder.ptrtoint(
+                    self.builder.gep(dummy_ptr, [ir.Constant(i32, 1)]), i64
+                )
+                total_bytes = self.builder.mul(left_size, elem_size_val)
+                total_bytes.flags = ['nuw']
+                result_data_bytes = self._gc_alloc(
+                    total_bytes, atomic=not self._type_contains_pointers(inner_llvm)
+                )
+                self._track_alloc(result_data_bytes)
+                result_data = self.builder.bitcast(
+                    result_data_bytes, inner_llvm.as_pointer()
+                )
+
+                is_float_elem = isinstance(
+                    inner_llvm, (ir.HalfType, ir.FloatType, ir.DoubleType)
+                )
+                is_unsigned_elem = inner_type_name.startswith("uint")
+                loop_cond_bb = self.builder.function.append_basic_block("vec_binop_cond")
+                loop_body_bb = self.builder.function.append_basic_block("vec_binop_body")
+                loop_inc_bb = self.builder.function.append_basic_block("vec_binop_inc")
+                loop_done_bb = self.builder.function.append_basic_block("vec_binop_done")
+                i_ptr = self.builder.alloca(i64, name="vec_binop_i")
+                self.builder.store(ir.Constant(i64, 0), i_ptr)
+                self.builder.branch(loop_cond_bb)
+                self.builder.position_at_end(loop_cond_bb)
+                i_val = self.builder.load(i_ptr)
+                i_in_bounds = self.builder.icmp_unsigned("<", i_val, left_size)
+                self.builder.cbranch(i_in_bounds, loop_body_bb, loop_done_bb)
+                self.builder.position_at_end(loop_body_bb)
+                lep = self.builder.gep(left_data, [i_val], inbounds=True)
+                lv = self.builder.load(lep)
+                if is_vec_vec:
+                    rep = self.builder.gep(right_data, [i_val], inbounds=True)
+                    rv = self.builder.load(rep)
+                    if rv.type != inner_llvm:
+                        is_uint_r = right_resolved_v[4:-1].startswith("uint")
+                        rv = self._emit_cast(
+                            rv, inner_llvm, is_signed=not is_uint_r, node=node
+                        )
+                    a_op = lv
+                    b_op = rv
+                else:
+                    if scalar_on_left:
+                        a_op = scalar_val
+                        b_op = lv
+                    else:
+                        a_op = lv
+                        b_op = scalar_val
+                if node.op == "+":
+                    if is_float_elem:
+                        res_e = self.builder.fadd(a_op, b_op)
+                        res_e.flags = ['fast']
+                    else:
+                        res_e = self.builder.add(a_op, b_op)
+                        res_e.flags = ['nuw', 'nsw']
+                elif node.op == "-":
+                    if is_float_elem:
+                        res_e = self.builder.fsub(a_op, b_op)
+                        res_e.flags = ['fast']
+                    else:
+                        res_e = self.builder.sub(a_op, b_op)
+                        res_e.flags = ['nuw', 'nsw']
+                elif node.op == "*":
+                    if is_float_elem:
+                        res_e = self.builder.fmul(a_op, b_op)
+                        res_e.flags = ['fast']
+                    else:
+                        res_e = self.builder.mul(a_op, b_op)
+                        res_e.flags = ['nuw', 'nsw']
+                elif node.op == "/":
+                    if is_float_elem:
+                        res_e = self.builder.fdiv(a_op, b_op)
+                        res_e.flags = ['fast']
+                    else:
+                        self._emit_division_by_zero_check(b_op)
+                        if is_unsigned_elem:
+                            res_e = self.builder.udiv(a_op, b_op)
+                        else:
+                            res_e = self.builder.sdiv(a_op, b_op)
+                sep = self.builder.gep(result_data, [i_val], inbounds=True)
+                self.builder.store(res_e, sep)
+                self.builder.branch(loop_inc_bb)
+                self.builder.position_at_end(loop_inc_bb)
+                next_i = self.builder.add(i_val, ir.Constant(i64, 1))
+                next_i.flags = ['nuw', 'nsw']
+                self.builder.store(next_i, i_ptr)
+                self.builder.branch(loop_cond_bb)
+                self.builder.position_at_end(loop_done_bb)
+
+                result_val = ir.Constant(vec_llvm, ir.Undefined)
+                result_val = self.builder.insert_value(result_val, result_data, 0)
+                result_val = self.builder.insert_value(result_val, left_size, 1)
+                result_val = self.builder.insert_value(result_val, left_size, 2)
+                return result_val
 
         # Logical operations (short-circuiting)
         if node.op == "&&":
