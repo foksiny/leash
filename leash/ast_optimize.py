@@ -104,6 +104,79 @@ def optimize_ast(program, opt_level=0, opt_verbose=False):
 # Phase 1 – Constant folding
 # ---------------------------------------------------------------------------
 
+def _c_trunc_div(a, b):
+    """C/LLVM integer division, truncated toward zero (sdiv semantics).
+
+    Python's ``//`` floors toward minus infinity, which disagrees with the
+    runtime's sdiv for negative operands (e.g. -5/2 is -2 at runtime but -3
+    with ``//``). Mirror the target semantics so folding never changes results.
+    """
+    q = abs(a) // abs(b)
+    return -q if (a < 0) != (b < 0) else q
+
+
+def _c_trunc_mod(a, b):
+    """C/LLVM integer remainder with dividend sign (srem semantics)."""
+    return a - _c_trunc_div(a, b) * b
+
+
+def _literal_int_width(value):
+    """Width (bits) codegen would assign to a bare sized integer literal.
+
+    Mirrors ``CodeGen._codegen_NumberLiteral``: values that fit in signed
+    32-bit become i32, anything larger is widened to the smallest of
+    64/128/256/512/1024 that holds it. Used to decide whether a folded
+    constant result is safe to emit.
+    """
+    if -2147483648 <= value <= 2147483647:
+        return 32
+    for w in (64, 128, 256, 512, 1024):
+        if -(2 ** (w - 1)) <= value <= 2 ** w - 1:
+            return w
+    return 0
+
+
+def _fits_signed(value, width):
+    """True if *value* fits in a signed integer of *width* bits."""
+    if width <= 0:
+        return True
+    return -(2 ** (width - 1)) <= value <= (2 ** (width - 1)) - 1
+
+
+def _fold_arith_reducible(a, b, hint, result):
+    """Whether folding an int op on *a*,*b* to *result* preserves semantics.
+
+    The runtime sizes the two operands to a common width (default i32 when a
+    literal fits in 32 bits) and performs the operation at that width, so an
+    overflowing result wraps. Folding with unbounded Python ints would emit a
+    constant widened to i64+ instead (see CodeGen._codegen_NumberLiteral),
+    changing the value. Only fold when the result fits the operand width; in
+    the hint case use the hint's width, otherwise the max width codegen would
+    size either operand to.
+    """
+    if hint:
+        base = hint.split("[")[0].strip().lower()
+        width = None
+        is_unsigned = base.startswith("uint") or base.startswith("u128") or base.startswith("u256")
+        for k in ("uint", "int", "u128", "u256"):
+            if base.startswith(k):
+                try:
+                    width = int("".join(c for c in base[len(k):] if c.isdigit()))
+                except ValueError:
+                    width = None
+                break
+        if width is not None and width > 1:
+            # Mirror CodeGen._codegen_NumberLiteral: a hinted signed literal is
+            # only emitted at its width when it fits the signed range; unsigned
+            # only when it fits [0, 2^N-1]. Outside that the constant is emitted
+            # wider, which would not match the runtime wrap — so don't fold.
+            lo = 0 if is_unsigned else -(2 ** (width - 1))
+            hi = (2 ** width - 1) if is_unsigned else (2 ** (width - 1)) - 1
+            return lo <= result <= hi
+    w = max(_literal_int_width(a), _literal_int_width(b))
+    return _fits_signed(result, w)
+
+
 def _deep_fold(node):
     if node is None or isinstance(node, (str, int, float, bool)):
         return node
@@ -139,19 +212,22 @@ def _deep_fold(node):
 
             if node.op == "+":
                 _opt_log("CF", f"folded '{lv} + {rv}' -> {lv + rv}", node)
-                return _mk(lv + rv)
+                if _fold_arith_reducible(lv, rv, hint, lv + rv):
+                    return _mk(lv + rv)
             if node.op == "-":
                 _opt_log("CF", f"folded '{lv} - {rv}' -> {lv - rv}", node)
-                return _mk(lv - rv)
+                if _fold_arith_reducible(lv, rv, hint, lv - rv):
+                    return _mk(lv - rv)
             if node.op == "*":
                 _opt_log("CF", f"folded '{lv} * {rv}' -> {lv * rv}", node)
-                return _mk(lv * rv)
+                if _fold_arith_reducible(lv, rv, hint, lv * rv):
+                    return _mk(lv * rv)
             if node.op == "/" and rv != 0:
-                _opt_log("CF", f"folded '{lv} / {rv}' -> {lv // rv}", node)
-                return _mk(lv // rv)
-            if node.op == "%":
-                _opt_log("CF", f"folded '{lv} % {rv}' -> {lv % rv}", node)
-                return _mk(lv % rv)
+                _opt_log("CF", f"folded '{lv} / {rv}' -> {_c_trunc_div(lv, rv)}", node)
+                return _mk(_c_trunc_div(lv, rv))
+            if node.op == "%" and rv != 0:
+                _opt_log("CF", f"folded '{lv} % {rv}' -> {_c_trunc_mod(lv, rv)}", node)
+                return _mk(_c_trunc_mod(lv, rv))
             if node.op == "==":
                 _opt_log("CF", f"folded '{lv} == {rv}' -> {lv == rv}", node)
                 return BoolLiteral(lv == rv)
