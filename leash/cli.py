@@ -1384,7 +1384,17 @@ def build_project(extra_import_dirs=None):
     config, project_dir, main_path = read_project_config(project_dir)
     all_extra_dirs, extra_libs, opt_level, autofree, static = resolve_project_deps(config, project_dir, extra_import_dirs)
     out_basename = config.get("out_name") or os.path.basename(project_dir)
-    out_name = os.path.join(project_dir, "out", out_basename)
+    out_dir = os.path.join(project_dir, "out")
+    out_name = os.path.join(out_dir, out_basename)
+    # Security: an `out_name` from config.lshc must not escape the project's
+    # `out/` directory (`..`/absolute/separator segments would let a tampered
+    # config write the object+binary to arbitrary paths). Reject it here.
+    if os.path.dirname(os.path.abspath(out_name)) != os.path.abspath(out_dir):
+        sys.stderr.write(
+            f"error: invalid 'out_name' in config.lshc ('{out_basename}') — must stay "
+            "inside the project's out/ directory\n"
+        )
+        sys.exit(1)
     compile_file(main_path, output_name=out_name, extra_import_dirs=all_extra_dirs, extra_libs=extra_libs, opt_level=opt_level, autofree=autofree, static=static)
 
 
@@ -1439,7 +1449,7 @@ def update_leash():
     import json
     
     print("Leash Update Checker")
-    print("Current version: 0.23.7 Beta\n")
+    print("Current version: 0.23.8 Beta\n")
     
     try:
         req = urllib.request.Request(
@@ -1455,7 +1465,16 @@ def update_leash():
         print("Proceeding with git pull anyway...\n")
     
     print("\nPulling latest changes from GitHub...")
-    result = subprocess.run(["git", "pull"], capture_output=True, text=True)
+    # Security: run `git pull` in the Leash installation directory only, never
+    # the caller's cwd. `git pull` in an arbitrary cwd would fetch/merge into
+    # whatever unrelated git repo the user happens to be inside (which may have
+    # an attacker-set origin), a surprising and potentially destructive operation.
+    leash_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if not os.path.isdir(os.path.join(leash_root, ".git")):
+        print("error: Leash is not installed from a git checkout (no .git in "
+              f"{leash_root!r}); cannot self-update via git pull.")
+        sys.exit(1)
+    result = subprocess.run(["git", "pull"], cwd=leash_root, capture_output=True, text=True)
     print(result.stdout, end="")
     if result.stderr:
         print(result.stderr, end="")
@@ -1465,7 +1484,7 @@ def update_leash():
         print("Update failed.")
 
 
-VERSION_STRING = "v0.23.7 Beta"
+VERSION_STRING = "v0.23.8 Beta"
 
 MAIN_HELP = f"""Leash {VERSION_STRING} - LLVM-powered compiled programming language
 

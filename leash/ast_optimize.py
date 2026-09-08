@@ -224,10 +224,12 @@ def _deep_fold(node):
                     return _mk(lv * rv)
             if node.op == "/" and rv != 0:
                 _opt_log("CF", f"folded '{lv} / {rv}' -> {_c_trunc_div(lv, rv)}", node)
-                return _mk(_c_trunc_div(lv, rv))
+                if _fold_arith_reducible(lv, rv, hint, _c_trunc_div(lv, rv)):
+                    return _mk(_c_trunc_div(lv, rv))
             if node.op == "%" and rv != 0:
                 _opt_log("CF", f"folded '{lv} % {rv}' -> {_c_trunc_mod(lv, rv)}", node)
-                return _mk(_c_trunc_mod(lv, rv))
+                if _fold_arith_reducible(lv, rv, hint, _c_trunc_mod(lv, rv)):
+                    return _mk(_c_trunc_mod(lv, rv))
             if node.op == "==":
                 _opt_log("CF", f"folded '{lv} == {rv}' -> {lv == rv}", node)
                 return BoolLiteral(lv == rv)
