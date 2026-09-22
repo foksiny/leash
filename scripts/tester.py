@@ -148,6 +148,9 @@ def normalize_pointers(text):
     lines = text.split("\n")
     filtered = [
         l for l in lines if not l.startswith("warning:") and not l.startswith("tip:")
+        # multi-line warning ornamentation (position, source excerpt, footnotes)
+        and not l.strip().startswith("-->") and not l.strip().startswith("= tip:")
+        and not l.strip().startswith("|") and not re.match(r"^\s*\d+ \| ", l)
     ]
     text = "\n".join(filtered)
     # Normalize boolean representations

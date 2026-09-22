@@ -99,6 +99,10 @@ int leash_spawn_worker(void* (*func)(void*), void* arg) {
         leash_gc_register_root(arg);
     }
 
+    /* Switch the GC to locked (multi-threaded) mode before the thread
+       exists — single-threaded programs keep the lock-free alloc path. */
+    leash_gc_thread_spawned();
+
     /* We need a wrapper because Windows threads have a different signature */
     WorkerArgs* wa = (WorkerArgs*)malloc(sizeof(WorkerArgs));
     if (!wa) {

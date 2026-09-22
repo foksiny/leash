@@ -74,6 +74,10 @@ void leash_matrix_blocked_op_double(
 void* leash_tlab_alloc(size_t size);
 void leash_gc_bitmap_init(size_t max_objects);
 void leash_fast_memcpy(void* restrict dst, const void* restrict src, size_t n);
+/* Tell the GC that the program spawned (or is about to spawn) a worker
+   thread. Must be called BEFORE creating the thread. Until then the GC
+   takes no locks on the allocation fast path. */
+void leash_gc_thread_spawned(void);
 
 /* ===== Statistics ===== */
 size_t leash_gc_get_allocated(void);

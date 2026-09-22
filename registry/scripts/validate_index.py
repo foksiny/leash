@@ -122,6 +122,12 @@ def clone_and_check(url, name, version, publisher, problems, warnings):
                 f"`{name}`: repository has no `library/package.lshc`. "
                 "Publish with `leashed publish` to generate the correct layout.")
             return
+        # A symlinked package.lshc could point anywhere (info disclosure);
+        # legit `leashed publish` output is always a regular file.
+        if os.path.islink(pkg_path) or os.path.islink(os.path.dirname(pkg_path)):
+            problems.append(f"`{name}`: `library/package.lshc` must be a regular file, "
+                            "not a symlink.")
+            return
         try:
             with open(pkg_path, "r", encoding="utf-8") as f:
                 pkg = json.load(f)
@@ -158,13 +164,24 @@ EMPTY_INDEX = {"libraries": {}}
 
 
 def load_index_from_git(ref, path="index.json"):
-    rc, out, _ = run_git(["show", f"{ref}:{path}"])
+    """Load index.json at `ref`. Returns (index, error); exactly one is None.
+
+    A missing file yields (None, error); an unparseable file yields
+    (None, json-error). Callers must treat head-side errors as blocking —
+    otherwise a PR that breaks or deletes index.json would merge silently.
+    """
+    rc, out, err = run_git(["show", f"{ref}:{path}"])
     if rc != 0:
-        return dict(EMPTY_INDEX)
+        return None, (err or f"could not read {path} at {ref}")
     try:
-        return json.loads(out)
-    except json.JSONDecodeError:
-        return dict(EMPTY_INDEX)
+        return json.loads(out), None
+    except json.JSONDecodeError as e:
+        return None, f"not valid JSON ({e})"
+
+
+def index_exists_at(ref, path="index.json"):
+    rc, _, _ = run_git(["cat-file", "-e", f"{ref}:{path}"])
+    return rc == 0
 
 
 def compute_changes(base_index, head_index):
@@ -193,13 +210,37 @@ def validate_entry(name, entry, prev, pr_author, do_network=True, warnings=None)
         return problems
 
     version = entry.get("version", "")
+    publisher = entry.get("publisher", "")
     if parse_version(version) is None:
         problems.append(f"`{name}`: invalid version '{version}' (need semver X.Y.Z)")
-    for v in entry.get("versions", {}):
+    versions_map = entry.get("versions", {})
+    if not isinstance(versions_map, dict):
+        problems.append(f"`{name}`: 'versions' must be a map of version -> metadata")
+        versions_map = {}
+    for v in versions_map:
         if parse_version(v) is None:
             problems.append(f"`{name}`: invalid version '{v}' in versions map")
+    # Metadata inside the versions map is never trusted blindly: `leashed
+    # install name@version` clones versions[v]["repo"] verbatim, so a poisoned
+    # entry there (e.g. an ext:: URL or someone else's repo) is remote code
+    # execution on every client that pins that version.
+    for v, meta in versions_map.items():
+        if not isinstance(meta, dict):
+            problems.append(f"`{name}`: versions['{v}'] must be an object "
+                            "(repo/tag/published_at)")
+            continue
+        if publisher and meta.get("repo") is not None:
+            vrepo = meta.get("repo")
+            if not isinstance(vrepo, str) or not re.match(
+                    REPO_RE_TMPL.format(pub=re.escape(publisher)), vrepo):
+                problems.append(
+                    f"`{name}`: versions['{v}'] repo URL must be "
+                    f"https://github.com/{publisher}/<repo>")
+        vtag = meta.get("tag")
+        if vtag is not None and vtag != f"v{v}":
+            problems.append(
+                f"`{name}`: versions['{v}'] tag must be 'v{v}' (got '{vtag}')")
 
-    publisher = entry.get("publisher", "")
     if not publisher:
         problems.append(f"`{name}`: missing 'publisher' field (your GitHub login)")
     if not entry.get("repo"):
@@ -341,17 +382,41 @@ def main(argv=None):
                     help="best-effort compile smoke test (never blocks)")
     args = ap.parse_args(argv)
 
-    base_index = load_index_from_git(args.base)
-    head_index = load_index_from_git(args.head)
+    base_index, base_err = load_index_from_git(args.base)
+    head_index, head_err = load_index_from_git(args.head)
 
-    problems = ["`index.json`: file is not valid JSON"] if (
-        args.head != "HEAD" and not os.path.exists("index.json")) else []
+    problems = []
+    # Head-side load failures are always blocking: a PR that corrupts or
+    # deletes index.json must never merge. The only exception is a registry
+    # bootstrap, where the file does not exist at either ref.
+    if head_err:
+        head_exists = index_exists_at(args.head)
+        base_exists = index_exists_at(args.base)
+        if head_exists:
+            problems.append(f"`index.json`: head version is {head_err}")
+        elif base_exists:
+            problems.append("`index.json`: this PR deletes index.json, which "
+                            "is not supported (open an issue instead)")
+        elif not base_exists:
+            # Neither ref has the file — treat as an empty registry bootstrap.
+            head_index = dict(EMPTY_INDEX)
+    if base_err and not head_err:
+        base_bootstrap_note = (f"`index.json`: base version is unreadable ({base_err}); "
+                               "treating it as empty and validating every entry from scratch")
+    else:
+        base_bootstrap_note = None
+    if base_index is None:
+        base_index = dict(EMPTY_INDEX)
+    if head_index is None:
+        head_index = dict(EMPTY_INDEX)
 
     if not problems:
         if not isinstance(head_index, dict) or not isinstance(head_index.get("libraries", {}), dict):
             problems.append("`index.json`: top-level shape must be {\"libraries\": {...}}")
 
     warnings = []
+    if base_bootstrap_note:
+        warnings.append(base_bootstrap_note)
     details = []
     if not problems:
         base_libs, head_libs, added, changed, deleted = compute_changes(base_index, head_index)

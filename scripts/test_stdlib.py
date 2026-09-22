@@ -31,6 +31,10 @@ def normalize(text: str) -> str:
             continue
         if line.strip().startswith("|") or line.strip().startswith("-->") or line.strip().startswith("^"):
             continue
+        if line.strip().startswith("= tip:"):  # multi-line warning footnote
+            continue
+        if re.match(r"^\s*\d+ \| ", line):  # warning source excerpt ("3 | fnc ...")
+            continue
         lines.append(line)
     text = "\n".join(lines)
     text = re.sub(r"--- Executed at .*? ---\n?", "", text)

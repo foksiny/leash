@@ -239,7 +239,9 @@ class Lexer:
         ("ISIN", r"<>"),  # Is-in operator for arrays/pointers
         ("LT", r"<"),  # Less than
         ("GT", r">"),  # Greater than
-        ("CHAR", r"'[^'\\]*(\\.[^'\\]*)*'"),  # Char literal
+        ("CHAR", r"'[^'\\]*(?:\\.[^'\\]*)*'"),  # Char literal (inner group non-capturing:
+        # every alternative in TOKEN_SPECIFICATION must own exactly ONE numbered
+        # group so mo.lastindex maps 1:1 to a kind name in tokenize)
         ("AT", r"@"),  # @ symbol for native imports
         ("NEWLINE", r"\n"),  # Line endings
         ("SKIP", r"[ \t]+"),  # Skip over spaces and tabs
@@ -294,6 +296,12 @@ class Lexer:
         # Plain decimal integer
         return int(raw, 10)
 
+    # Class-level table mapping the combined regex's numbered groups back to
+    # kind names. _KIND_NAMES[i-1] is the kind of group i — indexed via
+    # mo.lastindex, which is much cheaper than the string-based lastgroup/
+    # group(name) lookups used previously in the hot tokenize loop.
+    _KIND_NAMES = tuple(name for name, _ in TOKEN_SPECIFICATION)
+
     def tokenize(self):
         regex = self._ensure_regex()
         code = self.code
@@ -302,13 +310,26 @@ class Lexer:
         tokens = []
         tokens_append = tokens.append
         keywords = self.KEYWORD_MAP
+        kind_names = self._KIND_NAMES
+        parse_number = self._parse_number
 
         for mo in regex.finditer(code):
-            kind = mo.lastgroup
-            value = mo.group(kind)
+            idx = mo.lastindex
+            kind = kind_names[idx - 1]
+            value = mo.group(idx)
             start = mo.start()
             column = start - line_start
 
+            # Dispatch ordered by token frequency: identifiers/keywords are by
+            # far the most common, then punctuation (fallthrough), then
+            # newline/whitespace/comment, numbers, strings.
+            if kind == "IDENT":
+                kw = keywords.get(value)
+                if kw is not None:
+                    tokens_append(Token(kw, value, line_num, column))
+                else:
+                    tokens_append(Token(kind, value, line_num, column))
+                continue
             if kind == "NEWLINE":
                 line_start = mo.end()
                 line_num += 1
@@ -316,7 +337,7 @@ class Lexer:
             if kind == "SKIP" or kind == "COMMENT" or kind == "MLCOMMENT":
                 continue
             if kind == "NUMBER":
-                tokens_append(Token(kind, self._parse_number(value), line_num, column))
+                tokens_append(Token(kind, parse_number(value), line_num, column))
                 continue
             if kind == "MISMATCH":
                 raise LeashError(f"Unexpected character: {value}", line_num, column)
@@ -344,8 +365,6 @@ class Lexer:
                         "NUL byte ('\\0') is not allowed inside string literals: Leash strings cannot hold embedded NULs.",
                         line_num, column,
                     )
-            elif kind == "IDENT" and value in keywords:
-                kind = keywords[value]
 
             # NOTE: '>>' is always emitted as a single SHR token. Whether it is a
             # right-shift or the closing brackets of nested generics (e.g.

@@ -2,6 +2,7 @@ import sys
 import os
 import subprocess
 import shutil
+import hashlib
 import functools
 from .lexer import Lexer
 from .parser_l import Parser
@@ -477,7 +478,12 @@ def init_project(project_dir):
     print(f"  {out_dir}/")
 
 
-def resolve_imports(program, base_path, extra_import_dirs=None):
+def resolve_imports(program, base_path, extra_import_dirs=None, import_hashes=None):
+    """Resolve `use` imports, inlining imported module items into the program.
+
+    `import_hashes`, when given a list, receives (abspath, sha256_hex) for every
+    module file actually read — used by compile_file's object cache to key on
+    the exact imported content."""
     loaded_modules = set()
     global_libs_dir = os.path.expanduser("~/.leash/libs")
     extra_dirs = extra_import_dirs or []
@@ -505,12 +511,28 @@ def resolve_imports(program, base_path, extra_import_dirs=None):
         new_items = []
         for item in items:
             if isinstance(item, ImportStmt):
+                # Defense in depth: module path segments must be plain
+                # identifiers — never '', '.', '..' or anything that could
+                # turn the resolved path into a traversal outside the
+                # import roots or ~/.leash/libs.
+                for seg in item.module_path:
+                    if not seg or not all(c.isalnum() or c == "_" for c in seg) or seg[0].isdigit():
+                        raise LeashError(
+                            f"Invalid module path segment '{seg}' in import — "
+                            "module paths must be plain identifiers",
+                            node=item,
+                            tip="Use 'use module::item;' with dot-free identifier names.",
+                        )
                 module_file = find_module_file(item.module_path, current_base_path)
                 if not module_file or isinstance(module_file, list):
                     raise LeashError(f"Module '{'::'.join(item.module_path)}' not found or ambiguous", node=item)
                 module_file_abs = os.path.abspath(module_file)
                 if module_file_abs in loaded_modules: continue
                 with open(module_file_abs, "r") as f: code = f.read()
+                if import_hashes is not None:
+                    import_hashes.append(
+                        (module_file_abs, hashlib.sha256(code.encode("utf-8")).hexdigest())
+                    )
                 try:
                     lexer = Lexer(code); tokens = lexer.tokenize(); parser = Parser(tokens, module_file_abs); module_ast = parser.parse()
                 except LeashError as e:
@@ -781,6 +803,67 @@ def expand_macros(program):
         new_items.append(item)
     return Program(new_items)
 
+
+def security_scan(program, main_source_file):
+    """Security pass over the fully-expanded AST. Runs in check/compile/dump.
+
+    Returns (errors, warnings):
+      - errors are LeashError objects with code 'E_SECURITY' (fatal)
+      - warnings are dicts in the _print_warning format with code 'W_SECURITY'
+
+    Current checks:
+      1. `@from` native library paths must stay inside the module directory
+         (no absolute paths, no '..' segments). A violated path lets whatever
+         produced the AST silently link an arbitrary binary into the output.
+      2. `@from` declarations coming from an imported module (anything other
+         than the main source file) are transitive native-link requests: the
+         dependency ships a prebuilt .a/.so/.dll that gets linked into YOUR
+         binary with full runtime privileges. Surface it loudly as a warning.
+
+    NOTE: NativeImport nodes are only ever top-level items — the parser only
+    produces them there, and resolve_conditionals() has already flattened
+    conditional branches into program.items by the time this scan runs.
+    Iterating program.items keeps this pass O(items) instead of walking the
+    entire AST (it ran on every expression before, which was measurable on
+    large programs).
+    """
+    errors, warnings = [], []
+    main_abs = os.path.abspath(main_source_file) if main_source_file else None
+
+    for node in program.items:
+        if not isinstance(node, NativeImport):
+            continue
+        lib = node.lib_path or ""
+        norm = lib.replace("\\", "/")
+        parts = [p for p in norm.split("/") if p not in ("", ".")]
+        if os.path.isabs(lib) or norm.startswith("~") or ".." in parts:
+            errors.append(LeashError(
+                f"Security: native library path '{lib}' in @from must be a relative "
+                "path that stays inside the module directory — absolute paths and "
+                "'..' segments can link an arbitrary binary into your program",
+                node=node,
+                tip="Place the library next to the source file and reference it by "
+                    "file name, e.g. @from(\"libfoo.a\").",
+                code="E_SECURITY",
+            ))
+        elif main_abs is not None:
+            src = getattr(node, "source_file", None)
+            if src and os.path.abspath(src) != main_abs:
+                warnings.append({
+                    "msg": (
+                        f"Security: imported module '{os.path.basename(src)}' links native "
+                        f"library '{lib}' into this build via @from — native libraries from "
+                        "dependencies run with your program's full privileges"
+                    ),
+                    "line": getattr(node, "line", None),
+                    "col": getattr(node, "col", None),
+                    "tip": "Confirm the dependency is expected to ship a native library, "
+                           "or review/build it from source.",
+                    "code": "W_SECURITY",
+                    "file": src,
+                })
+    return errors, warnings
+
 def resolve_conditionals(program, target_config):
     def resolve_items(items):
         res = []
@@ -889,20 +972,119 @@ def check_file(input_file, verbose=False, extra_import_dirs=None, opt_verbose=Fa
     except Exception as e:
         if verbose: import traceback; print(f"error: Internal: {e}", file=sys.stderr); traceback.print_exc()
         return errors, warnings
+    sec_errors, sec_warnings = security_scan(ast, input_file)
+    errors.extend(sec_errors)
+    warnings.extend(sec_warnings)
+    if sec_errors:
+        if verbose:
+            for err in sec_errors:
+                _print_error(err, input_file, code)
+        return errors, warnings
+    tc = None
     try:
         tc = TypeChecker(check_mode=True)
-        warnings = tc.check(ast)
+        tc_warnings = tc.check(ast)
+        if tc_warnings:
+            warnings.extend(tc_warnings)
     except LeashError as e:
         errors.append(e)
     except Exception as e:
         if verbose: import traceback; print(f"error: Internal: {e}", file=sys.stderr); traceback.print_exc()
     ll_errors = LowLevelChecker().check(ast)
     errors.extend(ll_errors)
-    errors.extend(tc.errors)
+    if tc is not None:
+        errors.extend(tc.errors)
     if verbose:
         for err in errors:
             _print_error(err, input_file, code)
     return errors, warnings
+
+# --------------------------------------------------------- object cache ----
+# Repeated `leash run` / `leash compile` invocations on unchanged sources pay
+# the full parse -> typecheck -> AST-opt -> codegen -> LLVM-opt -> emit price
+# every time (the dominant cost for medium/large files). This cache stores the
+# EMITTED OBJECT FILE keyed on everything that can influence its content:
+#   - compiler version + a stamp of the compiler's own source files
+#   - target platform, optimization level/size flags, GC mode
+#   - sha256 of the main source and of every imported module's content
+# Anything not in the key (output name, -l libs, linker flags) only affects
+# linking, which always runs. Set LEASH_NO_OBJ_CACHE=1 to disable.
+_OBJ_CACHE_DIR = os.path.join(os.path.expanduser("~/.leash"), "objcache")
+_OBJ_CACHE_MAX_FILES = 2000
+_COMPILER_STAMP_FILES = (
+    "lexer.py", "parser_l.py", "typechecker.py", "ast_optimize.py",
+    "codegen.py", "cli.py", "ast_nodes.py", "hoist_allocas.py",
+    "optimize.py", "targets.py", "lowlevel_checker.py",
+)
+
+def _compiler_stamp():
+    """Hash of the compiler's own source files (name:mtime_ns:size).
+
+    Invalidates cached objects when the compiler itself changes, even if
+    VERSION_STRING was not bumped (dev checkouts)."""
+    d = os.path.dirname(os.path.abspath(__file__))
+    h = hashlib.sha256()
+    for f in _COMPILER_STAMP_FILES:
+        try:
+            st = os.stat(os.path.join(d, f))
+            h.update(f"{f}:{st.st_mtime_ns}:{st.st_size};".encode())
+        except OSError:
+            h.update(f"{f}:missing;".encode())
+    return h.hexdigest()
+
+def _object_cache_key(main_hash, import_hashes, target_name,
+                      parsed_opt, size_opt, no_gc, autofree):
+    h = hashlib.sha256()
+    h.update(VERSION_STRING.encode()); h.update(b"\x00")
+    h.update(_compiler_stamp().encode()); h.update(b"\x00")
+    h.update(f"{target_name}|{parsed_opt}|{bool(size_opt)}|{bool(no_gc)}|{bool(autofree)}".encode())
+    h.update(b"\x00"); h.update(main_hash.encode())
+    for path, ih in import_hashes:
+        h.update(b"\x00"); h.update(ih.encode()); h.update(b"\x00"); h.update(path.encode())
+    return h.hexdigest()
+
+def _object_cache_get(key):
+    """Return cached object bytes, or None. Never raises."""
+    try:
+        with open(os.path.join(_OBJ_CACHE_DIR, key + ".o"), "rb") as f:
+            return f.read()
+    except OSError:
+        return None
+
+def _object_cache_put(key, obj_bytes):
+    """Store object bytes atomically; keep the cache bounded (oldest first).
+    Never raises — a cache problem must never fail a build."""
+    try:
+        os.makedirs(_OBJ_CACHE_DIR, exist_ok=True)
+        tmp = os.path.join(_OBJ_CACHE_DIR, f".tmp_{os.getpid()}_{key}.o")
+        with open(tmp, "wb") as f:
+            f.write(obj_bytes)
+        os.replace(tmp, os.path.join(_OBJ_CACHE_DIR, key + ".o"))
+        # Cheap size cap: prune oldest entries when over the limit.
+        try:
+            entries = []
+            for n in os.listdir(_OBJ_CACHE_DIR):
+                if not n.endswith(".o"):
+                    continue
+                p = os.path.join(_OBJ_CACHE_DIR, n)
+                try:
+                    entries.append((os.stat(p).st_mtime, p))
+                except OSError:
+                    pass
+            if len(entries) > _OBJ_CACHE_MAX_FILES:
+                for _, p in sorted(entries)[:len(entries) - _OBJ_CACHE_MAX_FILES]:
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+    except OSError:
+        pass
+
+def _cache_enabled():
+    return not os.environ.get("LEASH_NO_OBJ_CACHE")
+
 
 # Cache target machines to avoid repeated LLVM Target creation (~16ms each)
 _target_machine_cache = {}
@@ -912,19 +1094,58 @@ def _get_target_machine(triple, reloc, opt_level):
     if key not in _target_machine_cache:
         t = llvm.Target.from_triple(triple)
         _target_machine_cache[key] = t.create_target_machine(
-            reloc=reloc, opt=opt_level
+            reloc=reloc, opt=opt_level,
+            # NOT specifying codemodel makes llvmlite pick the *JIT* code
+            # model, which on x86-64 is the LARGE model: every inter-function
+            # call is emitted as `movabs $addr; call *%reg` (indirect) and
+            # code is placed in a private `.ltext` section. Indirect calls
+            # defeat branch prediction and inlining, costing 1.5-2x on
+            # call-heavy code. "default" is the target's native AOT model
+            # (small on x86-64) and produces plain direct `call rel32`.
+            codemodel="default",
         )
     return _target_machine_cache[key]
 
 def compile_file(input_file, output_name=None, output_type="executable", is_run_mode=False, target_name=None, check_mode=False, warnings_as_errors=False, extra_libs=None, opt_level=None, extra_import_dirs=None, opt_verbose=False, no_gc=False, autofree=False, static=False):
     with open(input_file, "r") as f: code = f.read()
     target_config = get_target(target_name) if target_name else get_native_target()
+    parsed_opt, size_opt = parse_opt_level(opt_level)
+    if output_name is None: output_name = input_file[:-4] if input_file.endswith(".lsh") else "out"
+    import_hashes = []
     try:
         lexer = Lexer(code); tokens = lexer.tokenize(); parser = Parser(tokens, input_file); ast = parser.parse()
-        ast = resolve_imports(ast, os.path.dirname(os.path.abspath(input_file)) or ".", extra_import_dirs=extra_import_dirs)
-        ast = resolve_conditionals(ast, target_config); ast = expand_macros(ast)
+        ast = resolve_imports(ast, os.path.dirname(os.path.abspath(input_file)) or ".", extra_import_dirs=extra_import_dirs, import_hashes=import_hashes)
+        # Flatten platform conditionals BEFORE the cache lookup so the hit
+        # path sees every NativeImport (they can live in `if _PLATFORM == ...`
+        # branches) when it computes the linker's native-library list.
+        ast = resolve_conditionals(ast, target_config)
+
+        # ---- Object cache fast path -------------------------------------
+        # The emitted object depends exactly on: compiler identity, target,
+        # opt/GC flags and the content of the main source + every imported
+        # module (hashed during resolve_imports above). If we already emitted
+        # an object for that combination, skip the whole pipeline and link it.
+        cache_key = None
+        if _cache_enabled():
+            main_hash = hashlib.sha256(code.encode("utf-8")).hexdigest()
+            cache_key = _object_cache_key(main_hash, import_hashes, target_config.name,
+                                          parsed_opt, size_opt, no_gc, autofree)
+            cached_obj = _object_cache_get(cache_key)
+            if cached_obj is not None:
+                obj_name = output_name + ".o"
+                with open(obj_name, "wb") as f: f.write(cached_obj)
+                native_libs = _native_libs_from_ast(ast, target_config)
+                return _link_native(obj_name, output_name, target_config, is_run_mode, output_type, native_libs, extra_libs, no_gc=no_gc, autofree=autofree, size_opt=bool(size_opt), static=static)
+        # ------------------------------------------------------------------
+
+        ast = expand_macros(ast)
+        sec_errors, sec_warnings = security_scan(ast, input_file)
+        if sec_errors:
+            for w in sec_warnings: _print_warning(w, warnings_as_errors, code=code, input_file=input_file)
+            for err in sec_errors: _print_error(err, input_file, code)
+            sys.exit(1)
         tc = TypeChecker(check_mode=check_mode)
-        warnings = tc.check(ast)
+        warnings = list(tc.check(ast)) + list(sec_warnings)
         for w in warnings: _print_warning(w, warnings_as_errors, code=code, input_file=input_file)
         if warnings_as_errors and warnings: sys.exit(1)
         if tc.errors:
@@ -934,7 +1155,6 @@ def compile_file(input_file, output_name=None, output_type="executable", is_run_
         if ll_errors:
             for err in ll_errors: _print_error(err, input_file, code)
             sys.exit(1)
-        parsed_opt, size_opt = parse_opt_level(opt_level)
         ast = optimize_ast(ast, opt_level=parsed_opt, opt_verbose=opt_verbose)
         llvm.initialize_native_target(); llvm.initialize_native_asmprinter()
         codegen = CodeGen(target_platform=target_config.name, no_gc=no_gc, autofree=autofree); codegen.generate_code(ast, input_file)
@@ -951,11 +1171,30 @@ def compile_file(input_file, output_name=None, output_type="executable", is_run_
                             min(parsed_opt, 3))
     mod.triple = triple
 
-    if output_name is None: output_name = input_file[:-4] if input_file.endswith(".lsh") else "out"
     optimize_module(mod, opt_level=parsed_opt, size_opt=size_opt, target_machine=tm, opt_verbose=opt_verbose)
     obj_name = output_name + ".o"
-    with open(obj_name, "wb") as f: f.write(tm.emit_object(mod))
-    return _link_native(obj_name, output_name, target_config, is_run_mode, output_type, codegen, extra_libs, no_gc=no_gc, autofree=autofree, size_opt=bool(size_opt), static=static)
+    obj_bytes = tm.emit_object(mod)
+    with open(obj_name, "wb") as f: f.write(obj_bytes)
+    if cache_key is not None:
+        _object_cache_put(cache_key, obj_bytes)
+    return _link_native(obj_name, output_name, target_config, is_run_mode, output_type, codegen.native_libs, extra_libs, no_gc=no_gc, autofree=autofree, size_opt=bool(size_opt), static=static)
+
+def _native_libs_from_ast(ast, target_config):
+    """Collect the linker arguments for `@from` native imports without running
+    a full CodeGen — used on the object-cache fast path, where the object is
+    reused but linking still needs the native library list.
+
+    NOTE: security_scan's E_SECURITY (absolute/'..' path) checks have not run
+    yet on this path; resolve_native_lib_path alone decides the linker input,
+    exactly as it did before the cache existed. The security checks still run
+    on every non-cached compile and on `leash check`."""
+    from .codegen import resolve_native_lib_path
+    libs = []
+    for item in ast.items:
+        if isinstance(item, NativeImport):
+            path = resolve_native_lib_path(item.lib_path, getattr(item, "source_file", None), target_config.name)
+            libs.append((path,))
+    return libs
 
 def _parse_undefined_symbols(stderr):
     """Parse undefined reference symbols from linker error output."""
@@ -1068,6 +1307,12 @@ def _get_runtime_stubs(cc, target_config, no_gc=False, autofree=False, size_opt=
         stub_files.append(("cross_compile_stubs.c", base_cflags))
 
     cc_key = tuple(cc) if isinstance(cc, (list, tuple)) else cc
+    # Normalize a bare command name ("gcc") to its resolved path so it shares
+    # one cache set with its absolute form ("/usr/bin/gcc"). Without this, the
+    # same toolchain compiles gc.c + stubs twice and each variant recompiles
+    # (~0.65s) whenever the other variant's cache entry is missing.
+    if isinstance(cc_key, str) and not os.path.isabs(cc_key) and not cc_key.startswith("wsl"):
+        cc_key = shutil.which(cc_key) or cc_key
     cc_cmd = _flatten_cc(cc)
     import hashlib
     cc_tag = hashlib.sha1(repr(cc_key).encode("utf-8")).hexdigest()[:10]
@@ -1119,8 +1364,8 @@ def _win_to_wsl_path(path):
     return p
 
 
-def _link_native(obj_name, output_name, target_config, is_run_mode, output_type, codegen, extra_libs=None, no_gc=False, autofree=False, size_opt=False, static=False):
-    nlib_args = [l[0] for l in codegen.native_libs]
+def _link_native(obj_name, output_name, target_config, is_run_mode, output_type, native_libs, extra_libs=None, no_gc=False, autofree=False, size_opt=False, static=False):
+    nlib_args = [l[0] for l in native_libs]
     if extra_libs: nlib_args.extend([f"-l{l}" for l in extra_libs])
     cc = os.environ.get("CC")
     if not cc:
@@ -1239,8 +1484,13 @@ def dump_file(input_file, output_name=None, target_name=None, check_mode=False, 
         lexer = Lexer(code); tokens = lexer.tokenize(); parser = Parser(tokens, input_file); ast = parser.parse()
         ast = resolve_imports(ast, os.path.dirname(os.path.abspath(input_file)) or ".", extra_import_dirs=extra_import_dirs)
         ast = resolve_conditionals(ast, target_config); ast = expand_macros(ast)
+        sec_errors, sec_warnings = security_scan(ast, input_file)
+        if sec_errors:
+            for w in sec_warnings: _print_warning(w, warnings_as_errors, code=code, input_file=input_file)
+            for err in sec_errors: _print_error(err, input_file, code)
+            sys.exit(1)
         tc = TypeChecker(check_mode=check_mode)
-        warnings = tc.check(ast)
+        warnings = list(tc.check(ast)) + list(sec_warnings)
         for w in warnings: _print_warning(w, warnings_as_errors, code=code, input_file=input_file)
         if warnings_as_errors and warnings: sys.exit(1)
         if tc.errors:
@@ -1449,7 +1699,7 @@ def update_leash():
     import json
     
     print("Leash Update Checker")
-    print("Current version: 0.23.8 Beta\n")
+    print("Current version: 0.23.9 Beta\n")
     
     try:
         req = urllib.request.Request(
@@ -1484,7 +1734,7 @@ def update_leash():
         print("Update failed.")
 
 
-VERSION_STRING = "v0.23.8 Beta"
+VERSION_STRING = "v0.23.9 Beta"
 
 MAIN_HELP = f"""Leash {VERSION_STRING} - LLVM-powered compiled programming language
 

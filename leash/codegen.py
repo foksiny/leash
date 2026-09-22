@@ -40,7 +40,52 @@ from .ast_nodes import (
     ThisOpTypeExpr,
     ThisWorkerExpr,
     OpDef,
+    MemberAccess,
+    Call,
+    EnumMemberAccess,
+    CastExpr,
+    AsExpr,
+    TypeConvExpr,
+    SafeCastExpr,
+    MethodCall,
+    ThisExpr,
+    UnaryOp,
+    PointerMemberAccess,
+    BinaryOp,
+    StructInit,
+    ByteConvExpr,
+    IndexAccess,
+    GenericTypeExpr,
 )
+
+
+def resolve_native_lib_path(lib_path, source_file, target_platform):
+    """Resolve a native library path relative to the source file and detect
+    platform extensions. Module-level so the object-cache path in cli.py can
+    compute the linker arguments for a cached object without instantiating a
+    full CodeGen (whose constructor builds the whole IR module)."""
+    source_dir = os.path.dirname(os.path.abspath(source_file)) if source_file else "."
+
+    _, ext = os.path.splitext(lib_path)
+    if not ext:
+        platform_extensions = {
+            "linux64": [".so", ".a"],
+            "linux32": [".so", ".a"],
+            "macos": [".dylib", ".a"],
+            "macos-arm": [".dylib", ".a"],
+            "win64": [".lib", ".dll", ".a"],
+        }
+        extensions = platform_extensions.get(target_platform, [".so", ".a"])
+        for ext in extensions:
+            candidate = lib_path + ext
+            abs_candidate = os.path.join(source_dir, candidate) if not os.path.isabs(candidate) else candidate
+            if os.path.exists(abs_candidate):
+                return os.path.normpath(abs_candidate)
+        lib_path = lib_path + extensions[0]
+
+    if os.path.isabs(lib_path):
+        return os.path.normpath(lib_path)
+    return os.path.normpath(os.path.join(source_dir, lib_path))
 
 
 class CodeGen:
@@ -62,6 +107,7 @@ class CodeGen:
         self.var_symtab = {}
         self.struct_symtab = {}
         self.type_aliases = {}  # name -> resolved type string
+        self._resolve_type_name_cache = {}  # (type_str, alias_map_size) -> resolved str
         self.union_symtab = {}  # name -> { 'type': ir_type, 'variants': [...], 'variant_types': {...}, 'max_size': int }
         self.enum_symtab = {}  # name -> { 'members': [names], 'names_arr': ir.GlobalVariable }
         self.class_symtab = {}  # name -> { 'type': ir_type, 'fields': {...}, 'methods': {...} }
@@ -1258,34 +1304,13 @@ class CodeGen:
 
     def _get_leash_type_name(self, node):
 
-        """Helper to try and get the Leash type name for an AST node during codegen."""
-        from .ast_nodes import (
-            Identifier,
-            MemberAccess,
-            IndexAccess,
-            Call,
-            GenericCall,
-            EnumMemberAccess,
-            CastExpr,
-            AsExpr,
-            TypeConvExpr,
-            SafeCastExpr,
-            MethodCall,
-            ThisExpr,
-            UnaryOp,
-            PointerMemberAccess,
-            SizeofExpr,
-            TypeofExpr,
-            ByteConvExpr,
-            BinaryOp,
-            StructInit,
-            NumberLiteral,
-            FloatLiteral,
-            StringLiteral,
-            CharLiteral,
-            BoolLiteral,
-        )
+        """Helper to try and get the Leash type name for an AST node during codegen.
 
+        NOTE: the AST classes this needs (Identifier, MemberAccess, Call, ...)
+        are imported at module level — this helper is one of the hottest
+        functions in codegen (thousands of calls per compile), and a
+        per-call `from .ast_nodes import ...` was costing measurable time.
+        """
         if isinstance(node, ThisExpr):
             if "this" in self.var_symtab:
                 return self.var_symtab["this"][1]
@@ -1490,7 +1515,7 @@ class CodeGen:
                 if node.method in ("push", "delete"):
                     return "void"
             # Handle File static methods
-            from .ast_nodes import Identifier, GenericTypeExpr
+            # (Identifier and GenericTypeExpr come from the module-level import)
 
             # Handle static method calls on generic classes (e.g., VecMath<int>.sum(...))
             if isinstance(node.expr, GenericTypeExpr):
@@ -1567,7 +1592,22 @@ class CodeGen:
     def _resolve_type_name(self, type_name):
         """Resolve type aliases to their underlying type (strips imut qualifier).
         Also resolves generic type names like Hash<string, int> to Hash_string_int.
+
+        Heavily called during codegen — results are memoized per input string.
+        The memo key includes len(self.type_aliases): the alias map only ever
+        grows during a compile, so entries cached before a new alias is
+        registered are automatically not reused afterwards (no stale
+        resolutions, no explicit invalidation needed).
         """
+        # Memoized fast path (string inputs only)
+        if isinstance(type_name, str):
+            cache_key = (type_name, len(self.type_aliases))
+            cached = self._resolve_type_name_cache.get(cache_key)
+            if cached is not None:
+                return cached
+        else:
+            cache_key = None
+
         # Strip imut qualifier — it's a compile-time-only concept
         if isinstance(type_name, str) and type_name.startswith("imut "):
             type_name = type_name[5:]
@@ -1599,8 +1639,12 @@ class CodeGen:
                 type_name = mangled_name
 
         if prefix:
-            return f"{prefix}{type_name}"
-        return type_name
+            result = f"{prefix}{type_name}"
+        else:
+            result = type_name
+        if cache_key is not None:
+            self._resolve_type_name_cache[cache_key] = result
+        return result
 
     def _is_fixed_array_type(self, type_name):
         """Return True if `type_name` is a fixed-size array like `int[3]` or
@@ -1811,29 +1855,7 @@ class CodeGen:
             self.global_init_list.append((gv, node.value, var_type))
 
     def _resolve_native_lib_path(self, lib_path, source_file):
-        """Resolve a native library path relative to the source file and detect platform extensions."""
-        source_dir = os.path.dirname(os.path.abspath(source_file)) if source_file else "."
-
-        _, ext = os.path.splitext(lib_path)
-        if not ext:
-            platform_extensions = {
-                "linux64": [".so", ".a"],
-                "linux32": [".so", ".a"],
-                "macos": [".dylib", ".a"],
-                "macos-arm": [".dylib", ".a"],
-                "win64": [".lib", ".dll", ".a"],
-            }
-            extensions = platform_extensions.get(self.target_platform, [".so", ".a"])
-            for ext in extensions:
-                candidate = lib_path + ext
-                abs_candidate = os.path.join(source_dir, candidate) if not os.path.isabs(candidate) else candidate
-                if os.path.exists(abs_candidate):
-                    return os.path.normpath(abs_candidate)
-            lib_path = lib_path + extensions[0]
-
-        if os.path.isabs(lib_path):
-            return os.path.normpath(lib_path)
-        return os.path.normpath(os.path.join(source_dir, lib_path))
+        return resolve_native_lib_path(lib_path, source_file, self.target_platform)
 
     def _is_hfa_struct(self, llvm_type):
         """Check if a struct type is a Homogeneous Float Aggregate (all fields same float type, ≤4)."""
@@ -6330,7 +6352,11 @@ class CodeGen:
             cmd_buf = self.builder.call(
                 self.malloc_fn, [ir.Constant(ir.IntType(64), 256)]
             )
-            self.builder.call(self.sprintf_fn, [cmd_buf, redirect_cmd, command_val])
+            # Bounds-limited format: sprintf would overflow this fixed 256-byte
+            # buffer (and smash the heap) for any command longer than ~220 chars.
+            self.builder.call(self.func_symtab["snprintf"], [
+                cmd_buf, ir.Constant(ir.IntType(64), 256), redirect_cmd, command_val
+            ])
             pipe = self.builder.call(
                 self.popen_fn, [cmd_buf, self._emit_const_str("r")]
             )
@@ -6352,7 +6378,11 @@ class CodeGen:
                 new_cmd_buf = self.builder.call(
                     self.malloc_fn, [ir.Constant(ir.IntType(64), 1024)]
                 )
-                self.builder.call(self.sprintf_fn, [new_cmd_buf, cmd_prefix_fmt, cmd_val])
+                # Bounds-limited format: sprintf would overflow this fixed
+                # 1024-byte buffer for commands longer than ~1010 chars.
+                self.builder.call(self.func_symtab["snprintf"], [
+                    new_cmd_buf, ir.Constant(ir.IntType(64), 1024), cmd_prefix_fmt, cmd_val
+                ])
                 popen_cmd = new_cmd_buf
             else:
                 popen_cmd = command_val

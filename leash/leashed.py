@@ -30,6 +30,9 @@ PACKAGE_CONFIG = "package.lshc"
 PUBLISHER_FILE = "publisher"
 LIBRARY_DIR = "library"
 VERBOSE = False
+# Hard cap on downloaded index size: a hostile/custom registry must not be
+# able to exhaust memory by serving a multi-gigabyte JSON document.
+MAX_INDEX_BYTES = 32 * 1024 * 1024
 
 
 def eprint(*args, **kwargs):
@@ -41,6 +44,56 @@ def validate_name(name):
         eprint(f"error: Invalid name '{name}'. Must start with a letter or underscore and contain only letters, digits, hyphens, and underscores.")
         sys.exit(1)
     return name
+
+
+# Git transports that are safe to clone from. Anything else is rejected:
+#   - `ext::` / `fd::` transports execute arbitrary local commands (RCE)
+#   - `file://` / local paths smuggle unreviewed local content into installs
+#   - `http://` is trivially tampered in transit (registry URLs must be https)
+#   - URLs starting with `-` would be parsed by git as command-line options
+#     (e.g. `--upload-pack=sh -c ...`), which is again remote code execution
+_SCP_STYLE_RE = re.compile(r'^[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+:[A-Za-z0-9_./~-]+$')
+_SAFE_GIT_SCHEMES = ("https://", "ssh://", "git://")
+
+
+def validate_git_url(url, allow_insecure=False, source="repository"):
+    """Validate a git URL before it is ever handed to `git clone`.
+
+    Returns the (stripped) URL or exits with an error. With
+    `allow_insecure=True` (for URLs the user typed themselves), plain http is
+    permitted but warned about; URLs coming from the registry must be https.
+    """
+    u = (url or "").strip()
+    if not u:
+        eprint(f"error: Empty {source} URL")
+        sys.exit(1)
+    if any(ord(c) < 0x20 or c == "\x7f" for c in u):
+        eprint(f"error: Invalid {source} URL: contains control characters")
+        sys.exit(1)
+    if u.startswith("-"):
+        eprint(f"error: Unsafe {source} URL rejected: '{u}' looks like a git "
+               "command-line option (possible option-injection attack).")
+        sys.exit(1)
+    low = u.lower()
+    if "://" in low:
+        scheme = low.split("://", 1)[0] + "://"
+        if scheme == "http://":
+            if not allow_insecure:
+                eprint(f"error: Insecure {source} URL rejected: '{u}' (registry entries must use https).")
+                sys.exit(1)
+            print("[leashed] warning: using an unencrypted http:// git URL — "
+                  "the download can be tampered with in transit.")
+        elif scheme not in _SAFE_GIT_SCHEMES:
+            eprint(f"error: Unsafe {source} URL rejected: '{u}'")
+            eprint("  Only https://, ssh:// and git:// URLs are allowed. Git "
+                   "transports such as ext::/fd:: execute local commands, and "
+                   "file:// URLs bypass the registry review entirely.")
+            sys.exit(1)
+    elif not _SCP_STYLE_RE.match(u):
+        eprint(f"error: Unsafe {source} URL rejected: '{u}'")
+        eprint("  Use an https:// URL (or git@host:owner/repo.git).")
+        sys.exit(1)
+    return u
 
 
 # ------------------------------------------------------------- semver ----
@@ -114,6 +167,25 @@ def tmp_cleanup(d):
             pass
 
 
+def assert_no_symlinks(root):
+    """Refuse to install any package tree containing symlinks.
+
+    A symlink in a cloned repo (e.g. `library/data -> /home/victim/.ssh` or a
+    symlink cycle) would be dereferenced by shutil.copytree, leaking files
+    into the install directory or hanging the copy. Leash packages are plain
+    source trees, so a symlink is never legitimate here.
+    """
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        for name in filenames + dirnames:
+            p = os.path.join(dirpath, name)
+            if os.path.islink(p):
+                rel = os.path.relpath(p, root)
+                eprint(f"error: refusing to install package: '{rel}' is a symlink.")
+                eprint("  Symlinks in packages can point outside the package "
+                       "(path traversal) and are not allowed.")
+                sys.exit(1)
+
+
 def run_git(cmd, cwd=None):
     try:
         res = subprocess.run(
@@ -168,15 +240,32 @@ def fetch_index():
     try:
         req = urllib.request.Request(REGISTRY_URL, headers={"User-Agent": "leashed"})
         with urllib.request.urlopen(req, timeout=30) as r:
-            return json.loads(r.read().decode("utf-8"))
+            data = r.read(MAX_INDEX_BYTES + 1)
+            if len(data) > MAX_INDEX_BYTES:
+                eprint(f"error: Package index exceeds the maximum allowed size ({MAX_INDEX_BYTES // (1024 * 1024)} MiB)")
+                sys.exit(1)
+            index = json.loads(data.decode("utf-8"))
     except urllib.error.HTTPError as e:
         if e.code == 404:
             return {"libraries": {}}
         eprint(f"error: Failed to fetch package index (HTTP {e.code})")
         sys.exit(1)
-    except (urllib.error.URLError, json.JSONDecodeError) as e:
+    except (urllib.error.URLError, json.JSONDecodeError, UnicodeDecodeError) as e:
         eprint(f"error: Failed to fetch package index: {e}")
         sys.exit(1)
+    if not isinstance(index, dict) or not isinstance(index.get("libraries", {}), dict):
+        eprint("error: Package index has an invalid format (expected {\"libraries\": {...}})")
+        sys.exit(1)
+    return index
+
+
+def get_index_entry(index, libname):
+    """Fetch a library entry from the index with defensive type checks."""
+    entry = index.get("libraries", {}).get(libname)
+    if not isinstance(entry, dict):
+        eprint(f"error: Registry entry for '{libname}' is corrupt; refusing to use it")
+        sys.exit(1)
+    return entry
 
 
 def read_pkg_config(path):
@@ -354,6 +443,9 @@ def cmd_publish(args):
     index = fetch_index()
     libs = index.get("libraries", {})
     existing_entry = libs.get(name)
+    if existing_entry is not None and not isinstance(existing_entry, dict):
+        eprint(f"error: Registry entry for '{name}' is corrupt; cannot publish over it.")
+        sys.exit(1)
     if existing_entry:
         reg_owner = existing_entry.get("publisher") or existing_entry.get("author", "")
         if reg_owner not in (publisher, author):
@@ -748,6 +840,12 @@ def _write_stub(libname, version, author, desc, dest_root):
     # The main file path in config is relative to project dir, but files are
     # copied to the library root (subdirectory stripped). Use just the filename.
     entry_module = os.path.splitext(os.path.basename(entry_main))[0]
+    # A tampered package.lshc could set 'main' to a traversal payload like
+    # "../../evil" — never let it influence the generated stub file.
+    if not re.match(r'^[A-Za-z_][A-Za-z0-9_]*$', entry_module):
+        print(f"[leashed] warning: skipping import stub: invalid module name "
+              f"'{entry_module}' in installed package.lshc")
+        return
     stub_path = os.path.join(LEASH_LIBS_DIR, f"{libname}.lsh")
     with open(stub_path, "w", encoding="utf-8") as f:
         f.write(f"// {libname} {version} by {author}\n")
@@ -768,7 +866,19 @@ def _install_from_repo(repo_url, requested_version=None, libname=None):
 
     Works both for registry-published repos (library/ layout) and any plain
     git repo containing a package.lshc or .lsh sources at its root.
+
+    Security: the URL is validated before cloning (no ext::/fd::/file://
+    transports, no git option injection), and packages containing symlinks
+    are refused (path traversal via copytree).
     """
+    if requested_version is not None and not validate_version(requested_version):
+        eprint(f"error: Invalid version '{requested_version}'. Use semver: X.Y.Z")
+        sys.exit(1)
+    # Registry-sourced URLs must be https; this also blocks ext::/fd::/file://
+    # and leading-dash option injection. `allow_insecure` only ever matters
+    # for URLs the user typed on the command line themselves.
+    strict_https = libname is not None or requested_version is not None
+    repo_url = validate_git_url(repo_url, allow_insecure=not strict_https)
     repo_tmp = tempfile.mkdtemp(prefix="leashed_repo_")
     try:
         clone_cmd = ["clone", "--depth", "1"]
@@ -792,6 +902,8 @@ def _install_from_repo(repo_url, requested_version=None, libname=None):
         pkg = _read_installed_pkg_config(src) if not fallback_root else {}
         if not pkg:
             pkg = _read_installed_pkg_config(repo_tmp)
+        if not isinstance(pkg, dict):
+            pkg = {}
         if not libname:
             libname = pkg.get("name", "")
         if not libname:
@@ -806,6 +918,7 @@ def _install_from_repo(repo_url, requested_version=None, libname=None):
         desc = pkg.get("description", "")
 
         print(f"[leashed] Installing '{libname}' v{version} from {repo_url}")
+        assert_no_symlinks(src)
         os.makedirs(LEASH_LIBS_DIR, exist_ok=True)
         dest_root = os.path.join(LEASH_LIBS_DIR, libname)
         if os.path.exists(dest_root):
@@ -853,14 +966,19 @@ def cmd_install(args):
         eprint("  Or install directly from a URL: leashed install https://github.com/user/lib.git")
         sys.exit(1)
 
-    entry = libs[libname]
+    entry = get_index_entry(index, libname)
     ver = entry.get("version", "?")
     desc = entry.get("description", "")
     author = entry.get("author", "?")
 
     if req_version:
         versions = entry.get("versions", {})
+        if not isinstance(versions, dict):
+            eprint(f"error: Registry version list for '{libname}' is corrupt")
+            sys.exit(1)
         info = versions.get(req_version)
+        if not isinstance(info, dict):
+            info = None
         if info is None and req_version != ver:
             available = ", ".join(sorted_versions(list(versions.keys()))[:10]) or "none"
             eprint(f"error: '{libname}' has no published version {req_version}")
@@ -924,7 +1042,7 @@ def cmd_info(args):
     if libname not in libs:
         eprint(f"error: Library '{libname}' not found in the package index")
         sys.exit(1)
-    e = libs[libname]
+    e = get_index_entry(index, libname)
     print(f"{libname}")
     print(f"  Latest version: {e.get('version', '?')}")
     print(f"  Author:         {e.get('author', '?')}")
@@ -985,7 +1103,7 @@ def _install_from_repo_by_index(libname):
         eprint(f"error: Library '{libname}' not found in the package index")
         eprint("  Run 'leashed search' to find available libraries.")
         sys.exit(1)
-    entry = libs[libname]
+    entry = get_index_entry(index, libname)
     return _install_from_repo(entry.get("repo", ""), libname=libname)
 
 
@@ -1011,7 +1129,7 @@ def cmd_add(args):
     version = "?"
     index = fetch_index()
     libs = index.get("libraries", {})
-    if libname in libs:
+    if libname in libs and isinstance(libs[libname], dict):
         version = libs[libname].get("version", "?")
 
     deps = config.get("dependencies", "")
@@ -1049,7 +1167,12 @@ def cmd_search(args):
     index = fetch_index()
     libs = index.get("libraries", {})
 
-    matching = {k: v for k, v in libs.items() if query in k.lower() or query in v.get("description", "").lower()}
+    matching = {}
+    for k, v in libs.items():
+        if not isinstance(v, dict):
+            continue  # corrupt entry — never render or use it
+        if query in k.lower() or query in v.get("description", "").lower():
+            matching[k] = v
 
     if not matching:
         print(f"[leashed] No libraries found matching '{query}'")

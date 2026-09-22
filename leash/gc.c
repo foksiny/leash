@@ -54,6 +54,7 @@ void leash_gc_register_root(void* ptr) { (void)ptr; }
 void leash_gc_unregister_root(void* ptr) { (void)ptr; }
 void* leash_gc_alloc_string(size_t len) { return leash_gc_malloc(len + 1); }
 void* leash_gc_alloc_vector_data(size_t elem_size, size_t capacity) { return leash_gc_malloc(elem_size * capacity); }
+void leash_gc_thread_spawned(void) {}
 
 /* ===== End stub mode ===== */
 #else
@@ -74,7 +75,53 @@ static LONG  gc_mutex_ready = 0;
 static pthread_mutex_t gc_mutex = PTHREAD_MUTEX_INITIALIZER;
 #endif
 
-/* GC is initialised via leash_gc_init once before any concurrent access. */
+/* Single-thread fast path: allocating with a mutex (uncontended lock +
+   unlock) costs ~25-40ns on every allocation, which is a large fraction of
+   small-object allocation time. While no worker threads exist there is no
+   possible concurrent access, so the lock can be skipped entirely.
+
+   How threads become known:
+     - leash_spawn_worker() and the matrix thread pool call
+       leash_gc_thread_spawned() BEFORE creating each thread (set-once flag,
+       never cleared).
+     - Any OTHER thread that still reaches the GC (e.g. a callback thread
+       created inside an FFI library) is detected here via the main-thread id
+       check and permanently switches the GC to locked mode. There is a
+       nanosecond-wide transition window in that unsanctioned case (the main
+       thread's in-flight allocation when the flag flips); the sanctioned
+       spawn path has no such window because the flag is set before the
+       thread exists. */
+static volatile int gc_is_multithreaded = 0;
+
+#ifdef _WIN32
+static DWORD gc_main_thread_id = 0;
+static __declspec(thread) int gc_i_hold_lock = 0;
+#else
+static pthread_t gc_main_thread;
+static __thread int gc_i_hold_lock = 0;
+#endif
+
+void leash_gc_thread_spawned(void) {
+#ifdef _WIN32
+    InterlockedExchange(&gc_is_multithreaded, 1);
+#else
+    __sync_synchronize();
+    gc_is_multithreaded = 1;
+#endif
+}
+
+static int gc_is_main_thread(void) {
+#ifdef _WIN32
+    return GetCurrentThreadId() == gc_main_thread_id;
+#else
+    return pthread_equal(pthread_self(), gc_main_thread);
+#endif
+}
+
+/* GC is initialised via leash_gc_init once before any concurrent access.
+   GC_UNLOCK must mirror exactly what GC_LOCK decided — the multithreaded flag
+   can flip (0->1) while the main thread is inside a lock-free section, so
+   "did I lock?" is tracked per-thread (__thread / __declspec(thread)). */
 #ifdef _WIN32
 #define GC_LOCK()                                                          \
     do {                                                                   \
@@ -82,12 +129,43 @@ static pthread_mutex_t gc_mutex = PTHREAD_MUTEX_INITIALIZER;
             fprintf(stderr, "FATAL: GC lock before leash_gc_init()\n");    \
             abort();                                                       \
         }                                                                  \
-        EnterCriticalSection(&gc_mutex);                                   \
+        if (gc_is_multithreaded) {                                         \
+            EnterCriticalSection(&gc_mutex);                               \
+            gc_i_hold_lock = 1;                                            \
+        } else if (!gc_is_main_thread()) {                                 \
+            /* Foreign thread (FFI-spawned): switch to locked mode. */     \
+            leash_gc_thread_spawned();                                     \
+            EnterCriticalSection(&gc_mutex);                              \
+            gc_i_hold_lock = 1;                                            \
+        }                                                                  \
     } while(0)
-#define GC_UNLOCK() LeaveCriticalSection(&gc_mutex)
+#define GC_UNLOCK()                                                        \
+    do {                                                                   \
+        if (gc_i_hold_lock) {                                              \
+            gc_i_hold_lock = 0;                                            \
+            LeaveCriticalSection(&gc_mutex);                               \
+        }                                                                  \
+    } while(0)
 #else
-#define GC_LOCK()   pthread_mutex_lock(&gc_mutex)
-#define GC_UNLOCK() pthread_mutex_unlock(&gc_mutex)
+#define GC_LOCK()                                                          \
+    do {                                                                   \
+        if (gc_is_multithreaded) {                                         \
+            pthread_mutex_lock(&gc_mutex);                                 \
+            gc_i_hold_lock = 1;                                           \
+        } else if (!gc_is_main_thread()) {                                  \
+            /* Foreign thread (FFI-spawned): switch to locked mode. */     \
+            leash_gc_thread_spawned();                                     \
+            pthread_mutex_lock(&gc_mutex);                                 \
+            gc_i_hold_lock = 1;                                           \
+        }                                                                  \
+    } while(0)
+#define GC_UNLOCK()                                                        \
+    do {                                                                   \
+        if (gc_i_hold_lock) {                                              \
+            gc_i_hold_lock = 0;                                            \
+            pthread_mutex_unlock(&gc_mutex);                               \
+        }                                                                  \
+    } while(0)
 #endif
 
 /* Configuration */
@@ -127,6 +205,9 @@ void leash_gc_init(void) {
 #ifdef _WIN32
     InitializeCriticalSection(&gc_mutex);
     InterlockedExchange(&gc_mutex_ready, 1);
+    gc_main_thread_id = GetCurrentThreadId();
+#else
+    gc_main_thread = pthread_self();
 #endif
 
     gc.object_list = NULL;
@@ -320,6 +401,66 @@ void leash_gc_unregister_root(void* ptr) {
 }
 
 /* Mark Phase */
+/*
+ * Pointer -> object lookup.
+ *
+ * The original implementation linearly walked the whole object list for
+ * every candidate pointer in every object (and again for every root), making
+ * a collection O(objects^2 * words_per_object). Instead we snapshot the
+ * objects into an array sorted by payload address once per collection, then
+ * binary-search for the payload containing each candidate pointer:
+ * O(N log N) build + O(log N) per candidate — a massive speedup once a
+ * program has more than a handful of live objects.
+ */
+static struct gc_object** gc_sort_index = NULL;
+static size_t gc_sort_index_cap = 0;
+
+static int gc_payload_cmp(const void* a, const void* b) {
+    const char* pa = (const char*)((*(struct gc_object* const*)a) + 1);
+    const char* pb = (const char*)((*(struct gc_object* const*)b) + 1);
+    if (pa < pb) return -1;
+    if (pa > pb) return 1;
+    return 0;
+}
+
+static void gc_build_index(void) {
+    size_t n = gc.object_count;
+    if (gc_sort_index_cap < n) {
+        size_t cap = gc_sort_index_cap ? gc_sort_index_cap : 1024;
+        while (cap < n) cap *= 2;
+        struct gc_object** ni = (struct gc_object**)realloc(
+            (void*)gc_sort_index, cap * sizeof(struct gc_object*));
+        if (!ni) {
+            /* OOM while growing the index: refuse to collect rather than
+               silently corrupt the heap. Allocation is unaffected. */
+            fprintf(stderr, "Leash GC: Out of memory (mark index)!\n");
+            abort();
+        }
+        gc_sort_index = ni;
+        gc_sort_index_cap = cap;
+    }
+    size_t i = 0;
+    struct gc_object* o;
+    for (o = gc.object_list; o; o = o->next) gc_sort_index[i++] = o;
+    qsort(gc_sort_index, n, sizeof(struct gc_object*), gc_payload_cmp);
+}
+
+/* Find the object whose payload [start, start+size) contains p, or NULL. */
+static struct gc_object* gc_find_object(const void* p) {
+    size_t lo = 0, hi = gc.object_count;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        const char* start = (const char*)(gc_sort_index[mid] + 1);
+        if ((const char*)p < start) hi = mid;
+        else lo = mid + 1;
+    }
+    if (lo == 0) return NULL;
+    struct gc_object* o = gc_sort_index[lo - 1];
+    const char* start = (const char*)(o + 1);
+    if ((const char*)p >= start && (const char*)p < start + o->size) return o;
+    return NULL;
+}
+
 static void mark_object(struct gc_object* obj) {
     if (!obj || (obj->flags & FLAG_MARKED)) return;
     obj->flags |= FLAG_MARKED;
@@ -333,33 +474,21 @@ static void mark_object(struct gc_object* obj) {
     for (i = 0; i < ptr_count; i++) {
         void* potential_ptr = ((void**)obj_data)[i];
         if (potential_ptr) {
-            struct gc_object* check = gc.object_list;
-            while (check) {
-                void* obj_start = (void*)(check + 1);
-                if (potential_ptr >= obj_start &&
-                    potential_ptr < (void*)((char*)obj_start + check->size)) {
-                    mark_object(check);
-                    break;
-                }
-                check = check->next;
-            }
+            struct gc_object* check = gc_find_object(potential_ptr);
+            if (check) mark_object(check);
         }
     }
 }
 
 static void mark_from_roots(void) {
+    /* Build the sorted payload index once per collection for O(log N)
+       pointer->object lookups. */
+    gc_build_index();
     size_t i;
     for (i = 0; i < gc.root_count; i++) {
         if (gc.roots[i]) {
-            struct gc_object* obj = gc.object_list;
-            while (obj) {
-                void* obj_start = (void*)(obj + 1);
-                if (gc.roots[i] == obj_start) {
-                    mark_object(obj);
-                    break;
-                }
-                obj = obj->next;
-            }
+            struct gc_object* obj = gc_find_object(gc.roots[i]);
+            if (obj) mark_object(obj);
         }
     }
 }
@@ -786,6 +915,8 @@ static void init_thread_pool(void) {
     g_num_threads = (int)sysinfo.dwNumberOfProcessors;
     if (g_num_threads < 2) g_num_threads = 2;
     if (g_num_threads > MAX_POOL_THREADS) g_num_threads = MAX_POOL_THREADS;
+    /* Pool threads exist now: the GC must take locks on its fast path. */
+    leash_gc_thread_spawned();
     for (int i = 0; i < g_num_threads; i++) {
         g_tasks[i].done = 0;
         HANDLE h = CreateThread(NULL, 0, pool_worker, (LPVOID)(intptr_t)i, 0, NULL);
@@ -938,6 +1069,10 @@ static void init_thread_pool(void) {
     g_num_threads = (int)sysconf(_SC_NPROCESSORS_ONLN);
     if (g_num_threads < 2) g_num_threads = 2;
     if (g_num_threads > MAX_POOL_THREADS) g_num_threads = MAX_POOL_THREADS;
+    /* Pool threads exist now: the GC must take locks on its fast path.
+       Set the flag while still single-threaded (before pthread_create) so
+       the first worker is guaranteed to observe it. */
+    leash_gc_thread_spawned();
     int ok = 1;
     for (int i = 0; i < g_num_threads; i++) {
         g_tasks[i].done = 0;
