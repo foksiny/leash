@@ -1,0 +1,8 @@
+use text::freq::Freq;
+fnc main() : void {
+    f: Freq = Freq.count_words("the cat ate the cat");
+    show(f.top_word());
+    show(f.count_of("cat"));
+    show(f.count_of("dog"));
+    show(f.distinct());
+}

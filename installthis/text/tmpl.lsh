@@ -1,0 +1,95 @@
+// {{placeholder}} string templates.
+//
+//   use text::tmpl::Template;
+//   t: Template = Template.make("Hello {{name}}, you have {{n}} messages.");
+//   t.set("name", "Ada");
+//   t.set("n", "3");
+//   show(t.render());   // "Hello Ada, you have 3 messages."
+
+pub def Template : class {
+    priv text: string;
+    priv names: vec<string>;
+    priv vals: vec<string>;
+
+    static pub fnc make(text string) : Template {
+        ns: vec<string>;
+        vs: vec<string>;
+        return Template { text: text, names: ns, vals: vs };
+    }
+
+    // One-step render from parallel vectors of names/values.
+    static pub fnc from(text string, names vec<string>, vals vec<string>) : Template {
+        ns: vec<string>;
+        vs: vec<string>;
+        foreach _, n in<vector> names {
+            ns.pushb(n);
+        }
+        foreach _, v in<vector> vals {
+            vs.pushb(v);
+        }
+        return Template { text: text, names: ns, vals: vs };
+    }
+
+    // Bind `name` ("{{name}}") to `value`. Later sets win.
+    pub fnc set(name string, value string) : void {
+        for i: int = 0; i < this.names.size; i = i + 1 {
+            if this.names.get(i) == name {
+                this.vals.set(i, value);
+                return;
+            }
+        }
+        this.names.pushb(name);
+        this.vals.pushb(value);
+    }
+
+    pub fnc render() : string {
+        n: int = this.text.size;
+        out: string = "";
+        i: int = 0;
+        while i < n {
+            if this.text[i] == '{' && i + 1 < n && this.text[i + 1] == '{' {
+                end: int = this.find_end(i + 2);
+                if end < 0 {
+                    out = out + this.text[i];
+                    i = i + 1;
+                    continue;
+                }
+                key: string = this.slice(i + 2, end);
+                out = out + this.lookup(key);
+                i = end + 2;
+            } else {
+                out = out + this.text[i];
+                i = i + 1;
+            }
+        }
+        return out;
+    }
+
+    priv fnc find_end(start int) : int {
+        n: int = this.text.size;
+        for i: int = start; i + 1 < n; i = i + 1 {
+            if this.text[i] == '}' && this.text[i + 1] == '}' {
+                return i;
+            }
+        }
+        return 0 - 1;
+    }
+
+    priv fnc slice(start int, end int) : string {
+        out: string = "";
+        for i: int = start; i < end; i = i + 1 {
+            c: char = this.text[i];
+            out = out + c;
+        }
+        return out;
+    }
+
+    priv fnc lookup(key string) : string {
+        for i: int = 0; i < this.names.size; i = i + 1 {
+            if this.names.get(i) == key {
+                return this.vals.get(i);
+            }
+        }
+        return "{{" + key + "}}";
+    }
+};

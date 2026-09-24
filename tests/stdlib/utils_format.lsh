@@ -1,0 +1,8 @@
+use utils::format::Format;
+fnc main() : void {
+    show(Format.dec(3.14159, 2));
+    show(Format.commas(1234567));
+    show(Format.percent(0.083, 1));
+    show(Format.dec(0.5, 0));
+    show(Format.commas(0));
+}

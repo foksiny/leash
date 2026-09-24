@@ -1,0 +1,72 @@
+// Joining vectors of values into a single string, including
+// human-readable lists.
+//
+//   use utils::join::Join;
+//   show(Join.strings(v, ", "));          // "a, b, c"
+//   show(Join.human(v));                  // "a, b and c"
+
+pub def Join : class {
+    static pub fnc strings(v vec<string>, sep string) : string {
+        out: string = "";
+        first: bool = true;
+        foreach _, x in<vector> v {
+            if !first {
+                out = out + sep;
+            }
+            out = out + x;
+            first = false;
+        }
+        return out;
+    }
+
+    static pub fnc ints(v vec<int>, sep string) : string {
+        out: string = "";
+        first: bool = true;
+        foreach _, x in<vector> v {
+            if !first {
+                out = out + sep;
+            }
+            out = out + tostring(x);
+            first = false;
+        }
+        return out;
+    }
+
+    static pub fnc floats(v vec<float>, sep string) : string {
+        out: string = "";
+        first: bool = true;
+        foreach _, x in<vector> v {
+            if !first {
+                out = out + sep;
+            }
+            out = out + tostring(x);
+            first = false;
+        }
+        return out;
+    }
+
+    // "a and b" / "a, b and c" style joins.
+    static pub fnc human(v vec<string>) : string {
+        n: int = v.size;
+        if n == 0 {
+            return "";
+        }
+        if n == 1 {
+            return v.get(0);
+        }
+        if n == 2 {
+            return v.get(0) + " and " + v.get(1);
+        }
+        out: string = "";
+        for i: int = 0; i < n - 1; i = i + 1 {
+            out = out + v.get(i);
+            if i + 1 < n - 1 {
+                out = out + ", ";
+            } else {
+                out = out + " and ";
+            }
+        }
+        out = out + v.get(n - 1);
+        return out;
+    }
+};

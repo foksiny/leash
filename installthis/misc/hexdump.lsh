@@ -1,0 +1,80 @@
+// Hexdump rendering for byte payloads.
+//
+//   use misc::hexdump::Hexdump;
+//   show(Hexdump.of("hello"));
+
+pub def Hexdump : class {
+    // "00000000  68 65 6c 6c 6f                                      |hello|"
+    static pub fnc of(s string) : string {
+        v: vec<char>;
+        for i: int = 0; i < s.size; i = i + 1 {
+            v.pushb(s[i]);
+        }
+        return Hexdump.of_bytes(v);
+    }
+
+    static pub fnc of_bytes(data vec<char>) : string {
+        out: string = "";
+        digits: string = "0123456789abcdef";
+        n: int = data.size;
+        i: int = 0;
+        while i < n {
+            // offset
+            line: string = "";
+            ol: string = Hexdump.hex32(i);
+            line = line + ol + "  ";
+            for j: int = 0; j < 16; j = j + 1 {
+                if i + j < n {
+                    b: int = Hexdump.byte_val(data.get(i + j));
+                    line = line + digits[(b >> 4) & 15];
+                    line = line + digits[b & 15];
+                    line = line + " ";
+                } else {
+                    line = line + "   ";
+                }
+                if j == 7 {
+                    line = line + " ";
+                }
+            }
+            line = line + "|";
+            for k: int = 0; k < 16; k = k + 1 {
+                if i + k >= n {
+                    stop;
+                }
+                c: char = data.get(i + k);
+                if c < ' ' || c > '~' {
+                    line = line + '.';
+                } else {
+                    line = line + c;
+                }
+            }
+            line = line + "|";
+            out = out + line;
+            if i + 16 < n {
+                out = out + "\n";
+            }
+            i = i + 16;
+        }
+        return out;
+    }
+
+    static priv fnc byte_val(c char) : int {
+        v: int = toint(int, c);
+        if v < 0 {
+            v = v + 256;
+        }
+        return v;
+    }
+
+    static priv fnc hex32(n int) : string {
+        digits: string = "0123456789abcdef";
+        out: string = "";
+        shift: int = 28;
+        while shift >= 0 {
+            d: int = (n >> shift) & 15;
+            out = out + digits[d];
+            shift = shift - 4;
+        }
+        return out;
+    }
+};

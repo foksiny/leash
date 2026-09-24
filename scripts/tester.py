@@ -22,7 +22,7 @@ LEASH_COMPILE_CMD = [python_cmd, "-m", "leash.cli", "compile"]
 POINTER_PATTERN = re.compile(r"0x[0-9a-fA-F]+")
 
 # Known platform identifiers that should be normalized
-KNOWN_PLATFORMS = ["linux64", "linux32", "win64", "macos", "macos-arm"]
+KNOWN_PLATFORMS = ["linux64", "linux32", "linux-arm", "win64", "macos", "macos-arm"]
 
 
 def get_current_platform():
@@ -34,6 +34,8 @@ def get_current_platform():
             return "linux64"
         elif machine in ("i386", "i686", "x86"):
             return "linux32"
+        elif machine in ("arm64", "aarch64", "armv8l"):
+            return "linux-arm"
     elif system == "windows":
         return "win64"
     elif system == "darwin":
@@ -95,6 +97,20 @@ def check_cross_prerequisites(target):
             return False, "i686 cross-compiler not installed (sudo apt install gcc-multilib or gcc-i686-linux-gnu)"
         return True, None
 
+    # --- linux-arm on non-ARM: needs aarch64 cross toolchain + qemu-user ---
+    if target == "linux-arm" and current in ("linux64", "linux32"):
+        if not (shutil.which("aarch64-linux-gnu-gcc") or shutil.which("aarch64-linux-gnu-clang")):
+            return False, "aarch64 cross-compiler not installed (sudo apt install gcc-aarch64-linux-gnu)"
+        if not shutil.which("qemu-aarch64"):
+            return False, "qemu-user not installed (sudo apt install qemu-user) — needed to run ARM64 binaries on x86"
+        return True, None
+
+    # --- linux-arm on Windows: needs WSL with an aarch64 toolchain ---
+    if target == "linux-arm" and current == "win64":
+        if not _wsl_available():
+            return False, "WSL not installed — install it (wsl --install) with a distro that has gcc-aarch64-linux-gnu + qemu-user"
+        return True, None
+
     # --- macOS on non-macOS: can compile but not run ---
     if target in ("macos", "macos-arm") and current not in ("macos", "macos-arm"):
         return False, "macOS binaries cannot be executed on non-macOS hosts (compile-only; no runner)"
@@ -118,6 +134,8 @@ def describe_cross_mode(target):
         ("linux32", "win64"): "MinGW + wine",
         ("win64", "linux64"): "WSL",
         ("win64", "linux32"): "WSL",
+        ("linux64", "linux-arm"): "aarch64 cross-compiler + qemu-user",
+        ("win64", "linux-arm"): "WSL",
     }
     runner = runners.get((current, target))
     if runner:

@@ -1,0 +1,13 @@
+use collections::lru::Lru;
+fnc main() : void {
+    c: Lru = Lru.make(2);
+    c.put("a", "1");
+    c.put("b", "2");
+    // evict LRU
+    show(c.get("a"));
+    c.put("c", "3");
+    show(c.has("a"));
+    show(c.has("b"));
+    show(c.has("c"));
+    show(c.size());
+}

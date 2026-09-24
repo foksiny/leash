@@ -1,0 +1,9 @@
+use mathx::interp::Interp;
+fnc main() : void {
+    show(Interp.lerp(0.0, 10.0, 0.25));
+    show(Interp.clamp(12.0, 0.0, 1.0));
+    show(Interp.clamp(-5.0, 0.0, 1.0));
+    show(Interp.normalize(5.0, 0.0, 10.0));
+    show(Interp.remap(5.0, 0.0, 10.0, 0.0, 1.0));
+    show(Interp.smoothstep(0.0, 1.0, 0.5));
+}

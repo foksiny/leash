@@ -1,0 +1,56 @@
+// URL-friendly slugs from arbitrary text.
+//
+//   use text::slug::Slug;
+//   show(Slug.to_slug("Hello, World! — 42"));   // "hello-world-42"
+
+pub def Slug : class {
+    // Lowercase alphanumeric words joined by '-'.
+    static pub fnc to_slug(s string) : string {
+        return Slug.with_sep(s, '-');
+    }
+
+    static pub fnc with_sep(s string, sep char) : string {
+        out: string = "";
+        prev_sep: bool = true;
+        foreach _, c in<string> s {
+            lc: char = c;
+            if c >= 'A' && c <= 'Z' {
+                lc = (char)(c + 32);
+            }
+            if (lc >= 'a' && lc <= 'z') || (lc >= '0' && lc <= '9') {
+                out = out + lc;
+                prev_sep = false;
+            } else {
+                if !prev_sep && out.size > 0 {
+                    out = out + sep;
+                    prev_sep = true;
+                }
+            }
+        }
+        // trim a trailing separator
+        n: int = out.size;
+        if n > 0 && out[n - 1] == sep {
+            r: string = "";
+            for i: int = 0; i < n - 1; i = i + 1 {
+                r = r + out[i];
+            }
+            return r;
+        }
+        return out;
+    }
+
+    // True when `s` is already a valid slug.
+    static pub fnc is_slug(s string) : bool {
+        if s.size == 0 {
+            return false;
+        }
+        for i: int = 0; i < s.size; i = i + 1 {
+            c: char = s[i];
+            ok: bool = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+            if !ok && c != '-' {
+                return false;
+            }
+        }
+        return true;
+    }
+};

@@ -1,0 +1,8 @@
+use utils::roman::Roman;
+fnc main() : void {
+    show(Roman.to_roman(4));
+    show(Roman.to_roman(1994));
+    show(Roman.from_roman("MCMLXXXIV"));
+    show(Roman.from_roman(Roman.to_roman(2024)));
+    show(Roman.to_roman(0));
+}

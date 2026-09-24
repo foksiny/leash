@@ -26,6 +26,7 @@ class TypeChecker:
         self.var_types = {}  # name -> type string (local variables)
         self.var_immutable = {}  # name -> bool (True if immutable)
         self.func_types = {}  # name -> (arg_types, return_type)
+        self.async_funcs = set()  # names of `async fnc` functions
         self.struct_types = {}  # name -> {field: type}
         self.union_types = {}  # name -> {variant: type}
         self.forward_declared_types = set()  # names of structs/unions declared in the current compilation unit (validates recursive field types before full registration)
@@ -1019,6 +1020,12 @@ class TypeChecker:
                 uses_templates = True
 
         if uses_templates:
+            if getattr(node, "is_async", False):
+                self._error(
+                    f"generic function '{node.name}' cannot be async",
+                    node=node,
+                    tip="async fnc needs a concrete future<T> to return; write a non-generic async wrapper per type.",
+                )
             # Store the template params if not explicitly declared
             if not node.type_params:
                 # Find all template types used
@@ -1055,19 +1062,39 @@ class TypeChecker:
         
         # Register struct functions separately
         if hasattr(node, 'struct_type') and node.struct_type:
+            if getattr(node, "is_async", False):
+                self._error(
+                    f"struct method '{node.name}' cannot be async",
+                    node=node,
+                    tip="Call an `async fnc` from the method and await its future.",
+                )
             struct_name = node.struct_type
             if struct_name not in self.struct_methods:
                 self.struct_methods[struct_name] = {}
             self.struct_methods[struct_name][node.name] = (node, getattr(node, "visibility", "pub"))
         else:
-            # Regular function registration
+            # Regular function registration. An `async fnc` is seen by
+            # callers as returning future<T> (the join handle); its body
+            # still type-checks against the unwrapped T.
+            registered_return = node.return_type
+            if getattr(node, "is_async", False):
+                if node.name == "main":
+                    self._error(
+                        "'main' cannot be async — the C entry point must return synchronously",
+                        node=node,
+                        tip="Split your program: make main await your async entry function.",
+                    )
+                if isinstance(registered_return, str):
+                    registered_return = f"future<{registered_return}>"
             self.func_types[node.name] = (
                 arg_types,
-                node.return_type,
+                registered_return,
                 arg_names,
                 arg_defaults,
             )
             self.func_signatures_vis[node.name] = getattr(node, "visibility", "pub")
+            if getattr(node, "is_async", False):
+                self.async_funcs.add(node.name)
 
     def _is_multi_type(self, type_name):
         """Check if a type name has multi-type syntax like [int, float]."""
@@ -1232,6 +1259,8 @@ class TypeChecker:
             return "float"
         if t.startswith("vec<") and t.endswith(">"):
             return "vec"
+        if t.startswith("future<") and t.endswith(">"):
+            return "future"
         if t.startswith("matrix<") and t.endswith(">"):
             return "matrix"
         if t.startswith("hash<") and t.endswith(">"):
@@ -1250,6 +1279,9 @@ class TypeChecker:
         t = self._resolve(type_name)
         if t.startswith("*") or t.startswith("&"):
             return self._is_valid_type(t[1:])
+        # future<T> — the async/await join-handle type
+        if t.startswith("future<") and t.endswith(">"):
+            return self._is_valid_type(t[len("future<"):-1])
         # Handle function pointer types: fnc(...) : ...
         if self._is_function_pointer_type(t):
             return True
@@ -1916,6 +1948,7 @@ class TypeChecker:
         poisoned for the entire function (a later textual use can still run
         before the del on a subsequent iteration)."""
         from .ast_nodes import (
+    AwaitExpr,
             Identifier,
             DelStatement,
             IfStatement,
@@ -2753,6 +2786,12 @@ class TypeChecker:
             self._error("spawn requires a function call", node=stmt)
             return
         func_name = call.name
+        if func_name in self.async_funcs:
+            self._error(
+                f"Cannot spawn async function '{func_name}' — it already runs on a worker; just call it and await the future",
+                node=stmt,
+            )
+            return
         if func_name not in self.func_types:
             self._error(f"Cannot spawn unknown function '{func_name}'", node=stmt)
             return
@@ -2868,6 +2907,34 @@ class TypeChecker:
         return None
 
     # ── Expression type inference ───────────────────────────────────
+
+    def _check_await(self, expr):
+        """Type-check `await fut`: future<T> -> T."""
+        inner_t = self._infer_type(expr.expr)
+        if inner_t is None:
+            self._error(
+                "cannot determine the type of this 'await' operand",
+                node=expr.expr,
+                tip="Bind the future to a variable first (f: future<int> = work(); v := await f;).",
+                code="LEASH-E014",
+            )
+            return None
+        resolved = self._resolve(self._strip_imut(inner_t))
+        if not (isinstance(resolved, str) and resolved.startswith("future<")
+                and resolved.endswith(">")):
+            self._error(
+                f"'await' requires a future<T>, got '{inner_t}'",
+                node=expr,
+                tip="await joins the result of an `async fnc` call: x := await fetch(x);",
+                code="LEASH-E014",
+            )
+            return None
+        inner = resolved[len("future<"):-1]
+        # Stash T on the node so codegen can unbox through a typed pointer
+        # even when the operand is an expression it cannot re-infer
+        # (an index, a field, a call through a local, ...).
+        expr.inner_type = inner
+        return inner
 
     def _infer_type(self, expr):
         """Infer and return the type string for an expression, or None if unknown."""
@@ -2993,6 +3060,8 @@ class TypeChecker:
             )
         elif isinstance(expr, BinaryOp):
             return self._check_binary_op(expr)
+        elif isinstance(expr, AwaitExpr):
+            return self._check_await(expr)
         elif isinstance(expr, UnaryOp):
             return self._check_unary_op(expr)
         elif isinstance(expr, Call):

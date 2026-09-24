@@ -1,0 +1,60 @@
+// Duration formatting ("75" seconds -> "1m 15s") and unit helpers.
+//
+//   use time::duration::Duration;
+//   show(Duration.of_seconds(90061));
+
+pub def Duration : class {
+    static pub fnc of_seconds(total int) : string {
+        if total < 0 {
+            return "-" + Duration.of_seconds(0 - total);
+        }
+        d: int = total / 86400;
+        rem: int = total - d * 86400;
+        h: int = rem / 3600;
+        rem = rem - h * 3600;
+        m: int = rem / 60;
+        s: int = rem - m * 60;
+        out: string = "";
+        if d > 0 {
+            out = out + tostring(d) + "d";
+            out = out + " ";
+        }
+        if h > 0 {
+            out = out + tostring(h) + "h ";
+        }
+        if m > 0 {
+            out = out + tostring(m) + "m ";
+        }
+        if s > 0 || out.size == 0 {
+            out = out + tostring(s) + "s";
+        }
+        if out.size > 0 && out[out.size - 1] == ' ' {
+            out = Duration.trim_end(out);
+        }
+        return out;
+    }
+
+    static pub fnc of_minutes(total int) : string {
+        return Duration.of_seconds(total * 60);
+    }
+
+    static pub fnc of_hours(total int) : string {
+        return Duration.of_seconds(total * 3600);
+    }
+
+    static pub fnc of_millis(ms int) : string {
+        return Duration.of_seconds(ms / 1000);
+    }
+
+    static priv fnc trim_end(s string) : string {
+        n: int = s.size;
+        while n > 0 && s[n - 1] == ' ' {
+            n = n - 1;
+        }
+        out: string = "";
+        for i: int = 0; i < n; i = i + 1 {
+            out = out + s[i];
+        }
+        return out;
+    }
+};

@@ -1,0 +1,67 @@
+// String padding helpers for fixed-width output.
+//
+//   use utils::pad::Pad;
+//   show(Pad.left("42", 5));     // "   42"
+//   show(Pad.right("42", 5));    // "42   "
+//   show(Pad.center("ok", 8));   // "   ok   "
+
+pub def Pad : class {
+    // Pad on the right to `width` with spaces.
+    static pub fnc right(s string, width int) : string {
+        return Pad.right_fill(s, width, ' ');
+    }
+
+    // Pad on the right to `width` with `fill`.
+    static pub fnc right_fill(s string, width int, fill char) : string {
+        out: string = "";
+        for i: int = s.size; i < width; i = i + 1 {
+            out = out + fill;
+        }
+        return s + out;
+    }
+
+    // Pad on the left to `width` with spaces.
+    static pub fnc left(s string, width int) : string {
+        return Pad.left_fill(s, width, ' ');
+    }
+
+    // Pad on the left to `width` with `fill`.
+    static pub fnc left_fill(s string, width int, fill char) : string {
+        out: string = "";
+        for i: int = s.size; i < width; i = i + 1 {
+            out = out + fill;
+        }
+        return out + s;
+    }
+
+    // Center the text within `width` using `fill` around it.
+    static pub fnc center(s string, width int) : string {
+        return Pad.center_fill(s, width, ' ');
+    }
+
+    static pub fnc center_fill(s string, width int, fill char) : string {
+        gap: int = width - s.size;
+        if gap <= 0 {
+            return s;
+        }
+        l: int = gap / 2;
+        out: string = "";
+        for a: int = 0; a < l; a = a + 1 {
+            out = out + fill;
+        }
+        out = out + s;
+        for b: int = 0; b < gap - l; b = b + 1 {
+            out = out + fill;
+        }
+        return out;
+    }
+
+    // A run of `n` copies of `c` (or an empty string for n <= 0 handy in loops).
+    static pub fnc repeat(c char, n int) : string {
+        out: string = "";
+        for i: int = 0; i < n; i = i + 1 {
+            out = out + c;
+        }
+        return out;
+    }
+};

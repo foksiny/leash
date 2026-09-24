@@ -1,0 +1,8 @@
+use utils::pad::Pad;
+fnc main() : void {
+    show(Pad.left("42", 5));
+    show(Pad.right("42", 5));
+    show(Pad.center("ok", 8));
+    show(Pad.right_fill("7", 3, '0'));
+    show(Pad.repeat('*', 5));
+}

@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v0.23.9 Beta</div>
+        <div class="version">v0.24.1 Beta</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -109,6 +109,38 @@
     <li>All spawned threads run concurrently with <code>main</code> and with each other</li>
     <li>Workers stop when the program terminates or when <code>thisworker.interrupted</code> becomes true (e.g., on Ctrl+C)</li>
 </ul>
+
+<h2>Async Functions & Awaiting (<code>async fnc</code> / <code>await</code>)</h2>
+
+<p>Where <code>spawn</code> is fire-and-forget, <strong>async/await</strong> gives you a value back. Declare a function with <code>async fnc</code> and calling it returns a <code>future<T></code> handle immediately — the body runs on a worker thread. <code>await</code> joins the future and yields the result <code>T</code>.</p>
+
+<pre><code><span class="kw">async</span> <span class="kw">fnc</span> <span class="fn">fetch_score</span>(user <span class="kw">string</span>) : <span class="kw">int</span> {
+    <span class="cm">// runs on a worker thread</span>
+    <span class="kw">return</span> heavy_computation(user);
+}
+
+<span class="kw">fnc</span> <span class="fn">main</span>() {
+    <span class="cm">// three tasks in flight at once — real parallelism</span>
+    a: <span class="kw">future</span><<span class="kw">int</span>> = <span class="fn">fetch_score</span>(<span class="str">"ada"</span>);
+    b: <span class="kw">future</span><<span class="kw">int</span>> = <span class="fn">fetch_score</span>(<span class="str">"linus"</span>);
+    c: <span class="kw">future</span><<span class="kw">int</span>> = <span class="fn">fetch_score</span>(<span class="str">"grace"</span>);
+
+    <span class="fn">show</span>(<span class="kw">await</span> a, <span class="kw">await</span> b, <span class="kw">await</span> c);  <span class="cm">// joins in any order</span>
+}</code></pre>
+
+<h3>Rules</h3>
+<table>
+    <tr><th>Construct</th><th>Behavior</th></tr>
+    <tr><td><code>async fnc name(...) : T</code></td><td>Callable like any function; every call spawns a worker and returns <code>future<T></code></td></tr>
+    <tr><td><code>future<T></code></td><td>A first-class type — store it in variables, pass it around, await it once</td></tr>
+    <tr><td><code>await f</code> / <code>await name(...)</code></td><td>Blocks the calling thread until the result is ready; the expression's type is <code>T</code></td></tr>
+    <tr><td><code>async fnc ... : void</code></td><td>Join with <code>await f;</code> as a statement (no value)</td></tr>
+    <tr><td>Plain call, no <code>await</code></td><td>Legal fire-and-forget — the task still runs to completion</td></tr>
+</table>
+
+<div class="callout callout-info">Async functions compose: an <code>async fnc</code> may call (and <code>await</code>) other async functions — including itself, where recursion spawns child tasks. Calling an async function from inside its own body is always a new task; use <code>await</code> to collect results. <code>spawn</code> cannot be used on an async function (it already runs on a worker), and <code>main</code> cannot be async.</div>
+
+<div class="callout callout-info"><strong>Worker cap.</strong> The runtime runs at most 64 worker threads. Creating a 65th task does not deadlock and does not lose the result: the extra task runs inline on the calling thread, so its future still completes (you lose only the parallelism, and the runtime prints a notice). A future you never <code>await</code> stays rooted until the process exits, so fire-and-forget tasks are fine for a bounded number of calls, not an unbounded loop.</div>
 
 <h2>The <code>thisworker</code> Built-in</h2>
 

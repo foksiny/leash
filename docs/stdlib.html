@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v0.23.9 Beta</div>
+        <div class="version">v0.24.1 Beta</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -614,7 +614,7 @@ entry:
 
 <h1 id="extended">Extended Standard Libraries</h1>
 
-<p>Beyond the core modules above, the standard library ships 32 additional modules organized in subfolders. Most of them are pure Leash, require no compiler changes, and follow the same conventions: PascalCase classes with static or instance methods, errors reported through sentinel values or result fields instead of crashes. The <code>http</code> and <code>sql</code> modules additionally bundle native FFI libraries (see their sections below).</p>
+<p>Beyond the core modules above, the standard library ships <strong>100+ packages</strong>, organized in subfolders. Most of them are pure Leash, require no compiler changes, and follow the same conventions: PascalCase classes with static or instance methods, errors reported through sentinel values or result fields instead of crashes. The <code>http</code> and <code>sql</code> modules additionally bundle native FFI libraries (see their sections below).</p>
 
 <div class="callout callout-info">Install them together with the rest of the stdlib via <code>leash install installthis/</code>. Tests for every module live under <code>tests/stdlib/</code> &mdash; run them with <code>python3 scripts/test_stdlib.py test</code>.</div>
 
@@ -890,6 +890,53 @@ fnc main() {
     dl := Http.<span class="fn">download</span>(<span class="str">"https://example.com/archive.zip"</span>, <span class="str">"/tmp/archive.zip"</span>);
 }</code></pre>
 
+<h2>HTTP Server (<code>httpserver::httpserver</code>)</h2>
+
+<p>A native HTTP/1.1 server, built on a small C shim (<code>lshhttpd</code>) bound through <code>@from</code> — completing the web stack started by the <code>http</code> client. No external dependencies on any platform (BSD sockets on POSIX, Winsock2 on Windows).</p>
+
+<pre><code><span class="kw">use</span> httpserver::httpserver::*;
+
+<span class="kw">fnc</span> <span class="fn">handle</>(method string, path string, query string,
+            headers string, body string) : <span class="kw">int</span> {
+    <span class="kw">if</span> path == <span class="str">"/"</span> {
+        <span class="kw">return</span> HttpServer.<span class="fn">reply</span>(200, <span class="str">"text/html"</span>, <span class="str">"&lt;h1&gt;Hello from Leash!&lt;/h1&gt;"</span>);
+    }
+    <span class="kw">if</span> HttpServer.<span class="fn">path_matches</span>(path, <span class="str">"/api/data"</span>) {
+        q: HttpQuery = HttpServer.<span class="fn">parse_query</span>(query);
+        <span class="kw">return</span> HttpServer.<span class="fn">reply</span>(200, <span class="str">"application/json"</span>,
+            <span class="str">"{\"echo\": \""</span> + q.<span class="fn">get</span>(<span class="str">"q"</span>) + <span class="str">"\"}"</span>);
+    }
+    <span class="kw">return</span> HttpServer.<span class="fn">reply</span>(404, <span class="str">"text/plain"</span>, <span class="str">"not found: "</span> + path);
+}
+
+<span class="kw">fnc</span> <span class="fn">main</>() {
+    <span class="fn">show</span>(<span class="str">"listening on http://localhost:8080 …"</span>);
+    HttpServer.<span class="fn">serve</span>(8080, &amp;handle);   <span class="cm">// blocks until HttpServer.shutdown()</span>
+}</code></pre>
+
+<h3><code>HttpServer</code></h3>
+<table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td><code>serve(port, handler)</code></td><td>Blocking loop until <code>shutdown()</code>; returns requests served or a negative error</td></tr>
+    <tr><td><code>serve_ex(port, max_requests, handler)</code></td><td>Exit cleanly after N requests (good for tests)</td></tr>
+    <tr><td><code>shutdown()</code></td><td>Stop a running server; from a handler: after the current response; from another thread: unblocks <code>accept()</code> immediately</td></tr>
+    <tr><td><code>set_body(body)</code> / <code>add_header(name, value)</code> / <code>set_content_type(ct)</code></td><td>Fill the current response (call from the handler)</td></tr>
+    <tr><td><code>reply(status, content_type, body)</code> / <code>reply_raw(status, body)</code></td><td>One-liner response — returns <code>status</code>, so it's the handler's return value</td></tr>
+    <tr><td><code>parse_query(q)</code></td><td>Split <code>"a=1&amp;b=2"</code> into a <code>HttpQuery</code> (<code>get</code>/<code>has</code>/<code>count</code>)</td></tr>
+    <tr><td><code>path_matches(path, prefix)</code></td><td>Prefix routing helper</td></tr>
+    <tr><td><code>version()</code> / <code>strerror(code)</code></td><td>Diagnostics</td></tr>
+</table>
+
+<div class="callout callout-info">Handler signature: <code>fnc handler(method string, path string, query string, headers string, body string) : int</code>. Serving model: a multiplexed event loop on the calling thread — connections stay open across requests (<strong>HTTP/1.1 keep-alive by default, pipelining supported</strong>) while every handler callback still runs on that thread, keeping handler locals GC-visible. Up to 128 concurrent connections; idle keep-alive connections close after 60&nbsp;s, requests stuck mid-flight after 30&nbsp;s. Rebuildable on any supported platform with <code>cd src &amp;&amp; sh build.sh</code> (add <code>TARGET_DIR=arm64 CC=aarch64-linux-gnu-gcc</code> to cross-build for ARM).</div>
+
+<h3><code>HttpQuery</code></h3>
+<table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td><code>get(name)</code></td><td>Parameter value, or <code>""</code> (percent-decoded by <code>encoding::url::Url.decode</code> yourself if needed)</td></tr>
+    <tr><td><code>has(name)</code></td><td>True when the query has that key</td></tr>
+    <tr><td><code>count()</code></td><td>Number of parsed parameters</td></tr>
+</table>
+
 <h2>SQL Database (<code>sql::sql</code>)</h2>
 
 <p>An embedded, zero-configuration SQL database powered by <a href="https://www.sqlite.org/">SQLite</a>, bound through the <code>@from</code> FFI directive. The SQLite amalgamation is vendored into the package and statically compiled into each platform archive (<code>linux/liblshsql.a</code>, <code>win/liblshsql.a</code>), so nothing external needs to be installed. Databases are single files (or in-memory), with prepared statements, typed bindings, and transactions.</p>
@@ -1027,6 +1074,117 @@ fnc main() {
     <span class="kw">if</span> Args.get_flag(p, <span class="str">"verbose"</span>) { show(<span class="str">"chatty mode"</span>); }
     name: string = Args.get_opt(p, <span class="str">"name"</span>);
 }</code></pre>
+
+<h3>New: <code>sys::env::Env</code></h3>
+<table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td><code>get(name)</code> / <code>get_or(name, fb)</code></td><td>Environment variable lookup ("" / fallback when unset)</td></tr>
+    <tr><td><code>has(name)</code></td><td>True when the variable is defined</td></tr>
+    <tr><td><code>home()</code> / <code>user()</code></td><td>HOME (or USERPROFILE) / USER (or USERNAME)</td></tr>
+</table>
+
+<h3>New: <code>sys::exit::Exit</code></h3>
+<table>
+    <tr><th>Member</th><th>Description</th></tr>
+    <tr><td><code>Exit.OK</code> / <code>Exit.FAILURE</code> / <code>Exit.USAGE</code></td><td>POSIX-ish exit codes</td></tr>
+    <tr><td><code>Exit.done(msg)</code></td><td>Print and <code>exit(0)</code></td></tr>
+    <tr><td><code>Exit.die(msg, code)</code></td><td>Print <code>error: msg</code> and <code>exit(code)</code></td></tr>
+</table>
+
+<h3>New: <code>sys::info::SysInfo</code></h3>
+<table>
+    <tr><th>Method</th><th>Description</th></tr>
+    <tr><td><code>name()</code></td><td>Current <code>_PLATFORM</code> string ("linux64", "linux-arm", "win64", ...)</td></tr>
+    <tr><td><code>is_windows() / is_linux() / is_macos() / is_posix()</code></td><td>OS checks</td></tr>
+    <tr><td><code>is_64bit() / is_arm()</code></td><td>Architecture checks</td></tr>
+</table>
+
+<h2>New Sections in 0.24.0 (natural ecosystem growth)</h2>
+
+<h3><code>utils</code> — everyday helpers</h3>
+<table>
+    <tr><th>Module</th><th>Highlights</th></tr>
+    <tr><td><code>utils::pad::Pad</code></td><td><code>left / right / center / repeat</code> fixed-width strings</td></tr>
+    <tr><td><code>utils::indent::Indent</code></td><td><code>text / by / dedent</code> line indentation control</td></tr>
+    <tr><td><code>utils::units::Units</code></td><td><code>bytes / bytes64</code> data-size formatting (1.5 MB); C&harr;F, km&harr;mi, m&harr;ft, kg&harr;lb</td></tr>
+    <tr><td><code>utils::roman::Roman</code></td><td><code>to_roman(2024)</code> = "MMXXIV", <code>from_roman</code></td></tr>
+    <tr><td><code>utils::join::Join</code></td><td><code>strings / ints / floats</code> with separator; <code>human()</code> ("a, b and c")</td></tr>
+    <tr><td><code>utils::id::Id</code></td><td>Random ids (<code>make(len)</code> alnum, <code>lower(len)</code>, <code>hex(len)</code>)</td></tr>
+    <tr><td><code>utils::format::Format</code></td><td><code>dec(x, n)</code> fixed decimals, <code>commas(n)</code> thousands, <code>percent(x, n)</code></td></tr>
+</table>
+
+<h3><code>text</code> — text processing</h3>
+<table>
+    <tr><th>Module</th><th>Highlights</th></tr>
+    <tr><td><code>text::slug::Slug</code></td><td><code>to_slug("Hello, World!")</code> = "hello-world"</td></tr>
+    <tr><td><code>text::wrap::Wrap</code></td><td><code>text(s, width)</code> greedy word wrap (long words are broken)</td></tr>
+    <tr><td><code>text::caseconv::Case</code></td><td><code>to_camel / to_snake / to_kebab / to_pascal / to_screaming</code></td></tr>
+    <tr><td><code>text::plural::Plural</code></td><td><code>word("box", 3)</code> = "boxes", <code>phrase(2, "file")</code> = "2 files"</td></tr>
+    <tr><td><code>text::tmpl::Template</code></td><td>Mustache-lite <code>{{name}}</code> placeholders</td></tr>
+    <tr><td><code>text::count::Count</code></td><td><code>chars / words / lines / read_time</code></td></tr>
+    <tr><td><code>text::freq::Freq</code></td><td>Word frequency — <code>count_of</code>, <code>top_word</code>, <code>distinct</code></td></tr>
+    <tr><td><code>text::ngrams::Ngrams</code></td><td><code>words(text, n)</code> / <code>chars(text, n)</code></td></tr>
+    <tr><td><code>text::lorem::Lorem</code></td><td>Deterministic filler text — <code>sentence() / words(n) / paragraph(n)</code></td></tr>
+    <tr><td><code>text::leet::Leet</code></td><td>"leet" &rarr; "1337"</td></tr>
+    <tr><td><code>text::distance::Distance</code></td><td><code>edit(a, b)</code> (Levenshtein), <code>similarity(a, b)</code> (0..1)</td></tr>
+</table>
+
+<h3><code>collections</code> — containers beyond linked lists</h3>
+<table>
+    <tr><th>Module</th><th>Highlights</th></tr>
+    <tr><td><code>collections::multiset::MultiSet</code></td><td>String bag with per-item <code>count_of / add_n / total / distinct</code></td></tr>
+    <tr><td><code>collections::bitset::BitSet</code></td><td>Packed uint&lt;64&gt; bit array — <code>set / clear / toggle / get / popcount / lowest_set</code></td></tr>
+    <tr><td><code>collections::vecops::Vecs</code></td><td><code>reverse / take / drop / zip / unique / intersect / min / max / sum</code> for vecs</td></tr>
+    <tr><td><code>collections::lru::Lru</code></td><td>string &rarr; string cache with eviction by recency</td></tr>
+</table>
+
+<h3><code>mathx</code> — math for games/tools</h3>
+<table>
+    <tr><th>Module</th><th>Highlights</th></tr>
+    <tr><td><code>mathx::range::Range</code></td><td><code>ints/by / product / mean_ints / linspace</code></td></tr>
+    <tr><td><code>mathx::interp::Interp</code></td><td><code>lerp / clamp / normalize / remap / smoothstep</code></td></tr>
+    <tr><td><code>mathx::geometry::Geometry</code></td><td>circle/sphere/triangle area, <code>dist</code>, <code>hypot</code>, degree/radian</td></tr>
+    <tr><td><code>mathx::vec2::Vec2</code> / <code>mathx::vec3::Vec3</code></td><td>2D/3D vectors — dot, cross, length, normalized, dist</td></tr>
+</table>
+
+<h3><code>algo</code>, <code>crypto</code>, <code>encoding</code></h3>
+<table>
+    <tr><th>Module</th><th>Highlights</th></tr>
+    <tr><td><code>algo::combo::Combo</code></td><td><code>choose_indexes(n, k)</code>, <code>permute_indexes(n)</code> (Heap's)</td></tr>
+    <tr><td><code>algo::series::Series</code></td><td>Fibonacci, factorial, triangular, perfect squares</td></tr>
+    <tr><td><code>crypto::fnv::Fnv</code></td><td>FNV-1a string hash — 64-bit <code>hash64</code>, 32-bit <code>hash32</code></td></tr>
+    <tr><td><code>crypto::adler32::Adler32</code></td><td>Adler-32 checksums (string / hex forms); also available via <code>crypto::crc::Crc.adler32</code></td></tr>
+    <tr><td><code>encoding::base32::Base32</code></td><td>RFC 4648 encode/decode/valid</td></tr>
+    <tr><td><code>encoding::escape::Escape</code></td><td>JSON string escaping, shell-ish <code>controls</code></td></tr>
+    <tr><td><code>encoding::html::Html</code></td><td>Escaping for <code>&amp; &lt; &gt; " '</code> plus <code>&amp;#NNN;</code> numeric refs</td></tr>
+</table>
+
+<h3>Networking (<code>net::*</code>), data files (<code>data::*</code>), AI toys (<code>ai::*</code>)</h3>
+<table>
+    <tr><th>Module</th><th>Highlights</th></tr>
+    <tr><td><code>net::ip::Ip</code></td><td>Dotted-quad &harr; int, <code>is_valid</code>, <code>in_cidr</code></td></tr>
+    <tr><td><code>net::email::Email</code></td><td>Pragmatic address validation</td></tr>
+    <tr><td><code>net::mac::Mac</code></td><td>aa:bb:cc:dd:ee:ff / aabb.ccdd.eeff validation and normalization</td></tr>
+    <tr><td><code>data::ini::Ini</code></td><td>INI parse (<code>[section]</code>/<code>key = value</code>/comments)</td></tr>
+    <tr><td><code>data::env::EnvFile</code></td><td>.env files — KEY=value, optional quotes, # comments</td></tr>
+    <tr><td><code>data::querystring::QueryString</code></td><td>Parse "a=1&amp;b=2" against a browser-encoded query string</td></tr>
+    <tr><td><code>ai::markov::Markov</code></td><td>Word-level Markov text generator</td></tr>
+    <tr><td><code>ai::knn::Knn</code></td><td>k-nearest-neighbors over float vectors</td></tr>
+    <tr><td><code>ai::perceptron::Perceptron</code></td><td>Single-layer binary classifier</td></tr>
+</table>
+
+<h3>Games, time, money &amp; geo</h3>
+<table>
+    <tr><th>Module</th><th>Highlights</th></tr>
+    <tr><td><code>games::dice::Dice</code></td><td><code>d6 / d20 / roll(n, sides) / rolls(n, sides)</code></td></tr>
+    <tr><td><code>games::cards::Cards</code></td><td>52-card deck, Fisher-Yates shuffle, suit/rank helpers</td></tr>
+    <tr><td><code>games::board::Board</code></td><td>3&times;3 tic-tac-toe state &amp; win/draw detection</td></tr>
+    <tr><td><code>time::duration::Duration</code></td><td><code>of_seconds(90061)</code> &rarr; "1d 1h 1m 1s"</td></tr>
+    <tr><td><code>finance::money::Money</code></td><td>Cent-based currency formatting (<code>usd(1234567)</code> &rarr; "$12,345.67")</td></tr>
+    <tr><td><code>finance::interest::Interest</code></td><td><code>simple / compound / monthly_payment / years_to_grow</code></td></tr>
+    <tr><td><code>geo::coords::Coords</code></td><td>Lat/lon validation, haversine distance in km</td></tr>
+    <tr><td><code>testing::asserts::Asserts</code></td><td>self-counting assertion helper for tests (<code>ok / eq_int / eq_str / eq_float / summarize</code>)</td></tr>
+</table>
 
 <h2>Miscellaneous (<code>misc::*</code>)</h2>
 

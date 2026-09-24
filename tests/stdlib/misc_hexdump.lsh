@@ -1,0 +1,6 @@
+use misc::hexdump::Hexdump;
+fnc main() : void {
+    show(Hexdump.of("hello"));
+    show("---");
+    show(Hexdump.of("abcdefghijklmnopq"));   // 17 bytes => wrap to 2 lines
+}

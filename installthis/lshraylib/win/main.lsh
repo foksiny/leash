@@ -2285,7 +2285,7 @@
     ) : void;
 
     fnc UnloadSoundAlias(
-        alias Sound
+        snd Sound
     ) : void;
 
     fnc PlaySound(

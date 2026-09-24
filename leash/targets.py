@@ -79,7 +79,7 @@ class TargetConfig:
 
     def uses_wsl(self):
         """Return True if this target must be built/run through WSL on Windows."""
-        return os.name == "nt" and self.name in ("linux64", "linux32")
+        return os.name == "nt" and self.name in ("linux64", "linux32", "linux-arm")
 
     def detect_cross_linker(self):
         """Try to detect an appropriate cross-compiler for this target."""
@@ -93,6 +93,11 @@ class TargetConfig:
         cross_compilers = {
             "win64": ["x86_64-w64-mingw32-gcc", "x86_64-w64-mingw32-clang"],
             "linux32": ["i686-linux-gnu-gcc", "i686-pc-linux-gnu-gcc"],
+            "linux-arm": [
+                "aarch64-linux-gnu-gcc",
+                "aarch64-linux-gnu-clang",
+                "arm64-linux-gnu-gcc",
+            ],
             "linux64": None,  # Usually native on Linux
             "macos": ["o64-clang", "x86_64-apple-darwin20-clang"],
         }
@@ -134,6 +139,21 @@ TARGETS = {
         linker_flags=["-no-pie"],
         platform_name="Linux",
         description="Linux x86 (32-bit)",
+        size_flags=[
+            "-Wl,--gc-sections",
+            "-Wl,--strip-all",
+            "-Wl,--build-id=none",
+            "-Wl,-O1",
+        ],
+        size_only_flags=["-Wl,--hash-style=gnu"],
+    ),
+    "linux-arm": TargetConfig(
+        name="linux-arm",
+        llvm_triple="aarch64-unknown-linux-gnu",
+        output_extension="",
+        linker_flags=["-no-pie"],
+        platform_name="Linux",
+        description="Linux ARM64 (AArch64, Raspberry Pi 4/5, AWS Graviton, ARM servers)",
         size_flags=[
             "-Wl,--gc-sections",
             "-Wl,--strip-all",
@@ -195,6 +215,8 @@ def get_native_target():
             return TARGETS["linux64"]
         elif machine in ("i386", "i686", "x86"):
             return TARGETS["linux32"]
+        elif machine in ("arm64", "aarch64", "armv8l"):
+            return TARGETS["linux-arm"]
     elif system == "windows":
         return TARGETS["win64"]
     elif system == "darwin":

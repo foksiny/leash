@@ -1,0 +1,8 @@
+use geo::coords::Coords;
+use utils::format::Format;
+fnc main() : void {
+    show(Coords.in_range(51.5, -0.12));
+    show(Coords.in_range(91.0, 0.0));
+    show(Format.dec(Coords.dist_km(0.0, 0.0, 0.0, 0.0), 2));
+    show(Format.dec(Coords.dist_km(0.0, 0.0, 0.0, 1.0), 2));
+}

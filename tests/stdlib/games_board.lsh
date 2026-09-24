@@ -1,0 +1,13 @@
+use games::board::Board;
+fnc main() : void {
+    b: Board = Board.make();
+    show(b.play(0, 'X'));
+    show(b.play(1, 'O'));
+    show(b.play(3, 'X'));
+    show(b.play(4, 'O'));
+    b.play(6, 'X');
+    show(b.winner());
+    show(b.is_draw());
+    b2: Board = Board.make();
+    show(b2.winner());
+}

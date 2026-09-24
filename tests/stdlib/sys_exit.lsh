@@ -1,0 +1,7 @@
+use sys::exit::Exit;
+fnc main() : void {
+    show(Exit.OK);
+    show(Exit.FAILURE);
+    show("running");
+    Exit.die("intentional", 3);
+}

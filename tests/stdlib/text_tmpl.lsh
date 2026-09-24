@@ -1,0 +1,15 @@
+use text::tmpl::Template;
+fnc main() : void {
+    ns: vec<string>;
+    vs: vec<string>;
+    ns.pushb("name"); vs.pushb("Ada");
+    ns.pushb("n");    vs.pushb("3");
+    t: Template = Template.from("Hi {{name}}, {{n}} msgs", ns, vs);
+    show(t.render());
+
+    t2: Template = Template.make("{{a}} + {{b}} = {{c}}");
+    t2.set("a", "1");
+    t2.set("b", "2");
+    t2.set("c", "3");
+    show(t2.render());
+}

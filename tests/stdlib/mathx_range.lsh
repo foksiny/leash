@@ -1,0 +1,14 @@
+use mathx::range::Range;
+fnc main() : void {
+    u2: vec<int> = Range.ints(1, 5);
+    foreach _, x in<vector> u2 { show(x); }
+    show("---");
+    u3: vec<int> = Range.ints_by(1, 10, 2);
+    foreach _, x in<vector> u3 { show(x); }
+    show("---");
+    u4: vec<int> = Range.ints_by(5, 0, -1);
+    foreach _, x in<vector> u4 { show(x); }
+    show(Range.sum(Range.ints_by(1, 101, 1)));
+    show(Range.product((vec<int>){1, 2, 3, 4, 5}));
+    show(Range.mean_ints(Range.ints_by(1, 11, 1)));
+}

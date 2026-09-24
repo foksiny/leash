@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name='leash',
-    version="0.23.9",
+    version="0.24.1",
     packages=find_packages(),
     install_requires=[
         'llvmlite'

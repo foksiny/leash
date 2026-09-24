@@ -1,0 +1,10 @@
+use encoding::escape::Escape;
+fnc main() : void {
+    show(Escape.json("a\"b"));
+    show(Escape.json("tab\there"));
+    orig: string = "a\"b\n";
+    enc: string = Escape.json(orig);
+    show(enc);
+    show(Escape.unjson(enc) == orig);
+    show(Escape.controls("x\ny"));
+}

@@ -1,0 +1,33 @@
+// Leetspeak conversion, mostly for fun and tests-of-idempotent code.
+//
+//   use text::leet::Leet;
+//   show(Leet.convert("leet speak"));   // "1337 5p34k"
+
+pub def Leet : class {
+    static pub fnc map(lc char) : char {
+        if lc == 'a' { return '4'; }
+        if lc == 'e' { return '3'; }
+        if lc == 'i' { return '1'; }
+        if lc == 'o' { return '0'; }
+        if lc == 's' { return '5'; }
+        if lc == 't' { return '7'; }
+        if lc == 'l' { return '1'; }
+        if lc == 'g' { return '9'; }
+        if lc == 'b' { return '8'; }
+        return lc;
+    }
+
+    static pub fnc convert(s string) : string {
+        out: string = "";
+        foreach _, c in<string> s {
+            lc: char = c;
+            if c >= 'a' && c <= 'z' {
+                lc = c;
+            } also c >= 'A' && c <= 'Z' {
+                lc = (char)(c + 32);
+            }
+            out = out + Leet.map(lc);
+        }
+        return out;
+    }
+};

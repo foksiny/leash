@@ -1,0 +1,11 @@
+use data::querystring::QueryString;
+fnc main() : void {
+    q: QueryString = QueryString.parse("a=1&b=&flag&x=a%20b");
+    show(q.count());
+    show(q.get("a"));
+    show(q.get("x"));
+    show(q.has("flag"));
+    show(q.get("flag").size);
+    q2: QueryString = QueryString.parse("?k=1");
+    show(q2.get("k"));
+}

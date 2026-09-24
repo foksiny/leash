@@ -1,0 +1,6 @@
+use text::lorem::Lorem;
+fnc main() : void {
+    show(Lorem.sentence());
+    show(Lorem.words(5));
+    show(Lorem.paragraph(2));
+}

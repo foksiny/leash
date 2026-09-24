@@ -1,0 +1,9 @@
+use text::plural::Plural;
+fnc main() : void {
+    show(Plural.word("cat", 2));
+    show(Plural.word("box", 3));
+    show(Plural.word("city", 2));
+    show(Plural.word("cat", 1));
+    show(Plural.phrase(2, "file"));
+    show(Plural.singular("boxes"));
+}

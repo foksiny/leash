@@ -1,0 +1,11 @@
+use text::caseconv::Case;
+fnc main() : void {
+    show(Case.to_camel("hello_world"));
+    show(Case.to_snake("HelloWorld42"));
+    show(Case.to_kebab("SomeThing Big"));
+    show(Case.to_pascal("hello world"));
+    show(Case.to_screaming("hello world"));
+    show(Case.to_uppercase("MiX"));
+    show(Case.to_lowercase("MiX"));
+    show(Case.capitalize("hello"));
+}

@@ -1,0 +1,57 @@
+// Levenshtein edit distance and a normalized similarity ratio.
+//
+//   use text::distance::Distance;
+//   show(Distance.edit("kitten", "sitting"));
+//   show(Distance.similarity("hello", "hallo"));
+
+pub def Distance : class {
+    // Plain Levenshtein distance (insert/delete/substitute cost 1).
+    static pub fnc edit(a string, b string) : int {
+        na: int = a.size;
+        nb: int = b.size;
+        cur: vec<int>;
+        for j: int = 0; j <= nb; j = j + 1 {
+            cur.pushb(j);
+        }
+        i: int = 1;
+        while i <= na {
+            prev: vec<int>;
+            foreach _, x in<vector> cur {
+                prev.pushb(x);
+            }
+            cur.clear();
+            cur.pushb(i);
+            for k: int = 1; k <= nb; k = k + 1 {
+                del_cost: int = prev.get(k) + 1;
+                ins_cost: int = cur.get(k - 1) + 1;
+                sub_cost: int = prev.get(k - 1);
+                if a[i - 1] != b[k - 1] {
+                    sub_cost = sub_cost + 1;
+                }
+                m: int = del_cost;
+                if ins_cost < m {
+                    m = ins_cost;
+                }
+                if sub_cost < m {
+                    m = sub_cost;
+                }
+                cur.pushb(m);
+            }
+            i = i + 1;
+        }
+        return cur.get(nb);
+    }
+
+    // 0.0 (nothing alike) .. 1.0 (identical) similarity, 1 - dist/maxlen.
+    static pub fnc similarity(a string, b string) : float {
+        max: int = a.size;
+        if b.size > max {
+            max = b.size;
+        }
+        if max == 0 {
+            return 1.0;
+        }
+        d: int = Distance.edit(a, b);
+        return 1.0 - tofloat(float, d) / tofloat(float, max);
+    }
+};

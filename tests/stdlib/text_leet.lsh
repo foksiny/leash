@@ -1,0 +1,6 @@
+use text::leet::Leet;
+fnc main() : void {
+    show(Leet.convert("leet"));
+    show(Leet.convert("Leet"));
+    show(Leet.convert("123"));
+}

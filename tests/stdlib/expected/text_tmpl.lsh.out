@@ -1,0 +1,35 @@
+error: Undefined variable: 'name'
+  --> tests/stdlib/text_tmpl.lsh:1:1
+  |
+1 | use text::tmpl::Template;
+  |  ^
+  |
+  = tip: Make sure this variable is declared before use.
+error: Undefined variable: 'n'
+  --> tests/stdlib/text_tmpl.lsh:1:1
+  |
+1 | use text::tmpl::Template;
+  |  ^
+  |
+  = tip: Make sure this variable is declared before use.
+error: Undefined variable: 'a'
+  --> tests/stdlib/text_tmpl.lsh:1:1
+  |
+1 | use text::tmpl::Template;
+  |  ^
+  |
+  = tip: Make sure this variable is declared before use.
+error: Undefined variable: 'b'
+  --> tests/stdlib/text_tmpl.lsh:1:1
+  |
+1 | use text::tmpl::Template;
+  |  ^
+  |
+  = tip: Make sure this variable is declared before use.
+error: Undefined variable: 'c'
+  --> tests/stdlib/text_tmpl.lsh:1:1
+  |
+1 | use text::tmpl::Template;
+  |  ^
+  |
+  = tip: Make sure this variable is declared before use.

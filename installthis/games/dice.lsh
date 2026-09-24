@@ -1,0 +1,46 @@
+// Dice rolling on top of the runtime's rand(). Property-style functions
+// (in ranges) make tests deterministic.
+//
+//   use games::dice::Dice;
+//   show(Dice.d6());
+
+pub def Dice : class {
+    // One dN roll in [1, sides].
+    static pub fnc roll(sides int) : int {
+        if sides <= 1 {
+            return 1;
+        }
+        return rand(1, sides);
+    }
+
+    // One d6. The classic.
+    static pub fnc d6() : int {
+        return rand(1, 6);
+    }
+
+    // One d20 (crits and all).
+    static pub fnc d20() : int {
+        return rand(1, 20);
+    }
+
+    // Sum of `n` dice of `sides` faces each.
+    static pub fnc roll_sum(n int, sides int) : int {
+        if n <= 0 {
+            return 0;
+        }
+        s: int = 0;
+        for i: int = 0; i < n; i = i + 1 {
+            s = s + Dice.roll(sides);
+        }
+        return s;
+    }
+
+    // A sequence of `n` d-side rolls (vec).
+    static pub fnc rolls(n int, sides int) : vec<int> {
+        out: vec<int>;
+        for i: int = 0; i < n; i = i + 1 {
+            out.pushb(Dice.roll(sides));
+        }
+        return out;
+    }
+};

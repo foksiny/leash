@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v0.23.9 Beta</div>
+        <div class="version">v0.24.1 Beta</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -42,7 +42,7 @@
 <main class="main">
 
 <div class="hero">
-    <div class="version-badge">v0.23.9 Beta</div>
+    <div class="version-badge">v0.24.1 Beta</div>
     <h1>Leash</h1>
     <p class="tagline">A strongly-typed, modern compiled programming language built on LLVM.</p>
 </div>
@@ -70,19 +70,27 @@
     </div>
     <div class="feature-card">
         <h3>Package Manager</h3>
-        <p><code>leashed</code> lets you publish, install, and manage libraries with semantic versioning.</p>
+        <p><code>leashed</code> publishes, installs and manages libraries with semantic versioning and per-project reproducible builds via <code>leash.lock</code>.</p>
     </div>
     <div class="feature-card">
         <h3>Cross-Platform</h3>
-        <p>Compile for Linux, Windows, and macOS from a single source with conditional compilation.</p>
+        <p>Compile for Linux (x64/ARM64), Windows, and macOS from a single source with conditional compilation.</p>
+    </div>
+    <div class="feature-card">
+        <h3>Native Web Stack</h3>
+        <p><code>http</code> ships a full HTTP/HTTPS client; <code>httpserver</code> adds a multiplexed keep-alive HTTP/1.1 server — both dependency-free.</p>
+    </div>
+    <div class="feature-card">
+        <h3>Native Debugger</h3>
+        <p><code>leash dbg</code> steps or breakpoints any program without GDB/LLDB — source-level stops, set from the CLI or interactively.</p>
     </div>
     <div class="feature-card">
         <h3>Concurrency</h3>
-        <p>Built-in worker threads with shared and fusion variables for safe multi-threaded programming.</p>
+        <p>Worker threads, <code>shared</code>/<code>fusion</code> variables, and native <code>async</code>/<code>await</code> with <code>future<T></code>.</p>
     </div>
     <div class="feature-card">
         <h3>Rich Standard Library</h3>
-        <p>Vectors, matrices, hash tables, file I/O, string utilities, math functions, and windowing.</p>
+        <p>100+ importable packages: vectors, hash maps, graphs, files, math, HTTP/SQL, compression, parsing, testing helpers, and more.</p>
     </div>
 </div>
 

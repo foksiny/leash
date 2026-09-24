@@ -1,0 +1,30 @@
+// Native async/await: an `async fnc` returns a future<T> immediately and
+// runs on a worker thread; `await` joins it and yields T.
+
+async fnc slow_add(a int, b int) : int {
+    return a + b;
+}
+
+async fnc greet(name string) : string {
+    return "hello, " + name + "!";
+}
+
+async fnc log_later(msg string) : void {
+    show("[bg] ", msg);
+}
+
+fnc main() : void {
+    // fire three tasks; they run in parallel on worker threads
+    f1: future<int> = slow_add(19, 23);
+    f2: future<string> = greet("leash");
+    f3: future<int> = slow_add(100, 200);
+
+    show(await f2);
+    show(await f1);
+    show(await f3);
+
+    // void async: await as a statement waits for the side effect
+    bg: future<void> = log_later("work done");
+    await bg;
+    show("done");
+}

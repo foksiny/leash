@@ -1,0 +1,87 @@
+// HTML entity escaping (& < > " ') and the corresponding unescape for
+// the named entities it produces, plus &#NNN; numeric refs.
+//
+//   use encoding::html::Html;
+//   show(Html.escape("<p>a & b</p>"));   // "&lt;p&gt;a &amp; b&lt;/p&gt;"
+
+pub def Html : class {
+    static pub fnc escape(s string) : string {
+        out: string = "";
+        foreach _, c in<string> s {
+            out = out + Html.esc_char(c);
+        }
+        return out;
+    }
+
+    static pub fnc esc_char(c char) : string {
+        if c == '&' { return "&amp;"; }
+        if c == '<' { return "&lt;"; }
+        if c == '>' { return "&gt;"; }
+        if c == '"' { return "&quot;"; }
+        if c == '\'' { return "&#39;"; }
+        return "" + c;
+    }
+
+    // Unescape the five entities escaped here, plus &#NNN; numeric refs.
+    static pub fnc unescape(s string) : string {
+        out: string = "";
+        i: int = 0;
+        n: int = s.size;
+        while i < n {
+            c: char = s[i];
+            if c != '&' {
+                out = out + c;
+                i = i + 1;
+                continue;
+            }
+            if Html.match_at(s, i, "&amp;") {
+                out = out + '&';
+                i = i + 5;
+            } also Html.match_at(s, i, "&lt;") {
+                out = out + '<';
+                i = i + 4;
+            } also Html.match_at(s, i, "&gt;") {
+                out = out + '>';
+                i = i + 4;
+            } also Html.match_at(s, i, "&quot;") {
+                out = out + '"';
+                i = i + 6;
+            } also Html.match_at(s, i, "&#39;") {
+                out = out + '\'';
+                i = i + 5;
+            } also Html.match_at(s, i, "&#") {
+                j: int = i + 2;
+                v: int = 0;
+                digits: bool = false;
+                while j < n && s[j] >= '0' && s[j] <= '9' {
+                    v = v * 10 + toint(int, s[j]) - toint(int, '0');
+                    digits = true;
+                    j = j + 1;
+                }
+                if digits && j < n && s[j] == ';' {
+                    out = out + (char)v;
+                    i = j + 1;
+                } else {
+                    out = out + c;
+                    i = i + 1;
+                }
+            } else {
+                out = out + c;
+                i = i + 1;
+            }
+        }
+        return out;
+    }
+
+    static priv fnc match_at(s string, from int, pat string) : bool {
+        if from + pat.size > s.size {
+            return false;
+        }
+        for k: int = 0; k < pat.size; k = k + 1 {
+            if s[from + k] != pat[k] {
+                return false;
+            }
+        }
+        return true;
+    }
+};

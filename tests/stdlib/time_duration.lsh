@@ -1,0 +1,10 @@
+use time::duration::Duration;
+fnc main() : void {
+    show(Duration.of_seconds(65));
+    show(Duration.of_seconds(3600));
+    show(Duration.of_seconds(86461));
+    show(Duration.of_minutes(90));
+    show(Duration.of_hours(25));
+    show(Duration.of_millis(2000));
+    show(Duration.of_seconds(0));
+}

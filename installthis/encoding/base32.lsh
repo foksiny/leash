@@ -1,0 +1,78 @@
+// RFC 4648 Base32 encoding/decoding (uppercase letters + 234567).
+//
+//   use encoding::base32::Base32;
+//   show(Base32.encode("hello"));
+
+pub def Base32 : class {
+    static pub fnc chr(d int) : char {
+        if d >= 0 && d <= 25 {
+            return (char)('A' + d);
+        }
+        if d >= 26 && d <= 31 {
+            return (char)('2' + (d - 26));
+        }
+        return 'A';
+    }
+
+    static pub fnc val(c char) : int {
+        if c >= 'A' && c <= 'Z' {
+            return toint(int, c) - toint(int, 'A');
+        }
+        if c >= '2' && c <= '7' {
+            return toint(int, c) - toint(int, '2') + 26;
+        }
+        return 0 - 1;
+    }
+
+    static pub fnc encode(s string) : string {
+        out: string = "";
+        i: int = 0;
+        n: int = s.size;
+        while i < n {
+            b0: int = Base32.byte_of(s, i);
+            b1: int = Base32.byte_of(s, i + 1);
+            b2: int = Base32.byte_of(s, i + 2);
+            b3: int = Base32.byte_of(s, i + 3);
+            b4: int = Base32.byte_of(s, i + 4);
+
+            out = out + Base32.chr((b0 >> 3) & 31);
+            out = out + Base32.chr(((b0 << 2) | (b1 >> 6)) & 31);
+            if i + 1 < n {
+                out = out + Base32.chr((b1 >> 1) & 31);
+                out = out + Base32.chr(((b1 << 4) | (b2 >> 4)) & 31);
+            }
+            if i + 2 < n {
+                out = out + Base32.chr(((b2 << 1) | (b3 >> 7)) & 31);
+            }
+            if i + 3 < n {
+                out = out + Base32.chr((b3 >> 2) & 31);
+                out = out + Base32.chr(((b3 << 3) | (b4 >> 5)) & 31);
+            }
+            if i + 4 < n {
+                out = out + Base32.chr(b4 & 31);
+            }
+            i = i + 5;
+        }
+        return out;
+    }
+
+    static priv fnc byte_of(s string, i int) : int {
+        if i >= s.size {
+            return 0;
+        }
+        v: int = toint(int, s[i]);
+        if v < 0 {
+            v = v + 256;
+        }
+        return v;
+    }
+
+    static pub fnc valid(s string) : bool {
+        for i: int = 0; i < s.size; i = i + 1 {
+            if Base32.val(s[i]) < 0 {
+                return false;
+            }
+        }
+        return true;
+    }
+};

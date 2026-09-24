@@ -1,0 +1,11 @@
+use data::ini::Ini;
+fnc main() : void {
+    cfg: Ini = Ini.parse("[srv]\nport = 8080\nhost = 127.0.0.1\n; comment\n\n[ui]\ncolor = red\n");
+    show(cfg.get("srv", "port"));
+    show(cfg.get("srv", "host"));
+    show(cfg.get("ui", "color"));
+    show(cfg.get_i32("srv", "port"));
+    show(cfg.has("srv", "port"));
+    show(cfg.has("ui", "font"));
+    show(cfg.count());
+}

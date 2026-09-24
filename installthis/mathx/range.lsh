@@ -1,0 +1,75 @@
+// Numeric range generation (like Python's range() but into vecs).
+//
+//   use mathx::range::Range;
+//   v: vec<int> = Range.ints(1, 5);        // 1..4
+//   show(Range.sum(Range.ints(1, 101)));   // 5050
+
+pub def Range : class {
+    // [start, stop_at) with a default step of 1.
+    static pub fnc ints(start int, stop_at int) : vec<int> {
+        return Range.ints_by(start, stop_at, 1);
+    }
+
+    static pub fnc ints_by(start int, stop_at int, step int) : vec<int> {
+        out: vec<int>;
+        if step == 0 {
+            return out;
+        }
+        if step > 0 {
+            v: int = start;
+            while v < stop_at {
+                out.pushb(v);
+                v = v + step;
+            }
+            return out;
+        }
+        w: int = start;
+        while w > stop_at {
+            out.pushb(w);
+            w = w + step;
+        }
+        return out;
+        return out;
+    }
+
+    // n floats spanning [a, b] inclusive on both ends (grid for sampling).
+    static pub fnc linspace(a float, b float, n int) : vec<float> {
+        out: vec<float>;
+        if n <= 0 {
+            return out;
+        }
+        if n == 1 {
+            out.pushb(a);
+            return out;
+        }
+        denom: float = (float)(n - 1);
+        for i: int = 0; i < n; i = i + 1 {
+            t: float = (float)i / denom;
+            out.pushb(a + (b - a) * t);
+        }
+        return out;
+    }
+
+    static pub fnc sum(v vec<int>) : int {
+        s: int = 0;
+        foreach _, x in<vector> v {
+            s = s + x;
+        }
+        return s;
+    }
+
+    static pub fnc product(v vec<int>) : int {
+        p: int = 1;
+        foreach _, x in<vector> v {
+            p = p * x;
+        }
+        return p;
+    }
+
+    static pub fnc mean_ints(v vec<int>) : float {
+        if v.size == 0 {
+            return 0.0;
+        }
+        return (float)Range.sum(v) / (float)v.size;
+    }
+};

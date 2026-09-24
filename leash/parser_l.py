@@ -1,5 +1,6 @@
 from .lexer import Lexer, Token, leash_unescape
 from .ast_nodes import (
+    AwaitExpr,
     Program,
     StructDef,
     Function,
@@ -644,7 +645,8 @@ class Parser:
             is_unsafe = False
             is_inline = False
             is_nogc = False
-            while self.current().type in ("NOGC", "UNSAFE", "INLINE"):
+            is_async = False
+            while self.current().type in ("NOGC", "UNSAFE", "INLINE", "ASYNC"):
                 if self.current().type == "NOGC":
                     self.eat("NOGC")
                     is_nogc = True
@@ -654,8 +656,26 @@ class Parser:
                 elif self.current().type == "INLINE":
                     self.eat("INLINE")
                     is_inline = True
+                elif self.current().type == "ASYNC":
+                    self.eat("ASYNC")
+                    is_async = True
 
-            if self.current().type == "WORKER":
+            if is_async:
+                if self.current().type == "FNC":
+                    fn = self.parse_function(
+                        is_unsafe=is_unsafe,
+                        is_inline=is_inline,
+                        is_nogc=is_nogc,
+                    )
+                    fn.is_async = True
+                    items.append(fn)
+                else:
+                    raise LeashError(
+                        "'async' must be followed by 'fnc'",
+                        self.current().line, self.current().column,
+                        tip="Declare async functions like: async fnc work() : int { ... }",
+                    )
+            elif self.current().type == "WORKER":
                 items.append(self.parse_worker_function(is_unsafe=is_unsafe, is_inline=is_inline, is_nogc=is_nogc))
             elif self.current().type in ("SHARED", "FUSION"):
                 items.append(self.parse_shared_global_var())
@@ -670,14 +690,31 @@ class Parser:
                     # It's a fnc with visibility
                     visibility = self.current().value.lower()
                     self.eat(self.current().type)  # eat PUB/PRIV
-                    items.append(
-                        self.parse_function(
-                            visibility=visibility,
-                            is_unsafe=is_unsafe,
-                            is_inline=is_inline,
-                            is_nogc=is_nogc,
-                        )
+                    fn = self.parse_function(
+                        visibility=visibility,
+                        is_unsafe=is_unsafe,
+                        is_inline=is_inline,
+                        is_nogc=is_nogc,
                     )
+                    items.append(fn)
+                elif self.peek() and self.peek().type == "ASYNC":
+                    # `pub async fnc ...` — consume pub, then the async path below
+                    visibility = self.current().value.lower()
+                    self.eat(self.current().type)  # eat PUB/PRIV
+                    self.eat("ASYNC")
+                    if self.current().type != "FNC":
+                        raise LeashError(
+                            "'async' must be followed by 'fnc'",
+                            self.current().line, self.current().column,
+                        )
+                    fn = self.parse_function(
+                        visibility=visibility,
+                        is_unsafe=is_unsafe,
+                        is_inline=is_inline,
+                        is_nogc=is_nogc,
+                    )
+                    fn.is_async = True
+                    items.append(fn)
                 elif self.peek() and self.peek().type == "ERROR":
                     visibility = self.current().value.lower()
                     self.eat(self.current().type)  # eat PUB/PRIV
@@ -824,7 +861,8 @@ class Parser:
         """Parse a single top-level item (used inside conditional branches)."""
         is_unsafe = False
         is_nogc = False
-        while self.current().type in ("NOGC", "UNSAFE", "INLINE"):
+        is_async = False
+        while self.current().type in ("NOGC", "UNSAFE", "INLINE", "ASYNC"):
             if self.current().type == "NOGC":
                 self.eat("NOGC")
                 is_nogc = True
@@ -834,6 +872,19 @@ class Parser:
             elif self.current().type == "INLINE":
                 self.eat("INLINE")
                 pass
+            elif self.current().type == "ASYNC":
+                self.eat("ASYNC")
+                is_async = True
+
+        if is_async:
+            if self.current().type != "FNC":
+                raise LeashError(
+                    "'async' must be followed by 'fnc'",
+                    self.current().line, self.current().column,
+                )
+            fn = self.parse_function(is_unsafe=is_unsafe, is_nogc=is_nogc)
+            fn.is_async = True
+            return fn
 
         if self.current().type == "WORKER":
             return self.parse_worker_function(is_unsafe=is_unsafe, is_nogc=is_nogc)
@@ -848,7 +899,20 @@ class Parser:
             elif self.peek() and self.peek().type == "FNC":
                 visibility = self.current().value.lower()
                 self.eat(self.current().type)
-                return self.parse_function(visibility=visibility, is_unsafe=is_unsafe, is_nogc=is_nogc)
+                fn = self.parse_function(visibility=visibility, is_unsafe=is_unsafe, is_nogc=is_nogc)
+                return fn
+            elif self.peek() and self.peek().type == "ASYNC":
+                visibility = self.current().value.lower()
+                self.eat(self.current().type)  # eat PUB/PRIV
+                self.eat("ASYNC")
+                if self.current().type != "FNC":
+                    raise LeashError(
+                        "'async' must be followed by 'fnc'",
+                        self.current().line, self.current().column,
+                    )
+                fn = self.parse_function(visibility=visibility, is_unsafe=is_unsafe, is_nogc=is_nogc)
+                fn.is_async = True
+                return fn
             elif self.peek() and self.peek().type == "USE":
                 visibility = self.current().value.lower()
                 self.eat(self.current().type)
@@ -1874,6 +1938,13 @@ class Parser:
             # Nested function declaration inside another function
             return self.parse_function()
 
+        elif current.type == "AWAIT":
+            # `await expr;` as a statement — join a future, discard the value.
+            tok = self.current()
+            expr = self.parse_await_expression()
+            self.eat("SEMI")
+            return self._pos(ExpressionStatement(expr), tok)
+
         elif current.type == "DEL":
             tok = self.current()
             self.eat("DEL")
@@ -2154,8 +2225,20 @@ class Parser:
     def parse_expression(self, no_struct_init=False):
         return self.parse_ternary(no_struct_init)
 
+    def parse_await_expression(self, no_struct_init=False):
+        """`await` as the leftmost operator of an expression.
+
+        The prefix binds to the following unary expression, then the normal
+        operator tail applies, so `await f + 1` parses as `(await f) + 1`
+        exactly like it does inside a larger expression."""
+        tok = self.eat("AWAIT")
+        operand = self.parse_unary(no_struct_init)
+        return self.parse_ternary_from(self._pos(AwaitExpr(operand), tok), no_struct_init)
+
     def parse_ternary(self, no_struct_init=False):
-        node = self.parse_logical_or(no_struct_init)
+        return self.parse_ternary_from(self.parse_logical_or(no_struct_init), no_struct_init)
+
+    def parse_ternary_from(self, node, no_struct_init=False):
         if self.current().type == "QUESTION":
             q_tok = self.current()
             self.eat("QUESTION")
@@ -2296,6 +2379,10 @@ class Parser:
         return node
 
     def parse_unary(self, no_struct_init=False):
+        if self.current().type == "AWAIT":
+            tok = self.eat("AWAIT")
+            expr = self.parse_unary(no_struct_init)
+            return self._pos(AwaitExpr(expr), tok)
         if self.current().type in ("NOT", "BIT_NOT", "MINUS", "MUL", "BIT_AND"):
             op = self.eat(self.current().type)
             expr = self.parse_unary(no_struct_init)

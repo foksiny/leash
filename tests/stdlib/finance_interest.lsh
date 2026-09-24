@@ -1,0 +1,8 @@
+use finance::interest::Interest;
+use utils::format::Format;
+fnc main() : void {
+    show(Format.dec(Interest.simple(1000.0, 0.05, 2.0), 2));
+    show(Format.dec(Interest.compound(1000.0, 0.05, 1), 2));
+    show(Interest.years_to_grow(1000.0, 2000.0, 0.0));
+    show(Interest.years_to_grow(1000.0, 1000.0, 0.05));
+}

@@ -1,0 +1,17 @@
+use games::cards::Cards;
+fnc main() : void {
+    d: vec<string> = Cards.deck();
+    show(d.size);
+    show(Cards.suit_of("KS"));
+    show(Cards.is_ace("AH"));
+    show(Cards.is_ace("2D"));
+    show(Cards.rank_value("10S"));
+    show(Cards.rank_value("QH"));
+    s: vec<string> = Cards.shuffled(d);
+    show(s.size == d.size);
+    sum: int = 0;
+    foreach _, c in<vector> s { sum = sum + Cards.rank_value(c); }
+    orig: int = 0;
+    foreach _, c in<vector> d { orig = orig + Cards.rank_value(c); }
+    show(sum == orig);
+}

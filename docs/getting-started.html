@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v0.23.9 Beta</div>
+        <div class="version">v0.24.1 Beta</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -86,6 +86,8 @@ winget install mingw
     <tr><td><strong>Git</strong></td><td><code>leashed publish</code>, <code>leashed install</code></td><td>Required for package management</td></tr>
     <tr><td><strong>GitHub CLI (<code>gh</code>)</strong></td><td><code>leashed publish</code></td><td>Required to create repos and PRs</td></tr>
     <tr><td><strong>Wine</strong></td><td><code>leash run --target win64</code> on Linux</td><td>Run Windows binaries on Linux</td></tr>
+    <tr><td><strong>MinGW (<code>gcc-mingw-w64</code>)</strong></td><td><code>leash run/compile --target win64</code> on Linux</td><td>Cross-compile for Windows</td></tr>
+    <tr><td><strong>gcc-aarch64-linux-gnu</strong> (+ <code>qemu-user</code>)</td><td><code>leash compile/run --target linux-arm</code></td><td>Cross-compile to Linux ARM64; qemu runs the produced binary on x86 hosts</td></tr>
 </table>
 
 <pre><code><span class="cm"># Linux</span>

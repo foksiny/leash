@@ -162,6 +162,8 @@ class Lexer:
         "fusion",
         "worker",
         "spawn",
+        "async",
+        "await",
         "thisworker",
         "matrix",
         "nogc",

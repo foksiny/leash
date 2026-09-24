@@ -5,6 +5,7 @@ import llvmlite.ir as ir
 import llvmlite.binding as llvm
 from .errors import LeashError
 from .ast_nodes import (
+    AwaitExpr,
     TypeAlias,
     StructDef,
     EnumDef,
@@ -18,6 +19,7 @@ from .ast_nodes import (
     WorksOtherwiseStatement,
     SpawnStatement,
     ThrowStatement,
+    Statement,
     SelfExpr,
     NativeImport,
     DeferStatement,
@@ -71,6 +73,7 @@ def resolve_native_lib_path(lib_path, source_file, target_platform):
         platform_extensions = {
             "linux64": [".so", ".a"],
             "linux32": [".so", ".a"],
+            "linux-arm": [".so", ".a"],
             "macos": [".dylib", ".a"],
             "macos-arm": [".dylib", ".a"],
             "win64": [".lib", ".dll", ".a"],
@@ -89,7 +92,7 @@ def resolve_native_lib_path(lib_path, source_file, target_platform):
 
 
 class CodeGen:
-    def __init__(self, target_platform=None, no_gc=False, autofree=False):
+    def __init__(self, target_platform=None, no_gc=False, autofree=False, debug_instrument=False):
         self.module = ir.Module(name="leash_module")
         try:
             # Initialize once (safe to call multiple times)
@@ -150,6 +153,12 @@ class CodeGen:
         self.current_func_alloc_limit = 0  # Not used with GC
         self.no_gc = no_gc  # Global no-gc mode: use C malloc instead of GC malloc
         self.autofree = autofree  # Autofree mode: track allocs and auto-free on scope exit
+
+        # Native source-level debugging (`leash dbg`): when enabled, every
+        # statement is preceded by a call to __leash_dbg_stmt(func, line)
+        # so the runtime debugger can step/break on source lines.
+        self.debug_instrument = debug_instrument
+        self._dbg_hook = None  # lazily-declared extern void (i8*, i32)
 
         # Per-function tracking structures for autofree mode
         # These are LLVM values (alloca'd in the entry block) that dominate all uses
@@ -297,8 +306,28 @@ class CodeGen:
 
         # GC root management (used for multi-threading - spawn args)
         gc_root_ty = ir.FunctionType(ir.VoidType(), [ir.IntType(8).as_pointer()])
+        self.gc_register_root = ir.Function(
+            self.module, gc_root_ty, name="leash_gc_register_root"
+        )
         self.gc_unregister_root = ir.Function(
             self.module, gc_root_ty, name="leash_gc_unregister_root"
+        )
+
+        # Futures (native async/await)
+        i8p = ir.IntType(8).as_pointer()
+        self.future_new = ir.Function(
+            self.module, ir.FunctionType(i8p, []), name="leash_future_new"
+        )
+        self.future_complete = ir.Function(
+            self.module, ir.FunctionType(ir.VoidType(), [i8p, i8p]),
+            name="leash_future_complete",
+        )
+        self.future_await = ir.Function(
+            self.module, ir.FunctionType(i8p, [i8p]), name="leash_future_await"
+        )
+        self.future_is_done = ir.Function(
+            self.module, ir.FunctionType(ir.IntType(32), [i8p]),
+            name="leash_future_is_done",
         )
 
         # Free is still declared just in case, but GC_malloc doesn't need it.
@@ -1295,12 +1324,42 @@ class CodeGen:
                 node=node
             )
 
+        if self.debug_instrument:
+            self._emit_dbg_hook(node)
+
         method_name = f"_codegen_{type(node).__name__}"
         method = getattr(self, method_name, None)
         if method:
             return method(node)
         else:
             raise NotImplementedError(f"No codegen for {type(node).__name__}")
+
+    def _emit_dbg_hook(self, node):
+        """Instrument a statement for the native debugger (`leash dbg`):
+        emit `call void @__leash_dbg_stmt(i8* func, i32 line)` right before
+        the statement's own code. Only function-body statements with a line
+        number get a hook; synthetic nodes (line 0/None) and dead code are
+        skipped so cheap compiles stay cheap."""
+        if not isinstance(node, Statement):
+            return
+        if self.builder is None or self.builder.block is None or \
+                self.builder.block.is_terminated:
+            return
+        if getattr(self, "_emitting_global_init", False):
+            return
+        line = getattr(node, "line", 0) or 0
+        if line <= 0:
+            return
+        if self._dbg_hook is None:
+            ty = ir.FunctionType(
+                ir.VoidType(), [ir.IntType(8).as_pointer(), ir.IntType(32)]
+            )
+            self._dbg_hook = ir.Function(self.module, ty, name="__leash_dbg_stmt")
+        fn_name = self.current_func_name or "?"
+        name_ptr = self._emit_const_str(fn_name)
+        self.builder.call(
+            self._dbg_hook, [name_ptr, ir.Constant(ir.IntType(32), line)]
+        )
 
     def _get_leash_type_name(self, node):
 
@@ -1315,6 +1374,9 @@ class CodeGen:
             if "this" in self.var_symtab:
                 return self.var_symtab["this"][1]
             return "int"
+        if isinstance(node, AwaitExpr):
+            # `await fut` yields T; the typechecker stamped it on the node.
+            return getattr(node, "inner_type", None) or "int"
         if isinstance(node, ThisWorkerExpr):
             return "thisworker"
         if isinstance(node, Identifier):
@@ -2041,9 +2103,32 @@ class CodeGen:
             if mangled_name not in self.func_symtab:
                 self._codegen(func_node)
 
+    def _is_future_type_name(self, type_name):
+        """True for a future<T> handle in either the source spelling
+        ("future<int>") or the mangled spelling the generic normalizer
+        produces ("future_int")."""
+        if not isinstance(type_name, str):
+            return False
+        if type_name.startswith("future<") and type_name.endswith(">"):
+            return True
+        return type_name == "future_void" or type_name.startswith("future_")
+
     def _get_llvm_type(self, type_name, is_return=False):
+        # future<T> — the async/await join handle is an opaque i8*.
+        # Checked BEFORE alias resolution: the generic-name normalizer
+        # rewrites "future<int>" to "future_int", which must never resolve
+        # as an alias or fall through to the i32 default.
+        if isinstance(type_name, str) and type_name.startswith("future<") and type_name.endswith(">"):
+            return ir.IntType(8).as_pointer()
+
         # Resolve aliases first
         type_name = self._resolve_type_name(type_name)
+
+        # An alias whose target is `future<T>` (def Job : type future<int>;)
+        # must land on the same i8* handle representation. After resolution
+        # the generic normalizer has mangled the type to "future_int".
+        if self._is_future_type_name(type_name):
+            return ir.IntType(8).as_pointer()
 
         if type_name.startswith("*") or type_name.startswith("&"):
             inner_type = type_name[1:] if type_name.startswith("*") else type_name[1:]
@@ -2687,6 +2772,18 @@ class CodeGen:
             return
         if node.name == "main":
             return
+        if getattr(node, "is_async", False):
+            # Callers see the WRAPPER: (args...) -> future<T> (opaque i8*).
+            arg_types = []
+            struct_type_name = getattr(node, 'struct_type', None)
+            if struct_type_name:
+                arg_types.append(self._get_llvm_type(struct_type_name).as_pointer())
+            for arg_name, arg_type, default in node.args:
+                arg_types.append(self._get_llvm_type(arg_type))
+            func_type = ir.FunctionType(ir.IntType(8).as_pointer(), arg_types)
+            func = self._declare_user_function(node.name, func_type)
+            self.func_symtab[node.name] = func
+            return
         is_worker = getattr(node, "is_worker", False)
         if is_worker:
             void_ptr = ir.IntType(8).as_pointer()
@@ -2739,7 +2836,220 @@ class CodeGen:
         )
         self._codegen_Function(func_node)
 
+
+    def _codegen_async_function(self, node):
+        """Generate an `async fnc` as three cooperating functions:
+
+          <name>              (args...) -> future<T>   the public wrapper:
+                                  allocates the future, packs the args into a
+                                  GC block, spawns the worker, returns the
+                                  future handle. This is what every call to
+                                  `name` resolves to (including from the body
+                                  itself, so recursion spawns child tasks).
+          <name>__async_body  (args...) -> T            the user's body,
+                                  generated by the ordinary function path on
+                                  a renamed copy of the node.
+          <name>__async_thunk i8*(i8*)                   worker entry: unpacks
+                                  {future, args...}, runs the body, boxes the
+                                  result, and completes the future.
+
+        The result is boxed in GC memory whose address is stored in the
+        future (itself GC-rooted until await)."""
+        import copy as _copy
+
+        i8p = ir.IntType(8).as_pointer()
+        body_name = f"{node.name}__async_body"
+        thunk_name = f"{node.name}__async_thunk"
+
+        # ---- 1. body: an ordinary function under a private name ----
+        body_node = _copy.deepcopy(node)
+        body_node.name = body_name
+        body_node.is_async = False
+        # Args/return of the body are exactly as declared (unwrapped T).
+        self._codegen_Function(body_node)
+
+        body_fn = self.func_symtab.get(body_name)
+        if body_fn is None:
+            # _codegen_Function registered it via _declare_user_function.
+            raise LeashError(f"Internal: async body {body_name} was not emitted", node=node)
+
+        # ---- 2. argument packing layout (shared by wrapper and thunk) ----
+        arg_llvm_types = []
+        for _, arg_type, _ in node.args:
+            arg_llvm_types.append(self._get_llvm_type(arg_type))
+        packed_ty = ir.LiteralStructType([i8p] + arg_llvm_types)
+        packed_ptr_ty = packed_ty.as_pointer()
+
+        # ---- 3. thunk: i8* (i8*) ----
+        thunk_ty = ir.FunctionType(i8p, [i8p])
+        thunk = self._declare_user_function(thunk_name, thunk_ty)
+        self.func_symtab[thunk_name] = thunk
+
+        thunk_entry = thunk.append_basic_block(name="entry")
+        saved_builder = self.builder
+        self.builder = ir.IRBuilder(thunk_entry)
+
+        packed = self.builder.bitcast(thunk.args[0], packed_ptr_ty)
+        future_ptr = self.builder.load(self.builder.gep(
+            packed, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)]
+        ))
+
+        # Load every argument BEFORE dropping the spawn's GC root for the
+        # packed block: the loads copy values out of the block, and a
+        # collection between the last load and the unregister would be
+        # harmless, but unregistering first would leave the block — and
+        # anything only reachable through it — collectable mid-load.
+        thunk_args = []
+        for idx, (_, _, _) in enumerate(node.args):
+            gep = self.builder.gep(
+                packed,
+                [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), idx + 1)],
+            )
+            thunk_args.append(self.builder.load(gep))
+
+        # The spawn machinery registered the packed block as a GC root;
+        # mirror the generated worker pattern and drop that root now that
+        # the args are loaded into this frame. When the wrapper runs this
+        # thunk inline after a failed spawn the runtime already removed
+        # the root, and unregistering an unknown pointer is a no-op.
+        if not self.no_gc and not self.autofree:
+            self.builder.call(self.gc_unregister_root, [thunk.args[0]])
+
+        result = self.builder.call(body_fn, thunk_args)
+
+        # Box the result (skip for void bodies). The box is GC memory; the
+        # future (GC-rooted) holds the pointer until await copies it out.
+        if node.return_type == "void":
+            self.builder.call(self.future_complete, [future_ptr, ir.Constant(i8p, None)])
+        else:
+            ret_llvm = self._get_llvm_type(node.return_type, is_return=True)
+            box_size = self._get_type_size(ret_llvm)
+            if box_size <= 0:
+                box_size = 8
+            box_raw = self.builder.call(
+                self.malloc, [ir.Constant(ir.IntType(64), box_size)]
+            )
+            # Keep the freshly allocated box alive across the store and the
+            # complete() call: nothing else roots it until the future does.
+            if not self.no_gc and not self.autofree:
+                self.builder.call(self.gc_register_root, [box_raw])
+            box_ptr = self.builder.bitcast(box_raw, ret_llvm.as_pointer())
+            self.builder.store(result, box_ptr)
+            self.builder.call(self.future_complete, [future_ptr, box_raw])
+            if not self.no_gc and not self.autofree:
+                # The future now owns the box and stays rooted until await.
+                self.builder.call(self.gc_unregister_root, [box_raw])
+
+        self.builder.ret(ir.Constant(i8p, None))
+        self.builder = saved_builder
+
+        # ---- 4. wrapper: (args...) -> future<T> ----
+        wrapper = self.func_symtab.get(node.name)
+        if wrapper is None:
+            # Predeclare pass normally created it; be robust when the async
+            # fn is generated before predeclare (e.g. nested definitions).
+            wrapper_arg_types = list(arg_llvm_types)
+            wrapper = self._declare_user_function(
+                node.name, ir.FunctionType(i8p, wrapper_arg_types)
+            )
+            self.func_symtab[node.name] = wrapper
+
+        wrap_entry = wrapper.append_basic_block(name="entry")
+        saved_builder = self.builder
+        self.builder = ir.IRBuilder(wrap_entry)
+
+        future_val = self.builder.call(self.future_new, [])
+
+        struct_size = self._get_type_size(packed_ty)
+        if struct_size <= 0:
+            struct_size = 8
+        packed_raw = self.builder.call(
+            self.malloc, [ir.Constant(ir.IntType(64), struct_size)]
+        )
+        packed_ptr = self.builder.bitcast(packed_raw, packed_ptr_ty)
+        self.builder.store(
+            future_val,
+            self.builder.gep(
+                packed_ptr, [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), 0)]
+            ),
+        )
+        for idx, _ in enumerate(node.args):
+            self.builder.store(
+                wrapper.args[idx],
+                self.builder.gep(
+                    packed_ptr,
+                    [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), idx + 1)],
+                ),
+            )
+        # Spawn the worker. When the runtime refuses (thread limit reached),
+        # nobody would ever run the thunk and the returned future would
+        # never complete, deadlocking every await. Run the thunk inline in
+        # that case: the future still completes, the call still returns the
+        # same future<T>, only the parallelism is lost.
+        spawn_rc = self.builder.call(
+            self.leash_spawn_worker_fn, [thunk, packed_raw]
+        )
+        spawn_ok = self.builder.icmp_unsigned(
+            "==", spawn_rc, ir.Constant(ir.IntType(32), 0)
+        )
+        ran_bb = wrapper.append_basic_block(name="ran_inline")
+        done_bb = wrapper.append_basic_block(name="spawned")
+        self.builder.cbranch(spawn_ok, done_bb, ran_bb)
+
+        self.builder.position_at_end(ran_bb)
+        self.builder.call(thunk, [packed_raw])
+        self.builder.branch(done_bb)
+
+        self.builder.position_at_end(done_bb)
+        self.builder.ret(future_val)
+        self.builder = saved_builder
+
+        return wrapper
+
+    def _codegen_AwaitExpr(self, node):
+        """`await fut` — block on a future<T> and unbox T.
+
+        The typechecker guarantees the operand is future<T>; the LLVM-side
+        representation is a plain i8*. The await runtime returns the box
+        pointer; loading through a typed pointer yields T."""
+        i8p = ir.IntType(8).as_pointer()
+        fut = self._codegen(node.expr)
+        if fut is None:
+            raise LeashError("Internal: await on an expression with no value", node=node)
+        if not isinstance(fut.type, ir.PointerType):
+            raise LeashError(
+                "Internal: await operand is not a future pointer",
+                node=node,
+            )
+        fut = self.builder.bitcast(fut, i8p)
+        box = self.builder.call(self.future_await, [fut])
+
+        # What is T? The typechecker stamped it onto the node while it
+        # still had full expression context (an index or field operand
+        # cannot be re-inferred from raw LLVM here).
+        inner = getattr(node, "inner_type", None)
+        if not inner:
+            raise LeashError(
+                "Internal: await operand type was not recorded by the typechecker",
+                node=node,
+            )
+
+        result = None
+        if inner != "void":
+            ret_llvm = self._get_llvm_type(inner, is_return=True)
+            typed = self.builder.bitcast(box, ret_llvm.as_pointer())
+            result = self.builder.load(typed)
+
+        # The result is now a value in this frame, so the future (and the
+        # box it holds) can stop being roots. Unregistering after the load
+        # is what keeps the box alive across the join.
+        if not self.no_gc and not self.autofree:
+            self.builder.call(self.gc_unregister_root, [fut])
+        return result
+
     def _codegen_Function(self, node):
+        if getattr(node, "is_async", False):
+            return self._codegen_async_function(node)
         # Start with globals in scope (they can be shadowed by locals)
         self.var_symtab = (
             self.global_var_ptrs.copy() if hasattr(self, "global_var_ptrs") else {}
@@ -9271,13 +9581,19 @@ class CodeGen:
 
                 # If target is pointer and source is not a pointer (safe pointer conversion)
                 # BUT: skip this for i8* (string) pointers - strings are passed by value
+                # BUT: skip this for function-pointer targets - the callee wants
+                # the function pointer itself, never the address of the cell it
+                # was forwarded through (broke FFI callbacks and any handler
+                # stored in a variable/parameter).
                 target_pointee = getattr(target_llvm, "pointee", None)
                 is_string_ptr = (
                     isinstance(target_pointee, ir.IntType) and target_pointee.width == 8
                 )
+                is_fnc_ptr_target = isinstance(target_pointee, ir.FunctionType)
                 if (
                     isinstance(target_llvm, ir.PointerType)
                     and not is_string_ptr
+                    and not is_fnc_ptr_target
                     and not (
                         resolved_src.startswith("*") or resolved_src.startswith("&")
                     )

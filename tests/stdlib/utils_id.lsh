@@ -1,0 +1,9 @@
+use utils::id::Id;
+fnc main() : void {
+    show(Id.make(12).size);
+    show(Id.lower(8).size);
+    show(Id.hex(16).size);
+    a: string = Id.make(8);
+    b: string = Id.make(8);
+    show(a != b);
+}

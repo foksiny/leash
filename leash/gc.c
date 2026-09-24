@@ -52,6 +52,7 @@ void* leash_gc_aligned_alloc(size_t size, size_t alignment) {
 void leash_gc_collect(void) {}
 void leash_gc_register_root(void* ptr) { (void)ptr; }
 void leash_gc_unregister_root(void* ptr) { (void)ptr; }
+void* leash_gc_malloc_rooted(size_t size) { return leash_gc_malloc(size); }
 void* leash_gc_alloc_string(size_t len) { return leash_gc_malloc(len + 1); }
 void* leash_gc_alloc_vector_data(size_t elem_size, size_t capacity) { return leash_gc_malloc(elem_size * capacity); }
 void leash_gc_thread_spawned(void) {}
@@ -238,18 +239,9 @@ void* leash_gc_malloc(size_t size) {
     return leash_gc_malloc_ex(size, 0);
 }
 
-void* leash_gc_malloc_ex(size_t size, unsigned int flags) {
-    if (size == 0) return NULL;
-
-    /* Guard against size_t overflow: total_size must not wrap around, or we
-       would allocate a tiny block and then memset `size` bytes past it. */
-    if (size > SIZE_MAX - sizeof(struct gc_object)) {
-        fprintf(stderr, "Leash GC: allocation too large!\n");
-        abort();
-    }
-
-    GC_LOCK();
-
+/* Allocate one GC object. Caller must hold the GC lock. Returns the user
+   pointer (just past the header), with its payload zeroed. */
+static void* gc_alloc_locked(size_t size, unsigned int flags) {
     size_t total_size = sizeof(struct gc_object) + size;
     struct gc_object* obj = (struct gc_object*)malloc(total_size);
     if (!obj) {
@@ -279,7 +271,60 @@ void* leash_gc_malloc_ex(size_t size, unsigned int flags) {
 
     void* user_ptr = (void*)(obj + 1);
     memset(user_ptr, 0, size);
+    return user_ptr;
+}
 
+void* leash_gc_malloc_ex(size_t size, unsigned int flags) {
+    if (size == 0) return NULL;
+
+    /* Guard against size_t overflow: total_size must not wrap around, or we
+       would allocate a tiny block and then memset `size` bytes past it. */
+    if (size > SIZE_MAX - sizeof(struct gc_object)) {
+        fprintf(stderr, "Leash GC: allocation too large!\n");
+        abort();
+    }
+
+    GC_LOCK();
+    void* user_ptr = gc_alloc_locked(size, flags);
+    GC_UNLOCK();
+    return user_ptr;
+}
+
+/* Append a root. Caller must hold the GC lock. */
+static void gc_register_root_locked(void* ptr) {
+    if (gc.root_count >= gc.root_capacity) {
+        size_t new_cap = gc.root_capacity * 2;
+        void** new_roots = (void**)realloc(gc.roots, new_cap * sizeof(void*));
+        if (!new_roots) {
+            /* Cannot grow the root set: dropping the root would let the
+               referenced object be collected and later used after free. Treat
+               this as an unrecoverable OOM, consistent with the rest of the GC. */
+            fprintf(stderr, "Leash GC: Out of memory (root set)!\n");
+            GC_UNLOCK();
+            abort();
+        }
+        gc.roots = new_roots;
+        memset(gc.roots + gc.root_capacity, 0, (new_cap - gc.root_capacity) * sizeof(void*));
+        gc.root_capacity = new_cap;
+    }
+    gc.roots[gc.root_count++] = ptr;
+}
+
+/* Allocate an object and root it before any collection can observe it.
+   Runtime objects that must be reachable from the instant they exist (a
+   future, before its owner has a chance to store it anywhere) use this:
+   allocating and registering under one lock acquisition closes the window
+   in which a concurrent leash_gc_collect() from another thread could sweep
+   the object. */
+void* leash_gc_malloc_rooted(size_t size) {
+    if (size == 0) return NULL;
+    if (size > SIZE_MAX - sizeof(struct gc_object)) {
+        fprintf(stderr, "Leash GC: allocation too large!\n");
+        abort();
+    }
+    GC_LOCK();
+    void* user_ptr = gc_alloc_locked(size, 0);
+    gc_register_root_locked(user_ptr);
     GC_UNLOCK();
     return user_ptr;
 }
@@ -1631,4 +1676,124 @@ int leash_bigint_parse(const char *s, unsigned bitwidth, int is_signed,
             out[i] = (unsigned char)((l32[i / 4u] >> ((i % 4u) * 8u)) & 0xFFu);
     }
     return 1;
+}
+
+/* ================================================================ */
+/* ===== Futures (native async/await) ============================ */
+/* ================================================================ */
+
+/*
+ * A future is the join handle created by an `async fnc` call. The state
+ * block itself is GC-allocated and registered as a root from creation
+ * until await, so neither the future nor the worker's boxed result can be
+ * swept while the task is in flight (collect() is explicit-only in this
+ * runtime, but the root keeps `future->value` reachable for users who do
+ * trigger collections concurrently).
+ *
+ * Layout (non-moving mark-sweep GC — embedding OS primitives is safe):
+ *   [ pthread_mutex_t | pthread_cond_t | int done | void* value ]
+ * The GC's conservative payload scan may see the mutex/cond words; worst
+ * case that falsely retains an object for one cycle — never frees early.
+ */
+
+#include <string.h>
+
+#ifndef _WIN32
+# include <pthread.h>
+#endif
+
+#ifdef _WIN32
+typedef struct {
+    CRITICAL_SECTION     mu;
+    CONDITION_VARIABLE   cv;
+    int                  done;
+    void*                value;
+} leash_future_t;
+#else
+typedef struct {
+    pthread_mutex_t      mu;
+    pthread_cond_t       cv;
+    int                  done;
+    void*                value;
+} leash_future_t;
+#endif
+
+void* leash_future_new(void) {
+    /* Rooted at creation: the handle must be reachable before the caller
+       can store it anywhere, so a concurrent collect() cannot sweep it. */
+    leash_future_t* f = (leash_future_t*)leash_gc_malloc_rooted(sizeof(leash_future_t));
+    if (!f) {
+        fprintf(stderr, "Leash: Out of memory (future)\n");
+        abort();
+    }
+#ifdef _WIN32
+    InitializeCriticalSection(&f->mu);
+    InitializeConditionVariable(&f->cv);
+#else
+    pthread_mutex_init(&f->mu, NULL);
+    pthread_cond_init(&f->cv, NULL);
+#endif
+    f->done = 0;
+    f->value = NULL;
+    leash_gc_register_root(f);
+    return f;
+}
+
+void leash_future_complete(void* fut, void* value) {
+    leash_future_t* f = (leash_future_t*)fut;
+    if (!f) return;
+#ifdef _WIN32
+    EnterCriticalSection(&f->mu);
+    f->value = value;
+    f->done = 1;
+    WakeAllConditionVariable(&f->cv);
+    LeaveCriticalSection(&f->mu);
+#else
+    pthread_mutex_lock(&f->mu);
+    f->value = value;
+    f->done = 1;
+    pthread_cond_broadcast(&f->cv);
+    pthread_mutex_unlock(&f->mu);
+#endif
+}
+
+void* leash_future_await(void* fut) {
+    leash_future_t* f = (leash_future_t*)fut;
+    void* value = NULL;
+    if (!f) return NULL;
+#ifdef _WIN32
+    EnterCriticalSection(&f->mu);
+    while (!f->done) {
+        SleepConditionVariableCS(&f->cv, &f->mu, INFINITE);
+    }
+    value = f->value;
+    LeaveCriticalSection(&f->mu);
+#else
+    pthread_mutex_lock(&f->mu);
+    while (!f->done) {
+        pthread_cond_wait(&f->cv, &f->mu);
+    }
+    value = f->value;
+    pthread_mutex_unlock(&f->mu);
+#endif
+    /* The future stays rooted: generated code drops the root only after it
+       has loaded the result out of the box, so the box cannot be swept in
+       between. */
+    return value;
+}
+
+int leash_future_is_done(void* fut) {
+    leash_future_t* f = (leash_future_t*)fut;
+    int done = 0;
+    if (!f) return 1;
+#ifdef _WIN32
+    EnterCriticalSection(&f->mu);
+    done = f->done;
+    LeaveCriticalSection(&f->mu);
+#else
+    pthread_mutex_lock(&f->mu);
+    done = f->done;
+    pthread_mutex_unlock(&f->mu);
+#endif
+    return done;
 }

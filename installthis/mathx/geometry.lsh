@@ -1,0 +1,65 @@
+use utils::math::Math;
+
+// Geometry helpers (circles, spheres, triangles, regular polygons).
+//
+//   use mathx::geometry::Geometry;
+//   show(Geometry.circle_area(2.0));
+
+pub def Geometry : class {
+    static pub fnc PI() : float {
+        return 3.14159265358979;
+    }
+
+    static pub fnc circle_area(r float) : float {
+        return Geometry.PI() * r * r;
+    }
+
+    static pub fnc circle_circ(r float) : float {
+        return 2.0 * Geometry.PI() * r;
+    }
+
+    static pub fnc sphere_volume(r float) : float {
+        return 4.0 / 3.0 * Geometry.PI() * r * r * r;
+    }
+
+    static pub fnc sphere_area(r float) : float {
+        return 4.0 * Geometry.PI() * r * r;
+    }
+
+    static pub fnc rect_area(w float, h float) : float {
+        return w * h;
+    }
+
+    static pub fnc triangle_area(b float, h float) : float {
+        return 0.5 * b * h;
+    }
+
+    // Triangle area from three vertices (determinant form).
+    static pub fnc triangle_area_xy(ax float, ay float, bx float, by float, cx float, cy float) : float {
+        d: float = (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by)) * 0.5;
+        if d < 0.0 {
+            return 0.0 - d;
+        }
+        return d;
+    }
+
+    // Distance between two points (hypot without needing vec classes).
+    static pub fnc dist(ax float, ay float, bx float, by float) : float {
+        dx: float = bx - ax;
+        dy: float = by - ay;
+        return Math.sqrt((double)(dx * dx + dy * dy));
+    }
+
+    // Third side from the Pythagorean law (hypotenuse).
+    static pub fnc hypot(a float, b float) : float {
+        return Math.sqrt((double)(a * a + b * b));
+    }
+
+    static pub fnc deg_to_rad(deg float) : float {
+        return deg * (Geometry.PI() / 180.0);
+    }
+
+    static pub fnc rad_to_deg(rad float) : float {
+        return rad * 180.0 / Geometry.PI();
+    }
+};

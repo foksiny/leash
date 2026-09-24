@@ -1,0 +1,7 @@
+use misc::progress::Progress;
+fnc main() : void {
+    p: Progress = Progress.make(100);
+    show(p.bar(0));
+    show(p.bar(50));
+    show(p.bar(100));
+}

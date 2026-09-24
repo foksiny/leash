@@ -1,0 +1,37 @@
+// Platform information helpers.
+//
+//   use sys::info::SysInfo;
+//   show(SysInfo.name());          // "linux64"
+//   show(SysInfo.is_posix());      // true
+
+pub def SysInfo : class {
+    // The --target/_PLATFORM name ("linux64", "linux32", "linux-arm",
+    // "win64", "macos", "macos-arm").
+    static pub fnc name() : string {
+        return _PLATFORM;
+    }
+
+    static pub fnc is_windows() : bool {
+        return _PLATFORM == "win64";
+    }
+
+    static pub fnc is_linux() : bool {
+        return _PLATFORM == "linux64" || _PLATFORM == "linux32" || _PLATFORM == "linux-arm";
+    }
+
+    static pub fnc is_macos() : bool {
+        return _PLATFORM == "macos" || _PLATFORM == "macos-arm";
+    }
+
+    static pub fnc is_posix() : bool {
+        return _PLATFORM != "win64";
+    }
+
+    static pub fnc is_64bit() : bool {
+        return _PLATFORM != "linux32";
+    }
+
+    static pub fnc is_arm() : bool {
+        return _PLATFORM == "linux-arm" || _PLATFORM == "macos-arm";
+    }
+};

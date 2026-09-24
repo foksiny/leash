@@ -1,0 +1,43 @@
+use utils::math::Math;
+
+// Geo-coordinate helpers: haversine distance, lat/lon validation.
+//
+//   use geo::coords::Coords;
+//   show(Coords.dist_km(40.4168, -3.7038, 41.3874, 2.1686));  // ~505 km
+
+pub def Coords : class {
+    static pub fnc in_range(lat float, lon float) : bool {
+        return lat >= -90.0 && lat <= 90.0 && lon >= -180.0 && lon <= 180.0;
+    }
+
+    // Great-circle distance in kilometers between two lat/lon points.
+    static pub fnc dist_km(lat1 float, lon1 float, lat2 float, lon2 float) : float {
+        pi: float = 3.14159265358979;
+        to_rad: float = pi / 180.0;
+        lat1r: float = lat1 * to_rad;
+        lat2r: float = lat2 * to_rad;
+        dlat: float = (lat2 - lat1) * to_rad;
+        dlon: float = (lon2 - lon1) * to_rad;
+
+        h: float = Coords.sin_half_sq(dlat) +
+                   Math.cos(lat1r) * Math.cos(lat2r) * Coords.sin_half_sq(dlon);
+        s1: float = Coords.sqrt_nonneg(h);
+        s2: float = Coords.sqrt_nonneg(1.0 - h);
+        if s2 == 0.0 {
+            return 6371.0 * pi;
+        }
+        return 2.0 * 6371.0 * Math.atan(s1 / s2);
+    }
+
+    static priv fnc sin_half_sq(x float) : float {
+        s: float = Math.sin(x * 0.5);
+        return s * s;
+    }
+
+    static priv fnc sqrt_nonneg(x float) : float {
+        if x < 0.0 {
+            return 0.0;
+        }
+        return Math.sqrt(x);
+    }
+};

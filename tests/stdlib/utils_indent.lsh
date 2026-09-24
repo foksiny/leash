@@ -1,0 +1,6 @@
+use utils::indent::Indent;
+fnc main() : void {
+    show(Indent.text("a\nb", 2));
+    show(Indent.by("x\ny", "+ "));
+    show(Indent.dedent("  a\n   b"));
+}

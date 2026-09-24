@@ -1,0 +1,21 @@
+use collections::vecops::Vecs;
+fnc main() : void {
+    v: vec<int> = (vec<int>){1, 2, 2, 3};
+    rv: vec<int> = Vecs.reverse_ints(v);
+    show(rv.size);
+    show(rv.get(0));
+    w: vec<int> = Vecs.take_ints(v, 2);
+    show(w.size);
+    x: vec<int> = Vecs.drop_ints(v, 2);
+    show(x.size);
+    u: vec<int> = Vecs.unique_ints(v);
+    show(u.size);
+    s: vec<int> = (vec<int>){2, 4};
+    zi: vec<int> = Vecs.zip_ints(v, s);
+    show(zi.size);
+    inter: vec<int> = Vecs.intersect_ints(v, s);
+    show(inter.size);
+    show(Vecs.min_ints(v));
+    show(Vecs.max_ints(v));
+    show(Vecs.sum_ints(v));
+}

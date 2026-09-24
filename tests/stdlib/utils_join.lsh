@@ -1,0 +1,10 @@
+use utils::join::Join;
+fnc main() : void {
+    v: vec<string>;
+    v.pushb("a"); v.pushb("b"); v.pushb("c");
+    show(Join.strings(v, ", "));
+    show(Join.human(v));
+    n: vec<int>;
+    n.pushb(1); n.pushb(2); n.pushb(3);
+    show(Join.ints(n, "+"));
+}

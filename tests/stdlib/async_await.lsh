@@ -1,0 +1,55 @@
+// Native async/await: `async fnc` returns a future<T> handle, `await`
+// joins it. These tests are deterministic (no timing assertions).
+
+async fnc slow_add(a int, b int) : int {
+    x: int = a + b;
+    return x;
+}
+
+async fnc greet(name string) : string {
+    return "hello, " + name;
+}
+
+async fnc pi_times(x float) : float {
+    return x * 3.1415;
+}
+
+async fnc noop_task() : void {
+    x: int = 1;
+}
+
+async fnc inner(v int) : int {
+    return v * 2;
+}
+
+async fnc outer(v int) : int {
+    nested: future<int> = inner(v);
+    r: int = await nested;
+    return r + 1;
+}
+
+fnc main() : void {
+    // futures in flight at once, then joined
+    f1: future<int> = slow_add(19, 23);
+    f2: future<string> = greet("leash");
+    f3: future<int> = outer(20);
+
+    show(await f1);
+    show(await f2);
+    show(await f3);
+
+    // await directly on the call expression
+    show(await slow_add(1, 2));
+
+    // float result through the box
+    show(await pi_times(2.0));
+
+    // void async: await as a statement
+    v: future<void> = noop_task();
+    await v;
+    show("void-joined");
+
+    // fire-and-forget (never awaited) must not crash the runtime
+    leashed_away: future<int> = slow_add(1, 1);
+    show("spawned-without-await");
+}

@@ -1,0 +1,93 @@
+// Escaping for JSON-style strings and shell-ish quoted strings.
+//
+//   use encoding::escape::Escape;
+//   show(Escape.json("a\"b\nc"));   // a\"b\nc
+
+pub def Escape : class {
+    // JSON string escaping: \", \\, \n, \t, \r, control chars to \xNN.
+    static pub fnc json(s string) : string {
+        out: string = "";
+        foreach _, c in<string> s {
+            if c == '"' { out = out + "\\\""; }
+            also c == '\\' { out = out + "\\\\"; }
+            also c == '\n' { out = out + "\\n"; }
+            also c == '\t' { out = out + "\\t"; }
+            also c == '\r' { out = out + "\\r"; }
+            also c < ' ' {
+                out = out + "\\x";
+                v: int = toint(int, c);
+                if v < 0 {
+                    v = v + 256;
+                }
+                digits: string = "0123456789abcdef";
+                out = out + digits[(v >> 4) & 15];
+                out = out + digits[v & 15];
+            } else {
+                out = out + c;
+            }
+        }
+        return out;
+    }
+
+    // Reverse of json(): unescape \" \\ \n \t \r \xXX.
+    static pub fnc unjson(s string) : string {
+        out: string = "";
+        i: int = 0;
+        n: int = s.size;
+        while i < n {
+            c: char = s[i];
+            if c == '\\' && i + 1 < n {
+                nc: char = s[i + 1];
+                done_here: bool = false;
+                if nc == 'n' { out = out + '\n'; i = i + 2; done_here = true; }
+                also nc == 't' { out = out + '\t'; i = i + 2; done_here = true; }
+                also nc == 'r' { out = out + '\r'; i = i + 2; done_here = true; }
+                also nc == '"' { out = out + '"'; i = i + 2; done_here = true; }
+                also nc == '\\' { out = out + '\\'; i = i + 2; done_here = true; }
+                also nc == 'x' && i + 3 < n {
+                    hi: int = Escape.hexval(s[i + 2]);
+                    lo: int = Escape.hexval(s[i + 3]);
+                    if hi >= 0 && lo >= 0 {
+                        out = out + (char)(hi * 16 + lo);
+                    }
+                    i = i + 4;
+                    done_here = true;
+                } else {
+                    if !done_here {
+                        out = out + c;
+                        i = i + 1;
+                    }
+                }
+            } else {
+                out = out + c;
+                i = i + 1;
+            }
+        }
+        return out;
+    }
+
+    static priv fnc hexval(c char) : int {
+        if c >= '0' && c <= '9' {
+            return toint(int, c) - toint(int, '0');
+        }
+        if c >= 'a' && c <= 'f' {
+            return toint(int, c) - toint(int, 'a') + 10;
+        }
+        if c >= 'A' && c <= 'F' {
+            return toint(int, c) - toint(int, 'A') + 10;
+        }
+        return 0 - 1;
+    }
+
+    // Quoted-printable-ish escaping of control characters only.
+    static pub fnc controls(s string) : string {
+        out: string = "";
+        foreach _, c in<string> s {
+            if c == '\n' { out = out + "\\n"; }
+            also c == '\t' { out = out + "\\t"; }
+            also c == '\r' { out = out + "\\r"; }
+            else { out = out + c; }
+        }
+        return out;
+    }
+};

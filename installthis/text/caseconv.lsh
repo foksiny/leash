@@ -1,0 +1,139 @@
+// Identifier case conversions: camelCase, snake_case, kebab-case,
+// PascalCase, SCREAMING_SNAKE_CASE and friends.
+//
+//   use text::case::Case;
+//   show(Case.to_snake("HelloWorld42"));    // "hello_world42"
+//   show(Case.to_camel("hello_world"));     // "helloWorld"
+//   show(Case.to_kebab("SomeThing Big"));   // "some-thing-big"
+
+pub def Case : class {
+    // True for ASCII uppercase letters.
+    static pub fnc is_upper(c char) : bool {
+        return c >= 'A' && c <= 'Z';
+    }
+
+    static pub fnc is_lower(c char) : bool {
+        return c >= 'a' && c <= 'z';
+    }
+
+    static pub fnc is_digit(c char) : bool {
+        return c >= '0' && c <= '9';
+    }
+
+    static pub fnc to_upper_c(c char) : char {
+        if c >= 'a' && c <= 'z' {
+            return (char)(c - 32);
+        }
+        return c;
+    }
+
+    static pub fnc to_lower_c(c char) : char {
+        if c >= 'A' && c <= 'Z' {
+            return (char)(c + 32);
+        }
+        return c;
+    }
+
+    static pub fnc to_uppercase(s string) : string {
+        out: string = "";
+        foreach _, c in<string> s {
+            out = out + Case.to_upper_c(c);
+        }
+        return out;
+    }
+
+    static pub fnc to_lowercase(s string) : string {
+        out: string = "";
+        foreach _, c in<string> s {
+            out = out + Case.to_lower_c(c);
+        }
+        return out;
+    }
+
+    //("camelCase" | "PascalCase" | "snake_case" | "kebab-case") style)
+    // Split an identifier into lowercase word components. Transitions on
+    // '_', '-', ' ', and on camelCase humps.
+    static pub fnc words(s string) : vec<string> {
+        out: vec<string>;
+        word: string = "";
+        n: int = s.size;
+        for i: int = 0; i < n; i = i + 1 {
+            c: char = s[i];
+            if c == '_' || c == '-' || c == ' ' || c == '.' {
+                if word.size > 0 {
+                    out.pushb(Case.to_lowercase(word));
+                    word = "";
+                }
+            } else {
+                is_hump: bool = i > 0 && Case.is_upper(c) &&
+                                (Case.is_lower(s[i - 1]) || Case.is_digit(s[i - 1]));
+                if is_hump && word.size > 0 {
+                    out.pushb(Case.to_lowercase(word));
+                    word = "";
+                }
+                word = word + c;
+            }
+        }
+        if word.size > 0 {
+            out.pushb(Case.to_lowercase(word));
+        }
+        return out;
+    }
+
+    static pub fnc to_snake(s string) : string {
+        return Case.join_sep(Case.words(s), '_');
+    }
+
+    static pub fnc to_kebab(s string) : string {
+        return Case.join_sep(Case.words(s), '-');
+    }
+
+    static pub fnc to_camel(s string) : string {
+        w: vec<string> = Case.words(s);
+        out: string = "";
+        for i: int = 0; i < w.size; i = i + 1 {
+            if i == 0 {
+                out = out + w.get(i);
+            } else {
+                out = out + Case.capitalize(w.get(i));
+            }
+        }
+        return out;
+    }
+
+    static pub fnc to_pascal(s string) : string {
+        w: vec<string> = Case.words(s);
+        out: string = "";
+        for i: int = 0; i < w.size; i = i + 1 {
+            out = out + Case.capitalize(w.get(i));
+        }
+        return out;
+    }
+
+    static pub fnc to_screaming(s string) : string {
+        return Case.to_uppercase(Case.to_snake(s));
+    }
+
+    static pub fnc capitalize(s string) : string {
+        if s.size == 0 {
+            return s;
+        }
+        out: string = "";
+        out = out + Case.to_upper_c(s[0]);
+        for i: int = 1; i < s.size; i = i + 1 {
+            out = out + s[i];
+        }
+        return out;
+    }
+
+    static priv fnc join_sep(v vec<string>, sep char) : string {
+        out: string = "";
+        for i: int = 0; i < v.size; i = i + 1 {
+            if i > 0 {
+                out = out + sep;
+            }
+            out = out + v.get(i);
+        }
+        return out;
+    }
+};

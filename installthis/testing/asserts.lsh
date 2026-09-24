@@ -1,0 +1,45 @@
+// Tiny assertion helper crate for Leash test files.
+//
+//   use testing::asserts::Asserts;
+//   onetest: ...
+
+pub def Asserts : class {
+    // Counts failures within a single test run (zero = clean).
+    pub fails: int;
+    pub checks: int;
+
+    static pub fnc make() : Asserts {
+        return Asserts { fails: 0, checks: 0 };
+    }
+
+    pub fnc ok(cond bool, label string) : void {
+        this.checks = this.checks + 1;
+        if !cond {
+            this.fails = this.fails + 1;
+            show("[FAIL] " + label);
+        }
+    }
+
+    pub fnc eq_int(actual int, expected int, label string) : void {
+        this.ok(actual == expected,
+                label + " (got " + tostring(actual) + ", want " + tostring(expected) + ")");
+    }
+
+    pub fnc eq_str(actual string, expected string, label string) : void {
+        this.ok(actual == expected, label + " (got '" + actual + "')");
+    }
+
+    pub fnc eq_float(actual float, expected float, eps float, label string) : void {
+        d: float = actual - expected;
+        if d < 0.0 {
+            d = 0.0 - d;
+        }
+        this.ok(d <= eps, label + " (got " + tostring(actual) + ")");
+    }
+
+    // Summarize; returns remaining failures (0 means all good).
+    pub fnc summarize() : int {
+        show(tostring(this.checks) + " checks, " + tostring(this.fails) + " failed");
+        return this.fails;
+    }
+};

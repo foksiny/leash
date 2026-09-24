@@ -7,6 +7,7 @@ Or via unittest discovery from the repo root:
 """
 import importlib.util
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -300,6 +301,194 @@ class TestIndexShapeHardening(unittest.TestCase):
     def test_dict_entry_passes(self):
         index = {"libraries": {"ok": {"version": "1.0.0"}}}
         self.assertEqual(L.get_index_entry(index, "ok"), {"version": "1.0.0"})
+
+
+import io
+import json
+import contextlib
+
+
+class TestLockfile(unittest.TestCase):
+    """leash.lock read/write semantics and install-time pinning."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="leashed_lock_")
+        self._cwd = os.getcwd()
+        os.chdir(self.tmp)
+        with open(os.path.join(self.tmp, "leash-pkg.lshc"), "w") as f:
+            f.write('name: "testpkg"\nversion: "0.1.0"\nauthor: "tester"\n')
+
+    def tearDown(self):
+        os.chdir(self._cwd)
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_write_read_round_trip(self):
+        L.write_lockfile(self.tmp, {
+            "beta": {"version": "2.0.0", "repo": "https://github.com/x/beta.git"},
+            "alpha": {"version": "1.0.0", "repo": "https://github.com/x/alpha.git"},
+        })
+        data = L.read_lockfile(self.tmp)
+        self.assertEqual(data["version"], L.LOCKFILE_VERSION)
+        # keys are written sorted for stable diffs
+        self.assertEqual(list(data["packages"].keys()), ["alpha", "beta"])
+        self.assertEqual(data["packages"]["beta"]["tag"], "v2.0.0")
+
+    def test_read_missing_returns_none(self):
+        self.assertIsNone(L.read_lockfile(self.tmp))
+
+    def test_read_corrupt_exits(self):
+        with open(os.path.join(self.tmp, "leash.lock"), "w") as f:
+            f.write("{not json")
+        with self.assertRaises(SystemExit):
+            L.read_lockfile(self.tmp)
+
+    def test_invalid_versions_are_dropped(self):
+        L.write_lockfile(self.tmp, {"bad": {"version": "nope", "repo": "x"}})
+        self.assertEqual(L.read_lockfile(self.tmp)["packages"], {})
+
+    def test_pin_record_unpin(self):
+        self.assertIsNone(L.lockfile_pin(self.tmp, "alpha"))
+        L.lockfile_record(self.tmp, "alpha", "1.2.3", "https://github.com/x/alpha.git")
+        self.assertEqual(L.lockfile_pin(self.tmp, "alpha"), "1.2.3")
+        L.lockfile_record(self.tmp, "alpha", "1.2.4", "https://github.com/x/alpha.git")
+        self.assertEqual(L.lockfile_pin(self.tmp, "alpha"), "1.2.4")
+        L.lockfile_unpin(self.tmp, "alpha")
+        self.assertIsNone(L.lockfile_pin(self.tmp, "alpha"))
+
+    def test_install_resolves_deps_and_writes_lock(self):
+        calls = []
+
+        def fake_registry(name, ver=None):
+            calls.append((name, ver))
+            return name, ver or "9.9.9", f"https://github.com/x/{name}.git"
+
+        orig = L._install_registry
+        L._install_registry = fake_registry
+        try:
+            with open(os.path.join(self.tmp, "leash-pkg.lshc"), "w") as f:
+                f.write('name: "testpkg"\nversion: "0.1.0"\nauthor: "t"\n'
+                        'dependencies: "alpha, beta@2.0.0"\n')
+            with contextlib.redirect_stdout(io.StringIO()):
+                L.cmd_install_project_deps(self.tmp, strict=False)
+        finally:
+            L._install_registry = orig
+
+        self.assertIn(("beta", "2.0.0"), calls)
+        self.assertIn(("alpha", None), calls)
+        data = L.read_lockfile(self.tmp)
+        self.assertEqual(data["packages"]["beta"]["version"], "2.0.0")
+        self.assertEqual(data["packages"]["alpha"]["version"], "9.9.9")
+
+    def test_install_locked_requires_lockfile(self):
+        with self.assertRaises(SystemExit):
+            L.cmd_install_project_deps(self.tmp, strict=True)
+
+    def test_restore_from_lock_uses_pinned_versions(self):
+        calls = []
+
+        def fake_install(repo, requested_version=None, libname=None):
+            calls.append((libname, requested_version, repo))
+            return libname, requested_version
+
+        orig = L._install_from_repo
+        L._install_from_repo = fake_install
+        try:
+            L.write_lockfile(self.tmp, {
+                "alpha": {"version": "1.2.3", "repo": "https://github.com/x/alpha.git"},
+            })
+            with contextlib.redirect_stdout(io.StringIO()):
+                L.cmd_install_project_deps(self.tmp, strict=True)
+        finally:
+            L._install_from_repo = orig
+
+        self.assertEqual(calls, [("alpha", "1.2.3", "https://github.com/x/alpha.git")])
+
+    def test_bare_install_prefers_locked_version(self):
+        seen = []
+
+        def fake_install(repo, requested_version=None, libname=None):
+            seen.append((libname, requested_version, repo))
+            return libname, requested_version
+
+        orig = L._install_from_repo
+        L._install_from_repo = fake_install
+        try:
+            L.write_lockfile(self.tmp, {
+                "alpha": {"version": "1.0.0", "repo": "https://github.com/x/alpha.git"},
+            })
+            with contextlib.redirect_stdout(io.StringIO()):
+                L.cmd_install(["alpha"])
+        finally:
+            L._install_from_repo = orig
+        # installs the locked repo at the pinned tag — never touches the registry
+        self.assertEqual(seen, [("alpha", "1.0.0", "https://github.com/x/alpha.git")])
+        self.assertEqual(L.lockfile_pin(self.tmp, "alpha"), "1.0.0")
+
+    def test_bare_install_locked_is_pin_authoritative(self):
+        # With a pinned lock, the lockfile's repo+version wins even if the
+        # registry is unreachable — the whole point of leash.lock.
+        def exploding_index():
+            raise AssertionError("registry must not be contacted")
+
+        def fake_install(repo, requested_version=None, libname=None):
+            return libname, requested_version
+
+        orig_i = L._install_from_repo
+        orig_f = L.fetch_index
+        L._install_from_repo = fake_install
+        L.fetch_index = exploding_index
+        try:
+            L.write_lockfile(self.tmp, {
+                "alpha": {"version": "1.0.0", "repo": "https://github.com/x/alpha.git"},
+            })
+            with contextlib.redirect_stdout(io.StringIO()):
+                L.cmd_install(["alpha"])
+        finally:
+            L._install_from_repo = orig_i
+            L.fetch_index = orig_f
+
+    def test_missing_lock_version_field_exits(self):
+        with open(os.path.join(self.tmp, "leash.lock"), "w") as f:
+            json.dump({"packages": {}}, f)
+        with self.assertRaises(SystemExit):
+            L.read_lockfile(self.tmp)
+
+    def test_future_lock_version_exits(self):
+        with open(os.path.join(self.tmp, "leash.lock"), "w") as f:
+            json.dump({"version": 999, "packages": {}}, f)
+        with self.assertRaises(SystemExit):
+            L.read_lockfile(self.tmp)
+
+    def test_git_url_install_never_writes_lock(self):
+        calls = []
+
+        def fake_install(url, requested_version=None, libname=None):
+            calls.append(url)
+            return (libname or "urlpkg"), (requested_version or "0.1.0")
+
+        orig = L._install_from_repo
+        L._install_from_repo = fake_install
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                L.cmd_install(["https://github.com/someone/somelib.git"])
+        finally:
+            L._install_from_repo = orig
+        self.assertEqual(calls, ["https://github.com/someone/somelib.git"])
+        self.assertIsNone(L.read_lockfile(self.tmp))
+
+    def test_locked_flag_without_entry_exits(self):
+        def fake_registry(name, ver=None):
+            return name, "1.0.0", "https://github.com/x/foo.git"
+
+        orig = L._install_registry
+        L._install_registry = fake_registry
+        try:
+            # no leash.lock -> --locked must fail
+            with self.assertRaises(SystemExit):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    L.cmd_install(["foo", "--locked"])
+        finally:
+            L._install_registry = orig
 
 
 if __name__ == "__main__":

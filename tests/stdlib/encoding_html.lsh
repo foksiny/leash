@@ -1,0 +1,6 @@
+use encoding::html::Html;
+fnc main() : void {
+    show(Html.escape("<p>a & b</p>"));
+    show(Html.unescape("&lt;p&gt;a &amp; b&lt;/p&gt;"));
+    show(Html.unescape("&#65;&#66;"));
+}

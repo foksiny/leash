@@ -1,0 +1,71 @@
+// A multiset (bag) of strings: items with per-item counts.
+//
+//   use collections::multiset::MultiSet;
+//   s: MultiSet = MultiSet.make();
+//   s.add("a"); s.add("a"); show(s.count_of("a"));  // 2
+
+pub def MultiSet : class {
+    priv keys: vec<string>;
+    priv counts: vec<int>;
+
+    static pub fnc make() : MultiSet {
+        ks: vec<string>;
+        cs: vec<int>;
+        return MultiSet { keys: ks, counts: cs };
+    }
+
+    pub fnc add(item string) : void {
+        this.add_n(item, 1);
+    }
+
+    pub fnc add_n(item string, n int) : void {
+        for i: int = 0; i < this.keys.size; i = i + 1 {
+            if this.keys.get(i) == item {
+                c: int = this.counts.get(i);
+                this.counts.set(i, c + n);
+                return;
+            }
+        }
+        this.keys.pushb(item);
+        this.counts.pushb(n);
+    }
+
+    pub fnc remove(item string) : void {
+        for i: int = 0; i < this.keys.size; i = i + 1 {
+            if this.keys.get(i) == item {
+                c: int = this.counts.get(i);
+                if c > 0 {
+                    this.counts.set(i, c - 1);
+                }
+                return;
+            }
+        }
+    }
+
+    pub fnc count_of(item string) : int {
+        for i: int = 0; i < this.keys.size; i = i + 1 {
+            if this.keys.get(i) == item {
+                return this.counts.get(i);
+            }
+        }
+        return 0;
+    }
+
+    // Distinct items.
+    pub fnc distinct() : int {
+        return this.keys.size;
+    }
+
+    // Total number of items (counting duplicates).
+    pub fnc total() : int {
+        s: int = 0;
+        foreach _, c in<vector> this.counts {
+            s = s + c;
+        }
+        return s;
+    }
+
+    pub fnc has(item string) : bool {
+        return this.count_of(item) > 0;
+    }
+};

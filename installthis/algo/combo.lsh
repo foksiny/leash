@@ -1,0 +1,88 @@
+// Permutations and combinations as string-matrix results.
+//
+//   use algo::combo::Combo;
+//   show(Combo.choose((vec<string>){"a","b","c"}, 2).size);
+
+pub def Combo : class {
+    // All C(n, k) subsets as a vector of joined "i1,i2,..." index strings.
+    static pub fnc choose_indexes(n int, k int) : vec<string> {
+        out: vec<string>;
+        if k <= 0 || k > n {
+            out.pushb("");
+            return out;
+        }
+        heap: vec<int>;
+        // start with the identity
+        cur: vec<int>;
+        for j: int = 0; j < k; j = j + 1 {
+            cur.pushb(j);
+        }
+        while true {
+            out.pushb(Combo.fmt(cur));
+            i: int = k - 1;
+            while i >= 0 && cur.get(i) == n - k + i {
+                i = i - 1;
+            }
+            if i < 0 {
+                stop;
+            }
+            v: int = cur.get(i) + 1;
+            cur.set(i, v);
+            for m: int = i + 1; m < k; m = m + 1 {
+                cur.set(m, cur.get(m - 1) + 1);
+            }
+        }
+        return out;
+    }
+
+    // All permutations of 0..n-1 as "i1,i2,.." strings (Heap's algorithm).
+    static pub fnc permute_indexes(n int) : vec<string> {
+        out: vec<string>;
+        if n <= 0 {
+            out.pushb("");
+            return out;
+        }
+        a: vec<int>;
+        for j: int = 0; j < n; j = j + 1 {
+            a.pushb(j);
+        }
+        // iterative Heap's algorithm with a counter stack
+        c: vec<int>;
+        for m: int = 0; m < n; m = m + 1 {
+            c.pushb(0);
+        }
+        out.pushb(Combo.fmt(a));
+        i: int = 0;
+        while i < n {
+            if c.get(i) < i {
+                if i % 2 == 0 {
+                    t: int = a.get(0);
+                    a.set(0, a.get(i));
+                    a.set(i, t);
+                } else {
+                    t2: int = a.get(c.get(i));
+                    a.set(c.get(i), a.get(i));
+                    a.set(i, t2);
+                }
+                out.pushb(Combo.fmt(a));
+                c.set(i, c.get(i) + 1);
+                i = 0;
+            } else {
+                c.set(i, 0);
+                i = i + 1;
+            }
+        }
+        return out;
+    }
+
+    static priv fnc fmt(v vec<int>) : string {
+        out: string = "";
+        for i: int = 0; i < v.size; i = i + 1 {
+            if i > 0 {
+                out = out + ",";
+            }
+            out = out + tostring(v.get(i));
+        }
+        return out;
+    }
+};

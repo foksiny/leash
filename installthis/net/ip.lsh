@@ -1,0 +1,132 @@
+// IPv4 utilities: dotted-quad <-> integer, validation, CIDR test.
+//
+//   use net::ip::Ip;
+//   show(Ip.is_valid("10.0.0.1"));
+//   show(Ip.to_int("0.0.0.255"));
+
+pub def Ip : class {
+    // True when s is a dotted quad of 4 0..255 numbers.
+    static pub fnc is_valid(s string) : bool {
+        n: int = 0;
+        i: int = 0;
+        sz: int = s.size;
+        count: int = 0;
+        while true {
+            if n >= 4 {
+                return false;
+            }
+            j: int = i;
+            digits: int = 0;
+            v: int = 0;
+            while i < sz && s[i] >= '0' && s[i] <= '9' {
+                v = v * 10 + toint(int, s[i]) - toint(int, '0');
+                if v > 255 || digits > 2 {
+                    return false;
+                }
+                digits = digits + 1;
+                i = i + 1;
+            }
+            if digits == 0 {
+                return false;
+            }
+            count = count + 1;
+            if count == 4 {
+                return i == sz;
+            }
+            if i >= sz || s[i] != '.' {
+                return false;
+            }
+            i = i + 1;
+            n = n + 1;
+        }
+        return false;
+    }
+
+    // dotted-quad -> 32-bit int (0 on invalid input).
+    static pub fnc to_int(s string) : uint<32> {
+        parts: vec<int>;
+        n: int = s.size;
+        i: int = 0;
+        while i < n {
+            j: int = i;
+            v: int = 0;
+            while i < n && s[i] >= '0' && s[i] <= '9' {
+                v = v * 10 + toint(int, s[i]) - toint(int, '0');
+                i = i + 1;
+            }
+            if v > 255 {
+                return (uint<32>)0;
+            }
+            parts.pushb(v);
+            if i < n && s[i] == '.' {
+                i = i + 1;
+            }
+        }
+        if parts.size != 4 {
+            return (uint<32>)0;
+        }
+        r: uint<32> = (uint<32>)parts.get(0) << 24;
+        r = r | ((uint<32>)parts.get(1) << 16);
+        r = r | ((uint<32>)parts.get(2) << 8);
+        r = r | ((uint<32>)parts.get(3));
+        return r;
+    }
+
+    static pub fnc from_int(v uint<32>) : string {
+        a: uint<32> = (v >> 24) & (uint<32>)255;
+        b: uint<32> = (v >> 16) & (uint<32>)255;
+        c: uint<32> = (v >> 8) & (uint<32>)255;
+        d: uint<32> = v & (uint<32>)255;
+        return tostring(toint(int, a)) + "." + tostring(toint(int, b)) + "." + tostring(toint(int, c)) + "." + tostring(toint(int, d));
+    }
+
+    // True when `ip` is inside cidr "a.b.c.d/prefix".
+    static pub fnc in_cidr(ip string, cidr string) : bool {
+        slash: int = -1;
+        for i: int = 0; i < cidr.size; i = i + 1 {
+            if cidr[i] == '/' {
+                slash = i;
+                stop;
+            }
+        }
+        if slash < 0 {
+            return false;
+        }
+        base: string = Ip.slice(cidr, 0, slash);
+        prefix_str: string = Ip.slice(cidr, slash + 1, cidr.size);
+        if prefix_str.size == 0 {
+            return false;
+        }
+        prefix: int = 0;
+        foreach _, c in<string> prefix_str {
+            if c < '0' || c > '9' {
+                return false;
+            }
+            prefix = prefix * 10 + toint(int, c) - toint(int, '0');
+        }
+        if prefix < 0 || prefix > 32 {
+            return false;
+        }
+        ipv: uint<32> = Ip.to_int(ip);
+        basev: uint<32> = Ip.to_int(base);
+        if ipv == 0 && !Ip.is_valid(ip) {
+            return false;
+        }
+        if basev == 0 && !Ip.is_valid(base) {
+            return false;
+        }
+        if prefix == 0 {
+            return true;
+        }
+        shift: int = 32 - prefix;
+        return (ipv >> shift) == (basev >> shift);
+    }
+
+    static priv fnc slice(s string, start int, end int) : string {
+        out: string = "";
+        for i: int = start; i < end && i < s.size; i = i + 1 {
+            out = out + s[i];
+        }
+        return out;
+    }
+};

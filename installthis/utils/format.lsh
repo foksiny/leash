@@ -1,0 +1,70 @@
+// Fixed-precision number formatting (no printf "%.*f" needed).
+//
+//   use utils::format::Format;
+//   show(Format.dec(3.14159, 2));    // "3.14"
+//   show(Format.commas(1234567));    // "1,234,567"
+//   show(Format.percent(0.0825, 1)); // "8.3%"
+
+pub def Format : class {
+    // Fixed decimals; rounds half-up.
+    static pub fnc dec(x float, places int) : string {
+        neg: bool = x < 0.0;
+        u: float = x;
+        if neg {
+            u = 0.0 - u;
+        }
+        scale: int = 1;
+        for k: int = 0; k < places; k = k + 1 {
+            scale = scale * 10;
+        }
+        whole: int = toint(int, u);
+        frac_d: float = (u - tofloat(float, whole)) * tofloat(float, scale) + 0.5;
+        frac_i: int = toint(int, frac_d);
+        if frac_i >= scale {
+            whole = whole + 1;
+            frac_i = frac_i - scale;
+        }
+        fs: string = tostring(frac_i);
+        // zero-pad the fractional part
+        for i: int = fs.size; i < places; i = i + 1 {
+            fs = "0" + fs;
+        }
+        if neg && (whole > 0 || frac_i > 0) {
+            return "-" + tostring(whole) + "." + fs;
+        }
+        return tostring(whole) + "." + fs;
+    }
+
+    // Thousands separators for integers.
+    static pub fnc commas(n int) : string {
+        return Format.commas64(n);
+    }
+
+    static pub fnc commas64(n int<64>) : string {
+        neg: bool = n < 0;
+        v: int<64> = n;
+        if neg {
+            v = 0 - v;
+        }
+        digits: string = tostring(v);
+        out: string = "";
+        k: int = 0;
+        for i: int = digits.size; i > 0; i = i - 1 {
+            out = digits[i - 1] + out;
+            k = k + 1;
+            if k == 3 && i - 1 > 0 {
+                out = "," + out;
+                k = 0;
+            }
+        }
+        if neg {
+            return "-" + out;
+        }
+        return out;
+    }
+
+    // "8.3%" style — x is a fraction (0.083 → "8.3%").
+    static pub fnc percent(x float, places int) : string {
+        return Format.dec(x * 100.0, places) + "%";
+    }
+};

@@ -1,0 +1,9 @@
+use algo::combo::Combo;
+fnc main() : void {
+    c: vec<string> = Combo.choose_indexes(4, 2);
+    show(c.size);
+    foreach _, row in<vector> c { show(row); }
+    p: vec<string> = Combo.permute_indexes(3);
+    show(p.size);
+    show(p.get(0));
+}

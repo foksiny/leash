@@ -1,0 +1,9 @@
+use text::distance::Distance;
+fnc main() : void {
+    show(Distance.edit("kitten", "sitting"));
+    show(Distance.edit("", ""));
+    show(Distance.edit("a", "a"));
+    show(Distance.edit("abc", ""));
+    show(Distance.similarity("hello", "hallo"));
+    show(Distance.similarity("abc", "abc"));
+}

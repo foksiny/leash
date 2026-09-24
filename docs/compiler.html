@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v0.23.9 Beta</div>
+        <div class="version">v0.24.1 Beta</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -55,6 +55,7 @@
     <tr><th>Command</th><th>Description</th></tr>
     <tr><td><code>leash compile &lt;file&gt;</code></td><td>Compile to a native executable</td></tr>
     <tr><td><code>leash run [&lt;file&gt;]</code></td><td>Run file or project (without file, runs <code>config.lshc</code> project)</td></tr>
+    <tr><td><code>leash dbg [&lt;file&gt;]</code></td><td>Run under the native source-level debugger (step / breakpoints)</td></tr>
     <tr><td><code>leash dump &lt;file&gt;</code></td><td>Dump LLVM IR to a <code>.ll</code> file</td></tr>
     <tr><td><code>leash check &lt;file&gt;</code></td><td>Static analysis without compiling</td></tr>
     <tr><td><code>leash init [dir]</code></td><td>Scaffold a new project</td></tr>
@@ -67,16 +68,65 @@
 
 <h2>Compilation Targets</h2>
 
-<p>Leash supports multiple compilation targets, allowing you to compile your code for different platforms. The default target compiles to a native binary for your current system. Cross-compilation to Windows and macOS is supported when the appropriate toolchains are installed.</p>
+<p>Leash supports multiple compilation targets, allowing you to compile your code for different platforms. The default target compiles to a native binary for your current system. Cross-compilation to Windows, macOS, and Linux (including ARM64) is supported when the appropriate toolchains are installed.</p>
 
 <pre><code><span class="cm"># Current system (default)</span>
 python3 -m leash.cli compile program.lsh
 
-<span class="cm"># Windows 64-bit (cross-compile)</span>
+<span class="cm"># Windows 64-bit (cross-compile via MinGW)</span>
 python3 -m leash.cli compile program.lsh --target win64
 
 <span class="cm"># macOS (cross-compile)</span>
-python3 -m leash.cli compile program.lsh --target macos</code></pre>
+python3 -m leash.cli compile program.lsh --target macos
+
+<span class="cm"># Linux 32-bit</span>
+python3 -m leash.cli compile program.lsh --target linux32
+
+<span class="cm"># Linux ARM64 (Raspberry Pi 4/5, ARM servers, Ampere, AWS Graviton)</span>
+python3 -m leash.cli compile program.lsh --target linux-arm</code></pre>
+
+<p>For <code>linux-arm</code> on a non-ARM host, install the cross toolchain (<code>gcc-aarch64-linux-gnu</code>) — <code>leash run --target linux-arm</code> executes the produced binary through <code>qemu-aarch64</code> (qemu-user) when the host is x86. On native ARM64 Linux (e.g. a Raspberry Pi) no extra setup is needed.</p>
+
+<table>
+    <tr><th>Target</th><th>Triple</th><th>Runs on</th></tr>
+    <tr><td><code>linux64</code></td><td><code>x86_64-unknown-linux-gnu</code></td><td>Linux x86_64</td></tr>
+    <tr><td><code>linux32</code></td><td><code>i686-unknown-linux-gnu</code></td><td>Linux x86 (32-bit)</td></tr>
+    <tr><td><code>linux-arm</code></td><td><code>aarch64-unknown-linux-gnu</code></td><td>Linux ARM64 (Raspberry Pi, ARM servers)</td></tr>
+    <tr><td><code>win64</code></td><td><code>x86_64-pc-windows-msvc</code></td><td>Windows x86_64</td></tr>
+    <tr><td><code>macos</code></td><td><code>x86_64-apple-darwin</code></td><td>macOS x86_64</td></tr>
+    <tr><td><code>macos-arm</code></td><td><code>aarch64-apple-darwin</code></td><td>macOS ARM64 (Apple Silicon)</td></tr>
+</table>
+
+<h2>Debugging</h2>
+
+<p><code>leash dbg &lt;file.lsh&gt;</code> compiles the program with lightweight statement instrumentation and runs it under the <strong>native Leash debugger</strong> — no external tools needed. Every statement emits a hook that the runtime interprets interactively:</p>
+
+<pre><code>leash dbg app.lsh
+leash dbg app.lsh --break 42          <span class="cm"># break at line 42</span>
+leash dbg app.lsh --run               <span class="cm"># skip initial stepping; run to the first breakpoint</span>
+leash dbg                             <span class="cm"># debug the current project (config.lshc)</span></code></pre>
+
+<p>At each stop the debugger prints the location and source line, and offers an interactive prompt:</p>
+
+<pre><code>--- Debug session for 'app.lsh' (leash dbg) ---
+[leash-dbg] --&gt; app.lsh:8 in main
+       8 |     z: int = add(x, y);
+(dbg) h                        <span class="cm"># help</span>
+(dbg) s                        <span class="cm"># step (also: n, or just Enter)</span>
+(dbg) b 12                     <span class="cm"># set breakpoint at line 12</span>
+(dbg) c                        <span class="cm"># continue until the next breakpoint</span>
+(dbg) l                        <span class="cm"># list breakpoints</span>
+(dbg) d 12                     <span class="cm"># delete breakpoint 12</span>
+(dbg) q                        <span class="cm"># quit the program now</span></code></pre>
+
+<ul>
+    <li>Debug builds default to <code>-O0</code> so statements map 1:1 to source lines (the always-on AST folding can drop <code>x: int = …</code> declarations that are fully constant-propagated — a breakpoint pinned to such a line simply never fires; prefer to step into the caller).</li>
+    <li>Break on entry is the default; use <code>--run</code> to run straight to the first breakpoint.</li>
+    <li>While stopped at the <code>(dbg)</code> prompt, stdin belongs to the debugger — the debuggee receives it once you continue (step/continue). Pipeline-style stdin (<code>printf 'c\nq\n' | leash dbg app.lsh</code>) is the recommended CI usage.</li>
+    <li>Statement-level instrumentation is provided by the toolchain itself — no external debugger is required. The binary remains a valid GDB/LLDB target at symbol level.</li>
+</ul>
+
+<p>Under the hood, <code>leash dbg</code> emits a call to the runtime's <code>__leash_dbg_stmt(func, line)</code> before every statement; with <code>LEASH_DBG</code> unset the hook is a no-op, so the same archive can be reused by plain <code>leash run</code>.</p>
 
 <h2>Library Output Types</h2>
 

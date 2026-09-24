@@ -9,6 +9,7 @@ supported on every platform:
 | Linux    | BSD sockets + OpenSSL (statically bundled in `linux/liblshhttp.a`) |
 | Windows  | WinHTTP (`win/liblshhttp.a`, no external dependencies) |
 | macOS    | BSD sockets + OpenSSL (build once, see below) |
+| Linux ARM64 | BSD sockets + OpenSSL (`arm64/` — rebuild, see below) |
 
 ## Usage
 
@@ -84,4 +85,10 @@ cd src && build.bat
 cd src && OPENSSL_ROOT=$(brew --prefix openssl) sh build.sh
 ```
 
-Outputs land in `../linux/`, `../win/` or `../macos/` respectively.
+Outputs land in `../linux/`, `../win/` or `../macos/` respectively. For
+Linux ARM64 cross-compile from an x86 host, install the aarch64 toolchain and
+run:
+
+    TARGET_DIR=arm64 CC=aarch64-linux-gnu-gcc sh build.sh
+
+which produces `arm64/liblshhttp.a`.

@@ -1,0 +1,221 @@
+@from("liblshhttpd.a") {
+
+    //====================================================
+    // Native HTTP server (lshhttpd)
+    //====================================================
+
+    // The request handler contract. A handler receives:
+    //   method   "GET", "POST", "PUT", "DELETE", "HEAD", ...
+    //   path     URL path, e.g. "/hello" (query string excluded)
+    //   query    raw query string without the leading '?', e.g. "a=1&b=2"
+    //   headers  request headers, one "Name: value" per LF-separated line
+    //   body     request body ("" when there is none)
+    // and returns the HTTP status code to reply with (200, 404, ...).
+    // The handler fills the response through HttpServer.set_body() /
+    // HttpServer.add_header() — see below.
+    //
+    // Serve exactly `max_requests` requests (`max_requests` < 0 = forever),
+    // then return. Returns the number of requests served (>= 0) or a
+    // negative error code (pass it to lshhttpd_strerror).
+    fnc lshhttpd_serve(
+        port int,
+        max_requests int<64>,
+        handler fnc(string, string, string, string, string) : int
+    ) : int;
+
+    // Ask a running serve() loop to exit: called from inside a handler it
+    // shuts down after the current response; from another thread it unblocks
+    // the accept loop immediately.
+    fnc lshhttpd_shutdown() : void;
+
+    // Set the response body for the current request (copied immediately).
+    fnc lshhttpd_set_body(body string) : void;
+
+    // Append "Name: value" to the response headers for the current request.
+    // Content-Length and Connection are managed by the server.
+    fnc lshhttpd_add_header(name string, value string) : void;
+
+    // Append a raw header line ("Name: value") for the current request.
+    fnc lshhttpd_set_header(line string) : void;
+
+    // Library version identifier.
+    fnc lshhttpd_version() : string;
+
+    // Human-readable description of an error code (GC-managed string).
+    fnc lshhttpd_strerror(code int) : string;
+};
+
+// A parsed query string ("a=1&b=2"). Built by HttpServer.parse_query().
+pub def HttpQuery : class {
+    pub keys: vec<string>;
+    pub vals: vec<string>;
+
+    pub fnc VAL_HttpQuery() : string {
+        return "HttpQuery{" + tostring(this.keys.size) + " params}";
+    }
+
+    pub fnc count() : int {
+        return this.keys.size;
+    }
+
+    // True when the query contains a parameter named `name`.
+    pub fnc has(name string) : bool {
+        foreach _, k in<vector> this.keys {
+            if k == name {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // The value of parameter `name` ("" when absent or valueless).
+    pub fnc get(name string) : string {
+        foreach i, k in<vector> this.keys {
+            if k == name {
+                return this.vals.get(i);
+            }
+        }
+        return "";
+    }
+};
+
+// The handler signature expected by HttpServer.serve().
+pub def HttpHandler : type fnc(string, string, string, string, string) : int;
+
+pub def HttpServer : class {
+    //====================================================
+    // Serving
+    //====================================================
+
+    // Serves requests on `port` until HttpServer.shutdown() is called
+    // (or the process exits). Blocks the calling thread.
+    // Returns the number of requests served, or a negative error code.
+    static pub fnc serve(port int, handler HttpHandler) : int {
+        return lshhttpd_serve(port, 0 - 1, handler);
+    }
+
+    // Like serve(), but exits cleanly after `max_requests` requests.
+    // Handy for tests and short-lived services.
+    static pub fnc serve_ex(port int, max_requests int<64>, handler HttpHandler) : int {
+        return lshhttpd_serve(port, max_requests, handler);
+    }
+
+    // Asks a running server to stop. Safe to call from a handler
+    // (stops after the current response) or from another thread.
+    static pub fnc shutdown() : void {
+        lshhttpd_shutdown();
+    }
+
+    //====================================================
+    // Filling the response (call these from inside a handler)
+    //====================================================
+
+    // Sets the response body.
+    static pub fnc set_body(body string) : void {
+        lshhttpd_set_body(body);
+    }
+
+    // Appends a "Name: value" response header line.
+    static pub fnc add_header(name string, value string) : void {
+        lshhttpd_add_header(name, value);
+    }
+
+    // Appends a raw header line ("Name: value").
+    static pub fnc add_header_line(line string) : void {
+        lshhttpd_set_header(line);
+    }
+
+    // Shortcut: sets the Content-Type response header.
+    static pub fnc set_content_type(content_type string) : void {
+        lshhttpd_add_header("Content-Type", content_type);
+    }
+
+    // One-liner: reply with a Content-Type + body, returning `status`
+    // so it can be used as the handler's return value:
+    //     return HttpServer.reply(200, "text/plain", "hello");
+    static pub fnc reply(status int, content_type string, body string) : int {
+        HttpServer.set_content_type(content_type);
+        lshhttpd_set_body(body);
+        return status;
+    }
+
+    // Like reply() without touching Content-Type (the client decides).
+    static pub fnc reply_raw(status int, body string) : int {
+        lshhttpd_set_body(body);
+        return status;
+    }
+
+    //====================================================
+    // Handler helpers
+    //====================================================
+
+    // Parses a query string "a=1&b=2" into an HttpQuery.
+    // Keys and values are NOT percent-decoded — pair that with
+    // encoding::url::Url.decode if you need it.
+    static pub fnc parse_query(q string) : HttpQuery {
+        fresh_keys: vec<string>;
+        fresh_vals: vec<string>;
+        out: HttpQuery = HttpQuery { keys: fresh_keys, vals: fresh_vals };
+        n: int = q.size;
+        p: int = 0;
+        while p < n {
+            amp: int = HttpServer.find_ch(q, p, '&');
+            if amp < 0 {
+                amp = n;
+            }
+            eq: int = HttpServer.find_ch(q, p, '=');
+            if eq < 0 || eq >= amp {
+                out.keys.pushb(HttpServer.slice(q, p, amp));
+                out.vals.pushb("");
+            } else {
+                out.keys.pushb(HttpServer.slice(q, p, eq));
+                out.vals.pushb(HttpServer.slice(q, eq + 1, amp));
+            }
+            p = amp + 1;
+        }
+        return out;
+    }
+
+    // True when `req_path` starts with `prefix`.
+    static pub fnc path_matches(req_path string, prefix string) : bool {
+        if req_path.size < prefix.size {
+            return false;
+        }
+        for i: int = 0; i < prefix.size; i = i + 1 {
+            if req_path[i] != prefix[i] {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    //====================================================
+    // Diagnostics
+    //====================================================
+
+    static pub fnc version() : string {
+        return lshhttpd_version();
+    }
+
+    static pub fnc strerror(code int) : string {
+        return lshhttpd_strerror(code);
+    }
+
+    static priv fnc find_ch(s string, start int, c char) : int {
+        for i: int = start; i < s.size; i = i + 1 {
+            if s[i] == c {
+                return i;
+            }
+        }
+        return 0 - 1;
+    }
+
+    static priv fnc slice(s string, start int, end int) : string {
+        out: string;
+        for i: int = start; i < end; i = i + 1 {
+            out = out + s[i];
+        }
+        return out;
+    }
+};
+

@@ -1,0 +1,73 @@
+// Naive English pluralization for display strings.
+//
+//   use text::plural::Plural;
+//   show(Plural.word("error", 3));    // "errors"
+//   show(Plural.phrase(2, "file"));   // "2 files"
+
+pub def Plural : class {
+    // English plural of a lowercase word ("cat" -> "cats", "box" -> "boxes",
+    // "city" -> "cities"). `count` >= 0 picks singular when it is 1.
+    static pub fnc word(w string, count int) : string {
+        if count == 1 {
+            return w;
+        }
+        n: int = w.size;
+        if n == 0 {
+            return w;
+        }
+        last: char = w[n - 1];
+        second: char = Plural.prev_char(w, n - 2);
+        if last == 's' || last == 'x' || last == 'z' ||
+           (last == 'h' && (second == 's' || second == 'c')) {
+            return w + "es";
+        }
+        if last == 'y' && !(second == 'a' || second == 'e' || second == 'i' ||
+                            second == 'o' || second == 'u') {
+            out2: string = "";
+            for i2: int = 0; i2 < n - 1; i2 = i2 + 1 {
+                out2 = out2 + w[i2];
+            }
+            return out2 + "ies";
+        }
+        return w + "s";
+    }
+
+    // "1 file" / "3 files" ready-made phrase.
+    static pub fnc phrase(count int, w string) : string {
+        return tostring(count) + " " + Plural.word(w, count);
+    }
+
+    // Singularize: "cats" -> "cat", "boxes" -> "box".
+    static pub fnc singular(w string) : string {
+        n: int = w.size;
+        if n <= 1 {
+            return w;
+        }
+        if w[n - 1] == 's' {
+            if n >= 3 && w[n - 2] == 'e' && w[n - 3] == 'i' {
+                return "";  // invalid; keep below
+            }
+            if n >= 2 && (w[n - 2] == 'e' || w[n - 2] == '\'') {
+                // "boxes" -> "box", "bosses" -> "boss"
+                out2: string = "";
+                for j2: int = 0; j2 < n - 2; j2 = j2 + 1 {
+                    out2 = out2 + w[j2];
+                }
+                return out2;
+            }
+            out: string = "";
+            for j: int = 0; j < n - 1; j = j + 1 {
+                out = out + w[j];
+            }
+            return out;
+        }
+        return w;
+    }
+    static priv fnc prev_char(s string, pos int) : char {
+        if pos < 0 {
+            return '\0';
+        }
+        return s[pos];
+    }
+};
+

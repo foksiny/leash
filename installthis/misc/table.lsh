@@ -1,0 +1,158 @@
+// Fixed-width ASCII tables.
+//
+//   use misc::table::Table;
+//   t: Table = Table.with_headers((vec<string>){"Name", "Wins"});
+//   t.row((vec<string>){"alpha", "3"});
+//   print(t.render());
+
+pub def Table : class {
+    priv headers: vec<string>;
+    priv rows: vec<string>;
+    priv has_headers: bool;
+
+    static pub fnc make() : Table {
+        h: vec<string>;
+        r: vec<string>;
+        return Table { headers: h, rows: r, has_headers: false };
+    }
+
+    static pub fnc with_headers(cols vec<string>) : Table {
+        h: vec<string>;
+        r: vec<string>;
+        foreach _, c in<vector> cols {
+            h.pushb(c);
+        }
+        return Table { headers: h, rows: r, has_headers: true };
+    }
+
+    pub fnc row(cols vec<string>) : void {
+        line: string = "";
+        first: bool = true;
+        foreach _, c in<vector> cols {
+            if !first {
+                line = line + "\t";
+            }
+            line = line + c;
+            first = false;
+        }
+        this.rows.pushb(line);
+    }
+
+    // Width of column `i` (longest cell seen).
+    priv fnc col_width(i int) : int {
+        w: int = 0;
+        if this.has_headers && i < this.headers.size {
+            w = this.headers.get(i).size;
+        }
+        foreach _, r in<vector> this.rows {
+            c: string = this.cell(r, i);
+            if c.size > w {
+                w = c.size;
+            }
+        }
+        return w;
+    }
+
+    priv fnc cols_of() : int {
+        n: int = 0;
+        if this.has_headers {
+            n = this.headers.size;
+        }
+        foreach _, r in<vector> this.rows {
+            k: int = this.count_cells(r);
+            if k > n {
+                n = k;
+            }
+        }
+        return n;
+    }
+
+    priv fnc count_cells(line string) : int {
+        if line.size == 0 {
+            return 0;
+        }
+        n: int = 1;
+        foreach _, c in<string> line {
+            if c == '\t' {
+                n = n + 1;
+            }
+        }
+        return n;
+    }
+
+    // Get tab-separated cell `i` of `line` ("" when out of range).
+    priv fnc cell(line string, want int) : string {
+        cur: int = 0;
+        start: int = 0;
+        n: int = line.size;
+        for i: int = 0; i <= n; i = i + 1 {
+            if i == n || line[i] == '\t' {
+                if cur == want {
+                    out: string = "";
+                    for j: int = start; j < i; j = j + 1 {
+                        out = out + line[j];
+                    }
+                    return out;
+                }
+                cur = cur + 1;
+                start = i + 1;
+            }
+        }
+        return "";
+    }
+
+    priv fnc pad_to(s string, width int) : string {
+        out: string = s;
+        for i: int = s.size; i < width; i = i + 1 {
+            out = out + " ";
+        }
+        return out;
+    }
+
+    // The whole table as a single string.
+    pub fnc render() : string {
+        cols: int = this.cols_of();
+        out: string = "";
+        widths: vec<int>;
+        for i: int = 0; i < cols; i = i + 1 {
+            widths.pushb(this.col_width(i));
+        }
+        if this.has_headers {
+            first: bool = true;
+            for i2: int = 0; i2 < cols; i2 = i2 + 1 {
+                if !first {
+                    out = out + "  ";
+                }
+                first = false;
+                cell_text: string = "";
+                if i2 < this.headers.size {
+                    cell_text = this.headers.get(i2);
+                }
+                out = out + this.pad_to(cell_text, widths.get(i2));
+            }
+            out = out + "\n";
+            for i3: int = 0; i3 < cols; i3 = i3 + 1 {
+                w: int = widths.get(i3);
+                for k: int = 0; k < w; k = k + 1 {
+                    out = out + "-";
+                }
+                if i3 + 1 < cols {
+                    out = out + "  ";
+                }
+            }
+            out = out + "\n";
+        }
+        foreach _, r in<vector> this.rows {
+            first2: bool = true;
+            for i4: int = 0; i4 < cols; i4 = i4 + 1 {
+                if !first2 {
+                    out = out + "  ";
+                }
+                first2 = false;
+                out = out + this.pad_to(this.cell(r, i4), widths.get(i4));
+            }
+            out = out + "\n";
+        }
+        return out;
+    }
+};

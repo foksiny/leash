@@ -1,0 +1,52 @@
+// wc-style counters: bytes, chars, words, lines.
+//
+//   use text::count::Count;
+//   show(Count.words("the quick brown fox"));  // 4
+
+pub def Count : class {
+    static pub fnc chars(s string) : int {
+        return s.size;
+    }
+
+    static pub fnc lines(s string) : int {
+        if s.size == 0 {
+            return 0;
+        }
+        n: int = 1;
+        foreach _, c in<string> s {
+            if c == '\n' {
+                n = n + 1;
+            }
+        }
+        return n;
+    }
+
+    static pub fnc words(text string) : int {
+        count: int = 0;
+        in_word: bool = false;
+        foreach _, c in<string> text {
+            if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+                if in_word {
+                    count = count + 1;
+                    in_word = false;
+                }
+            } else {
+                in_word = true;
+            }
+        }
+        if in_word {
+            count = count + 1;
+        }
+        return count;
+    }
+
+    // Roughly average reading time at 200 wpm ("< 1 min", "3 min").
+    static pub fnc read_time(text string) : string {
+        w: int = Count.words(text);
+        minutes: int = w / 200;
+        if minutes < 1 {
+            return "< 1 min";
+        }
+        return tostring(minutes) + " min";
+    }
+};

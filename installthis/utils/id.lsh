@@ -1,0 +1,44 @@
+// Short generated identifiers (suffixes, session tags, ids in test
+// output) — a lighter alternative to utils::uuid::Uuid.
+//
+//   use utils::id::Id;
+//   show(Id.make(12));        // e.g. "x4f9Kp2bNqTz"
+//   show(Id.lower(8));        // from a-z0-9 only
+
+pub def Id : class {
+    // Random id of `len` chars from a-zA-Z0-9.
+    static pub fnc make(len int) : string {
+        chars: string = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+        out: string = "";
+        i: int = 0;
+        while i < len {
+            out = out + chars[rand(0, 61)];
+            i = i + 1;
+        }
+        return out;
+    }
+
+    // Random lowercase id of `len` chars from a-z.
+    static pub fnc lower(len int) : string {
+        chars: string = "abcdefghijklmnopqrstuvwxyz";
+        out: string = "";
+        i: int = 0;
+        while i < len {
+            out = out + chars[rand(0, 25)];
+            i = i + 1;
+        }
+        return out;
+    }
+
+    // Random hexadecimal id (like a short SHA).
+    static pub fnc hex(len int) : string {
+        chars: string = "0123456789abcdef";
+        out: string = "";
+        i: int = 0;
+        while i < len {
+            out = out + chars[rand(0, 15)];
+            i = i + 1;
+        }
+        return out;
+    }
+};

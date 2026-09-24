@@ -1,0 +1,55 @@
+// Interest math (simple + compound).
+//
+//   use finance::interest::Interest;
+//   show(Interest.compound(1000.0, 0.05, 3));  // ~1157.6
+
+pub def Interest : class {
+    // Simple interest: principal * rate * years.
+    static pub fnc simple(principal float, rate float, years float) : float {
+        return principal * rate * years;
+    }
+
+    // Compound, once per year.
+    static pub fnc compound(principal float, rate float, years int) : float {
+        result: float = principal;
+        mult: float = 1.0 + rate;
+        for i: int = 0; i < years; i = i + 1 {
+            result = result * mult;
+        }
+        return result;
+    }
+
+    // Monthly payment for an amortized loan.
+    static pub fnc monthly_payment(principal float, annual_rate float, months int) : float {
+        if months <= 0 {
+            return 0.0;
+        }
+        if annual_rate <= 0.0 {
+            return principal / (float)months;
+        }
+        r: float = annual_rate / 1200.0;
+        one_plus_r_n: float = 1.0;
+        for i: int = 0; i < months; i = i + 1 {
+            one_plus_r_n = one_plus_r_n * (1.0 + r);
+        }
+        return principal * r * one_plus_r_n / (one_plus_r_n - 1.0);
+    }
+
+    // Years for principal to reach target at a constant rate (0 if impossible).
+    static pub fnc years_to_grow(principal float, target float, rate float) : int {
+        if principal <= 0.0 || rate <= 0.0 || target <= principal {
+            if target <= principal {
+                return 0;
+            }
+            return -1;
+        }
+        years: int = 0;
+        v: float = principal;
+        mult: float = 1.0 + rate;
+        while v < target && years < 1000000 {
+            v = v * mult;
+            years = years + 1;
+        }
+        return years;
+    }
+};

@@ -8,6 +8,7 @@ compiled in, so no external packages are ever needed:
 | Platform | Archive |
 |----------|---------|
 | Linux    | `linux/liblshsql.a` |
+| Linux ARM64 | `arm64/liblshsql.a` (cross-build: `TARGET_DIR=arm64 CC=aarch64-linux-gnu-gcc sh build.sh`) |
 | Windows  | `win/liblshsql.a` |
 | macOS    | build once with `src/build.sh` |
 

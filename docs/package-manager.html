@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v0.23.9 Beta</div>
+        <div class="version">v0.24.1 Beta</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -114,8 +114,48 @@ main: <span class="str">"src/main.lsh"</span></code></pre>
 <p>Pre-release versions are supported and ordered correctly (<code>1.0.0-rc.1 &lt; 1.0.0</code>):</p>
 <pre><code>version: <span class="str">"1.0.0-beta.2"</span></code></pre>
 
+<h2>Lockfile: reproducible builds (<code>leash.lock</code>)</h2>
+
+<p><code>leashed</code> maintains a per-project <code>leash.lock</code> file recording the
+<strong>exact resolved versions</strong> of the project's dependencies. Even though the
+object-file cache already skips recompiles for unchanged sources, the lockfile is what
+makes a project build identically on a fresh machine (or in CI) without any waiting or
+guesswork.</p>
+
+<pre><code>{ <span class="cm"># leash.lock</span>
+  <span class="str">"version"</span>: 1,
+  <span class="str">"packages"</span>: {
+    <span class="str">"mylib"</span>: { <span class="str">"version"</span>: <span class="str">"1.2.3"</span>, <span class="str">"repo"</span>: <span class="str">"https://github.com/you/mylib.git"</span>, <span class="str">"tag"</span>: <span class="str">"v1.2.3"</span> }
+  }
+}</code></pre>
+
+<p>Rules of the lockfile:</p>
+
+<ul>
+    <li><strong>Write it once, commit it:</strong> <code>leashed lock</code> resolves
+    <code>leash-pkg.lshc</code>'s <code>dependencies</code> field, installs each package,
+    and writes the lock. The file is meant to go into version control.</li>
+    <li><strong>Fresh environments restore exactly:</strong> inside a project,
+    bare <code>leashed install</code> (no target) restores the pinned versions from
+    <code>leash.lock</code> &mdash; no re-resolution, no surprises.</li>
+    <li><strong>Lockfile pins win:</strong> inside a project, <code>leashed install</code>
+    (with a target) prefers the locked version when it exists.</li>
+    <li><strong>Strict CI mode:</strong> <code>leashed install --locked</code> fails when a
+    package isn't pinned in <code>leash.lock</code> (or when no lockfile is present),
+    instead of silently resolving another version.</li>
+    <li><strong>Kept in sync:</strong> <code>leashed add</code>, <code>leashed update</code>
+    and <code>leashed uninstall</code> update the lockfile automatically.</li>
+</ul>
+
+<pre><code>git clone myapp && cd myapp    <span class="cm"># fresh clone</span>
+leashed install                <span class="cm"># installs exactly leash.lock's versions</span>
+
+leashed lock                   <span class="cm"># (re)write the lockfile from dependencies</span>
+leashed install --locked       <span class="cm"># CI: fail on un-pinned dependencies</span></code></pre>
+
 <h2>Installing Libraries</h2>
-<p>Install a library globally so any Leash program can use it. The installer fetches the registry, finds the library's repository, clones it, and places the files in the global libraries directory &mdash; no manual configuration needed.</p>
+<p>Install a library globally so any Leash program can use it. The installer fetches the registry, finds the library's repository, clones it, and places the files in the global libraries directory &mdash; no manual configuration needed.
+Inside a project directory (one containing a <code>leash-pkg.lshc</code> or a lockfile), installs are additionally recorded into <code>leash.lock</code> &mdash; see above.</p>
 <pre><code>leashed install mylib
 
 <span class="cm"># Install a specific published version</span>
@@ -159,7 +199,10 @@ leashed install someone/somelib</code></pre>
 <h2>Managing Libraries</h2>
 <pre><code>leashed list                 <span class="cm"># show installed libraries and versions</span>
 leashed info mylib           <span class="cm"># registry metadata, all published versions</span>
-leashed uninstall mylib      <span class="cm"># remove an installed library</span>
+leashed install mylib        <span class="cm"># install globally (pinned version inside a project)</span>
+leashed install              <span class="cm"># inside a project: restore from leash.lock</span>
+leashed lock                 <span class="cm"># resolve dependencies and write leash.lock</span>
+leashed uninstall mylib      <span class="cm"># remove an installed library (and unpin it)</span>
 leashed update               <span class="cm"># update every dependency of the current project</span>
 leashed update mylib         <span class="cm"># reinstall one library at its latest version</span></code></pre>
 

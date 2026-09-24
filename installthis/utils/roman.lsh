@@ -1,0 +1,66 @@
+// Roman numeral conversion (1..3999 for to_roman).
+//
+//   use utils::roman::Roman;
+//   show(Roman.to_roman(1987));     // "MCMLXXXVII"
+//   show(Roman.from_roman("XLII")); // 42
+
+pub def Roman : class {
+    // Converts an integer in [1, 3999] to roman numerals; outside that
+    // range "" is returned.
+    static pub fnc to_roman(n int) : string {
+        if n <= 0 || n > 3999 {
+            return "";
+        }
+        out: string = "";
+        v: int = n;
+        while v >= 1000 { out = out + "M"; v = v - 1000; }
+        if v >= 900 { out = out + "CM"; v = v - 900; }
+        if v >= 500 { out = out + "D"; v = v - 500; }
+        if v >= 400 { out = out + "CD"; v = v - 400; }
+        while v >= 100 { out = out + "C"; v = v - 100; }
+        if v >= 90 { out = out + "XC"; v = v - 90; }
+        if v >= 50 { out = out + "L"; v = v - 50; }
+        if v >= 40 { out = out + "XL"; v = v - 40; }
+        while v >= 10 { out = out + "X"; v = v - 10; }
+        if v == 9 { out = out + "IX"; v = 0; }
+        if v >= 5 { out = out + "V"; v = v - 5; }
+        if v == 4 { out = out + "IV"; v = 0; }
+        while v > 0 { out = out + "I"; v = v - 1; }
+        return out;
+    }
+
+    // Parses roman numerals (uppercase). Returns 0 on invalid input.
+    static pub fnc from_roman(s string) : int {
+        out: int = 0;
+        i: int = 0;
+        n: int = s.size;
+        while i < n {
+            v: int = Roman.val(s[i]);
+            if v == 0 {
+                return 0;
+            }
+            if i + 1 < n {
+                vnext: int = Roman.val(s[i + 1]);
+                if v < vnext {
+                    out = out + (vnext - v);
+                    i = i + 2;
+                    continue;
+                }
+            }
+            out = out + v;
+            i = i + 1;
+        }
+        return out;
+    }
+
+    static priv fnc val(c char) : int {
+        if c == 'M' { return 1000; }
+        if c == 'D' { return 500; }
+        if c == 'C' { return 100; }
+        if c == 'L' { return 50; }
+        if c == 'X' { return 10; }
+        if c == 'V' { return 5; }
+        if c == 'I' { return 1; }
+        return 0;
+    }
+};

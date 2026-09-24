@@ -1,0 +1,85 @@
+// A tiny LRU cache of string -> string (keeps `capacity` most-recent keys).
+//
+//   use collections::lru::Lru;
+//   c: Lru = Lru.make(128);
+//   c.put("k", "v"); show(c.get("k"));
+
+pub def Lru : class {
+    priv keys: vec<string>;
+    priv vals: vec<string>;
+    priv cap: int;
+
+    static pub fnc make(capacity int) : Lru {
+        ks: vec<string>;
+        vs: vec<string>;
+        c: int = capacity;
+        if c < 1 {
+            c = 1;
+        }
+        return Lru { keys: ks, vals: vs, cap: c };
+    }
+
+    priv fnc bump(i int) : void {
+        k: string = this.keys.get(i);
+        v: string = this.vals.get(i);
+        // shift everything after `i` left (vec copies make remove-index clumsy)
+        nk: vec<string>;
+        nv: vec<string>;
+        for j: int = 0; j < this.keys.size; j = j + 1 {
+            if j != i {
+                nk.pushb(this.keys.get(j));
+                nv.pushb(this.vals.get(j));
+            }
+        }
+        nk.pushb(k);
+        nv.pushb(v);
+        this.keys = nk;
+        this.vals = nv;
+    }
+
+    pub fnc put(key string, value string) : void {
+        for i: int = 0; i < this.keys.size; i = i + 1 {
+            if this.keys.get(i) == key {
+                this.vals.set(i, value);
+                this.bump(i);
+                return;
+            }
+        }
+        this.keys.pushb(key);
+        this.vals.pushb(value);
+        if this.keys.size > this.cap {
+            nk: vec<string>;
+            nv: vec<string>;
+            for j: int = 1; j < this.keys.size; j = j + 1 {
+                nk.pushb(this.keys.get(j));
+                nv.pushb(this.vals.get(j));
+            }
+            this.keys = nk;
+            this.vals = nv;
+        }
+    }
+
+    pub fnc has(key string) : bool {
+        for i: int = 0; i < this.keys.size; i = i + 1 {
+            if this.keys.get(i) == key {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    pub fnc get(key string) : string {
+        for i: int = 0; i < this.keys.size; i = i + 1 {
+            if this.keys.get(i) == key {
+                v: string = this.vals.get(i);
+                this.bump(i);
+                return v;
+            }
+        }
+        return "";
+    }
+
+    pub fnc size() : int {
+        return this.keys.size;
+    }
+};

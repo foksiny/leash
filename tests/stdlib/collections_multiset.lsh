@@ -1,0 +1,12 @@
+use collections::multiset::MultiSet;
+fnc main() : void {
+    s: MultiSet = MultiSet.make();
+    s.add("a");
+    s.add("a");
+    s.add("b");
+    show(s.count_of("a"));
+    show(s.count_of("b"));
+    show(s.count_of("x"));
+    show(s.distinct());
+    show(s.total());
+}

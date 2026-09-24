@@ -1,0 +1,95 @@
+// K-nearest-neighbors on float feature vectors (Euclidean distance).
+//
+//   use ai::knn::Knn;
+//   k: Knn = Knn.make(3);
+//   k.add((vec<float>){0.0}, "class-a");
+//   show(k.classify((vec<float>){0.1}));
+
+pub def Knn : class {
+    priv xs: vec<float>;
+    priv labels: vec<string>;
+    priv dims: int;
+    priv k: int;
+
+    static pub fnc make(k int) : Knn {
+        xs: vec<float>;
+        ls: vec<string>;
+        if k <= 0 {
+            k = 1;
+        }
+        return Knn { xs: xs, labels: ls, dims: 0, k: k };
+    }
+
+    // Add one labeled sample.
+    pub fnc add(features vec<float>, label string) : void {
+        foreach _, x in<vector> features {
+            this.xs.pushb(x);
+        }
+        this.labels.pushb(label);
+        if this.dims == 0 {
+            this.dims = features.size;
+        }
+    }
+
+    // Classify by k-nearest neighbors among the samples seen so far.
+    pub fnc classify(features vec<float>) : string {
+        if this.labels.size == 0 {
+            return "";
+        }
+        d: int = this.dims;
+        if d <= 0 {
+            return this.labels.get(0);
+        }
+        idx: vec<int>;
+        best: vec<float>;
+        n: int = this.labels.size;
+        for i: int = 0; i < n; i = i + 1 {
+            dist: float = this.dist(features, i);
+            // insertion sort into (best, idx) keeping at most k items
+            ins: int = best.size;
+            for j: int = 0; j < best.size; j = j + 1 {
+                if dist < best.get(j) {
+                    ins = j;
+                    stop;
+                }
+            }
+            best.pushb(dist);
+            idx.pushb(i);
+            for m: int = best.size - 1; m > ins; m = m - 1 {
+                best.set(m, best.get(m - 1));
+                idx.set(m, idx.get(m - 1));
+            }
+            best.set(ins, dist);
+            idx.set(ins, i);
+            if best.size > this.k {
+                best.popb();
+                idx.popb();
+            }
+        }
+        // majority vote
+        top_label: string = "";
+        top_count: int = -1;
+        for a: int = 0; a < idx.size; a = a + 1 {
+            cnt: int = 0;
+            for h: int = 0; h < idx.size; h = h + 1 {
+                if this.labels.get(idx.get(h)) == this.labels.get(idx.get(a)) {
+                    cnt = cnt + 1;
+                }
+            }
+            if cnt > top_count {
+                top_count = cnt;
+                top_label = this.labels.get(idx.get(a));
+            }
+        }
+        return top_label;
+    }
+
+    priv fnc dist(a vec<float>, sample_i int) : float {
+        s: float = 0.0;
+        for j: int = 0; j < this.dims && j < a.size; j = j + 1 {
+            d: float = a.get(j) - this.xs.get(sample_i * this.dims + j);
+            s = s + d * d;
+        }
+        return s;
+    }
+};

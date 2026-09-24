@@ -1,0 +1,9 @@
+use testing::asserts::Asserts;
+fnc main() : void {
+    a: Asserts = Asserts.make();
+    a.ok(true, "true-ok");
+    a.eq_int(4, 4, "eq4");
+    a.eq_str("a", "b", "should fail");
+    show(a.fails);
+    show(a.checks);
+}

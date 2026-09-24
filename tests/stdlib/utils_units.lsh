@@ -1,0 +1,9 @@
+use utils::units::Units;
+fnc main() : void {
+    show(Units.bytes(1023));
+    show(Units.bytes(1024));
+    show(Units.bytes64(1572864));
+    show(Units.f1(3.1415));
+    show(Units.c_to_f(100.0));
+    show(Units.mi_to_km(2.0));
+}

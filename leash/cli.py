@@ -1033,11 +1033,11 @@ def _compiler_stamp():
     return h.hexdigest()
 
 def _object_cache_key(main_hash, import_hashes, target_name,
-                      parsed_opt, size_opt, no_gc, autofree):
+                      parsed_opt, size_opt, no_gc, autofree, debug_instrument=False):
     h = hashlib.sha256()
     h.update(VERSION_STRING.encode()); h.update(b"\x00")
     h.update(_compiler_stamp().encode()); h.update(b"\x00")
-    h.update(f"{target_name}|{parsed_opt}|{bool(size_opt)}|{bool(no_gc)}|{bool(autofree)}".encode())
+    h.update(f"{target_name}|{parsed_opt}|{bool(size_opt)}|{bool(no_gc)}|{bool(autofree)}|{bool(debug_instrument)}".encode())
     h.update(b"\x00"); h.update(main_hash.encode())
     for path, ih in import_hashes:
         h.update(b"\x00"); h.update(ih.encode()); h.update(b"\x00"); h.update(path.encode())
@@ -1106,7 +1106,7 @@ def _get_target_machine(triple, reloc, opt_level):
         )
     return _target_machine_cache[key]
 
-def compile_file(input_file, output_name=None, output_type="executable", is_run_mode=False, target_name=None, check_mode=False, warnings_as_errors=False, extra_libs=None, opt_level=None, extra_import_dirs=None, opt_verbose=False, no_gc=False, autofree=False, static=False):
+def compile_file(input_file, output_name=None, output_type="executable", is_run_mode=False, target_name=None, check_mode=False, warnings_as_errors=False, extra_libs=None, opt_level=None, extra_import_dirs=None, opt_verbose=False, no_gc=False, autofree=False, static=False, debug_instrument=False):
     with open(input_file, "r") as f: code = f.read()
     target_config = get_target(target_name) if target_name else get_native_target()
     parsed_opt, size_opt = parse_opt_level(opt_level)
@@ -1129,13 +1129,14 @@ def compile_file(input_file, output_name=None, output_type="executable", is_run_
         if _cache_enabled():
             main_hash = hashlib.sha256(code.encode("utf-8")).hexdigest()
             cache_key = _object_cache_key(main_hash, import_hashes, target_config.name,
-                                          parsed_opt, size_opt, no_gc, autofree)
+                                          parsed_opt, size_opt, no_gc, autofree,
+                                          debug_instrument)
             cached_obj = _object_cache_get(cache_key)
             if cached_obj is not None:
                 obj_name = output_name + ".o"
                 with open(obj_name, "wb") as f: f.write(cached_obj)
                 native_libs = _native_libs_from_ast(ast, target_config)
-                return _link_native(obj_name, output_name, target_config, is_run_mode, output_type, native_libs, extra_libs, no_gc=no_gc, autofree=autofree, size_opt=bool(size_opt), static=static)
+                return _link_native(obj_name, output_name, target_config, is_run_mode, output_type, native_libs, extra_libs, no_gc=no_gc, autofree=autofree, size_opt=bool(size_opt), static=static, debug_info=debug_instrument)
         # ------------------------------------------------------------------
 
         ast = expand_macros(ast)
@@ -1157,7 +1158,7 @@ def compile_file(input_file, output_name=None, output_type="executable", is_run_
             sys.exit(1)
         ast = optimize_ast(ast, opt_level=parsed_opt, opt_verbose=opt_verbose)
         llvm.initialize_native_target(); llvm.initialize_native_asmprinter()
-        codegen = CodeGen(target_platform=target_config.name, no_gc=no_gc, autofree=autofree); codegen.generate_code(ast, input_file)
+        codegen = CodeGen(target_platform=target_config.name, no_gc=no_gc, autofree=autofree, debug_instrument=debug_instrument); codegen.generate_code(ast, input_file)
         hoist_allocas(codegen.module)
         mod = llvm.parse_assembly(codegen.get_ir()); mod.verify()
     except LeashError as e: _print_error(e, input_file, code); sys.exit(1)
@@ -1177,7 +1178,7 @@ def compile_file(input_file, output_name=None, output_type="executable", is_run_
     with open(obj_name, "wb") as f: f.write(obj_bytes)
     if cache_key is not None:
         _object_cache_put(cache_key, obj_bytes)
-    return _link_native(obj_name, output_name, target_config, is_run_mode, output_type, codegen.native_libs, extra_libs, no_gc=no_gc, autofree=autofree, size_opt=bool(size_opt), static=static)
+    return _link_native(obj_name, output_name, target_config, is_run_mode, output_type, codegen.native_libs, extra_libs, no_gc=no_gc, autofree=autofree, size_opt=bool(size_opt), static=static, debug_info=debug_instrument)
 
 def _native_libs_from_ast(ast, target_config):
     """Collect the linker arguments for `@from` native imports without running
@@ -1263,7 +1264,7 @@ def _match_symbols_to_libs(symbols, target_name):
         # On Windows MinGW, also try to check if gdi32/winmm/opengl32 exist as
         # import libraries and add them proactively when many Win32 symbols are seen
         win32_count = sum(1 for s in symbols if s in _WIN32_SYMBOL_LIBS)
-    elif target_name in ("linux64", "linux32"):
+    elif target_name in ("linux64", "linux32", "linux-arm"):
         mapping = _LINUX_SYMBOL_LIBS
     elif target_name in ("macos", "macos-arm"):
         mapping = _MACOS_SYMBOL_LIBS
@@ -1364,7 +1365,7 @@ def _win_to_wsl_path(path):
     return p
 
 
-def _link_native(obj_name, output_name, target_config, is_run_mode, output_type, native_libs, extra_libs=None, no_gc=False, autofree=False, size_opt=False, static=False):
+def _link_native(obj_name, output_name, target_config, is_run_mode, output_type, native_libs, extra_libs=None, no_gc=False, autofree=False, size_opt=False, static=False, debug_info=False):
     nlib_args = [l[0] for l in native_libs]
     if extra_libs: nlib_args.extend([f"-l{l}" for l in extra_libs])
     cc = os.environ.get("CC")
@@ -1393,8 +1394,8 @@ def _link_native(obj_name, output_name, target_config, is_run_mode, output_type,
 
     static_flags = []
     if static:
-        if target_config.name not in ("linux64", "linux32"):
-            print("error: --static is only supported for linux64/linux32 targets", file=sys.stderr)
+        if target_config.name not in ("linux64", "linux32", "linux-arm"):
+            print("error: --static is only supported for linux64/linux32/linux-arm targets", file=sys.stderr)
             sys.exit(1)
         if not os.environ.get("CC"):
             if isinstance(cc, list) and cc[0] == "wsl":
@@ -1430,6 +1431,8 @@ def _link_native(obj_name, output_name, target_config, is_run_mode, output_type,
     if size_opt:
         size_flags.extend(target_config.size_only_flags)
 
+    debug_flags = ["-g"] if debug_info and output_type == "executable" else []
+
     stubs = _get_runtime_stubs(cc, target_config, no_gc=no_gc, autofree=autofree, size_opt=size_opt)
 
     out = None
@@ -1438,7 +1441,7 @@ def _link_native(obj_name, output_name, target_config, is_run_mode, output_type,
         try:
             if output_type == "executable":
                 out = target_config.get_output_name(output_name)
-                result = subprocess.run(_flatten_cc(cc) + [obj_name] + stubs + ["-o", out] + target_config.linker_flags + size_flags + static_flags + nlib_args, stderr=subprocess.PIPE)
+                result = subprocess.run(_flatten_cc(cc) + [obj_name] + stubs + ["-o", out] + target_config.linker_flags + size_flags + debug_flags + static_flags + nlib_args, stderr=subprocess.PIPE)
                 if result.returncode != 0:
                     raise subprocess.CalledProcessError(result.returncode, result.args, stderr=result.stderr)
             elif output_type == "dynamic":
@@ -1515,6 +1518,70 @@ def dump_file(input_file, output_name=None, target_name=None, check_mode=False, 
     with open(output_name, "w") as f: f.write(str(mod))
     print(f"Dumped LLVM IR to '{output_name}'"); return output_name
 
+def dbg_file(input_file, args=None, target_name=None, break_lines=None, start_run=False, extra_import_dirs=None, opt_level="0", no_gc=False, autofree=False):
+    """Compile with debugger instrumentation and run under `leash dbg`.
+
+    The generated binary calls __leash_dbg_stmt(func, line) (from the runtime
+    stubs) before every statement. A -O0 default keeps the statement<->line
+    correspondence intact; opt levels may still be requested explicitly."""
+    import uuid, stat
+    if target_name is not None:
+        print("error: --target is not supported for 'leash dbg' (debug on the native host)", file=sys.stderr)
+        sys.exit(1)
+    input_abs = os.path.abspath(input_file)
+    tmp = f".__temp_leash_dbg_{uuid.uuid4().hex}"
+    out = compile_file(input_file, output_name=tmp, is_run_mode=True,
+                       target_name=None, extra_import_dirs=extra_import_dirs,
+                       opt_level=opt_level, no_gc=no_gc, autofree=autofree,
+                       debug_instrument=True)
+    out_abs = os.path.abspath(out)
+    try:
+        os.chmod(out_abs, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
+    except OSError:
+        pass
+    env = dict(os.environ)
+    env["LEASH_DBG"] = "1"
+    env["LEASH_DBG_SRC"] = input_abs
+    env["LEASH_DBG_BREAKS"] = ",".join(str(l) for l in (break_lines or []))
+    if start_run:
+        env["LEASH_DBG_RUN"] = "1"
+    print(f"--- Debug session for '{os.path.basename(input_abs)}' (leash dbg) ---", flush=True)
+    print(f"    commands: s/next, c/continue, b <line>, d <line>, l/list, q/quit", flush=True)
+    try:
+        proc = subprocess.run([out_abs] + (args or []), env=env)
+    finally:
+        try:
+            os.remove(out_abs)
+        except OSError:
+            pass
+    if proc.returncode != 0:
+        sys.exit(proc.returncode)
+
+
+def _parse_breaks(args, i_start=0):
+    """Parse '--break N' / '-b N' (repeatable) + '--run' out of arg list.
+    Returns (break_lines, start_run, remaining_args)."""
+    breaks = []
+    start_run = False
+    remaining = []
+    i = i_start
+    while i < len(args):
+        if args[i] in ("--break", "-b") and i + 1 < len(args):
+            try:
+                n = int(args[i + 1])
+            except ValueError:
+                print(f"error: invalid breakpoint line '{args[i + 1]}'", file=sys.stderr)
+                sys.exit(1)
+            breaks.append(n)
+            i += 2
+        elif args[i] == "--run":
+            start_run = True
+            i += 1
+        else:
+            remaining.append(args[i])
+            i += 1
+    return breaks, start_run, remaining
+
 def run_file(input_file, args=[], target_name=None, check_mode=False, warnings_as_errors=False, extra_libs=None, opt_level=None, extra_import_dirs=None, opt_verbose=False, no_gc=False, autofree=False, static=False):
     import platform, time, uuid, stat, signal
     tcfg = get_target(target_name) if target_name else get_native_target()
@@ -1542,6 +1609,14 @@ def run_file(input_file, args=[], target_name=None, check_mode=False, warnings_a
         except OSError:
             pass
         cmd = ["wsl", out_wsl] + args
+    elif tcfg.name == "linux-arm" and not (sys_name == "linux" and platform.machine().lower() in ("arm64", "aarch64", "armv8l")):
+        # ARM64 Linux binary on a non-ARM host: run through qemu-user.
+        qemu = shutil.which("qemu-aarch64")
+        if not qemu:
+            print("error: Cannot run linux-arm binary on this host. Install qemu-user (qemu-aarch64) to execute ARM64 binaries.")
+            sys.exit(1)
+        sysroot = "/usr/aarch64-linux-gnu" if os.path.isdir("/usr/aarch64-linux-gnu") else "/etc/qemu-binfmt/aarch64"
+        cmd = [qemu] + (["-L", sysroot] if os.path.isdir(sysroot) else []) + [out_abs] + args
     elif tcfg.name in ("macos", "macos-arm") and sys_name != "darwin":
         print("error: Cannot run macOS binary on non-macOS"); sys.exit(1)
     proc = None
@@ -1699,7 +1774,7 @@ def update_leash():
     import json
     
     print("Leash Update Checker")
-    print("Current version: 0.23.9 Beta\n")
+    print("Current version: 0.24.1 Beta\n")
     
     try:
         req = urllib.request.Request(
@@ -1734,7 +1809,7 @@ def update_leash():
         print("Update failed.")
 
 
-VERSION_STRING = "v0.23.9 Beta"
+VERSION_STRING = "v0.24.1 Beta"
 
 MAIN_HELP = f"""Leash {VERSION_STRING} - LLVM-powered compiled programming language
 
@@ -1744,6 +1819,7 @@ Usage:
 Commands:
   compile <file.lsh>    Compile to an executable binary
   run [<file.lsh>]      Compile and immediately execute (file or project)
+  dbg [<file.lsh>]      Run under the interactive source-level debugger
   dump <file.lsh>       Dump generated LLVM IR instead of linking
   check <file.lsh>      Type-check only; report errors and warnings
   init [dir]            Scaffold a new Leash project (default: .)
@@ -1753,7 +1829,7 @@ Commands:
   help [command]        Show help, optionally for one command
 
 Global Options:
-  --target <target>                Cross-compile target: linux64, linux32, win64, macos, macos-arm
+  --target <target>                Cross-compile target: linux64, linux32, linux-arm, win64, macos, macos-arm
   --check                          Type-check only, do not produce output
   --warnings-as-errors             Treat warnings as errors
   --opt <level> / -O<level>        Optimization level: 0, 1, 2, 3, 4, s (size), z (aggressive size)
@@ -1770,7 +1846,7 @@ Global Options:
 Run 'leash <command> --help' for command-specific options.
 Note: 'runp' is deprecated -- use 'leash run' without a file to run the current project."""
 
-_SHARED_COMPILE_OPTIONS = """  --target <target>                Cross-compile target: linux64, linux32, win64, macos, macos-arm
+_SHARED_COMPILE_OPTIONS = """  --target <target>                Cross-compile target: linux64, linux32, linux-arm, win64, macos, macos-arm
   --check                          Type-check only, do not produce output
   --warnings-as-errors             Treat warnings as errors
   --opt <level> / -O<level>        Optimization level: 0, 1, 2, 3, 4, s (size), z (aggressive size)
@@ -1852,6 +1928,36 @@ Usage:
 
 Options:
   --other-imports / -oi <folder>   Extra module search directory (repeatable)""",
+    "dbg": """Compile and run a Leash program under the native source-level
+debugger. Every statement is instrumented; the debugger stops at each one
+(step mode) or only at the breakpoints you set.
+
+Usage:
+  leash dbg [<file.lsh>] [options] [-- program-args]
+
+  With <file.lsh>: compile and debug that file.
+  Without <file.lsh>: debug the current project's main file (config.lshc).
+
+Options:
+  --break N / -b N       Set a breakpoint at line N (repeatable)
+  --run                  Run until the first breakpoint instead of stepping
+  --other-imports / -oi <folder>  Extra module search directory (repeatable)
+  --opt N / -ON          Optimization level (default 0 for exact line mapping)
+  --no-garbage-collector / -ngc    Compile without the GC
+  --autofree / -af                 Auto-free mode
+
+Debugger commands (at the '(dbg)' prompt):
+  s | n | <Enter>        step to the next statement
+  c                      continue (run until the next breakpoint)
+  b <line>               set a breakpoint
+  d <line>               delete a breakpoint
+  l                      list breakpoints
+  h                      help
+  q                      quit the program
+
+Non-interactive stdin is handled gracefully: scripts can pipe commands
+(e.g. printf 'b 5\\nc\\n' | leash dbg app.lsh). GDB/LLDB still work on the
+produced binary as an alternative.""",
     "runp": """Build the project from config.lshc and run its output binary.
 
 Usage:
@@ -1929,6 +2035,56 @@ def main():
     # after the command name, before any command tries to interpret it.
     if cmd in KNOWN_COMMANDS and len(sys.argv) > 2 and sys.argv[2] in ("-h", "--help", "help"):
         print(COMMAND_HELP[cmd])
+        sys.exit(0)
+    if cmd in ("dbg", "debug"):
+        # Debug a file (or the current project when no file is given).
+        all_args = sys.argv[2:]
+        compile_args = all_args
+        prog_args = []
+        if "--" in all_args:
+            sep = all_args.index("--")
+            compile_args = all_args[:sep]
+            prog_args = all_args[sep + 1:]
+        breaks, start_run, rest = _parse_breaks(compile_args)
+
+        target_file = None
+        extra_import_dirs = []
+        opt_level = "0"
+        no_gc = False
+        autofree = False
+        i = 0
+        while i < len(rest):
+            a = rest[i]
+            if not a.startswith("-") and target_file is None:
+                target_file = a
+                i += 1
+            elif a in ("--other-imports", "-oi") and i + 1 < len(rest):
+                extra_import_dirs.append(os.path.abspath(rest[i + 1]))
+                i += 2
+            elif a.startswith("-O") and len(a) > 2:
+                opt_level = a[2:]
+                i += 1
+            elif (a == "--opt" or a == "-O") and i + 1 < len(rest):
+                opt_level = rest[i + 1]
+                i += 2
+            elif a in ("--no-garbage-collector", "-ngc"):
+                no_gc = True
+                i += 1
+            elif a in ("--autofree", "-af"):
+                autofree = True
+                i += 1
+            else:
+                i += 1
+
+        if target_file is None:
+            # project mode: use the main file from config.lshc
+            cfg, _pd, target_file = read_project_config(os.getcwd())
+        if not os.path.exists(target_file):
+            print(f"error: Not found: {target_file}", file=sys.stderr)
+            sys.exit(1)
+        dbg_file(target_file, args=prog_args, break_lines=breaks,
+                 start_run=start_run, extra_import_dirs=extra_import_dirs,
+                 opt_level=opt_level, no_gc=no_gc, autofree=autofree)
         sys.exit(0)
     if cmd == "check":
         if len(sys.argv) < 3:

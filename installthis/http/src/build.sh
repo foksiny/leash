@@ -10,30 +10,40 @@
 # Usage:
 #   sh build.sh                 # -> ../linux/liblshhttp.a  (Linux)
 #                               # -> ../macos/liblshhttp.a  (macOS)
+#   TARGET_DIR=arm64 CC=aarch64-linux-gnu-gcc sh build.sh
+#                               # -> ../arm64/liblshhttp.a  (ARM64 cross)
 set -e
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
 OS_NAME="$(uname -s)"
 
-case "$OS_NAME" in
-    Darwin)
-        OUT_DIR="$DIR/../macos"
-        CC="${CC:-cc}"
-        if [ -n "$OPENSSL_ROOT" ]; then
-            CFLAGS="-I$OPENSSL_ROOT/include"
-            LDFLAGS_EXTRA="-L$OPENSSL_ROOT/lib"
-        elif [ -d /opt/homebrew/opt/openssl ]; then
-            CFLAGS="-I/opt/homebrew/opt/openssl/include"
-            LDFLAGS_EXTRA="-L/opt/homebrew/opt/openssl/lib"
-        fi
-        ;;
-    *)
-        OUT_DIR="$DIR/../linux"
-        CC="${CC:-gcc}"
-        CFLAGS=""
-        LDFLAGS_EXTRA=""
-        ;;
-esac
+if [ -n "$TARGET_DIR" ]; then
+    # Explicit cross-build (e.g. TARGET_DIR=arm64 with an aarch64 CC).
+    OUT_DIR="$DIR/../$TARGET_DIR"
+    CC="${CC:-gcc}"
+    CFLAGS="${CFLAGS:-}"
+    LDFLAGS_EXTRA=""
+else
+    case "$OS_NAME" in
+        Darwin)
+            OUT_DIR="$DIR/../macos"
+            CC="${CC:-cc}"
+            if [ -n "$OPENSSL_ROOT" ]; then
+                CFLAGS="-I$OPENSSL_ROOT/include"
+                LDFLAGS_EXTRA="-L$OPENSSL_ROOT/lib"
+            elif [ -d /opt/homebrew/opt/openssl ]; then
+                CFLAGS="-I/opt/homebrew/opt/openssl/include"
+                LDFLAGS_EXTRA="-L/opt/homebrew/opt/openssl/lib"
+            fi
+            ;;
+        *)
+            OUT_DIR="$DIR/../linux"
+            CC="${CC:-gcc}"
+            CFLAGS=""
+            LDFLAGS_EXTRA=""
+            ;;
+    esac
+fi
 
 mkdir -p "$OUT_DIR"
 TMP="$(mktemp -d)"

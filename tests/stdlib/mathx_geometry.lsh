@@ -1,0 +1,12 @@
+use mathx::geometry::Geometry;
+use utils::format::Format;
+fnc main() : void {
+    show(Format.dec(Geometry.circle_area(2.0), 3));
+    show(Format.dec(Geometry.circle_circ(1.0), 2));
+    show(Format.dec(Geometry.sphere_volume(1.0), 3));
+    show(Format.dec(Geometry.rect_area(2.5, 3.0), 1));
+    show(Format.dec(Geometry.triangle_area(4.0, 3.0), 1));
+    show(Format.dec(Geometry.dist(0.0, 0.0, 3.0, 4.0), 1));
+    show(Format.dec(Geometry.hypot(3.0, 4.0), 1));
+    show(Format.dec(Geometry.deg_to_rad(180.0), 3));
+}

@@ -1,0 +1,8 @@
+use text::count::Count;
+fnc main() : void {
+    s: string = "hello world\nsecond line";
+    show(Count.chars(s));
+    show(Count.words(s));
+    show(Count.lines(s));
+    show(Count.read_time(s));
+}

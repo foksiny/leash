@@ -1,0 +1,78 @@
+// Lorem-ipsum-style filler text for demos and tests.
+//
+//   use text::lorem::Lorem;
+//   show(Lorem.sentence());     // "Lorem ipsum dolor sit amet..."
+//   show(Lorem.words(5));
+
+pub def Lorem : class {
+    // A deterministic-filler paragraph starter.
+    static pub fnc sentence() : string {
+        return "Lorem ipsum dolor sit amet, consectetur adipiscing elit.";
+    }
+
+    // `n` filler words separated by spaces (deterministic).
+    static pub fnc words(n int) : string {
+        out: string = "";
+        vocab: vec<string> = Lorem.vocab();
+        for i: int = 0; i < n; i = i + 1 {
+            if i > 0 {
+                out = out + " ";
+            }
+            out = out + vocab.get((i * 7 + 3) % vocab.size);
+        }
+        return out;
+    }
+
+    // A paragraph of about `sentences` sentences (deterministic).
+    static pub fnc paragraph(sentences int) : string {
+        out: string = "";
+        for s: int = 0; s < sentences; s = s + 1 {
+            words: string = Lorem.words_count(8 + (s % 5));
+            out = out + Lorem.cap(words) + ".";
+            if s + 1 < sentences {
+                out = out + "  ";
+            }
+        }
+        return out;
+    }
+
+    static pub fnc words_count(n int) : string {
+        out: string = "";
+        vocab: vec<string> = Lorem.vocab();
+        for i: int = 0; i < n; i = i + 1 {
+            if i > 0 {
+                out = out + " ";
+            }
+            out = out + vocab.get((i * 7 + 3) % vocab.size);
+        }
+        return out;
+    }
+
+    static priv fnc vocab() : vec<string> {
+        v: vec<string>;
+        v.pushb("lorem"); v.pushb("ipsum"); v.pushb("dolor");
+        v.pushb("sit"); v.pushb("amet,"); v.pushb("consectetur");
+        v.pushb("adipiscing"); v.pushb("elit,"); v.pushb("sed");
+        v.pushb("do"); v.pushb("eiusmod"); v.pushb("tempor");
+        v.pushb("incididunt"); v.pushb("ut"); v.pushb("labore");
+        v.pushb("et"); v.pushb("dolore"); v.pushb("magna");
+        v.pushb("aliqua"); v.pushb("enim"); v.pushb("ad");
+        v.pushb("minim"); v.pushb("veniam");
+        return v;
+    }
+
+    static priv fnc cap(s string) : string {
+        if s.size == 0 {
+            return s;
+        }
+        c: char = s[0];
+        if c >= 'a' && c <= 'z' {
+            c = (char)(c - 32);
+        }
+        out: string = "" + c;
+        for i: int = 1; i < s.size; i = i + 1 {
+            out = out + s[i];
+        }
+        return out;
+    }
+};

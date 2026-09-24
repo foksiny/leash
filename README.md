@@ -1,6 +1,6 @@
 # Leash Programming Language
 
-**Version 0.23.9 Beta**
+**Version 0.24.1 Beta**
 
 Leash is a strongly-typed, modern compiled programming language built on LLVM. It features an intuitive syntax and native performance with a built-in garbage collector, package manager, and cross-platform support.
 
@@ -49,11 +49,13 @@ leash run
 - **Strongly typed** with full type inference and explicit bit-width integers/floats
 - **LLVM-powered** compilation with optimization levels O0-O4, LTO, and PGO
 - **Built-in garbage collector** with optional `nogc` manual mode
-- **Package manager** (`leashed`) with fully self-service publishing — registry updates are validated and merged by a bot, no human review; install from the index or any git URL
-- **Concurrency model** with workers, `shared` and `fusion` variables
-- **Cross-platform** compilation for Linux, Windows, and macOS
-- **Rich standard library** with vectors, matrices, hash tables, file I/O, math, and windowing
-- **FFI** via `@from` directive for calling C/C++/Rust libraries
+- **Package manager** (`leashed`) with fully self-service publishing — registry updates are validated and merged by a bot, no human review; install from the index or any git URL; **reproducible project builds** with `leash.lock`
+- **Concurrency model** with workers, `shared` and `fusion` variables — plus native **`async fnc`/`await`** returning `future<T>`
+- **Cross-platform** compilation for Linux (x86-64 and ARM64), Windows, and macOS
+- **100+ standard-library packages** — vectors, matrices, hash tables, file I/O, string/text tools, math, crypto, SQL, HTTP, games, AI, testing helpers…
+- **Native HTTP/HTTPS client** (`http`) and **multiplexed keep-alive HTTP/1.1 server** (`httpserver`) — full web stack with no external dependencies
+- **Native source-level debugger** (`leash dbg`) — step/breakpoint debugging without GDB/LLDB
+- **FFI** via `@from` directive for calling C/C++/Rust libraries (including Leash-language function-pointer callbacks)
 
 ## Documentation
 

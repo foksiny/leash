@@ -1,0 +1,12 @@
+use algo::series::Series;
+fnc main() : void {
+    show(Series.fib(10));
+    show(Series.fib(0));
+    show(Series.fib(1));
+    show(Series.factorial(5));
+    show(Series.triangular(10));
+    show(Series.is_perfect_square(144));
+    show(Series.is_perfect_square(145));
+    fs: vec<int> = Series.fibs(7);
+    show(fs.size);
+}

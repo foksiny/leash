@@ -1,0 +1,6 @@
+use encoding::base32::Base32;
+fnc main() : void {
+    show(Base32.encode("hello"));
+    show(Base32.encode(""));
+    show(Base32.valid(Base32.encode("hello")));
+}

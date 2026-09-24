@@ -1,0 +1,82 @@
+// A 52-card deck ("A".."K", four suits) with Fisher-Yates shuffle.
+//
+//   use games::cards::Cards;
+//   d: vec<string> = Cards.deck();
+//   d = Cards.shuffled(d);
+
+pub def Cards : class {
+    static pub fnc suit_of(card string) : string {
+        // cards are "RANK of SUIT"
+        return Cards.split_last(card);
+    }
+
+    // An ordered 52-card deck: "A♠".."K♠","A♥".."K♥","A♦".."K♦","A♣".."K♣".
+    static pub fnc deck() : vec<string> {
+        out: vec<string>;
+        ranks: vec<string>;
+        ranks.pushb("A"); ranks.pushb("2"); ranks.pushb("3");
+        ranks.pushb("4"); ranks.pushb("5"); ranks.pushb("6");
+        ranks.pushb("7"); ranks.pushb("8"); ranks.pushb("9");
+        ranks.pushb("10"); ranks.pushb("J"); ranks.pushb("Q");
+        ranks.pushb("K");
+        suits: vec<string>;
+        suits.pushb("S"); suits.pushb("H");
+        suits.pushb("D"); suits.pushb("C");
+        foreach _, s in<vector> suits {
+            foreach _, r in<vector> ranks {
+                out.pushb(r + s);
+            }
+        }
+        return out;
+    }
+
+    // Fisher-Yates shuffle (uses rand()).
+    static pub fnc shuffled(deck vec<string>) : vec<string> {
+        out: vec<string>;
+        foreach _, c in<vector> deck {
+            out.pushb(c);
+        }
+        n: int = out.size;
+        for i: int = n - 1; i > 0; i = i - 1 {
+            j: int = rand(0, i);
+            a: string = out.get(i);
+            b: string = out.get(j);
+            out.set(j, a);
+            out.set(i, b);
+        }
+        return out;
+    }
+
+    // True when `card` is an ace (any suit).
+    static pub fnc is_ace(card string) : bool {
+        if card.size < 2 {
+            return false;
+        }
+        return card[0] == 'A';
+    }
+
+    // Numeric-ish rank value: A=1, J=11, Q=12, K=13.
+    static pub fnc rank_value(card string) : int {
+        if card.size == 0 {
+            return 0;
+        }
+        if card[0] == 'A' { return 1; }
+        if card[0] == 'J' { return 11; }
+        if card[0] == 'Q' { return 12; }
+        if card[0] == 'K' { return 13; }
+        if card[0] == '1' && card.size >= 2 && card[1] == '0' { return 10; }
+        if card[0] >= '2' && card[0] <= '9' {
+            return toint(int, card[0]) - toint(int, '0');
+        }
+        return 0;
+    }
+
+    static priv fnc split_last(card string) : string {
+        out: string = "";
+        if card.size == 0 {
+            return out;
+        }
+        out = out + card[card.size - 1];
+        return out;
+    }
+};

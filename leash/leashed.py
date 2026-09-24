@@ -11,7 +11,9 @@ import stat
 import urllib.request
 import urllib.error
 
-LEASHED_VERSION = "0.2.0"
+LEASHED_VERSION = "0.3.0"
+LOCKFILE = "leash.lock"
+LOCKFILE_VERSION = 1
 
 def _env(name, default):
     v = os.environ.get(name)
@@ -822,8 +824,194 @@ def cmd_publish(args):
     tmp_cleanup(reg_tmp)
 
 
+# ------------------------------------------------------------ lockfile ----
+
+def read_lockfile(project_dir):
+    """Read leash.lock. Returns None when it does not exist; exits on a
+    corrupt file (a lockfile you can't parse must fail loudly, not silently
+    resolve different versions)."""
+    path = os.path.join(project_dir, LOCKFILE)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        eprint(f"error: Corrupt {LOCKFILE}: {e}")
+        sys.exit(1)
+    if not isinstance(data, dict) or not isinstance(data.get("packages", {}), dict):
+        eprint(f"error: {LOCKFILE} has an invalid format (expected {{\"packages\": {{...}}}})")
+        sys.exit(1)
+    if data.get("version") != LOCKFILE_VERSION:
+        eprint(f"error: {LOCKFILE} has an unsupported version field "
+               f"({data.get('version')!r}; expected {LOCKFILE_VERSION})")
+        sys.exit(1)
+    return data
+
+
+def write_lockfile(project_dir, packages):
+    """Write leash.lock deterministically (sorted keys, fixed shape).
+    `packages` maps name -> {"version", "repo"}."""
+    out = {"version": LOCKFILE_VERSION, "packages": {}}
+    for name in sorted(packages):
+        p = packages[name] if isinstance(packages[name], dict) else {}
+        version = p.get("version", "")
+        if not validate_version(version):
+            continue
+        out["packages"][name] = {
+            "version": version,
+            "repo": p.get("repo", ""),
+            "tag": p.get("tag") or f"v{version}",
+        }
+    path = os.path.join(project_dir, LOCKFILE)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(out, f, indent=2)
+        f.write("\n")
+    return path
+
+
+def _project_dir_or_none():
+    """The lockfile lives in leashed projects (a dir with leash-pkg.lshc) and
+    in dirs that already have one."""
+    cwd = os.getcwd()
+    if os.path.exists(os.path.join(cwd, LEASHED_CONFIG)) or \
+            os.path.exists(os.path.join(cwd, LOCKFILE)):
+        return cwd
+    return None
+
+
+def lockfile_pin(project_dir, name):
+    """Return the locked version of `name` when the project has an entry."""
+    data = read_lockfile(project_dir)
+    if not data:
+        return None
+    entry = data.get("packages", {}).get(name)
+    if isinstance(entry, dict) and validate_version(entry.get("version", "")):
+        return entry["version"]
+    return None
+
+
+def lockfile_record(project_dir, name, version, repo):
+    """Insert or update one entry in the project lockfile."""
+    if not validate_version(version):
+        eprint(f"warning: not recording {name}@{version} in {LOCKFILE}: invalid version")
+        return
+    pkgs = {}
+    data = read_lockfile(project_dir)
+    if data:
+        pkgs = dict(data.get("packages", {}))
+    pkgs[name] = {"version": version, "repo": repo}
+    write_lockfile(project_dir, pkgs)
+    print(f"[leashed] Wrote {LOCKFILE}: {name}@{version}")
+
+
+def lockfile_unpin(project_dir, name):
+    """Remove one entry from the lockfile (no-op when absent)."""
+    data = read_lockfile(project_dir)
+    if not data:
+        return
+    pkgs = dict(data.get("packages", {}))
+    if name in pkgs:
+        del pkgs[name]
+        write_lockfile(project_dir, pkgs)
+
+
+def _install_registry(libname, req_version=None):
+    """Shared registry install path. Returns (name, version, repo_url)."""
+    index = fetch_index()
+    libs = index.get("libraries", {})
+    if libname not in libs:
+        eprint(f"error: Library '{libname}' not found in the package index")
+        eprint("  Run 'leashed search' to find available libraries.")
+        eprint("  Or install directly from a URL: leashed install https://github.com/user/lib.git")
+        sys.exit(1)
+    entry = get_index_entry(index, libname)
+    if req_version is not None:
+        versions = entry.get("versions", {})
+        if not isinstance(versions, dict):
+            eprint(f"error: Registry version list for '{libname}' is corrupt")
+            sys.exit(1)
+        info = versions.get(req_version)
+        if not isinstance(info, dict):
+            info = None
+        if info is None and req_version != entry.get("version"):
+            available = ", ".join(sorted_versions(list(versions.keys()))[:10]) or "none"
+            eprint(f"error: '{libname}' has no published version {req_version}")
+            eprint(f"  Available versions: {available}")
+            sys.exit(1)
+        repo_url = (info or {}).get("repo") or entry.get("repo", "")
+        n, v = _install_from_repo(repo_url, requested_version=req_version, libname=libname)
+        return n, v, repo_url
+    repo_url = entry.get("repo", "")
+    ver = entry.get("version", "?")
+    author = entry.get("author", "?")
+    desc = entry.get("description", "")
+    print(f"[leashed] Found {libname} v{ver} by {author}")
+    if desc:
+        print(f"  {desc}")
+    n, v = _install_from_repo(repo_url, libname=libname)
+    return n, v, repo_url
+
+
+def cmd_install_project_deps(project_dir, strict):
+    """'leashed install' with no target inside a project: restore
+    dependencies from leash.lock when present (reproducible build), else
+    resolve the dependencies listed in leash-pkg.lshc and write the lock."""
+    lock = read_lockfile(project_dir)
+    if lock is not None and strict and not lock.get("packages"):
+        eprint(f"error: {LOCKFILE} contains no packages (--locked)")
+        sys.exit(1)
+    if strict and lock is None:
+        eprint(f"error: --locked requires a {LOCKFILE} in the project (run 'leashed lock')")
+        sys.exit(1)
+    if lock and lock.get("packages"):
+        pkgs = lock["packages"]
+        print(f"[leashed] Restoring {len(pkgs)} locked package(s) from {LOCKFILE}...")
+        for name in sorted(pkgs):
+            entry = pkgs[name]
+            if not isinstance(entry, dict):
+                eprint(f"error: {LOCKFILE} entry for '{name}' is corrupt")
+                sys.exit(1)
+            version = entry.get("version", "")
+            repo = entry.get("repo", "")
+            if not validate_version(version) or not repo:
+                eprint(f"error: {LOCKFILE} entry for '{name}' is missing version/repo")
+                sys.exit(1)
+            print(f"[leashed] Installing {name}@{version} (locked)...")
+            _install_from_repo(repo, requested_version=version, libname=validate_name(name))
+        print(f"[leashed] Done — environment matches {LOCKFILE}")
+        return
+
+    config_path = os.path.join(project_dir, LEASHED_CONFIG)
+    if not os.path.exists(config_path):
+        eprint(f"error: No {LEASHED_CONFIG} or {LOCKFILE} in '{project_dir}'")
+        eprint("  Usage: leashed install <name|name@version|git-url|user/repo>")
+        sys.exit(1)
+    config = read_pkg_config(config_path)
+    deps = config.get("dependencies", "")
+    deps_list = [d.strip() for d in deps.split(",") if d.strip()]
+    if not deps_list:
+        print("[leashed] Project has no dependencies")
+        return
+    resolved = {}
+    for dep in deps_list:
+        if "@" in dep:
+            name, _, ver = dep.partition("@")
+        else:
+            name, ver = dep, None
+        name = validate_name(name.strip())
+        ver = ver.strip() if ver else None
+        if ver is not None and not validate_version(ver):
+            eprint(f"error: Invalid version '{ver}' for dependency '{name}'")
+            sys.exit(1)
+        print(f"[leashed] Resolving {name}...")
+        _n, v, repo = _install_registry(name, ver)
+        resolved[name] = {"version": v, "repo": repo}
+    write_lockfile(project_dir, resolved)
+    print(f"[leashed] Installed {len(resolved)} package(s) and wrote {LOCKFILE}")
+
+
 def _read_installed_pkg_config(dest_root):
-    """Read package.lshc from an installed library directory."""
     pkg_config_path = os.path.join(dest_root, PACKAGE_CONFIG)
     pkg = {}
     if os.path.exists(pkg_config_path):
@@ -933,9 +1121,21 @@ def _install_from_repo(repo_url, requested_version=None, libname=None):
 
 
 def cmd_install(args):
+    locked_strict = False
+    args = list(args)
+    while "--locked" in args:
+        args.remove("--locked")
+        locked_strict = True
+
     if len(args) < 1:
-        eprint("Usage: leashed install <library_name>[@<version> | <git-url> | <user>/<repo>]")
-        sys.exit(1)
+        # No target: inside a project this restores the lockfile /
+        # resolves leash-pkg.lshc dependencies (and writes the lockfile).
+        project_dir = _project_dir_or_none()
+        if project_dir is None:
+            eprint("Usage: leashed install <library_name>[@<version> | <git-url> | <user>/<repo>]")
+            sys.exit(1)
+        cmd_install_project_deps(project_dir, strict=locked_strict)
+        return
     target = args[0].strip()
 
     # 1) Direct git URL or user/repo shorthand — decentralized, no registry needed
@@ -957,41 +1157,41 @@ def cmd_install(args):
         libname = validate_name(target)
         req_version = None
 
-    print(f"[leashed] Looking up '{libname}'...")
-    index = fetch_index()
-    libs = index.get("libraries", {})
-    if libname not in libs:
-        eprint(f"error: Library '{libname}' not found in the package index")
-        eprint("  Run 'leashed search' to find available libraries.")
-        eprint("  Or install directly from a URL: leashed install https://github.com/user/lib.git")
+    project_dir = _project_dir_or_none()
+
+    if locked_strict and project_dir is None:
+        eprint(f"error: --locked requires a project directory ({LEASHED_CONFIG} or {LOCKFILE})")
         sys.exit(1)
 
-    entry = get_index_entry(index, libname)
-    ver = entry.get("version", "?")
-    desc = entry.get("description", "")
-    author = entry.get("author", "?")
-
-    if req_version:
-        versions = entry.get("versions", {})
-        if not isinstance(versions, dict):
-            eprint(f"error: Registry version list for '{libname}' is corrupt")
+    # The lockfile pins the version when present. `leashed install --locked`
+    # turns "no pin" into an error: CI reproducibility.
+    if req_version is None and project_dir is not None:
+        lock = read_lockfile(project_dir)
+        lock_entry = None
+        if lock:
+            lock_entry = lock.get("packages", {}).get(libname)
+        if lock_entry is not None and not isinstance(lock_entry, dict):
+            eprint(f"error: {LOCKFILE} entry for '{libname}' is corrupt; refusing to use it")
             sys.exit(1)
-        info = versions.get(req_version)
-        if not isinstance(info, dict):
-            info = None
-        if info is None and req_version != ver:
-            available = ", ".join(sorted_versions(list(versions.keys()))[:10]) or "none"
-            eprint(f"error: '{libname}' has no published version {req_version}")
-            eprint(f"  Available versions: {available}")
+        if lock_entry is not None:
+            pin = lock_entry.get("version", "")
+            repo = lock_entry.get("repo", "")
+            if validate_version(pin) and repo:
+                print(f"[leashed] Using locked version {libname}@{pin} from {LOCKFILE}")
+                _n, v = _install_from_repo(repo, requested_version=pin, libname=libname)
+                lockfile_record(project_dir, libname, v, repo)
+                return
+            # malformed lockfile entry: fall through and re-resolve below
+            eprint(f"warning: {LOCKFILE} entry for '{libname}' is incomplete — resolving from registry")
+        elif locked_strict:
+            eprint(f"error: '{libname}' is not in {LOCKFILE} (--locked)")
+            eprint(f"  Run 'leashed add {libname}' or 'leashed lock' first.")
             sys.exit(1)
-        repo_url = (info or {}).get("repo") or entry.get("repo", "")
-        _install_from_repo(repo_url, requested_version=req_version, libname=libname)
-        return
 
-    print(f"[leashed] Found {libname} v{ver} by {author}")
-    if desc:
-        print(f"  {desc}")
-    _install_from_repo(entry.get("repo", ""), libname=libname)
+    print(f"[leashed] Looking up '{libname}'...")
+    _n, v, repo = _install_registry(libname, req_version)
+    if project_dir is not None:
+        lockfile_record(project_dir, libname, v, repo)
 
 
 def cmd_uninstall(args):
@@ -1008,6 +1208,9 @@ def cmd_uninstall(args):
         shutil.rmtree(dest_root, onerror=_del_rw)
     if os.path.exists(stub_path):
         os.remove(stub_path)
+    project_dir = _project_dir_or_none()
+    if project_dir is not None:
+        lockfile_unpin(project_dir, libname)
     print(f"[leashed] Uninstalled '{libname}'")
 
 
@@ -1080,12 +1283,14 @@ def cmd_update(args):
         print(f"[leashed] Updating all project dependencies: {', '.join(targets)}")
 
     new_versions = {}
+    new_repos = {}
     for t in targets:
         if "@" in t:
             t = t.split("@", 1)[0]
         libname = validate_name(t.strip())
-        _, version = _install_from_repo_by_index(libname)
+        _, version, repo = _install_registry(libname)
         new_versions[libname] = version
+        new_repos[libname] = repo
 
     if update_deps_field:
         config = read_pkg_config(config_path)
@@ -1094,17 +1299,50 @@ def cmd_update(args):
         write_pkg_config(config_path, config)
         print(f"[leashed] Updated dependencies in {LEASHED_CONFIG}")
 
+    if in_project or os.path.exists(os.path.join(project_dir, LOCKFILE)):
+        # Only keep the lockfile in sync for actual project dependencies;
+        # `leashed update otherpkg` outside the dep list must not add it.
+        dep_names = set()
+        if in_project:
+            config = read_pkg_config(config_path)
+            dep_names = {d.split("@", 1)[0] for d in config.get("dependencies", "").split(",") if d.strip()}
+        for n, v in new_versions.items():
+            if v != "?" and (update_deps_field or n in dep_names):
+                lockfile_record(project_dir, n, v, new_repos.get(n, ""))
 
-def _install_from_repo_by_index(libname):
-    """Resolve a library through the registry and install its latest version."""
-    index = fetch_index()
-    libs = index.get("libraries", {})
-    if libname not in libs:
-        eprint(f"error: Library '{libname}' not found in the package index")
-        eprint("  Run 'leashed search' to find available libraries.")
+
+def cmd_lock(args):
+    """Resolve the project's dependencies, install them, and write leash.lock."""
+    project_dir = os.getcwd()
+    config_path = os.path.join(project_dir, LEASHED_CONFIG)
+    if not os.path.exists(config_path):
+        eprint(f"error: No '{LEASHED_CONFIG}' found in '{project_dir}'")
+        eprint("  Run 'leashed init' first or change to a leash package directory")
         sys.exit(1)
-    entry = get_index_entry(index, libname)
-    return _install_from_repo(entry.get("repo", ""), libname=libname)
+    config = read_pkg_config(config_path)
+    deps = config.get("dependencies", "")
+    deps_list = [d.strip() for d in deps.split(",") if d.strip()]
+    if not deps_list:
+        eprint("error: No dependencies to lock.")
+        eprint(f"  Add libraries first: leashed add <name>")
+        sys.exit(1)
+    resolved = {}
+    for dep in deps_list:
+        if "@" in dep:
+            name, _, ver = dep.partition("@")
+        else:
+            name, ver = dep, None
+        name = validate_name(name.strip())
+        ver = ver.strip() if ver else None
+        if ver is not None and not validate_version(ver):
+            eprint(f"error: Invalid version '{ver}' for dependency '{name}'")
+            sys.exit(1)
+        print(f"[leashed] Locking {name}...")
+        _n, v, repo = _install_registry(name, ver)
+        resolved[name] = {"version": v, "repo": repo}
+    write_lockfile(project_dir, resolved)
+    print(f"[leashed] Locked {len(resolved)} package(s) in {LOCKFILE}")
+    print(f"[leashed] Commit {LOCKFILE} — fresh clones restore it with 'leashed install'")
 
 
 def cmd_add(args):
@@ -1120,24 +1358,34 @@ def cmd_add(args):
         sys.exit(1)
     config = read_pkg_config(config_path)
 
+    installed_version = None
+    installed_repo = ""
     if not os.path.exists(os.path.join(LEASH_LIBS_DIR, f"{libname}.lsh")):
         print(f"[leashed] Library '{libname}' not installed globally. Installing first...")
-        cmd_install([libname])
-    else:
-        print(f"[leashed] Library '{libname}' is already installed globally")
+        pin = lockfile_pin(project_dir, libname)
+        if pin:
+            print(f"[leashed] Using locked version {libname}@{pin} from {LOCKFILE}")
+            _n, _v, _r = _install_registry(libname, pin)
+        else:
+            _n, _v, _r = _install_registry(libname)
+        installed_version = _v
+        installed_repo = _r
 
     version = "?"
     index = fetch_index()
     libs = index.get("libraries", {})
     if libname in libs and isinstance(libs[libname], dict):
         version = libs[libname].get("version", "?")
+    if installed_version:
+        version = installed_version
 
     deps = config.get("dependencies", "")
     deps_list = [d.strip() for d in deps.split(",") if d.strip()]
-    entry = f"{libname}@{version}"
-    if entry in deps_list:
+    existing = {d.split("@", 1)[0] for d in deps_list}
+    if libname in existing:
         print(f"[leashed] '{libname}' is already a dependency of this project")
         return
+    entry = f"{libname}@{version}"
     deps_list.append(entry)
     config["dependencies"] = ", ".join(deps_list)
     write_pkg_config(config_path, config)
@@ -1153,6 +1401,10 @@ def cmd_add(args):
                 with open(main_path, "w", encoding="utf-8") as f:
                     f.write(line + content)
                 print(f"[leashed] Added 'use {libname}::*;' to {main_file}")
+
+    if version != "?":
+        lockfile_record(project_dir, libname, version,
+                        installed_repo or (libs[libname].get("repo", "") if libname in libs and isinstance(libs[libname], dict) else ""))
 
     print(f"[leashed] Added '{libname}' ({version}) as a dependency")
 
@@ -1201,16 +1453,21 @@ def usage():
     print("  init <path>       Initialize a new leash package project")
     print("  publish           Compile and publish the current package")
     print("                    (registered automatically, no human review)")
-    print("  install <target>  Install a library globally (~/.leash/libs)")
-    print("                    <name>, <name>@1.2.3, <user>/<repo> or a git URL")
+    print("  install [<target>]  Install a library globally (~/.leash/libs)")
+    print("                    <name>, <name>@1.2.3, <user>/<repo> or a git URL;")
+    print("                    with no target (inside a project), restores the")
+    print("                    versions pinned in leash.lock")
     print("  uninstall <name>  Remove an installed library")
     print("  list              List installed libraries")
     print("  info <name>       Show registry metadata for a library")
     print("  update [names]    Update installed libs / all project dependencies")
     print("  add <name>        Add a library to the current project")
+    print("  lock              Resolve dependencies and write leash.lock")
     print("  search <query>    Search for libraries")
     print()
     print("Global Options:")
+    print("  --locked (install) Fail instead of resolving a version that is")
+    print("                    not pinned in leash.lock (CI reproducibility)")
     print("  --verbose/-vb     Enable verbose output")
     print()
     print("Environment:")
@@ -1246,6 +1503,7 @@ def main():
         "info": cmd_info,
         "update": cmd_update,
         "add": cmd_add,
+        "lock": cmd_lock,
         "search": cmd_search,
     }
     fn = table.get(cmd)

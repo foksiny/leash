@@ -1,0 +1,6 @@
+use text::wrap::Wrap;
+fnc main() : void {
+    show(Wrap.text("the quick brown fox jumps", 12));
+    show("---");
+    show(Wrap.text("aa bb cc", 3));
+}

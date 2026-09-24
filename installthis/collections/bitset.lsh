@@ -1,0 +1,90 @@
+// A growable set of bits (uint<64> words packed).
+//
+//   use collections::bitset::BitSet;
+//   b: BitSet = BitSet.make(130);
+//   b.set(42); show(b.get(42));
+
+pub def BitSet : class {
+    priv words: vec<uint<64>>;
+    priv nbits: int;
+
+    // A bitset sized for `nbits` bits.
+    static pub fnc make(nbits int) : BitSet {
+        ws: vec<uint<64>>;
+        words: int = (nbits + 63) / 64;
+        for i: int = 0; i < words; i = i + 1 {
+            ws.pushb((uint<64>)0);
+        }
+        return BitSet { words: ws, nbits: nbits };
+    }
+
+    priv fnc grow_to(i int) : void {
+        while this.words.size * 64 <= i {
+            this.words.pushb((uint<64>)0);
+        }
+        if this.nbits <= i {
+            this.nbits = i + 1;
+        }
+    }
+
+    pub fnc set(i int) : void {
+        this.grow_to(i);
+        w: int = i / 64;
+        b: int = i - (w * 64);
+        cur: uint<64> = this.words.get(w);
+        this.words.set(w, cur | ((uint<64>)1 << b));
+    }
+
+    pub fnc clear(i int) : void {
+        if i >= this.nbits {
+            return;
+        }
+        w: int = i / 64;
+        b: int = i - (w * 64);
+        cur: uint<64> = this.words.get(w);
+        this.words.set(w, cur & ~((uint<64>)1 << b));
+    }
+
+    pub fnc get(i int) : bool {
+        if i >= this.nbits {
+            return false;
+        }
+        w: int = i / 64;
+        b: int = i - (w * 64);
+        cur: uint<64> = this.words.get(w);
+        return ((cur >> b) & (uint<64>)1) == 1;
+    }
+
+    pub fnc toggle(i int) : void {
+        this.grow_to(i);
+        w: int = i / 64;
+        b: int = i - (w * 64);
+        cur: uint<64> = this.words.get(w);
+        this.words.set(w, cur ^ ((uint<64>)1 << b));
+    }
+
+    // Number of set bits.
+    pub fnc popcount() : int {
+        total: int = 0;
+        foreach _, w in<vector> this.words {
+            x: uint<64> = w;
+            for i: int = 0; i < 64; i = i + 1 {
+                if ((x >> i) & (uint<64>)1) == 1 {
+                    total = total + 1;
+                }
+            }
+        }
+        return total;
+    }
+
+    // Index of the lowest set bit (−1 when empty).
+    pub fnc lowest_set() : int {
+        nbits_local: int = this.nbits;
+        for i: int = 0; i < nbits_local; i = i + 1 {
+            if this.get(i) {
+                return i;
+            }
+        }
+        return 0 - 1;
+    }
+};

@@ -29,6 +29,20 @@ void leash_gc_collect(void);
 /* ===== Root Management ===== */
 void leash_gc_register_root(void* ptr);
 void leash_gc_unregister_root(void* ptr);
+/* Allocate a GC object that is rooted before any collection can see it
+   (used for runtime objects such as futures). */
+void* leash_gc_malloc_rooted(size_t size);
+
+/* ===== Futures (native async/await) =====
+ * A future is the join handle for an `async fnc` call. new() registers
+ * the future as a GC root; complete() is called by the worker with the
+ * boxed result; await() blocks until complete and returns the boxed
+ * value, leaving the root in place so generated code can unroot it only
+ * after it has loaded the result out. is_done() is a non-blocking poll. */
+void* leash_future_new(void);
+void  leash_future_complete(void* fut, void* value);
+void* leash_future_await(void* fut);
+int   leash_future_is_done(void* fut);
 
 /* ===== String/Vector/Matrix Helpers ===== */
 void* leash_gc_alloc_string(size_t len);

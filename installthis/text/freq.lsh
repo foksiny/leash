@@ -1,0 +1,88 @@
+// Word-frequency counting.
+//
+//   use text::freq::Freq;
+//   f: Freq = Freq.count_words("the cat sat with the cat");
+//   show(f.top_word());          // "the"
+//   show(f.count_of("cat"));     // 2
+
+pub def Freq : class {
+    priv words: vec<string>;
+    priv counts: vec<int>;
+
+    static pub fnc count_words(text string) : Freq {
+        ws: vec<string>;
+        cs: vec<int>;
+        out: Freq = Freq { words: ws, counts: cs };
+        n: int = text.size;
+        i: int = 0;
+        while i < n {
+            while i < n && !Freq.is_word_ch(text[i]) {
+                i = i + 1;
+            }
+            if i >= n {
+                stop;
+            }
+            start: int = i;
+            while i < n && Freq.is_word_ch(text[i]) {
+                i = i + 1;
+            }
+            out.bump(text, start, i);
+        }
+        return out;
+    }
+
+    priv fnc bump(text string, start int, end int) : void {
+        w: string = Freq.slice(text, start, end);
+        for j: int = 0; j < this.words.size; j = j + 1 {
+            if this.words.get(j) == w {
+                c: int = this.counts.get(j);
+                this.counts.set(j, c + 1);
+                return;
+            }
+        }
+        this.words.pushb(w);
+        this.counts.pushb(1);
+    }
+
+    pub fnc count_of(w string) : int {
+        for j: int = 0; j < this.words.size; j = j + 1 {
+            if this.words.get(j) == w {
+                return this.counts.get(j);
+            }
+        }
+        return 0;
+    }
+
+    pub fnc distinct() : int {
+        return this.words.size;
+    }
+
+    // The most frequent word ("" when empty).
+    pub fnc top_word() : string {
+        best: int = -1;
+        bestc: int = -1;
+        for j: int = 0; j < this.words.size; j = j + 1 {
+            if this.counts.get(j) > bestc {
+                bestc = this.counts.get(j);
+                best = j;
+            }
+        }
+        if best < 0 {
+            return "";
+        }
+        return this.words.get(best);
+    }
+
+    static priv fnc is_word_ch(c char) : bool {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+               (c >= '0' && c <= '9') || c == '_' || c == '\'';
+    }
+
+    static priv fnc slice(text string, start int, end int) : string {
+        out: string = "";
+        for i: int = start; i < end; i = i + 1 {
+            out = out + text[i];
+        }
+        return out;
+    }
+};

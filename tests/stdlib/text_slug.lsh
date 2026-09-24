@@ -1,0 +1,8 @@
+use text::slug::Slug;
+fnc main() : void {
+    show(Slug.to_slug("Hello, World! — 42"));
+    show(Slug.to_slug("already-a-slug"));
+    show(Slug.is_slug("already-a-slug"));
+    show(Slug.is_slug("Not A Slug!"));
+    show(Slug.with_sep("a b c", '_'));
+}

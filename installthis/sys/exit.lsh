@@ -1,0 +1,22 @@
+// Process exit helpers: die with a message, POSIX-ish exit codes.
+//
+//   use sys::exit::Exit;
+//   Exit.die("config missing", 2);
+
+pub def Exit : class {
+    static pub OK: int = 0;
+    static pub FAILURE: int = 1;
+    static pub USAGE: int = 2;
+
+    // Print a message and exit(0).
+    static pub fnc done(msg string) : void {
+        show(msg);
+        exit(0);
+    }
+
+    // Print an error message and exit with `code` (default style: 1).
+    static pub fnc die(msg string, code int) : void {
+        show("error: " + msg);
+        exit(code);
+    }
+};

@@ -1,0 +1,66 @@
+// Integer sequences: Fibonacci, triangular numbers, factorials.
+//
+//   use algo::series::Series;
+//   show(Series.fib(10));    // 55
+
+pub def Series : class {
+    // nth Fibonacci number (0-indexed: fib(0)=0, fib(1)=1).
+    static pub fnc fib(n int) : int {
+        if n <= 0 {
+            return 0;
+        }
+        if n == 1 {
+            return 1;
+        }
+        a: int = 0;
+        b: int = 1;
+        for i: int = 2; i <= n; i = i + 1 {
+            t: int = a + b;
+            a = b;
+            b = t;
+        }
+        return b;
+    }
+
+    // First n Fibonacci numbers.
+    static pub fnc fibs(n int) : vec<int> {
+        out: vec<int>;
+        for i: int = 0; i < n && i <= 92; i = i + 1 {
+            out.pushb(Series.fib(i));
+        }
+        return out;
+    }
+
+    static pub fnc factorial(n int) : int<64> {
+        if n < 0 {
+            return -1;
+        }
+        r: int<64> = 1;
+        for i: int = 2; i <= n; i = i + 1 {
+            r = r * i;
+        }
+        return r;
+    }
+
+    // nth triangular number: n(n+1)/2.
+    static pub fnc triangular(n int) : int {
+        if n <= 0 {
+            return 0;
+        }
+        return n * (n + 1) / 2;
+    }
+
+    static pub fnc is_perfect_square(n int) : bool {
+        if n < 0 {
+            return false;
+        }
+        i: int = 0;
+        while i * i <= n {
+            if i * i == n {
+                return true;
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+};

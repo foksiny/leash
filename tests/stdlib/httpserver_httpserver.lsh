@@ -1,0 +1,74 @@
+use httpserver::httpserver::*;
+use http::http::*;
+
+fnc handle(method string, path string, query string, headers string, body string) : int {
+    if HttpServer.path_matches(path, "/hello") {
+        return HttpServer.reply(200, "text/plain", "hello, " + path);
+    }
+    if HttpServer.path_matches(path, "/echo") {
+        HttpServer.set_content_type("text/plain");
+        HttpServer.add_header("X-Echo-Method", method);
+        HttpServer.set_body(body);
+        return 200;
+    }
+    return HttpServer.reply(404, "text/plain", "not found: " + path);
+}
+
+worker fnc probe(port int) {
+    base: string = "http://127.0.0.1:" + tostring(port);
+    tries: int = 0;
+    r: HttpResponse = Http.get(base + "/hello/world");
+    retrying: bool = !r.ok;
+    while retrying {
+        if tries > 50 {
+            retrying = false;
+        } else {
+            tries = tries + 1;
+            r = Http.get(base + "/hello/world");
+            retrying = !r.ok;
+        }
+    }
+
+    show(r.status);
+    show(r.body);
+    show(r.header("Server"));
+
+    r2: HttpResponse = Http.request("POST", base + "/echo", "leash", "");
+    show(r2.status);
+    show(r2.header("X-Echo-Method"));
+    show(r2.body);
+
+    r3: HttpResponse = Http.get(base + "/missing");
+    show(r3.status);
+    show(r3.body);
+
+    HttpServer.shutdown();
+}
+
+fnc main() : void {
+    show(HttpServer.version());
+
+    port: int = 18741;
+    spawn probe(port);
+
+    served: int = HttpServer.serve(port, &handle);
+    show(served);
+
+    // bad serve args are reported, not fatal
+    bad: int = HttpServer.serve_ex(0, 0, &handle);
+    show(bad);
+    show(HttpServer.strerror(bad));
+
+    // query parsing helper
+    qry: HttpQuery = HttpServer.parse_query("a=1&b=&flag");
+    show(qry.count());
+    show(qry.get("a"));
+    show(qry.has("a"));
+    show(qry.get("flag").size);
+    show(qry.get("missing") == "");
+    show(qry.get("b") == "");
+    show(qry);
+
+    show(HttpServer.path_matches("/hello/x", "/hello"));
+    show(HttpServer.path_matches("/world", "/hello"));
+}

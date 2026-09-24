@@ -1,0 +1,15 @@
+use collections::bitset::BitSet;
+fnc main() : void {
+    b: BitSet = BitSet.make(130);
+    b.set(0);
+    b.set(64);
+    b.set(129);
+    show(b.get(0));
+    show(b.get(64));
+    show(b.get(129));
+    show(b.get(63));
+    b.clear(64);
+    show(b.get(64));
+    show(b.popcount());
+    show(b.lowest_set());
+}

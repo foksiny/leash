@@ -1,0 +1,89 @@
+// Greedy word wrapping for fixed-width output.
+//
+//   use text::wrap::Wrap;
+//   show(Wrap.text("the quick brown fox jumps", 12));
+
+pub def Wrap : class {
+    // Word-wrap `text` at `width` columns. Words longer than `width`
+    // are broken at column boundaries. '\n' in input starts a new line.
+    static pub fnc text(s string, width int) : string {
+        if width <= 0 {
+            return s;
+        }
+        out: string = "";
+        col: int = 0;
+        i: int = 0;
+        n: int = s.size;
+        while i < n {
+            // next word
+            while i < n && (s[i] == ' ' || s[i] == '\t') {
+                i = i + 1;
+            }
+            if i >= n {
+                stop;
+            }
+            wend: int = i;
+            while wend < n && s[wend] != ' ' && s[wend] != '\t' && s[wend] != '\n' {
+                wend = wend + 1;
+            }
+            wlen: int = wend - i;
+            nl_in_word: bool = wend < n && s[wend] == '\n';
+
+            ws: string = Wrap.slice(s, i, wend);
+            if nl_in_word {
+                // hard break directly after the word
+                if col > 0 && col + wlen > width {
+                    out = out + '\n';
+                    col = 0;
+                }
+                out = out + ws;
+                out = out + '\n';
+                col = 0;
+                i = wend + 1;
+                continue;
+            }
+            if wlen > width {
+                // break the long word itself
+                if col > 0 {
+                    out = out + '\n';
+                    col = 0;
+                }
+                j: int = 0;
+                while j < ws.size {
+                    take: int = width;
+                    if j + take > ws.size {
+                        take = ws.size - j;
+                    }
+                    out = out + Wrap.slice(ws, j, j + take);
+                    if j + take < ws.size {
+                        out = out + '\n';
+                    }
+                    j = j + take;
+                }
+                col = ws.size - (j - (ws.size - take));
+                col = take;
+            } else {
+                if col == 0 {
+                    out = out + ws;
+                    col = wlen;
+                } also col + 1 + wlen <= width {
+                    out = out + " " + ws;
+                    col = col + 1 + wlen;
+                } else {
+                    out = out + '\n' + ws;
+                    col = wlen;
+                }
+            }
+            i = wend;
+        }
+        return out;
+    }
+
+    static priv fnc slice(s string, start int, end int) : string {
+        out: string = "";
+        for i: int = start; i < end; i = i + 1 {
+            out = out + s[i];
+        }
+        return out;
+    }
+};

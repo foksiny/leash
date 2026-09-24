@@ -1,0 +1,6 @@
+use sys::info::SysInfo;
+fnc main() : void {
+    show(SysInfo.name().size > 0);
+    show(SysInfo.is_posix() || SysInfo.is_windows());
+    show(SysInfo.is_64bit());
+}

@@ -1,0 +1,13 @@
+use misc::table::Table;
+fnc main() : void {
+    hs: vec<string>;
+    hs.pushb("Name"); hs.pushb("Wins"); hs.pushb("Points");
+    t: Table = Table.with_headers(hs);
+    r1: vec<string>;
+    r1.pushb("alpha"); r1.pushb("3"); r1.pushb("30");
+    t.row(r1);
+    r2: vec<string>;
+    r2.pushb("beta"); r2.pushb("12"); r2.pushb("120");
+    t.row(r2);
+    show(t.render());
+}

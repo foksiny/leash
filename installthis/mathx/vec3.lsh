@@ -1,0 +1,64 @@
+use utils::math::Math;
+
+// 3D vectors for games/geometry.
+//
+//   use mathx::vec3::Vec3;
+//   v: Vec3 = Vec3.xyz(0.0, 1.0, 0.0);
+
+pub def Vec3 : class {
+    pub x: float;
+    pub y: float;
+    pub z: float;
+
+    static pub fnc xyz(x float, y float, z float) : Vec3 {
+        return Vec3 { x: x, y: y, z: z };
+    }
+
+    static pub fnc zero() : Vec3 {
+        return Vec3 { x: 0.0, y: 0.0, z: 0.0 };
+    }
+
+    pub fnc VAL_Vec3() : string {
+        return "Vec3{" + tostring(this.x) + ", " + tostring(this.y) + ", " + tostring(this.z) + "}";
+    }
+
+    pub fnc add(o Vec3) : Vec3 {
+        return Vec3.xyz(this.x + o.x, this.y + o.y, this.z + o.z);
+    }
+
+    pub fnc sub(o Vec3) : Vec3 {
+        return Vec3.xyz(this.x - o.x, this.y - o.y, this.z - o.z);
+    }
+
+    pub fnc scale(k float) : Vec3 {
+        return Vec3.xyz(this.x * k, this.y * k, this.z * k);
+    }
+
+    pub fnc dot(o Vec3) : float {
+        return this.x * o.x + this.y * o.y + this.z * o.z;
+    }
+
+    // Cross product (right-handed).
+    pub fnc cross(o Vec3) : Vec3 {
+        return Vec3.xyz(
+            this.y * o.z - this.z * o.y,
+            this.z * o.x - this.x * o.z,
+            this.x * o.y - this.y * o.x);
+    }
+
+    pub fnc length_sq() : float {
+        return this.x * this.x + this.y * this.y + this.z * this.z;
+    }
+
+    pub fnc length() : float {
+        return Math.sqrt((double)this.length_sq());
+    }
+
+    pub fnc normalized() : Vec3 {
+        l: float = this.length();
+        if l == 0.0 {
+            return Vec3.zero();
+        }
+        return Vec3.xyz(this.x / l, this.y / l, this.z / l);
+    }
+};

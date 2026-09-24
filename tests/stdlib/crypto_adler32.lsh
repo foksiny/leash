@@ -1,0 +1,6 @@
+use crypto::adler32::Adler32;
+fnc main() : void {
+    show(Adler32.of("hello"));
+    show(Adler32.of(""));
+    show(Adler32.hex("hello").size);
+}

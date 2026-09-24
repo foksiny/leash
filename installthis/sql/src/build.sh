@@ -8,15 +8,23 @@
 # Usage:
 #   sh build.sh                 # -> ../linux/liblshsql.a  (Linux)
 #                               # -> ../macos/liblshsql.a  (macOS)
+#   TARGET_DIR=arm64 CC=aarch64-linux-gnu-gcc sh build.sh
+#                               # -> ../arm64/liblshsql.a  (ARM64 cross)
 set -e
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
 OS_NAME="$(uname -s)"
 
-case "$OS_NAME" in
-    Darwin) OUT_DIR="$DIR/../macos"; CC="${CC:-cc}" ;;
-    *)      OUT_DIR="$DIR/../linux"; CC="${CC:-gcc}" ;;
-esac
+if [ -n "$TARGET_DIR" ]; then
+    # Explicit cross-build (e.g. TARGET_DIR=arm64 with an aarch64 CC).
+    OUT_DIR="$DIR/../$TARGET_DIR"
+    CC="${CC:-gcc}"
+else
+    case "$OS_NAME" in
+        Darwin) OUT_DIR="$DIR/../macos"; CC="${CC:-cc}" ;;
+        *)      OUT_DIR="$DIR/../linux"; CC="${CC:-gcc}" ;;
+    esac
+fi
 
 mkdir -p "$OUT_DIR"
 TMP="$(mktemp -d)"

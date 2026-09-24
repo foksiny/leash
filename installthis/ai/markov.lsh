@@ -1,0 +1,99 @@
+// A simple word-level Markov chain (order 1).
+//
+//   use ai::markov::Markov;
+//   m: Markov = Markov.trained("the cat sat. the dog ran.");
+//   show(m.next_word("the"));
+
+pub def Markov : class {
+    priv words: vec<string>;
+    priv nexts: vec<string>;
+    priv counts: vec<int>;
+
+    static pub fnc trained(text string) : Markov {
+        ws: vec<string>;
+        ns: vec<string>;
+        cs: vec<int>;
+        m: Markov = Markov { words: ws, nexts: ns, counts: cs };
+        toks: vec<string>;
+        i: int = 0;
+        n: int = text.size;
+        while i < n {
+            while i < n && (text[i] == ' ' || text[i] == '\t' || text[i] == '\n' || text[i] == '\r') {
+                i = i + 1;
+            }
+            if i >= n {
+                stop;
+            }
+            start: int = i;
+            while i < n && text[i] != ' ' && text[i] != '\t' && text[i] != '\n' && text[i] != '\r' {
+                i = i + 1;
+            }
+            toks.pushb(Markov.slice(text, start, i));
+        }
+        for j: int = 0; j + 1 < toks.size; j = j + 1 {
+            m.learn(toks.get(j), toks.get(j + 1));
+        }
+        return m;
+    }
+
+    priv fnc learn(a string, b string) : void {
+        for i: int = 0; i < this.words.size; i = i + 1 {
+            if this.words.get(i) == a && this.nexts.get(i) == b {
+                this.counts.set(i, this.counts.get(i) + 1);
+                return;
+            }
+        }
+        this.words.pushb(a);
+        this.nexts.pushb(b);
+        this.counts.pushb(1);
+    }
+
+    // A random successor of `word`, or "" when unknown (weighted by counts).
+    pub fnc next_word(word string) : string {
+        total: int = 0;
+        for i: int = 0; i < this.words.size; i = i + 1 {
+            if this.words.get(i) == word {
+                total = total + this.counts.get(i);
+            }
+        }
+        if total == 0 {
+            return "";
+        }
+        pick: int = rand(1, total);
+        walk: int = 0;
+        for j: int = 0; j < this.words.size; j = j + 1 {
+            if this.words.get(j) == word {
+                walk = walk + this.counts.get(j);
+                if walk >= pick {
+                    return this.nexts.get(j);
+                }
+            }
+        }
+        return "";
+    }
+
+    // Generate up to `n` words starting at `start`.
+    pub fnc generate(start string, n int) : string {
+        out: string = "";
+        cur: string = start;
+        for i: int = 0; i < n; i = i + 1 {
+            if cur == "" {
+                stop;
+            }
+            if out.size > 0 {
+                out = out + " ";
+            }
+            out = out + cur;
+            cur = this.next_word(cur);
+        }
+        return out;
+    }
+
+    static priv fnc slice(text string, start int, end int) : string {
+        out: string = "";
+        for i: int = start; i < end && i < text.size; i = i + 1 {
+            out = out + text[i];
+        }
+        return out;
+    }
+};

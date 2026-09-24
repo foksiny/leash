@@ -17,6 +17,8 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <signal.h>
+#include <string.h>
+#include <stdarg.h>
 
 /* Helper to get stdout portably */
 FILE* _leash_get_stdout(void) {
@@ -66,6 +68,9 @@ static volatile int _leash_interrupted = 0;
 /* Thread handles for all spawned workers */
 static pthread_t _leash_workers[MAX_WORKERS];
 static int _leash_num_workers = 0;
+/* Guards the worker table and counter: a worker running an async fn can
+   itself spawn children, so leash_spawn_worker() is not main-thread-only. */
+static pthread_mutex_t _leash_worker_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /* Signal handler for Ctrl+C / SIGINT */
 static void _leash_signal_handler(int sig) {
@@ -100,7 +105,19 @@ int leash_spawn_worker(void* (*func)(void*), void* arg) {
         fprintf(stderr, "error: Failed to create worker thread\n");
         return -1;
     }
-    _leash_workers[_leash_num_workers++] = thread;
+
+    pthread_mutex_lock(&_leash_worker_lock);
+    if (_leash_num_workers < MAX_WORKERS) {
+        _leash_workers[_leash_num_workers++] = thread;
+        thread = 0;
+    }
+    pthread_mutex_unlock(&_leash_worker_lock);
+
+    if (thread != 0) {
+        /* The table filled up between the cap check and here. The thread is
+           running and will finish; it just cannot be joined later. */
+        pthread_detach(thread);
+    }
     return 0;
 }
 
@@ -120,8 +137,200 @@ void leash_setup_interrupt_handler(void) {
 
 /* Wait for all spawned worker threads to finish. */
 void leash_wait_for_workers(void) {
-    for (int i = 0; i < _leash_num_workers; i++) {
+    pthread_mutex_lock(&_leash_worker_lock);
+    int n = _leash_num_workers;
+    pthread_mutex_unlock(&_leash_worker_lock);
+    for (int i = 0; i < n; i++) {
         pthread_join(_leash_workers[i], NULL);
     }
+    pthread_mutex_lock(&_leash_worker_lock);
     _leash_num_workers = 0;
+    pthread_mutex_unlock(&_leash_worker_lock);
+}
+
+/* ---- Native source-level debugger (leash dbg) ----
+ *
+ * Instrumented programs call __leash_dbg_stmt(func, line) before every
+ * statement. Without LEASH_DBG set this is a near-free no-op so the same
+ * binary can be shared with plain `leash run`. With LEASH_DBG=1 the hook
+ * stops at each statement (step mode) or at configured breakpoints and
+ * offers an interactive prompt on stdin.
+ *
+ * Agent/CI usage: specify commands on stdin (they are consumed in order,
+ * so `printf 'c\nq\n' | leash dbg app.lsh` continues then quits).
+ */
+#define LSH_DBG_MAX_BREAKS 128
+#define LSH_DBG_LINE_LEN   1024
+
+static int     lsh_dbg_state = -1;    /* -1 uninitialized, 0 off, 1 on   */
+static int     lsh_dbg_running = 0;   /* 0 = stepping, 1 = run to break  */
+static int     lsh_dbg_breaks[LSH_DBG_MAX_BREAKS];
+static int     lsh_dbg_nbreaks = 0;
+static char    lsh_dbg_src[4096] = "";
+static FILE   *lsh_dbg_src_file = NULL;
+static pthread_mutex_t lsh_dbg_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void lsh_dbg_trim(char *s) {
+    size_t n = strlen(s);
+    while (n > 0 && (s[n - 1] == '\n' || s[n - 1] == '\r')) s[--n] = '\0';
+}
+
+static void lsh_dbg_lazy_init(void) {
+    if (lsh_dbg_state != -1) return;
+    lsh_dbg_state = 0;
+    const char *env = getenv("LEASH_DBG");
+    if (!env || !env[0] || (env[0] == '0' && env[1] == '\0')) return;
+    lsh_dbg_state = 1;
+
+    const char *src = getenv("LEASH_DBG_SRC");
+    if (src && src[0]) {
+        strncpy(lsh_dbg_src, src, sizeof(lsh_dbg_src) - 1);
+        lsh_dbg_src_file = fopen(lsh_dbg_src, "r");
+    }
+
+    const char *b = getenv("LEASH_DBG_BREAKS");
+    if (b && b[0]) {
+        const char *p = b;
+        const char *end;
+        while (*p && lsh_dbg_nbreaks < LSH_DBG_MAX_BREAKS) {
+            long v = strtol(p, (char **)&end, 10);
+            if (end == p) {
+                p++; /* garbage byte: skip it, never spin */
+            } else {
+                if (v > 0) lsh_dbg_breaks[lsh_dbg_nbreaks++] = (int)v;
+                p = end;
+            }
+            while (*p == ',' || *p == ' ') p++;
+        }
+    }
+    if (getenv("LEASH_DBG_RUN")) lsh_dbg_running = 1;
+
+    fprintf(stdout, "[leash-dbg] breakpoint locations: %d\n", lsh_dbg_nbreaks);
+    fprintf(stdout, "[leash-dbg] h for help, s/Enter to step, c to continue\n");
+    fflush(stdout);
+}
+
+static int lsh_dbg_is_breakpoint(int line) {
+    for (int i = 0; i < lsh_dbg_nbreaks; i++) {
+        if (lsh_dbg_breaks[i] == line) return 1;
+    }
+    return 0;
+}
+
+static void lsh_dbg_print_source(int line) {
+    if (!lsh_dbg_src_file) return;
+    rewind(lsh_dbg_src_file);
+    char buf[256];
+    long cur = 1;
+    while (fgets(buf, sizeof(buf), lsh_dbg_src_file)) {
+        if (cur == (long)line) {
+            lsh_dbg_trim(buf);
+            fprintf(stdout, "       %ld | %s\n", cur, buf);
+            break;
+        }
+        cur++;
+    }
+}
+
+static void lsh_dbg_help(void) {
+    fprintf(stdout,
+        "[leash-dbg] commands:\n"
+        "  s | n | <Enter>  step to the next statement\n"
+        "  c                continue (run until the next breakpoint)\n"
+        "  b <line>         set a breakpoint\n"
+        "  d <line>         delete a breakpoint\n"
+        "  l                list breakpoints\n"
+        "  h                this help\n"
+        "  q                quit the program now\n");
+    fflush(stdout);
+}
+
+/* Called before every statement (codegen emission). func/line describe the
+ * statement about to run. */
+void __leash_dbg_stmt(const char *func, int line) {
+    lsh_dbg_lazy_init();
+    if (!lsh_dbg_state || line <= 0) return;
+
+    pthread_mutex_lock(&lsh_dbg_mutex);
+
+    if (lsh_dbg_running && !lsh_dbg_is_breakpoint(line)) {
+        pthread_mutex_unlock(&lsh_dbg_mutex);
+        return;
+    }
+
+    if (lsh_dbg_running && lsh_dbg_is_breakpoint(line)) {
+        fprintf(stdout, "[leash-dbg] hit breakpoint at line %d\n", line);
+        lsh_dbg_running = 0;
+    }
+
+    fprintf(stdout, "[leash-dbg] --> %s:%d in %s\n",
+            lsh_dbg_src[0] ? lsh_dbg_src : "?", line, func ? func : "?");
+    lsh_dbg_print_source(line);
+    fflush(stdout);
+
+    char cmd[LSH_DBG_LINE_LEN];
+    for (;;) {
+        fprintf(stdout, "(dbg) ");
+        fflush(stdout);
+        if (!fgets(cmd, sizeof(cmd), stdin)) {
+            /* non-interactive stdin: continue running rather than spin */
+            lsh_dbg_running = 1;
+            break;
+        }
+        lsh_dbg_trim(cmd);
+        if (cmd[0] == '\0' || strcmp(cmd, "s") == 0 || strcmp(cmd, "n") == 0 ||
+                strcmp(cmd, "step") == 0) {
+            break;
+        }
+        if (strcmp(cmd, "c") == 0 || strcmp(cmd, "continue") == 0) {
+            lsh_dbg_running = 1;
+            break;
+        }
+        if (strcmp(cmd, "h") == 0 || strcmp(cmd, "help") == 0) {
+            lsh_dbg_help();
+            continue;
+        }
+        if (strcmp(cmd, "l") == 0 || strcmp(cmd, "list") == 0) {
+            fprintf(stdout, "[leash-dbg] %d breakpoint(s):", lsh_dbg_nbreaks);
+            for (int i = 0; i < lsh_dbg_nbreaks; i++)
+                fprintf(stdout, " %d", lsh_dbg_breaks[i]);
+            fprintf(stdout, "\n");
+            fflush(stdout);
+            continue;
+        }
+        if (strcmp(cmd, "q") == 0 || strcmp(cmd, "quit") == 0) {
+            fprintf(stdout, "[leash-dbg] quitting\n");
+            fflush(stdout);
+            _exit(0);
+        }
+        if ((cmd[0] == 'b' || cmd[0] == 'd') && (cmd[1] == ' ' || cmd[1] == '\t')) {
+            int v = atoi(cmd + 2);
+            if (v <= 0) {
+                fprintf(stdout, "[leash-dbg] bad line number\n");
+                fflush(stdout);
+                continue;
+            }
+            if (cmd[0] == 'b') {
+                if (lsh_dbg_nbreaks < LSH_DBG_MAX_BREAKS &&
+                        !lsh_dbg_is_breakpoint(v)) {
+                    lsh_dbg_breaks[lsh_dbg_nbreaks++] = v;
+                }
+                fprintf(stdout, "[leash-dbg] breakpoint set at line %d\n", v);
+            } else {
+                for (int i = 0; i < lsh_dbg_nbreaks; i++) {
+                    if (lsh_dbg_breaks[i] == v) {
+                        lsh_dbg_breaks[i] = lsh_dbg_breaks[--lsh_dbg_nbreaks];
+                        break;
+                    }
+                }
+                fprintf(stdout, "[leash-dbg] breakpoint cleared at line %d\n", v);
+            }
+            fflush(stdout);
+            continue;
+        }
+        fprintf(stdout, "[leash-dbg] unknown command (h for help)\n");
+        fflush(stdout);
+    }
+
+    pthread_mutex_unlock(&lsh_dbg_mutex);
 }

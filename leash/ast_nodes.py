@@ -63,6 +63,7 @@ class Function(ASTNode):
         self.struct_type = struct_type  # For struct functions: which struct this function belongs to
         self.is_worker = is_worker
         self.is_nogc = is_nogc
+        self.is_async = False
 
 
 class Block(ASTNode):
@@ -683,3 +684,14 @@ class ThisOpTypeExpr(Expression):
 
     def __init__(self):
         pass
+
+
+class AwaitExpr(Expression):
+    """Represents `await expr` — block on a future<T> and yield T."""
+
+    def __init__(self, expr):
+        self.expr = expr
+        self.inner_type = None  # T in future<T>, filled in by the typechecker
+        self.line = None
+        self.col = None
+        self.source_file = None

@@ -1,0 +1,10 @@
+use mathx::vec3::Vec3;
+use utils::format::Format;
+fnc main() : void {
+    a: Vec3 = Vec3.xyz(1.0, 0.0, 0.0);
+    b: Vec3 = Vec3.xyz(0.0, 1.0, 0.0);
+    show(Format.dec(a.cross(b).z, 1));
+    show(Format.dec(a.dot(Vec3.xyz(0.5, 0.0, 0.0)), 1));
+    show(Format.dec(Vec3.xyz(1.0, 2.0, 2.0).length(), 1));
+    show(Format.dec(a.normalized().x, 2));
+}

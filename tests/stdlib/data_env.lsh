@@ -1,0 +1,9 @@
+use data::env::EnvFile;
+fnc main() : void {
+    e: EnvFile = EnvFile.parse("PORT=8080\nDEBUG=1\n# comment\nNAME=\"quoted\"\n");
+    show(e.get("PORT"));
+    show(e.get("DEBUG"));
+    show(e.get("NAME"));
+    show(e.has("DEBUG"));
+    show(e.count());
+}

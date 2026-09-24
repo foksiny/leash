@@ -1,0 +1,53 @@
+// E-mail address sanity checks (not RFC 5322 — deliberately pragmatic).
+//
+//   use net::email::Email;
+//   show(Email.is_valid("a.b+c@example.com"));
+
+pub def Email : class {
+    static pub fnc is_valid(s string) : bool {
+        n: int = s.size;
+        if n < 5 {
+            return false;
+        }
+        at: int = 0 - 1;
+        for p: int = 0; p < n; p = p + 1 {
+            if s[p] == '@' {
+                if at >= 0 {
+                    return false;  // two '@'
+                }
+                at = p;
+            }
+        }
+        if at <= 0 || at >= n - 3 {
+            return false;
+        }
+        local_ok: bool = Email.has_no_space(s, 0, at);
+        dot: bool = false;
+        for i: int = at + 1; i < n; i = i + 1 {
+            c: char = s[i];
+            if c == '.' {
+                if i == at + 1 || i == n - 1 {
+                    return false;
+                }
+                dot = true;
+            }
+        }
+        if !dot {
+            return false;
+        }
+        return local_ok && Email.has_no_space(s, at + 1, n);
+    }
+
+    static priv fnc has_no_space(s string, start int, end int) : bool {
+        for i: int = start; i < end; i = i + 1 {
+            c: char = s[i];
+            if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+                return false;
+            }
+            if c == '@' {
+                return false;
+            }
+        }
+        return true;
+    }
+};

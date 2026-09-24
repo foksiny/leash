@@ -1,0 +1,265 @@
+@from("liblshhttp.a") {
+
+    //====================================================
+    // Core client
+    //====================================================
+
+    // Performs an HTTP/HTTPS request.
+    // Returns the HTTP status code (>= 100), or one of the negative
+    // LSH_E_* error codes on failure.
+    fnc lsh_http_request(
+        method string,
+        url string,
+        headers string,
+        body string,
+        timeout_ms int<64>,
+        max_redirects int,
+        verify_tls int,
+        out_headers pointer<pointer<char>>,
+        out_body pointer<pointer<char>>
+    ) : int;
+
+    // Downloads a URL straight to a file (binary-safe).
+    fnc lsh_http_download(
+        url string,
+        dest_path string,
+        timeout_ms int<64>,
+        max_redirects int,
+        verify_tls int
+    ) : int;
+
+    // Human-readable description of an error code (GC-managed string).
+    fnc lsh_http_strerror(code int) : string;
+
+    // Library version identifier.
+    fnc lsh_http_version() : string;
+};
+
+pub def HttpResponse : class {
+    pub status: int;
+    pub ok: bool;
+    pub headers: string;
+    pub body: string;
+    pub err: string;
+
+    pub fnc VAL_HttpResponse() : string {
+        if !this.ok {
+            return "HttpResponse{err: " + this.err + "}";
+        }
+        return "HttpResponse{status: " + tostring(this.status) + ", body: " + tostring(this.body.size) + " bytes}";
+    }
+
+    // True when the response has a 2xx status code.
+    pub fnc success() : bool {
+        return this.ok && this.status >= 200 && this.status < 300;
+    }
+
+    // Returns the value of the first header matching `name`
+    // (case-insensitive) or "" when absent.
+    pub fnc header(name string) : string {
+        nlen: int = name.size;
+        p: int = 0;
+        n: int = this.headers.size;
+        while p < n {
+            eol: int = HttpResponse.find_ch(this.headers, p, '\n');
+            if eol < 0 {
+                eol = n;
+            }
+            linelen: int = eol - p;
+            if linelen > nlen {
+                matches: bool = true;
+                for j: int = 0; j < nlen; j = j + 1 {
+                    a: char = this.headers[p + j];
+                    b: char = name[j];
+                    if HttpResponse.lower(a) != HttpResponse.lower(b) {
+                        matches = false;
+                        stop;
+                    }
+                }
+                if matches && this.headers[p + nlen] == ':' {
+                    vs: int = p + nlen + 1;
+                    while vs < eol && (this.headers[vs] == ' ' || this.headers[vs] == '\t') {
+                        vs = vs + 1;
+                    }
+                    ve: int = eol;
+                    while ve > vs && (this.headers[ve - 1] == ' ' || this.headers[ve - 1] == '\t') {
+                        ve = ve - 1;
+                    }
+                    return HttpResponse.slice(this.headers, vs, ve);
+                }
+            }
+            p = eol + 1;
+        }
+        return "";
+    }
+
+    static pub fnc find_ch(s string, start int, c char) : int {
+        for i: int = start; i < s.size; i = i + 1 {
+            if s[i] == c {
+                return i;
+            }
+        }
+        return 0 - 1;
+    }
+
+    static pub fnc lower(c char) : char {
+        if c >= 'A' && c <= 'Z' {
+            return (char)(c + 32);
+        }
+        return c;
+    }
+
+    static pub fnc slice(s string, start int, end int) : string {
+        out: string;
+        for i: int = start; i < end; i = i + 1 {
+            out = out + s[i];
+        }
+        return out;
+    }
+};
+
+pub def Http : class {
+    static pub DEFAULT_TIMEOUT_MS : int<64> = 30000;
+    static pub DEFAULT_MAX_REDIRECTS : int = 10;
+
+    //====================================================
+    // Convenience verbs
+    //====================================================
+
+    static pub fnc get(url string) : HttpResponse {
+        return Http.request("GET", url, "", "");
+    }
+
+    static pub fnc post(url string, body string) : HttpResponse {
+        return Http.request("POST", url, body, "");
+    }
+
+    static pub fnc put(url string, body string) : HttpResponse {
+        return Http.request("PUT", url, body, "");
+    }
+
+    static pub fnc patch(url string, body string) : HttpResponse {
+        return Http.request("PATCH", url, body, "");
+    }
+
+    static pub fnc delete(url string) : HttpResponse {
+        return Http.request("DELETE", url, "", "");
+    }
+
+    static pub fnc head(url string) : HttpResponse {
+        return Http.request("HEAD", url, "", "");
+    }
+
+    //====================================================
+    // Full control
+    //====================================================
+
+    // Sends `method` request to `url` with optional `body` and extra
+    // `headers` (one per line, e.g. "Content-Type: application/json").
+    static pub fnc request(method string, url string, body string, headers string) : HttpResponse {
+        return Http.request_ex(method, url, body, headers, Http.DEFAULT_TIMEOUT_MS, Http.DEFAULT_MAX_REDIRECTS, true);
+    }
+
+    static pub fnc request_ex(method string, url string, body string, headers string, timeout_ms int<64>, max_redirects int, verify_tls bool) : HttpResponse {
+        vh: string;
+        vb: string;
+        vflag: int = 0;
+        if verify_tls {
+            vflag = 1;
+        }
+        st: int = lsh_http_request(method, url, headers, body, timeout_ms, max_redirects, vflag, &vh, &vb);
+        if st >= 100 {
+            return HttpResponse { status: st, ok: true, headers: vh, body: vb, err: "" };
+        }
+        return HttpResponse { status: st, ok: false, headers: "", body: "", err: lsh_http_strerror(st) };
+    }
+
+    //====================================================
+    // Binary downloads
+    //====================================================
+
+    // Streams the URL body straight into `dest_path` (binary-safe).
+    static pub fnc download(url string, dest_path string) : HttpResponse {
+        return Http.download_ex(url, dest_path, Http.DEFAULT_TIMEOUT_MS, Http.DEFAULT_MAX_REDIRECTS, true);
+    }
+
+    static pub fnc download_ex(url string, dest_path string, timeout_ms int<64>, max_redirects int, verify_tls bool) : HttpResponse {
+        vflag: int = 0;
+        if verify_tls {
+            vflag = 1;
+        }
+        st: int = lsh_http_download(url, dest_path, timeout_ms, max_redirects, vflag);
+        if st >= 100 {
+            return HttpResponse { status: st, ok: true, headers: "", body: "", err: "" };
+        }
+        return HttpResponse { status: st, ok: false, headers: "", body: "", err: lsh_http_strerror(st) };
+    }
+
+    //====================================================
+    // Misc
+    //====================================================
+
+    static pub fnc version() : string {
+        return lsh_http_version();
+    }
+
+    static pub fnc strerror(code int) : string {
+        return lsh_http_strerror(code);
+    }
+
+    // Builds a JSON content header, handy with post()/put().
+    static pub fnc json_header() : string {
+        return "Content-Type: application/json";
+    }
+
+    // Encodes a map of key/value pairs as an application/x-www-form-urlencoded
+    // body. Keys and values are percent-encoded.
+    static pub fnc form_encode(keys vec<string>, vals vec<string>) : string {
+        out: string;
+        count: int = keys.size;
+        if vals.size < count {
+            count = vals.size;
+        }
+        foreach i, k in<vector> keys {
+            if i >= count {
+                stop;
+            }
+            if i > 0 {
+                out = out + '&';
+            }
+            out = out + Http.percent_encode(k) + '=' + Http.percent_encode(vals.get(i));
+        }
+        return out;
+    }
+
+    static pub fnc form_content_type() : string {
+        return "Content-Type: application/x-www-form-urlencoded";
+    }
+
+    static pub fnc percent_encode(s string) : string {
+        out: string;
+        foreach _, c in<string> s {
+            if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~' {
+                out = out + c;
+            } else {
+                v: int = 0;
+                if c < 0 {
+                    v = c + 256;
+                } else {
+                    v = toint(int, c);
+                }
+                out = out + '%';
+                out = out + Http.hexdigit(v / 16);
+                out = out + Http.hexdigit(v - (v / 16) * 16);
+            }
+        }
+        return out;
+    }
+
+    static priv fnc hexdigit(d int) : char {
+        if d < 10 {
+            return (char)('0' + d);
+        }
+        return (char)('A' + d - 10);
+    }
+};

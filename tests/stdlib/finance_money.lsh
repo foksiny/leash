@@ -1,0 +1,9 @@
+use finance::money::Money;
+fnc main() : void {
+    show(Money.usd(1234567));
+    show(Money.usd(0));
+    show(Money.usd(5));
+    show(Money.fmt(599, "EUR"));
+    show(Money.fmt(199, ""));
+    show(Money.whole(199));
+}

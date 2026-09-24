@@ -1,0 +1,7 @@
+use text::ngrams::Ngrams;
+fnc main() : void {
+    v: vec<string> = Ngrams.words("the quick brown fox", 2);
+    foreach _, x in<vector> v { show(x); }
+    c: vec<string> = Ngrams.chars("abcd", 2);
+    foreach _, x in<vector> c { show(x); }
+}

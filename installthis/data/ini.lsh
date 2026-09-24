@@ -1,0 +1,146 @@
+// INI-style config file parsing ("[section]\nkey = value").
+//
+//   use data::ini::Ini;
+//   cfg: Ini = Ini.parse("[srv]\nport = 8080\nhost = 127.0.0.1\n");
+//   show(cfg.get("srv", "port"));
+
+pub def Ini : class {
+    priv keys: vec<string>;
+    priv vals: vec<string>;
+
+    static pub fnc parse(text string) : Ini {
+        ks: vec<string>;
+        vs: vec<string>;
+        out: Ini = Ini { keys: ks, vals: vs };
+        section: string = "";
+        n: int = text.size;
+        i: int = 0;
+        while i < n {
+            le: int = Ini.find_nl(text, i);
+            line: string = Ini.trim(Ini.slice(text, i, le));
+            if line.size == 0 {
+                i = le + 1;
+                continue;
+            }
+            if line[0] == '#' || line[0] == ';' {
+                i = le + 1;
+                continue;
+            }
+            if line[0] == '[' && line[line.size - 1] == ']' {
+                section = Ini.trim(Ini.slice(line, 1, line.size - 1));
+                i = le + 1;
+                continue;
+            }
+            eq: int = Ini.find_eq(line);
+            if eq > 0 {
+                k: string = Ini.trim(Ini.slice(line, 0, eq));
+                v: string = Ini.trim(Ini.slice(line, eq + 1, line.size));
+                if k.size > 0 {
+                    full: string = k;
+                    if section.size > 0 {
+                        full = section + "." + k;
+                    }
+                    out.keys.pushb(full);
+                    out.vals.pushb(v);
+                }
+            }
+            i = le + 1;
+        }
+        return out;
+    }
+
+    // "section.key" -> value (""), or "key" when there is no section.
+    pub fnc get(section string, key string) : string {
+        name: string = key;
+        if section.size > 0 {
+            name = section + "." + key;
+        }
+        for i: int = 0; i < this.keys.size; i = i + 1 {
+            if this.keys.get(i) == name {
+                return this.vals.get(i);
+            }
+        }
+        return "";
+    }
+
+    pub fnc get_i32(section string, key string) : int {
+        s: string = this.get(section, key);
+        if s.size == 0 {
+            return 0;
+        }
+        v: int = 0;
+        neg: bool = false;
+        start: int = 0;
+        if s[0] == '-' {
+            neg = true;
+            start = 1;
+        }
+        for i: int = start; i < s.size; i = i + 1 {
+            c: char = s[i];
+            if c < '0' || c > '9' {
+                stop;
+            }
+            v = v * 10 + toint(int, c) - toint(int, '0');
+        }
+        if neg {
+            return 0 - v;
+        }
+        return v;
+    }
+
+    pub fnc has(section string, key string) : bool {
+        name: string = key;
+        if section.size > 0 {
+            name = section + "." + key;
+        }
+        for i: int = 0; i < this.keys.size; i = i + 1 {
+            if this.keys.get(i) == name {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    pub fnc count() : int {
+        return this.keys.size;
+    }
+
+    static priv fnc find_nl(s string, from int) : int {
+        for i: int = from; i < s.size; i = i + 1 {
+            if s[i] == '\n' {
+                return i;
+            }
+        }
+        return s.size;
+    }
+
+    static priv fnc find_eq(s string) : int {
+        for i: int = 0; i < s.size; i = i + 1 {
+            if s[i] == '=' {
+                return i;
+            }
+        }
+        return 0 - 1;
+    }
+
+    static priv fnc slice(s string, from int, to int) : string {
+        out: string = "";
+        for i: int = from; i < to && i < s.size; i = i + 1 {
+            out = out + s[i];
+        }
+        return out;
+    }
+
+    // trim leading and trailing ' ' and '\t'
+    static priv fnc trim(s string) : string {
+        start: int = 0;
+        end: int = s.size;
+        while start < end && (s[start] == ' ' || s[start] == '\t' || s[start] == '\r') {
+            start = start + 1;
+        }
+        while end > start && (s[end - 1] == ' ' || s[end - 1] == '\t' || s[end - 1] == '\r') {
+            end = end - 1;
+        }
+        return Ini.slice(s, start, end);
+    }
+};

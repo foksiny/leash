@@ -1,0 +1,71 @@
+// A simple stderr progress bar: [####..........] 42%
+//
+//   use misc::progress::Progress;
+//   p: Progress = Progress.make(100);
+//   foreach ... { p.update(i); }
+
+pub def Progress : class {
+    priv total: int;
+    priv width: int;
+    priv last_w: int;
+
+    // `total` = value at which the bar is full (0 disables clamping math).
+    static pub fnc make(total int) : Progress {
+        if total <= 0 {
+            total = 1;
+        }
+        return Progress { total: total, width: 40, last_w: -1 };
+    }
+
+    static pub fnc make_width(total int, width int) : Progress {
+        if total <= 0 {
+            total = 1;
+        }
+        if width <= 0 {
+            width = 40;
+        }
+        return Progress { total: total, width: width, last_w: -1 };
+    }
+
+    // Render "[####........] 42%" at `value`.
+    pub fnc bar(value int) : string {
+        pct: int = 0;
+        if this.total > 0 {
+            pct = (value * 100) / this.total;
+        }
+        if pct > 100 {
+            pct = 100;
+        }
+        filled: int = (value * this.width) / this.total;
+        if filled > this.width {
+            filled = this.width;
+        }
+        out: string = "[";
+        for i: int = 0; i < filled; i = i + 1 {
+            out = out + '#';
+        }
+        for i2: int = filled; i2 < this.width; i2 = i2 + 1 {
+            out = out + '.';
+        }
+        out = out + "] " + tostring(pct) + "%";
+        return out;
+    }
+
+    // Update on stderr with \r (carriage return), printing only when the
+    // filled cell count changes to avoid flicker.
+    pub fnc update(value int) : void {
+        filled: int = 0;
+        if this.total > 0 {
+            filled = (value * this.width) / this.total;
+        }
+        if filled != this.last_w {
+            show('\r' + this.bar(value) + "  ");
+            this.last_w = filled;
+        }
+    }
+
+    // Move to a fresh line (call when finishing the bar).
+    pub fnc clear() : void {
+        show("");
+    }
+};

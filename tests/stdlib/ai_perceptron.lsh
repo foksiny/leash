@@ -1,0 +1,23 @@
+use ai::perceptron::Perceptron;
+fnc main() : void {
+    // OR gate: (0,0)->0, others -> 1
+    xs: vec<float>;
+    target: vec<int>;
+    xs.pushb(0.0); xs.pushb(0.0); target.pushb(0);
+    xs.pushb(0.0); xs.pushb(1.0); target.pushb(1);
+    xs.pushb(1.0); xs.pushb(0.0); target.pushb(1);
+    xs.pushb(1.0); xs.pushb(1.0); target.pushb(1);
+    p: Perceptron = Perceptron.make(2);
+    for e: int = 0; e < 100; e = e + 1 {
+        errs: int = p.train(xs, target);
+        if errs == 0 {
+            stop;
+        }
+    }
+    x0: vec<float>;
+    x0.pushb(0.0); x0.pushb(0.0);
+    x1: vec<float>;
+    x1.pushb(1.0); x1.pushb(1.0);
+    show(p.predict(x0));
+    show(p.predict(x1));
+}

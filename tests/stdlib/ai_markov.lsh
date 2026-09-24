@@ -1,0 +1,8 @@
+use ai::markov::Markov;
+fnc main() : void {
+    m: Markov = Markov.trained("the cat sat. the dog sat. the cat ran.");
+    w: string = m.next_word("the");
+    show(w == "cat" || w == "dog");
+    g: string = m.generate("the", 3);
+    show(g.size > 0);
+}

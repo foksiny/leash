@@ -1,0 +1,41 @@
+// Adler-32 checksum (fast, weak integrity checking; use crypto::sha256
+// for anything adversarial).
+//
+//   use crypto::adler32::Adler32;
+//   show(Adler32.of("hello"));   // decimal
+
+pub def Adler32 : class {
+    static priv fnc VAL0() : int {
+        return 1;
+    }
+
+    static pub fnc of(s string) : int {
+        a: int = 1;
+        b: int = 0;
+        MOD: int = 65521;
+        foreach _, c in<string> s {
+            v: int = 0;
+            if c < 0 {
+                v = c + 256;
+            } else {
+                v = toint(int, c);
+            }
+            a = (a + v) % MOD;
+            b = (b + a) % MOD;
+        }
+        return b * 65536 + a;
+    }
+
+    static pub fnc hex(s string) : string {
+        v: int = Adler32.of(s);
+        u32: uint<32> = (uint<32>)v;
+        digits: string = "0123456789abcdef";
+        out: string = "";
+        for i: int = 0; i < 8; i = i + 1 {
+            shift: int = (7 - i) * 4;
+            dd: uint<32> = (u32 >> shift) & (uint<32>)15;
+            out = out + digits[toint(int, dd)];
+        }
+        return out;
+    }
+};

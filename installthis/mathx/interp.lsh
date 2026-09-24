@@ -1,0 +1,45 @@
+// Learp/clamp/remap math for animation and normalization.
+//
+//   use mathx::interp::Interp;
+//   show(Interp.lerp(0.0, 10.0, 0.5));   // 5.0
+//   show(Interp.clamp(12.0, 0.0, 1.0));  // 1.0
+
+pub def Interp : class {
+    // Linear interpolation between a and b at t in [0,1] (unclamped).
+    static pub fnc lerp(a float, b float, t float) : float {
+        return a + (b - a) * t;
+    }
+
+    static pub fnc clamp(x float, lo float, hi float) : float {
+        if x < lo {
+            return lo;
+        }
+        if x > hi {
+            return hi;
+        }
+        return x;
+    }
+
+    static pub fnc clamp01(x float) : float {
+        return Interp.clamp(x, 0.0, 1.0);
+    }
+
+    // Map x from [a, b] into [0, 1] (clamped).
+    static pub fnc normalize(x float, a float, b float) : float {
+        if b == a {
+            return 0.0;
+        }
+        return Interp.clamp01((x - a) / (b - a));
+    }
+
+    // Map x from [a, b] to [c, d] (clamped on the input side).
+    static pub fnc remap(x float, a float, b float, c float, d float) : float {
+        return Interp.lerp(c, d, Interp.normalize(x, a, b));
+    }
+
+    // Hermite smoothstep between a and b.
+    static pub fnc smoothstep(a float, b float, x float) : float {
+        t: float = Interp.normalize(x, a, b);
+        return t * t * (3.0 - 2.0 * t);
+    }
+};

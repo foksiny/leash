@@ -1,0 +1,12 @@
+use mathx::vec2::Vec2;
+use utils::format::Format;
+fnc main() : void {
+    a: Vec2 = Vec2.xy(1.0, 2.0);
+    b: Vec2 = Vec2.xy(3.0, 4.0);
+    show(Format.dec(a.add(b).x, 1));
+    show(Format.dec(a.add(b).y, 1));
+    show(Format.dec(a.dot(b), 1));
+    show(Format.dec(b.length(), 1));
+    show(Format.dec(a.normalized().x, 2));
+    show(a.dist(a));
+}

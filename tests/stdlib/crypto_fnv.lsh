@@ -1,0 +1,8 @@
+use crypto::fnv::Fnv;
+fnc main() : void {
+    show(Fnv.hash64("hello") != 0);
+    show(Fnv.hash64("hello") == Fnv.hash64("hello"));
+    show(Fnv.hash64("hello") != Fnv.hash64("hella"));
+    show(Fnv.hash32("hello") != 0);
+    show(Fnv.hash32("hello") == Fnv.hash32("hello"));
+}

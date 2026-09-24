@@ -1,0 +1,6 @@
+use sys::env::Env;
+fnc main() : void {
+    show(Env.has("PATH"));
+    show(Env.get_or("DEFINITELY_NOT_SET_XYZ", "fallback"));
+    show(Env.get("PATH").size > 0);
+}

@@ -1,0 +1,36 @@
+// FNV-1a non-cryptographic string hash (64-bit), from the FNV hash family.
+//
+//   use crypto::fnv::Fnv;
+//   show(Fnv.hash64("hello"));
+
+pub def Fnv : class {
+    static pub fnc hash64(s string) : int<64> {
+        // FNV-1a 64-bit; constants fit in signed int<64> only modulo 2^64,
+        // so the rolling hash works on uint<64> throughout.
+        h: uint<64> = (uint<64>)14695981039346656037;  // 0xcbf29ce484222325
+        i: uint<64> = (uint<64>)1099511628211;         // 0x100000001b3
+        foreach _, c in<string> s {
+            v: int = toint(int, c);
+            if v < 0 {
+                v = v + 256;
+            }
+            h = h ^ (uint<64>)v;
+            h = h * i;
+        }
+        return toint(int<64>, h);
+    }
+
+    // 32-bit variant (FNV-1a).
+    static pub fnc hash32(s string) : uint<32> {
+        h: uint<32> = (uint<32>)2166136261;
+        foreach _, c in<string> s {
+            v: int = toint(int, c);
+            if v < 0 {
+                v = v + 256;
+            }
+            h = h ^ (uint<32>)v;
+            h = h * (uint<32>)16777619;
+        }
+        return h;
+    }
+};
