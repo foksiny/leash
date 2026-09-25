@@ -8,15 +8,20 @@
  *
  * Serving model (v1.1): a multiplexed event loop on the thread that calls
  * lshhttpd_serve(). A single poll()/select() slice watches the listen socket
- * and every open client connection; complete requests are dispatched to the
- * Leash handler callback ON THAT THREAD (so the garbage collector sees every
- * handler local). Client sockets are kept open across requests
- * (HTTP/1.1 keep-alive), with pipelining on a single connection supported
- * naturally by the byte-buffered framing — a leaky browser can't wedge the
- * server anymore.
+ * and every open client connection — read-readiness AND writability — so
+ * complete requests are dispatched to the Leash handler callback ON THAT
+ * THREAD (so the garbage collector sees every handler local) and slow
+ * readers cannot wedge the server. Client sockets are kept open across
+ * requests (HTTP/1.1 keep-alive), with pipelining on a single connection
+ * supported naturally by the byte-buffered framing. Responses are written
+ * non-blockingly: a response that would block is buffered per connection
+ * and drained on POLLOUT while other connections keep being served.
  *
  * Idle keep-alive connections close after 60 s of silence; a connection
- * parked mid-request gets the 30 s per-request I/O budget instead.
+ * parked mid-request gets the 30 s per-request I/O budget instead, and a
+ * response still draining after its 30 s write deadline is reaped.
+ * Buffered bytes (request accumulators + pending responses) are bounded
+ * per connection AND by a server-wide ceiling (LSHD_MAX_GLOBAL_BYTES).
  * lshhttpd_shutdown() may be called from the handler (shuts down after the
  * current response) or from another thread (unblocks accept/poll
  * immediately).
@@ -80,6 +85,13 @@ extern void *leash_gc_alloc_string(long long len);
 #define LSHD_IDLE_TIMEOUT_MS 60000                      /* idle keep-alive cutoff                 */
 #define LSHD_SLOW_REQ_MS     LSHD_IO_TIMEOUT_MS         /* slow request bytes get 30 s windows    */
 #define LSHD_MAX_CONN_ACC    (LSHD_MAX_HEAD_BYTES + LSHD_MAX_BODY_BYTES)
+/* Server-wide buffered-bytes ceiling (request accumulators + pending
+ * response bytes). Per-connection caps alone let 128 connections hold
+ * ~2 GiB; this bounds the total memory the server will buffer at once.
+ * Redefine at compile time for tighter deployments. */
+#ifndef LSHD_MAX_GLOBAL_BYTES
+#  define LSHD_MAX_GLOBAL_BYTES (64LL * 1024LL * 1024LL)  /* 64 MiB total */
+#endif
 
 /* Error codes returned by lshhttpd_serve(). */
 enum {
@@ -166,48 +178,6 @@ static int lshd_wait_writable(lsh_fd_t fd, long ms) {
 #ifndef MSG_NOSIGNAL
 #  define MSG_NOSIGNAL 0
 #endif
-
-/* Send all bytes; returns 0 on success, negative error.
- * Client sockets are non-blocking, so a full kernel buffer surfaces as
- * EAGAIN/WSAEWOULDBLOCK — wait for writability under the I/O deadline
- * instead of aborting the response. */
-static int lshd_send_all(lsh_fd_t fd, const char *data, size_t len) {
-    size_t off = 0;
-    long long deadline = lshd_now_ms() + LSHD_IO_TIMEOUT_MS;
-    while (off < len) {
-#ifdef _WIN32
-        int n = send(fd, data + off, (int)(len - off), 0);
-        if (n > 0) { off += (size_t)n; continue; }
-        int err = WSAGetLastError();
-        if (err == WSAEINTR) continue;
-        if (err == WSAEWOULDBLOCK) {
-            long long left = deadline - lshd_now_ms();
-            if (left <= 0 || !lshd_wait_writable(fd, (long)left)) {
-                lshd_set_detail("send timed out");
-                return LSHD_E_ACCEPT;
-            }
-            continue;
-        }
-        lshd_set_detail("send failed");
-        return LSHD_E_ACCEPT;
-#else
-        ssize_t n = send(fd, data + off, len - off, MSG_NOSIGNAL);
-        if (n > 0) { off += (size_t)n; continue; }
-        if (n < 0 && errno == EINTR) continue;
-        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
-            long long left = deadline - lshd_now_ms();
-            if (left <= 0 || !lshd_wait_writable(fd, (long)left)) {
-                lshd_set_detail("send timed out");
-                return LSHD_E_ACCEPT;
-            }
-            continue;
-        }
-        lshd_set_detail("send failed");
-        return LSHD_E_ACCEPT;
-#endif
-    }
-    return 0;
-}
 
 /* ------------------------------------------------------------------ */
 /* Growable buffer                                                      */
@@ -444,12 +414,47 @@ static int lshd_is_head_method(const char *method) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Multiplexed keep-alive connection table                             */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    lsh_fd_t  fd;
+    lshd_buf  acc;         /* request-byte accumulator (pipelining-friendly) */
+    lshd_buf  out;         /* pending response bytes (non-blocking write)    */
+    size_t    out_off;     /* bytes of `out` already written to the socket   */
+    long long out_start;   /* when the CURRENT pending response began        */
+    int       out_close;   /* drop the connection once `out` fully drains    */
+    long long last_ms;     /* timestamp of the most recent accepted byte     */
+    long long req_start;   /* when the CURRENT (incomplete) request began   */
+    int       has_bytes;   /* seen any bytes on this connection yet          */
+    int       deferred;    /* pipelined requests left for the next slice     */
+} lshd_conn;
+
+static lshd_conn *g_conns[LSHD_MAX_CONNS];
+static int        g_nconns = 0;
+/* Set when a connection left pipelined requests behind after hitting the
+ * per-slice dispatch budget: the next poll must not block on I/O. */
+static int        g_pending_work = 0;
+/* Server-wide count of bytes currently buffered in request accumulators
+ * and pending response buffers. Bounded by LSHD_MAX_GLOBAL_BYTES: the
+ * per-connection caps alone let 128 connections hold ~2 GiB, and this
+ * counter is what keeps the total (not just each connection) in check. */
+static long long  g_total_buf_bytes = 0;
+
+/* ------------------------------------------------------------------ */
 /* Response writing                                                    */
 /* ------------------------------------------------------------------ */
 
-/* Build and send one response. `close_conn` selects the Connection
- * header. Returns 0 on success, negative LSHD_E_* error. */
-static int lshd_write_response(lsh_fd_t fd, int status,
+/* Build one response into the connection's pending-output buffer and try
+ * to flush it without blocking the serving loop. Pipelined responses
+ * queue in order in `c->out`; when the socket would block, the remaining
+ * bytes stay buffered and the event loop drains them on POLLOUT — other
+ * connections keep being served meanwhile. The newly buffered bytes are
+ * accounted against the server-wide LSHD_MAX_GLOBAL_BYTES ceiling.
+ * `close_conn` selects the Connection header and is remembered in
+ * `c->out_close` until the write fully drains (the connection drops then).
+ * Returns 0 on success (flushed or buffered), negative LSHD_E_* error. */
+static int lshd_write_response(lshd_conn *c, int status,
                                const char *hdr, const char *body,
                                int head_only, int close_conn) {
     size_t body_len = body ? strlen(body) : 0;
@@ -509,13 +514,27 @@ static int lshd_write_response(lsh_fd_t fd, int status,
     if (!buf_append(&out, line, strlen(line))) goto oom;
     if (!buf_append(&out, "\r\n", 2)) goto oom;
 
-    int rc = lshd_send_all(fd, out.p, out.len);
-    buf_free(&out);
-    if (rc != 0) return rc;
-
     if (!head_only && body_len > 0) {
-        return lshd_send_all(fd, body, body_len);
+        if (!buf_append(&out, body, body_len)) goto oom;
     }
+
+    if (c->out.len == 0) {
+        /* First byte of a fresh response: start the write deadline. A
+         * pipelined response appended onto an undrained one keeps the
+         * earlier deadline. */
+        c->out_start = lshd_now_ms();
+        c->out_close = 0;
+    }
+
+    /* One accounted append into the connection's pending-output buffer. */
+    size_t added = out.len;
+    if (added > 0 && !buf_append(&c->out, out.p, out.len)) {
+        buf_free(&out);
+        goto oom;
+    }
+    buf_free(&out);
+    g_total_buf_bytes += (long long)added;
+
     return 0;
 
 oom:
@@ -523,24 +542,48 @@ oom:
     return LSHD_E_MEMORY;
 }
 
-/* ------------------------------------------------------------------ */
-/* Multiplexed keep-alive connection table                             */
-/* ------------------------------------------------------------------ */
-
-typedef struct {
-    lsh_fd_t  fd;
-    lshd_buf  acc;         /* request-byte accumulator (pipelining-friendly) */
-    long long last_ms;     /* timestamp of the most recent accepted byte     */
-    long long req_start;   /* when the CURRENT (incomplete) request began   */
-    int       has_bytes;   /* seen any bytes on this connection yet          */
-    int       deferred;    /* pipelined requests left for the next slice     */
-} lshd_conn;
-
-static lshd_conn *g_conns[LSHD_MAX_CONNS];
-static int        g_nconns = 0;
-/* Set when a connection left pipelined requests behind after hitting the
- * per-slice dispatch budget: the next poll must not block on I/O. */
-static int        g_pending_work = 0;
+/* Non-blocking flush of pending response bytes. Returns:
+ *   1  all pending bytes written (out buffer reset for the next response)
+ *   0  would block — remaining bytes stay buffered; poll watches POLLOUT
+ *  <0  hard send error (caller drops the connection)
+ * Every byte sent is un-accounted from the server-wide buffer ceiling. */
+static int lshd_conn_flush(lshd_conn *c) {
+    size_t before = c->out.len - c->out_off;
+    while (c->out_off < c->out.len) {
+#ifdef _WIN32
+        int n = send(c->fd, c->out.p + c->out_off, (int)(c->out.len - c->out_off), 0);
+        if (n > 0) {
+            c->out_off += (size_t)n;
+            c->last_ms = lshd_now_ms();
+            continue;
+        }
+        int err = WSAGetLastError();
+        if (err == WSAEINTR) continue;
+        if (err == WSAEWOULDBLOCK) break;
+        lshd_set_detail("send failed");
+        return LSHD_E_ACCEPT;
+#else
+        ssize_t n = send(c->fd, c->out.p + c->out_off, c->out.len - c->out_off, MSG_NOSIGNAL);
+        if (n > 0) {
+            c->out_off += (size_t)n;
+            c->last_ms = lshd_now_ms();
+            continue;
+        }
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) break;
+        lshd_set_detail("send failed");
+        return LSHD_E_ACCEPT;
+#endif
+    }
+    size_t after = c->out.len - c->out_off;
+    if (after != before) g_total_buf_bytes -= (long long)(before - after);
+    if (c->out_off >= c->out.len) {
+        c->out.len = 0;
+        c->out_off = 0;
+        return 1;
+    }
+    return 0;
+}
 
 static long long lshd_now_ms(void) {
 #ifdef _WIN32
@@ -552,13 +595,17 @@ static long long lshd_now_ms(void) {
 #endif
 }
 
+/* ------------------------------------------------------------------ */
 /* Byte read done inside the multiplex loop. Returns:
  *   0  OK (may be 0 bytes — would-block)
  *   1  peer closed cleanly
  *  <0  hard recv error
  * Reads at most LSHD_DRAIN_BUDGET bytes per call so one chatty writer
- * cannot monopolize the serving thread between polls (R5), and refuses
- * to buffer beyond LSHD_MAX_CONN_ACC per connection (R3). */
+ * cannot monopolize the serving thread between polls (R5), refuses
+ * to buffer beyond LSHD_MAX_CONN_ACC per connection (R3), and stops
+ * pulling when the server-wide LSHD_MAX_GLOBAL_BYTES ceiling is reached
+ * (R4) — buffered bytes free up as requests are consumed and the next
+ * slice reads again, so nothing is lost. */
 #define LSHD_DRAIN_BUDGET (64 * 16384)   /* max bytes pulled per poll slice */
 /* Max pipelined requests dispatched from one connection per poll slice. */
 #define LSHD_DISPATCH_BUDGET 32
@@ -571,6 +618,11 @@ static int lshd_conn_read_avail(lshd_conn *c) {
              * fire on the next extract; stop buffering more right now. */
             return 0;
         }
+        if (g_total_buf_bytes >= LSHD_MAX_GLOBAL_BYTES) {
+            /* Server-wide fence exceeded: bytes stay in the kernel until
+             * live requests are consumed and memory frees up. */
+            return 0;
+        }
         if (pulled >= LSHD_DRAIN_BUDGET) {
             return 0; /* be fair: let other connections take a slice */
         }
@@ -581,6 +633,7 @@ static int lshd_conn_read_avail(lshd_conn *c) {
         int n = recv(c->fd, chunk, (int)sizeof(chunk), 0);
         if (n > 0) {
             if (!buf_append(&c->acc, chunk, (size_t)n)) return LSHD_E_MEMORY;
+            g_total_buf_bytes += (long long)n;
             c->last_ms = lshd_now_ms();
             c->has_bytes = 1;
             pulled += (size_t)n;
@@ -596,6 +649,7 @@ static int lshd_conn_read_avail(lshd_conn *c) {
         ssize_t n = recv(c->fd, chunk, sizeof(chunk), 0);
         if (n > 0) {
             if (!buf_append(&c->acc, chunk, (size_t)n)) return LSHD_E_MEMORY;
+            g_total_buf_bytes += (long long)n;
             c->last_ms = lshd_now_ms();
             c->has_bytes = 1;
             pulled += (size_t)n;
@@ -612,8 +666,12 @@ static int lshd_conn_read_avail(lshd_conn *c) {
 
 static void lshd_conn_free(lshd_conn *c) {
     if (!c) return;
+    /* Un-account whatever is still buffered on this connection (request
+     * accumulator + undrained response bytes). */
+    g_total_buf_bytes -= (long long)(c->acc.len + (c->out.len - c->out_off));
     lshd_close_fd(c->fd);
     buf_free(&c->acc);
+    buf_free(&c->out);
     free(c);
 }
 
@@ -1001,7 +1059,7 @@ oom:
  * Returns 0 on OK; negative LSHD_E_* on I/O error.
  * Sets *stop_after when the handler asked the whole server to stop, and
  * *close_after when the connection must be dropped after this response. */
-static int lshd_serve_ready(lsh_fd_t fd, lshd_request *req,
+static int lshd_serve_ready(lshd_conn *c, lshd_request *req,
                             lshhttpd_handler_t handler,
                             int *stop_after, int *close_after) {
     *stop_after = 0;
@@ -1010,9 +1068,11 @@ static int lshd_serve_ready(lsh_fd_t fd, lshd_request *req,
     if (req->bad != 0) {
         int status = req->bad;
         lshd_request_free(req);
-        lshd_write_response(fd, status, "Content-Type: text/plain\n",
-                            "malformed request", 0, 1);
-        return 0;
+        int wrc = lshd_write_response(c, status, "Content-Type: text/plain\n",
+                                      "malformed request", 0, 1);
+        if (wrc != 0) return wrc;
+        int frc = lshd_conn_flush(c);
+        return frc < 0 ? frc : 0;
     }
 
     /* Hand GC copies to the handler so they survive arbitrary use. */
@@ -1048,13 +1108,20 @@ static int lshd_serve_ready(lsh_fd_t fd, lshd_request *req,
     int head_only = lshd_is_head_method(req->method);
     int close_conn = req->close_after;
     lshd_request_free(req);
-    int rc = lshd_write_response(fd, status, hdrbuf, bodybuf,
+    int rc = lshd_write_response(c, status, hdrbuf, bodybuf,
                                  head_only, close_conn);
     free(hdrbuf);
     free(bodybuf);
+    if (rc != 0) return rc;
+
+    /* Try to drain the response right away — in the common case it fits
+     * the kernel buffer and the write completes synchronously. Only a
+     * slow reader leaves bytes buffered for the POLLOUT path. */
+    int frc = lshd_conn_flush(c);
+    if (frc < 0) return frc;
 
     if (lshd_stop_flag) *stop_after = 1;
-    return rc;
+    return 0;
 }
 
 /* Consume any complete requests sitting in a connection's accumulator.
@@ -1092,6 +1159,7 @@ static int lshd_conn_serve(lshd_conn *c, lshhttpd_handler_t handler,
         if (consumed > 0) {
             memmove(c->acc.p, c->acc.p + consumed, c->acc.len - consumed);
             c->acc.len -= consumed;
+            g_total_buf_bytes -= (long long)consumed;
             if (c->acc.len == 0) {
                 c->req_start = 0; /* request boundary reached */
             }
@@ -1099,23 +1167,34 @@ static int lshd_conn_serve(lshd_conn *c, lshhttpd_handler_t handler,
 
         if (xr == LSHD_X_BAD) {
             int bad_code = req.bad ? req.bad : 500;
-            lshd_write_response(c->fd, bad_code, "Content-Type: text/plain\n",
-                                "malformed request",
-                                lshd_is_head_method(req.method), 1);
+            int wrc = lshd_write_response(c, bad_code, "Content-Type: text/plain\n",
+                                          "malformed request",
+                                          lshd_is_head_method(req.method), 1);
             lshd_request_free(&req);
+            if (wrc == 0) lshd_conn_flush(c);
             return -1;
         }
 
         /* serve_ready() frees `req` on every path. */
         int stop_after = 0;
         int close_after = 0;
-        int rc = lshd_serve_ready(c->fd, &req, handler,
+        int rc = lshd_serve_ready(c, &req, handler,
                                   &stop_after, &close_after);
         if (rc != 0) {
             return rc;
         }
         (*served_delta)++;
         dispatched++;
+        if (c->out.len > c->out_off) {
+            /* The response is still draining (slow reader): the connection
+             * stays open and the close decision is remembered until the
+             * write finishes — or the write deadline reaps it. The event
+             * loop watches POLLOUT and keeps serving other connections
+             * meanwhile. */
+            c->out_close = close_after || peer_eof;
+            if (stop_after) *must_stop = 1;
+            return 0;
+        }
         if (stop_after) {
             *must_stop = 1;
             return 1;
@@ -1172,6 +1251,7 @@ int lshhttpd_serve(int port, long long max_requests, lshhttpd_handler_t handler)
     lshd_running = 1;
     lshd_stop_flag = 0;
     g_nconns = 0;
+    g_total_buf_bytes = 0;
 
     long long served = 0;
     int rc = 0;
@@ -1268,11 +1348,16 @@ int lshhttpd_serve(int port, long long max_requests, lshhttpd_handler_t handler)
 #ifdef _WIN32
         fd_set rfds;
         FD_ZERO(&rfds);
+        fd_set wfds;
+        FD_ZERO(&wfds);
         if (accepting) {
             FD_SET(lfd, &rfds);
         }
         for (int i = 0; i < g_nconns; i++) {
             FD_SET(g_conns[i]->fd, &rfds);
+            if (g_conns[i]->out.len > g_conns[i]->out_off) {
+                FD_SET(g_conns[i]->fd, &wfds); /* response draining */
+            }
         }
         struct timeval tv;
         if (g_pending_work) {
@@ -1282,7 +1367,7 @@ int lshhttpd_serve(int port, long long max_requests, lshhttpd_handler_t handler)
             tv.tv_sec = LSHD_POLL_SLICE_MS / 1000;
             tv.tv_usec = (LSHD_POLL_SLICE_MS % 1000) * 1000;
         }
-        int ready = select(0, &rfds, NULL, NULL, &tv);
+        int ready = select(0, &rfds, &wfds, NULL, &tv);
         if (ready == SOCKET_ERROR) {
             if (WSAGetLastError() == WSAEINTR) continue;
             if (lshd_stop_flag) break;
@@ -1305,6 +1390,11 @@ int lshhttpd_serve(int port, long long max_requests, lshhttpd_handler_t handler)
         for (int i = 0; i < g_nconns; i++) {
             pfds_arr[nfds].fd = g_conns[i]->fd;
             pfds_arr[nfds].events = POLLIN;
+            /* Watch POLLOUT on connections with a response still draining
+             * so the event loop wakes to flush it without busy-spinning. */
+            if (g_conns[i]->out.len > g_conns[i]->out_off) {
+                pfds_arr[nfds].events |= POLLOUT;
+            }
             pfds_arr[nfds].revents = 0;
             nfds++;
         }
@@ -1371,6 +1461,7 @@ int lshhttpd_serve(int port, long long max_requests, lshhttpd_handler_t handler)
                     continue;
                 }
                 buf_init(&cc->acc);
+                buf_init(&cc->out);
                 cc->fd = client;
                 cc->last_ms = lshd_now_ms();
                 cc->req_start = 0;
@@ -1383,6 +1474,51 @@ int lshhttpd_serve(int port, long long max_requests, lshhttpd_handler_t handler)
         g_pending_work = 0;
         for (int i = 0; i < g_nconns; i++) {
             lshd_conn *cc = g_conns[i];
+
+            /* --- 1. drain pending response bytes (non-blocking write) ---
+             * A slow reader no longer blocks the loop: while a response is
+             * buffered the event loop polls POLLOUT and flushes it here,
+             * while other connections keep being served. Reading from this
+             * connection is paused until the write drains. */
+            if (cc->out.len > cc->out_off) {
+                int write_ready;
+#ifdef _WIN32
+                write_ready = ready > 0 && FD_ISSET(cc->fd, &wfds) != 0;
+#else
+                write_ready = 0;
+                for (nfds_t j = 0; j < nfds; j++) {
+                    if (pfds_arr[j].fd == cc->fd &&
+                        (pfds_arr[j].revents & (POLLOUT | POLLERR | POLLHUP)) != 0) {
+                        write_ready = 1;
+                        break;
+                    }
+                }
+#endif
+                if (write_ready) {
+                    int frc = lshd_conn_flush(cc);
+                    if (frc < 0) {
+                        lshd_conn_drop(i);
+                        i--;
+                        continue;
+                    }
+                    if (frc == 1 && cc->out_close) {
+                        /* Fully drained and the connection was marked for
+                         * closing (Connection: close / peer EOF). */
+                        lshd_conn_drop(i);
+                        i--;
+                        continue;
+                    }
+                }
+                if (cc->out.len > cc->out_off) {
+                    /* Still draining: skip reading from this connection
+                     * until the write finishes. poll() watches POLLOUT; a
+                     * stalled reader is reaped by the write deadline in the
+                     * sweep below. */
+                    continue;
+                }
+            }
+
+            /* --- 2. read + serve as before --- */
             int live_ready;
 #ifdef _WIN32
             live_ready = cc->deferred || (ready > 0 && FD_ISSET(cc->fd, &rfds) != 0);
@@ -1421,8 +1557,10 @@ int lshhttpd_serve(int port, long long max_requests, lshhttpd_handler_t handler)
                 continue;
             }
             cc->deferred = 0;
-            /* drop-or-keep decision */
-            if (svc != 0 || peer_eof) {
+            /* drop-or-keep decision. A peer EOF with a response still
+             * draining keeps the connection until the write finishes
+             * (conn_serve remembered it in out_close). */
+            if (svc != 0 || (peer_eof && cc->out.len <= cc->out_off)) {
                 lshd_conn_drop(i);
                 i--;
                 continue;
@@ -1435,6 +1573,15 @@ int lshhttpd_serve(int port, long long max_requests, lshhttpd_handler_t handler)
         long long now = lshd_now_ms();
         for (int i = 0; i < g_nconns; i++) {
             lshd_conn *cc = g_conns[i];
+            if (cc->out.len > cc->out_off) {
+                /* mid-response write: fixed deadline from when the response
+                 * began (a stalled reader cannot outlive it) */
+                if (now - cc->out_start > LSHD_IO_TIMEOUT_MS) {
+                    lshd_conn_drop(i);
+                    i--;
+                }
+                continue;
+            }
             if (cc->acc.len > 0 && cc->req_start > 0) {
                 /* mid-request: fixed deadline from when the request began
                  * (a 1-byte-per-29s trickle cannot outlive it) */
@@ -1448,6 +1595,19 @@ int lshhttpd_serve(int port, long long max_requests, lshhttpd_handler_t handler)
                 lshd_conn_drop(i);
                 i--;
             }
+        }
+    }
+
+    /* Best-effort drain of pending response bytes before the connections
+     * close: shutdown()/max_requests semantics promise the in-flight
+     * response completes. Bounded by the I/O deadline so a wedged peer
+     * cannot hold the exit hostage. */
+    for (int i = 0; i < g_nconns; i++) {
+        lshd_conn *cc = g_conns[i];
+        long long deadline = lshd_now_ms() + LSHD_IO_TIMEOUT_MS;
+        while (cc->out.len > cc->out_off && lshd_now_ms() < deadline) {
+            if (lshd_conn_flush(cc) != 0) break;   /* 1 = done, <0 = error */
+            lshd_wait_writable(cc->fd, 100);       /* short writability wait */
         }
     }
 

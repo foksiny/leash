@@ -121,19 +121,16 @@ handler's return value: `return HttpServer.reply(200, "text/plain", "hi");`
 
 ### Known limitations (beta)
 
-- **A slow reader blocks the serving thread.** Responses are written
-  synchronously from the thread that called `serve()`; if a client stops
-  reading, the write stalls for up to the 30 s I/O budget and other
-  connections are not polled during that wait. A slow *read* of a large
-  response is the only case that behaves this way — reading requests is
-  fully multiplexed. Full non-blocking output buffering is the obvious next
-  step (0.24.2+).
-- **Memory ceiling is per connection, not global.** With the default caps a
-  single connection can hold roughly 2x (64 KiB head + 16 MiB body) in its
-  accumulator, and up to 128 connections are accepted at once, so the
-  theoretical worst case is a few GiB. Lower `LSHD_MAX_BODY_BYTES` /
-  `LSHD_MAX_CONNS` (compile-time) for untrusted deployments, or put a
-  reverse proxy in front.
+- **Memory ceiling is per connection AND server-wide.** With the default
+  caps a single connection can hold roughly 2x (64 KiB head + 16 MiB body)
+  in its accumulator, up to 128 connections are accepted at once, and the
+  server-wide buffered-bytes ceiling (`LSHD_MAX_GLOBAL_BYTES`, 64 MiB
+  default) bounds the total — new bytes simply wait in the kernel until
+  live requests are consumed. Lower `LSHD_MAX_GLOBAL_BYTES` /
+  `LSHD_MAX_BODY_BYTES` / `LSHD_MAX_CONNS` (compile-time) for untrusted
+  deployments, or put a reverse proxy in front.
+- **Never-awaited futures stay rooted until exit** (async/await side, not
+  an httpserver concern — listed here for completeness).
 
 ## Rebuilding the native library
 

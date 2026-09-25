@@ -7,6 +7,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## [0.24.2] - 2026-09-24
+
+### Added — Non-blocking HTTP server write path (0.24.1's "next step")
+- The last synchronous corner of the `httpserver` serving engine is gone:
+  **responses are now written non-blockingly**. Each connection carries a
+  pending-output buffer (`out` + write offset); when the kernel buffer is
+  full (`EAGAIN`/`WSAEWOULDBLOCK`), the remaining bytes stay buffered and
+  the event loop drains them on **POLLOUT** (POSIX `poll` events /
+  Winsock `select` write set) while other connections keep being served.
+  A slow reader can no longer stall the loop for the 30 s I/O budget —
+  reading requests *and* writing responses are now fully multiplexed.
+- In the common case (response fits the kernel buffer) the write still
+  completes synchronously, so latency and request ordering are unchanged.
+- Pipelined responses queue in order in the per-connection output buffer;
+  `Connection: close` and peer-EOF close decisions are remembered
+  (`out_close`) and honored exactly when the write fully drains.
+- A response still draining after its 30 s write deadline is reaped by the
+  idle sweep (a stalled reader cannot outlive it), and `shutdown()` /
+  `max_requests` exhaustion still complete the in-flight response first
+  (a bounded best-effort drain before the connections close).
+
+### Added — Server-wide buffered-bytes ceiling (global memory bound)
+- Buffered bytes are now bounded **per connection AND server-wide**:
+  a new compile-time cap `LSHD_MAX_GLOBAL_BYTES` (64 MiB default) counts
+  request accumulators plus pending response bytes across all live
+  connections. Per-connection caps alone allowed 128 × 16 MiB ≈ 2 GiB.
+- When the ceiling is reached the server stops pulling bytes from client
+  sockets — they wait in the kernel until live requests are consumed and
+  memory frees up, so nothing is lost and no connection is dropped for it.
+  Every buffered byte is accounted exactly once (buffered → consumed /
+  flushed / dropped), so the counter cannot drift.
+
+### Changed — Worker-thread cap refinements (async/await side)
+- The worker cap is now **runtime-configurable** through the
+  `LEASH_MAX_WORKERS` environment variable (clamped to [1, 4096]; the
+  default stays 64), and the worker-handle table grows to the resolved
+  cap on first use instead of being a fixed 64-entry array.
+- Exceeding the cap during an `async fnc` call is now **silent**: the
+  runtime gained `leash_try_spawn_worker` (used by the generated async
+  wrapper) which returns instead of printing
+  `error: Maximum number of worker threads (64) reached` — running the
+  task inline is expected, correct (just non-parallel) fallback behavior,
+  so it must not pollute stderr. Plain `spawn` keeps the loud report,
+  because a silently dropped task there IS an error.
+- `leash_wait_for_workers()` cycles cleanly: repeated spawn/wait rounds
+  reuse the same table (no growth leak).
+
+### Changed
+- Bump version to `0.24.2 Beta`.
+
 ## [0.24.1] - 2026-09-24
 
 ### Added — HTTP server keep-alive (persistent connections + pipelining)

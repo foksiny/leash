@@ -54,19 +54,42 @@ int leash_keyget(void) {
 
 /* ---- Threading support (Windows) ---- */
 
-/* Maximum number of worker threads */
-#define MAX_WORKERS 64
+/* Maximum number of worker threads. Overridable at runtime through the
+   LEASH_MAX_WORKERS environment variable (clamped to [1, 4096]); the
+   default stays 64. Resolved once on first use under the worker-table
+   lock, so every thread sees the same cap. */
+static int _leash_max_workers = 0;   /* 0 = not resolved yet */
 
 /* Global interrupted flag for worker threads */
 static volatile int _leash_interrupted = 0;
 
-/* Thread handles for all spawned workers */
-static HANDLE _leash_workers[MAX_WORKERS];
+/* Thread handles for all spawned workers. The table grows to the resolved
+   cap on first use and is reused after leash_wait_for_workers() resets
+   the counter, so repeated spawn/wait cycles do not leak. */
+static HANDLE *_leash_workers = NULL;
+static int _leash_workers_cap = 0;
 static int _leash_num_workers = 0;
 /* Guards the worker table and counter: a worker running an async fn can
    itself spawn children, so leash_spawn_worker() is not main-thread-only.
    SRWLOCK is statically initialized — no init race. */
 static SRWLOCK _leash_worker_lock = SRWLOCK_INIT;
+
+static int leash_max_workers(void) {
+    int n = _leash_max_workers;
+    if (n > 0) return n;
+    long v = 64;
+    const char *env = getenv("LEASH_MAX_WORKERS");
+    if (env && *env) {
+        char *endp = NULL;
+        long parsed = strtol(env, &endp, 10);
+        if (endp && *endp == '\0' && parsed >= 1) v = parsed;
+    }
+    if (v > 4096) v = 4096;
+    AcquireSRWLockExclusive(&_leash_worker_lock);
+    if (_leash_max_workers <= 0) _leash_max_workers = (int)v;
+    ReleaseSRWLockExclusive(&_leash_worker_lock);
+    return _leash_max_workers;
+}
 
 /* Signal handler for Ctrl+C / SIGINT */
 static void _leash_signal_handler(int sig) {
@@ -87,13 +110,24 @@ static DWORD WINAPI _leash_thread_wrapper(LPVOID lpParam) {
     return 0;
 }
 
-/* Spawn a worker thread.
- * Returns 0 on success, non-zero on failure.
- */
-int leash_spawn_worker(void* (*func)(void*), void* arg) {
-    if (_leash_num_workers >= MAX_WORKERS) {
-        fprintf(stderr, "error: Maximum number of worker threads (%d) reached\n", MAX_WORKERS);
-        return -1;
+/* Common spawn path. `quiet` suppresses the cap-reached report: the
+ * async/await expansion runs the task inline when the cap is hit, which
+ * is a correct (only non-parallel) fallback — so hitting the cap there
+ * is not an error and must not print to stderr. Plain `spawn` keeps the
+ * loud report, because a silently dropped task IS an error for the user.
+ * Returns 0 when the thread was spawned; 1 when the cap was reached
+ * (the caller runs the task inline); -1 on hard failure. */
+static int lsh_spawn_worker_internal(void* (*func)(void*), void* arg, int quiet) {
+    int cap = leash_max_workers();
+
+    AcquireSRWLockExclusive(&_leash_worker_lock);
+    int full = (_leash_num_workers >= cap);
+    ReleaseSRWLockExclusive(&_leash_worker_lock);
+    if (full) {
+        if (!quiet) {
+            fprintf(stderr, "error: Maximum number of worker threads (%d) reached\n", cap);
+        }
+        return 1;
     }
 
     /* Register the argument as a GC root so it isn't collected before the
@@ -124,18 +158,46 @@ int leash_spawn_worker(void* (*func)(void*), void* arg) {
     }
 
     AcquireSRWLockExclusive(&_leash_worker_lock);
-    if (_leash_num_workers < MAX_WORKERS) {
-        _leash_workers[_leash_num_workers++] = thread;
-        thread = NULL;
+    if (_leash_num_workers < cap) {
+        /* Grow the table on first use (or if the resolved cap grew). */
+        if (_leash_num_workers >= _leash_workers_cap) {
+            HANDLE *nt = (HANDLE *)realloc(
+                _leash_workers, (size_t)cap * sizeof(HANDLE));
+            if (nt) {
+                _leash_workers = nt;
+                _leash_workers_cap = cap;
+            }
+        }
+        if (_leash_num_workers < _leash_workers_cap) {
+            _leash_workers[_leash_num_workers++] = thread;
+            thread = NULL;
+        }
     }
     ReleaseSRWLockExclusive(&_leash_worker_lock);
 
     if (thread != NULL) {
-        /* The table filled up between the cap check and here. The thread is
-           running and will finish; it just cannot be joined later. */
+        /* The table could not grow between the cap check and here. The
+           thread is running and will finish; it just cannot be joined. */
         CloseHandle(thread);
     }
     return 0;
+}
+
+/* Spawn a worker thread. Reports the worker cap as an error (plain
+ * `spawn` would silently lose the task).
+ * Returns 0 on success, non-zero on failure.
+ */
+int leash_spawn_worker(void* (*func)(void*), void* arg) {
+    return lsh_spawn_worker_internal(func, arg, 0);
+}
+
+/* Try to spawn a worker thread without reporting the cap as an error.
+ * Used by the async/await expansion: when the worker cap is reached the
+ * generated wrapper runs the task inline — correct, just non-parallel —
+ * so hitting the cap is not an error and must not pollute stderr.
+ * Returns 0 when spawned, non-zero otherwise (run the task inline). */
+int leash_try_spawn_worker(void* (*func)(void*), void* arg) {
+    return lsh_spawn_worker_internal(func, arg, 1);
 }
 
 /* Check if the program has been interrupted (Ctrl+C). Returns 1 if interrupted, 0 otherwise. */

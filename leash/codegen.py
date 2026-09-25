@@ -587,6 +587,12 @@ class CodeGen:
         void_ptr = ir.IntType(8).as_pointer()
         leash_spawn_ty = ir.FunctionType(ir.IntType(32), [ir.FunctionType(void_ptr, [void_ptr]).as_pointer(), void_ptr])
         self.leash_spawn_worker_fn = ir.Function(self.module, leash_spawn_ty, name="leash_spawn_worker")
+        # Quiet variant used by the async/await expansion: hitting the
+        # worker cap is not an error there (the task runs inline), so the
+        # runtime must not print to stderr for it.
+        self.leash_try_spawn_worker_fn = ir.Function(
+            self.module, leash_spawn_ty, name="leash_try_spawn_worker"
+        )
 
         leash_is_interrupted_ty = ir.FunctionType(ir.IntType(32), [])
         self.leash_is_interrupted_fn = ir.Function(self.module, leash_is_interrupted_ty, name="leash_is_interrupted")
@@ -2981,13 +2987,15 @@ class CodeGen:
                     [ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), idx + 1)],
                 ),
             )
-        # Spawn the worker. When the runtime refuses (thread limit reached),
-        # nobody would ever run the thunk and the returned future would
-        # never complete, deadlocking every await. Run the thunk inline in
-        # that case: the future still completes, the call still returns the
-        # same future<T>, only the parallelism is lost.
+        # Spawn the worker via the quiet try-spawn: when the runtime refuses
+        # (worker cap reached, or a transient pthread failure), nobody would
+        # ever run the thunk and the returned future would never complete,
+        # deadlocking every await. Run the thunk inline in that case: the
+        # future still completes, the call still returns the same future<T>,
+        # only the parallelism is lost. The quiet variant guarantees the cap
+        # is NOT reported as an error — running inline is expected behavior.
         spawn_rc = self.builder.call(
-            self.leash_spawn_worker_fn, [thunk, packed_raw]
+            self.leash_try_spawn_worker_fn, [thunk, packed_raw]
         )
         spawn_ok = self.builder.icmp_unsigned(
             "==", spawn_rc, ir.Constant(ir.IntType(32), 0)
