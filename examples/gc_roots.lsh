@@ -1,0 +1,42 @@
+// Root survival across collections: globals, class statics, locals and
+// nested containers must stay valid while garbage is being produced.
+pub def Node : class {
+    static pub seen: int = 0;
+    pub label: string;
+    pub kids: vec<string>;
+    pub fnc touch() : int {
+        Node.seen = Node.seen + 1;
+        return this.kids.size;
+    }
+}
+
+glob_names: vec<string> = {"alpha", "beta"};
+glob_str: string = "global-canary";
+
+fnc churn(rounds int) : int {
+    acc: int = 0;
+    for i: int = 0; i < rounds; i = i + 1 {
+        tmp: vec<string> = {"junk", tostring(i)};
+        acc = acc + tmp.size;
+        other: string = "throwaway-" + tostring(i);
+    }
+    return acc;
+}
+
+fnc main() {
+    local_names: vec<string> = {"one", "two", "three"};
+    local_node: Node = Node { label: "local-node", kids: {"k1", "k2"} };
+
+    junk_total: int = churn(200);
+    gc_collect();
+    show(junk_total > 0);
+
+    show(glob_str, " ", glob_names.size, " ", glob_names.get(1));
+    show(local_names.size, " ", local_names.get(0), " ", local_names.get(2));
+    show(local_node.label, " ", local_node.kids.size, " ", local_node.kids.get(1));
+    show(local_node.touch(), " ", Node.seen);
+
+    gc_collect();
+    show(local_names.size, " ", glob_names.get(0), " ", local_node.kids.get(0));
+    show("roots ok");
+}

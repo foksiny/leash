@@ -3950,6 +3950,14 @@ class TypeChecker:
                 )
             return "void"
 
+        if expr.name in ("gc_collect", "gc_stats"):
+            if len(expr.args) != 0:
+                self._error(
+                    f"Function '{expr.name}' expects 0 arguments, but got {len(expr.args)}",
+                    node=expr,
+                )
+            return "void"
+
         if expr.name == "normescape":
             if len(expr.args) != 1:
                 self._error(

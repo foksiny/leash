@@ -101,6 +101,25 @@ static void _leash_signal_handler(int sig) {
     _leash_interrupted = 1;
 }
 
+/* Wrap spawned workers so the thread that runs generated Leash code brackets
+ * its whole lifetime with leash_gc_worker_begin/end: it becomes a known
+ * (non-foreign) thread, and automatic collection stays away while any worker
+ * is active. The wrapper also transfers func/arg by value so a failed
+ * allocation or early parent-side error can't leave the worker dangling. */
+struct lsh_worker_wrap {
+    void *(*func)(void *);
+    void *arg;
+};
+
+static void *lsh_worker_wrap_fn(void *p) {
+    struct lsh_worker_wrap w = *(struct lsh_worker_wrap *)p;
+    free(p);
+    leash_gc_worker_begin();
+    void *r = w.func(w.arg);
+    leash_gc_worker_end();
+    return r;
+}
+
 /* Common spawn path. `quiet` suppresses the cap-reached report: the
  * async/await expansion runs the task inline when the cap is hit, which
  * is a correct (only non-parallel) fallback — so hitting the cap there
@@ -133,8 +152,18 @@ static int lsh_spawn_worker_internal(void* (*func)(void*), void* arg, int quiet)
        exists — single-threaded programs keep the lock-free alloc path. */
     leash_gc_thread_spawned();
 
+    struct lsh_worker_wrap *wrap = malloc(sizeof(*wrap));
+    if (!wrap) {
+        if (arg) leash_gc_unregister_root(arg);
+        fprintf(stderr, "error: Out of memory\n");
+        return -1;
+    }
+    wrap->func = func;
+    wrap->arg = arg;
+
     pthread_t thread;
-    if (pthread_create(&thread, NULL, func, arg) != 0) {
+    if (pthread_create(&thread, NULL, lsh_worker_wrap_fn, wrap) != 0) {
+        free(wrap);
         if (arg) leash_gc_unregister_root(arg);
         fprintf(stderr, "error: Failed to create worker thread\n");
         return -1;

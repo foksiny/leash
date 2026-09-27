@@ -105,7 +105,11 @@ typedef struct {
 
 static DWORD WINAPI _leash_thread_wrapper(LPVOID lpParam) {
     WorkerArgs* wa = (WorkerArgs*)lpParam;
+    /* Bracket the generated-code lifetime so this thread is known to the GC
+       and automatic collection stays away while it runs. */
+    leash_gc_worker_begin();
     wa->func(wa->arg);
+    leash_gc_worker_end();
     free(wa);
     return 0;
 }

@@ -100,11 +100,38 @@ def _build_rust(task_path, opt_level, build_dir):
     return exe, elapsed
 
 
-# ── run helpers (return (stdout, stderr, returncode)) ──────────────
+# ── run helpers (return (stdout, stderr, returncode, peak_rss_kb)) ──────
+
+def _rss_kb(usage):
+    """Normalize ru_maxrss to kilobytes (Linux reports KB, macOS bytes)."""
+    if usage is None:
+        return None
+    rss = usage.ru_maxrss
+    if sys.platform == "darwin":
+        rss //= 1024
+    return rss
+
 
 def _run_exe(exe_path):
-    result = subprocess.run([str(exe_path)], capture_output=True, text=True, timeout=120)
-    return result.stdout, result.stderr, result.returncode
+    """Run a compiled benchmark and report its own peak RSS.
+
+    Uses os.wait4 so each run carries rusage; subprocess.run discards it.
+    Falls back to subprocess.run where wait4 is unavailable (Windows)."""
+    if not hasattr(os, "wait4"):
+        result = subprocess.run([str(exe_path)], capture_output=True, text=True, timeout=120)
+        return result.stdout, result.stderr, result.returncode, None
+    with tempfile.TemporaryFile() as fo, tempfile.TemporaryFile() as fe:
+        proc = subprocess.Popen([str(exe_path)], stdout=fo, stderr=fe)
+        _, status, usage = os.wait4(proc.pid, 0)
+        try:
+            proc.returncode = os.waitstatus_to_exitcode(status)
+        except AttributeError:  # Python < 3.9
+            proc.returncode = -os.WTERMSIG(status) if os.WIFSIGNALED(status) else os.WEXITSTATUS(status)
+        fo.seek(0)
+        fe.seek(0)
+        out = fo.read().decode("utf-8", errors="replace")
+        err = fe.read().decode("utf-8", errors="replace")
+    return out, err, proc.returncode, _rss_kb(usage)
 
 
 # ── language registry ──────────────────────────────────────────────
@@ -191,17 +218,22 @@ def run_benchmark(task_name, lang_key, opt_level, runs=5):
 
     # ── run step ────────────────────────────────────────────────
     run_times = []
+    rss_values = []
     stdout = ""
     for _ in range(runs):
         try:
             t0 = time.perf_counter()
             if exe is not None:
-                out, err, rc = lang["run"](exe)
+                res = lang["run"](exe)
             else:
-                out, err, rc = lang["run"](task_path, opt_level, BUILD_DIR)
+                res = lang["run"](task_path, opt_level, BUILD_DIR)
             elapsed = time.perf_counter() - t0
+            out, err, rc = res[0], res[1], res[2]
+            rss = res[3] if len(res) > 3 else None
             if rc == 0:
                 run_times.append(elapsed)
+                if rss is not None:
+                    rss_values.append(rss)
                 stdout = out
             else:
                 run_times.append(None)
@@ -223,6 +255,7 @@ def run_benchmark(task_name, lang_key, opt_level, runs=5):
             "max": max(valid),
             "stdev": stdev(valid) if len(valid) > 1 else 0.0,
             "runs": len(valid),
+            "peak_rss_kb": max(rss_values) if rss_values else None,
         },
         "stdout": stdout.strip(),
     }
@@ -242,6 +275,16 @@ def fmt_time(seconds):
 
 def fmt_time_compact(seconds):
     return fmt_time(seconds)
+
+
+def fmt_rss(kb):
+    if kb is None:
+        return "     N/A "
+    if kb >= 1024 * 1024:
+        return f"{kb / 1024 / 1024:>6.2f} GB"
+    if kb >= 1024:
+        return f"{kb / 1024:>6.1f} MB"
+    return f"{kb:>5.0f} KB"
 
 
 def print_table(title, results, tasks, langs, field):
@@ -268,11 +311,13 @@ def print_table(title, results, tasks, langs, field):
                 elif r.get("error"):
                     row.append(f"{'ERR':>{col_w}s}")
                 else:
-                    d = r.get(field)
+                    d = r.get("run") if field == "rss" else r.get(field)
                     if d is None:
                         row.append(f"{'N/A':>{col_w}s}")
                     elif field == "compile":
                         row.append(fmt_time_compact(d.get("seconds")))
+                    elif field == "rss":
+                        row.append(fmt_rss(d.get("peak_rss_kb")))
                     else:
                         row.append(fmt_time_compact(d.get("median")))
         print(sep.join(row))
@@ -350,6 +395,11 @@ def main():
     print("═══ RUN TIMES (median) ═══")
     print()
     print_table("run", results, tasks, langs, "run")
+
+    print()
+    print("═══ PEAK RSS (max over runs) ═══")
+    print()
+    print_table("rss", results, tasks, langs, "rss")
 
     # optional json output
     if args.json:

@@ -1,21 +1,61 @@
 /**
- * Leash Custom Garbage Collector — Multi-Thread Ready
- * A simple mark-and-sweep GC with mutex-based thread safety.
+ * Leash Custom Garbage Collector — slab-based mark & sweep
+ *
+ * Design:
+ *   - Small objects (payload <= 4080 bytes) are carved from 64KB slabs,
+ *     one size class per slab, with a 16-byte cell header
+ *     {size_t size; u32 flags} immediately before the payload. Freed
+ *     cells recycle through per-class free lists (threaded through the
+ *     cell payload); empty slabs are unmapped during sweep.
+ *   - Large objects are individually malloc'd with the same 16-byte
+ *     header at payload-16 (raw base at payload-32) and kept in an
+ *     address-sorted array.
+ *   - Pointer -> object lookup is O(1): slab pages are registered in an
+ *     open-addressing page directory keyed by page address; large
+ *     objects are found by binary search. Candidates outside the heap
+ *     are rejected by a single hash probe + binary search miss.
+ *   - Marking is iterative (explicit worklist, no recursion). Roots:
+ *     the explicit object-root array (futures, spawn arg blocks),
+ *     scan regions registered by generated code for pointer-bearing
+ *     globals, and a conservative scan of the main thread's stack with
+ *     callee-saved registers flushed via setjmp.
+ *   - Automatic collection triggers from the allocation path when
+ *     bytes-since-last-collection exceeds max(2MB, 2x live bytes),
+ *     only while quiescent: no active worker threads, no parallel
+ *     matrix op in flight, no foreign (FFI) threads detected. Workers
+ *     register with leash_gc_worker_begin/end around their lifetime;
+ *     their stacks hold unscanned live pointers while they run.
  *
  * When compiled with -DNO_GC (used by --no-gc and --autofree modes),
- * all functions become thin wrappers around standard malloc/free,
+ * the GC entry points become thin wrappers around standard malloc/free,
  * making the binary independent of the GC runtime.
  */
 
-/* Must be defined before any system header so posix_memalign is declared. */
+/* Must be defined before any system header so posix_memalign is declared
+   and pthread_getattr_np (stack bounds) is visible on glibc. */
 #ifndef _POSIX_C_SOURCE
 #define _POSIX_C_SOURCE 200809L
+#endif
+#if defined(__linux__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE 1
 #endif
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <setjmp.h>
+#include <time.h>
+
+#include "gc.h"
+
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <unistd.h>
+#include <pthread.h>
+#include <sys/mman.h>
+#endif
 
 #ifdef NO_GC
 /* ===== Stub mode: plain malloc/free, no GC tracking ===== */
@@ -49,31 +89,45 @@ void* leash_gc_aligned_alloc(size_t size, size_t alignment) {
     return leash_gc_malloc(size);
 }
 
+void* leash_gc_aligned_alloc_ex(size_t size, size_t alignment, unsigned int flags) {
+    (void)flags;
+    return leash_gc_aligned_alloc(size, alignment);
+}
+
 void leash_gc_collect(void) {}
 void leash_gc_register_root(void* ptr) { (void)ptr; }
 void leash_gc_unregister_root(void* ptr) { (void)ptr; }
+void leash_gc_register_scan_region(void* start, size_t nbytes) { (void)start; (void)nbytes; }
 void* leash_gc_malloc_rooted(size_t size) { return leash_gc_malloc(size); }
 void* leash_gc_alloc_string(size_t len) { return leash_gc_malloc(len + 1); }
 void* leash_gc_alloc_vector_data(size_t elem_size, size_t capacity) { return leash_gc_malloc(elem_size * capacity); }
 void leash_gc_thread_spawned(void) {}
+void leash_gc_worker_begin(void) {}
+void leash_gc_worker_end(void) {}
+size_t leash_gc_get_allocated(void) { return 0; }
+size_t leash_gc_get_object_count(void) { return 0; }
+void leash_gc_print_stats(void) {}
+void leash_gc_verify(void) {}
 
 /* ===== End stub mode ===== */
 #else
 /* Full GC implementation follows */
 
 #ifdef _WIN32
-#include <windows.h>
 static CRITICAL_SECTION gc_mutex;
 static LONG  gc_mutex_ready = 0;
 /* On Windows the CRITICAL_SECTION must be initialised before first use.
    leash_gc_init() is called from main() before any threads exist, so we
    initialise it there and then set gc_mutex_ready.  Use InterlockedExchange
    so the flag becomes visible to all threads. */
+static DWORD gc_main_thread_id = 0;
+static __declspec(thread) int gc_i_hold_lock = 0;
+static __declspec(thread) int gc_thread_worker = 0;
 #else
-#include <unistd.h>
-#include <pthread.h>
-/* On non-Windows we use pthread mutexes. */
 static pthread_mutex_t gc_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_t gc_main_thread;
+static __thread int gc_i_hold_lock = 0;
+static __thread int gc_thread_worker = 0;
 #endif
 
 /* Single-thread fast path: allocating with a mutex (uncontended lock +
@@ -82,42 +136,21 @@ static pthread_mutex_t gc_mutex = PTHREAD_MUTEX_INITIALIZER;
    possible concurrent access, so the lock can be skipped entirely.
 
    How threads become known:
-     - leash_spawn_worker() and the matrix thread pool call
-       leash_gc_thread_spawned() BEFORE creating each thread (set-once flag,
-       never cleared).
-     - Any OTHER thread that still reaches the GC (e.g. a callback thread
-       created inside an FFI library) is detected here via the main-thread id
-       check and permanently switches the GC to locked mode. There is a
-       nanosecond-wide transition window in that unsanctioned case (the main
-       thread's in-flight allocation when the flag flips); the sanctioned
-       spawn path has no such window because the flag is set before the
-       thread exists. */
+      - leash_spawn_worker() and the matrix thread pool call
+        leash_gc_thread_spawned() BEFORE creating each thread (set-once flag,
+        never cleared).
+      - Threads that run Leash code also set the per-thread gc_thread_worker
+        flag via leash_gc_worker_begin(); they are bracketed for their whole
+        lifetime so automatic collection stays away while they run.
+      - Any OTHER thread that still reaches the GC (e.g. a callback thread
+        created inside an FFI library) is detected here via the main-thread id
+        check and permanently switches the GC to locked mode AND disables
+        automatic collection (its stack is not scanned). */
 static volatile int gc_is_multithreaded = 0;
-
-#ifdef _WIN32
-static DWORD gc_main_thread_id = 0;
-static __declspec(thread) int gc_i_hold_lock = 0;
-#else
-static pthread_t gc_main_thread;
-static __thread int gc_i_hold_lock = 0;
-#endif
-
-void leash_gc_thread_spawned(void) {
-#ifdef _WIN32
-    InterlockedExchange(&gc_is_multithreaded, 1);
-#else
-    __sync_synchronize();
-    gc_is_multithreaded = 1;
-#endif
-}
-
-static int gc_is_main_thread(void) {
-#ifdef _WIN32
-    return GetCurrentThreadId() == gc_main_thread_id;
-#else
-    return pthread_equal(pthread_self(), gc_main_thread);
-#endif
-}
+/* Set when a thread we did not sanction (FFI callback) touches the GC.
+   Automatic and explicit collection are refused from then on: unknown
+   threads hold live pointers on stacks we never scan. */
+static volatile int gc_foreign_threads = 0;
 
 /* GC is initialised via leash_gc_init once before any concurrent access.
    GC_UNLOCK must mirror exactly what GC_LOCK decided — the multithreaded flag
@@ -126,17 +159,16 @@ static int gc_is_main_thread(void) {
 #ifdef _WIN32
 #define GC_LOCK()                                                          \
     do {                                                                   \
-        if (!InterlockedExchangeAdd(&gc_mutex_ready, 0)) {                 \
-            fprintf(stderr, "FATAL: GC lock before leash_gc_init()\n");    \
-            abort();                                                       \
-        }                                                                  \
-        if (gc_is_multithreaded) {                                         \
+        if (gc_is_multithreaded || !gc_is_main_thread()) {                 \
+            if (!gc_is_main_thread()) {                                    \
+                if (!gc_thread_worker) gc_foreign_threads = 1;             \
+                if (!gc_is_multithreaded) leash_gc_thread_spawned();       \
+            }                                                              \
+            if (!InterlockedExchangeAdd(&gc_mutex_ready, 0)) {             \
+                fprintf(stderr, "FATAL: GC lock before leash_gc_init()\n");\
+                abort();                                                   \
+            }                                                              \
             EnterCriticalSection(&gc_mutex);                               \
-            gc_i_hold_lock = 1;                                            \
-        } else if (!gc_is_main_thread()) {                                 \
-            /* Foreign thread (FFI-spawned): switch to locked mode. */     \
-            leash_gc_thread_spawned();                                     \
-            EnterCriticalSection(&gc_mutex);                              \
             gc_i_hold_lock = 1;                                            \
         }                                                                  \
     } while(0)
@@ -150,14 +182,13 @@ static int gc_is_main_thread(void) {
 #else
 #define GC_LOCK()                                                          \
     do {                                                                   \
-        if (gc_is_multithreaded) {                                         \
+        if (gc_is_multithreaded || !gc_is_main_thread()) {                 \
+            if (!gc_is_main_thread()) {                                    \
+                if (!gc_thread_worker) gc_foreign_threads = 1;             \
+                if (!gc_is_multithreaded) leash_gc_thread_spawned();       \
+            }                                                              \
             pthread_mutex_lock(&gc_mutex);                                 \
-            gc_i_hold_lock = 1;                                           \
-        } else if (!gc_is_main_thread()) {                                  \
-            /* Foreign thread (FFI-spawned): switch to locked mode. */     \
-            leash_gc_thread_spawned();                                     \
-            pthread_mutex_lock(&gc_mutex);                                 \
-            gc_i_hold_lock = 1;                                           \
+            gc_i_hold_lock = 1;                                            \
         }                                                                  \
     } while(0)
 #define GC_UNLOCK()                                                        \
@@ -169,39 +200,984 @@ static int gc_is_main_thread(void) {
     } while(0)
 #endif
 
-/* Configuration */
-#define MAX_ROOTS 100000
-#define INITIAL_THRESHOLD (2 * 1024 * 1024)  /* 2MB */
+static int gc_is_main_thread(void) {
+#ifdef _WIN32
+    return GetCurrentThreadId() == gc_main_thread_id;
+#else
+    return pthread_equal(pthread_self(), gc_main_thread);
+#endif
+}
 
-/* Object header */
-struct gc_object {
-    size_t size;
-    unsigned int flags;
-    struct gc_object* next;
-    struct gc_object* prev;
+void leash_gc_thread_spawned(void) {
+#ifdef _WIN32
+    InterlockedExchange(&gc_is_multithreaded, 1);
+#else
+    __sync_synchronize();
+    gc_is_multithreaded = 1;
+#endif
+}
+
+/* ===== Configuration ===== */
+#define INITIAL_THRESHOLD (2 * 1024 * 1024)  /* 2MB floor between auto-collections */
+#define SLAB_NOMINAL_SIZE (64 * 1024)        /* slab size, rounded to page size */
+#define CELL_HDR ((size_t)16)                /* cell header before payload */
+#define SMALL_MAX_PAYLOAD 4080               /* cell <= 4096 */
+#define NUM_CLASSES 95
+#define ROOTS_INIT_CAP 256
+#define PAGE_DIR_TOMBSTONE ((uintptr_t)1)
+
+/* Cell classes (cell size includes the 16-byte header):
+     payload <= 496  -> cell = round16(payload+16), 32..512
+     payload <= 1008 -> cell = round32(payload+16), 544..1024
+     payload <= 4080 -> cell = round64(payload+16), 1088..4096
+   class index maps each cell size back to a free-list slot. */
+static uint32_t gc_cell_size_for(size_t payload) {
+    size_t need = payload + CELL_HDR;
+    if (need <= 512) return (uint32_t)((need + 15) & ~(size_t)15);
+    if (need <= 1024) return (uint32_t)((need + 31) & ~(size_t)31);
+    if (need <= 4096) return (uint32_t)((need + 63) & ~(size_t)63);
+    return 0; /* large path */
+}
+
+static uint32_t gc_class_index(uint32_t cell) {
+    if (cell <= 512) return (cell - 32) / 16;       /* 0..30 */
+    if (cell <= 1024) return 31 + (cell - 544) / 32; /* 31..46 */
+    return 47 + (cell - 1088) / 64;                  /* 47..94 */
+}
+
+/* ===== Object header (16 bytes, immediately before the payload) ===== */
+struct gc_cell {
+    size_t size;      /* requested payload size */
+    uint32_t flags;   /* FLAG_MARKED | FLAG_ATOMIC | CELL_IN_USE */
+    uint32_t _pad;
 };
 
-/* Flag bits (unsigned so bitwise ops stay unsigned and avoid sign-conversion) */
-#define FLAG_MARKED     0x01U
-#define FLAG_ATOMIC     0x02U
+#define FLAG_MARKED   0x01U
+#define FLAG_ATOMIC   0x02U
+#define CELL_IN_USE   0x04U
+
+/* ===== Slab (lives at the start of its own page-aligned mapping) ===== */
+struct gc_slab {
+    struct gc_slab* next;       /* all-slabs list (sweep) */
+    struct gc_slab* class_next; /* per-class slab list */
+    char* base;
+    char* cells;
+    char* bump;                 /* next never-handed-out cell */
+    char* end;                  /* end of whole-cell region */
+    size_t map_size;
+    uint32_t cell_size;
+    uint32_t live;              /* IN_USE cells */
+    uint16_t class_idx;
+    uint16_t _pad;
+};
+
+/* ===== Large object (payload > SMALL_MAX_PAYLOAD or alignment > 16) ===== */
+struct gc_large {
+    char* payload;
+    size_t size;
+    void* raw;                  /* malloc base at payload-32.. */
+};
+
+/* ===== Page directory: page address -> slab owner (tag bit clear) ===== */
+struct gc_page_slot {
+    uintptr_t key;    /* page address, 0 = empty, 1 = tombstone */
+    uintptr_t owner;  /* struct gc_slab* (bit 0 clear — page aligned) */
+};
+
+struct gc_region { void* start; size_t nbytes; };
 
 /* GC State */
 static struct {
-    struct gc_object* object_list;
-    size_t total_allocated;
-    size_t threshold;
-    size_t object_count;
+    /* slabs */
+    struct gc_slab* slabs;
+    struct gc_slab* class_slabs[NUM_CLASSES];
+    struct gc_slab* class_bump[NUM_CLASSES];
+    void* class_freelists[NUM_CLASSES];
+    /* large objects, sorted by payload address */
+    struct gc_large* larges;
+    size_t large_count;
+    size_t large_cap;
+    /* page directory */
+    struct gc_page_slot* page_dir;
+    size_t page_dir_cap;
+    size_t page_dir_count;
+    unsigned page_dir_shift;
+    /* roots */
     void** roots;
     size_t root_count;
     size_t root_capacity;
+    /* scan regions (pointer-bearing globals) */
+    struct gc_region* regions;
+    size_t region_count;
+    size_t region_capacity;
+    /* mark worklist */
+    struct gc_cell** worklist;
+    size_t worklist_count;
+    size_t worklist_cap;
+    /* accounting */
+    size_t total_allocated;
+    size_t object_count;
     size_t alloc_count;
     size_t collect_count;
+    size_t bytes_since_gc;
+    size_t live_bytes;
+    size_t threshold_floor;
+    unsigned long long gc_time_ns;
+    /* environment */
+    char* stack_top;            /* conservative scan upper bound (NULL = unknown) */
+    int auto_collect;
 } gc = {0};
 
-/* Initialization */
+/* Quiescence counters (atomics; written without the GC lock) */
+static volatile int gc_active_workers = 0;
+
+static void gc_oom(const char* what) {
+    fprintf(stderr, "Leash GC: Out of memory (%s)!\n", what);
+    abort();
+}
+
+/* ===== Atomics ===== */
+static int gc_atomic_load(volatile int* p) {
+#ifdef _WIN32
+    return (int)InterlockedCompareExchange((volatile LONG*)p, 0, 0);
+#else
+    return __sync_fetch_and_add(p, 0);
+#endif
+}
+
+void leash_gc_worker_begin(void) {
+    /* Marks this thread as sanctioned Leash code: it may touch the GC, and
+       automatic collection stays away while the count is non-zero. */
+    gc_thread_worker = 1;
+#ifdef _WIN32
+    InterlockedIncrement((volatile LONG*)&gc_active_workers);
+#else
+    __sync_fetch_and_add(&gc_active_workers, 1);
+#endif
+}
+
+void leash_gc_worker_end(void) {
+#ifdef _WIN32
+    InterlockedDecrement((volatile LONG*)&gc_active_workers);
+#else
+    __sync_fetch_and_add(&gc_active_workers, -1);
+#endif
+}
+
+/* ===== Page allocation (slab mappings) ===== */
+static size_t gc_page_size = 4096;
+static size_t gc_slab_map = SLAB_NOMINAL_SIZE;
+
+static char* gc_page_alloc(size_t size) {
+#ifdef _WIN32
+    void* p = VirtualAlloc(NULL, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    return (char*)p;
+#else
+    void* p = mmap(NULL, size, PROT_READ | PROT_WRITE,
+                   MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (p == MAP_FAILED) return NULL;
+    return (char*)p;
+#endif
+}
+
+static void gc_page_free(char* base, size_t size) {
+#ifdef _WIN32
+    (void)size;
+    VirtualFree(base, 0, MEM_RELEASE);
+#else
+    munmap(base, size);
+#endif
+}
+
+/* ===== Page directory ===== */
+static inline size_t gc_page_hash(uintptr_t key) {
+    uint64_t h = (uint64_t)key * 0x9E3779B97F4A7C15ULL;
+    return (size_t)(h >> gc.page_dir_shift);
+}
+
+static void gc_page_dir_grow(void);
+
+static void gc_page_dir_insert(uintptr_t key, uintptr_t owner) {
+    if (gc.page_dir_cap == 0 || gc.page_dir_count * 10 >= gc.page_dir_cap * 7) {
+        gc_page_dir_grow();
+    }
+    size_t cap = gc.page_dir_cap;
+    size_t idx = gc_page_hash(key);
+    size_t first_tomb = (size_t)-1;
+    for (size_t probe = 0; probe < cap; probe++) {
+        struct gc_page_slot* s = &gc.page_dir[(idx + probe) & (cap - 1)];
+        if (s->key == 0) {
+            struct gc_page_slot* dst = (first_tomb != (size_t)-1)
+                ? &gc.page_dir[first_tomb] : s;
+            dst->key = key;
+            dst->owner = owner;
+            if (first_tomb == (size_t)-1) gc.page_dir_count++;
+            return;
+        }
+        if (s->key == PAGE_DIR_TOMBSTONE) {
+            if (first_tomb == (size_t)-1) first_tomb = (idx + probe) & (cap - 1);
+            continue;
+        }
+        if (s->key == key) {
+            s->owner = owner;
+            return;
+        }
+    }
+    gc_page_dir_grow();
+    gc_page_dir_insert(key, owner);
+}
+
+static void gc_page_dir_grow(void) {
+    size_t new_cap = gc.page_dir_cap ? gc.page_dir_cap * 2 : 4096;
+    struct gc_page_slot* nd = (struct gc_page_slot*)calloc(new_cap, sizeof(*nd));
+    if (!nd) gc_oom("page directory");
+    struct gc_page_slot* old = gc.page_dir;
+    size_t old_cap = gc.page_dir_cap;
+    gc.page_dir = nd;
+    gc.page_dir_cap = new_cap;
+    gc.page_dir_count = 0;
+    unsigned shift = 0;
+    while (((size_t)1 << shift) < new_cap) shift++;
+    gc.page_dir_shift = 64 - shift;
+    for (size_t i = 0; i < old_cap; i++) {
+        if (old[i].key != 0 && old[i].key != PAGE_DIR_TOMBSTONE) {
+            /* re-insert without recursion into grow */
+            size_t idx = gc_page_hash(old[i].key);
+            for (size_t probe = 0; probe < new_cap; probe++) {
+                struct gc_page_slot* s = &gc.page_dir[(idx + probe) & (new_cap - 1)];
+                if (s->key == 0) {
+                    s->key = old[i].key;
+                    s->owner = old[i].owner;
+                    gc.page_dir_count++;
+                    break;
+                }
+            }
+        }
+    }
+    free(old);
+}
+
+static uintptr_t gc_page_dir_find(uintptr_t key) {
+    size_t cap = gc.page_dir_cap;
+    if (cap == 0) return 0;
+    size_t idx = gc_page_hash(key);
+    for (size_t probe = 0; probe < cap; probe++) {
+        const struct gc_page_slot* s = &gc.page_dir[(idx + probe) & (cap - 1)];
+        if (s->key == 0) return 0;
+        if (s->key == key) return s->owner;
+    }
+    return 0;
+}
+
+static void gc_page_dir_tombstone(uintptr_t key) {
+    size_t cap = gc.page_dir_cap;
+    if (cap == 0) return;
+    size_t idx = gc_page_hash(key);
+    for (size_t probe = 0; probe < cap; probe++) {
+        struct gc_page_slot* s = &gc.page_dir[(idx + probe) & (cap - 1)];
+        if (s->key == 0) return;
+        if (s->key == key) {
+            s->key = PAGE_DIR_TOMBSTONE;
+            s->owner = 0;
+            return;
+        }
+    }
+}
+
+/* ===== Pointer -> object lookup (O(1) slab probe + binary search) ===== */
+static struct gc_cell* gc_find_object(const void* p) {
+    uintptr_t addr = (uintptr_t)p;
+    if (addr == 0 || addr < CELL_HDR + 32) return NULL;
+
+    uintptr_t page = addr & ~((uintptr_t)gc_page_size - 1);
+    uintptr_t owner = gc_page_dir_find(page);
+    if (owner != 0) {
+        struct gc_slab* s = (struct gc_slab*)owner;
+        if (addr < (uintptr_t)s->cells || addr >= (uintptr_t)s->end) return NULL;
+        size_t off = addr - (uintptr_t)s->cells;
+        uint32_t cs = s->cell_size;
+        size_t idx = off / cs;
+        char* cp = s->cells + idx * cs;
+        if (addr < (uintptr_t)cp || addr >= (uintptr_t)s->end) return NULL;
+        struct gc_cell* c = (struct gc_cell*)cp;
+        uintptr_t pay = (uintptr_t)cp + CELL_HDR;
+        if (addr < pay) return NULL;
+        if (addr - pay >= c->size) return NULL;
+        if (!(c->flags & CELL_IN_USE)) return NULL;
+        return c;
+    }
+
+    /* large objects: address-sorted array */
+    size_t lo = 0, hi = gc.large_count;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        uintptr_t start = (uintptr_t)gc.larges[mid].payload;
+        if (addr < start) hi = mid;
+        else lo = mid + 1;
+    }
+    if (lo == 0) return NULL;
+    struct gc_large* L = &gc.larges[lo - 1];
+    if (addr < (uintptr_t)L->payload) return NULL;
+    struct gc_cell* c = (struct gc_cell*)(L->payload - CELL_HDR);
+    if (addr - (uintptr_t)L->payload >= c->size) return NULL;
+    if (!(c->flags & CELL_IN_USE)) return NULL;
+    if (L->payload + c->size <= L->payload) return NULL;
+    return c;
+}
+
+/* ===== Large object array ===== */
+static void gc_large_insert(char* payload, size_t size, void* raw) {
+    if (gc.large_count == gc.large_cap) {
+        size_t cap = gc.large_cap ? gc.large_cap * 2 : 16;
+        struct gc_large* nl = (struct gc_large*)realloc(gc.larges, cap * sizeof(*nl));
+        if (!nl) gc_oom("large object table");
+        gc.larges = nl;
+        gc.large_cap = cap;
+    }
+    size_t lo = 0, hi = gc.large_count;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if ((uintptr_t)gc.larges[mid].payload < (uintptr_t)payload) lo = mid + 1;
+        else hi = mid;
+    }
+    memmove(&gc.larges[lo + 1], &gc.larges[lo],
+            (gc.large_count - lo) * sizeof(struct gc_large));
+    gc.larges[lo].payload = payload;
+    gc.larges[lo].size = size;
+    gc.larges[lo].raw = raw;
+    gc.large_count++;
+}
+
+static size_t gc_large_find_index(const char* payload) {
+    size_t lo = 0, hi = gc.large_count;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if ((uintptr_t)gc.larges[mid].payload < (uintptr_t)payload) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo; /* caller checks match */
+}
+
+static void gc_large_remove(size_t idx) {
+    memmove(&gc.larges[idx], &gc.larges[idx + 1],
+            (gc.large_count - idx - 1) * sizeof(struct gc_large));
+    gc.large_count--;
+}
+
+/* ===== Slab creation / purge ===== */
+static struct gc_slab* gc_slab_create(uint32_t cell_size, uint32_t class_idx) {
+    char* base = gc_page_alloc(gc_slab_map);
+    if (!base) gc_oom("slab");
+    size_t hdr = (sizeof(struct gc_slab) + 15) & ~(size_t)15;
+    struct gc_slab* s = (struct gc_slab*)base;
+    s->next = gc.slabs;
+    gc.slabs = s;
+    s->class_next = NULL;
+    s->base = base;
+    s->map_size = gc_slab_map;
+    s->cell_size = cell_size;
+    s->live = 0;
+    s->class_idx = (uint16_t)class_idx;
+    s->cells = base + hdr;
+    s->bump = s->cells;
+    s->end = s->cells + ((gc_slab_map - hdr) / cell_size) * cell_size;
+
+    uintptr_t page_mask = ~((uintptr_t)gc_page_size - 1);
+    uintptr_t pg = (uintptr_t)base & page_mask;
+    uintptr_t pend = ((uintptr_t)(base + gc_slab_map) - 1) & page_mask;
+    for (; pg <= pend; pg += gc_page_size) {
+        gc_page_dir_insert(pg, (uintptr_t)s);
+    }
+    return s;
+}
+
+static void gc_slab_purge(struct gc_slab* s) {
+    /* Tombstone page entries before the mapping goes away. */
+    uintptr_t page_mask = ~((uintptr_t)gc_page_size - 1);
+    uintptr_t pg = (uintptr_t)s->base & page_mask;
+    uintptr_t pend = ((uintptr_t)(s->base + s->map_size) - 1) & page_mask;
+    for (; pg <= pend; pg += gc_page_size) {
+        gc_page_dir_tombstone(pg);
+    }
+    /* Unlink from lists (descriptor lives inside the mapping: unlink first). */
+    struct gc_slab** p = &gc.slabs;
+    while (*p && *p != s) p = &(*p)->next;
+    if (*p) *p = s->next;
+    struct gc_slab** cp = &gc.class_slabs[s->class_idx];
+    while (*cp && *cp != s) cp = &(*cp)->class_next;
+    if (*cp) *cp = s->class_next;
+    if (gc.class_bump[s->class_idx] == s) gc.class_bump[s->class_idx] = NULL;
+    char* base = s->base;
+    size_t map = s->map_size;
+    gc_page_free(base, map);
+}
+
+/* ===== Allocation ===== */
+static void* gc_alloc_small(size_t size, uint32_t cell_size, unsigned flags) {
+    uint32_t idx = gc_class_index(cell_size);
+
+    /* Prefer recycled cells (bounded RSS) over fresh bump space. */
+    void* payload = gc.class_freelists[idx];
+    struct gc_cell* c;
+    if (payload) {
+        gc.class_freelists[idx] = *(void**)payload;
+        c = (struct gc_cell*)((char*)payload - CELL_HDR);
+        c->size = size;
+        c->flags = CELL_IN_USE | (flags & FLAG_ATOMIC);
+        memset(payload, 0, size);
+        /* slab live count: find owner via page dir (cheap, one probe) */
+        uintptr_t page = ((uintptr_t)c) & ~((uintptr_t)gc_page_size - 1);
+        uintptr_t owner = gc_page_dir_find(page);
+        if (owner) ((struct gc_slab*)owner)->live++;
+        goto accounted;
+    }
+
+    struct gc_slab* s = gc.class_bump[idx];
+    if (s && s->bump + cell_size > s->end) s = NULL;
+    if (!s) {
+        for (s = gc.class_slabs[idx]; s; s = s->class_next) {
+            if (s->bump + cell_size <= s->end) break;
+        }
+    }
+    if (!s) {
+        s = gc_slab_create(cell_size, idx);
+        s->class_next = gc.class_slabs[idx];
+        gc.class_slabs[idx] = s;
+    }
+    gc.class_bump[idx] = s;
+    c = (struct gc_cell*)s->bump;
+    s->bump += cell_size;
+    s->live++;
+    c->size = size;
+    c->flags = CELL_IN_USE | (flags & FLAG_ATOMIC);
+    /* mmap'd slab: fresh cells are already zeroed — no memset. */
+    payload = (char*)c + CELL_HDR;
+
+accounted:
+    gc.total_allocated += size;
+    gc.object_count++;
+    gc.alloc_count++;
+    gc.bytes_since_gc += size;
+    return payload;
+}
+
+static void* gc_alloc_large(size_t size, unsigned int flags, size_t alignment) {
+    if (alignment < 16) alignment = 16;
+    /* round alignment up to a power of two */
+    size_t al = 16;
+    while (al < alignment && al <= (size_t)1 << 20) al <<= 1;
+    alignment = al;
+    if (size > SIZE_MAX - alignment - 64) gc_oom("allocation too large");
+    size_t need = size + alignment + 64;
+    char* raw = (char*)malloc(need);
+    if (!raw) gc_oom("large object");
+    uintptr_t a = ((uintptr_t)raw + 64 + alignment - 1) & ~(uintptr_t)(alignment - 1);
+    char* payload = (char*)a;
+    struct gc_cell* c = (struct gc_cell*)(payload - CELL_HDR);
+    ((void**)c)[-1] = raw; /* raw base at payload-32 */
+    c->size = size;
+    c->flags = CELL_IN_USE | (flags & FLAG_ATOMIC);
+    memset(payload, 0, size);
+    gc_large_insert(payload, size, raw);
+    gc.total_allocated += size;
+    gc.object_count++;
+    gc.alloc_count++;
+    gc.bytes_since_gc += size;
+    return payload;
+}
+
+static void gc_free_cell_payload(void* payload) {
+    struct gc_cell* c = (struct gc_cell*)((char*)payload - CELL_HDR);
+    c->flags &= ~CELL_IN_USE;
+    gc.total_allocated -= c->size;
+    gc.object_count--;
+    uintptr_t page = ((uintptr_t)c) & ~((uintptr_t)gc_page_size - 1);
+    uintptr_t owner = gc_page_dir_find(page);
+    if (owner) {
+        struct gc_slab* s = (struct gc_slab*)owner;
+        if (s->live) s->live--;
+        uint32_t idx = gc_class_index(s->cell_size);
+        *(void**)payload = gc.class_freelists[idx];
+        gc.class_freelists[idx] = payload;
+    }
+}
+
+static void gc_free_large_payload(void* payload) {
+    struct gc_cell* c = (struct gc_cell*)((char*)payload - CELL_HDR);
+    gc.total_allocated -= c->size;
+    gc.object_count--;
+    size_t idx = gc_large_find_index((char*)payload);
+    if (idx < gc.large_count && gc.larges[idx].payload == payload) {
+        void* raw = gc.larges[idx].raw;
+        gc_large_remove(idx);
+        free(raw);
+    }
+}
+
+/* Caller must hold the GC lock (or be single-threaded). */
+static void* gc_alloc_locked(size_t size, unsigned int flags, size_t alignment) {
+    uint32_t cell = gc_cell_size_for(size);
+    if (cell != 0 && alignment <= 16) {
+        return gc_alloc_small(size, cell, flags);
+    }
+    return gc_alloc_large(size, flags, alignment);
+}
+
+static int gc_should_auto_collect(void);
+static void gc_collect_locked_impl(void);
+
+void* leash_gc_malloc_ex(size_t size, unsigned int flags); /* must stay non-static:
+   GCC -O2 constant propagation would otherwise specialize away the generic
+   symbol the generated LLVM code links against. */
+
+void* leash_gc_malloc(size_t size) {
+    return leash_gc_malloc_ex(size, 0);
+}
+
+void* leash_gc_malloc_ex(size_t size, unsigned int flags) {
+    if (size == 0) return NULL;
+    if (size > SIZE_MAX - 4096) {
+        fprintf(stderr, "Leash GC: allocation too large!\n");
+        abort();
+    }
+    GC_LOCK();
+    if (gc_should_auto_collect()) {
+        gc_collect_locked_impl();
+    }
+    void* p = gc_alloc_locked(size, flags, 16);
+    GC_UNLOCK();
+    return p;
+}
+
+void* leash_gc_aligned_alloc_ex(size_t size, size_t alignment, unsigned int flags) {
+    if (size == 0) return NULL;
+    if (size > SIZE_MAX - 4096) {
+        fprintf(stderr, "Leash GC: allocation too large!\n");
+        abort();
+    }
+    GC_LOCK();
+    if (gc_should_auto_collect()) {
+        gc_collect_locked_impl();
+    }
+    void* p = gc_alloc_locked(size, flags, alignment);
+    GC_UNLOCK();
+    return p;
+}
+
+void* leash_gc_aligned_alloc(size_t size, size_t alignment) {
+    /* Tracked through the GC now (previously a raw posix_memalign that the
+       collector could neither scan nor free — matrix temporaries leaked).
+       Not marked ATOMIC here: callers wanting pointer-free semantics pass
+       flags via leash_gc_aligned_alloc_ex. */
+    return leash_gc_aligned_alloc_ex(size, alignment, 0);
+}
+
+void* leash_gc_malloc_rooted(size_t size) {
+    if (size == 0) return NULL;
+    if (size > SIZE_MAX - 4096) {
+        fprintf(stderr, "Leash GC: allocation too large!\n");
+        abort();
+    }
+    GC_LOCK();
+    if (gc_should_auto_collect()) {
+        gc_collect_locked_impl();
+    }
+    void* p = gc_alloc_locked(size, 0, 16);
+    if (gc.root_count >= gc.root_capacity) {
+        size_t new_cap = gc.root_capacity ? gc.root_capacity * 2 : ROOTS_INIT_CAP;
+        void** nr = (void**)realloc(gc.roots, new_cap * sizeof(void*));
+        if (!nr) gc_oom("root set");
+        memset(nr + gc.root_capacity, 0, (new_cap - gc.root_capacity) * sizeof(void*));
+        gc.roots = nr;
+        gc.root_capacity = new_cap;
+    }
+    gc.roots[gc.root_count++] = p;
+    GC_UNLOCK();
+    return p;
+}
+
+/* Ownership routing for a payload the GC handed out (caller holds lock). */
+static int gc_payload_is_large(const void* payload) {
+    size_t idx = gc_large_find_index((const char*)payload);
+    return idx < gc.large_count && gc.larges[idx].payload == (const char*)payload;
+}
+
+static void gc_free_payload_locked(void* payload) {
+    if (gc_payload_is_large(payload)) gc_free_large_payload(payload);
+    else gc_free_cell_payload(payload);
+}
+
+void* leash_gc_realloc(void* ptr, size_t new_size) {
+    if (!ptr) return leash_gc_malloc(new_size);
+
+    GC_LOCK();
+    struct gc_cell* c = (struct gc_cell*)((char*)ptr - CELL_HDR);
+    unsigned flags = c->flags & FLAG_ATOMIC;
+    size_t old_size = c->size;
+
+    if (new_size == 0) {
+        gc_free_payload_locked(ptr);
+        GC_UNLOCK();
+        return NULL;
+    }
+
+    if (new_size <= old_size) {
+        /* Shrink in place: cell capacity is unchanged, bytes beyond new_size
+           are never observed again. */
+        gc.total_allocated -= (old_size - new_size);
+        c->size = new_size;
+        if (gc_payload_is_large(ptr)) {
+            gc.larges[gc_large_find_index((const char*)ptr)].size = new_size;
+        }
+        GC_UNLOCK();
+        return ptr;
+    }
+
+    /* Growth: allocate fresh (never extends in place — slack bytes may hold
+       stale data from a previous occupant and must not be observed). */
+    if (new_size > SIZE_MAX - 4096) {
+        fprintf(stderr, "Leash GC: allocation too large!\n");
+        GC_UNLOCK();
+        abort();
+    }
+    if (gc_should_auto_collect()) gc_collect_locked_impl();
+    void* np = gc_alloc_locked(new_size, flags, 16);
+    memcpy(np, ptr, old_size);
+    for (size_t i = 0; i < gc.root_count; i++) {
+        if (gc.roots[i] == ptr) gc.roots[i] = np;
+    }
+    gc_free_payload_locked(ptr);
+    GC_UNLOCK();
+    return np;
+}
+
+/* ===== Root Management ===== */
+void leash_gc_register_root(void* ptr) {
+    if (!ptr) return;
+    GC_LOCK();
+    if (gc.root_count >= gc.root_capacity) {
+        size_t new_cap = gc.root_capacity ? gc.root_capacity * 2 : ROOTS_INIT_CAP;
+        void** nr = (void**)realloc(gc.roots, new_cap * sizeof(void*));
+        if (!nr) gc_oom("root set");
+        memset(nr + gc.root_capacity, 0, (new_cap - gc.root_capacity) * sizeof(void*));
+        gc.roots = nr;
+        gc.root_capacity = new_cap;
+    }
+    gc.roots[gc.root_count++] = ptr;
+    GC_UNLOCK();
+}
+
+void leash_gc_unregister_root(void* ptr) {
+    if (!ptr) return;
+    GC_LOCK();
+    for (size_t i = 0; i < gc.root_count; i++) {
+        if (gc.roots[i] == ptr) {
+            gc.roots[i] = gc.roots[gc.root_count - 1];
+            gc.roots[gc.root_count - 1] = NULL;
+            gc.root_count--;
+            break;
+        }
+    }
+    GC_UNLOCK();
+}
+
+void leash_gc_register_scan_region(void* start, size_t nbytes) {
+    if (!start || !nbytes) return;
+    GC_LOCK();
+    if (gc.region_count >= gc.region_capacity) {
+        size_t cap = gc.region_capacity ? gc.region_capacity * 2 : 8;
+        struct gc_region* nr = (struct gc_region*)realloc(gc.regions, cap * sizeof(*nr));
+        if (!nr) gc_oom("scan region table");
+        gc.regions = nr;
+        gc.region_capacity = cap;
+    }
+    gc.regions[gc.region_count].start = start;
+    gc.regions[gc.region_count].nbytes = nbytes;
+    gc.region_count++;
+    GC_UNLOCK();
+}
+
+/* ===== Time ===== */
+static unsigned long long gc_now_ns(void) {
+#ifdef _WIN32
+    static LARGE_INTEGER freq = {0};
+    LARGE_INTEGER counter;
+    if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&counter);
+    return (unsigned long long)(counter.QuadPart * 1000000000ULL / freq.QuadPart);
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (unsigned long long)ts.tv_sec * 1000000000ULL + (unsigned long long)ts.tv_nsec;
+#endif
+}
+
+/* ===== Stack bounds (conservative main-stack scanning) =====
+   Captured on the collecting thread at every collection: only the TOP of the
+   stack (highest address; stacks grow down on all supported architectures)
+   is cached here — the low bound is the collector's own frame. Without
+   trustworthy bounds the collector refuses to run rather than do a partial
+   scan that could miss live roots. */
+static void gc_capture_stack_bounds(void) {
+    char* top = NULL;
+#if defined(_WIN32)
+    MEMORY_BASIC_INFORMATION mbi;
+    char probe;
+    if (VirtualQuery(&probe, &mbi, sizeof(mbi)) != 0) {
+        void* base = mbi.AllocationBase;
+        top = (char*)mbi.BaseAddress + mbi.RegionSize;
+        /* Walk upward through contiguous regions of the same allocation
+           (the stack's guard/committed pages) to the true top. */
+        for (;;) {
+            MEMORY_BASIC_INFORMATION nb;
+            if (VirtualQuery(top, &nb, sizeof(nb)) == 0) break;
+            if (nb.AllocationBase != base) break;
+            char* ntop = (char*)nb.BaseAddress + nb.RegionSize;
+            if (ntop <= top) break;
+            top = ntop;
+        }
+    }
+#elif defined(__APPLE__)
+    top = (char*)pthread_get_stackaddr_np(pthread_self());
+#elif defined(__linux__)
+    pthread_attr_t attr;
+    void* addr = NULL;
+    size_t size = 0;
+    if (pthread_getattr_np(pthread_self(), &attr) == 0) {
+        if (pthread_attr_getstack(&attr, &addr, &size) == 0 && addr && size) {
+            top = (char*)addr + size;
+        }
+        pthread_attr_destroy(&attr);
+    }
+#else
+    (void)top; /* unknown platform: bounds stay unknown, collection refuses */
+#endif
+    if (top) gc.stack_top = top; /* keep the last good value on failure */
+}
+
+/* ===== Marking (iterative worklist, no recursion) ===== */
+static void gc_worklist_push(struct gc_cell* c) {
+    if (gc.worklist_count == gc.worklist_cap) {
+        size_t cap = gc.worklist_cap ? gc.worklist_cap * 2 : 1024;
+        struct gc_cell** nw = (struct gc_cell**)realloc(gc.worklist, cap * sizeof(*nw));
+        if (!nw) gc_oom("mark worklist");
+        gc.worklist = nw;
+        gc.worklist_cap = cap;
+    }
+    gc.worklist[gc.worklist_count++] = c;
+}
+
+static void gc_mark_cell(struct gc_cell* c) {
+    if (c->flags & FLAG_MARKED) return;
+    c->flags |= FLAG_MARKED;
+    gc_worklist_push(c);
+}
+
+static void gc_mark_candidate(const void* p) {
+    struct gc_cell* c = gc_find_object(p);
+    if (c) gc_mark_cell(c);
+}
+
+/* Treat every aligned word in [start, start+nbytes) as a candidate pointer. */
+static void gc_mark_words(const void* start, size_t nbytes) {
+    const char* s = (const char*)start;
+    if (!s || nbytes < sizeof(uintptr_t)) return;
+    uintptr_t end = (uintptr_t)s + nbytes;
+    uintptr_t addr = ((uintptr_t)s + sizeof(uintptr_t) - 1)
+                     & ~(uintptr_t)(sizeof(uintptr_t) - 1);
+    for (; addr + sizeof(uintptr_t) <= end; addr += sizeof(uintptr_t)) {
+        gc_mark_candidate((const void*)*(const uintptr_t*)addr);
+    }
+}
+
+static void gc_mark_drain(void) {
+    while (gc.worklist_count) {
+        struct gc_cell* c = gc.worklist[--gc.worklist_count];
+        if (c->flags & FLAG_ATOMIC) continue; /* pointer-free payload */
+        gc_mark_words((const char*)c + CELL_HDR, c->size);
+    }
+}
+
+static void gc_mark_roots(void) {
+    for (size_t i = 0; i < gc.root_count; i++) {
+        if (gc.roots[i]) gc_mark_candidate(gc.roots[i]);
+    }
+    for (size_t i = 0; i < gc.region_count; i++) {
+        gc_mark_words(gc.regions[i].start, gc.regions[i].nbytes);
+    }
+}
+
+static void gc_mark_stack(void) {
+    char probe = 0; /* address-only, but initialized to keep -Wmaybe-uninit quiet */
+    char* sp = &probe;
+    char* top = gc.stack_top;
+    if (!top || sp > top) return; /* precondition checked by the caller */
+    gc_mark_words(sp, (size_t)(top - sp));
+}
+
+/* ===== Sweep ===== */
+/* Purging an empty slab leaves freelist heads pointing into unmapped memory,
+   so after any purge the free lists are rebuilt from the surviving slabs
+   (old heads are discarded without ever being dereferenced). */
+static void gc_freelist_rebuild(void) {
+    for (uint32_t i = 0; i < NUM_CLASSES; i++) gc.class_freelists[i] = NULL;
+    for (struct gc_slab* s = gc.slabs; s; s = s->next) {
+        uint32_t idx = gc_class_index(s->cell_size);
+        for (char* p = s->cells; p < s->bump; p += s->cell_size) {
+            struct gc_cell* c = (struct gc_cell*)p;
+            if (c->flags & CELL_IN_USE) continue;
+            void* payload = p + CELL_HDR;
+            *(void**)payload = gc.class_freelists[idx];
+            gc.class_freelists[idx] = payload;
+        }
+    }
+}
+
+static void gc_sweep(void) {
+    struct gc_slab* s = gc.slabs;
+    int purged_any = 0;
+    while (s) {
+        struct gc_slab* next = s->next;
+        uint32_t cs = s->cell_size;
+        uint32_t idx = gc_class_index(cs);
+        uint32_t live = 0;
+        for (char* p = s->cells; p < s->bump; p += cs) {
+            struct gc_cell* c = (struct gc_cell*)p;
+            if (!(c->flags & CELL_IN_USE)) continue;
+            if (c->flags & FLAG_MARKED) {
+                c->flags = CELL_IN_USE | (c->flags & FLAG_ATOMIC);
+                live++;
+                continue;
+            }
+            void* payload = p + CELL_HDR;
+            gc.total_allocated -= c->size;
+            gc.object_count--;
+            c->flags = 0;
+            *(void**)payload = gc.class_freelists[idx];
+            gc.class_freelists[idx] = payload;
+        }
+        s->live = live;
+        if (live == 0) {
+            gc_slab_purge(s);
+            purged_any = 1;
+        }
+        s = next;
+    }
+
+    size_t i = 0;
+    while (i < gc.large_count) {
+        struct gc_large* L = &gc.larges[i];
+        struct gc_cell* c = (struct gc_cell*)(L->payload - CELL_HDR);
+        if (!(c->flags & FLAG_MARKED)) {
+            gc_free_large_payload(L->payload); /* removes entry i */
+            continue;
+        }
+        c->flags = CELL_IN_USE | (c->flags & FLAG_ATOMIC);
+        i++;
+    }
+
+    if (purged_any) gc_freelist_rebuild();
+    gc.live_bytes = gc.total_allocated;
+}
+
+/* ===== Collection ===== */
+static int gc_in_collect = 0;
+
+static void gc_collect_locked_impl(void) {
+    /* Caller holds the GC lock. Roots are: the explicit root array, the
+       registered scan regions, this thread's stack (conservative, from the
+       collector's frame up to the stack top) and the callee-saved registers
+       spilled by setjmp. */
+    gc_capture_stack_bounds();
+    char probe;
+    if (!gc.stack_top || &probe > gc.stack_top) {
+        /* Unknown bounds, or bounds captured on a different thread (mismatch
+           would make the scan cross unmapped memory). Refuse: a partial scan
+           could free live objects. */
+        static int warned = 0;
+        if (!warned) {
+            warned = 1;
+            fprintf(stderr, "Leash GC: cannot determine stack bounds; "
+                            "automatic collection disabled\n");
+        }
+        gc.auto_collect = 0;
+        return;
+    }
+    unsigned long long t0 = gc_now_ns();
+    gc_in_collect = 1;
+    jmp_buf regs;
+    int sj = setjmp(regs); /* spill callee-saved registers into this frame */
+    (void)sj;
+    gc_mark_words(regs, sizeof(regs)); /* redundant with the stack scan, kept
+                                          so the frame's contents are marked
+                                          even if scanning changes */
+    gc_mark_roots();
+    gc_mark_stack();
+    gc_mark_drain();
+    gc_sweep();
+    gc.bytes_since_gc = 0;
+    gc.collect_count++;
+    gc.gc_time_ns += gc_now_ns() - t0;
+    gc_in_collect = 0;
+}
+
+/* ===== Auto-collection gating ===== */
+static int gc_quiescent(void) {
+    if (gc_atomic_load(&gc_active_workers) != 0) return 0;
+    if (gc_atomic_load(&gc_foreign_threads) != 0) return 0;
+    return 1;
+}
+
+static int gc_should_auto_collect(void) {
+    if (!gc.auto_collect || gc_in_collect) return 0;
+    if (!gc_quiescent()) return 0;
+    size_t threshold = gc.live_bytes * 2;
+    if (threshold < (size_t)gc.threshold_floor) threshold = (size_t)gc.threshold_floor;
+    return gc.bytes_since_gc > threshold;
+}
+
+/* ===== String/Vector helpers ===== */
+void* leash_gc_alloc_string(size_t len) {
+    if (len > SIZE_MAX - 1) {
+        fprintf(stderr, "Leash GC: string allocation too large!\n");
+        abort();
+    }
+    /* Strings never hold pointers: ATOMIC lets the collector skip them. */
+    return leash_gc_malloc_ex(len + 1, FLAG_ATOMIC);
+}
+
+void* leash_gc_alloc_vector_data(size_t elem_size, size_t capacity) {
+    if (elem_size != 0 && capacity > SIZE_MAX / elem_size) {
+        fprintf(stderr, "Leash GC: vector allocation too large!\n");
+        abort();
+    }
+    /* Not ATOMIC: vectors of objects hold pointers the collector must see. */
+    return leash_gc_malloc(elem_size * capacity);
+}
+
+/* ===== Public collection entry ===== */
+void leash_gc_collect(void) {
+    GC_LOCK();
+    if (!gc_quiescent()) {
+        static int warned = 0;
+        if (!warned) {
+            warned = 1;
+            fprintf(stderr, "Leash GC: collect skipped (worker threads active)\n");
+        }
+        GC_UNLOCK();
+        return;
+    }
+    gc_collect_locked_impl();
+    GC_UNLOCK();
+}
+
+/* ===== Lifecycle ===== */
+static int gc_inited = 0;
+
 void leash_gc_init(void) {
-    /* Called from main() before any threads are spawned — no lock needed. */
-    if (gc.roots != NULL) return;
+    /* Called from main() before any threads are spawned. Idempotent. */
+    if (gc_inited) return;
+    gc_inited = 1;
 
 #ifdef _WIN32
     InitializeCriticalSection(&gc_mutex);
@@ -211,388 +1187,141 @@ void leash_gc_init(void) {
     gc_main_thread = pthread_self();
 #endif
 
-    gc.object_list = NULL;
-    gc.total_allocated = 0;
-    gc.threshold = INITIAL_THRESHOLD;
-    gc.object_count = 0;
-    gc.alloc_count = 0;
-    gc.collect_count = 0;
+    gc.threshold_floor = INITIAL_THRESHOLD;
+    gc.auto_collect = 1;
 
-    gc.root_capacity = MAX_ROOTS;
-    gc.root_count = 0;
-    gc.roots = (void**)malloc(gc.root_capacity * sizeof(void*));
-    if (!gc.roots) {
-        fprintf(stderr, "Leash GC: Failed to allocate root set\n");
-        abort();
-    }
-    memset(gc.roots, 0, gc.root_capacity * sizeof(void*));
-}
-
-/* Allocation */
-/* Forward declaration: leash_gc_malloc_ex is defined just below.
-   Must NOT be static: GCC -O2 performs constant propagation and would
-   otherwise specialize/remove the generic symbol that the generated
-   LLVM code links against. */
-void* leash_gc_malloc_ex(size_t size, unsigned int flags);
-
-void* leash_gc_malloc(size_t size) {
-    return leash_gc_malloc_ex(size, 0);
-}
-
-/* Allocate one GC object. Caller must hold the GC lock. Returns the user
-   pointer (just past the header), with its payload zeroed. */
-static void* gc_alloc_locked(size_t size, unsigned int flags) {
-    size_t total_size = sizeof(struct gc_object) + size;
-    struct gc_object* obj = (struct gc_object*)malloc(total_size);
-    if (!obj) {
-        fprintf(stderr, "Leash GC: Out of memory!\n");
-        GC_UNLOCK();
-        abort();
-    }
-
-    obj->size = size;
-    /* Only the ATOMIC flag is meaningful here; it tells the marker that this
-       object's payload contains no GC pointers and must not be scanned. This
-       is the key to avoiding conservative false-retention of unrelated
-       objects whose addresses happen to appear as raw bytes (e.g. strings,
-       numeric vectors). */
-    obj->flags = (flags & FLAG_ATOMIC);
-    obj->next = gc.object_list;
-    obj->prev = NULL;
-
-    if (gc.object_list) {
-        gc.object_list->prev = obj;
-    }
-    gc.object_list = obj;
-
-    gc.total_allocated += size;
-    gc.object_count++;
-    gc.alloc_count++;
-
-    void* user_ptr = (void*)(obj + 1);
-    memset(user_ptr, 0, size);
-    return user_ptr;
-}
-
-void* leash_gc_malloc_ex(size_t size, unsigned int flags) {
-    if (size == 0) return NULL;
-
-    /* Guard against size_t overflow: total_size must not wrap around, or we
-       would allocate a tiny block and then memset `size` bytes past it. */
-    if (size > SIZE_MAX - sizeof(struct gc_object)) {
-        fprintf(stderr, "Leash GC: allocation too large!\n");
-        abort();
-    }
-
-    GC_LOCK();
-    void* user_ptr = gc_alloc_locked(size, flags);
-    GC_UNLOCK();
-    return user_ptr;
-}
-
-/* Append a root. Caller must hold the GC lock. */
-static void gc_register_root_locked(void* ptr) {
-    if (gc.root_count >= gc.root_capacity) {
-        size_t new_cap = gc.root_capacity * 2;
-        void** new_roots = (void**)realloc(gc.roots, new_cap * sizeof(void*));
-        if (!new_roots) {
-            /* Cannot grow the root set: dropping the root would let the
-               referenced object be collected and later used after free. Treat
-               this as an unrecoverable OOM, consistent with the rest of the GC. */
-            fprintf(stderr, "Leash GC: Out of memory (root set)!\n");
-            GC_UNLOCK();
-            abort();
-        }
-        gc.roots = new_roots;
-        memset(gc.roots + gc.root_capacity, 0, (new_cap - gc.root_capacity) * sizeof(void*));
-        gc.root_capacity = new_cap;
-    }
-    gc.roots[gc.root_count++] = ptr;
-}
-
-/* Allocate an object and root it before any collection can observe it.
-   Runtime objects that must be reachable from the instant they exist (a
-   future, before its owner has a chance to store it anywhere) use this:
-   allocating and registering under one lock acquisition closes the window
-   in which a concurrent leash_gc_collect() from another thread could sweep
-   the object. */
-void* leash_gc_malloc_rooted(size_t size) {
-    if (size == 0) return NULL;
-    if (size > SIZE_MAX - sizeof(struct gc_object)) {
-        fprintf(stderr, "Leash GC: allocation too large!\n");
-        abort();
-    }
-    GC_LOCK();
-    void* user_ptr = gc_alloc_locked(size, 0);
-    gc_register_root_locked(user_ptr);
-    GC_UNLOCK();
-    return user_ptr;
-}
-
-void* leash_gc_realloc(void* ptr, size_t new_size) {
-    if (!ptr) return leash_gc_malloc(new_size);
-    if (new_size == 0) {
-        /* Mirror the NO_GC stub: free the object instead of leaking it. */
-        GC_LOCK();
-        struct gc_object* obj = ((struct gc_object*)ptr) - 1;
-        if (obj->prev) obj->prev->next = obj->next;
-        if (obj->next) obj->next->prev = obj->prev;
-        if (gc.object_list == obj) gc.object_list = obj->next;
-        gc.total_allocated -= obj->size;
-        gc.object_count--;
-        free(obj);
-        GC_UNLOCK();
-        return NULL;
-    }
-
-    GC_LOCK();
-
-    struct gc_object* obj = ((struct gc_object*)ptr) - 1;
-    if (obj->size >= new_size) {
-        obj->size = new_size;
-        GC_UNLOCK();
-        return ptr;
-    }
-
-    /* Allocate new block, copy, link, unlink old */
-    if (new_size > SIZE_MAX - sizeof(struct gc_object)) {
-        fprintf(stderr, "Leash GC: allocation too large!\n");
-        GC_UNLOCK();
-        abort();
-    }
-    size_t total_size = sizeof(struct gc_object) + new_size;
-    struct gc_object* new_obj = (struct gc_object*)malloc(total_size);
-    if (!new_obj) {
-        fprintf(stderr, "Leash GC: Out of memory!\n");
-        GC_UNLOCK();
-        abort();
-    }
-
-    new_obj->size = new_size;
-    new_obj->flags = obj->flags;
-    new_obj->next = gc.object_list;
-    new_obj->prev = NULL;
-    if (gc.object_list) {
-        gc.object_list->prev = new_obj;
-    }
-    gc.object_list = new_obj;
-
-    /* Copy old data */
-    void* old_user = (void*)(obj + 1);
-    void* new_user = (void*)(new_obj + 1);
-    memcpy(new_user, old_user, obj->size < new_size ? obj->size : new_size);
-
-    /* The object moved, so any root that referenced the old user pointer is
-       now dangling. Repoint those roots at the new location; otherwise the
-       root would keep pointing at freed memory (use-after-free). */
-    for (size_t i = 0; i < gc.root_count; i++) {
-        if (gc.roots[i] == old_user) gc.roots[i] = new_user;
-    }
-
-    /* Unlink old object */
-    if (obj->prev) obj->prev->next = obj->next;
-    if (obj->next) obj->next->prev = obj->prev;
-    if (gc.object_list == obj) gc.object_list = obj->next;
-
-    gc.total_allocated -= obj->size;
-    gc.object_count--;
-    free(obj);
-
-    GC_UNLOCK();
-    return new_user;
-}
-
-/* Root Management */
-void leash_gc_register_root(void* ptr) {
-    if (!ptr) return;
-
-    GC_LOCK();
-
-    if (gc.root_count >= gc.root_capacity) {
-        size_t new_cap = gc.root_capacity * 2;
-        void** new_roots = (void**)realloc(gc.roots, new_cap * sizeof(void*));
-        if (!new_roots) {
-            /* Cannot grow the root set: dropping the root would let the
-               referenced object be collected and later used after free. Treat
-               this as an unrecoverable OOM, consistent with the rest of the GC. */
-            fprintf(stderr, "Leash GC: Out of memory (root set)!\n");
-            GC_UNLOCK();
-            abort();
-        }
-        gc.roots = new_roots;
-        memset(gc.roots + gc.root_capacity, 0, (new_cap - gc.root_capacity) * sizeof(void*));
-        gc.root_capacity = new_cap;
-    }
-    gc.roots[gc.root_count++] = ptr;
-
-    GC_UNLOCK();
-}
-
-void leash_gc_unregister_root(void* ptr) {
-    if (!ptr) return;
-
-    GC_LOCK();
-    size_t i;
-    for (i = 0; i < gc.root_count; i++) {
-        if (gc.roots[i] == ptr) {
-            gc.roots[i] = gc.roots[gc.root_count - 1];
-            gc.roots[gc.root_count - 1] = NULL;
-            gc.root_count--;
-            GC_UNLOCK();
-            return;
-        }
-    }
-    GC_UNLOCK();
-}
-
-/* Mark Phase */
-/*
- * Pointer -> object lookup.
- *
- * The original implementation linearly walked the whole object list for
- * every candidate pointer in every object (and again for every root), making
- * a collection O(objects^2 * words_per_object). Instead we snapshot the
- * objects into an array sorted by payload address once per collection, then
- * binary-search for the payload containing each candidate pointer:
- * O(N log N) build + O(log N) per candidate — a massive speedup once a
- * program has more than a handful of live objects.
- */
-static struct gc_object** gc_sort_index = NULL;
-static size_t gc_sort_index_cap = 0;
-
-static int gc_payload_cmp(const void* a, const void* b) {
-    const char* pa = (const char*)((*(struct gc_object* const*)a) + 1);
-    const char* pb = (const char*)((*(struct gc_object* const*)b) + 1);
-    if (pa < pb) return -1;
-    if (pa > pb) return 1;
-    return 0;
-}
-
-static void gc_build_index(void) {
-    size_t n = gc.object_count;
-    if (gc_sort_index_cap < n) {
-        size_t cap = gc_sort_index_cap ? gc_sort_index_cap : 1024;
-        while (cap < n) cap *= 2;
-        struct gc_object** ni = (struct gc_object**)realloc(
-            (void*)gc_sort_index, cap * sizeof(struct gc_object*));
-        if (!ni) {
-            /* OOM while growing the index: refuse to collect rather than
-               silently corrupt the heap. Allocation is unaffected. */
-            fprintf(stderr, "Leash GC: Out of memory (mark index)!\n");
-            abort();
-        }
-        gc_sort_index = ni;
-        gc_sort_index_cap = cap;
-    }
-    size_t i = 0;
-    struct gc_object* o;
-    for (o = gc.object_list; o; o = o->next) gc_sort_index[i++] = o;
-    qsort(gc_sort_index, n, sizeof(struct gc_object*), gc_payload_cmp);
-}
-
-/* Find the object whose payload [start, start+size) contains p, or NULL. */
-static struct gc_object* gc_find_object(const void* p) {
-    size_t lo = 0, hi = gc.object_count;
-    while (lo < hi) {
-        size_t mid = lo + (hi - lo) / 2;
-        const char* start = (const char*)(gc_sort_index[mid] + 1);
-        if ((const char*)p < start) hi = mid;
-        else lo = mid + 1;
-    }
-    if (lo == 0) return NULL;
-    struct gc_object* o = gc_sort_index[lo - 1];
-    const char* start = (const char*)(o + 1);
-    if ((const char*)p >= start && (const char*)p < start + o->size) return o;
-    return NULL;
-}
-
-static void mark_object(struct gc_object* obj) {
-    if (!obj || (obj->flags & FLAG_MARKED)) return;
-    obj->flags |= FLAG_MARKED;
-
-    if (obj->flags & FLAG_ATOMIC) return;
-
-    /* Trace pointers in the object */
-    void* obj_data = (void*)(obj + 1);
-    size_t ptr_count = obj->size / sizeof(void*);
-    size_t i;
-    for (i = 0; i < ptr_count; i++) {
-        void* potential_ptr = ((void**)obj_data)[i];
-        if (potential_ptr) {
-            struct gc_object* check = gc_find_object(potential_ptr);
-            if (check) mark_object(check);
-        }
-    }
-}
-
-static void mark_from_roots(void) {
-    /* Build the sorted payload index once per collection for O(log N)
-       pointer->object lookups. */
-    gc_build_index();
-    size_t i;
-    for (i = 0; i < gc.root_count; i++) {
-        if (gc.roots[i]) {
-            struct gc_object* obj = gc_find_object(gc.roots[i]);
-            if (obj) mark_object(obj);
-        }
-    }
-}
-
-/* Sweep Phase */
-static void sweep(void) {
-    struct gc_object** p = &gc.object_list;
-    while (*p) {
-        struct gc_object* obj = *p;
-        if (!(obj->flags & FLAG_MARKED)) {
-            *p = obj->next;
-            if (obj->next) {
-                obj->next->prev = obj->prev;
-            }
-            gc.total_allocated -= obj->size;
-            gc.object_count--;
-            free(obj);
-        } else {
-            obj->flags &= ~FLAG_MARKED;
-            p = &obj->next;
-        }
-    }
-}
-
-/* Collection */
-void leash_gc_collect(void) {
-    GC_LOCK();
-    mark_from_roots();
-    sweep();
-    gc.collect_count++;
-    GC_UNLOCK();
-}
-
-/* Utility Functions */
-void* leash_gc_alloc_string(size_t len) {
-    if (len > SIZE_MAX - 1) {
-        fprintf(stderr, "Leash GC: string allocation too large!\n");
-        abort();
-    }
-    return leash_gc_malloc(len + 1);
-}
-
-void* leash_gc_alloc_vector_data(size_t elem_size, size_t capacity) {
-    if (elem_size != 0 && capacity > SIZE_MAX / elem_size) {
-        fprintf(stderr, "Leash GC: vector allocation too large!\n");
-        abort();
-    }
-    return leash_gc_malloc(elem_size * capacity);
-}
-
-void* leash_gc_aligned_alloc(size_t size, size_t alignment) {
-#ifdef _WIN32
-    return _aligned_malloc(size, alignment);
+    /* Page size and slab geometry: slabs are whole multiples of the page. */
+#if defined(_WIN32)
+    SYSTEM_INFO si;
+    GetSystemInfo(&si);
+    size_t page = (size_t)si.dwPageSize;
 #else
-    void* ptr = NULL;
-    if (posix_memalign(&ptr, alignment, size) != 0) return NULL;
-    return ptr;
+    long ps = sysconf(_SC_PAGESIZE);
+    size_t page = ps > 0 ? (size_t)ps : 4096;
 #endif
+    if (page > 0) gc_page_size = page;
+    size_t map = SLAB_NOMINAL_SIZE;
+    if (map < gc_page_size) map = gc_page_size;
+    map = ((map + gc_page_size - 1) / gc_page_size) * gc_page_size;
+    gc_slab_map = map;
+
+    const char* env = getenv("LEASH_GC_AUTO");
+    if (env && (*env == '0' || *env == 'n' || *env == 'N' ||
+                *env == 'f' || *env == 'F')) {
+        gc.auto_collect = 0;
+    }
+    env = getenv("LEASH_GC_STATS");
+    if (env && *env && *env != '0') {
+        atexit(leash_gc_print_stats);
+    }
 }
+
+void leash_gc_shutdown(void) {
+    GC_LOCK();
+    struct gc_slab* s = gc.slabs;
+    while (s) {
+        struct gc_slab* next = s->next;
+        gc_page_free(s->base, s->map_size);
+        s = next;
+    }
+    gc.slabs = NULL;
+    for (uint32_t i = 0; i < NUM_CLASSES; i++) {
+        gc.class_slabs[i] = NULL;
+        gc.class_bump[i] = NULL;
+        gc.class_freelists[i] = NULL;
+    }
+    for (size_t i = 0; i < gc.large_count; i++) free(gc.larges[i].raw);
+    free(gc.larges);
+    gc.larges = NULL;
+    gc.large_count = gc.large_cap = 0;
+    free(gc.page_dir);
+    gc.page_dir = NULL;
+    gc.page_dir_cap = gc.page_dir_count = 0;
+    free(gc.roots);
+    gc.roots = NULL;
+    gc.root_count = gc.root_capacity = 0;
+    free(gc.regions);
+    gc.regions = NULL;
+    gc.region_count = gc.region_capacity = 0;
+    free(gc.worklist);
+    gc.worklist = NULL;
+    gc.worklist_count = gc.worklist_cap = 0;
+    gc.total_allocated = 0;
+    gc.object_count = 0;
+    gc.bytes_since_gc = 0;
+    gc.live_bytes = 0;
+    GC_UNLOCK();
+}
+
+/* ===== Statistics ===== */
+size_t leash_gc_get_allocated(void) {
+    GC_LOCK();
+    size_t v = gc.total_allocated;
+    GC_UNLOCK();
+    return v;
+}
+
+size_t leash_gc_get_object_count(void) {
+    GC_LOCK();
+    size_t v = gc.object_count;
+    GC_UNLOCK();
+    return v;
+}
+
+void leash_gc_print_stats(void) {
+    GC_LOCK();
+    size_t slab_bytes = 0;
+    size_t slab_count = 0;
+    for (struct gc_slab* s = gc.slabs; s; s = s->next) {
+        slab_bytes += s->map_size;
+        slab_count++;
+    }
+    fprintf(stderr,
+        "GC stats: %zu objects, %zu bytes live, %zu bytes since last gc, "
+        "%zu slab bytes in %zu slabs, %zu large objects, %zu allocs, "
+        "%zu collections, %.3f ms in gc\n",
+        gc.object_count, gc.total_allocated, gc.bytes_since_gc,
+        slab_bytes, slab_count, gc.large_count, gc.alloc_count,
+        gc.collect_count, gc.gc_time_ns / 1000000.0);
+    GC_UNLOCK();
+}
+
+void leash_gc_verify(void) {
+    GC_LOCK();
+    for (struct gc_slab* s = gc.slabs; s; s = s->next) {
+        uint32_t live = 0;
+        for (char* p = s->cells; p < s->bump; p += s->cell_size) {
+            const struct gc_cell* c = (const struct gc_cell*)p;
+            if (!(c->flags & CELL_IN_USE)) continue;
+            live++;
+            if (p + CELL_HDR + c->size > s->end) {
+                fprintf(stderr, "GC verify: cell payload exceeds slab bounds\n");
+                break;
+            }
+        }
+        if (live != s->live) {
+            fprintf(stderr, "GC verify: slab live count mismatch (%u vs %u)\n",
+                    live, s->live);
+        }
+    }
+    for (size_t i = 0; i < gc.large_count; i++) {
+        const struct gc_cell* c =
+            (const struct gc_cell*)(gc.larges[i].payload - CELL_HDR);
+        if (!(c->flags & CELL_IN_USE)) {
+            fprintf(stderr, "GC verify: large object not in use\n");
+        }
+        if (c->size != gc.larges[i].size) {
+            fprintf(stderr, "GC verify: large object size mismatch\n");
+        }
+        if (i > 0 && gc.larges[i - 1].payload >= gc.larges[i].payload) {
+            fprintf(stderr, "GC verify: large object table not sorted\n");
+        }
+    }
+    GC_UNLOCK();
+}
+
+#endif /* NO_GC */
+
 
 /* ===== Optimized Matrix Binary Operations ===== */
 
@@ -881,265 +1610,19 @@ void leash_matrix_blocked_op_double(
     }
 }
 
+
+
 /* ===== Parallel (threaded) Matrix Operations ===== */
 /*
- * Optimization 8: Thread pool with static worker re-use
- * Optimization 9: NUMA-aware chunk scheduling with dynamic work stealing
- * Optimization 10: Use optimized sequential ops in each thread
+ * Thread pool with static worker re-use. Task hand-off is a mutex +
+ * condition variable state machine (0 = idle/done, 1 = ready, 2 = busy,
+ * 3 = shutdown) — the old spin loops (sched_yield/Sleep(0)) burned a core
+ * per worker per operation.
+ *
+ * The dispatcher brackets each operation with leash_gc_worker_begin/end:
+ * the pool threads dereference GC-owned operand/result buffers while the
+ * op runs, so automatic collection must stay away for the duration.
  */
-
-#if defined(_WIN32)
-
-#include <windows.h>
-
-/* Optimization 11: Thread pool structure - reuse threads across calls */
-#define MAX_POOL_THREADS 64
-
-typedef struct {
-    void* res;
-    const void* a;
-    const void* b;
-    int64_t start;
-    int64_t end;
-    int op;
-    int elem_size;
-    int is_int;
-    volatile int done;
-} thread_task;
-
-static thread_task g_tasks[MAX_POOL_THREADS];
-static int g_pool_initialized = 0;
-static int g_num_threads = 0;
-static int g_dispatch_is_int = 0;
-
-static DWORD WINAPI pool_worker(LPVOID arg) {
-    int tid = (int)(intptr_t)arg;
-    thread_task* ta = &g_tasks[tid];
-    while (1) {
-        while (!ta->done) { Sleep(0); }
-        if (ta->start == -1 && ta->end == -1) return 0;
-        int64_t n = ta->end - ta->start;
-        if (n <= 0) { ta->done = 0; continue; }
-        if (ta->is_int) {
-            if (ta->elem_size == 4) {
-                leash_matrix_binary_op_int32(
-                    (int32_t*)ta->res + ta->start,
-                    (const int32_t*)ta->a + ta->start,
-                    (const int32_t*)ta->b + ta->start,
-                    n, ta->op);
-            } else if (ta->elem_size == 8) {
-                leash_matrix_binary_op_int64(
-                    (int64_t*)ta->res + ta->start,
-                    (const int64_t*)ta->a + ta->start,
-                    (const int64_t*)ta->b + ta->start,
-                    n, ta->op);
-            }
-        } else if (ta->elem_size == 4) {
-            leash_matrix_binary_op_float(
-                (float*)ta->res + ta->start,
-                (const float*)ta->a + ta->start,
-                (const float*)ta->b + ta->start,
-                n, ta->op);
-        } else if (ta->elem_size == 8) {
-            leash_matrix_binary_op_double(
-                (double*)ta->res + ta->start,
-                (const double*)ta->a + ta->start,
-                (const double*)ta->b + ta->start,
-                n, ta->op);
-        }
-        ta->done = 0;
-        _ReadWriteBarrier();
-    }
-    return 0;
-}
-
-static void init_thread_pool(void) {
-    if (g_pool_initialized) return;
-    SYSTEM_INFO sysinfo;
-    GetSystemInfo(&sysinfo);
-    g_num_threads = (int)sysinfo.dwNumberOfProcessors;
-    if (g_num_threads < 2) g_num_threads = 2;
-    if (g_num_threads > MAX_POOL_THREADS) g_num_threads = MAX_POOL_THREADS;
-    /* Pool threads exist now: the GC must take locks on its fast path. */
-    leash_gc_thread_spawned();
-    for (int i = 0; i < g_num_threads; i++) {
-        g_tasks[i].done = 0;
-        HANDLE h = CreateThread(NULL, 0, pool_worker, (LPVOID)(intptr_t)i, 0, NULL);
-        CloseHandle(h);
-    }
-    g_pool_initialized = 1;
-}
-
-/* Optimization 12: Static scheduling with adaptive chunking */
-static void parallel_dispatch(void* res, const void* a, const void* b,
-                              int64_t n, int op, int elem_size)
-{
-    if (!g_pool_initialized) init_thread_pool();
-    int num_workers = g_num_threads;
-    int is_int = g_dispatch_is_int;
-    if (num_workers < 2 || n < 1024) {
-        if (is_int) {
-            if (elem_size == 4) leash_matrix_binary_op_int32((int32_t*)res, (const int32_t*)a, (const int32_t*)b, n, op);
-            else leash_matrix_binary_op_int64((int64_t*)res, (const int64_t*)a, (const int64_t*)b, n, op);
-        } else {
-            if (elem_size == 4) leash_matrix_binary_op_float((float*)res, (const float*)a, (const float*)b, n, op);
-            else leash_matrix_binary_op_double((double*)res, (const double*)a, (const double*)b, n, op);
-        }
-        return;
-    }
-    int64_t chunk = (n + num_workers - 1) / num_workers;
-    for (int t = 0; t < num_workers; t++) {
-        g_tasks[t].res = res;
-        g_tasks[t].a = a;
-        g_tasks[t].b = b;
-        g_tasks[t].start = t * chunk;
-        g_tasks[t].end = (t + 1) * chunk;
-        if (g_tasks[t].end > n) g_tasks[t].end = n;
-        g_tasks[t].op = op;
-        g_tasks[t].elem_size = elem_size;
-        g_tasks[t].is_int = is_int;
-        g_tasks[t].done = 1;
-        _ReadWriteBarrier();
-    }
-    /* Main thread helps with last chunk */
-    /* Worker num_workers-1 already covers [(num_workers-1)*chunk, n); the main
-       thread must NOT also process that range or the last chunk is written
-       twice. The main thread simply waits for all workers to finish. */
-    for (int t = 0; t < num_workers; t++) {
-        while (g_tasks[t].done) { Sleep(0); }
-    }
-}
-
-void leash_matrix_parallel_op_float(
-    float* res, const float* a, const float* b, int64_t n, int op)
-{
-    g_dispatch_is_int = 0;
-    parallel_dispatch(res, a, b, n, op, 4);
-}
-
-void leash_matrix_parallel_op_double(
-    double* res, const double* a, const double* b, int64_t n, int op)
-{
-    g_dispatch_is_int = 0;
-    parallel_dispatch(res, a, b, n, op, 8);
-}
-
-void leash_matrix_parallel_op_int32(
-    int32_t* res, const int32_t* a, const int32_t* b, int64_t n, int op)
-{
-    if (n < 1024) { leash_matrix_binary_op_int32(res, a, b, n, op); return; }
-    g_dispatch_is_int = 1;
-    parallel_dispatch(res, a, b, n, op, 4);
-}
-
-void leash_matrix_parallel_op_int64(
-    int64_t* res, const int64_t* a, const int64_t* b, int64_t n, int op)
-{
-    if (n < 1024) { leash_matrix_binary_op_int64(res, a, b, n, op); return; }
-    g_dispatch_is_int = 1;
-    parallel_dispatch(res, a, b, n, op, 8);
-}
-
-#else /* POSIX - pthreads with thread pool */
-
-#include <pthread.h>
-
-#define MAX_POOL_THREADS 64
-
-typedef struct {
-    void* res;
-    const void* a;
-    const void* b;
-    int64_t start;
-    int64_t end;
-    int op;
-    int elem_size;
-    int is_int;
-    volatile int done;
-} thread_task;
-
-static thread_task g_tasks[MAX_POOL_THREADS];
-static pthread_t g_threads[MAX_POOL_THREADS];
-static int g_pool_initialized = 0;
-static int g_num_threads = 0;
-static int g_dispatch_is_int = 0;
-static pthread_mutex_t g_pool_init_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-static void* pool_worker(void* arg) {
-    int tid = (int)(intptr_t)arg;
-    thread_task* ta = &g_tasks[tid];
-    while (1) {
-        while (!ta->done) { sched_yield(); }
-        /* Acquire barrier: ensure task fields are visible before we read them. */
-        __sync_synchronize();
-        if (ta->start == -1 && ta->end == -1) return NULL;
-        int64_t n = ta->end - ta->start;
-        if (n <= 0) { __sync_synchronize(); ta->done = 0; continue; }
-        if (ta->is_int) {
-            if (ta->elem_size == 4) {
-                leash_matrix_binary_op_int32(
-                    (int32_t*)ta->res + ta->start,
-                    (const int32_t*)ta->a + ta->start,
-                    (const int32_t*)ta->b + ta->start,
-                    n, ta->op);
-            } else if (ta->elem_size == 8) {
-                leash_matrix_binary_op_int64(
-                    (int64_t*)ta->res + ta->start,
-                    (const int64_t*)ta->a + ta->start,
-                    (const int64_t*)ta->b + ta->start,
-                    n, ta->op);
-            }
-        } else if (ta->elem_size == 4) {
-            leash_matrix_binary_op_float(
-                (float*)ta->res + ta->start,
-                (const float*)ta->a + ta->start,
-                (const float*)ta->b + ta->start,
-                n, ta->op);
-        } else if (ta->elem_size == 8) {
-            leash_matrix_binary_op_double(
-                (double*)ta->res + ta->start,
-                (const double*)ta->a + ta->start,
-                (const double*)ta->b + ta->start,
-                n, ta->op);
-        }
-        __sync_synchronize();
-        ta->done = 0;
-    }
-    return NULL;
-}
-
-static void init_thread_pool(void) {
-    pthread_mutex_lock(&g_pool_init_mutex);
-    if (g_pool_initialized) { pthread_mutex_unlock(&g_pool_init_mutex); return; }
-    g_num_threads = (int)sysconf(_SC_NPROCESSORS_ONLN);
-    if (g_num_threads < 2) g_num_threads = 2;
-    if (g_num_threads > MAX_POOL_THREADS) g_num_threads = MAX_POOL_THREADS;
-    /* Pool threads exist now: the GC must take locks on its fast path.
-       Set the flag while still single-threaded (before pthread_create) so
-       the first worker is guaranteed to observe it. */
-    leash_gc_thread_spawned();
-    int ok = 1;
-    for (int i = 0; i < g_num_threads; i++) {
-        g_tasks[i].done = 0;
-        g_tasks[i].is_int = 0;
-        if (pthread_create(&g_threads[i], NULL, pool_worker, (void*)(intptr_t)i) != 0) { ok = 0; break; }
-    }
-    if (ok) {
-        g_pool_initialized = 1;
-    } else {
-        /* Could not spawn the worker pool: shut down the threads we did start
-           (via the exit sentinel) and fall back to sequential execution. */
-        for (int i = 0; i < g_num_threads; i++) {
-            g_tasks[i].start = -1; g_tasks[i].end = -1;
-            __sync_synchronize();
-            g_tasks[i].done = 1;
-            pthread_join(g_threads[i], NULL);
-        }
-        g_num_threads = 0;
-        g_pool_initialized = 1; /* sequential mode; never retry */
-    }
-    pthread_mutex_unlock(&g_pool_init_mutex);
-}
 
 static void sequential_matrix_op(void* res, const void* a, const void* b,
                                  int64_t n, int op, int elem_size, int is_int) {
@@ -1152,69 +1635,315 @@ static void sequential_matrix_op(void* res, const void* a, const void* b,
     }
 }
 
+#if defined(_WIN32)
+
+#define MAX_POOL_THREADS 64
+
+typedef struct {
+    void* res;
+    const void* a;
+    const void* b;
+    int64_t start;
+    int64_t end;
+    int op;
+    int elem_size;
+    int is_int;
+    int state; /* 0 = idle/done, 1 = ready, 2 = busy, 3 = shutdown */
+} thread_task;
+
+static thread_task g_tasks[MAX_POOL_THREADS];
+static CRITICAL_SECTION g_pool_cs;
+static CRITICAL_SECTION g_dispatch_cs;
+static CONDITION_VARIABLE g_pool_cv;
+static INIT_ONCE g_pool_once = INIT_ONCE_STATIC_INIT;
+static int g_pool_initialized = 0;
+static int g_num_threads = 0;
+
+static BOOL CALLBACK pool_sync_init(PINIT_ONCE once, PVOID param, PVOID* ctx) {
+    (void)once; (void)param; (void)ctx;
+    InitializeCriticalSection(&g_pool_cs);
+    InitializeCriticalSection(&g_dispatch_cs);
+    InitializeConditionVariable(&g_pool_cv);
+    return TRUE;
+}
+
+static void pool_sync_ready(void) {
+    InitOnceExecuteOnce(&g_pool_once, pool_sync_init, NULL, NULL);
+}
+
+static DWORD WINAPI pool_worker(LPVOID arg) {
+    thread_task* ta = &g_tasks[(intptr_t)arg];
+    EnterCriticalSection(&g_pool_cs);
+    for (;;) {
+        while (ta->state == 0) {
+            SleepConditionVariableCS(&g_pool_cv, &g_pool_cs, INFINITE);
+        }
+        if (ta->state == 3) break; /* shutdown */
+        ta->state = 2;             /* busy */
+        void* res = ta->res;
+        const void* a = ta->a;
+        const void* b = ta->b;
+        int64_t start = ta->start, end = ta->end;
+        int op = ta->op, elem_size = ta->elem_size, is_int = ta->is_int;
+        LeaveCriticalSection(&g_pool_cs);
+
+        int64_t n = end - start;
+        if (n > 0) {
+            if (is_int) {
+                if (elem_size == 4) leash_matrix_binary_op_int32((int32_t*)res + start, (const int32_t*)a + start, (const int32_t*)b + start, n, op);
+                else leash_matrix_binary_op_int64((int64_t*)res + start, (const int64_t*)a + start, (const int64_t*)b + start, n, op);
+            } else {
+                if (elem_size == 4) leash_matrix_binary_op_float((float*)res + start, (const float*)a + start, (const float*)b + start, n, op);
+                else leash_matrix_binary_op_double((double*)res + start, (const double*)a + start, (const double*)b + start, n, op);
+            }
+        }
+
+        EnterCriticalSection(&g_pool_cs);
+        ta->state = 0;
+        WakeAllConditionVariable(&g_pool_cv);
+    }
+    LeaveCriticalSection(&g_pool_cs);
+    return 0;
+}
+
+static void init_thread_pool(void) {
+    pool_sync_ready();
+    EnterCriticalSection(&g_pool_cs);
+    if (g_pool_initialized) {
+        LeaveCriticalSection(&g_pool_cs);
+        return;
+    }
+    SYSTEM_INFO sysinfo;
+    GetSystemInfo(&sysinfo);
+    g_num_threads = (int)sysinfo.dwNumberOfProcessors;
+    if (g_num_threads < 2) g_num_threads = 2;
+    if (g_num_threads > MAX_POOL_THREADS) g_num_threads = MAX_POOL_THREADS;
+    /* Pool threads exist now: the GC must take locks on its fast path. */
+    leash_gc_thread_spawned();
+    for (int i = 0; i < g_num_threads; i++) {
+        g_tasks[i].state = 0;
+        HANDLE h = CreateThread(NULL, 0, pool_worker, (LPVOID)(intptr_t)i, 0, NULL);
+        if (!h) {
+            /* Could not spawn the full pool: keep the threads we did start
+               idle and fall back to sequential execution. */
+            g_num_threads = i;
+            break;
+        }
+        CloseHandle(h);
+    }
+    g_pool_initialized = 1;
+    LeaveCriticalSection(&g_pool_cs);
+}
+
+/* Static scheduling with adaptive chunking */
 static void parallel_dispatch(void* res, const void* a, const void* b,
-                              int64_t n, int op, int elem_size)
+                              int64_t n, int op, int elem_size, int is_int)
 {
     if (!g_pool_initialized) init_thread_pool();
     int num_workers = g_num_threads;
-    int is_int = g_dispatch_is_int;
     if (num_workers < 2 || n < 1024) {
         sequential_matrix_op(res, a, b, n, op, elem_size, is_int);
         return;
     }
+    /* Whole-dispatch ownership: a second dispatcher (Leash worker thread)
+       blocks here instead of clobbering the task array mid-flight. */
+    leash_gc_worker_begin();
+    EnterCriticalSection(&g_dispatch_cs);
+    EnterCriticalSection(&g_pool_cs);
     int64_t chunk = (n + num_workers - 1) / num_workers;
     for (int t = 0; t < num_workers; t++) {
-        g_tasks[t].res = res;
-        g_tasks[t].a = a;
-        g_tasks[t].b = b;
-        g_tasks[t].start = t * chunk;
-        g_tasks[t].end = (t + 1) * chunk;
-        if (g_tasks[t].end > n) g_tasks[t].end = n;
-        g_tasks[t].op = op;
-        g_tasks[t].elem_size = elem_size;
-        g_tasks[t].is_int = is_int;
-        __sync_synchronize();
-        g_tasks[t].done = 1;
+        thread_task* tk = &g_tasks[t];
+        tk->res = res;
+        tk->a = a;
+        tk->b = b;
+        tk->start = t * chunk;
+        tk->end = (t + 1) * chunk < n ? (t + 1) * chunk : n;
+        tk->op = op;
+        tk->elem_size = elem_size;
+        tk->is_int = is_int;
+        tk->state = 1;
     }
+    WakeAllConditionVariable(&g_pool_cv);
     /* Worker num_workers-1 already covers [(num_workers-1)*chunk, n); the main
        thread must NOT also process that range or the last chunk is written
        twice. The main thread simply waits for all workers to finish. */
     for (int t = 0; t < num_workers; t++) {
-        while (g_tasks[t].done) { sched_yield(); }
+        while (g_tasks[t].state != 0) {
+            SleepConditionVariableCS(&g_pool_cv, &g_pool_cs, INFINITE);
+        }
     }
+    LeaveCriticalSection(&g_pool_cs);
+    LeaveCriticalSection(&g_dispatch_cs);
+    leash_gc_worker_end();
 }
+
+#else /* POSIX - pthreads with thread pool */
+
+#define MAX_POOL_THREADS 64
+
+typedef struct {
+    void* res;
+    const void* a;
+    const void* b;
+    int64_t start;
+    int64_t end;
+    int op;
+    int elem_size;
+    int is_int;
+    int state; /* 0 = idle/done, 1 = ready, 2 = busy, 3 = shutdown */
+} thread_task;
+
+static thread_task g_tasks[MAX_POOL_THREADS];
+static pthread_t g_threads[MAX_POOL_THREADS];
+static int g_pool_initialized = 0;
+static int g_num_threads = 0;
+static pthread_mutex_t g_pool_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t g_dispatch_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_pool_cond = PTHREAD_COND_INITIALIZER;
+
+static void* pool_worker(void* arg) {
+    thread_task* ta = &g_tasks[(intptr_t)arg];
+    pthread_mutex_lock(&g_pool_mutex);
+    for (;;) {
+        while (ta->state == 0) {
+            pthread_cond_wait(&g_pool_cond, &g_pool_mutex);
+        }
+        if (ta->state == 3) break; /* shutdown */
+        ta->state = 2;             /* busy */
+        /* Task fields copied under the lock: the dispatcher may rewrite
+           them as soon as the task is marked done. */
+        void* res = ta->res;
+        const void* a = ta->a;
+        const void* b = ta->b;
+        int64_t start = ta->start, end = ta->end;
+        int op = ta->op, elem_size = ta->elem_size, is_int = ta->is_int;
+        pthread_mutex_unlock(&g_pool_mutex);
+
+        int64_t n = end - start;
+        if (n > 0) {
+            if (is_int) {
+                if (elem_size == 4) leash_matrix_binary_op_int32((int32_t*)res + start, (const int32_t*)a + start, (const int32_t*)b + start, n, op);
+                else leash_matrix_binary_op_int64((int64_t*)res + start, (const int64_t*)a + start, (const int64_t*)b + start, n, op);
+            } else {
+                if (elem_size == 4) leash_matrix_binary_op_float((float*)res + start, (const float*)a + start, (const float*)b + start, n, op);
+                else leash_matrix_binary_op_double((double*)res + start, (const double*)a + start, (const double*)b + start, n, op);
+            }
+        }
+
+        pthread_mutex_lock(&g_pool_mutex);
+        ta->state = 0;
+        pthread_cond_broadcast(&g_pool_cond);
+    }
+    pthread_mutex_unlock(&g_pool_mutex);
+    return NULL;
+}
+
+static void init_thread_pool(void) {
+    pthread_mutex_lock(&g_pool_mutex);
+    if (g_pool_initialized) {
+        pthread_mutex_unlock(&g_pool_mutex);
+        return;
+    }
+    int want = (int)sysconf(_SC_NPROCESSORS_ONLN);
+    if (want < 2) want = 2;
+    if (want > MAX_POOL_THREADS) want = MAX_POOL_THREADS;
+    /* Pool threads exist now: the GC must take locks on its fast path.
+       Set the flag while still single-threaded (before pthread_create) so
+       the first worker is guaranteed to observe it. */
+    leash_gc_thread_spawned();
+    int started = 0;
+    int ok = 1;
+    for (int i = 0; i < want; i++) {
+        g_tasks[i].state = 0;
+        if (pthread_create(&g_threads[i], NULL, pool_worker, (void*)(intptr_t)i) != 0) {
+            ok = 0;
+            break;
+        }
+        started++;
+    }
+    if (ok) {
+        g_num_threads = want;
+        g_pool_initialized = 1;
+        pthread_mutex_unlock(&g_pool_mutex);
+        return;
+    }
+    /* Could not spawn the worker pool: shut down the threads we did start
+       and fall back to sequential execution. */
+    for (int i = 0; i < started; i++) g_tasks[i].state = 3;
+    pthread_cond_broadcast(&g_pool_cond);
+    g_num_threads = 0;
+    g_pool_initialized = 1; /* sequential mode; never retry */
+    pthread_mutex_unlock(&g_pool_mutex);
+    for (int i = 0; i < started; i++) pthread_join(g_threads[i], NULL);
+}
+
+static void parallel_dispatch(void* res, const void* a, const void* b,
+                              int64_t n, int op, int elem_size, int is_int)
+{
+    if (!g_pool_initialized) init_thread_pool();
+    int num_workers = g_num_threads;
+    if (num_workers < 2 || n < 1024) {
+        sequential_matrix_op(res, a, b, n, op, elem_size, is_int);
+        return;
+    }
+    /* Whole-dispatch ownership: a second dispatcher (Leash worker thread)
+       blocks here instead of clobbering the task array mid-flight. */
+    leash_gc_worker_begin();
+    pthread_mutex_lock(&g_dispatch_mutex);
+    pthread_mutex_lock(&g_pool_mutex);
+    int64_t chunk = (n + num_workers - 1) / num_workers;
+    for (int t = 0; t < num_workers; t++) {
+        thread_task* tk = &g_tasks[t];
+        tk->res = res;
+        tk->a = a;
+        tk->b = b;
+        tk->start = t * chunk;
+        tk->end = (t + 1) * chunk < n ? (t + 1) * chunk : n;
+        tk->op = op;
+        tk->elem_size = elem_size;
+        tk->is_int = is_int;
+        tk->state = 1;
+    }
+    pthread_cond_broadcast(&g_pool_cond);
+    /* Worker num_workers-1 already covers [(num_workers-1)*chunk, n); the main
+       thread must NOT also process that range or the last chunk is written
+       twice. The main thread simply waits for all workers to finish. */
+    for (int t = 0; t < num_workers; t++) {
+        while (g_tasks[t].state != 0) {
+            pthread_cond_wait(&g_pool_cond, &g_pool_mutex);
+        }
+    }
+    pthread_mutex_unlock(&g_pool_mutex);
+    pthread_mutex_unlock(&g_dispatch_mutex);
+    leash_gc_worker_end();
+}
+
+#endif /* _WIN32 / POSIX */
 
 void leash_matrix_parallel_op_float(
     float* res, const float* a, const float* b, int64_t n, int op)
 {
-    g_dispatch_is_int = 0;
-    parallel_dispatch(res, a, b, n, op, 4);
+    parallel_dispatch(res, a, b, n, op, 4, 0);
 }
 
 void leash_matrix_parallel_op_double(
     double* res, const double* a, const double* b, int64_t n, int op)
 {
-    g_dispatch_is_int = 0;
-    parallel_dispatch(res, a, b, n, op, 8);
+    parallel_dispatch(res, a, b, n, op, 8, 0);
 }
 
 void leash_matrix_parallel_op_int32(
     int32_t* res, const int32_t* a, const int32_t* b, int64_t n, int op)
 {
-    if (n < 1024) { leash_matrix_binary_op_int32(res, a, b, n, op); return; }
-    g_dispatch_is_int = 1;
-    parallel_dispatch(res, a, b, n, op, 4);
+    parallel_dispatch(res, a, b, n, op, 4, 1);
 }
 
 void leash_matrix_parallel_op_int64(
     int64_t* res, const int64_t* a, const int64_t* b, int64_t n, int op)
 {
-    if (n < 1024) { leash_matrix_binary_op_int64(res, a, b, n, op); return; }
-    g_dispatch_is_int = 1;
-    parallel_dispatch(res, a, b, n, op, 8);
+    parallel_dispatch(res, a, b, n, op, 8, 1);
 }
 
-#endif /* _WIN32 / POSIX */
 
 /* ===== Vector Batch Operations ===== */
 /*
@@ -1304,99 +2033,6 @@ void leash_vec_sort_f64(double* data, int64_t size) {
     qsort(data, (size_t)size, sizeof(double), f64_cmp);
 }
 
-/* ===== GC Optimizations ===== */
-/*
- * Optimization 18: Incremental collection with yield points
- * Optimization 19: Thread-local allocation buffer (bump allocator)
- * Optimization 20: Mark-bit compaction (store marks in separate bitmap)
- * Optimization 21: Generational GC hint (separate young generation)
- */
-
-/* Young generation threshold */
-#define YOUNG_THRESHOLD (256 * 1024)  /* 256KB */
-
-/* Optimization 19: Thread-local bump allocator for small objects */
-#if defined(_WIN32)
-static __declspec(thread) struct {
-    char* start;
-    char* current;
-    char* end;
-} tlab = {NULL, NULL, NULL};
-
-#define TLAB_SIZE (64 * 1024)  /* 64KB per thread */
-
-static void tlab_refill(void) {
-    tlab.start = (char*)malloc(TLAB_SIZE);
-    if (!tlab.start) { tlab.current = NULL; tlab.end = NULL; return; }
-    tlab.current = tlab.start;
-    tlab.end = tlab.start + TLAB_SIZE;
-}
-
-void* leash_tlab_alloc(size_t size) {
-    if (!tlab.start || (tlab.current + size > tlab.end)) {
-        tlab_refill();
-        if (!tlab.start) return NULL;
-    }
-    void* ptr = (void*)tlab.current;
-    tlab.current += size;
-    memset(ptr, 0, size);
-    return ptr;
-}
-
-#else
-static __thread struct {
-    char* start;
-    char* current;
-    char* end;
-} tlab = {NULL, NULL, NULL};
-
-#define TLAB_SIZE (64 * 1024)
-
-static void tlab_refill(void) {
-    tlab.start = (char*)malloc(TLAB_SIZE);
-    if (!tlab.start) { tlab.current = NULL; tlab.end = NULL; return; }
-    tlab.current = tlab.start;
-    tlab.end = tlab.start + TLAB_SIZE;
-}
-
-void* leash_tlab_alloc(size_t size) {
-    if (!tlab.start || (tlab.current + size > tlab.end)) {
-        tlab_refill();
-        if (!tlab.start) return NULL;
-    }
-    void* ptr = (void*)tlab.current;
-    tlab.current += size;
-    memset(ptr, 0, size);
-    return ptr;
-}
-#endif
-
-/* Optimization 20: Bitmap-based mark for compact tracking */
-#define BITS_PER_WORD (sizeof(size_t) * 8)
-
-/* Fast mark with bitmap (global, protected by GC mutex) */
-static size_t* gc_mark_bitmap = NULL;
-static size_t gc_bitmap_capacity = 0;
-
-void leash_gc_bitmap_init(size_t max_objects) {
-    size_t words = (max_objects + BITS_PER_WORD - 1) / BITS_PER_WORD;
-    gc_mark_bitmap = (size_t*)calloc(words, sizeof(size_t));
-    gc_bitmap_capacity = words;
-}
-
-static inline void bitmap_mark(size_t idx) {
-    gc_mark_bitmap[idx / BITS_PER_WORD] |= ((size_t)1 << (idx % BITS_PER_WORD));
-}
-
-static inline int bitmap_ismarked(size_t idx) {
-    return (gc_mark_bitmap[idx / BITS_PER_WORD] >> (idx % BITS_PER_WORD)) & 1;
-}
-
-static inline void bitmap_clear(size_t idx) {
-    gc_mark_bitmap[idx / BITS_PER_WORD] &= ~((size_t)1 << (idx % BITS_PER_WORD));
-}
-
-/* Optimization 22: Fast sequential memory copy with prefetch */
 void leash_fast_memcpy(void* restrict dst, const void* restrict src, size_t n) {
     /* The word-copy loop below requires size_t-aligned pointers. If either
        operand isn't aligned, fall back to a plain memcpy (which handles
@@ -1422,64 +2058,6 @@ void leash_fast_memcpy(void* restrict dst, const void* restrict src, size_t n) {
     }
     memcpy(d + i, s + i, n - i * sizeof(size_t));
 }
-
-size_t leash_gc_get_allocated(void) {
-    GC_LOCK();
-    size_t v = gc.total_allocated;
-    GC_UNLOCK();
-    return v;
-}
-
-size_t leash_gc_get_object_count(void) {
-    GC_LOCK();
-    size_t v = gc.object_count;
-    GC_UNLOCK();
-    return v;
-}
-
-void leash_gc_print_stats(void) {
-    GC_LOCK();
-    fprintf(stderr,
-        "GC stats: %zu objects, %zu bytes allocated, "
-        "%zu allocs, %zu collections\n",
-        gc.object_count, gc.total_allocated,
-        gc.alloc_count, gc.collect_count);
-    GC_UNLOCK();
-}
-
-void leash_gc_verify(void) {
-    GC_LOCK();
-    struct gc_object* obj = gc.object_list;
-    while (obj) {
-        if (obj->next == obj || obj->prev == obj) {
-            fprintf(stderr, "GC: Corrupted object list!\n");
-            break;
-        }
-        obj = obj->next;
-    }
-    GC_UNLOCK();
-}
-
-void leash_gc_shutdown(void) {
-    GC_LOCK();
-    /* Free all objects */
-    struct gc_object* obj = gc.object_list;
-    while (obj) {
-        struct gc_object* next = obj->next;
-        free(obj);
-        obj = next;
-    }
-    gc.object_list = NULL;
-    gc.total_allocated = 0;
-    gc.object_count = 0;
-    free(gc.roots);
-    gc.roots = NULL;
-    gc.root_count = 0;
-    gc.root_capacity = 0;
-    GC_UNLOCK();
-}
-
-#endif /* NO_GC */
 
 /* =========================================================================
  * Wide integer formatting (any bit width, 1..512+ bits)
@@ -1677,6 +2255,7 @@ int leash_bigint_parse(const char *s, unsigned bitwidth, int is_signed,
     }
     return 1;
 }
+
 
 /* ================================================================ */
 /* ===== Futures (native async/await) ============================ */

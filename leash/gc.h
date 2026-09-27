@@ -1,5 +1,16 @@
 /**
  * Leash Custom Garbage Collector - Header
+ *
+ * Slab-based, non-moving, conservative mark-and-sweep collector.
+ * Small objects live in per-size-class slab allocators with 16-byte
+ * headers; large objects are individually malloc'd. A page directory
+ * gives O(1) candidate-pointer -> object lookup. Roots are: an explicit
+ * object-root array (futures, spawn arg blocks), registered scan regions
+ * (pointer-bearing globals, emitted by codegen), and a conservative
+ * scan of the main thread's stack. Automatic collection triggers when
+ * bytes-since-last-collection exceeds max(threshold, 2x live bytes),
+ * gated on quiescence (no active workers, no in-flight parallel ops,
+ * no foreign threads).
  */
 
 #ifndef LEASH_GC_H
@@ -22,6 +33,9 @@ void* leash_gc_malloc(size_t size);
 void* leash_gc_malloc_ex(size_t size, unsigned int flags);
 void* leash_gc_realloc(void* ptr, size_t new_size);
 void* leash_gc_aligned_alloc(size_t size, size_t alignment);
+/* GC-tracked, aligned allocation with flags (e.g. LEASH_GC_FLAG_ATOMIC
+   for pointer-free payloads such as numeric matrix buffers). */
+void* leash_gc_aligned_alloc_ex(size_t size, size_t alignment, unsigned int flags);
 
 /* ===== Collection ===== */
 void leash_gc_collect(void);
@@ -32,6 +46,20 @@ void leash_gc_unregister_root(void* ptr);
 /* Allocate a GC object that is rooted before any collection can see it
    (used for runtime objects such as futures). */
 void* leash_gc_malloc_rooted(size_t size);
+
+/* Register a scan region: every aligned word in [start, start+nbytes) is
+   treated as a conservative candidate pointer at collection time. Used by
+   generated code to register pointer-bearing globals precisely. */
+void leash_gc_register_scan_region(void* start, size_t nbytes);
+
+/* ===== Worker / quiescence accounting =====
+ * The spawn stubs call begin() before creating a worker thread and the
+ * worker trampoline calls end() when its function returns; the parallel
+ * matrix dispatch brackets each operation the same way. Automatic and
+ * explicit collection are refused while the counter is non-zero: worker
+ * stacks hold unscanned live pointers while they run. */
+void leash_gc_worker_begin(void);
+void leash_gc_worker_end(void);
 
 /* ===== Futures (native async/await) =====
  * A future is the join handle for an `async fnc` call. new() registers
@@ -85,8 +113,6 @@ void leash_matrix_blocked_op_double(
     double* res, const double* a, const double* b, int64_t n, int op);
 
 /* ===== GC Extensions ===== */
-void* leash_tlab_alloc(size_t size);
-void leash_gc_bitmap_init(size_t max_objects);
 void leash_fast_memcpy(void* restrict dst, const void* restrict src, size_t n);
 /* Tell the GC that the program spawned (or is about to spawn) a worker
    thread. Must be called BEFORE creating the thread. Until then the GC
@@ -102,9 +128,8 @@ void leash_gc_print_stats(void);
 void leash_gc_verify(void);
 
 /* ===== Flag Constants ===== */
-#define LEASH_GC_FLAG_MARKED   0x01
-#define LEASH_GC_FLAG_ATOMIC   0x02
-#define LEASH_GC_FLAG_FINALIZE 0x04
+#define LEASH_GC_FLAG_MARKED 0x01
+#define LEASH_GC_FLAG_ATOMIC 0x02
 
 #ifdef __cplusplus
 }

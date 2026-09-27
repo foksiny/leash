@@ -304,6 +304,22 @@ class CodeGen:
             self.module, gc_collect_ty, name="leash_gc_collect"
         )
 
+        # Conservative scan-region registration: module-level storage (globals,
+        # native-import globals, class statics) that can hold GC pointers is
+        # registered once from main() so the marker scans it every collection.
+        gc_scan_region_ty = ir.FunctionType(
+            ir.VoidType(), [ir.IntType(8).as_pointer(), ir.IntType(64)]
+        )
+        self.gc_register_scan_region = ir.Function(
+            self.module, gc_scan_region_ty, name="leash_gc_register_scan_region"
+        )
+
+        # GC statistics dump (gc_stats() builtin)
+        gc_print_stats_ty = ir.FunctionType(ir.VoidType(), [])
+        self.gc_print_stats = ir.Function(
+            self.module, gc_print_stats_ty, name="leash_gc_print_stats"
+        )
+
         # GC root management (used for multi-threading - spawn args)
         gc_root_ty = ir.FunctionType(ir.VoidType(), [ir.IntType(8).as_pointer()])
         self.gc_register_root = ir.Function(
@@ -610,6 +626,16 @@ class CodeGen:
         # (malloc provides sufficient alignment for most vector/matrix operations)
         if self.no_gc or self.autofree:
             self.aligned_alloc = self.c_malloc
+
+        # Flag-carrying aligned allocation: lets pointer-free matrix/array data
+        # be allocated ATOMIC so the conservative marker skips its payload.
+        aligned_alloc_ex_ty = ir.FunctionType(
+            ir.IntType(8).as_pointer(),
+            [ir.IntType(64), ir.IntType(64), ir.IntType(32)],
+        )
+        self.aligned_alloc_ex = ir.Function(
+            self.module, aligned_alloc_ex_ty, name="leash_gc_aligned_alloc_ex"
+        )
 
         # Optimized matrix binary op functions (called for float/double/int32/int64 element types)
         i8ptr = ir.IntType(8).as_pointer()
@@ -1150,6 +1176,23 @@ class CodeGen:
         # it is always allocated ATOMIC. This is the single biggest source of
         # conservative false-retention in real programs.
         return self._gc_alloc(size_ir, atomic=True)
+
+    def _gc_aligned_alloc(self, size_ir, alignment_ir, atomic=False):
+        """64-byte-aligned GC allocation for matrix/array data buffers.
+
+        `atomic` marks pointer-free payloads so the conservative marker never
+        scans them (numeric matrices/arrays are the other big source of
+        false-retention). In autofree / no-gc modes this keeps the plain
+        aligned-allocator call path unchanged.
+        """
+        if self.autofree or self.no_gc:
+            return self.builder.call(self.aligned_alloc, [size_ir, alignment_ir])
+        flags = ir.Constant(
+            ir.IntType(32), self.LEASH_GC_FLAG_ATOMIC if atomic else 0
+        )
+        return self.builder.call(
+            self.aligned_alloc_ex, [size_ir, alignment_ir, flags]
+        )
 
     @staticmethod
     def _type_contains_pointers(llvm_type):
@@ -1847,6 +1890,7 @@ class CodeGen:
 
         if not self.no_gc and not self.autofree:
             self.builder.call(self.gc_init, [])
+            self._emit_register_global_roots()
         stdout_ptr = self.builder.call(self.get_stdout_fn, [])
         null_ptr = ir.Constant(i8p, None)
         self.builder.call(self.setbuf_fn, [stdout_ptr, null_ptr])
@@ -2060,6 +2104,46 @@ class CodeGen:
         for _, name, target_type in node.typedef_declarations:
             self.type_aliases[name] = target_type
 
+    def _emit_register_global_roots(self):
+        """Register module-level storage that can hold GC pointers as
+        conservative scan regions.
+
+        Emitted from main() immediately after leash_gc_init() and before the
+        global initializer runs. Covers top-level globals, native-import
+        extern globals (readable, conservative-safe) and class static fields;
+        pointer-free storage is skipped. Also covers the showb buffer global,
+        which is not part of global_var_ptrs but holds GC-allocated memory.
+        """
+        if self.no_gc or self.autofree or self.in_nogc_func:
+            return
+        i8p = ir.IntType(8).as_pointer()
+        i64 = ir.IntType(64)
+        seen = set()
+
+        def emit(gv):
+            if id(gv) in seen:
+                return
+            seen.add(id(gv))
+            gv_type = gv.value_type
+            if not self._type_contains_pointers(gv_type):
+                return
+            size = self._get_type_size(gv_type)
+            if size <= 0:
+                return
+            self.builder.call(
+                self.gc_register_scan_region,
+                [gv.bitcast(i8p), ir.Constant(i64, size)],
+            )
+
+        for _name, (gv, _leash_type) in self.global_var_ptrs.items():
+            emit(gv)
+        for cls_info in self.class_symtab.values():
+            if not isinstance(cls_info, dict):
+                continue
+            for sf in (cls_info.get("static_fields") or {}).values():
+                emit(sf["global"])
+        emit(self.showb_buffer_gv)
+
     def _codegen_global_init_function(self):
         """Generate a function that initializes all globals with initializers."""
         init_func = ir.Function(
@@ -2237,6 +2321,31 @@ class CodeGen:
             return ir.IntType(8).as_pointer()  # FILE* is i8*
         return ir.IntType(32)  # default fallback
 
+    def _get_abi_align(self, llvm_type):
+        """ABI alignment of an LLVM type in bytes (mirrors DataLayout rules)."""
+        if isinstance(llvm_type, ir.IntType):
+            return max(1, (llvm_type.width + 7) // 8)
+        if isinstance(llvm_type, ir.HalfType):
+            return 2
+        if isinstance(llvm_type, ir.FloatType):
+            return 4
+        if isinstance(llvm_type, ir.DoubleType):
+            return 8
+        if isinstance(llvm_type, ir.PointerType):
+            return 8
+        if isinstance(llvm_type, ir.ArrayType):
+            return self._get_abi_align(llvm_type.element)
+        if isinstance(llvm_type, (ir.LiteralStructType, ir.IdentifiedStructType)):
+            elements = llvm_type.elements
+            if elements is None:
+                raise LeashError(f"sizeof on incomplete type '{llvm_type.name}'")
+            return max((self._get_abi_align(e) for e in elements), default=1)
+        return 8
+
+    @staticmethod
+    def _align_up(value, alignment):
+        return (value + alignment - 1) // alignment * alignment
+
     def _get_type_size(self, llvm_type):
         """Get the size of an LLVM type in bytes."""
         # Try using the target data layout if available
@@ -2245,7 +2354,11 @@ class CodeGen:
                 return self.module.data_layout.get_abi_size(llvm_type)
             except Exception:
                 pass
-        # Fallback: manual calculation for common types
+        # Manual calculation matching LLVM's default (C-style) layout: each
+        # field is placed at its ABI-aligned offset and the struct is padded
+        # out to its own alignment. A plain sum of field sizes would undercount
+        # padding and hand out blocks smaller than the gep offsets codegen
+        # actually uses (which silently overflowed into neighbouring memory).
         if isinstance(llvm_type, ir.IntType):
             return (llvm_type.width + 7) // 8
         elif isinstance(llvm_type, (ir.HalfType, ir.FloatType, ir.DoubleType)):
@@ -2255,10 +2368,17 @@ class CodeGen:
         elif isinstance(llvm_type, ir.ArrayType):
             return llvm_type.count * self._get_type_size(llvm_type.element)
         elif isinstance(llvm_type, (ir.LiteralStructType, ir.IdentifiedStructType)):
-            total = 0
-            for elem in llvm_type.elements:
-                total += self._get_type_size(elem)
-            return total
+            elements = llvm_type.elements
+            if elements is None:
+                raise LeashError(f"sizeof on incomplete type '{llvm_type.name}'")
+            offset = 0
+            struct_align = 1
+            for elem in elements:
+                elem_align = self._get_abi_align(elem)
+                offset = self._align_up(offset, elem_align)
+                offset += self._get_type_size(elem)
+                struct_align = max(struct_align, elem_align)
+            return self._align_up(offset, struct_align)
         return 8  # Default fallback
 
     def _codegen_StructDef(self, node):
@@ -3141,6 +3261,7 @@ class CodeGen:
         if name == "main":
             if not self.in_nogc_func and not self.no_gc and not self.autofree:
                 self.builder.call(self.gc_init, [])
+                self._emit_register_global_roots()
             # Set stdout to unbuffered so that interactive prompts and prints are flushed in real time
             stdout_ptr = self.builder.call(self.get_stdout_fn, [])
             null_ptr = ir.Constant(ir.IntType(8).as_pointer(), None)
@@ -5706,8 +5827,10 @@ class CodeGen:
             )
             total_bytes = self.builder.mul(left_size, elem_size_val)
             total_bytes.flags = ['nuw']
-            result_data_bytes = self.builder.call(
-                self.aligned_alloc, [total_bytes, ir.Constant(ir.IntType(64), 64)]
+            result_data_bytes = self._gc_aligned_alloc(
+                total_bytes,
+                ir.Constant(ir.IntType(64), 64),
+                atomic=not self._type_contains_pointers(inner_llvm),
             )
             self._track_alloc(result_data_bytes)
             result_data = self.builder.bitcast(result_data_bytes, inner_llvm.as_pointer())
@@ -9479,6 +9602,27 @@ class CodeGen:
             self.builder.unreachable()
             return None
 
+        if node.name == "gc_collect":
+            # gc_collect() - run a garbage collection pass now (no-op in
+            # no-gc/autofree modes; the runtime stub does nothing).
+            if len(node.args) != 0:
+                self._error(
+                    f"Function 'gc_collect' expects 0 arguments, but got {len(node.args)}",
+                    node=node,
+                )
+            self.builder.call(self.gc_collect, [])
+            return None
+
+        if node.name == "gc_stats":
+            # gc_stats() - print allocator/GC statistics to stderr.
+            if len(node.args) != 0:
+                self._error(
+                    f"Function 'gc_stats' expects 0 arguments, but got {len(node.args)}",
+                    node=node,
+                )
+            self.builder.call(self.gc_print_stats, [])
+            return None
+
         if node.name == "exec":
             return self._emit_exec(node)
 
@@ -10341,7 +10485,9 @@ class CodeGen:
             elem_size = self._type_byte_size(elem_type)
             total_bytes = self.builder.mul(size_val, ir.Constant(ir.IntType(64), elem_size))
             total_bytes.flags = ['nuw']
-            data_bytes = self.builder.call(self.malloc, [total_bytes])
+            data_bytes = self._gc_alloc(
+                total_bytes, atomic=not self._type_contains_pointers(elem_type)
+            )
             self._track_alloc(data_bytes)
             data_ptr = self.builder.bitcast(data_bytes, elem_type.as_pointer())
 
@@ -10383,7 +10529,11 @@ class CodeGen:
             elem_size = self.builder.ptrtoint(elem_size_ptr, ir.IntType(64))
             total_bytes = self.builder.mul(size_val, elem_size)
             total_bytes.flags = ['nuw']
-            data_bytes = self.builder.call(self.aligned_alloc, [total_bytes, ir.Constant(ir.IntType(64), 64)])
+            data_bytes = self._gc_aligned_alloc(
+                total_bytes,
+                ir.Constant(ir.IntType(64), 64),
+                atomic=not self._type_contains_pointers(elem_type),
+            )
             self._track_alloc(data_bytes)
             data_ptr = self.builder.bitcast(data_bytes, elem_type.as_pointer())
 
@@ -10471,9 +10621,10 @@ class CodeGen:
             elem_size = self.builder.ptrtoint(elem_size_ptr, ir.IntType(64))
             length_val = ir.Constant(ir.IntType(64), length)
             total_bytes = self.builder.mul(length_val, elem_size)
-            data_bytes = self.builder.call(
-                self.aligned_alloc,
-                [total_bytes, ir.Constant(ir.IntType(64), 64)],
+            data_bytes = self._gc_aligned_alloc(
+                total_bytes,
+                ir.Constant(ir.IntType(64), 64),
+                atomic=not self._type_contains_pointers(elem_type),
             )
             self._track_alloc(data_bytes)
             arr_ptr = self.builder.bitcast(data_bytes, elem_type.as_pointer())

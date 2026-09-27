@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v0.24.2 Beta</div>
+        <div class="version">v0.24.3 Beta</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -49,7 +49,7 @@
 
 <h2>Memory Management</h2>
 
-<p>Leash uses a <strong>custom garbage collector</strong> with a mark-and-sweep algorithm and conservative root finding. Memory is managed automatically &mdash; you never need to call <code>free()</code> or worry about memory leaks.</p>
+<p>Leash uses a <strong>custom garbage collector</strong> with a mark-and-sweep algorithm, a slab-based allocator, and hybrid root finding. Memory is managed automatically &mdash; you never need to call <code>free()</code> or worry about memory leaks.</p>
 
 <h3>How It Works</h3>
 <ol>
@@ -59,9 +59,11 @@
 
 <h3>Features</h3>
 <ul>
-    <li>Conservative root finding &mdash; identifies pointers without explicit registration</li>
+    <li>Hybrid root finding &mdash; globals and class statics are registered precisely by the compiler, plus conservative scanning of the calling thread's stack</li>
     <li>Explicit root management via <code>leash_gc_register_root()</code> / <code>leash_gc_unregister_root()</code></li>
-    <li>Automatic collection when memory exceeds a threshold</li>
+    <li>Automatic collection when allocation since the last cycle exceeds a threshold (deferred while worker threads are busy; disable with <code>LEASH_GC_AUTO=0</code>, exit-time stats with <code>LEASH_GC_STATS=1</code>)</li>
+    <li>Manual control from Leash code via the <code>gc_collect()</code> and <code>gc_stats()</code> builtins</li>
+    <li>Slab allocator with per-size-class free lists &mdash; no per-object <code>malloc</code>, and no lock while the program is single-threaded</li>
     <li>Type-aware: strings, vectors, arrays, structs, classes, unions all handled properly</li>
     <li>Built-in GC stats via <code>leash_gc_print_stats()</code></li>
 </ul>
@@ -279,8 +281,8 @@ gcc -shared -fPIC math_utils.c -o libmath.so</code></pre>
     <tr><td>3</td><td><strong>Reusable thread pool</strong> &mdash; replaces per-call thread creation (lazily initialized, persists for program lifetime)</td></tr>
     <tr><td>4</td><td><strong>Cache-blocked operations</strong> &mdash; processes tiles fitting in L1 cache</td></tr>
     <tr><td>5</td><td><strong>Vector batch utilities</strong> &mdash; bulk copy, reverse, sort (O(n log n))</td></tr>
-    <tr><td>6</td><td><strong>Thread-local allocation (TLAB)</strong> &mdash; bump-pointer arena per thread</td></tr>
-    <tr><td>7</td><td><strong>GC bitmap</strong> &mdash; compact bitmask for faster mark phase</td></tr>
+    <tr><td>6</td><td><strong>Slab allocator</strong> &mdash; 64 KB pages split into size-class cells with free-list reuse (replaces per-object <code>malloc</code>)</td></tr>
+    <tr><td>7</td><td><strong>Iterative mark phase</strong> &mdash; explicit worklist instead of recursion, scanning an open-addressed page directory</td></tr>
     <tr><td>8</td><td><strong>Fast memcpy</strong> &mdash; thin wrapper with <code>__restrict__</code> hints</td></tr>
 </table>
 

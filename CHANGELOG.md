@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## [0.24.3] - 2026-09-26
+
+### Added — The garbage collector actually collects (Phases 0–2 overhaul)
+- **Slab allocator.** `leash_gc_malloc` now hands out cells from 64 KB
+  page-aligned slabs carved into 95 size classes with per-class free lists,
+  instead of a glibc `malloc` + 32 B header per object. Small allocations
+  are a few instructions on the main thread (no lock while the program is
+  single-threaded); empty slabs are returned to the OS on sweep.
+- **Automatic collection.** The runtime now triggers mark-and-sweep when
+  bytes allocated since the last cycle exceed `max(2 MB, 2 × live bytes)`.
+  Collection runs only at *quiescence* (no active pool workers, no
+  in-flight parallel op, no foreign threads) so mutator threads are never
+  stopped mid-operation. `LEASH_GC_AUTO=0` (or `f`/`F`) disables it,
+  `LEASH_GC_STATS=1` prints stats at exit.
+- **Roots.** The compiler registers globals, class static fields, and the
+  `showb` buffer precisely at startup (`gc_register_scan_region`); the
+  collector additionally scans the collecting thread's C stack
+  conservatively (stack bounds captured per thread, `[sp, stack_top)`,
+  refusal falls back to a one-time warning + auto-collect disabled).
+- **Builtins**: `gc_collect()` forces a full cycle, `gc_stats()` prints the
+  stats line (both are no-ops under `-ngc`).
+- GC behavior tests: `tests/test_gc.c` (12 cases) + `tests/test_gc.py`,
+  plus `examples/gc_roots.lsh` and `examples/gc_churn.lsh`.
+- Allocation-churn benchmark task `benchmarking/tasks/allocstress.lsh`
+  (400 rounds of short-lived strings/vectors/hashes with a small live set).
+- Benchmark harness now measures **peak RSS** (via `os.wait4` →
+  `ru_maxrss`), prints a `PEAK RSS (max over runs)` table, and records
+  `peak_rss_kb` per run in `--json` output.
+
+### Changed
+- Mark phase is iterative (explicit worklist, no recursion) over an
+  open-addressed page directory; large objects live in an address-sorted
+  array found by binary search. Freelist heads are discarded without
+  deref on purge and rebuilt by walking the surviving slabs.
+- Threads take the GC mutex on entry (`leash_gc_thread_spawned()` before
+  creation, `gc_thread_worker` TLS + `leash_gc_worker_begin/end` brackets
+  for pool/matrix workers); foreign threads that touch the GC flip it to
+  locked mode and are tracked until quiescence.
+- Matrix buffers, vector batches, `leash_fast_memcpy`, bigint and future
+  helpers are compiled outside the `NO_GC` guard again, restoring
+  `-ngc` link compatibility.
+- Bump version to `0.24.3 Beta`.
+
+### Fixed
+- `_get_type_size` now computes real ABI layout (alignment + struct
+  padding) instead of summing field sizes — llvmlite's `get_abi_size`
+  requires a binding type and always threw for IR types. Undersized
+  allocations (e.g. `RxNode`: 95 B requested, ≥120 B real) were masked by
+  glibc slack under the old GC and corrupted the slab allocator.
+  `sizeof` on an opaque struct now raises a proper `LeashError`.
+- Memory: on the `allocstress` benchmark, peak RSS drops from **58.9 MB**
+  (old GC, never collects) to **15.1 MB** (new GC, auto-collect) with
+  comparable run times; compute benchmarks show no real regression
+  (verified by direct A/B — suite-level deltas were machine noise).
+
 ## [0.24.2] - 2026-09-24
 
 ### Added — Non-blocking HTTP server write path (0.24.1's "next step")
@@ -412,6 +467,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 ### Changed
 - Bump version to `0.23.5 Beta`.
 
+[0.24.3]: https://github.com/foksiny/leash/releases/tag/v0.24.3
+[0.24.2]: https://github.com/foksiny/leash/releases/tag/v0.24.2
 [0.24.1]: https://github.com/foksiny/leash/releases/tag/v0.24.1
 [0.24.0]: https://github.com/foksiny/leash/releases/tag/v0.24.0
 [0.23.9]: https://github.com/foksiny/leash/releases/tag/v0.23.9

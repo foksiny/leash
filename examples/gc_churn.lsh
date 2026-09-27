@@ -1,0 +1,25 @@
+// Allocation churn: produce enough short-lived strings/vectors that both
+// explicit and automatic collections run; live data and totals stay exact.
+fnc build(count int) : int {
+    total: int = 0;
+    for i: int = 0; i < count; i = i + 1 {
+        v: vec<int> = {i, i + 1, i + 2};
+        s: string = "pad-" + tostring(i);
+        total = total + v.size + s.size;
+    }
+    return total;
+}
+
+fnc main() {
+    grand: int = 0;
+    for r: int = 0; r < 30; r = r + 1 {
+        grand = grand + build(2000);
+        gc_collect();
+    }
+    live: vec<string> = {"still", "here"};
+    grand = grand + build(2000);
+    gc_collect();
+    show(grand);
+    show(live.size, " ", live.get(0), " ", live.get(1));
+    show("churn ok");
+}

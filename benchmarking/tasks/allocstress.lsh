@@ -1,0 +1,44 @@
+// Allocation-heavy GC stress: short-lived strings, vectors and hash tables
+// with a small live set. Stresses reclamation rate and peak memory (shown in
+// the PEAK RSS table of scripts/benchmark.py). The checksum must stay exact.
+// Each builder runs in its own function so its containers die on return.
+
+fnc make_words(round int) : int {
+    words: vec<string>;
+    for wi: int = 0; wi < 300; wi = wi + 1 {
+        words.pushb("w" + tostring(wi) + "-" + tostring(round));
+    }
+    total: int = 0;
+    foreach _, word in<vector> words {
+        total = total + word.size;
+    }
+    return total + words.size;
+}
+
+fnc make_nums(round int) : int {
+    nums: vec<int>;
+    for ni: int = 0; ni < 600; ni = ni + 1 {
+        nums.pushb(ni * (round + 1));
+    }
+    return nums.size + nums.get(599);
+}
+
+fnc make_counts() : int {
+    counts: hash<string, int>;
+    for ki: int = 0; ki < 100; ki = ki + 1 {
+        counts.push("k" + tostring(ki), ki);
+    }
+    return counts.size;
+}
+
+fnc main() {
+    checksum: int = 0;
+    live: vec<string> = {"keep"};
+    for round: int = 0; round < 400; round = round + 1 {
+        checksum = checksum + make_words(round);
+        checksum = checksum + make_nums(round);
+        checksum = checksum + make_counts();
+        live.pushb("round-" + tostring(round));
+    }
+    show(checksum, " ", live.size);
+}
