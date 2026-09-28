@@ -55,7 +55,10 @@ def validate_name(name):
 #   - URLs starting with `-` would be parsed by git as command-line options
 #     (e.g. `--upload-pack=sh -c ...`), which is again remote code execution
 _SCP_STYLE_RE = re.compile(r'^[A-Za-z0-9_.-]+@[A-Za-z0-9_.-]+:[A-Za-z0-9_./~-]+$')
-_SAFE_GIT_SCHEMES = ("https://", "ssh://", "git://")
+# git:// is deliberately NOT in the safe list: it is unauthenticated and
+# unencrypted, so a network attacker can substitute package content that
+# then gets linked into the user's binary.
+_SAFE_GIT_SCHEMES = ("https://", "ssh://")
 
 
 def validate_git_url(url, allow_insecure=False, source="repository"):
@@ -65,6 +68,11 @@ def validate_git_url(url, allow_insecure=False, source="repository"):
     `allow_insecure=True` (for URLs the user typed themselves), plain http is
     permitted but warned about; URLs coming from the registry must be https.
     """
+    if not isinstance(url, str):
+        # Malformed registry entries (e.g. "repo": 123) must fail with a
+        # clean error, not an AttributeError traceback.
+        eprint(f"error: Invalid {source} URL")
+        sys.exit(1)
     u = (url or "").strip()
     if not u:
         eprint(f"error: Empty {source} URL")
@@ -87,7 +95,7 @@ def validate_git_url(url, allow_insecure=False, source="repository"):
                   "the download can be tampered with in transit.")
         elif scheme not in _SAFE_GIT_SCHEMES:
             eprint(f"error: Unsafe {source} URL rejected: '{u}'")
-            eprint("  Only https://, ssh:// and git:// URLs are allowed. Git "
+            eprint("  Only https:// and ssh:// URLs are allowed. Git "
                    "transports such as ext::/fd:: execute local commands, and "
                    "file:// URLs bypass the registry review entirely.")
             sys.exit(1)
@@ -177,6 +185,15 @@ def assert_no_symlinks(root):
     into the install directory or hanging the copy. Leash packages are plain
     source trees, so a symlink is never legitimate here.
     """
+    # The walk root itself must be checked too: os.walk always descends
+    # into the root even when it is a symlink (followlinks=False only
+    # affects nested links), so `library -> /home/victim/.ssh` used to
+    # pass the check and copytree then copied the target directory.
+    if os.path.islink(root):
+        eprint(f"error: refusing to install package: '{root}' is a symlink.")
+        eprint("  Symlinks in packages can point outside the package "
+               "(path traversal) and are not allowed.")
+        sys.exit(1)
     for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
         for name in filenames + dirnames:
             p = os.path.join(dirpath, name)
@@ -239,6 +256,9 @@ def get_gh_user():
 
 
 def fetch_index():
+    if REGISTRY_URL.startswith("http://"):
+        eprint("[leashed] warning: LEASHED_REGISTRY_URL uses plain http:// — "
+               "the package index can be tampered with in transit.")
     try:
         req = urllib.request.Request(REGISTRY_URL, headers={"User-Agent": "leashed"})
         with urllib.request.urlopen(req, timeout=30) as r:
@@ -302,12 +322,26 @@ def read_pkg_config(path):
 
 
 def write_pkg_config(path, config):
+    def _esc(v):
+        s = str(v).replace("\\", "\\\\").replace('"', '\\"')
+        if any(ord(c) < 0x20 or c == "\x7f" for c in s):
+            # control characters (including newlines) cannot round-trip
+            # through the line-based format — collapse them to spaces
+            s = " ".join(s.split())
+        return s
+
     with open(path, "w", encoding="utf-8") as f:
         f.write("# Leashed package configuration\n")
-        for key in ["name", "version", "author", "description", "main", "repo", "dependencies", "imports"]:
-            val = config.get(key)
-            if val:
-                f.write(f'{key}: "{val}"\n')
+        # Write ALL existing keys (custom keys used to be silently deleted)
+        # with values that survive the read round-trip.
+        for key, val in config.items():
+            if not key or any(c in key for c in ' "\r\n\x00-\x1f\x7f'):
+                continue
+            if val is None:
+                continue
+            if not isinstance(val, str):
+                val = " ".join(str(x) for x in val) if isinstance(val, (list, tuple)) else str(val)
+            f.write(f'{key}: "{_esc(val)}"\n')
 
 
 def run_leash_check(filepath, extra_import_dirs=None):
@@ -422,6 +456,13 @@ def cmd_publish(args):
         eprint("error: 'main' not set in leash-pkg.lshc")
         sys.exit(1)
     main_path = os.path.join(project_dir, main_file)
+    # `main: "../other/src/main.lsh"` used to make the source-copy phase
+    # walk (and publish) a directory OUTSIDE the project.
+    _real_main = os.path.realpath(main_path)
+    _real_proj = os.path.realpath(project_dir)
+    if _real_main != _real_proj and not _real_main.startswith(_real_proj + os.sep):
+        eprint(f"error: 'main' must stay inside the project directory (got '{main_file}').")
+        sys.exit(1)
     if not os.path.exists(main_path):
         eprint(f"error: Main file '{main_path}' not found")
         sys.exit(1)
@@ -480,6 +521,11 @@ def cmd_publish(args):
         tmp_cleanup(out_dir)
         sys.exit(1)
 
+    # The publish path never checked for symlinks: shutil.copy2/copytree
+    # both FOLLOW them, so a tracked `src -> /home/victim/.ssh` would be
+    # silently committed and force-pushed to the (public) repository.
+    assert_no_symlinks(project_dir)
+
     src_root = os.path.dirname(main_path)
     for root, dirs, files in os.walk(src_root):
         rel = os.path.relpath(root, src_root)
@@ -507,6 +553,11 @@ def cmd_publish(args):
     # Step 3: Determine or create the library repo
     repo_url = config.get("repo", "")
     if repo_url:
+        # The config value used to go straight into `git remote add` ->
+        # `git fetch` -> `git push --force`, so a tampered leash-pkg.lshc
+        # could force-push to arbitrary local / file:// / ext:: remotes.
+        # Same strict validation as the install path (H1).
+        repo_url = validate_git_url(repo_url, allow_insecure=False, source="publish repo")
         print(f"[leashed] Using repo: {repo_url}")
     else:
         # Auto-create a public repo under the user's GitHub account
@@ -1034,6 +1085,15 @@ def _write_stub(libname, version, author, desc, dest_root):
         print(f"[leashed] warning: skipping import stub: invalid module name "
               f"'{entry_module}' in installed package.lshc")
         return
+    # Defense in depth: never trust the caller's metadata either.
+    def _clean(s, default):
+        s = s if isinstance(s, str) else default
+        s = re.sub(r'[\r\n\x00-\x1f\x7f]', ' ', s).strip()
+        return s or default
+    author = _clean(author, "?")
+    desc = _clean(desc, "")
+    if not (isinstance(version, str) and validate_version(version)):
+        version = "?"
     stub_path = os.path.join(LEASH_LIBS_DIR, f"{libname}.lsh")
     with open(stub_path, "w", encoding="utf-8") as f:
         f.write(f"// {libname} {version} by {author}\n")
@@ -1104,6 +1164,17 @@ def _install_from_repo(repo_url, requested_version=None, libname=None):
         version = pkg.get("version", requested_version or "?")
         author = pkg.get("author", "?")
         desc = pkg.get("description", "")
+        # M7: these fields come from the installed package's own metadata
+        # and are written into the generated import stub — a newline would
+        # escape the `//` comment and inject source into every consumer.
+        if not (isinstance(version, str) and validate_version(version)):
+            version = requested_version if (isinstance(requested_version, str) and validate_version(requested_version)) else "?"
+        if not isinstance(author, str):
+            author = "?"
+        author = re.sub(r'[\r\n\x00-\x1f\x7f]', ' ', author).strip() or "?"
+        if not isinstance(desc, str):
+            desc = ""
+        desc = re.sub(r'[\r\n\x00-\x1f\x7f]', ' ', desc).strip()
 
         print(f"[leashed] Installing '{libname}' v{version} from {repo_url}")
         assert_no_symlinks(src)
@@ -1423,7 +1494,10 @@ def cmd_search(args):
     for k, v in libs.items():
         if not isinstance(v, dict):
             continue  # corrupt entry — never render or use it
-        if query in k.lower() or query in v.get("description", "").lower():
+        # A non-string description must not crash the search (M8).
+        _desc = v.get("description", "")
+        _desc = _desc if isinstance(_desc, str) else ""
+        if query in k.lower() or query in _desc.lower():
             matching[k] = v
 
     if not matching:

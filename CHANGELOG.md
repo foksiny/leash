@@ -7,6 +7,153 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## [0.25.0] - 2026-09-27
+
+### Summary — ~90 audit fixes across the whole compiler
+A full read-and-verify audit of the five compiler subsystems (lexer/parser,
+type checker, codegen, C runtime/GC, package manager/CLI) produced ~90
+findings. All of them are fixed in this release, each with regression
+coverage. The overarching theme: silent corruption, silent success and
+silent exfiltration all became loud errors or well-defined behavior.
+
+### Fixed — Type checker (soundness)
+- Argument/field/method type mismatches are now errors (were warnings);
+  literal values must fit the declared sign/width (`int<8> = 129` is
+  rejected); missing struct fields without defaults are rejected.
+- `works { ... } otherwise err { ... }` no longer swallows compile-time
+  type errors inside the works block: static errors are re-reported
+  instead of being misreported as runtime failures.
+- Functions returning a value must return on all paths (an `if/else`
+  where both arms return satisfies the check).
+- Operators between incompatible types (`struct + int`, `int == string`)
+  are hard errors; the unsafe-pointer-cast checker (`as`/`(T)x`) now
+  recognizes `int<N>` spellings and real pointer sources.
+- `spawn` only accepts `worker fnc` functions.
+- Block scoping: variables declared in `if`/loop bodies no longer leak
+  into the enclosing scope.
+- `opdef` extension methods on user structs work (implicit `this`
+  receiver, arguments checked); `this` inside opdef bodies resolves.
+- Shift amounts are checked against the operand's real (resolved)
+  width — including aliases and `char` — and negative amounts are
+  errors; `x % 0` is caught statically like `x / 0`.
+- Union type-punning is rejected for every escape hatch: globals,
+  struct fields, and aliased unions (previously only direct locals).
+- `del` poisons every alias of the deleted instance (`p := o; del o; p.v`
+  is an error); read-only array borrows can no longer be handed to a
+  mutable `&T` parameter; `imut` containers can no longer be mutated
+  through element/field writes.
+- Negative array indices wrap from the end by design; constant indices
+  beyond the wrap range are compile-time errors.
+- `if`/`while`/`for` conditions and `&&`/`||` operands must be `bool`.
+- Member access on primitives/arrays/strings (`5.foo`) is a proper
+  error instead of a downstream crash; default parameter values,
+  unknown parameter/return types, array sizes, and builtin argument
+  counts are all validated (no more internal-error tracebacks).
+- New error codes: `LEASH-E015` (literal out of range), `LEASH-E016`
+  (struct init missing field), `LEASH-E017` (shared one-writer rule).
+
+### Fixed — Code generation (miscompiles & memory safety)
+- `tostring`/concatenation buffers for floats grew from 64 bytes to 400
+  with bounded `snprintf` (`"x = " + 1.5e300` no longer smashes the heap).
+- Signedness is derived from the Leash types everywhere instead of
+  defaulting to signed: widening (`uint<32> -> int<64>`), int<->float
+  conversions (`uitofp`/`fptoui`), char/bool binary ops
+  (`char(200) >> 1` is 100, not -28), union/matrix scalar helpers.
+- Subscript indices widen straight to i64 with the source's signedness —
+  a 2^32+3 index no longer truncates to a valid-looking 3; pointer
+  arithmetic sign-extends negative offsets (`p + (-1)` reads the
+  previous element instead of a wild address).
+- Loop variables are restored after loops (`foreach i, v in ...; show(i)`
+  prints the outer `i`, not the loop index); constant propagation
+  invalidates loop-rebinding variables; `_ = expr` is a true discard.
+- Runtime guards for shift amounts and `INT_MIN / -1` (plus static
+  detection when constants were folded by the optimizer); `nuw`/`nsw`
+  flags were removed from wrapping user arithmetic (they made overflow
+  poison at -O1+).
+- Union payloads are stored aligned (int<128> variants), `tounion(...)`
+  produces a fully-tagged union value usable everywhere, and `vec.isin`
+  compares struct elements field-wise and strings by content instead of
+  comparing addresses (which never matched).
+- `tostring(true)` prints `"true"`; `tostring(uint)`/`tostring(char)`
+  no longer print negative numbers.
+- `rand(min, max)` computes in 64-bit and validates `max >= min`;
+  `exec(..., "code")` survives a failed `popen` and returns `""`;
+  long exec commands abort instead of silently running a truncated
+  command.
+- The `_emit_cast` fallback now raises a proper diagnostic instead of
+  returning an ill-typed value that crashed llvmlite.
+
+### Fixed — C runtime & garbage collector
+- Unions are pointer-bearing to the collector: union-typed globals are
+  registered as scan regions and `vec<union>`/`matrix<union>` buffers
+  are never marked atomic (a string held in a union used to be
+  collectable while reachable).
+- The `showb` output buffer is guarded by a runtime spin lock; growth
+  uses a real branch (an LLVM `select` evaluated both the malloc and
+  realloc arms, leaking one allocation per growth) with an OOM trap;
+  `main` now waits for workers BEFORE flushing, so buffered worker
+  output is no longer lost.
+- `File.read`/`readb`/replace reject non-seekable streams (`ftell < 0`)
+  instead of allocating 0/(size_t)-1 bytes; `readb` on an empty file
+  returns a valid empty buffer; `exec` and `get` check every allocation
+  result.
+- GC hardening: double frees of small/large cells are ignored
+  (`CELL_IN_USE` guard); futures are no longer double-rooted (every
+  `async`/`await` used to leak permanently); stack-bound capture
+  records its owning thread and invalidates on failure (a stale
+  cross-thread top could SIGSEGV the marker); `leash_gc_thread_attach()`
+  lets FFI-created threads opt into the collector deterministically;
+  vector helpers validate sizes (`qsort` with a negative size walked out
+  of bounds; the bulk-copy guard aborted every 1-byte-element copy);
+  debug-init races in the Windows/cross stubs use init-once primitives.
+- The GC harness passes cleanly under AddressSanitizer (the conservative
+  stack scanner is excluded, Boehm-style).
+
+### Fixed — Package manager & CLI security
+- `leashed publish` validates the configured `repo` with the same strict
+  URL rules as installs (a tampered `leash-pkg.lshc` could previously
+  force-push to arbitrary local/`file://`/`ext::` remotes), rejects
+  symlinked projects and `main:` paths that escape the project
+  directory, and never dereferences tracked symlinks into the published
+  repository.
+- `assert_no_symlinks` now also rejects a symlinked package ROOT
+  (`library -> ~/.ssh` used to pass and be copied wholesale).
+- Project builds contain `main:`/`imports:` inside the project, object
+  writes refuse to follow planted symlinks (`out/app.o -> ~/.bashrc`
+  no longer truncates the target), `@from` native libraries must
+  realpath inside the module directory (symlink escapes are errors),
+  and the object cache runs the security scan before being consulted.
+- Registry/package hardening: non-string index fields fail cleanly;
+  package metadata can no longer inject source into import stubs via
+  newlines; `git://` installs are rejected (unauthenticated transport);
+  `write_pkg_config` preserves unknown keys and escapes values;
+  the runtime stub cache moved from the (possibly shared) install dir
+  to a private `~/.leash/rtcache`; temp binaries are 0600 instead of
+  world-readable; `update_leash` verifies the origin remote and pulls
+  with `--ff-only`.
+- CLI ergonomics: unknown `--target`/unreadable input report friendly
+  errors instead of tracebacks; `leash run --target x file.lsh` (options
+  before the file) no longer silently switches to project mode;
+  `leash install` refuses symlinked sources.
+
+### Added — Concurrency (`shared`/`fusion` semantics enforced)
+- The `shared` one-writer rule is now enforced at compile time
+  (`LEASH-E017` when two functions write the same `shared` global).
+- Scalar integer `fusion` globals compile to atomic (seq_cst) loads and
+  stores, and the counter idiom `x = x + n` lowers to a single atomic
+  read-modify-write — the generated IR previously contained zero atomic
+  instructions, contradicting the documented semantics.
+- Docs updated accordingly (conditions must be bool; negative index
+  wrap rules; FFI threads and automatic collection).
+
+### Tests
+- New suites/growth: `test_frontend.py` (51), `test_typechecker.py`
+  (75), `test_codegen_fixes.py` (32), `test_leashed.py` security
+  additions, `test_security.py` symlink/containment cases. Full stack:
+  240 pytest, 88 example tests, 99 stdlib tests, 227 unittest, GC
+  harness (plain + ASan) — all green.
+
+
 ## [0.24.3] - 2026-09-26
 
 ### Added — The garbage collector actually collects (Phases 0–2 overhaul)

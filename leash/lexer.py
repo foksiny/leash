@@ -19,17 +19,45 @@ _LEASH_ESCAPE_MAP = {
 }
 
 
-def leash_unescape(text):
+def leash_unescape(text, line=None, col=None):
     """Unescape a Leash string: \\{ -> {, \\} -> }, \\n, \\t, \\uXXXX, \\xNN, etc.
 
     Unlike Python's unicode_escape codec, this never mangles non-ASCII
     characters (unicode_escape decodes UTF-8 bytes as Latin-1, corrupting
     every non-ASCII char in the literal). Unknown escapes keep their
     backslash, matching Python 3.12+'s unicode_escape behavior.
+
+    Fixed-width escapes (\\x, \\u, \\U) must have exactly 2/4/8 hex digits
+    and a valid, non-surrogate code point; anything else raises LeashError
+    (with line/col when the caller can supply a source position).
     """
     out = []
     i = 0
     n = len(text)
+
+    def _bad(msg):
+        return LeashError(msg, line, col)
+
+    def _hex_cp(digits, what, width, limit):
+        if len(digits) != width or any(c not in "0123456789abcdefABCDEF" for c in digits):
+            raise _bad(
+                f"Invalid {what} escape: expected exactly {width} hex digits "
+                f"(e.g. \\{'x' if width == 2 else 'u' if width == 4 else 'U'}"
+                f"{'41'.zfill(width)})."
+            )
+        cp = int(digits, 16)
+        if cp > limit:
+            raise _bad(
+                f"Invalid {what} escape: code point U+{cp:0{width}X} is out of range "
+                f"(max U+{limit:X})."
+            )
+        if 0xD800 <= cp <= 0xDFFF:
+            raise _bad(
+                f"Invalid {what} escape: U+{cp:04X} is a lone UTF-16 surrogate; "
+                "encode non-BMP characters directly instead."
+            )
+        return chr(cp)
+
     while i < n:
         ch = text[i]
         if ch == "\\" and i + 1 < n:
@@ -39,31 +67,16 @@ def leash_unescape(text):
                 i += 2
                 continue
             if nxt == "x":
-                digits = text[i + 2 : i + 4]
-                try:
-                    out.append(chr(int(digits, 16)))
-                    i += 4
-                except ValueError:
-                    out.append("\\x")
-                    i += 2
+                out.append(_hex_cp(text[i + 2 : i + 4], "\\x", 2, 0xFF))
+                i += 4
                 continue
             if nxt == "u":
-                digits = text[i + 2 : i + 6]
-                try:
-                    out.append(chr(int(digits, 16)))
-                    i += 6
-                except ValueError:
-                    out.append("\\u")
-                    i += 2
+                out.append(_hex_cp(text[i + 2 : i + 6], "\\u", 4, 0xFFFF))
+                i += 6
                 continue
             if nxt == "U":
-                digits = text[i + 2 : i + 10]
-                try:
-                    out.append(chr(int(digits, 16)))
-                    i += 10
-                except ValueError:
-                    out.append("\\U")
-                    i += 2
+                out.append(_hex_cp(text[i + 2 : i + 10], "\\U", 8, 0x10FFFF))
+                i += 10
                 continue
             out.append("\\")
             out.append(nxt)
@@ -175,20 +188,26 @@ class Lexer:
     TOKEN_SPECIFICATION = [
         (
             "MLSTRING_D",
-            r'"""[\s\S]*"""',
-        ),  # Multi-line string double (greedy to last """")
+            r'"""[\s\S]*?"""',
+        ),  # Multi-line string double (non-greedy: stops at the first closing """)
         (
             "MLSTRING_S",
-            r"'''[\s\S]*'''",
-        ),  # Multi-line string single (greedy to last ''')
+            r"'''[\s\S]*?'''",
+        ),  # Multi-line string single (non-greedy: stops at the first closing ''')
         (
             "STRING",
-            r'"(?:[^"\\]|\\.)*"(?!["])',  # String literal (not followed by another ")
+            r'"(?:[^"\\\n]|\\.)*"(?!["])',  # String literal (no raw newlines, not followed by another ")
         ),
         (
+            "BADNUM",
+            r"0[bB](?:[01_]*[2-9a-zA-Z]|(?![01]))"
+            r"|0[oO](?:[0-7_]*[8-9a-zA-Z]|(?![0-7]))"
+            r"|0[xX](?:[0-9a-fA-F_]*[g-oq-zG-OQ-Z]|(?![0-9a-fA-F]))",
+        ),  # Malformed binary/octal/hex literal (invalid digit or missing digits)
+        (
             "NUMBER",
-            r"(?:0[xX][0-9a-fA-F]+(?:\.[0-9a-fA-F]*)?(?:[pP][+-]?\d+)?|0[bB][01]+|0[oO][0-7]+|\d+(?:\.\d*)?(?:[eE][+-]?\d+)?|\.\d+(?:[eE][+-]?\d+)?)",
-        ),  # Integer, float, hex, binary, octal, scientific
+            r"(?:0[xX][0-9a-fA-F](?:_?[0-9a-fA-F])*(?:\.[0-9a-fA-F](?:_?[0-9a-fA-F])*)?(?:[pP][+-]?\d+)?|0[bB][01](?:_?[01])*|0[oO][0-7](?:_?[0-7])*|\d(?:_?\d)*(?:\.(?:\d(?:_?\d)*)?)?(?:[eE][+-]?\d+)?|\.\d(?:_?\d)*(?:[eE][+-]?\d+)?)",
+        ),  # Numeric literal; integer digit separators (1_000) supported
         ("IDENT", r"[A-Za-z_][A-Za-z0-9_]*"),  # Identifiers
         ("INC", r"\+\+"),  # Increment
         ("PLUS_ASSIGN", r"\+="),  # Plus-equals
@@ -201,6 +220,7 @@ class Lexer:
         ("MUL", r"\*"),  # Multiplication operator
         ("COMMENT", r"//.*"),  # Comments
         ("MLCOMMENT", r"/\*[\s\S]*?\*/"),  # Multi-line comments
+        ("BADCOMMENT", r"/\*(?:[^*]|\*(?!/))*"),  # Unterminated block comment (no closing */)
         ("DIV_ASSIGN", r"/="),  # Divide-equals
         ("DIV", r"/"),  # Division operator
         ("MOD_ASSIGN", r"%="),  # Modulo-equals
@@ -241,12 +261,12 @@ class Lexer:
         ("ISIN", r"<>"),  # Is-in operator for arrays/pointers
         ("LT", r"<"),  # Less than
         ("GT", r">"),  # Greater than
-        ("CHAR", r"'[^'\\]*(?:\\.[^'\\]*)*'"),  # Char literal (inner group non-capturing:
+        ("CHAR", r"'(?:[^'\\\n]|\\.)*'"),  # Char literal (no raw newlines; inner group non-capturing:
         # every alternative in TOKEN_SPECIFICATION must own exactly ONE numbered
         # group so mo.lastindex maps 1:1 to a kind name in tokenize)
         ("AT", r"@"),  # @ symbol for native imports
         ("NEWLINE", r"\n"),  # Line endings
-        ("SKIP", r"[ \t]+"),  # Skip over spaces and tabs
+        ("SKIP", r"[ \t\r]+"),  # Skip over spaces, tabs, and CR (CRLF line endings)
         ("MISMATCH", r"."),  # Any other character
     ]
 
@@ -270,17 +290,21 @@ class Lexer:
         """Parse a numeric literal into an int or float.
 
         Supported forms:
-          - Decimal:  42, 3.14, .5, 1e10, 2.5E-3
-          - Hex:      0xFF, 0xDEAD.BEEF, 0x1p10
-          - Binary:   0b1010
-          - Octal:    0o755
+          - Decimal:  42, 3.14, .5, 1e10, 2.5E-3, digit separators 1_000
+          - Hex:      0xFF, 0xDEAD.BEEF, 0x1p10, 0x1_FFFF
+          - Binary:   0b1010, 0b1111_0000
+          - Octal:    0o755, 0o7_55
+
+        Raises ValueError for malformed literals (leading zeros in decimal,
+        bad digits) or values that overflow to infinity.
         """
         lower = raw.lower()
 
         # Hexadecimal (with optional hex-float exponent p/P)
         if lower.startswith("0x"):
             if "." in raw or "p" in lower:
-                return float.fromhex(raw)
+                # float.fromhex does not accept digit separators.
+                return float.fromhex(raw.replace("_", ""))
             return int(raw, 16)
 
         # Binary
@@ -293,9 +317,15 @@ class Lexer:
 
         # Decimal with exponent or dot → float
         if "e" in lower or "." in raw:
-            return float(raw)
+            v = float(raw)
+            if v == float("inf") or v == float("-inf"):
+                raise ValueError(f"'{raw}' is out of range (evaluates to infinity)")
+            return v
 
-        # Plain decimal integer
+        # Plain decimal integer — reject ambiguous leading zeros (007)
+        if len(raw) > 1 and raw[0] == "0" and raw.replace("_", "").isdigit():
+            raise ValueError("leading zeros are not allowed in decimal literals")
+
         return int(raw, 10)
 
     # Class-level table mapping the combined regex's numbered groups back to
@@ -336,16 +366,68 @@ class Lexer:
                 line_start = mo.end()
                 line_num += 1
                 continue
-            if kind == "SKIP" or kind == "COMMENT" or kind == "MLCOMMENT":
+            if kind == "SKIP" or kind == "COMMENT":
                 continue
+            if kind == "MLCOMMENT":
+                # Multi-line comments contain newlines: advance line tracking.
+                if "\n" in value:
+                    line_num += value.count("\n")
+                    line_start = start + value.rfind("\n") + 1
+                continue
+            if kind == "BADCOMMENT":
+                raise LeashError(
+                    "Unterminated block comment: missing '*/'.",
+                    line_num,
+                    column,
+                    tip="Block comments look like /* ... */ and cannot span to the end of the file without closing.",
+                )
             if kind == "NUMBER":
-                tokens_append(Token(kind, parse_number(value), line_num, column))
+                try:
+                    num = parse_number(value)
+                except (ValueError, OverflowError) as e:
+                    raise LeashError(
+                        f"Invalid numeric literal '{value}': {e}.", line_num, column
+                    )
+                tokens_append(Token(kind, num, line_num, column))
                 continue
+            if kind == "BADNUM":
+                if value[:2].lower() == "0b":
+                    what = "binary"
+                elif value[:2].lower() == "0o":
+                    what = "octal"
+                else:
+                    what = "hexadecimal"
+                raise LeashError(
+                    f"Invalid {what} numeric literal '{value}'.",
+                    line_num,
+                    column,
+                    tip=f"Use only valid digits for {what} literals (separators like 1_000 must be between digits).",
+                )
             if kind == "MISMATCH":
-                raise LeashError(f"Unexpected character: {value}", line_num, column)
+                if value == '"' and code[start : start + 3] == '"""':
+                    raise LeashError(
+                        "Unterminated multi-line string literal: missing closing \"\"\".",
+                        line_num,
+                        column,
+                    )
+                if value == '"':
+                    raise LeashError(
+                        "Unterminated or malformed string literal.",
+                        line_num,
+                        column,
+                        tip="Strings must close on the same line; use \"\"\" ... \"\"\" for multi-line text.",
+                    )
+                if value == "'":
+                    raise LeashError(
+                        "Unterminated or malformed character literal.",
+                        line_num,
+                        column,
+                        tip="Character literals hold exactly one character, e.g. 'a', '\\n'.",
+                    )
+                raise LeashError(f"Unexpected character: {value!r}", line_num, column)
             if kind == "STRING":
                 raw = value[1:-1]
-                text = leash_unescape(raw)
+                text = leash_unescape(raw, line_num, column)
                 if "\x00" in text:
                     raise LeashError(
                         "NUL byte ('\\0') is not allowed inside string literals: Leash strings cannot hold embedded NULs.",
@@ -354,19 +436,44 @@ class Lexer:
                 t = Token(kind, text, line_num, column)
                 t.raw = raw
                 tokens_append(t)
+                # Strings may span lines only via their content tokens? No — but
+                # keep line tracking correct for any raw newlines defensively.
+                if "\n" in value:
+                    line_num += value.count("\n")
+                    line_start = start + value.rfind("\n") + 1
                 continue
 
             if kind == "CHAR":
-                value = value[1:-1]
-                value = leash_unescape(value)
-            elif kind in ("MLSTRING_D", "MLSTRING_S"):
-                value = value[3:-3]
-                value = leash_unescape(value)
-                if "\x00" in value:
+                inner_raw = value[1:-1]
+                text = leash_unescape(inner_raw, line_num, column)
+                if len(text) != 1:
+                    raise LeashError(
+                        "Character literal must contain exactly one character "
+                        f"(found {len(text)}).",
+                        line_num,
+                        column,
+                        tip="For longer text use a string literal: \"abc\" instead of 'abc'.",
+                    )
+                tokens_append(Token(kind, text, line_num, column))
+                if "\n" in value:
+                    line_num += value.count("\n")
+                    line_start = start + value.rfind("\n") + 1
+                continue
+            if kind in ("MLSTRING_D", "MLSTRING_S"):
+                inner_raw = value[3:-3]
+                text = leash_unescape(inner_raw, line_num, column)
+                if "\x00" in text:
                     raise LeashError(
                         "NUL byte ('\\0') is not allowed inside string literals: Leash strings cannot hold embedded NULs.",
                         line_num, column,
                     )
+                t = Token(kind, text, line_num, column)
+                t.raw = inner_raw  # enables {expr} interpolation in """ strings
+                tokens_append(t)
+                if "\n" in value:
+                    line_num += value.count("\n")
+                    line_start = start + value.rfind("\n") + 1
+                continue
 
             # NOTE: '>>' is always emitted as a single SHR token. Whether it is a
             # right-shift or the closing brackets of nested generics (e.g.

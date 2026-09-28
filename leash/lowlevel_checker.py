@@ -2,8 +2,10 @@ from .errors import LeashError
 from .ast_nodes import (
     UnionDef, VariableDecl, Assignment, MemberAccess, Identifier,
     NumberLiteral, FloatLiteral, BoolLiteral, StringLiteral, NullLiteral,
-    AsExpr, ByteConvExpr, Function, ClassMethod, Call,
+    AsExpr, ByteConvExpr, Function, ClassMethod, Call, UnaryOp, CastExpr,
+    StructDef, TypeAlias, GlobalVarDecl, StructInit,
 )
+import re
 
 class LowLevelChecker:
     def __init__(self):
@@ -12,20 +14,44 @@ class LowLevelChecker:
         self.errors = []
         self.in_assign_target = False
         self.union_variants = {}  # union_type_name -> set of variant names
-        self.var_union_info = {}  # var_name -> {union_type, active_variant} (per function scope)
+        self.var_union_info = {}  # union location key -> {union_type, active_variant} (per function scope)
         self.param_types = {}     # param_name -> type_name (per function scope)
+        self.local_types = {}     # local var_name -> type_name (per function scope)
+        self.struct_fields = {}   # struct_name -> {field_name: type}
+        self.type_aliases = {}    # alias name -> target type name
+        self.global_types = {}    # global var name -> declared type
+        self.global_union_info = {}  # global union var -> {union_type, active_variant}
         self.unsafe_func_names = set()  # names of functions marked `unsafe`
         self.nogc_func_names = set()  # names of functions marked `nogc`
 
     def check(self, ast):
         # First pass: collect union definitions and unsafe function names
         self._collect_info(ast)
+        self.var_union_info = dict(self.global_union_info)
         self.visit(ast)
         return self.errors
 
     def _collect_info(self, node):
         if isinstance(node, UnionDef):
             self.union_variants[node.name] = {v[0] for v in node.variants}
+        elif isinstance(node, StructDef):
+            self.struct_fields[node.name] = {
+                f[0]: f[1] for f in node.fields if len(f) >= 2
+            }
+        elif isinstance(node, TypeAlias):
+            self.type_aliases[node.name] = node.target_type
+        elif isinstance(node, GlobalVarDecl):
+            if node.var_type:
+                self.global_types[node.name] = node.var_type
+                resolved = self._resolve_alias(node.var_type)
+                if resolved in self.union_variants:
+                    variant = None
+                    if node.value is not None:
+                        variant = self._find_matching_variant(resolved, node.value)
+                    self.global_union_info[node.name] = {
+                        "union_type": resolved,
+                        "active_variant": variant,
+                    }
         elif isinstance(node, Function):
             if getattr(node, "is_unsafe", False):
                 self.unsafe_func_names.add(node.name)
@@ -49,13 +75,60 @@ class LowLevelChecker:
     def _error(self, msg, node=None, tip=None):
         self.errors.append(LeashError(msg, node=node, tip=tip, code="E_LOWLEVEL"))
 
-    def _get_var_name(self, expr):
-        """Extract variable name from an expression (handles chains like a.b.c -> a)."""
-        if isinstance(expr, Identifier):
-            return expr.name
-        if isinstance(expr, MemberAccess):
-            return self._get_var_name(expr.expr)
+    def _resolve_alias(self, type_name):
+        """Resolve `def X : type Y` aliases (also strips `imut ` and `*`/`&`)."""
+        if not type_name:
+            return type_name
+        t = str(type_name).strip()
+        while t and (t.startswith("imut ") or t[0] in "*&"):
+            t = t[5:].strip() if t.startswith("imut ") else t[1:].strip()
+        seen = set()
+        while t in self.type_aliases and t not in seen:
+            seen.add(t)
+            t = str(self.type_aliases[t]).strip()
+            while t and (t.startswith("imut ") or t[0] in "*&"):
+                t = t[5:].strip() if t.startswith("imut ") else t[1:].strip()
+        return t
+
+    def _member_path(self, node):
+        """Full path of a MemberAccess chain: `w.u.f` -> ('w', 'u', 'f')."""
+        parts = []
+        cur = node
+        while isinstance(cur, MemberAccess):
+            parts.append(cur.member)
+            cur = cur.expr
+        if isinstance(cur, Identifier):
+            parts.append(cur.name)
+            return tuple(reversed(parts))
         return None
+
+    def _union_reads_in_path(self, path):
+        """Find union variant reads along a member path.
+
+        Yields (union_key, union_type, variant) where union_key is the
+        location key of the union ('u' for a local/global, 'w.u' for a
+        union stored in a struct field) and variant is the member read.
+        """
+        t = (
+            self.local_types.get(path[0])
+            or self.param_types.get(path[0])
+            or self.global_types.get(path[0])
+        )
+        if t is None:
+            return
+        for i in range(1, len(path)):
+            member = path[i]
+            rt = self._resolve_alias(t)
+            if rt in self.union_variants:
+                if member in self.union_variants[rt]:
+                    yield (".".join(path[:i]), rt, member)
+                return
+            fields = self.struct_fields.get(rt)
+            if fields is None:
+                return
+            t = fields.get(member)
+            if t is None:
+                return
 
     def _infer_literal_type_name(self, expr):
         """Guess the type name of a literal expression for union variant matching."""
@@ -119,16 +192,20 @@ class LowLevelChecker:
         old_nogc = self.in_nogc_func
         old_var_info = self.var_union_info
         old_param_types = self.param_types
+        old_local_types = self.local_types
         self.in_unsafe_func = getattr(node, "is_unsafe", False)
         self.in_nogc_func = getattr(node, "is_nogc", False)
-        self.var_union_info = {}
+        # Globals stay visible inside functions; local declarations shadow.
+        self.var_union_info = dict(self.global_union_info)
         self.param_types = {}
+        self.local_types = {}
         # Track parameter types for union variant matching
         for arg in node.args:
             if len(arg) >= 2:
                 self.param_types[arg[0]] = arg[1]
         self.generic_visit(node)
         self.param_types = old_param_types
+        self.local_types = old_local_types
         self.var_union_info = old_var_info
         self.in_nogc_func = old_nogc
         self.in_unsafe_func = old_unsafe
@@ -138,10 +215,13 @@ class LowLevelChecker:
         old_nogc = self.in_nogc_func
         old_var_info = self.var_union_info
         old_param_types = self.param_types
+        old_local_types = self.local_types
         self.in_unsafe_func = getattr(node, "is_unsafe", False) or getattr(getattr(node, "fnc", None), "is_unsafe", False)
         self.in_nogc_func = getattr(getattr(node, "fnc", None), "is_nogc", False)
-        self.var_union_info = {}
+        # Globals stay visible inside functions; local declarations shadow.
+        self.var_union_info = dict(self.global_union_info)
         self.param_types = {}
+        self.local_types = {}
         fnc = getattr(node, "fnc", None)
         if fnc:
             for arg in fnc.args:
@@ -149,35 +229,68 @@ class LowLevelChecker:
                     self.param_types[arg[0]] = arg[1]
         self.generic_visit(node)
         self.param_types = old_param_types
+        self.local_types = old_local_types
         self.var_union_info = old_var_info
         self.in_nogc_func = old_nogc
         self.in_unsafe_func = old_unsafe
 
     def visit_VariableDecl(self, node):
-        # Track union variable declarations
+        # Track local declarations so pointer↔int cast checks can tell a
+        # `*T`/`&T` source (unsafe to convert) from a plain value cast.
+        if getattr(node, "name", None) and getattr(node, "var_type", None):
+            self.local_types[node.name] = node.var_type
+        # Track union variable declarations (resolving `def MyU : type U`
+        # aliases so aliased unions are covered too)
         var_type = node.var_type
-        if var_type in self.union_variants:
-            info = {"union_type": var_type, "active_variant": None}
-            # Try to determine active variant from initializer
-            if node.value is not None:
-                variant = self._find_matching_variant(var_type, node.value)
-                if variant is not None:
-                    info["active_variant"] = variant
-            # Also check if var_type has stripped pointer types
-            self.var_union_info[node.name] = info
+        if var_type:
+            resolved = self._resolve_alias(var_type)
+            if resolved in self.union_variants:
+                info = {"union_type": resolved, "active_variant": None}
+                # Try to determine active variant from initializer
+                if node.value is not None:
+                    variant = self._find_matching_variant(resolved, node.value)
+                    if variant is not None:
+                        info["active_variant"] = variant
+                self.var_union_info[node.name] = info
+            # `w: W = W{u: 5}` — a union stored in a struct field gets its
+            # active variant from the field's literal initializer, tracked
+            # under the path key `<var>.<field>`.
+            value = node.value
+            if isinstance(value, StructInit) and node.name:
+                sname = self._resolve_alias(value.name)
+                s_fields = self.struct_fields.get(sname, {})
+                for fname, fexpr in (value.kwargs or []):
+                    ftype = self._resolve_alias(s_fields.get(fname))
+                    if ftype in self.union_variants and fexpr is not None:
+                        variant = self._find_matching_variant(ftype, fexpr)
+                        if variant is not None:
+                            self.var_union_info[f"{node.name}.{fname}"] = {
+                                "union_type": ftype,
+                                "active_variant": variant,
+                            }
         self.generic_visit(node)
 
     def visit_MemberAccess(self, node):
-        """Detect reads from union variants where the active variant differs."""
-        var_name = self._get_var_name(node)
-        if var_name and var_name in self.var_union_info and not self.in_assign_target:
-            info = self.var_union_info[var_name]
-            variant = node.member
-            if variant in self.union_variants.get(info["union_type"], set()):
-                if info["active_variant"] is not None and info["active_variant"] != variant:
-                    if not self.in_unsafe_func:
+        """Detect reads from union variants where the active variant differs.
+
+        Covers locals, globals, aliased unions, and unions stored in struct
+        fields (`w.u.f`): the chain is resolved from the root variable's
+        declared type through struct fields down to the union.
+        """
+        if not self.in_assign_target:
+            path = self._member_path(node)
+            if path:
+                for union_key, union_type, variant in self._union_reads_in_path(path):
+                    info = self.var_union_info.get(union_key)
+                    if (
+                        info
+                        and info.get("union_type") == union_type
+                        and info.get("active_variant") is not None
+                        and info["active_variant"] != variant
+                        and not self.in_unsafe_func
+                    ):
                         self._error(
-                            f"Reading union '{info['union_type']}' variant '{variant}' when "
+                            f"Reading union '{union_type}' variant '{variant}' when "
                             f"'{info['active_variant']}' is active is type-punning and unsafe "
                             f"outside an `unsafe` function",
                             node,
@@ -189,14 +302,17 @@ class LowLevelChecker:
     def visit_Assignment(self, node):
         target = node.target
         new_variant = None
-        # Determine the target variant (if any) before visiting the value
+        # Determine the target variant (if any) before visiting the value.
+        # Handles direct locals (`u.f = x`), globals, and struct fields
+        # (`w.u.f = x`) through path resolution.
         if isinstance(target, MemberAccess):
-            var_name = self._get_var_name(target.expr)
-            if var_name and var_name in self.var_union_info:
-                info = self.var_union_info[var_name]
-                variant = target.member
-                if variant in self.union_variants.get(info["union_type"], set()):
-                    new_variant = (var_name, info, variant)
+            path = self._member_path(target)
+            if path:
+                for union_key, union_type, variant in self._union_reads_in_path(path):
+                    info = self.var_union_info.get(union_key)
+                    if info and info.get("union_type") == union_type:
+                        new_variant = (union_key, info, variant)
+                    break
         # Visit the value first (reads) before updating the active variant for the write
         self.visit(node.value)
         # Then handle the write to the union variant
@@ -239,10 +355,56 @@ class LowLevelChecker:
             )
         self.generic_visit(node)
 
+    @staticmethod
+    def _is_ptr_int_cast_target(target_name):
+        """True if the cast target is an integer-family type spelling.
+
+        The typechecker canonicalizes integers as `int<N>`/`uint<N>` (bare
+        `int` = int<32>); the old hardcoded C-ish names (`int64`, `uint32`,
+        ...) never matched those spellings, so `p as int<64>`, `(int<64>)p`,
+        `p as char`, and `p as bool` all slipped past the unsafe-pointer-cast
+        check.
+        """
+        if not target_name:
+            return False
+        t = str(target_name).strip()
+        if t in (
+            "int", "uint", "char", "bool",
+            "long", "ulong", "int64", "uint64", "int32", "uint32",
+            "int8", "int16", "uint8", "uint16",
+        ):
+            return True
+        return re.fullmatch(r"(u?)int<\d+>", t) is not None
+
+    def _expr_is_ptr_like(self, expr):
+        """True if expr is statically known to produce a pointer/reference.
+
+        The cast checks only guard pointer→int conversions; value casts like
+        `(char)('0' + d)` are legal outside `unsafe`, so the source must be
+        identified before flagging. Unknown expressions are not flagged.
+        """
+        if isinstance(expr, UnaryOp):
+            if expr.op == "&":
+                return True
+            if expr.op == "*":
+                # Dereference yields a value (the pointed-to type).
+                return False
+        if isinstance(expr, Identifier):
+            t = self.local_types.get(expr.name) or self.param_types.get(expr.name)
+            if t:
+                return re.match(r"^(imut\s+)?[*&]", str(t).strip()) is not None
+            return False
+        # CastExpr/AsExpr chains of non-pointer types produce values.
+        if isinstance(expr, (CastExpr, AsExpr)):
+            return False
+        return False
+
     def visit_CastExpr(self, node):
         if not self.in_unsafe_func:
             dst_type = getattr(node.target_type, "name", str(node.target_type))
-            if dst_type in ("int", "uint", "long", "ulong", "int64", "uint64", "int32", "uint32"):
+            if self._is_ptr_int_cast_target(dst_type) and self._expr_is_ptr_like(
+                getattr(node, "expr", None)
+            ):
                 self._error(
                     "Casting a pointer to integer type is unsafe outside an `unsafe` function — this can hide pointers from the Garbage Collector",
                     node,
@@ -257,8 +419,9 @@ class LowLevelChecker:
         if not self.in_unsafe_func:
             target = node.target_type
             target_name = getattr(target, "name", str(target)) if not isinstance(target, str) else target
-            if target_name in ("int", "uint", "long", "ulong", "int64", "uint64", "int32", "uint32",
-                               "int8", "int16", "int64", "uint8", "uint16", "uint32", "uint64"):
+            if self._is_ptr_int_cast_target(target_name) and self._expr_is_ptr_like(
+                getattr(node, "expr", None)
+            ):
                 self._error(
                     "Casting a pointer to integer with `as` is unsafe outside an `unsafe` function — this can hide pointers from the Garbage Collector",
                     node,

@@ -1,3 +1,5 @@
+import sys
+
 from .lexer import Lexer, Token, leash_unescape
 from .ast_nodes import (
     AwaitExpr,
@@ -92,6 +94,12 @@ from .errors import LeashError
 
 
 class Parser:
+    # Shared nesting cap for expressions, statements, and types. Each
+    # expression level burns ~16 Python frames, each statement level ~5, so
+    # the cap stays under the recursion limit and hostile/deep input yields a
+    # clean LeashError instead of a RecursionError crash.
+    MAX_EXPR_DEPTH = 100
+
     def __init__(self, tokens, source_file=None):
         self.tokens = tokens
         self.pos = 0
@@ -99,6 +107,9 @@ class Parser:
         # Journal of '>>' splices: list of (token_index, original_SHR_token).
         # Used to precisely undo splits when speculative parsing rolls back.
         self._gt_mutations = []
+        self._depth = 0
+        # Headroom for the nesting caps above (idempotent; only ever raised).
+        sys.setrecursionlimit(max(sys.getrecursionlimit(), 3000))
 
     def _pos(self, node, tok=None):
         """Set line/col on an AST node from a token (defaults to current token)."""
@@ -108,6 +119,81 @@ class Parser:
         node.col = tok.column
         node.source_file = self.source_file
         return node
+
+    def _enter(self, what):
+        """Shared nesting-depth guard (see MAX_*_DEPTH).
+
+        One counter backs expression, statement, and type nesting so the
+        combined stack stays bounded no matter how they interleave.
+        """
+        if self._depth >= self.MAX_EXPR_DEPTH:
+            tok = self.current()
+            raise LeashError(
+                f"{what} nesting is too deep (maximum {self.MAX_EXPR_DEPTH} levels).",
+                tok.line,
+                tok.column,
+                tip="Split the nested structure into named variables or helper functions.",
+            )
+        self._depth += 1
+
+    @staticmethod
+    def _type_expr_str(node):
+        """Render an array-size expression as source-like text.
+
+        f-string formatting of an AST node would leak '<object at 0x...>' into
+        the type string (and into every diagnostic that prints it), so size
+        expressions are pretty-printed here instead.
+        """
+        if node is None:
+            return ""
+        if isinstance(node, str):
+            return node
+        if isinstance(node, bool):
+            return "true" if node else "false"
+        if isinstance(node, int):
+            return str(node)
+        if isinstance(node, float):
+            return repr(node)
+        name = type(node).__name__
+        ts = Parser._type_expr_str
+        if name in ("NumberLiteral", "FloatLiteral"):
+            v = node.value
+            return str(v) if isinstance(v, int) else repr(v)
+        if name == "StringLiteral":
+            return '"' + str(node.value).replace("\\", "\\\\").replace('"', '\\"') + '"'
+        if name == "CharLiteral":
+            return "'" + str(node.value).replace("\\", "\\\\").replace("'", "\\'") + "'"
+        if name == "BoolLiteral":
+            return "true" if node.value else "false"
+        if name in ("NullLiteral",):
+            return "null"
+        if name == "Identifier":
+            return node.name
+        if name == "UnaryOp":
+            return f"{node.op}{ts(node.expr)}"
+        if name == "BinaryOp":
+            return f"{ts(node.left)} {node.op} {ts(node.right)}"
+        if name == "Call":
+            kwargs = "".join(f", {k} = {ts(v)}" for k, v in (node.kwargs or {}).items())
+            return f"{node.name}({', '.join(ts(a) for a in node.args)}{kwargs})"
+        if name == "MemberAccess":
+            return f"{ts(node.expr)}.{node.member}"
+        if name == "PointerMemberAccess":
+            return f"{ts(node.expr)}->{node.member}"
+        if name == "IndexAccess":
+            return f"{ts(node.expr)}[{ts(node.index)}]"
+        if name == "EnumMemberAccess":
+            return f"{node.enum_name}::{node.member_name}"
+        if name == "SizeofExpr":
+            return f"sizeof({ts(node.target)})"
+        if name == "TypeofExpr":
+            return f"typeof({ts(node.expr)})"
+        if name == "CastExpr":
+            return f"({node.target_type}){ts(node.expr)}"
+        if name == "AsExpr":
+            return f"{ts(node.expr)} as {node.target_type}"
+        # Unknown node kind: never leak a Python repr.
+        return "?"
 
     def _parse_interpolated_string(self, tok):
         raw = getattr(tok, 'raw', tok.value)
@@ -156,21 +242,45 @@ class Parser:
 
                 expr_text = content[expr_start:i-1]
 
+                sub_tokens = None
                 try:
-                    sub_lexer = Lexer(expr_text)
-                    sub_tokens = sub_lexer.tokenize()
-                    sub_parser = Parser(sub_tokens, source_file=self.source_file)
-                    expr_node = sub_parser.parse_expression()
-                    if sub_parser.current().type != "EOF":
-                        raise Exception("Extra tokens after expression")
-                    parts.append((None, expr_node))
-                except Exception:
+                    sub_tokens = Lexer(expr_text).tokenize()
+                except LeashError:
+                    # Inner text isn't tokenizable as Leash source (JSON with
+                    # \" escapes, regex fragments, ...). Keep the historical
+                    # behavior: the {...} span stays literal text.
+                    sub_tokens = None
+
+                def _interp_fallback():
                     raw_literal = "{" + expr_text + "}"
                     literal = leash_unescape(raw_literal)
                     if parts and parts[-1][0] is not None:
                         parts[-1] = (parts[-1][0] + literal, None)
                     else:
                         parts.append((literal, None))
+
+                if sub_tokens is None:
+                    _interp_fallback()
+                else:
+                    try:
+                        sub_parser = Parser(sub_tokens, source_file=self.source_file)
+                        expr_node = sub_parser.parse_expression()
+                        if sub_parser.current().type != "EOF":
+                            raise Exception("Extra tokens after expression")
+                        parts.append((None, expr_node))
+                    except LeashError as sub_err:
+                        # Tokenized fine but doesn't parse: a genuine syntax
+                        # error inside {expr}. Surface it instead of silently
+                        # degrading the interpolation to literal text.
+                        raise LeashError(
+                            f"Invalid interpolation expression '{expr_text.strip()}': {sub_err.msg}",
+                            tok.line,
+                            tok.column,
+                            file=self.source_file,
+                            tip=sub_err.tip,
+                        ) from None
+                    except Exception:
+                        _interp_fallback()
 
                 last_end = i
             else:
@@ -272,6 +382,28 @@ class Parser:
             del self.tokens[ntokens:]
         self.pos = pos
 
+    _CLOSE_NAMES = {"RPAREN": ")", "RBRACE": "}"}
+
+    def _expect_sep(self, close_type, what):
+        """Consume a ',' item separator, or verify the closing delimiter.
+
+        Space-separated lists (call args, params, literals, kwargs) were
+        silently accepted before; they are a typo the parser should catch.
+        Empty lists and trailing commas remain valid.
+        """
+        if self.current().type == "COMMA":
+            self.eat("COMMA")
+            return
+        if self.current().type == close_type:
+            return
+        tok = self.current()
+        close = self._CLOSE_NAMES.get(close_type, close_type)
+        raise LeashError(
+            f"Expected ',' or '{close}' to separate items in {what}, but found '{tok.value}'",
+            tok.line, tok.column,
+            file=self.source_file,
+        )
+
     def _get_smart_tip(self, expected_type, token):
         obs_val = token.value.lower() if isinstance(token.value, str) else str(token.value)
         obs_type = token.type
@@ -364,6 +496,13 @@ class Parser:
         return None
 
     def parse_type(self):
+        self._enter("Type")
+        try:
+            return self._parse_type_inner()
+        finally:
+            self._depth -= 1
+
+    def _parse_type_inner(self):
         is_imut = False
         if self.current().type == "IMUT":
             self.eat("IMUT")
@@ -390,7 +529,7 @@ class Parser:
         if self.current().type == "LPAREN":
             # Look ahead to distinguish from a cast expression or grouping paren
             # A multi-return type looks like: (type, type, ...)
-            saved = self.pos
+            saved = self._save()
             self.eat("LPAREN")
             types = []
             # Try to parse at least two types separated by commas
@@ -407,10 +546,10 @@ class Parser:
                         return f"imut {result}"
                     return result
                 else:
-                    # Not a multi-return type, restore
-                    self.pos = saved
+                    # Not a multi-return type, restore (also undoes any '>>' splices)
+                    self._restore(saved)
             except (LeashError, IndexError):
-                self.pos = saved
+                self._restore(saved)
 
         # Handle multi-type syntax: [int, float, ...]
         if self.current().type == "LBRACKET":
@@ -480,7 +619,15 @@ class Parser:
                     is_type = True
 
                 if not is_type:
+                    size_tok = self.current()
                     size = self.eat("NUMBER").value
+                    if isinstance(size, bool) or not isinstance(size, int) or size <= 0:
+                        raise LeashError(
+                            f"Invalid bit width '{size}' for '{base}': "
+                            "expected a positive integer (e.g. int<32>, uint<8>).",
+                            size_tok.line,
+                            size_tok.column,
+                        )
                     base = f"{base}<{size}>"
 
                 self._eat_gt()
@@ -491,7 +638,7 @@ class Parser:
                 if self.current().type == "NUMBER":
                     arr_size = self.eat("NUMBER").value
                 elif self.current().type == "IDENT":
-                    start_pos = self.pos
+                    start_ckpt = self._save()
                     arr_size = self.current().value
                     self.eat("IDENT")
                     while self.current().type == "DOT":
@@ -510,7 +657,7 @@ class Parser:
                         "VEC",
                         "IDENT",
                     ):
-                        self.pos = start_pos
+                        self._restore(start_ckpt)
                         arr_size = self.parse_expression()
                 elif self.current().type in (
                     "LPAREN",
@@ -526,7 +673,7 @@ class Parser:
                     arr_size = self.parse_expression()
                 self.eat("RBRACKET")
                 if arr_size is not None:
-                    base = f"{base}[{arr_size}]"
+                    base = f"{base}[{self._type_expr_str(arr_size)}]"
                 else:
                     base = f"{base}[]"
 
@@ -555,8 +702,7 @@ class Parser:
         param_types = []
         while self.current().type != "RPAREN":
             param_types.append(self.parse_type())
-            if self.current().type == "COMMA":
-                self.eat("COMMA")
+            self._expect_sep("RPAREN", "function pointer type")
         self.eat("RPAREN")
         return_type = "void"
         if self.current().type == "COLON":
@@ -1065,8 +1211,7 @@ class Parser:
                 self.eat("COLON")
             arg_type = self.parse_type()
             args.append((arg_name, arg_type, None))
-            if self.current().type == "COMMA":
-                self.eat("COMMA")
+            self._expect_sep("RPAREN", "native declaration parameter list")
         self.eat("RPAREN")
         return_type = "void"
         if self.current().type == "COLON":
@@ -1249,8 +1394,7 @@ class Parser:
         params = []
         while self.current().type != "RPAREN":
             params.append(self.eat("IDENT").value)
-            if self.current().type == "COMMA":
-                self.eat("COMMA")
+            self._expect_sep("RPAREN", "macro parameter list")
         self.eat("RPAREN")
         if self.current().type == "PIPE":
             self.eat("PIPE")
@@ -1389,8 +1533,7 @@ class Parser:
                             self.current().column,
                         )
                     args.append((arg_name, arg_type, default_value))
-                    if self.current().type == "COMMA":
-                        self.eat("COMMA")
+                    self._expect_sep("RPAREN", "method parameter list")
                 self.eat("RPAREN")
                 return_type = "void"
                 if self.current().type == "COLON":
@@ -1478,8 +1621,7 @@ class Parser:
                         tip="Move required arguments before optional ones with default values",
                     )
                 args.append((arg_name, arg_type, default_value))
-                if self.current().type == "COMMA":
-                    self.eat("COMMA")
+                self._expect_sep("RPAREN", "method parameter list")
             self.eat("RPAREN")
         return_type = "void"
         struct_type = None
@@ -1582,8 +1724,7 @@ class Parser:
                     tip="Move required arguments before optional ones with default values",
                 )
             args.append((arg_name, arg_type, default_value))
-            if self.current().type == "COMMA":
-                self.eat("COMMA")
+            self._expect_sep("RPAREN", "parameter list")
         self.eat("RPAREN")
 
         # Parse optional return type
@@ -1646,8 +1787,7 @@ class Parser:
                     tip="Move required arguments before optional ones with default values",
                 )
             args.append((arg_name, arg_type, default_value))
-            if self.current().type == "COMMA":
-                self.eat("COMMA")
+            self._expect_sep("RPAREN", "lambda parameter list")
         self.eat("RPAREN")
         return_type = "void"
         if self.current().type == "COLON":
@@ -1666,6 +1806,13 @@ class Parser:
         return self._pos(Lambda(args, return_type, body), tok)
 
     def parse_statement(self):
+        self._enter("Statement")
+        try:
+            return self._parse_statement_inner()
+        finally:
+            self._depth -= 1
+
+    def _parse_statement_inner(self):
         current = self.current()
         if current.type == "IDENT":
             self._check_keyword_misuse(current)
@@ -1825,8 +1972,7 @@ class Parser:
             args = []
             while self.current().type != "RPAREN":
                 args.append(self.parse_expression())
-                if self.current().type == "COMMA":
-                    self.eat("COMMA")
+                self._expect_sep("RPAREN", "throw argument list")
             self.eat("RPAREN")
             self.eat("SEMI")
             return self._pos(ThrowStatement(error_name, args), tok)
@@ -1971,7 +2117,14 @@ class Parser:
             self.eat("SEMI")
             return self._pos(DelStatement(target), tok)
 
-        elif self.current().type in ("IDENT", "THIS", "MUL", "BIT_AND", "NUMBER", "STRING", "TRUE", "FALSE", "LPAREN", "MINUS", "BANG", "TILDE"):
+        elif self.current().type in (
+            # Any token that can start an expression (previously a partial
+            # whitelist that rejected ++i;, 'c', create Foo(1), null, {1,2}, ...)
+            "IDENT", "THIS", "THISWORKER", "SELF", "MUL", "BIT_AND",
+            "NUMBER", "STRING", "MLSTRING_D", "MLSTRING_S", "CHAR",
+            "TRUE", "FALSE", "NULL", "NIL", "LPAREN", "LBRACE",
+            "MINUS", "NOT", "BIT_NOT", "CREATE", "INC", "DEC",
+        ):
             # Could be assignment or function call or show
             if self.current().type == "IDENT" and self.current().value == "show":
                 tok = self.current()
@@ -1985,7 +2138,8 @@ class Parser:
                         and self.peek()
                         and self.peek().type == "ASSIGN"
                     ):
-                        kw_key = self.eat("IDENT").value
+                        kw_key_tok = self.eat("IDENT")
+                        kw_key = kw_key_tok.value
                         self.eat("ASSIGN")
                         kw_val = self.parse_expression()
                         if kw_key == "end":
@@ -1995,17 +2149,16 @@ class Parser:
                             else:
                                 raise LeashError(
                                     "'end' argument of show() must be a string literal",
-                                    self.current().line, self.current().column,
+                                    kw_key_tok.line, kw_key_tok.column,
                                 )
                         else:
                             raise LeashError(
                                 f"Unexpected keyword argument '{kw_key}' for show()",
-                                self.current().line, self.current().column,
+                                kw_key_tok.line, kw_key_tok.column,
                             )
                     else:
                         args.append(self.parse_expression())
-                    if self.current().type == "COMMA":
-                        self.eat("COMMA")
+                    self._expect_sep("RPAREN", "show() argument list")
                 self.eat("RPAREN")
                 self.eat("SEMI")
                 return self._pos(ShowStatement(args, end=end), tok)
@@ -2016,8 +2169,7 @@ class Parser:
                 args = []
                 while self.current().type != "RPAREN":
                     args.append(self.parse_expression())
-                    if self.current().type == "COMMA":
-                        self.eat("COMMA")
+                    self._expect_sep("RPAREN", "showb() argument list")
                 self.eat("RPAREN")
                 self.eat("SEMI")
                 return self._pos(ShowStatement(args, is_buffer=True), tok)
@@ -2223,7 +2375,11 @@ class Parser:
             )
 
     def parse_expression(self, no_struct_init=False):
-        return self.parse_ternary(no_struct_init)
+        self._enter("Expression")
+        try:
+            return self.parse_ternary(no_struct_init)
+        finally:
+            self._depth -= 1
 
     def parse_await_expression(self, no_struct_init=False):
         """`await` as the leftmost operator of an expression.
@@ -2379,6 +2535,17 @@ class Parser:
         return node
 
     def parse_unary(self, no_struct_init=False):
+        if self.current().type == "AWAIT" or self.current().type in (
+            "NOT", "BIT_NOT", "MINUS", "MUL", "BIT_AND", "INC", "DEC",
+        ):
+            self._enter("Expression")
+            try:
+                return self._parse_unary_inner(no_struct_init)
+            finally:
+                self._depth -= 1
+        return self.parse_postfix(no_struct_init)
+
+    def _parse_unary_inner(self, no_struct_init=False):
         if self.current().type == "AWAIT":
             tok = self.eat("AWAIT")
             expr = self.parse_unary(no_struct_init)
@@ -2400,16 +2567,16 @@ class Parser:
         while self.current().type in ("DOT", "LBRACKET", "ARROW", "INC", "DEC"):
             if self.current().type == "DOT":
                 self.eat("DOT")
-                member = self.eat("IDENT").value
+                member_tok = self.eat("IDENT")
+                member = member_tok.value
                 if self.current().type == "LPAREN":
                     self.eat("LPAREN")
                     args = []
                     while self.current().type != "RPAREN":
                         args.append(self.parse_expression())
-                        if self.current().type == "COMMA":
-                            self.eat("COMMA")
+                        self._expect_sep("RPAREN", "method call argument list")
                     self.eat("RPAREN")
-                    expr = MethodCall(expr, member, args)
+                    expr = self._pos(MethodCall(expr, member, args), member_tok)
                 else:
                     expr = self._pos(MemberAccess(expr, member))
             elif self.current().type == "ARROW":
@@ -2417,10 +2584,10 @@ class Parser:
                 member = self.eat("IDENT").value
                 expr = self._pos(PointerMemberAccess(expr, member))
             elif self.current().type == "LBRACKET":
-                self.eat("LBRACKET")
+                idx_tok = self.eat("LBRACKET")
                 index = self.parse_expression()
                 self.eat("RBRACKET")
-                expr = IndexAccess(expr, index)
+                expr = self._pos(IndexAccess(expr, index), idx_tok)
             elif self.current().type in ("INC", "DEC"):
                 inc_dec_tok = self.current()
                 op = "++" if inc_dec_tok.type == "INC" else "--"
@@ -2538,6 +2705,7 @@ class Parser:
             if self.current().type == "LT":
                 # Look ahead to check if this is a generic call
                 saved_pos = self._save()
+                committed = False
                 try:
                     self.eat("LT")
                     type_args = []
@@ -2563,7 +2731,10 @@ class Parser:
                     if self._at_gt():
                         self._eat_gt()
                         if self.current().type == "LPAREN":
-                            # Committed: parse args for real
+                            # Committed: name<T>( is unambiguously a generic call,
+                            # so any error inside the argument list is a real
+                            # syntax error and must not be swallowed here.
+                            committed = True
                             self.eat("LPAREN")
                             args = []
                             kwargs = {}
@@ -2574,17 +2745,21 @@ class Parser:
                                     kwargs[kw_key] = self.parse_expression()
                                 else:
                                     args.append(self.parse_expression())
-                                if self.current().type == "COMMA":
-                                    self.eat("COMMA")
+                                self._expect_sep("RPAREN", "call argument list")
                             self.eat("RPAREN")
                             return self._pos(GenericCall(name, type_args, args, kwargs), tok)
                     # Not a generic call, restore position
                     self._restore(saved_pos)
                 except LeashError:
+                    if committed:
+                        raise
                     # Not a generic call, restore position
                     self._restore(saved_pos)
 
             # Check for generic type expression: Class<T> (used for static method calls like VecMath<int>.sum(...))
+            # Only commit when the token after '>' cannot continue a comparison
+            # (a < b > c) or a shift (a < b >> c); otherwise restore and let
+            # comparison/shift parsing handle it.
             if self.current().type == "LT":
                 saved_pos = self._save()
                 try:
@@ -2609,9 +2784,24 @@ class Parser:
                             self.eat("COMMA")
                     if self._at_gt():
                         self._eat_gt()
-                        # This is a generic type expression - return it and let parse_postfix handle the method call
-                        return self._pos(GenericTypeExpr(name, type_args), tok)
-                    # Not a generic type expression, restore position
+                        if self.current().type in (
+                            "DOT",
+                            "ARROW",
+                            "DCOLON",
+                            "SEMI",
+                            "RPAREN",
+                            "RBRACKET",
+                            "RBRACE",
+                            "COMMA",
+                            "EOF",
+                            "ASSIGN",
+                            "PIPE",
+                        ):
+                            # Generic type usage - return it and let parse_postfix
+                            # handle the method call
+                            return self._pos(GenericTypeExpr(name, type_args), tok)
+                    # Not a generic type expression, restore position (also
+                    # undoes any '>>' -> 'GT GT' splice performed by _eat_gt)
                     self._restore(saved_pos)
                 except LeashError:
                     self._restore(saved_pos)
@@ -2627,8 +2817,7 @@ class Parser:
                         kwargs[kw_key] = self.parse_expression()
                     else:
                         args.append(self.parse_expression())
-                    if self.current().type == "COMMA":
-                        self.eat("COMMA")
+                    self._expect_sep("RPAREN", "call argument list")
                 self.eat("RPAREN")
                 return self._pos(Call(name, args, kwargs), tok)
             elif not no_struct_init and self.current().type == "LBRACE":
@@ -2639,8 +2828,7 @@ class Parser:
                     self.eat("COLON")
                     val = self.parse_expression()
                     kwargs.append((key, val))
-                    if self.current().type == "COMMA":
-                        self.eat("COMMA")
+                    self._expect_sep("RBRACE", "struct initializer")
                 self.eat("RBRACE")
                 return self._pos(StructInit(name, kwargs), tok)
 
@@ -2660,8 +2848,7 @@ class Parser:
                 self.eat("LPAREN")
                 while self.current().type != "RPAREN":
                     args.append(self.parse_expression())
-                    if self.current().type == "COMMA":
-                        self.eat("COMMA")
+                    self._expect_sep("RPAREN", "create expression argument list")
                 self.eat("RPAREN")
             return self._pos(CreateExpr(class_name, args), tok)
         elif self.current().type == "LPAREN":
@@ -2699,8 +2886,7 @@ class Parser:
                     self.eat("COLON")
                     value = self.parse_expression()
                     entries.append((key_expr, value))
-                    if self.current().type == "COMMA":
-                        self.eat("COMMA")
+                    self._expect_sep("RBRACE", "hash initializer")
                 self.eat("RBRACE")
                 return self._pos(HashInit(entries), tok)
             else:
@@ -2708,10 +2894,9 @@ class Parser:
                 elements = []
                 while self.current().type != "RBRACE":
                     elements.append(self.parse_expression())
-                    if self.current().type == "COMMA":
-                        self.eat("COMMA")
+                    self._expect_sep("RBRACE", "array literal")
                 self.eat("RBRACE")
-                return ArrayInit(elements)
+                return self._pos(ArrayInit(elements), tok)
         else:
             tok = self.current()
             raise LeashError(

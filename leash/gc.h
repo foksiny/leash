@@ -118,6 +118,7 @@ void leash_fast_memcpy(void* restrict dst, const void* restrict src, size_t n);
    thread. Must be called BEFORE creating the thread. Until then the GC
    takes no locks on the allocation fast path. */
 void leash_gc_thread_spawned(void);
+void leash_gc_thread_attach(void);
 
 /* ===== Statistics ===== */
 size_t leash_gc_get_allocated(void);

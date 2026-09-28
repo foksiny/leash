@@ -1,8 +1,10 @@
 import sys
 import os
+import errno
 import subprocess
 import shutil
 import hashlib
+import tempfile
 import functools
 from .lexer import Lexer
 from .parser_l import Parser
@@ -385,6 +387,11 @@ def install_libraries(paths):
         if not os.path.exists(abs_path):
             print(f"Error: Path does not exist: {abs_path}")
             sys.exit(1)
+        # Same symlink discipline as `leashed install`: copy2/copytree both
+        # follow links, and ~/.leash/libs contents end up linked into every
+        # consumer's binary.
+        from .leashed import assert_no_symlinks
+        assert_no_symlinks(abs_path)
         if os.path.isfile(abs_path):
             dest = os.path.join(libs_root, os.path.basename(abs_path))
             if os.path.exists(dest):
@@ -848,20 +855,44 @@ def security_scan(program, main_source_file):
             ))
         elif main_abs is not None:
             src = getattr(node, "source_file", None)
-            if src and os.path.abspath(src) != main_abs:
-                warnings.append({
-                    "msg": (
-                        f"Security: imported module '{os.path.basename(src)}' links native "
-                        f"library '{lib}' into this build via @from — native libraries from "
-                        "dependencies run with your program's full privileges"
-                    ),
-                    "line": getattr(node, "line", None),
-                    "col": getattr(node, "col", None),
-                    "tip": "Confirm the dependency is expected to ship a native library, "
-                           "or review/build it from source.",
-                    "code": "W_SECURITY",
-                    "file": src,
-                })
+            # M6: the text-level rules never resolve symlinks —
+            # `@from("helper.so")` with helper.so -> /tmp/evil.so satisfied
+            # every check and was handed straight to the linker. Require
+            # every existing candidate (the resolver probes platform
+            # extensions) to stay inside the declaring module's directory
+            # after realpath.
+            _base_dir = os.path.dirname(os.path.abspath(src)) if src else os.path.dirname(main_abs)
+            _real_base = os.path.realpath(_base_dir)
+            for _cand in [lib] + [lib + e for e in (".so", ".a", ".dylib", ".lib", ".dll")]:
+                _cand_path = _cand if os.path.isabs(_cand) else os.path.join(_base_dir, _cand)
+                if not os.path.exists(_cand_path):
+                    continue
+                _real_cand = os.path.realpath(_cand_path)
+                if _real_cand != _real_base and not _real_cand.startswith(_real_base + os.sep):
+                    errors.append(LeashError(
+                        f"Security: native library path '{lib}' in @from resolves "
+                        "(via symlink) outside the module directory — it could link "
+                        "an arbitrary binary into your program",
+                        node=node,
+                        tip="Remove the symlink and place the real library next to the source file.",
+                        code="E_SECURITY",
+                    ))
+                    break
+            else:
+                if src and os.path.abspath(src) != main_abs:
+                    warnings.append({
+                        "msg": (
+                            f"Security: imported module '{os.path.basename(src)}' links native "
+                            f"library '{lib}' into this build via @from — native libraries from "
+                            "dependencies run with your program's full privileges"
+                        ),
+                        "line": getattr(node, "line", None),
+                        "col": getattr(node, "col", None),
+                        "tip": "Confirm the dependency is expected to ship a native library, "
+                               "or review/build it from source.",
+                        "code": "W_SECURITY",
+                        "file": src,
+                    })
     return errors, warnings
 
 def resolve_conditionals(program, target_config):
@@ -960,7 +991,11 @@ def _print_warning(w, warnings_as_errors=False, code=None, input_file=None):
             print(explanation, file=sys.stderr)
 
 def check_file(input_file, verbose=False, extra_import_dirs=None, opt_verbose=False):
-    with open(input_file, "r") as f: code = f.read()
+    try:
+        with open(input_file, "r", encoding="utf-8", errors="replace") as f:
+            code = f.read()
+    except OSError as e:
+        return [LeashError(f"cannot read '{input_file}': {e.strerror or e}", file=input_file)], []
     errors, warnings = [], []
     try:
         lexer = Lexer(code); tokens = lexer.tokenize(); parser = Parser(tokens, input_file); ast = parser.parse()
@@ -971,6 +1006,7 @@ def check_file(input_file, verbose=False, extra_import_dirs=None, opt_verbose=Fa
         errors.append(e); return errors, warnings
     except Exception as e:
         if verbose: import traceback; print(f"error: Internal: {e}", file=sys.stderr); traceback.print_exc()
+        errors.append(LeashError(f"Internal compiler error: {e}", file=input_file))
         return errors, warnings
     sec_errors, sec_warnings = security_scan(ast, input_file)
     errors.extend(sec_errors)
@@ -990,6 +1026,7 @@ def check_file(input_file, verbose=False, extra_import_dirs=None, opt_verbose=Fa
         errors.append(e)
     except Exception as e:
         if verbose: import traceback; print(f"error: Internal: {e}", file=sys.stderr); traceback.print_exc()
+        errors.append(LeashError(f"Internal compiler error: {e}", file=input_file))
     ll_errors = LowLevelChecker().check(ast)
     errors.extend(ll_errors)
     if tc is not None:
@@ -1043,6 +1080,29 @@ def _object_cache_key(main_hash, import_hashes, target_name,
         h.update(b"\x00"); h.update(ih.encode()); h.update(b"\x00"); h.update(path.encode())
     return h.hexdigest()
 
+def _safe_write_bytes(path, data, mode=0o644):
+    """Write bytes to `path` WITHOUT following a pre-existing symlink.
+
+    `open(path, "wb")` truncates whatever a symlink points at, so a planted
+    `out/app.o -> /home/user/.bashrc` used to overwrite the target file.
+    """
+    if os.path.islink(path):
+        sys.stderr.write(f"error: refusing to write '{path}': it is a symlink\n")
+        sys.exit(1)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        fd = os.open(path, flags, mode)
+    except OSError as e:
+        if e.errno == 17 or (hasattr(e, "errno") and e.errno == errno.ELOOP):  # ELOOP: symlinked target
+            sys.stderr.write(f"error: refusing to write '{path}': it is a symlink\n")
+            sys.exit(1)
+        raise
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+
+
 def _object_cache_get(key):
     """Return cached object bytes, or None. Never raises."""
     try:
@@ -1055,9 +1115,15 @@ def _object_cache_put(key, obj_bytes):
     """Store object bytes atomically; keep the cache bounded (oldest first).
     Never raises — a cache problem must never fail a build."""
     try:
-        os.makedirs(_OBJ_CACHE_DIR, exist_ok=True)
-        tmp = os.path.join(_OBJ_CACHE_DIR, f".tmp_{os.getpid()}_{key}.o")
-        with open(tmp, "wb") as f:
+        # 0700: a shared/writable cache dir lets another user poison the
+        # objects that get linked into every build for that key.
+        os.makedirs(_OBJ_CACHE_DIR, mode=0o700, exist_ok=True)
+        try:
+            os.chmod(_OBJ_CACHE_DIR, 0o700)
+        except OSError:
+            pass
+        fd, tmp = tempfile.mkstemp(prefix=f".tmp_{os.getpid()}_", suffix=".o", dir=_OBJ_CACHE_DIR)
+        with os.fdopen(fd, "wb") as f:
             f.write(obj_bytes)
         os.replace(tmp, os.path.join(_OBJ_CACHE_DIR, key + ".o"))
         # Cheap size cap: prune oldest entries when over the limit.
@@ -1107,8 +1173,18 @@ def _get_target_machine(triple, reloc, opt_level):
     return _target_machine_cache[key]
 
 def compile_file(input_file, output_name=None, output_type="executable", is_run_mode=False, target_name=None, check_mode=False, warnings_as_errors=False, extra_libs=None, opt_level=None, extra_import_dirs=None, opt_verbose=False, no_gc=False, autofree=False, static=False, debug_instrument=False):
-    with open(input_file, "r") as f: code = f.read()
-    target_config = get_target(target_name) if target_name else get_native_target()
+    # L9: a missing file or an unknown --target used to escape as a raw
+    # Python traceback; report them like every other compile error.
+    try:
+        with open(input_file, "r", encoding="utf-8", errors="replace") as f:
+            code = f.read()
+        target_config = get_target(target_name) if target_name else get_native_target()
+    except OSError as e:
+        sys.stderr.write(f"error: cannot read '{input_file}': {e.strerror or e}\n")
+        sys.exit(1)
+    except ValueError as e:
+        sys.stderr.write(f"error: {e}\n")
+        sys.exit(1)
     parsed_opt, size_opt = parse_opt_level(opt_level)
     if output_name is None: output_name = input_file[:-4] if input_file.endswith(".lsh") else "out"
     import_hashes = []
@@ -1127,6 +1203,16 @@ def compile_file(input_file, output_name=None, output_type="executable", is_run_
         # an object for that combination, skip the whole pipeline and link it.
         cache_key = None
         if _cache_enabled():
+            # L12: run the security scan BEFORE consulting the object cache,
+            # so a cached build can never skip the @from checks (and the
+            # transitive-import warning always fires).
+            _sec_errs, _sec_warns = security_scan(ast, input_file)
+            if _sec_errs:
+                for err in _sec_errs:
+                    _print_error(err, input_file, code)
+                sys.exit(1)
+            for w in _sec_warns:
+                _print_warning(w, warnings_as_errors, code=code, input_file=input_file)
             main_hash = hashlib.sha256(code.encode("utf-8")).hexdigest()
             cache_key = _object_cache_key(main_hash, import_hashes, target_config.name,
                                           parsed_opt, size_opt, no_gc, autofree,
@@ -1134,7 +1220,7 @@ def compile_file(input_file, output_name=None, output_type="executable", is_run_
             cached_obj = _object_cache_get(cache_key)
             if cached_obj is not None:
                 obj_name = output_name + ".o"
-                with open(obj_name, "wb") as f: f.write(cached_obj)
+                _safe_write_bytes(obj_name, cached_obj)
                 native_libs = _native_libs_from_ast(ast, target_config)
                 return _link_native(obj_name, output_name, target_config, is_run_mode, output_type, native_libs, extra_libs, no_gc=no_gc, autofree=autofree, size_opt=bool(size_opt), static=static, debug_info=debug_instrument)
         # ------------------------------------------------------------------
@@ -1175,7 +1261,7 @@ def compile_file(input_file, output_name=None, output_type="executable", is_run_
     optimize_module(mod, opt_level=parsed_opt, size_opt=size_opt, target_machine=tm, opt_verbose=opt_verbose)
     obj_name = output_name + ".o"
     obj_bytes = tm.emit_object(mod)
-    with open(obj_name, "wb") as f: f.write(obj_bytes)
+    _safe_write_bytes(obj_name, obj_bytes)
     if cache_key is not None:
         _object_cache_put(cache_key, obj_bytes)
     return _link_native(obj_name, output_name, target_config, is_run_mode, output_type, codegen.native_libs, extra_libs, no_gc=no_gc, autofree=autofree, size_opt=bool(size_opt), static=static, debug_info=debug_instrument)
@@ -1327,8 +1413,18 @@ def _get_runtime_stubs(cc, target_config, no_gc=False, autofree=False, size_opt=
         if key in _runtime_stub_cache:
             result.append(_runtime_stub_cache[key])
             continue
+        # Runtime stub objects used to be written INTO the compiler install
+        # directory with predictable names: a shared/writable install dir is
+        # a supply-chain injection point, and a read-only one emits warnings
+        # on every link. Keep them in the user's private cache instead.
+        rt_cache_dir = os.path.join(os.path.expanduser("~/.leash"), "rtcache")
+        try:
+            os.makedirs(rt_cache_dir, mode=0o700, exist_ok=True)
+            os.chmod(rt_cache_dir, 0o700)
+        except OSError:
+            rt_cache_dir = leash_dir  # fall back to the old location
         cached_o = os.path.join(
-            leash_dir, f".cached_{target_config.name}_{cc_tag}_{sfile}_{'_'.join(cflags)}.o")
+            rt_cache_dir, f".cached_{target_config.name}_{cc_tag}_{sfile}_{'_'.join(cflags)}.o")
         if os.path.exists(cached_o):
             # If the cached .o is older than the source, recompile
             if os.path.getmtime(cached_o) >= mtime:
@@ -1481,8 +1577,18 @@ def _link_native(obj_name, output_name, target_config, is_run_mode, output_type,
     return out
 
 def dump_file(input_file, output_name=None, target_name=None, check_mode=False, warnings_as_errors=False, extra_libs=None, opt_level=None, extra_import_dirs=None, opt_verbose=False, no_gc=False, autofree=False):
-    with open(input_file, "r") as f: code = f.read()
-    target_config = get_target(target_name) if target_name else get_native_target()
+    # L9: a missing file or an unknown --target used to escape as a raw
+    # Python traceback; report them like every other compile error.
+    try:
+        with open(input_file, "r", encoding="utf-8", errors="replace") as f:
+            code = f.read()
+        target_config = get_target(target_name) if target_name else get_native_target()
+    except OSError as e:
+        sys.stderr.write(f"error: cannot read '{input_file}': {e.strerror or e}\n")
+        sys.exit(1)
+    except ValueError as e:
+        sys.stderr.write(f"error: {e}\n")
+        sys.exit(1)
     try:
         lexer = Lexer(code); tokens = lexer.tokenize(); parser = Parser(tokens, input_file); ast = parser.parse()
         ast = resolve_imports(ast, os.path.dirname(os.path.abspath(input_file)) or ".", extra_import_dirs=extra_import_dirs)
@@ -1515,7 +1621,7 @@ def dump_file(input_file, output_name=None, target_name=None, check_mode=False, 
     optimize_module(mod, opt_level=popt, size_opt=sopt, opt_verbose=opt_verbose)
     if output_name is None: output_name = input_file[:-4] if input_file.endswith(".lsh") else "out"
     if not output_name.endswith(".ll"): output_name += ".ll"
-    with open(output_name, "w") as f: f.write(str(mod))
+    _safe_write_bytes(output_name, str(mod).encode("utf-8"))
     print(f"Dumped LLVM IR to '{output_name}'"); return output_name
 
 def dbg_file(input_file, args=None, target_name=None, break_lines=None, start_run=False, extra_import_dirs=None, opt_level="0", no_gc=False, autofree=False):
@@ -1536,7 +1642,7 @@ def dbg_file(input_file, args=None, target_name=None, break_lines=None, start_ru
                        debug_instrument=True)
     out_abs = os.path.abspath(out)
     try:
-        os.chmod(out_abs, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
+        os.chmod(out_abs, stat.S_IRWXU)
     except OSError:
         pass
     env = dict(os.environ)
@@ -1590,7 +1696,7 @@ def run_file(input_file, args=[], target_name=None, check_mode=False, warnings_a
     # Use absolute path to avoid working directory issues
     out_abs = os.path.abspath(out)
     # Ensure binary is executable (important on filesystems like WSL DrvFs)
-    try: os.chmod(out_abs, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
+    try: os.chmod(out_abs, stat.S_IRWXU)
     except: pass
     sys_name = platform.system().lower()
     cmd = [out_abs] + args
@@ -1679,6 +1785,14 @@ def read_project_config(project_dir):
         print("error: 'main' not set in config.lshc", file=sys.stderr)
         sys.exit(1)
     main_path = os.path.join(project_dir, main_file)
+    # `main: "../other/src/main.lsh"` used to be accepted, letting a cloned
+    # repo's config point the build at (and echo parse errors from) any
+    # readable file outside the project.
+    _real_main = os.path.realpath(main_path)
+    _real_proj = os.path.realpath(project_dir)
+    if _real_main != _real_proj and not _real_main.startswith(_real_proj + os.sep):
+        print(f"error: 'main' in config.lshc must stay inside the project directory (got '{main_file}')", file=sys.stderr)
+        sys.exit(1)
     if not os.path.exists(main_path):
         print(f"error: Main file '{main_path}' not found", file=sys.stderr)
         sys.exit(1)
@@ -1691,6 +1805,13 @@ def resolve_project_deps(config, project_dir, extra_import_dirs=None):
     all_extra_dirs = list(extra_import_dirs or [])
     if imports_dir:
         abs_imports = os.path.join(project_dir, imports_dir)
+        # Same containment discipline as `main:` — `imports: "../../"` used
+        # to widen module resolution outside the project.
+        _real_imports = os.path.realpath(abs_imports)
+        _real_proj = os.path.realpath(project_dir)
+        if _real_imports != _real_proj and not _real_imports.startswith(_real_proj + os.sep):
+            print(f"error: 'imports' in config.lshc must stay inside the project directory (got '{imports_dir}')", file=sys.stderr)
+            sys.exit(1)
         if os.path.isdir(abs_imports):
             all_extra_dirs.append(abs_imports)
     clibs = config.get("clibs", {})
@@ -1720,6 +1841,16 @@ def build_project(extra_import_dirs=None):
             "inside the project's out/ directory\n"
         )
         sys.exit(1)
+    # M4: text-level containment is bypassed by symlinks — a tracked
+    # `out/app.o -> /home/user/.bashrc` made the object write truncate the
+    # symlink's target.
+    if os.path.islink(out_dir):
+        sys.stderr.write(f"error: refusing to write into '{out_dir}': it is a symlink\n")
+        sys.exit(1)
+    for _target in (out_name, out_name + ".o"):
+        if os.path.islink(_target):
+            sys.stderr.write(f"error: refusing to write '{_target}': it is a symlink\n")
+            sys.exit(1)
     compile_file(main_path, output_name=out_name, extra_import_dirs=all_extra_dirs, extra_libs=extra_libs, opt_level=opt_level, autofree=autofree, static=static)
 
 
@@ -1733,7 +1864,7 @@ def run_project(prog_args=None, extra_import_dirs=None):
     out = compile_file(main_path, output_name=tmp, is_run_mode=True, extra_import_dirs=all_extra_dirs, extra_libs=extra_libs, opt_level=opt_level, autofree=autofree, static=static)
     out_abs = os.path.abspath(out)
     try:
-        os.chmod(out_abs, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
+        os.chmod(out_abs, stat.S_IRWXU)
     except:
         pass
     sys_name = platform.system().lower()
@@ -1774,7 +1905,7 @@ def update_leash():
     import json
     
     print("Leash Update Checker")
-    print("Current version: 0.24.3 Beta\n")
+    print(f"Current version: {VERSION_STRING.lstrip('v')}\n")
     
     try:
         req = urllib.request.Request(
@@ -1799,17 +1930,32 @@ def update_leash():
         print("error: Leash is not installed from a git checkout (no .git in "
               f"{leash_root!r}); cannot self-update via git pull.")
         sys.exit(1)
-    result = subprocess.run(["git", "pull"], cwd=leash_root, capture_output=True, text=True)
+    # The origin remote must actually be the Leash repository: a locally
+    # re-pointed origin would otherwise pull attacker-controlled code, and
+    # local hooks in the install repo run as the user after the merge.
+    rem = subprocess.run(["git", "remote", "get-url", "origin"], cwd=leash_root,
+                         capture_output=True, text=True)
+    origin = (rem.stdout or "").strip()
+    if rem.returncode != 0 or not (origin.startswith("https://github.com/foksiny/leash")
+                                   or origin.startswith("ssh://git@github.com/foksiny/leash")):
+        print("error: refusing to self-update: origin is not the Leash repository "
+              f"(got {origin!r}).")
+        sys.exit(1)
+    # Fast-forward only: never create merge commits or run a merge that
+    # could trip local hooks on divergent histories.
+    result = subprocess.run(["git", "pull", "--ff-only"], cwd=leash_root,
+                            capture_output=True, text=True)
     print(result.stdout, end="")
     if result.stderr:
         print(result.stderr, end="")
     if result.returncode == 0:
         print("Update complete.")
     else:
-        print("Update failed.")
+        print("Update failed (the checkout may have local changes; "
+              "inspect and fast-forward manually).")
 
 
-VERSION_STRING = "v0.24.3 Beta"
+VERSION_STRING = "v0.25.0 Beta"
 
 MAIN_HELP = f"""Leash {VERSION_STRING} - LLVM-powered compiled programming language
 
@@ -2165,12 +2311,29 @@ def main():
         if first in ("-h", "--help", "help"):
             print(COMMAND_HELP["run"])
             sys.exit(0)
+        # Scan past options (and their values) for the file operand:
+        # `leash run --target win64 ok.lsh` used to see the leading
+        # '--target' and silently switch to project mode, ignoring the file.
+        _RUN_OPTS_WITH_VALUE = ("--target", "--out", "--opt", "-o",
+                                "--other-imports", "-oi", "--elibs")
+        _operand, _op_idx = None, None
+        _i = 2
+        while _i < len(sys.argv):
+            _a = sys.argv[_i]
+            if _a == "--":
+                break
+            if _a in _RUN_OPTS_WITH_VALUE:
+                _i += 2
+                continue
+            if _a.startswith("-") and _a != "-":
+                _i += 1
+                continue
+            _operand, _op_idx = _a, _i
+            break
         is_project = False
-        if first == "--":
-            is_project = True
-        elif first.startswith("-"):
-            is_project = True
-        elif first.endswith(".lsh") or os.path.isfile(first):
+        if _operand is None:
+            is_project = True  # no file operand at all -> project mode
+        elif _operand.endswith(".lsh") or os.path.isfile(_operand):
             is_project = False
         else:
             # Heuristic: if config.lshc exists in cwd, treat bare non-file arg as project invocation
@@ -2197,14 +2360,17 @@ def main():
                     i += 1
             run_project(prog_args, extra_import_dirs)
             sys.exit(0)
-        # File mode
-        infile = sys.argv[2]
+        # File mode: the operand may appear after options
+        infile = _operand
         if "--" in sys.argv:
-            sep_idx = sys.argv.index("--", 3)
-            compile_argv = sys.argv[3:sep_idx]
+            try:
+                sep_idx = sys.argv.index("--", 3)
+            except ValueError:
+                sep_idx = len(sys.argv)
+            compile_argv = sys.argv[2:_op_idx] + sys.argv[_op_idx + 1:sep_idx]
             prog_args = sys.argv[sep_idx + 1:]
         else:
-            compile_argv = sys.argv[3:]
+            compile_argv = sys.argv[2:_op_idx] + sys.argv[_op_idx + 1:]
             prog_args = []
         target, outname, outtype, check, warnerr, elibs, opt = None, None, "executable", False, False, [], "2"
         no_gc = False

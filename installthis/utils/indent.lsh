@@ -32,8 +32,9 @@ pub def Indent : class {
         min: int = -1;
         i: int = 0;
         n: int = s.size;
+        line_end: int = 0;
         while i < n {
-            line_end: int = Indent.find_nl(s, i);
+            line_end = Indent.find_nl(s, i);
             run: int = Indent.leading_ws(s, i, line_end);
             has_content: bool = run < line_end - i;
             if has_content && (min < 0 || run < min) {

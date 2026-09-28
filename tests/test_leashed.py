@@ -195,9 +195,13 @@ class TestGitUrlValidation(unittest.TestCase):
         for u in ["https://github.com/u/r.git",
                   "https://example.com/repo",
                   "ssh://git@example.com/u/r.git",
-                  "git://example.com/u/r.git",
                   "git@github.com:u/r.git"]:
             self.assertEqual(L.validate_git_url(u), u, u)
+
+    def test_git_transport_rejected(self):
+        # git:// is unauthenticated and unencrypted: a network attacker can
+        # substitute package content that gets linked into the user's binary.
+        self.assert_blocked("git://example.com/u/r.git")
 
     def test_code_exec_transports_blocked(self):
         # ext:: runs an arbitrary local shell command; fd:: reads open FDs
@@ -489,6 +493,102 @@ class TestLockfile(unittest.TestCase):
                     L.cmd_install(["foo", "--locked"])
         finally:
             L._install_registry = orig
+
+
+class TestPhase5SecurityRegressions(unittest.TestCase):
+    """Security regressions for the Phase 5 audit fixes."""
+
+    def test_symlinked_root_rejected(self):
+        # H2: os.walk always descends into the walk root, so a symlinked
+        # package ROOT (library -> /home/victim/.ssh) passed the check and
+        # copytree then copied the target directory.
+        with tempfile.TemporaryDirectory() as td:
+            real = os.path.join(td, "real")
+            os.makedirs(real)
+            open(os.path.join(real, "secret.txt"), "w").write("top secret")
+            link = os.path.join(td, "library")
+            os.symlink(real, link)
+            with self.assertRaises(SystemExit):
+                L.assert_no_symlinks(link)
+
+    def test_write_stub_sanitizes_metadata(self):
+        # M7: a newline in package metadata escaped the `//` comment and
+        # injected arbitrary Leash source into every consumer's build.
+        with tempfile.TemporaryDirectory() as td:
+            old_libs = L.LEASH_LIBS_DIR
+            L.LEASH_LIBS_DIR = td
+            try:
+                pkg_dir = os.path.join(td, "pkg")
+                os.makedirs(pkg_dir)
+                with open(os.path.join(pkg_dir, "package.lshc"), "w") as f:
+                    f.write('name: "pkg"\nmain: "src/main.lsh"\n')
+                L._write_stub(
+                    "pkg",
+                    "1.2.3",
+                    "evil\nshow(injected)",
+                    "desc with\nuse evil::*;",
+                    pkg_dir,
+                )
+                stub_path = os.path.join(td, "pkg.lsh")
+                self.assertTrue(os.path.exists(stub_path))
+                text = open(stub_path).read()
+                # newline was neutralized: the injected text stays inside
+                # the comment and never reaches its own source line
+                # every line must be a comment or the use statement
+                for line in text.splitlines():
+                    s = line.strip()
+                    self.assertTrue(
+                        s.startswith("//") or s.startswith("use "),
+                        f"injected line: {s!r}",
+                    )
+            finally:
+                L.LEASH_LIBS_DIR = old_libs
+
+    def test_validate_git_url_non_string_fails_cleanly(self):
+        # M8: a malformed registry entry ("repo": 123) crashed with an
+        # AttributeError traceback.
+        for bad in (123, ["https://x"], None, {"a": 1}):
+            with self.assertRaises(SystemExit):
+                L.validate_git_url(bad)
+
+    def test_search_non_string_description(self):
+        # M8: `description: 123` in the index crashed search with
+        # AttributeError when the query did not match the key.
+        import unittest.mock as _mock
+        fake_index = {
+            "libraries": {
+                "good": {"description": "a good lib"},
+                "badint": {"description": 123},
+                "badlist": {"description": ["x"]},
+            }
+        }
+        with _mock.patch.object(L, "fetch_index", return_value=fake_index):
+            with _mock.patch("builtins.print"):
+                L.cmd_search(["zzz-no-match"])
+
+    def test_write_pkg_config_preserves_custom_keys_and_escapes(self):
+        # L15: unknown keys used to be silently deleted on rewrite, and
+        # values containing quotes/newlines corrupted the round-trip.
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "leash-pkg.lshc")
+            cfg = {
+                "name": "lib",
+                "version": "1.0.0",
+                "custom_key": "keep me",
+                "description": 'has "quotes" and\na newline',
+            }
+            L.write_pkg_config(path, cfg)
+            text = open(path).read()
+            self.assertIn('custom_key: "keep me"', text)
+            # the value must stay on ONE line (real newlines are collapsed)
+            desc_lines = [ln for ln in text.splitlines() if ln.startswith("description")]
+            self.assertEqual(len(desc_lines), 1)
+            self.assertIn('has \\"quotes\\" and', desc_lines[0])
+            # round-trip must parse back without corruption
+            back = L.read_pkg_config(path)
+            self.assertEqual(back.get("custom_key"), "keep me")
+            self.assertEqual(back.get("name"), "lib")
+            self.assertIn("quotes", back.get("description", ""))
 
 
 if __name__ == "__main__":

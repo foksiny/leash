@@ -83,12 +83,8 @@ def optimize_ast(program, opt_level=0, opt_verbose=False):
     program = _dead_code_elimination(program)
 
     if _opt_verbose:
-        print(f"[AST Opt] Running additional passes (foreach unroll, pushb fusion, ...)", file=sys.stderr)
+        print(f"[AST Opt] Running additional passes (foreach unroll, ...)", file=sys.stderr)
     program = _foreach_small_unroll(program)
-    program = _pushb_fusion(program)
-    program = _redundant_store_elim(program)
-    program = _size_call_caching(program)
-    program = _empty_collection_skip(program)
 
     program = _constant_propagation(program)
 
@@ -156,15 +152,21 @@ def _fold_arith_reducible(a, b, hint, result):
     """
     if hint:
         base = hint.split("[")[0].strip().lower()
-        width = None
-        is_unsigned = base.startswith("uint") or base.startswith("u128") or base.startswith("u256")
-        for k in ("uint", "int", "u128", "u256"):
-            if base.startswith(k):
-                try:
-                    width = int("".join(c for c in base[len(k):] if c.isdigit()))
-                except ValueError:
-                    width = None
-                break
+        # Bare names used to fall into `int("")` -> ValueError -> width=None,
+        # silently using the signed fallback width even for `uint`.
+        if base in ("int", "uint", "u128", "u256"):
+            width = {"int": 32, "uint": 32, "u128": 128, "u256": 256}[base]
+            is_unsigned = base != "int"
+        else:
+            width = None
+            is_unsigned = base.startswith("uint") or base.startswith("u128") or base.startswith("u256")
+            for k in ("uint", "int", "u128", "u256"):
+                if base.startswith(k):
+                    try:
+                        width = int("".join(c for c in base[len(k):] if c.isdigit()))
+                    except ValueError:
+                        width = None
+                    break
         if width is not None and width > 1:
             # Mirror CodeGen._codegen_NumberLiteral: a hinted signed literal is
             # only emitted at its width when it fits the signed range; unsigned
@@ -400,10 +402,21 @@ def _walk_stmt_dead_branch(stmt):
             if (cond.value and not stmt.invert) or (not cond.value and stmt.invert):
                 _opt_log("DBE", "eliminated dead branch (condition is always true)", stmt)
                 return _walk_stmts_dead_branch(_get_stmts_list(stmt.then_block))
-            for ac, ab, inv in stmt.also_blocks:
-                if isinstance(ac, BoolLiteral) and ((ac.value and not inv) or (not ac.value and inv)):
-                    _opt_log("DBE", "eliminated dead branch (also condition is always true)", stmt)
-                    return _walk_stmts_dead_branch(_get_stmts_list(ab))
+            # Condition is always false: then_block is skipped, so walk the
+            # `also` chain in order for the first block that can run. A
+            # non-literal condition means the chain must be kept from that
+            # point on (dropping it would skip code that can still execute).
+            for i, (ac, ab, inv) in enumerate(stmt.also_blocks):
+                if isinstance(ac, BoolLiteral):
+                    if (ac.value and not inv) or (not ac.value and inv):
+                        _opt_log("DBE", "eliminated dead branch (also condition is always true)", stmt)
+                        return _walk_stmts_dead_branch(_get_stmts_list(ab))
+                    continue  # literal-false also: unreachable, keep scanning
+                _opt_log("DBE", "dropped always-false prefix of also chain", stmt)
+                return _walk_stmt_dead_branch(
+                    IfStatement(ac, ab, stmt.also_blocks[i + 1:],
+                                stmt.else_block, invert=inv)
+                )
             if stmt.else_block:
                 _opt_log("DBE", "eliminated dead branch (condition is always false, taking else)", stmt)
                 return _walk_stmts_dead_branch(_get_stmts_list(stmt.else_block))
@@ -736,165 +749,6 @@ def _set_body_stmts(body, stmts):
 
 
 # ===================================================================
-# Optimization 6: Multiple pushb fusion
-# ===================================================================
-
-def _pushb_fusion(program):
-    """Fuse consecutive pushb calls on the same vector into a single batch."""
-    new_items = []
-    for item in program.items:
-        if isinstance(item, Function) and item.body:
-            stmts = _get_body_stmts(item.body)
-            item.body = _set_body_stmts(item.body, _fuse_pushb_stmts(stmts, item))
-        elif isinstance(item, ClassDef):
-            for m in item.methods:
-                if m.fnc.body:
-                    stmts = _get_body_stmts(m.fnc.body)
-                    m.fnc.body = _set_body_stmts(m.fnc.body, _fuse_pushb_stmts(stmts, m.fnc))
-        elif isinstance(item, OpDef) and item.body:
-            stmts = _get_body_stmts(item.body)
-            item.body = _set_body_stmts(item.body, _fuse_pushb_stmts(stmts, item))
-        new_items.append(item)
-    return Program(new_items)
-
-
-def _fuse_pushb_stmts(stmts, parent_node=None):
-    out = []
-    i = 0
-    while i < len(stmts):
-        s = stmts[i]
-        if isinstance(s, ExpressionStatement) and isinstance(s.expr, MethodCall):
-            if s.expr.method == "pushb" and isinstance(s.expr.expr, Identifier):
-                vec_name = s.expr.expr.name
-                batch_values = [s.expr.args[0]]
-                j = i + 1
-                while j < len(stmts):
-                    ns = stmts[j]
-                    if (isinstance(ns, ExpressionStatement) and isinstance(ns.expr, MethodCall)
-                            and ns.expr.method == "pushb"
-                            and isinstance(ns.expr.expr, Identifier)
-                            and ns.expr.expr.name == vec_name):
-                        batch_values.append(ns.expr.args[0])
-                        j += 1
-                    else:
-                        break
-                if len(batch_values) > 3:
-                    _opt_log("FUSE", f"fused {len(batch_values)} consecutive pushb calls on '{vec_name}'", parent_node)
-                    for kk in range(i, j):
-                        out.append(stmts[kk])
-                    i = j
-                    continue
-                else:
-                    out.append(s)
-                    i += 1
-                    continue
-        out.append(s)
-        i += 1
-    return out
-
-
-# ===================================================================
-# Optimization 7: Redundant store elimination for vectors/matrices
-# ===================================================================
-
-def _redundant_store_elim(program):
-    """Remove assignments to vector/matrix elements that are overwritten."""
-    new_items = []
-    for item in program.items:
-        if isinstance(item, Function) and item.body:
-            stmts = _get_body_stmts(item.body)
-            item.body = _set_body_stmts(item.body, _elim_redundant_stores(stmts))
-        elif isinstance(item, ClassDef):
-            for m in item.methods:
-                if m.fnc.body:
-                    stmts = _get_body_stmts(m.fnc.body)
-                    m.fnc.body = _set_body_stmts(m.fnc.body, _elim_redundant_stores(stmts))
-        elif isinstance(item, OpDef) and item.body:
-            stmts = _get_body_stmts(item.body)
-            item.body = _set_body_stmts(item.body, _elim_redundant_stores(stmts))
-        new_items.append(item)
-    return Program(new_items)
-
-
-def _elim_redundant_stores(stmts):
-    out = []
-    for i, s in enumerate(stmts[:]):
-        if isinstance(s, ExpressionStatement) and isinstance(s.expr, MethodCall):
-            if s.expr.method in ("set", "remove", "clear"):
-                pass
-        out.append(s)
-    return out
-
-
-# ===================================================================
-# Optimization 8: Size call caching
-# ===================================================================
-
-def _size_call_caching(program):
-    """Track repeated size() calls for codegen optimization."""
-    new_items = []
-    for item in program.items:
-        if isinstance(item, Function) and item.body:
-            _count_method_calls(_get_body_stmts(item.body))
-        elif isinstance(item, ClassDef):
-            for m in item.methods:
-                if m.fnc.body:
-                    _count_method_calls(_get_body_stmts(m.fnc.body))
-        elif isinstance(item, OpDef) and item.body:
-            _count_method_calls(_get_body_stmts(item.body))
-        new_items.append(item)
-    return Program(new_items)
-
-
-def _count_method_calls(stmts):
-    size_counts = {}
-    for s in stmts:
-        if isinstance(s, ExpressionStatement) and isinstance(s.expr, MethodCall):
-            if s.expr.method == "size" and isinstance(s.expr.expr, Identifier):
-                name = s.expr.expr.name
-                size_counts[name] = size_counts.get(name, 0) + 1
-        if isinstance(s, (IfStatement, WhileStatement, ForStatement,
-                         DoWhileStatement, LoopStatement)):
-            pass
-    for name, count in size_counts.items():
-        if count > 2:
-            pass
-
-
-# ===================================================================
-# Optimization 9: Empty collection operation skip
-# ===================================================================
-
-def _empty_collection_skip(program):
-    """Remove operations on definitely-empty vectors/matrices."""
-    new_items = []
-    for item in program.items:
-        if isinstance(item, Function) and item.body:
-            stmts = _get_body_stmts(item.body)
-            item.body = _set_body_stmts(item.body, _skip_empty_ops(stmts))
-        elif isinstance(item, ClassDef):
-            for m in item.methods:
-                if m.fnc.body:
-                    stmts = _get_body_stmts(m.fnc.body)
-                    m.fnc.body = _set_body_stmts(m.fnc.body, _skip_empty_ops(stmts))
-        elif isinstance(item, OpDef) and item.body:
-            stmts = _get_body_stmts(item.body)
-            item.body = _set_body_stmts(item.body, _skip_empty_ops(stmts))
-        new_items.append(item)
-    return Program(new_items)
-
-
-def _skip_empty_ops(stmts):
-    out = []
-    for s in stmts:
-        if isinstance(s, ExpressionStatement) and isinstance(s.expr, MethodCall):
-            if s.expr.method in ("popb", "popf", "remove"):
-                pass
-        out.append(s)
-    return out
-
-
-# ===================================================================
 # Optimization 10: Constant propagation (read-only variable inlining)
 # ===================================================================
 
@@ -977,6 +831,21 @@ def _collect_all_modified_vars(node):
         elif isinstance(n, UnaryOp) and n.op in ("&", "++", "--", "++p", "--p"):
             if isinstance(n.expr, Identifier):
                 modified.add(n.expr.name)
+        elif isinstance(n, ForStatement):
+            # The for-init declares a fresh binding that shadows any outer
+            # variable of the same name — treat it as modified so a stale
+            # outer constant is not folded into uses inside the loop.
+            init = getattr(n, "init", None)
+            if isinstance(init, VariableDecl):
+                modified.add(init.name)
+
+        # foreach statements bind index/value/char/name variables that
+        # shadow outer names (`foreach i, v in<array> a` rebinds `i`):
+        # mark them as modified for the same reason as the for-init above.
+        for bind_attr in ("index_var", "value_var", "char_var", "name_var"):
+            nm = getattr(n, bind_attr, None)
+            if isinstance(nm, str):
+                modified.add(nm)
 
         for attr_name in vars(n):
             if attr_name == "name":

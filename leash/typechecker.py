@@ -27,7 +27,9 @@ class TypeChecker:
         self.var_immutable = {}  # name -> bool (True if immutable)
         self.func_types = {}  # name -> (arg_types, return_type)
         self.async_funcs = set()  # names of `async fnc` functions
+        self.worker_funcs = set()  # names of `worker fnc` functions
         self.struct_types = {}  # name -> {field: type}
+        self.struct_field_defaults = {}  # struct -> {field: has_default}
         self.union_types = {}  # name -> {variant: type}
         self.forward_declared_types = set()  # names of structs/unions declared in the current compilation unit (validates recursive field types before full registration)
         self.enum_types = {}  # name -> list of member names
@@ -61,12 +63,23 @@ class TypeChecker:
         # del inside a loop may run before a later textual use on iteration 2.
         self.deleted_vars = set()
         self.loop_deleted = set()
+        # Alias groups: `p := o` for class instances makes p and o aliases
+        # of the same heap object, so `del` on one poisons every member.
+        self.alias_groups = []  # list of sets of names
+        self.alias_map = {}     # name -> index into alias_groups
         # Implicit borrow checker: array parameters passed without '&' are
         # read-only borrows of the caller's storage (arrays are not copied).
         self.readonly_borrows = set()
         self.current_func_params = set()
         self.loop_depth = 0  # Track nesting depth of loops for stop/continue
         self.global_vars = {}  # name -> (type, visibility) for module-level variables
+        # Concurrency globals (Phase 6): `shared` allows exactly ONE writer
+        # across all functions; `fusion` is many-reader/many-writer and is
+        # lowered to atomic loads/stores (+ atomicrmw for the counter
+        # idiom) in codegen.
+        self.shared_globals = set()
+        self.shared_writers = {}  # shared name -> writing function
+        self.fusion_globals = set()
         self.in_works_block = (
             False  # Track if we're inside a works block for error catching
         )
@@ -76,6 +89,11 @@ class TypeChecker:
         self.error_collect_all = False  # Collect all errors instead of raising on the first
         self.errors = []  # All collected errors
         self.check_mode = check_mode  # Verbose checking mode
+        # C builtins declared with a fixed prefix but called variadically.
+        self.variadic_builtins = {
+            "printf", "sprintf", "snprintf", "fprintf",
+            "scanf", "fscanf", "sscanf",
+        }
         self.defined_vars = {}  # name -> (line, col) for tracking declaration order
         self.shadows = []  # list of shadowing warnings
         self.in_unsafe_func = False  # Track if we're inside an unsafe function
@@ -182,6 +200,7 @@ class TypeChecker:
             self.global_vars[name] = (var_type, "pub")
         for _, name, fields in node.struct_declarations:
             self.struct_types[name] = {fname: ftype for fname, ftype in fields}
+            self.struct_field_defaults[name] = {fname: False for fname, _ft in fields}
         for _, name, variants in node.union_declarations:
             self.union_types[name] = {vname: vtype for vname, vtype in variants}
         for _, name, members in node.enum_declarations:
@@ -661,6 +680,9 @@ class TypeChecker:
                 tip="An empty struct doesn't store any data.",
             )
         self.struct_types[node.name] = fields
+        self.struct_field_defaults[node.name] = {
+            fname: fdefault is not None for fname, _ft, fdefault in node.fields
+        }
         self.struct_types_vis[node.name] = getattr(node, "visibility", "pub")
 
     def _register_union(self, node):
@@ -984,6 +1006,10 @@ class TypeChecker:
         if node.name in self.global_vars:
             self._error(f"Global variable '{node.name}' already defined", node=node)
         self.global_vars[node.name] = (node.var_type, node.visibility)
+        if getattr(node, "is_shared", False):
+            self.shared_globals.add(node.name)
+        if getattr(node, "is_fusion", False):
+            self.fusion_globals.add(node.name)
 
     def _check_global_var(self, node):
         """Check a global variable's initializer if present."""
@@ -1056,6 +1082,29 @@ class TypeChecker:
                 node.type_params = list(template_set)
             self.generic_funcs[node.name] = node
             return
+
+        # M4: parameter and return types must be real types. A bogus name
+        # (e.g. `a: BogusType`) previously registered silently and codegen
+        # fell back to i32, so the wrong-typed call passed the checker too.
+        invalid_params = []
+        for arg_name, arg_type, _d in node.args:
+            bare = self._strip_imut(arg_type)
+            if not self._is_valid_type(bare) and not self._is_multi_type(arg_type):
+                invalid_params.append(f"parameter '{arg_name}' has unknown type '{arg_type}'")
+        ret_bare = self._strip_imut(node.return_type) if node.return_type else "void"
+        if (
+            ret_bare != "void"
+            and not self._is_multi_type(node.return_type or "")
+            and not self._is_valid_type(ret_bare)
+        ):
+            invalid_params.append(f"return type '{node.return_type}' is unknown")
+        for msg in invalid_params:
+            self._error(
+                f"Function '{node.name}': {msg}",
+                node=node,
+                tip="Define the type first (`def Name : struct { ... };`, `def Name : type Real;`) or fix the spelling.",
+            )
+
         arg_types = [t for _, t, _ in node.args]
         arg_names = [n for n, _, _ in node.args]
         arg_defaults = [d is not None for _, _, d in node.args]
@@ -1095,6 +1144,8 @@ class TypeChecker:
             self.func_signatures_vis[node.name] = getattr(node, "visibility", "pub")
             if getattr(node, "is_async", False):
                 self.async_funcs.add(node.name)
+            if getattr(node, "is_worker", False):
+                self.worker_funcs.add(node.name)
 
     def _is_multi_type(self, type_name):
         """Check if a type name has multi-type syntax like [int, float]."""
@@ -1474,6 +1525,24 @@ class TypeChecker:
         """Check if type_name is a type parameter (template parameter)."""
         if not type_name:
             return False
+        # A name that resolves to a concrete declared type (struct, class,
+        # enum, union, alias, error) is never a type parameter — the
+        # single/double-uppercase heuristic below would otherwise classify
+        # common struct names like `P` or `UV` as type parameters and skip
+        # validation for them.
+        if (
+            type_name in self.struct_types
+            or type_name in self.union_types
+            or type_name in self.enum_types
+            or type_name in self.type_aliases
+            or type_name in self.class_types
+            or type_name in self.error_types
+        ):
+            return False
+        # Internal placeholder names produced for template instantiation
+        # (`_T`, `_T_1`, `__T_OPDEF__`, ...) are type parameters.
+        if type_name.startswith("_"):
+            return True
         # Type parameters are single uppercase letters like T, T1, T2
         if type_name.upper() == type_name and len(type_name) <= 2:
             return True
@@ -1481,6 +1550,84 @@ class TypeChecker:
         if type_name.startswith("T") and len(type_name) <= 3:
             return type_name[1:].isdigit() or type_name[1:] == ""
         return False
+
+    @staticmethod
+    def _mentions_discard(node, depth=0):
+        """True if node contains the discard identifier `_` in arithmetic."""
+        from .ast_nodes import Identifier, UnaryOp, BinaryOp
+
+        if node is None or depth > 32:
+            return False
+        if isinstance(node, Identifier):
+            return node.name == "_"
+        if isinstance(node, UnaryOp):
+            return TypeChecker._mentions_discard(node.expr, depth + 1)
+        if isinstance(node, BinaryOp):
+            return TypeChecker._mentions_discard(
+                node.left, depth + 1
+            ) or TypeChecker._mentions_discard(node.right, depth + 1)
+        return False
+
+    def _int_literal_value(self, value_expr):
+        """Return (is_literal, int_value) for an integer literal `lit` or `-lit`."""
+        from .ast_nodes import UnaryOp, NumberLiteral
+
+        neg = False
+        v = value_expr
+        while isinstance(v, UnaryOp) and getattr(v, "op", None) in ("-", "+"):
+            if v.op == "-":
+                neg = not neg
+            v = v.expr
+        if isinstance(v, NumberLiteral) and isinstance(getattr(v, "value", None), int):
+            return True, (-v.value if neg else v.value)
+        return False, 0
+
+    def _check_int_literal_fits(self, value_expr, target_type, node=None):
+        """Reject integer literals outside the sign/width of target_type.
+
+        Without this, a literal like `129` declared as `int<8>` or
+        `18446744073709551616` passed as `uint<64>` was silently truncated
+        at codegen (or widened wrong), so `check` reported no error while
+        the compiled program stored/returned a different value.
+        """
+        if not value_expr or not target_type:
+            return
+        ok, val = self._int_literal_value(value_expr)
+        if not ok:
+            return
+        t = self._resolve(self._strip_imut(target_type))
+        bits = None
+        signed = True
+        if t == "int":
+            bits, signed = 32, True
+        elif t == "uint":
+            bits, signed = 32, False
+        elif t.startswith("int<") and t.endswith(">"):
+            try:
+                bits, signed = int(t[4:-1]), True
+            except ValueError:
+                return
+        elif t.startswith("uint<") and t.endswith(">"):
+            try:
+                bits, signed = int(t[5:-1]), False
+            except ValueError:
+                return
+        else:
+            return
+        if bits <= 0 or bits > 1024:
+            return
+        if signed:
+            lo, hi = -(1 << (bits - 1)), (1 << (bits - 1))
+        else:
+            lo, hi = 0, 1 << bits
+        if not (lo <= val < hi):
+            self._error(
+                f"Number literal '{val}' is out of range for type '{t}' "
+                f"(allowed: {lo} to {hi - 1}).",
+                node=node if node is not None else value_expr,
+                tip="Use a literal inside the range for this type, or declare a wider type.",
+                code="LEASH-E015",
+            )
 
     def _error(self, msg, node=None, tip=None, code=None):
         """Create a LeashError with position info from an AST node."""
@@ -1512,10 +1659,29 @@ class TypeChecker:
             {"msg": msg, "line": line, "col": col, "tip": tip, "code": code, "file": file}
         )
 
-    def _types_compatible(self, src, dst):
+    def _alias_template_placeholders(self, type_name):
+        """Map `_Param` placeholders back to `Param` inside a generic template.
+
+        Method lookups on a generic class resolve via `_Param` placeholder
+        instantiations; inside the template's own body `_T` and `T` denote the
+        same type (e.g. `out: vec<T>` receiving `this.at(i)` -> `_T`).
+        """
+        cls = self.generic_classes.get(self.current_class) if self.current_class else None
+        if not cls or not getattr(cls, "type_params", None):
+            return type_name
+        for p in cls.type_params:
+            ph = "_" + p
+            if ph in type_name:
+                type_name = type_name.replace(ph, p)
+        return type_name
+
+    def _types_compatible(self, src, dst, node=None):
         """Check if src type can be assigned into dst type."""
         src_r = self._normalize_type(src)
         dst_r = self._normalize_type(dst)
+
+        src_r = self._alias_template_placeholders(src_r)
+        dst_r = self._alias_template_placeholders(dst_r)
 
         # Strip imut for compatibility checking: an imut variable accepts a
         # non-imut value (immutability is about reassignment, not initialization),
@@ -1656,7 +1822,7 @@ class TypeChecker:
             if src_r != dst_r:
                 raise LeashError(
                     f"Cannot compare or assign different enum types: '{src_r}' and '{dst_r}'",
-                    node=expr,
+                    node=node,
                     tip="To compare different enums, cast one to int: `(int)Enum::Member == (int)OtherEnum::OtherMember`",
                 )
             return True
@@ -1823,6 +1989,8 @@ class TypeChecker:
         self.readonly_borrows = set()
         # A `del` anywhere inside a loop invalidates the variable for the whole
         # function: on a second iteration any use is a use-after-free.
+        self.alias_groups = []
+        self.alias_map = {}
         self._collect_loop_dels(node.body, 0)
         self.current_func_node = node
         self.current_return_type = node.return_type
@@ -1882,6 +2050,32 @@ class TypeChecker:
             self.var_types["this"] = node.struct_type
             self.var_immutable["this"] = True
 
+        # M3: default parameter values must type-check against the declared
+        # parameter type. Previously they fell through to codegen, where a bad
+        # default like `a: int<64> = "hello"` compiled and produced a garbage
+        # value for every call that omitted the argument.
+        for arg_name, arg_type, default in node.args:
+            if default is None:
+                continue
+            bare_param = self._strip_imut(self._resolve(arg_type))
+            if (
+                self._is_type_param(bare_param)
+                or self._is_multi_type(arg_type)
+            ):
+                continue
+            dt = self._infer_type(default)
+            if dt is None or dt == "nil":
+                # Undefined/uninferable defaults already reported; `null` is a
+                # valid default for any reference/pointer parameter.
+                continue
+            if not self._types_compatible(self._strip_imut(dt), bare_param):
+                self._error(
+                    f"Default value for parameter '{arg_name}' has type '{dt}', "
+                    f"but the parameter is declared '{arg_type}'.",
+                    node=node,
+                    tip="The default must match the parameter type, otherwise a call that omits the argument would pass the wrong type.",
+                )
+
         # Temporarily replace body with filtered version for statement checking
         original_body = node.body
         node.body = regular_body
@@ -1890,7 +2084,7 @@ class TypeChecker:
 
         bare_ret = self._strip_imut(node.return_type) if node.return_type else "void"
         if bare_ret != "void" and not last_was_return:
-            self._warn(
+            self._error(
                 f"Function '{node.name}' might not return a value on all paths.",
                 node=node,
                 tip=f"This function is declared to return '{bare_ret}', but its body doesn't end with a `return` statement.",
@@ -2060,6 +2254,31 @@ class TypeChecker:
 
         self.current_class = None
 
+    def _stmt_list_returns(self, stmts):
+        """True if some statement in the list always ends the path with a return."""
+        for st in stmts or []:
+            if self._stmt_returns(st):
+                return True
+        return False
+
+    def _stmt_returns(self, stmt):
+        """True if this statement unconditionally ends its path with a return."""
+        from .ast_nodes import IfStatement, ReturnStatement, MultiReturnStatement
+
+        if isinstance(stmt, (ReturnStatement, MultiReturnStatement)):
+            return True
+        if isinstance(stmt, IfStatement):
+            # Only when every arm (then, every also/elseif, else) returns.
+            if not getattr(stmt, "else_block", None):
+                return False
+            if not self._stmt_list_returns(getattr(stmt, "then_block", None)):
+                return False
+            for _cond, block, _inv in getattr(stmt, "also_blocks", None) or []:
+                if not self._stmt_list_returns(block):
+                    return False
+            return self._stmt_list_returns(stmt.else_block)
+        return False
+
     def _check_statements(self, statements):
         """Check a list of statements, checking for unreachable code. Returns True if last stmt is return."""
         was_returned = False
@@ -2075,10 +2294,18 @@ class TypeChecker:
             try:
                 self._check_stmt(stmt)
             except LeashError as e:
-                if not (self.in_works_block and self.error_collecting):
+                if self.in_works_block and self.error_collecting:
+                    # C3: `works` only swallows the undefined-variable class
+                    # (kept for the runtime message). Raised static errors
+                    # must still fail `check`.
+                    if not str(e).startswith("Undefined variable"):
+                        self.errors.append(e)
+                else:
                     self.errors.append(e)
 
-            if isinstance(stmt, (ReturnStatement, MultiReturnStatement)):
+            if isinstance(stmt, (ReturnStatement, MultiReturnStatement)) or (
+                isinstance(stmt, IfStatement) and self._stmt_returns(stmt)
+            ):
                 was_returned = True
         return was_returned
 
@@ -2121,19 +2348,22 @@ class TypeChecker:
                 self.defined_vars.pop(decl.name, None)
         elif isinstance(stmt, WhileStatement):
             self.loop_depth += 1
-            self._infer_type(stmt.condition)
+            self._check_bool_condition(stmt.condition, "while")
             if not stmt.body:
                 self._warn(
                     "Empty `while` loop body.",
                     node=stmt,
                     tip="This loop will spin and probably hang your program if it runs. Did you forget to add logic or a break condition?",
                 )
-            self._check_statements(stmt.body)
+            self._check_scoped_block(stmt.body)
             self.loop_depth -= 1
         elif isinstance(stmt, ForStatement):
             self.loop_depth += 1
+            saved_types = dict(self.var_types)
+            saved_imut = dict(self.var_immutable)
+            saved_defined = dict(self.defined_vars)
             self._check_stmt(stmt.init)
-            self._infer_type(stmt.condition)
+            self._check_bool_condition(stmt.condition, "for")
             self._check_stmt(stmt.step)
             if not stmt.body:
                 self._warn(
@@ -2142,26 +2372,29 @@ class TypeChecker:
                     tip="This loop will execute its condition and step repeatedly but do nothing within the body.",
                 )
             self._check_statements(stmt.body)
+            self.var_types = saved_types
+            self.var_immutable = saved_imut
+            self.defined_vars = saved_defined
             self.loop_depth -= 1
         elif isinstance(stmt, DoWhileStatement):
             self.loop_depth += 1
             if not stmt.body:
                 self._warn("Empty `do-while` loop body.", node=stmt)
-            self._check_statements(stmt.body)
-            self._infer_type(stmt.condition)
+            self._check_scoped_block(stmt.body)
+            self._check_bool_condition(stmt.condition, "do-while")
             self.loop_depth -= 1
         elif isinstance(stmt, LoopStatement):
             self.loop_depth += 1
             if not stmt.body:
                 self._warn("Empty `loop` body.", node=stmt, code="LEASH-W003")
-            self._check_statements(stmt.body)
+            self._check_scoped_block(stmt.body)
             self.loop_depth -= 1
         elif isinstance(stmt, ForeachStructStatement):
             # Note: foreach over structs is unrolled and does not support stop/continue at runtime
             self._infer_type(stmt.struct_expr)
             self.var_types[stmt.name_var] = "string"
             self.var_types[stmt.value_var] = "int"  # Approximate
-            self._check_statements(stmt.body)
+            self._check_scoped_block(stmt.body)
         elif isinstance(stmt, ForeachArrayStatement):
             self.loop_depth += 1
             arr_t = self._infer_type(stmt.array_expr)
@@ -2170,14 +2403,14 @@ class TypeChecker:
                 elem_t = arr_t.split("[")[0]
             self.var_types[stmt.index_var] = "int"
             self.var_types[stmt.value_var] = elem_t
-            self._check_statements(stmt.body)
+            self._check_scoped_block(stmt.body)
             self.loop_depth -= 1
         elif isinstance(stmt, ForeachStringStatement):
             self.loop_depth += 1
             self._infer_type(stmt.string_expr)
             self.var_types[stmt.index_var] = "int"
             self.var_types[stmt.char_var] = "char"
-            self._check_statements(stmt.body)
+            self._check_scoped_block(stmt.body)
             self.loop_depth -= 1
         elif isinstance(stmt, ForeachVectorStatement):
             self.loop_depth += 1
@@ -2187,7 +2420,7 @@ class TypeChecker:
                 elem_t = vec_t[4:-1]
             self.var_types[stmt.index_var] = "int"
             self.var_types[stmt.value_var] = elem_t
-            self._check_statements(stmt.body)
+            self._check_scoped_block(stmt.body)
             self.loop_depth -= 1
         elif isinstance(stmt, ForeachMatrixStatement):
             self.loop_depth += 1
@@ -2197,7 +2430,7 @@ class TypeChecker:
                 elem_t = mat_t[7:-1]
             self.var_types[stmt.index_var] = "int"
             self.var_types[stmt.value_var] = elem_t
-            self._check_statements(stmt.body)
+            self._check_scoped_block(stmt.body)
             self.loop_depth -= 1
         elif isinstance(stmt, StopStatement):
             if self.loop_depth == 0:
@@ -2224,16 +2457,43 @@ class TypeChecker:
             self.collected_errors = []
             try:
                 self._check_statements(stmt.body)
-            except:
-                pass
+            except LeashError as e:
+                # C3: a raised static error inside works is not a runtime
+                # failure — surface it. (The undefined-variable class is the
+                # only thing works handles dynamically.)
+                if not str(e).startswith("Undefined variable"):
+                    self.errors.append(e)
             finally:
                 self.error_collecting = False
                 self.in_works_block = False
 
             err_msg = "Runtime error in works block"
-            if self.works_error_occured and self.collected_errors:
-                err = self.collected_errors[0]
-                err_msg = err.get("msg", "Runtime error in works block")
+            undefined_class = [
+                e
+                for e in self.collected_errors
+                if e.get("msg", "").startswith("Undefined variable")
+            ]
+            if undefined_class:
+                err_msg = undefined_class[0].get("msg", err_msg)
+            elif self.works_error_occured and self.collected_errors:
+                err_msg = self.collected_errors[0].get("msg", err_msg)
+
+            # C3: re-emit every collected *static* error (type mismatch,
+            # unknown type, bad call, ...) — only the undefined-variable
+            # class stays reserved for the runtime otherwise-message.
+            for e in self.collected_errors:
+                if e.get("msg", "").startswith("Undefined variable"):
+                    continue
+                self.errors.append(
+                    LeashError(
+                        e.get("msg", err_msg),
+                        line=e.get("line"),
+                        col=e.get("col"),
+                        tip=e.get("tip"),
+                        code=e.get("code"),
+                        file=e.get("file"),
+                    )
+                )
 
             self.var_types[stmt.err_var] = "string"
             self.var_immutable[stmt.err_var] = False
@@ -2260,16 +2520,76 @@ class TypeChecker:
         elif isinstance(stmt, MultiAssign):
             self._check_multi_assign(stmt)
 
+    def _record_shared_writer(self, name, node):
+        """`shared` globals allow exactly one writing function (docs/
+        concurrency.html). Writes from a local that shadows the global do
+        not count (var_types holds locals/params; globals live in
+        global_vars)."""
+        if name not in self.shared_globals:
+            return
+        if name in self.var_types:
+            return  # shadowed by a local/param: not a write to the global
+        writer = self.current_func or "<global>"
+        prev = self.shared_writers.get(name)
+        if prev is not None and prev != writer:
+            self._error(
+                f"shared variable '{name}' is written by both '{prev}' and '{writer}'.",
+                node=node,
+                tip="`shared` allows exactly ONE writer with any number of readers. "
+                    "Use a `fusion` variable (atomic) if several workers must write it, "
+                    "or give each worker its own variable.",
+                code="LEASH-E017",
+            )
+        else:
+            self.shared_writers[name] = writer
+
+    def _alias_union(self, a, b):
+        """Record that names a and b are aliases of the same object."""
+        ia = self.alias_map.get(a)
+        ib = self.alias_map.get(b)
+        if ia is not None and ib is not None:
+            if ia == ib:
+                return
+            ga, gb = self.alias_groups[ia], self.alias_groups[ib]
+            ga |= gb
+            for n in gb:
+                self.alias_map[n] = ia
+            self.alias_groups[ib] = set()
+        elif ia is not None:
+            self.alias_groups[ia].add(b)
+            self.alias_map[b] = ia
+        elif ib is not None:
+            self.alias_groups[ib].add(a)
+            self.alias_map[a] = ib
+        else:
+            self.alias_groups.append({a, b})
+            idx = len(self.alias_groups) - 1
+            self.alias_map[a] = idx
+            self.alias_map[b] = idx
+
+    def _alias_in(self, name, dead_set):
+        """True if name, or any alias of it, is in dead_set."""
+        if name in dead_set:
+            return True
+        g = self.alias_map.get(name)
+        if g is not None:
+            for n in self.alias_groups[g]:
+                if n is not name and n in dead_set:
+                    return True
+        return False
+
     def _check_del(self, stmt):
         """Type check a del statement - verify the target is a valid class instance."""
         from .ast_nodes import Identifier
         if isinstance(stmt.target, Identifier):
             name = stmt.target.name
-            if name in self.deleted_vars or name in self.loop_deleted:
+            if self._alias_in(name, self.deleted_vars) or self._alias_in(
+                name, self.loop_deleted
+            ):
                 self._error(
                     f"Double delete: '{name}' has already been deleted.",
                     node=stmt,
-                    tip="Deleting the same instance twice is undefined behavior. Delete it exactly once.",
+                    tip="Deleting the same instance twice is undefined behavior. Delete it exactly once. (This also covers aliases created with `p := o`.)",
                     code="LEASH-E008",
                 )
                 return
@@ -2284,7 +2604,13 @@ class TypeChecker:
                     tip="The 'del' keyword can only be used to delete class instances.",
                 )
         if isinstance(stmt.target, Identifier):
-            self.deleted_vars.add(stmt.target.name)
+            # Poison every alias of the deleted instance, not just its own
+            # name: `p := o; del o; p.v` is a use-after-free too.
+            g = self.alias_map.get(stmt.target.name)
+            if g is not None:
+                self.deleted_vars.update(self.alias_groups[g])
+            else:
+                self.deleted_vars.add(stmt.target.name)
 
     def _check_var_decl(self, stmt):
         if stmt.name in self.var_types:
@@ -2314,6 +2640,7 @@ class TypeChecker:
                     tip="Use ':=' when the type should be inferred from the value, e.g., `a := 10;`",
                     code="LEASH-E004",
                 )
+                return
             inferred_type = self._infer_type(stmt.value)
             if inferred_type is None:
                 self._error(
@@ -2321,6 +2648,10 @@ class TypeChecker:
                     node=stmt,
                     code="LEASH-E005",
                 )
+                # Stop checking this declaration: continuing would feed the
+                # None type into _resolve() below, raising an internal
+                # TypeError that cli.check_file reports as a false-clean pass.
+                return
             decl_type = inferred_type
             stmt.var_type = inferred_type  # Store for codegen
         else:
@@ -2333,6 +2664,9 @@ class TypeChecker:
         is_imut = self._is_imut(decl_type)
         bare_decl_type = self._strip_imut(decl_type)
         resolved = self._resolve(bare_decl_type)
+
+        # C2: literal initializer must fit the declared type's sign/width.
+        self._check_int_literal_fits(stmt.value, resolved, node=stmt)
 
         if bare_decl_type == "void":
             self._error(
@@ -2356,6 +2690,34 @@ class TypeChecker:
             inner = bare_decl_type.split("[")[1].split("]")[0]
             if inner:  # Non-empty size (not a slice)
                 import re
+
+                inner_clean = inner.strip()
+                if re.fullmatch(r"[-+]?\d+", inner_clean):
+                    # M5: constant size must be a positive integer that fits
+                    # the supported range (larger values crashed llvmlite IR
+                    # emission; non-positive sizes crashed with an internal
+                    # TypeError during array construction).
+                    size_val = int(inner_clean)
+                    if size_val <= 0:
+                        self._error(
+                            f"Array size for '{stmt.name}' must be a positive integer, got {size_val}.",
+                            node=stmt,
+                            tip="Declare the array as `T[n]` with n >= 1, or use a slice `T[]` for a dynamic list.",
+                        )
+                    elif size_val > 2147483647:
+                        self._error(
+                            f"Array size {size_val} for '{stmt.name}' is too large (maximum 2147483647).",
+                            node=stmt,
+                            tip="Use a `vec<T>` for large collections instead of a stack array of this size.",
+                        )
+                elif stmt.value is None:
+                    # M5: a runtime-sized array (`T[n]`) without an initializer
+                    # crashed the compiler ('int' object is not iterable).
+                    self._error(
+                        f"Array '{stmt.name}' has a non-constant size '{inner_clean}' but no initializer.",
+                        node=stmt,
+                        tip="Give the array an initializer (`a: T[n] = {…};`) so its length is known, use a literal size, or use a `vec<T>`.",
+                    )
 
                 for ident_match in re.finditer(r"[a-zA-Z_][a-zA-Z0-9_]*", inner):
                     ident = ident_match.group()
@@ -2430,6 +2792,15 @@ class TypeChecker:
                 code="LEASH-E004",
             )
 
+        # `p := o` (or `p: Obj = o`) between class instances creates an alias
+        # of the same heap object; `del` on either must poison both. Read-only
+        # borrows also propagate through copies.
+        if isinstance(stmt.value, Identifier):
+            if resolved in self.class_types:
+                self._alias_union(stmt.name, stmt.value.name)
+            if stmt.value.name in self.readonly_borrows:
+                self.readonly_borrows.add(stmt.name)
+
     def _maybe_specialize_generic_new(self, value_expr, declared_type):
         """Rewrite `Template.new(args)` to `Template<T1, T2>.new(args)` when the
         assignment context declares a concrete instantiation of that template.
@@ -2466,6 +2837,16 @@ class TypeChecker:
     def _check_assignment(self, stmt):
         from .ast_nodes import Identifier, IndexAccess, MemberAccess
 
+        # One-writer rule for `shared` globals (any write counts, including
+        # element/field writes through the root identifier).
+        _shared_root = None
+        if isinstance(stmt.target, Identifier):
+            _shared_root = stmt.target.name
+        elif isinstance(stmt.target, (IndexAccess, MemberAccess)):
+            _shared_root = self._root_identifier(stmt.target)
+        if _shared_root:
+            self._record_shared_writer(_shared_root, stmt)
+
         # Strings are immutable: reject element writes like s[0] = 'x'.
         if isinstance(stmt.target, IndexAccess):
             base_t = self._infer_type(stmt.target.expr)
@@ -2489,6 +2870,15 @@ class TypeChecker:
                     node=stmt,
                     tip=f"Arrays are not copied when passed. Declare the parameter as '&{self.var_types.get(root, 'T[]')}' to allow mutation of the caller's array, or copy the elements you need.",
                     code="LEASH-E012",
+                )
+            # `imut` containers could previously still be mutated through
+            # element/field writes (`p.x = 5; a[0] = 9;`) — only bare
+            # reassignment of the name itself was rejected.
+            if root and self.var_immutable.get(root, False):
+                self._error(
+                    f"Cannot mutate '{root}': it was declared `imut`.",
+                    node=stmt,
+                    tip=f"'{root}' is immutable: neither the variable nor its elements/fields can be assigned. Copy it into a mutable variable first, or drop `imut` from the declaration.",
                 )
 
         if isinstance(stmt.target, Identifier):
@@ -2516,6 +2906,21 @@ class TypeChecker:
         if isinstance(stmt.target, Identifier) and stmt.target.name in self.var_types:
             self._maybe_specialize_generic_new(stmt.value, self._strip_imut(self.var_types[stmt.target.name]))
         val_type = self._infer_type(stmt.value)
+
+        # C2: literal RHS must fit the target variable's sign/width.
+        self._check_int_literal_fits(stmt.value, target_type, node=stmt)
+
+        # `p = o` between class instances creates an alias of the same heap
+        # object; `del` on either must poison both. Read-only borrows also
+        # propagate through copies.
+        if isinstance(stmt.target, Identifier) and isinstance(stmt.value, Identifier):
+            if (
+                target_type
+                and self._resolve(self._strip_imut(target_type)) in self.class_types
+            ):
+                self._alias_union(stmt.target.name, stmt.value.name)
+            if stmt.value.name in self.readonly_borrows:
+                self.readonly_borrows.add(stmt.target.name)
 
         if isinstance(stmt.target, Identifier) and val_type and self._is_imut(val_type):
             self.var_immutable[stmt.target.name] = True
@@ -2795,6 +3200,13 @@ class TypeChecker:
         if func_name not in self.func_types:
             self._error(f"Cannot spawn unknown function '{func_name}'", node=stmt)
             return
+        if func_name not in self.worker_funcs:
+            self._error(
+                f"Cannot spawn non-worker function '{func_name}' — spawn only runs `worker fnc` functions",
+                node=stmt,
+                tip="Declare the target as `worker fnc name(...) { ... }`. Spawning a plain function creates an invalid thread entry point (it would crash at runtime).",
+            )
+            return
         expected_args, return_type, arg_names, arg_defaults = self.func_types[func_name]
         if len(call.args) != len(expected_args):
             self._error(
@@ -2815,8 +3227,35 @@ class TypeChecker:
                 node=stmt,
             )
 
+    def _check_scoped_block(self, block):
+        """Check a block with proper block scope: variables declared inside
+        are popped afterwards (if/loop bodies previously leaked their
+        declarations into the enclosing scope, so `if c { z: T = 1; } z`
+        type-checked and read an out-of-scope variable at runtime)."""
+        saved_types = dict(self.var_types)
+        saved_imut = dict(self.var_immutable)
+        saved_defined = dict(self.defined_vars)
+        self._check_statements(block)
+        self.var_types = saved_types
+        self.var_immutable = saved_imut
+        self.defined_vars = saved_defined
+
+    def _check_bool_condition(self, cond, construct):
+        """if/while/for conditions must be `bool` (was: any type silently
+        compiled — `if 5 {}` ran the then-block unconditionally)."""
+        t = self._infer_type(cond)
+        if not t:
+            return
+        rt = self._resolve(self._strip_imut(t))
+        if rt != "bool" and not self._is_type_param(rt):
+            self._error(
+                f"'{construct}' condition must be 'bool', but got '{rt}'.",
+                node=cond,
+                tip="Wrap the expression in an explicit comparison (e.g. `x != 0`, `s.size > 0`) or a call that returns bool.",
+            )
+
     def _check_if(self, stmt):
-        self._infer_type(stmt.condition)
+        self._check_bool_condition(stmt.condition, "if")
         if isinstance(stmt.condition, BoolLiteral):
             if stmt.condition.value == True:
                 self._warn(
@@ -2831,14 +3270,14 @@ class TypeChecker:
 
         if not stmt.then_block:
             self._warn("Empty `if` then-block.", node=stmt)
-        self._check_statements(stmt.then_block)
+        self._check_scoped_block(stmt.then_block)
         for cond, block, inverted in stmt.also_blocks:
             self._infer_type(cond)
-            self._check_statements(block)
+            self._check_scoped_block(block)
         if stmt.else_block:
             if not stmt.else_block:
                 self._warn("Empty `else` block.", node=stmt)
-            self._check_statements(stmt.else_block)
+            self._check_scoped_block(stmt.else_block)
 
     def _check_switch(self, stmt):
         switch_type = self._infer_type(stmt.expression)
@@ -2970,6 +3409,9 @@ class TypeChecker:
                 return self.current_class
             if self.current_func_node and getattr(self.current_func_node, 'struct_type', None):
                 return self.current_func_node.struct_type
+            if self.current_opdef_type:
+                # Inside an opdef body, `this` is the receiver instance.
+                return self.current_opdef_type
             self._error("'this' can only be used inside a class method or struct function", node=expr)
         elif isinstance(expr, ThisWorkerExpr):
             if not self.current_func_node or not getattr(self.current_func_node, 'is_worker', False):
@@ -3014,14 +3456,14 @@ class TypeChecker:
             return "string"
         elif isinstance(expr, Identifier):
             if expr.name in self.var_types:
-                if expr.name in self.deleted_vars:
+                if self._alias_in(expr.name, self.deleted_vars):
                     self._error(
                         f"Use of deleted variable '{expr.name}': it was already destroyed with 'del'.",
                         node=expr,
-                        tip="After `del x` the instance is gone; keep a reference to the data you still need before deleting.",
+                        tip="After `del x` the instance is gone; keep a reference to the data you still need before deleting. (This also fires for aliases such as `p := o; del o;`.)",
                         code="LEASH-E009",
                     )
-                elif expr.name in self.loop_deleted:
+                elif self._alias_in(expr.name, self.loop_deleted):
                     self._error(
                         f"Variable '{expr.name}' is used where it may already have been deleted by the 'del' inside a loop.",
                         node=expr,
@@ -3124,19 +3566,13 @@ class TypeChecker:
                         node=expr,
                         tip="Make sure the type exists and is properly defined.",
                     )
-                # Check if the left side's type is compatible with the right type
-                left_type = self._infer_type(expr.left)
-                if left_type and not self._types_compatible(left_type, expr.right):
-                    # This is not necessarily an error - it could be a runtime check
-                    # For example, checking if a union is a specific variant
-                    pass
             else:
                 # Value comparison: check that types are comparable
                 left_type = self._infer_type(expr.left)
                 right_type = self._infer_type(expr.right)
                 if left_type and right_type:
                     if not self._types_compatible(left_type, right_type):
-                        self._warn(
+                        self._error(
                             f"Comparing values of different types: '{left_type}' and '{right_type}'",
                             node=expr,
                         )
@@ -3196,18 +3632,24 @@ class TypeChecker:
 
             # Raw-pointer arithmetic walks unchecked memory: require unsafe.
             # Safe references ('&T', base 'sptr') auto-deref to values and are exempt.
-            if (left_b == "ptr" and right_b == "int") or (
-                left_b == "int" and right_b == "ptr"
+            if (left_b in ("ptr", "sptr") and right_b == "int") or (
+                left_b == "int" and right_b in ("ptr", "sptr")
             ):
-                if not self.in_unsafe_func:
-                    bad_t = left_t if left_b == "ptr" else right_t
+                if left_b == "int" and right_b == "ptr" and not self.in_unsafe_func:
                     raise LeashError(
-                        f"Pointer arithmetic on '{bad_t}' requires an `unsafe fnc`.",
+                        f"Pointer arithmetic on '{right_t}' requires an `unsafe fnc`.",
                         node=expr,
                         tip="Raw-pointer math can walk outside valid memory. Use an `unsafe fnc`, a safe '&T' reference, or bounds-checked arrays/vectors.",
                         code="LEASH-E011",
                     )
-                if left_b == "ptr":
+                if left_b == "ptr" and not self.in_unsafe_func:
+                    raise LeashError(
+                        f"Pointer arithmetic on '{left_t}' requires an `unsafe fnc`.",
+                        node=expr,
+                        tip="Raw-pointer math can walk outside valid memory. Use an `unsafe fnc`, a safe '&T' reference, or bounds-checked arrays/vectors.",
+                        code="LEASH-E011",
+                    )
+                if left_b in ("ptr", "sptr"):
                     return left_t
                 return right_t
 
@@ -3285,7 +3727,7 @@ class TypeChecker:
                 if right_b == "array":
                     array_inner = right_t.split("[")[0]
                     if not self._types_compatible(left_t, array_inner):
-                        self._warn(
+                        self._error(
                             f"Operator '<>' expects left operand of type '{array_inner}' but got '{left_t}'",
                             node=expr,
                         )
@@ -3322,21 +3764,67 @@ class TypeChecker:
                     return left_t
                 if self._is_int_family(left_t) and self._is_int_family(right_t):
                     # Shift limit check
-                    if expr.op in ("<<", ">>") and isinstance(
-                        expr.right, NumberLiteral
+                    if expr.op in ("<<", ">>"):
+                        shift_amount = None
+                        r = expr.right
+                        if isinstance(r, NumberLiteral):
+                            shift_amount = r.value
+                        elif (
+                            isinstance(r, UnaryOp)
+                            and r.op == "-"
+                            and isinstance(r.expr, NumberLiteral)
+                        ):
+                            shift_amount = -r.expr.value
+                        if shift_amount is not None:
+                            # Resolve aliases (`def u8x : type uint<8>`) and
+                            # the imut prefix so the width is the real one.
+                            rl = self._resolve(self._strip_imut(left_t))
+                            bits = None
+                            if rl.startswith("int<") and rl.endswith(">"):
+                                try:
+                                    bits = int(rl[4:-1])
+                                except ValueError:
+                                    bits = None
+                            elif rl.startswith("uint<") and rl.endswith(">"):
+                                try:
+                                    bits = int(rl[5:-1])
+                                except ValueError:
+                                    bits = None
+                            elif rl in ("int", "uint"):
+                                # Bare `int`/`uint` are 32-bit in Leash.
+                                bits = 32
+                            elif rl == "char":
+                                bits = 8
+                            elif rl == "bool":
+                                bits = 1
+                            if bits and bits > 0:
+                                if shift_amount < 0:
+                                    self._error(
+                                        f"Shift amount {shift_amount} is negative.",
+                                        node=expr,
+                                        tip="Shifting by a negative amount is undefined behavior. Use a shift amount within [0, bits-1].",
+                                    )
+                                elif shift_amount >= bits:
+                                    self._error(
+                                        f"Shift amount {shift_amount} is greater than or equal to bit-width {bits} of '{rl}'.",
+                                        node=expr,
+                                        tip="This is undefined behavior in many environments. Make sure the shift amount is within [0, bits-1].",
+                                    )
+
+                    # `%` on integer operands returns from this branch
+                    # before the numeric zero-division check below can
+                    # run, so a literal `x % 0` used to pass silently.
+                    if (
+                        expr.op == "%"
+                        and not self.in_unsafe_func
+                        and isinstance(expr.right, NumberLiteral)
+                        and expr.right.value == 0
                     ):
-                        bits = 64  # Default
-                        if "<" in left_t:
-                            try:
-                                bits = int(left_t.split("<")[1].split(">")[0])
-                            except:
-                                pass
-                        if expr.right.value >= bits:
-                            self._warn(
-                                f"Shift amount {expr.right.value} is greater than or equal to bit-width {bits}.",
-                                node=expr,
-                                tip="This is undefined behavior in many environments. Make sure the shift amount is within [0, bits-1].",
-                            )
+                        raise LeashError(
+                            f"Modulo by zero detected statically!",
+                            node=expr,
+                            tip="Make sure you aren't dividing by zero, as it will crash your program at runtime.",
+                        )
 
                     return left_t
                 else:
@@ -3353,6 +3841,16 @@ class TypeChecker:
                         self._warn("Redundant 'true && ...' operation.", node=expr)
                     if expr.op == "||" and expr.left.value == False:
                         self._warn("Redundant 'false || ...' operation.", node=expr)
+                for operand, operand_t in ((expr.left, left_t), (expr.right, right_t)):
+                    if not operand_t:
+                        continue
+                    rt = self._resolve(self._strip_imut(operand_t))
+                    if rt != "bool" and not self._is_type_param(rt):
+                        self._error(
+                            f"Operator '{expr.op}' requires 'bool' operands, but got '{rt}'.",
+                            node=operand,
+                            tip="Convert to an explicit comparison first (e.g. `a != 0 && b != 0`).",
+                        )
                 return "bool"
 
             # Numeric operations
@@ -3480,8 +3978,18 @@ class TypeChecker:
                         # Return type from opdef
                         return opdef_node.return_type
 
+            # nil / null: comparing any pointer, reference, or class instance
+            # against nil tests for null. (Both operands `nil` is meaningless.)
+            if expr.op in ("==", "!=") and (left_t == "nil") != (right_t == "nil"):
+                other_t = right_t if left_t == "nil" else left_t
+                other_b = right_b if left_t == "nil" else left_b
+                if other_b in ("ptr", "sptr") or other_t in self.class_types:
+                    return "bool"
+
             # General comparison: == and != between compatible types returns bool
-            if expr.op in ("==", "!=") and self._types_compatible(left_t, right_t):
+            if expr.op in ("==", "!=") and self._types_compatible(
+                left_t, right_t, node=expr
+            ):
                 return "bool"
 
             # Mixed string + non-string
@@ -3512,7 +4020,28 @@ class TypeChecker:
                         tip="Leash supports '+' for concatenating strings with numbers, but other operators like '-', '*', '/' are not supported for mixed types.",
                     )
 
-        return left_t  # Best guess fallback
+        # Fallback: numeric operands that slipped past the branches above keep
+        # the left type; anything else (structs, unions, arrays, mismatched
+        # types) must be rejected here — silently returning left_t let e.g.
+        # `p * q` (two structs) or `union == struct` reach codegen and die
+        # with an internal LLVM type error.
+        if not left_t or not right_t:
+            # An operand failed to infer — that error is already reported.
+            return left_t or right_t
+        if self._mentions_discard(expr):
+            # The discard variable `_` supports the stdlib idiom
+            # `_ = _ + 1 - 1;` (marks a foreach binding as used) on any type;
+            # never reject operators whose expression involves `_`.
+            return left_t
+        if self._is_type_param(left_t) or self._is_type_param(right_t):
+            return left_t
+        if self._is_numeric(left_t) and self._is_numeric(right_t):
+            return left_t
+        raise LeashError(
+            f"Cannot use operator '{expr.op}' between '{left_t}' and '{right_t}'",
+            node=expr,
+            tip="Only numbers, strings, vectors, matrices, and types with a matching operator overload support this operator.",
+        )
 
     def _check_unary_op(self, expr):
         from .ast_nodes import Identifier
@@ -3721,6 +4250,7 @@ class TypeChecker:
         if expr.name == "cstr":
             if len(expr.args) != 1:
                 self._error(f"Function 'cstr' expects 1 argument", node=expr)
+                return "char[]"
             arg_t = self._infer_type(expr.args[0])
             if arg_t and self._resolve(arg_t) == "char[]":
                 self._warn("Calling 'cstr' on a 'char[]' is redundant.", node=expr)
@@ -3738,6 +4268,7 @@ class TypeChecker:
         if expr.name == "lstr":
             if len(expr.args) != 1:
                 self._error(f"Function 'lstr' expects 1 argument", node=expr)
+                return "string"
             arg_t = self._infer_type(expr.args[0])
             if arg_t and self._resolve(arg_t) == "string":
                 self._warn("Calling 'lstr' on a 'string' is redundant.", node=expr)
@@ -3779,6 +4310,7 @@ class TypeChecker:
                     f"Function 'tostring' expects 1 argument, but got {len(expr.args)}",
                     node=expr,
                 )
+                return "string"
             arg_t = self._infer_type(expr.args[0])
             if arg_t:
                 resolved_t = self._resolve(arg_t)
@@ -3805,6 +4337,7 @@ class TypeChecker:
                     f"Function 'rand' expects 2 arguments (min, max), but got {len(expr.args)}",
                     node=expr,
                 )
+                return "int"
             arg_t1 = self._infer_type(expr.args[0])
             arg_t2 = self._infer_type(expr.args[1])
             if arg_t1 and not self._is_int_family(self._resolve(arg_t1)):
@@ -3825,6 +4358,7 @@ class TypeChecker:
                     f"Function 'randf' expects 2 arguments (min, max), but got {len(expr.args)}",
                     node=expr,
                 )
+                return "float"
             arg_t1 = self._infer_type(expr.args[0])
             arg_t2 = self._infer_type(expr.args[1])
             if arg_t1 and not self._is_numeric(self._resolve(arg_t1)):
@@ -3845,6 +4379,7 @@ class TypeChecker:
                     f"Function 'seed' expects 1 argument, but got {len(expr.args)}",
                     node=expr,
                 )
+                return "void"
             arg_t = self._infer_type(expr.args[0])
             if arg_t and not self._is_int_family(self._resolve(arg_t)):
                 self._error(
@@ -3875,6 +4410,7 @@ class TypeChecker:
                     f"Function 'wait' expects 1 argument (seconds), but got {len(expr.args)}",
                     node=expr,
                 )
+                return "void"
             arg_t = self._infer_type(expr.args[0])
             if arg_t and not self._is_numeric(self._resolve(arg_t)):
                 self._error(
@@ -3889,6 +4425,7 @@ class TypeChecker:
                     f"Function 'exec' expects 1 or 2 arguments (command, mode), but got {len(expr.args)}",
                     node=expr,
                 )
+                return "string"
             arg_t = self._infer_type(expr.args[0])
             if arg_t and self._resolve(arg_t) != "string":
                 self._error(
@@ -3942,6 +4479,7 @@ class TypeChecker:
                     f"Function 'exit' expects 1 argument (exit code), but got {len(expr.args)}",
                     node=expr,
                 )
+                return "void"
             arg_t = self._infer_type(expr.args[0])
             if arg_t and not self._is_int_family(self._resolve(arg_t)):
                 self._error(
@@ -3964,6 +4502,7 @@ class TypeChecker:
                     f"Function 'normescape' expects 1 argument, but got {len(expr.args)}",
                     node=expr,
                 )
+                return "string"
             arg_t = self._infer_type(expr.args[0])
             if arg_t and self._resolve(arg_t) != "string":
                 self._error(
@@ -4006,7 +4545,7 @@ class TypeChecker:
                         if bare_arg and not self._types_compatible(
                             bare_arg, bare_expected
                         ):
-                            self._warn(
+                            self._error(
                                 f"Argument {i + 1} of function pointer expects '{bare_expected}' "
                                 f"but got '{bare_arg}'.",
                                 node=expr,
@@ -4036,6 +4575,25 @@ class TypeChecker:
                     node=expr,
                 )
 
+        # Too many positional arguments (zip-based type checks below would
+        # silently truncate at len(expected_args)).
+        if (provided_positional > len(arg_names)
+                and expr.name not in self.variadic_builtins):
+            self._error(
+                f"Function '{expr.name}' expects at most {len(arg_names)} argument(s), "
+                f"but got {provided_positional} positional",
+                node=expr,
+            )
+        # A value provided positionally was also provided as a kwarg.
+        dupes = sorted(provided_kwarg_names.intersection(
+            arg_names[:provided_positional]))
+        if dupes:
+            self._error(
+                f"Function '{expr.name}' got multiple values for argument(s): "
+                + ", ".join(f"'{d}'" for d in dupes),
+                node=expr,
+            )
+
         # Check all required args are provided
         for i, (arg_name, has_default) in enumerate(zip(arg_names, arg_defaults)):
             if i < provided_positional:
@@ -4059,8 +4617,25 @@ class TypeChecker:
             arg_type = self._infer_type(arg_expr)
             bare_arg = self._strip_imut(arg_type) if arg_type else None
             bare_expected = self._strip_imut(expected_type)
+            # C2: literal argument must fit the parameter's sign/width.
+            self._check_int_literal_fits(arg_expr, bare_expected, node=arg_expr)
+            # A read-only borrowed array handed to a mutable `&T` parameter
+            # would let the callee mutate storage the caller itself only
+            # borrowed read-only.
+            if (
+                isinstance(expected_type, str)
+                and expected_type.startswith("&")
+                and isinstance(arg_expr, Identifier)
+                and arg_expr.name in self.readonly_borrows
+            ):
+                self._error(
+                    f"Argument {i + 1} of '{expr.name}' requires a mutable borrow ('&'), "
+                    f"but '{arg_expr.name}' was borrowed read-only.",
+                    node=arg_expr,
+                    tip=f"'{arg_expr.name}' is an array parameter declared without '&', so this function may not hand it to a mutating callee. Re-declare it as '&{bare_arg or 'T[]'}' or pass a copy.",
+                )
             if bare_arg and not self._types_compatible(bare_arg, bare_expected):
-                self._warn(
+                self._error(
                     f"Argument {i + 1} of '{expr.name}' expects '{bare_expected}' "
                     f"but got '{bare_arg}'.",
                     node=expr,
@@ -4075,8 +4650,10 @@ class TypeChecker:
                     arg_type = self._infer_type(kw_expr)
                     bare_arg = self._strip_imut(arg_type) if arg_type else None
                     bare_expected = self._strip_imut(expected_type)
+                    # C2: literal kwarg must fit the parameter's sign/width.
+                    self._check_int_literal_fits(kw_expr, bare_expected, node=kw_expr)
                     if bare_arg and not self._types_compatible(bare_arg, bare_expected):
-                        self._warn(
+                        self._error(
                             f"Argument '{kw_name}' of '{expr.name}' expects '{bare_expected}' "
                             f"but got '{bare_arg}'.",
                             node=expr,
@@ -4113,6 +4690,25 @@ class TypeChecker:
                     node=expr,
                 )
 
+        # Too many positional arguments (zip-based type checks below would
+        # silently truncate at len(expected_args)).
+        if (provided_positional > len(arg_names)
+                and expr.name not in self.variadic_builtins):
+            self._error(
+                f"Function '{expr.name}' expects at most {len(arg_names)} argument(s), "
+                f"but got {provided_positional} positional",
+                node=expr,
+            )
+        # A value provided positionally was also provided as a kwarg.
+        dupes = sorted(provided_kwarg_names.intersection(
+            arg_names[:provided_positional]))
+        if dupes:
+            self._error(
+                f"Function '{expr.name}' got multiple values for argument(s): "
+                + ", ".join(f"'{d}'" for d in dupes),
+                node=expr,
+            )
+
         # Check all required args are provided
         for i, (arg_name, has_default) in enumerate(zip(arg_names, arg_defaults)):
             if i < provided_positional:
@@ -4132,8 +4728,25 @@ class TypeChecker:
             arg_type = self._infer_type(arg_expr)
             bare_arg = self._strip_imut(arg_type) if arg_type else None
             bare_expected = self._strip_imut(expected_type)
+            # C2: literal argument must fit the parameter's sign/width.
+            self._check_int_literal_fits(arg_expr, bare_expected, node=arg_expr)
+            # A read-only borrowed array handed to a mutable `&T` parameter
+            # would let the callee mutate storage the caller itself only
+            # borrowed read-only.
+            if (
+                isinstance(expected_type, str)
+                and expected_type.startswith("&")
+                and isinstance(arg_expr, Identifier)
+                and arg_expr.name in self.readonly_borrows
+            ):
+                self._error(
+                    f"Argument {i + 1} of '{expr.name}' requires a mutable borrow ('&'), "
+                    f"but '{arg_expr.name}' was borrowed read-only.",
+                    node=arg_expr,
+                    tip=f"'{arg_expr.name}' is an array parameter declared without '&', so this function may not hand it to a mutating callee. Re-declare it as '&{bare_arg or 'T[]'}' or pass a copy.",
+                )
             if bare_arg and not self._types_compatible(bare_arg, bare_expected):
-                self._warn(
+                self._error(
                     f"Argument {i + 1} of '{expr.name}' expects '{bare_expected}' "
                     f"but got '{bare_arg}'.",
                     node=expr,
@@ -4148,8 +4761,10 @@ class TypeChecker:
                     arg_type = self._infer_type(kw_expr)
                     bare_arg = self._strip_imut(arg_type) if arg_type else None
                     bare_expected = self._strip_imut(expected_type)
+                    # C2: literal kwarg must fit the parameter's sign/width.
+                    self._check_int_literal_fits(kw_expr, bare_expected, node=kw_expr)
                     if bare_arg and not self._types_compatible(bare_arg, bare_expected):
-                        self._warn(
+                        self._error(
                             f"Argument '{kw_name}' of '{expr.name}' expects '{bare_expected}' "
                             f"but got '{bare_arg}'.",
                             node=expr,
@@ -4276,6 +4891,22 @@ class TypeChecker:
                 
             return field_info[0]
 
+        # Unknown member on a primitive/builtin value type. This used to
+        # fall through with `return None`, so `a.foo` on an int produced no
+        # checker error and only failed later at codegen with a misleading
+        # "Invalid l-value" crash.
+        bare_resolved = self._strip_imut(resolved)
+        member_base = self._base_type(bare_resolved)
+        if (
+            member_base in ("int", "uint", "char", "bool", "float", "string")
+            or (bare_resolved.endswith("]") and "[" in bare_resolved)
+        ):
+            raise LeashError(
+                f"Type '{bare_resolved}' has no member named '{expr.member}'",
+                node=expr,
+                tip=f"'{bare_resolved}' is a built-in value type; it has no member '{expr.member}'. Arrays and strings only expose `.size`.",
+            )
+
         return None
 
     def _check_pointer_member_access(self, expr):
@@ -4367,14 +4998,32 @@ class TypeChecker:
                     parts = resolved.split("[")
                     if len(parts) > 1 and parts[1].strip("]") != "":
                         size = int(parts[1].strip("]"))
-                        if isinstance(expr.index, NumberLiteral) and expr.index.value >= 0:
-                            idx = expr.index.value
-                            if idx >= size:
+                        idx_val = None
+                        if isinstance(expr.index, NumberLiteral):
+                            idx_val = expr.index.value
+                        elif (
+                            isinstance(expr.index, UnaryOp)
+                            and expr.index.op == "-"
+                            and isinstance(expr.index.expr, NumberLiteral)
+                        ):
+                            idx_val = -expr.index.expr.value
+                        if idx_val is not None:
+                            if idx_val >= size:
                                 if not self.in_unsafe_func:
                                     raise LeashError(
-                                        f"Array index {idx} is out of bounds for '{resolved}'",
+                                        f"Array index {idx_val} is out of bounds for '{resolved}'",
                                         node=expr,
                                         tip=f"This array only has {size} elements. Remember that Leash uses 0-based indexing (0 to {size - 1}).",
+                                    )
+                            elif idx_val < -size:
+                                # Negative indices wrap from the end
+                                # (-1 is the last element); beyond -size
+                                # they can never land in bounds.
+                                if not self.in_unsafe_func:
+                                    raise LeashError(
+                                        f"Array index {idx_val} is out of bounds for '{resolved}'",
+                                        node=expr,
+                                        tip=f"Negative indices wrap from the end (-1 is the last element). This array has {size} elements, so valid indices are [-{size}, {size - 1}].",
                                     )
                 except (ValueError, IndexError):
                     pass
@@ -4383,6 +5032,21 @@ class TypeChecker:
                 return "char"
             if resolved.endswith("]") and "[" in resolved:
                 return resolved.split("[")[0]
+
+            # M6: indexing a type with no index support used to fall through
+            # to `return None` here and crash llvmlite later with
+            # "Can't index at [0] in i64".
+            if not (
+                "[" in resolved
+                or resolved.startswith("*")
+                or resolved.startswith("hash<")
+                or resolved.startswith("vec<")
+            ):
+                raise LeashError(
+                    f"Cannot index a value of type '{base_type}'.",
+                    node=expr,
+                    tip="Indexing (`x[i]`) works on arrays, strings, hashes, vecs, and raw pointers. Numbers, structs, and classes don't support `[...]`.",
+                )
 
         return None
 
@@ -4487,20 +5151,42 @@ class TypeChecker:
             raise LeashError(f"Undefined struct: '{expr.name}'", node=expr)
 
         fields = self.struct_types[expr.name]
-        for key, val_expr in expr.kwargs:
+        provided = set()
+        for key, val_expr in expr.kwargs or []:
             if key not in fields:
                 raise LeashError(
                     f"Struct '{expr.name}' has no member named '{key}'",
                     node=val_expr,
                     tip=f"Available members: {', '.join(fields.keys())}",
                 )
+            provided.add(key)
             expected = fields[key]
             actual = self._infer_type(val_expr)
+            # C2: literal field initializer must fit the field's sign/width.
+            self._check_int_literal_fits(val_expr, expected, node=val_expr)
             if actual and not self._types_compatible(actual, expected):
-                self._warn(
+                self._error(
                     f"Struct '{expr.name}' field '{key}' expects '{expected}' "
                     f"but got '{actual}'.",
                     node=expr,
+                )
+        defaults = self.struct_field_defaults.get(expr.name)
+        if defaults is not None:
+            # Fields with declared defaults (and fields the initializer
+            # provides) are satisfied; the rest must be present, otherwise
+            # `p.y` reads uninitialized memory.
+            missing = [
+                f for f in fields if f not in provided and not defaults.get(f, False)
+            ]
+            if missing and not getattr(expr, "_missing_fields_reported", False):
+                expr._missing_fields_reported = True
+                self._error(
+                    f"Struct '{expr.name}' initializer is missing field(s): "
+                    f"{', '.join(missing)}.",
+                    node=expr,
+                    tip="Every struct field without a default must be initialized: "
+                        f"`{expr.name}{{...}}` covering {', '.join(missing)}.",
+                    code="LEASH-E016",
                 )
         return expr.name
 
@@ -4534,7 +5220,7 @@ class TypeChecker:
             expected = field_info[0]
             actual = self._infer_type(val_expr)
             if actual and not self._types_compatible(actual, expected):
-                self._warn(
+                self._error(
                     f"Class '{expr.name}' field '{key}' expects '{expected}' but got '{actual}'.",
                     node=expr,
                 )
@@ -4552,7 +5238,7 @@ class TypeChecker:
                 and first_type
                 and not self._types_compatible(elem_type, first_type)
             ):
-                self._warn(
+                self._error(
                     f"Array contains mixed types: '{first_type}' and '{elem_type}'.",
                     node=expr,
                 )
@@ -4568,13 +5254,13 @@ class TypeChecker:
         for key, val in expr.entries[1:]:
             k_type = self._infer_type(key)
             if k_type and key_type and not self._types_compatible(k_type, key_type):
-                self._warn(
+                self._error(
                     f"Hash contains mixed key types: '{key_type}' and '{k_type}'.",
                     node=expr,
                 )
             val_type = self._infer_type(val)
             if value_type and val_type and not self._types_compatible(val_type, value_type):
-                self._warn(
+                self._error(
                     f"Hash contains mixed value types: '{value_type}' and '{val_type}'.",
                     node=expr,
                 )
@@ -4622,7 +5308,7 @@ class TypeChecker:
                     # Mark argument as used and check type
                     arg_type = self._infer_type(expr.args[0])
                     if arg_type and not self._types_compatible(arg_type, inner_t):
-                        self._warn(
+                        self._error(
                             f"Vector method '{expr.method}' expects argument of type '{inner_t}' but got '{arg_type}'",
                             node=expr.args[0],
                         )
@@ -4697,7 +5383,7 @@ class TypeChecker:
                         )
                     val_type = self._infer_type(expr.args[1])
                     if val_type and not self._types_compatible(val_type, inner_t):
-                        self._warn(
+                        self._error(
                             f"Vector method '{expr.method}' expects second argument of type '{inner_t}' but got '{val_type}'",
                             node=expr.args[1],
                         )
@@ -4756,7 +5442,7 @@ class TypeChecker:
                             self._types_compatible(arg_t, expected_arr)
                             or self._types_compatible(arg_t, expected_ptr)
                         ):
-                            self._warn(
+                            self._error(
                                 f"Vector method '{expr.method}' expects argument of type '{expected_arr}' or '{expected_ptr}', but got '{arg_t}'",
                                 node=expr.args[0],
                             )
@@ -4772,7 +5458,7 @@ class TypeChecker:
                     arg_t = self._infer_type(expr.args[0])
                     expected_vec = f"vec<{inner_t}>"
                     if arg_t and not self._types_compatible(arg_t, expected_vec):
-                        self._warn(
+                        self._error(
                             f"Vector method '{expr.method}' expects argument of type '{expected_vec}', but got '{arg_t}'",
                             node=expr.args[0],
                         )
@@ -4793,7 +5479,7 @@ class TypeChecker:
                     arg_t = self._infer_type(expr.args[1])
                     expected_vec = f"vec<{inner_t}>"
                     if arg_t and not self._types_compatible(arg_t, expected_vec):
-                        self._warn(
+                        self._error(
                             f"Vector method '{expr.method}' expects argument of type '{expected_vec}', but got '{arg_t}'",
                             node=expr.args[1],
                         )
@@ -4837,7 +5523,7 @@ class TypeChecker:
                 elif len(expr.args) == 1:
                     arg_type = self._infer_type(expr.args[0])
                     if arg_type and not self._types_compatible(arg_type, inner_t):
-                        self._warn(
+                        self._error(
                             f"Matrix method '{expr.method}' expects argument of type '{inner_t}' but got '{arg_type}'",
                             node=expr.args[0],
                         )
@@ -4892,7 +5578,7 @@ class TypeChecker:
                     for i, arg in enumerate(expr.args):
                         arg_type = self._infer_type(arg)
                         if arg_type and not self._types_compatible(arg_type, "int"):
-                            self._warn(
+                            self._error(
                                 f"Matrix method '{expr.method}' expects argument {i + 1} of type 'int' (index) but got '{arg_type}'",
                                 node=arg,
                             )
@@ -4913,7 +5599,7 @@ class TypeChecker:
                             )
                     val_type = self._infer_type(expr.args[-1])
                     if val_type and not self._types_compatible(val_type, inner_t):
-                        self._warn(
+                        self._error(
                             f"Matrix method '{expr.method}' expects last argument of type '{inner_t}' but got '{val_type}'",
                             node=expr.args[-1],
                         )
@@ -4935,7 +5621,7 @@ class TypeChecker:
                     for i, arg in enumerate(expr.args):
                         arg_type = self._infer_type(arg)
                         if arg_type and not self._types_compatible(arg_type, "int"):
-                            self._warn(
+                            self._error(
                                 f"Matrix method '{expr.method}' expects argument {i + 1} of type 'int' (index) but got '{arg_type}'",
                                 node=arg,
                             )
@@ -4949,7 +5635,7 @@ class TypeChecker:
                 else:
                     arg_type = self._infer_type(expr.args[0])
                     if arg_type and not self._types_compatible(arg_type, inner_t):
-                        self._warn(
+                        self._error(
                             f"Matrix method '{expr.method}' expects argument of type '{inner_t}' but got '{arg_type}'",
                             node=expr.args[0],
                         )
@@ -5029,7 +5715,7 @@ class TypeChecker:
                 else:
                     arg_type = self._infer_type(expr.args[0])
                     if arg_type and not self._types_compatible(arg_type, value_t):
-                        self._warn(
+                        self._error(
                             f"Hash method '{expr.method}' expects argument of type '{value_t}' but got '{arg_type}'",
                             node=expr.args[0],
                         )
@@ -5074,13 +5760,13 @@ class TypeChecker:
                 else:
                     arg1_type = self._infer_type(expr.args[0])
                     if arg1_type and not self._types_compatible(arg1_type, key_t):
-                        self._warn(
+                        self._error(
                             f"Hash method '{expr.method}' expects first argument of type '{key_t}' but got '{arg1_type}'",
                             node=expr.args[0],
                         )
                     arg2_type = self._infer_type(expr.args[1])
                     if arg2_type and not self._types_compatible(arg2_type, value_t):
-                        self._warn(
+                        self._error(
                             f"Hash method '{expr.method}' expects second argument of type '{value_t}' but got '{arg2_type}'",
                             node=expr.args[1],
                         )
@@ -5225,7 +5911,7 @@ class TypeChecker:
                     and not is_generic_class_call
                     and not self._types_compatible(arg_type, expected_type)
                 ):
-                    self._warn(
+                    self._error(
                         f"Argument {i + 1} of method '{expr.method}' expects '{expected_type}' but got '{arg_type}'",
                         node=arg_expr,
                     )
@@ -5267,18 +5953,65 @@ class TypeChecker:
                         arg_type
                         and not self._types_compatible(arg_type, expected_type)
                     ):
-                        self._warn(
+                        self._error(
                             f"Argument {i + 1} of struct method '{expr.method}' expects '{expected_type}' but got '{arg_type}'",
                             node=arg_expr,
                         )
                 
                 return fnc_node.return_type
             else:
-                self._error(
-                    f"Struct '{target_struct}' has no method named '{expr.method}'",
-                    node=expr,
-                    tip=f"Available methods: {', '.join(self.struct_methods.get(target_struct, {}).keys())}",
-                )
+                # OpDef extension methods on this struct. The receiver is
+                # implicit (like struct methods): the call site passes the
+                # instance pointer as the first argument and `this` inside
+                # the opdef body refers to the instance.
+                opdef_node = None
+                opdef_key_type = None
+                for cand in (base_t, resolved_base):
+                    if (
+                        cand
+                        and cand in self.opdef_extensions
+                        and expr.method in self.opdef_extensions[cand]
+                    ):
+                        opdef_node = self.opdef_extensions[cand][expr.method]
+                        opdef_key_type = cand
+                        break
+                if opdef_node is None:
+                    self._error(
+                        f"Struct '{target_struct}' has no method named '{expr.method}'",
+                        node=expr,
+                        tip=f"Available methods: {', '.join(self.struct_methods.get(target_struct, {}).keys())}",
+                    )
+                elif self._get_opdef_inner_types(opdef_key_type):
+                    # Generic opdef on a struct: fall through to the generic
+                    # instantiation / conversion path below.
+                    pass
+                else:
+                    # The same expression can be inferred twice (e.g. `:=`
+                    # stores the inferred type and _check_var_decl infers the
+                    # initializer once more for compatibility) — report the
+                    # argument diagnostics only on the first pass.
+                    if not getattr(expr, "_opdef_args_checked", False):
+                        expr._opdef_args_checked = True
+                        expected_args = [t for _, t, _ in opdef_node.args]
+                        if len(expr.args) != len(expected_args):
+                            self._error(
+                                f"Struct method '{expr.method}' of struct '{target_struct}' expects {len(expected_args)} argument(s), but got {len(expr.args)}",
+                                node=expr,
+                            )
+                        else:
+                            for i, (arg_expr, expected_type) in enumerate(
+                                zip(expr.args, expected_args)
+                            ):
+                                arg_type = self._infer_type(arg_expr)
+                                if arg_type and not self._types_compatible(arg_type, expected_type):
+                                    self._error(
+                                        f"Argument {i + 1} of struct method '{expr.method}' expects '{expected_type}' but got '{arg_type}'",
+                                        node=arg_expr,
+                                    )
+                    mangled_name = self._opdef_mangle_name(opdef_key_type, expr.method)
+                    if mangled_name in self.func_types:
+                        return self.func_types[mangled_name][1]
+                    return opdef_node.return_type
 
         # Check opdef extension methods
         if base_t in self.opdef_extensions and expr.method in self.opdef_extensions[base_t]:

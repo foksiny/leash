@@ -18,7 +18,9 @@ fnc main() : void {
     show(a > b);
     show(a <= b);
     show(a >= b);
-    show(a && b);
-    show(a || b);
-    show(!a);
+    t: bool = true;
+    f: bool = false;
+    show(t && f);
+    show(t || f);
+    show(!t);
 }

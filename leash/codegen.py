@@ -114,7 +114,8 @@ class CodeGen:
         self.union_symtab = {}  # name -> { 'type': ir_type, 'variants': [...], 'variant_types': {...}, 'max_size': int }
         self.enum_symtab = {}  # name -> { 'members': [names], 'names_arr': ir.GlobalVariable }
         self.class_symtab = {}  # name -> { 'type': ir_type, 'fields': {...}, 'methods': {...} }
-        self.global_var_ptrs = {}  # name -> (ir.GlobalVariable, leash_type_string) for module-level variables
+        self.global_var_ptrs = {}
+        self.fusion_globals = set()  # names of `fusion` globals (atomic access)  # name -> (ir.GlobalVariable, leash_type_string) for module-level variables
         self.global_init_list = []  # list of (gv, init_expr, leash_type) for globals with initializers
         self.init_func = (
             None  # The _leash_init_globals function if any globals need init
@@ -873,8 +874,11 @@ class CodeGen:
 
     def _emit_tostring(self, val, llvm_ty, type_name=None):
         """Convert any basic value to a Leash string (i8*). Allocation via GC_malloc."""
-        # Buffer for conversion (64 bytes is plenty for any numeric)
-        buf = self._gc_alloc_string(ir.Constant(ir.IntType(64), 64))
+        # Buffer for conversion: a double printed with %f can need ~310
+        # characters (1.5e300 has 301 integer digits before the decimal
+        # point), so allocate 400 bytes like every other tostring path in
+        # the compiler and bound the write with snprintf.
+        buf = self._gc_alloc_string(ir.Constant(ir.IntType(64), 400))
         self._track_alloc(buf)
 
         fmt = ""
@@ -947,7 +951,10 @@ class CodeGen:
             return val  # already a string?
 
         fmt_ptr = self._emit_const_str(fmt)
-        self.builder.call(self.sprintf, [buf, fmt_ptr, casted_val])
+        self.builder.call(
+            self.func_symtab["snprintf"],
+            [buf, ir.Constant(ir.IntType(64), 400), fmt_ptr, casted_val],
+        )
         return buf
 
     def _value_to_display_string(self, val, resolved):
@@ -1194,20 +1201,32 @@ class CodeGen:
             self.aligned_alloc_ex, [size_ir, alignment_ir, flags]
         )
 
-    @staticmethod
-    def _type_contains_pointers(llvm_type):
+    def _type_contains_pointers(self, llvm_type):
         """Return True if `llvm_type` (or any aggregate element) can hold a GC
-        pointer. Used to decide whether a heap payload must be scanned."""
+        pointer. Used to decide whether a heap payload must be scanned.
+
+        Unions are pointer-BEARING even though their LLVM type shows only a
+        tag + byte-array payload: a variant may store a string/reference at
+        runtime (H1). A union-typed global therefore must be registered as
+        a scan region, and vec/matrix/array buffers of union elements must
+        not be marked ATOMIC (an atomic payload is never scanned, so the
+        string inside the union would be collected while still reachable).
+        Structural equality with a registered union type is intentionally
+        over-approximate: scanning a pointer-free region is harmless for a
+        conservative collector, missing a pointer is not."""
         if isinstance(llvm_type, ir.PointerType):
             return True
         if isinstance(llvm_type, (ir.LiteralStructType, ir.IdentifiedStructType)):
+            for udata in self.union_symtab.values():
+                if udata["type"] == llvm_type:
+                    return True
             return any(
-                CodeGen._type_contains_pointers(e) for e in llvm_type.elements
+                self._type_contains_pointers(e) for e in llvm_type.elements
             )
         if isinstance(llvm_type, ir.ArrayType):
-            return CodeGen._type_contains_pointers(llvm_type.element)
+            return self._type_contains_pointers(llvm_type.element)
         if hasattr(ir, "VectorType") and isinstance(llvm_type, ir.VectorType):
-            return CodeGen._type_contains_pointers(llvm_type.element)
+            return self._type_contains_pointers(llvm_type.element)
         return False
 
     def _mark_as_return_value(self, ptr):
@@ -1739,8 +1758,16 @@ class CodeGen:
             type_name = self.type_aliases[type_name]
 
         # Handle generic type names like Hash<string, int> -> Hash_string_int
-        # But don't mangle vec<T> types - they are handled specially
-        if isinstance(type_name, str) and "<" in type_name and type_name.endswith(">"):
+        # But don't mangle vec<T> types - they are handled specially, and
+        # never mangle function-pointer signatures (`fnc(int<64>) : int<64>`):
+        # splitting on "<" would produce the bogus base `fnc(int` and corrupt
+        # the whole type, breaking the call (H8).
+        if (
+            isinstance(type_name, str)
+            and "<" in type_name
+            and type_name.endswith(">")
+            and not self._is_function_pointer_type(type_name)
+        ):
             base_class = type_name.split("<")[0]
             # Don't mangle vec types or built-in sized types (int<>, uint<>, float<>) or hash
             if base_class not in ("vec", "matrix", "int", "uint", "float", "hash"):
@@ -1960,6 +1987,11 @@ class CodeGen:
         gv.linkage = (
             "internal"  # module-local; could use external for pub but not needed
         )
+        # Concurrency (Phase 6): fusion globals get atomic accesses; shared
+        # globals are plain (their one-writer rule is enforced by the
+        # typechecker).
+        if getattr(node, "is_fusion", False):
+            self.fusion_globals.add(node.name)
         # Store in global symbol table for visibility in functions
         self.global_var_ptrs[node.name] = (gv, var_type)
         # If there is an initializer, schedule it for runtime initialization
@@ -2160,7 +2192,12 @@ class CodeGen:
             self.current_target_type = old_target
             # Cast to the expected LLVM type and store
             target_llvm = self._get_llvm_type(leash_type)
-            init_val = self._emit_cast(init_val, target_llvm)
+            init_val = self._emit_cast(
+                init_val,
+                target_llvm,
+                src_type=self._get_leash_type_name(init_expr),
+                dst_type=leash_type,
+            )
             self.builder.store(init_val, gv)
         self.builder.ret_void()
         self.builder = None
@@ -2323,8 +2360,18 @@ class CodeGen:
 
     def _get_abi_align(self, llvm_type):
         """ABI alignment of an LLVM type in bytes (mirrors DataLayout rules)."""
+        # Prefer the real target data layout when available.
+        if hasattr(self.module, "data_layout") and self.module.data_layout:
+            try:
+                align = self.module.data_layout.get_abi_alignment(llvm_type)
+                if align:
+                    return align
+            except Exception:
+                pass
         if isinstance(llvm_type, ir.IntType):
-            return max(1, (llvm_type.width + 7) // 8)
+            size = max(1, (llvm_type.width + 7) // 8)
+            # Alignments are powers of two: LLVM aligns i33 to 4, not 5.
+            return 1 << (size.bit_length() - 1)
         if isinstance(llvm_type, ir.HalfType):
             return 2
         if isinstance(llvm_type, ir.FloatType):
@@ -2699,14 +2746,26 @@ class CodeGen:
                 "size": size,
             }
 
-        # Union layout: { i64 tag (padded for alignment), [max_size x i8] }
-        # Tag is i64 so data region starts at offset 8, ensuring proper alignment
-        # for i64/double variants when bitcasting the data pointer.
+        # Union layout: { i64 tag, payload }. The payload's element type is
+        # chosen so its ABI alignment covers the largest variant's
+        # alignment: LLVM then places the payload field at an aligned
+        # offset (16 for int<128>, etc.), so wide variants are not stored
+        # misaligned at offset 8 (undefined behavior).
+        max_align = 8
+        for vname, vdata in variant_info.items():
+            variant_align = self._get_abi_align(vdata["llvm_type"])
+            if variant_align > max_align:
+                max_align = variant_align
         if max_size < 8:
             max_size = 8  # minimum 8 bytes for pointer-sized data
-        union_type = ir.LiteralStructType(
-            [ir.IntType(64), ir.ArrayType(ir.IntType(8), max_size)]
-        )
+        if max_align > 8:
+            payload = ir.ArrayType(
+                ir.IntType(max_align * 8),
+                (max_size + max_align - 1) // max_align,
+            )
+        else:
+            payload = ir.ArrayType(ir.IntType(8), max_size)
+        union_type = ir.LiteralStructType([ir.IntType(64), payload])
 
         self.union_symtab[node.name] = {
             "type": union_type,
@@ -2870,22 +2929,13 @@ class CodeGen:
         self.builder.unreachable()
 
     def _type_byte_size(self, llvm_ty):
-        """Estimate byte size of an LLVM type."""
-        if isinstance(llvm_ty, ir.IntType):
-            return max(1, llvm_ty.width // 8)
-        elif isinstance(llvm_ty, ir.FloatType):
-            return 4
-        elif isinstance(llvm_ty, ir.DoubleType):
-            return 8
-        elif isinstance(llvm_ty, ir.HalfType):
-            return 2
-        elif isinstance(llvm_ty, ir.PointerType):
-            return 8  # 64-bit
-        elif isinstance(llvm_ty, ir.LiteralStructType):
-            return sum(self._type_byte_size(e) for e in llvm_ty.elements)
-        elif isinstance(llvm_ty, ir.ArrayType):
-            return self._type_byte_size(llvm_ty.element) * llvm_ty.count
-        return 8  # assume pointer size as fallback
+        """Byte size of an LLVM type under the target ABI (incl. padding).
+
+        Delegates to _get_type_size: a plain sum of field sizes undercounts
+        padding and `width // 8` truncates non-byte-multiple integers, which
+        silently undersized unions, vector element strides and memcpy sizes.
+        """
+        return self._get_type_size(llvm_ty)
 
     def _codegen_predeclare_function(self, node):
         """Pre-declare a function so it's available in func_symtab before body codegen."""
@@ -2941,7 +2991,18 @@ class CodeGen:
             return
         if mangled_name in self.func_symtab:
             return
+        # A method-style opdef on a user struct gets an implicit receiver:
+        # the LLVM signature is (this*, args...) and call sites pass the
+        # instance pointer as the first argument, exactly like struct methods.
+        resolved_target = self._resolve_type_name(node.type_name)
+        is_struct_target = (
+            isinstance(node.op_name, str)
+            and node.op_name[:1] not in "+-*/%=!<>&|^[]"
+            and resolved_target in self.struct_symtab
+        )
         arg_types = []
+        if is_struct_target:
+            arg_types.append(self._get_llvm_type(resolved_target).as_pointer())
         for arg_name, arg_type, default in node.args:
             llvm_arg_type = self._get_llvm_type(arg_type)
             arg_types.append(llvm_arg_type)
@@ -2949,6 +3010,14 @@ class CodeGen:
         func_type = ir.FunctionType(ret_type, arg_types)
         func = ir.Function(self.module, func_type, name=mangled_name)
         self.func_symtab[mangled_name] = func
+        if is_struct_target:
+            # Register it in the struct's method table so instance calls
+            # (recv.method(args)) resolve through the ordinary struct-method
+            # path in _codegen_MethodCall. A struct's own method (declared
+            # with `fnc name() : T -> Struct`) takes precedence.
+            self.struct_symtab[resolved_target]["methods"].setdefault(
+                node.op_name, func
+            )
 
     def _codegen_OpDef(self, node):
         if getattr(node, '_opdef_is_generic', False):
@@ -2960,6 +3029,15 @@ class CodeGen:
             mangled_name, tuple((n, t, d) for n, t, d in node.args),
             node.return_type, node.body, []
         )
+        resolved_target = self._resolve_type_name(node.type_name)
+        if (
+            isinstance(node.op_name, str)
+            and node.op_name[:1] not in "+-*/%=!<>&|^[]"
+            and resolved_target in self.struct_symtab
+        ):
+            # Method-style opdef on a user struct: the first LLVM argument
+            # is the implicit `this` pointer (see _codegen_predeclare_opdef).
+            func_node.struct_type = resolved_target
         self._codegen_Function(func_node)
 
 
@@ -3379,9 +3457,12 @@ class CodeGen:
         if not self.builder.block.is_terminated:
             self._emit_cleanup()
             if name == "main":
-                self.builder.call(self.showb_flush_fn, [])
-                # Wait for all worker threads before exiting
+                # Wait for all worker threads BEFORE flushing the showb
+                # buffer: a worker may still append buffered output, and
+                # flushing first permanently lost everything a worker
+                # appended after the flush.
                 self.builder.call(self.leash_wait_workers_fn, [])
+                self.builder.call(self.showb_flush_fn, [])
                 self.builder.ret(ir.Constant(ir.IntType(32), 0))
             elif is_worker:
                 void_ptr = ir.IntType(8).as_pointer()
@@ -3422,7 +3503,12 @@ class CodeGen:
             val = self._codegen(node.value)
             # Cast to return type
             if not isinstance(ret_type, ir.VoidType):
-                val = self._emit_cast(val, ret_type)
+                val = self._emit_cast(
+                    val,
+                    ret_type,
+                    src_type=self._get_leash_type_name(node.value),
+                    dst_type=getattr(self, "current_func_ret_type_name", None),
+                )
 
         self.current_target_type = old_target
 
@@ -3685,7 +3771,14 @@ class CodeGen:
                     ),
                 )
 
-        val = self._emit_cast(val, target_llvm)
+        val = self._emit_cast(
+            val,
+            target_llvm,
+            src_type=(
+                self._get_leash_type_name(node.value) if node.value is not None else None
+            ),
+            dst_type=node.var_type,
+        )
         ptr = self.builder.alloca(val.type)
         self.builder.store(val, ptr)
         
@@ -3693,6 +3786,13 @@ class CodeGen:
 
     def _union_auto_store(self, union_ptr, val, union_info, node=None):
         """Store a value into a union, auto-detecting the matching variant by LLVM type."""
+        # An already-boxed value of this exact union type stores directly
+        # (e.g. `u: Big = tounion(Big, x)` — ToUnionExpr codegen returns a
+        # fully-tagged union value).
+        if val.type == union_info["type"]:
+            self.builder.store(val, union_ptr)
+            return
+
         matched_idx = None
 
         # Prefer a variant whose Leash type name matches the source value's own
@@ -3766,8 +3866,51 @@ class CodeGen:
         # on strict-alignment targets.
         self.builder.store(val, typed_ptr, align=1)
 
+    def _emit_fusion_assign(self, node, ptr):
+        """Atomic write to a `fusion` global (scalar integer).
+
+        `x = x + k` / `x = x - k` / `x = k + x` lower to `atomicrmw` so
+        concurrent counters do not lose updates; any other value is an
+        atomic store. The statement form never uses the produced value
+        (atomicrmw returns the OLD value), which is exactly the dropped
+        statement result.
+        """
+        from .ast_nodes import Identifier, BinaryOp
+        target_name = node.target.name
+        pointee = ptr.type.pointee
+        v = node.value
+        operand = None
+        rmw_op = None
+        if isinstance(v, BinaryOp) and v.op in ("+", "-"):
+            if isinstance(v.left, Identifier) and v.left.name == target_name:
+                operand, rmw_op = v.right, ("add" if v.op == "+" else "sub")
+            elif v.op == "+" and isinstance(v.right, Identifier) and v.right.name == target_name:
+                operand, rmw_op = v.left, "add"
+        if operand is not None:
+            operand_val = self._codegen(operand)
+            if operand_val.type != pointee:
+                operand_val = self._emit_cast(operand_val, pointee)
+            self.builder.atomic_rmw(rmw_op, ptr, operand_val, "seq_cst")
+            return
+        val = self._codegen(node.value)
+        if val.type != pointee:
+            val = self._emit_cast(val, pointee)
+        self.builder.store_atomic(
+            val, ptr, "seq_cst", align=self._get_abi_align(pointee)
+        )
+
     def _codegen_Assignment(self, node):
         from .ast_nodes import MemberAccess, Identifier
+
+        # `_ = expr;` is a discard: evaluate the value for its side effects
+        # and drop the result. `_` may name a loop variable that is no
+        # longer in scope after its loop (H4 restores the outer binding),
+        # or nothing at all — writing to a bare `_` must never fail. This
+        # also avoids corrupting a foreach index when `_` names the index
+        # slot: the value is simply not stored.
+        if isinstance(node.target, Identifier) and node.target.name == "_":
+            self._codegen(node.value)
+            return
 
         # 1. Specialized logic: Assigning to a specific union variant (e.g., f.i = 10, s.y.b = 3.14)
         if isinstance(node.target, MemberAccess):
@@ -3873,6 +4016,20 @@ class CodeGen:
             return
 
         # 5. Standard Typed Assignment
+        # Fusion globals: atomic RMW for the `x = x +/- k` counter idiom
+        # (a plain load/store pair would lose updates between threads),
+        # atomic store for everything else.
+        if (
+            isinstance(node.target, Identifier)
+            and node.target.name in self.fusion_globals
+            and isinstance(ptr, ir.GlobalVariable)
+            and isinstance(ptr.type.pointee, ir.IntType)
+            and ptr.type.pointee.width >= 8
+            and ptr.type.pointee.width % 8 == 0
+        ):
+            self._emit_fusion_assign(node, ptr)
+            return
+
         old_target = self.current_target_type
         self.current_target_type = target_type_name
         val = self._codegen(node.value)
@@ -3902,7 +4059,12 @@ class CodeGen:
                     ),
                 )
 
-        val = self._emit_cast(val, target_llvm)
+        val = self._emit_cast(
+            val,
+            target_llvm,
+            src_type=self._get_leash_type_name(self._unwrap_cast_expr(node.value)),
+            dst_type=target_type_name,
+        )
         self.builder.store(val, ptr)
 
     def _codegen_lvalue(self, node):
@@ -4108,8 +4270,13 @@ class CodeGen:
                 idx_val = self._codegen(node.index)
                 if not self.in_unsafe_func:
                     str_len = self.builder.call(self.strlen, [str_ptr])
-                    idx32 = self._emit_cast(idx_val, ir.IntType(32))
-                    idx64 = self.builder.sext(idx32, ir.IntType(64))
+                    # Widen straight to i64 with the source's signedness —
+                    # the old truncate-to-i32-first silently aliased huge
+                    # i64 indices to small valid ones.
+                    idx64 = self._emit_cast(
+                        idx_val, ir.IntType(64),
+                        src_type=self._get_leash_type_name(node.index),
+                    )
                     # Normalize negative index: idx = idx < 0 ? idx + len : idx
                     is_negative = self.builder.icmp_signed("<", idx64, ir.Constant(ir.IntType(64), 0))
                     wrapped = self.builder.add(idx64, str_len)
@@ -4132,7 +4299,10 @@ class CodeGen:
                 ptr = self.builder.load(slice_ptr)
                 idx_val = self._codegen(node.index)
                 elem_type = self._get_llvm_type(resolved[1:])
-                idx64 = self._emit_cast(idx_val, ir.IntType(64))
+                idx64 = self._emit_cast(
+                    idx_val, ir.IntType(64),
+                    src_type=self._get_leash_type_name(node.index),
+                )
                 gep_ptr = self.builder.gep(ptr, [idx64], inbounds=bool(self.in_unsafe_func))
                 return (gep_ptr, resolved[1:], None)
             
@@ -4183,7 +4353,10 @@ class CodeGen:
                 data_ptr = self.builder.extract_value(vec_val, 0)
                 vec_size = self.builder.extract_value(vec_val, 1)
                 idx_val = self._codegen(node.index)
-                idx64 = self._emit_cast(idx_val, ir.IntType(64))
+                idx64 = self._emit_cast(
+                    idx_val, ir.IntType(64),
+                    src_type=self._get_leash_type_name(node.index),
+                )
                 # Normalize negative index: idx = idx < 0 ? idx + size : idx
                 is_negative = self.builder.icmp_signed("<", idx64, ir.Constant(ir.IntType(64), 0))
                 wrapped = self.builder.add(idx64, vec_size)
@@ -4206,8 +4379,12 @@ class CodeGen:
             slice_size = self.builder.extract_value(slice_val, 0)
             data_ptr = self.builder.extract_value(slice_val, 1)
             idx_val = self._codegen(node.index)
-            idx32 = self._emit_cast(idx_val, ir.IntType(32))
-            idx64 = self.builder.sext(idx32, ir.IntType(64))
+            # Widen straight to i64 with the source's signedness: an i64
+            # index of 2^32+3 used to wrap to 3 and pass the bounds check.
+            idx64 = self._emit_cast(
+                idx_val, ir.IntType(64),
+                src_type=self._get_leash_type_name(node.index),
+            )
             # Normalize negative index: idx = idx < 0 ? idx + size : idx
             is_negative = self.builder.icmp_signed("<", idx64, ir.Constant(ir.IntType(64), 0))
             wrapped = self.builder.add(idx64, slice_size)
@@ -4789,14 +4966,54 @@ class CodeGen:
         self._emit_printf_or_puts(fmt_str, args)
 
     def _create_showb_helpers(self):
-        """Create internal functions for showb buffer management."""
-        # _leash_showb_ensure_capacity(size_t needed)
-        ensure_ty = ir.FunctionType(ir.VoidType(), [ir.IntType(64)])
+        """Create internal functions for showb buffer management.
+
+        H2: the module-level buffer globals are shared by every thread, so
+        each public helper takes the runtime showb spin lock (gc.c:
+        leash_showb_lock / leash_showb_unlock).
+        M1: append_str reserves str_len + 1 because strcpy also writes the
+        NUL byte — with exactly-full buffers the NUL used to land one byte
+        past the allocation.
+        L5/M4: growth uses a real if/else — an LLVM `select` evaluates
+        BOTH the malloc and the realloc arm, leaking one allocation per
+        growth in no-gc/autofree mode — and the result is NULL-checked.
+        """
+        i64 = ir.IntType(64)
+        i8p = ir.IntType(8).as_pointer()
+        i32 = ir.IntType(32)
+
+        lock_ty = ir.FunctionType(ir.VoidType(), [])
+        lock_fn = (
+            self.module.globals["leash_showb_lock"]
+            if "leash_showb_lock" in self.module.globals
+            else ir.Function(self.module, lock_ty, name="leash_showb_lock")
+        )
+        unlock_fn = (
+            self.module.globals["leash_showb_unlock"]
+            if "leash_showb_unlock" in self.module.globals
+            else ir.Function(self.module, lock_ty, name="leash_showb_unlock")
+        )
+
+        def _const_str(builder, text):
+            data = bytearray(text.encode("utf8") + b"\0")
+            arr_ty = ir.ArrayType(ir.IntType(8), len(data))
+            g = ir.GlobalVariable(
+                self.module, arr_ty, name=self.module.get_unique_name("showb_msg")
+            )
+            g.linkage = "internal"
+            g.global_constant = True
+            g.initializer = ir.Constant(arr_ty, data)
+            return builder.gep(
+                g, [ir.Constant(i32, 0), ir.Constant(i32, 0)], inbounds=False
+            )
+
+        # _leash_showb_ensure_capacity(size_t needed) — internal; callers
+        # already hold the showb lock.
+        ensure_ty = ir.FunctionType(ir.VoidType(), [i64])
         ensure_fn = ir.Function(
             self.module, ensure_ty, name="_leash_showb_ensure_capacity"
         )
-        block = ensure_fn.append_basic_block("entry")
-        builder = ir.IRBuilder(block)
+        builder = ir.IRBuilder(ensure_fn.append_basic_block("entry"))
 
         needed = ensure_fn.args[0]
         curr_cap = builder.load(self.showb_cap_gv)
@@ -4805,33 +5022,66 @@ class CodeGen:
         new_size = builder.add(curr_size, needed)
         is_enough = builder.icmp_unsigned(">=", curr_cap, new_size)
 
-        with builder.if_then(builder.not_(is_enough)):
-            # new_cap = max(curr_cap * 2, new_size, 1024)
-            double_cap = builder.mul(curr_cap, ir.Constant(ir.IntType(64), 2))
+        done_bb = ensure_fn.append_basic_block("showb_ensure_done")
+        grow_bb = ensure_fn.append_basic_block("showb_grow")
+        builder.cbranch(is_enough, done_bb, grow_bb)
 
-            # Simple max logic
-            cond1 = builder.icmp_unsigned(">", double_cap, new_size)
-            max1 = builder.select(cond1, double_cap, new_size)
+        builder.position_at_end(grow_bb)
+        double_cap = builder.mul(curr_cap, ir.Constant(i64, 2))
+        cond1 = builder.icmp_unsigned(">", double_cap, new_size)
+        max1 = builder.select(cond1, double_cap, new_size)
+        cond2 = builder.icmp_unsigned(">", max1, ir.Constant(i64, 1024))
+        new_cap = builder.select(cond2, max1, ir.Constant(i64, 1024))
 
-            cond2 = builder.icmp_unsigned(">", max1, ir.Constant(ir.IntType(64), 1024))
-            new_cap = builder.select(cond2, max1, ir.Constant(ir.IntType(64), 1024))
+        curr_buf = builder.load(self.showb_buffer_gv)
+        is_null = builder.icmp_unsigned(
+            "==", builder.ptrtoint(curr_buf, i64), ir.Constant(i64, 0)
+        )
+        malloc_bb = ensure_fn.append_basic_block("showb_grow_malloc")
+        realloc_bb = ensure_fn.append_basic_block("showb_grow_realloc")
+        grow_merge_bb = ensure_fn.append_basic_block("showb_grow_merge")
+        builder.cbranch(is_null, malloc_bb, realloc_bb)
 
-            curr_buf = builder.load(self.showb_buffer_gv)
-            is_null = builder.icmp_unsigned(
-                "==",
-                builder.ptrtoint(curr_buf, ir.IntType(64)),
-                ir.Constant(ir.IntType(64), 0),
-            )
+        builder.position_at_end(malloc_bb)
+        malloc_buf = builder.call(self.malloc, [new_cap])
+        builder.branch(grow_merge_bb)
 
-            new_buf = builder.select(
-                is_null,
-                builder.call(self.malloc, [new_cap]),
-                builder.call(self.realloc, [curr_buf, new_cap]),
-            )
+        builder.position_at_end(realloc_bb)
+        realloc_buf = builder.call(self.realloc, [curr_buf, new_cap])
+        builder.branch(grow_merge_bb)
 
-            builder.store(new_buf, self.showb_buffer_gv)
-            builder.store(new_cap, self.showb_cap_gv)
+        builder.position_at_end(grow_merge_bb)
+        new_buf = builder.phi(i8p)
+        new_buf.add_incoming(malloc_buf, malloc_bb)
+        new_buf.add_incoming(realloc_buf, realloc_bb)
 
+        # NULL check: OOM must trap instead of letting strcpy write to NULL.
+        buf_is_null = builder.icmp_unsigned(
+            "==", builder.ptrtoint(new_buf, i64), ir.Constant(i64, 0)
+        )
+        oom_ok_bb = ensure_fn.append_basic_block("showb_oom_ok")
+        oom_fail_bb = ensure_fn.append_basic_block("showb_oom_fail")
+        builder.cbranch(buf_is_null, oom_fail_bb, oom_ok_bb)
+
+        builder.position_at_end(oom_fail_bb)
+        builder.call(
+            self.printf,
+            [
+                _const_str(
+                    builder,
+                    "Runtime error: out of memory growing the showb buffer.\n",
+                )
+            ],
+        )
+        builder.call(self.exit_fn, [ir.Constant(i32, 1)])
+        builder.unreachable()
+
+        builder.position_at_end(oom_ok_bb)
+        builder.store(new_buf, self.showb_buffer_gv)
+        builder.store(new_cap, self.showb_cap_gv)
+        builder.branch(done_bb)
+
+        builder.position_at_end(done_bb)
         builder.ret_void()
         self.showb_ensure_fn = ensure_fn
 
@@ -4840,11 +5090,11 @@ class CodeGen:
         append_char_fn = ir.Function(
             self.module, append_char_ty, name="_leash_showb_append_char"
         )
-        block = append_char_fn.append_basic_block("entry")
-        builder = ir.IRBuilder(block)
+        builder = ir.IRBuilder(append_char_fn.append_basic_block("entry"))
 
+        builder.call(lock_fn, [])
         char_val = append_char_fn.args[0]
-        builder.call(ensure_fn, [ir.Constant(ir.IntType(64), 1)])
+        builder.call(ensure_fn, [ir.Constant(i64, 1)])
 
         buf = builder.load(self.showb_buffer_gv)
         size = builder.load(self.showb_size_gv)
@@ -4852,55 +5102,59 @@ class CodeGen:
         pos_ptr = builder.gep(buf, [size])
         builder.store(char_val, pos_ptr)
 
-        new_size = builder.add(size, ir.Constant(ir.IntType(64), 1))
+        new_size = builder.add(size, ir.Constant(i64, 1))
         builder.store(new_size, self.showb_size_gv)
+        builder.call(unlock_fn, [])
         builder.ret_void()
         self.showb_append_char_fn = append_char_fn
 
         # _leash_showb_append_str(i8* str)
-        append_str_ty = ir.FunctionType(ir.VoidType(), [ir.IntType(8).as_pointer()])
+        append_str_ty = ir.FunctionType(ir.VoidType(), [i8p])
         append_str_fn = ir.Function(
             self.module, append_str_ty, name="_leash_showb_append_str"
         )
-        block = append_str_fn.append_basic_block("entry")
-        builder = ir.IRBuilder(block)
+        builder = ir.IRBuilder(append_str_fn.append_basic_block("entry"))
 
+        builder.call(lock_fn, [])
         str_val = append_str_fn.args[0]
         str_len = builder.call(self.strlen, [str_val])
-        builder.call(ensure_fn, [str_len])
+        # M1: reserve str_len + 1 — strcpy also writes the NUL terminator.
+        builder.call(
+            ensure_fn, [builder.add(str_len, ir.Constant(i64, 1))]
+        )
 
         buf = builder.load(self.showb_buffer_gv)
         size = builder.load(self.showb_size_gv)
 
         dest_ptr = builder.gep(buf, [size])
-        # Use memmove or strcpy? strcpy is for null-terminated.
-        # Since Leash strings are null-terminated, strcpy is fine.
+        # Leash strings are null-terminated, so strcpy is fine (the extra
+        # NUL byte is accounted for in the ensure call above).
         builder.call(self.strcpy, [dest_ptr, str_val])
 
         new_size = builder.add(size, str_len)
         builder.store(new_size, self.showb_size_gv)
+        builder.call(unlock_fn, [])
         builder.ret_void()
         self.showb_append_str_fn = append_str_fn
 
         # _leash_showb_flush()
         flush_ty = ir.FunctionType(ir.VoidType(), [])
         flush_fn = ir.Function(self.module, flush_ty, name="_leash_showb_flush")
-        block = flush_fn.append_basic_block("entry")
-        builder = ir.IRBuilder(block)
+        builder = ir.IRBuilder(flush_fn.append_basic_block("entry"))
 
+        builder.call(lock_fn, [])
         size = builder.load(self.showb_size_gv)
-        is_empty = builder.icmp_unsigned("==", size, ir.Constant(ir.IntType(64), 0))
+        is_empty = builder.icmp_unsigned("==", size, ir.Constant(i64, 0))
 
         with builder.if_then(builder.not_(is_empty)):
             buf = builder.load(self.showb_buffer_gv)
-            # Call portable helper to get stdout
             stdout = builder.call(self.get_stdout_fn, [])
-            # fwrite(buf, 1, size, stdout)
             builder.call(
-                self.fwrite, [buf, ir.Constant(ir.IntType(64), 1), size, stdout]
+                self.fwrite, [buf, ir.Constant(i64, 1), size, stdout]
             )
-            builder.store(ir.Constant(ir.IntType(64), 0), self.showb_size_gv)
+            builder.store(ir.Constant(i64, 0), self.showb_size_gv)
 
+        builder.call(unlock_fn, [])
         builder.ret_void()
         self.showb_flush_fn = flush_fn
 
@@ -4910,11 +5164,19 @@ class CodeGen:
             if isinstance(cond_val.type, ir.PointerType):
                 null_ptr = ir.Constant(cond_val.type, None)
                 return self.builder.icmp_unsigned("!=", cond_val, null_ptr)
-            zero = ir.Constant(cond_val.type, 0)
             if isinstance(cond_val.type, (ir.HalfType, ir.FloatType, ir.DoubleType)):
-                return self.builder.fcmp_ordered("!=", cond_val, zero)
-            else:
-                return self.builder.icmp_signed("!=", cond_val, zero)
+                # unordered: NaN != 0 must count as true — the ordered
+                # compare made `if NaN` take the else branch.
+                return self.builder.fcmp_unordered(
+                    "!=", cond_val, ir.Constant(cond_val.type, 0)
+                )
+            if isinstance(cond_val.type, ir.IntType):
+                return self.builder.icmp_signed(
+                    "!=", cond_val, ir.Constant(cond_val.type, 0)
+                )
+            raise LeashError(
+                "Condition value of a non-primitive type cannot be used as a bool"
+            )
         return cond_val
 
     def _codegen_IfStatement(self, node):
@@ -5071,6 +5333,21 @@ class CodeGen:
 
         self.builder.position_at_end(merge_bb)
 
+    def _save_symtab_entries(self, names):
+        """Snapshot var_symtab slots that a loop is about to (re)bind so the
+        outer binding can be restored at the loop's merge block (H4: loop
+        variables used to leak over any outer variable for the rest of the
+        function, so `foreach i, v in ...; show(i)` printed the array length
+        instead of the outer `i`)."""
+        return {n: self.var_symtab.get(n) for n in names if n}
+
+    def _restore_symtab_entries(self, saved):
+        for name, old in saved.items():
+            if old is None:
+                self.var_symtab.pop(name, None)
+            else:
+                self.var_symtab[name] = old
+
     def _codegen_WhileStatement(self, node):
         cond_bb = self.builder.function.append_basic_block("while_cond")
         body_bb = self.builder.function.append_basic_block("while_body")
@@ -5125,6 +5402,9 @@ class CodeGen:
         self.builder.position_at_end(merge_bb)
 
     def _codegen_ForStatement(self, node):
+        saved_loop_vars = self._save_symtab_entries(
+            [getattr(node.init, "name", None)]
+        )
         self._codegen(node.init)
         cond_bb = self.builder.function.append_basic_block("for_cond")
         body_bb = self.builder.function.append_basic_block("for_body")
@@ -5157,6 +5437,7 @@ class CodeGen:
         self.loop_stack.pop()
 
         self.builder.position_at_end(merge_bb)
+        self._restore_symtab_entries(saved_loop_vars)
 
     def _codegen_DoWhileStatement(self, node):
         body_bb = self.builder.function.append_basic_block("do_body")
@@ -5186,6 +5467,9 @@ class CodeGen:
         self.builder.position_at_end(merge_bb)
 
     def _codegen_ForeachStructStatement(self, node):
+        saved_loop_vars = self._save_symtab_entries(
+            [node.name_var, node.value_var]
+        )
         lvalue_result = self._codegen_lvalue(node.struct_expr)
         if len(lvalue_result) == 3:
             struct_ptr, struct_type_name, _ = lvalue_result
@@ -5230,7 +5514,12 @@ class CodeGen:
                 if self.builder.block.is_terminated:
                     break
 
+        self._restore_symtab_entries(saved_loop_vars)
+
     def _codegen_ForeachArrayStatement(self, node):
+        saved_loop_vars = self._save_symtab_entries(
+            [node.index_var, node.value_var]
+        )
         elem_type_name = "int"
         try:
             lvalue_result = self._codegen_lvalue(node.array_expr)
@@ -5297,8 +5586,12 @@ class CodeGen:
         self.loop_stack.pop()
 
         self.builder.position_at_end(merge_bb)
+        self._restore_symtab_entries(saved_loop_vars)
 
     def _codegen_ForeachStringStatement(self, node):
+        saved_loop_vars = self._save_symtab_entries(
+            [node.index_var, node.char_var]
+        )
         str_val = self._codegen(node.string_expr)
         length_val = self.builder.call(self.strlen, [str_val])
 
@@ -5349,8 +5642,12 @@ class CodeGen:
         self.loop_stack.pop()
 
         self.builder.position_at_end(merge_bb)
+        self._restore_symtab_entries(saved_loop_vars)
 
     def _codegen_ForeachVectorStatement(self, node):
+        saved_loop_vars = self._save_symtab_entries(
+            [node.index_var, node.value_var]
+        )
         vec_val = self._codegen(node.vector_expr)
 
         data_ptr = self.builder.extract_value(vec_val, 0)
@@ -5428,8 +5725,12 @@ class CodeGen:
         self.loop_stack.pop()
 
         self.builder.position_at_end(merge_bb)
+        self._restore_symtab_entries(saved_loop_vars)
 
     def _codegen_ForeachMatrixStatement(self, node):
+        saved_loop_vars = self._save_symtab_entries(
+            [node.index_var, node.value_var]
+        )
         mat_val = self._codegen(node.matrix_expr)
 
         data_ptr = self.builder.extract_value(mat_val, 0)
@@ -5503,6 +5804,7 @@ class CodeGen:
         self.loop_stack.pop()
 
         self.builder.position_at_end(merge_bb)
+        self._restore_symtab_entries(saved_loop_vars)
 
     def _codegen_TernaryOp(self, node):
         cond_val = self._cast_bool(self._codegen(node.condition))
@@ -5555,11 +5857,17 @@ class CodeGen:
                 return self.global_var_ptrs[node.name][0]
         raise LeashError("Cannot get pointer to union from this expression", node=node)
 
-    def _emit_binop_scalar(self, left, right, op):
-        """Perform a binary operation on two scalar values with type promotion."""
+    def _emit_binop_scalar(self, left, right, op, elem_leash=None):
+        """Perform a binary operation on two scalar values with type promotion.
+
+        M5: when `elem_leash` (the Leash type name of one operand, e.g. a
+        union variant) is given, widening, division/remainder/shift and
+        comparisons follow that type's signedness instead of the previous
+        hard-coded signed semantics (sdiv/srem/ashr/icmp_signed).
+        """
+        signed = self._leash_type_is_signed(elem_leash) if elem_leash else True
         if left.type != right.type:
             if isinstance(left.type, ir.IntType) and isinstance(right.type, ir.IntType):
-                signed = True
                 if left.type.width < right.type.width:
                     left = self._emit_cast(left, right.type, is_signed=signed)
                 else:
@@ -5587,11 +5895,23 @@ class CodeGen:
         elif op == "/":
             if not is_float:
                 self._emit_division_by_zero_check(right)
-            return self.builder.fdiv(left, right) if is_float else self.builder.sdiv(left, right)
+                if signed:
+                    self._emit_signed_div_overflow_check(left, right)
+            return (
+                self.builder.fdiv(left, right)
+                if is_float
+                else (self.builder.udiv(left, right) if not signed else self.builder.sdiv(left, right))
+            )
         elif op == "%":
             if not is_float:
                 self._emit_division_by_zero_check(right)
-            return self.builder.frem(left, right) if is_float else self.builder.srem(left, right)
+                if signed:
+                    self._emit_signed_div_overflow_check(left, right)
+            return (
+                self.builder.frem(left, right)
+                if is_float
+                else (self.builder.urem(left, right) if not signed else self.builder.srem(left, right))
+            )
         elif op == "&":
             return self.builder.and_(left, right)
         elif op == "|":
@@ -5599,21 +5919,33 @@ class CodeGen:
         elif op == "^":
             return self.builder.xor(left, right)
         elif op == "<<":
+            if not is_float:
+                self._emit_shift_range_check(right, left.type.width)
             return self.builder.shl(left, right)
         elif op == ">>":
-            return self.builder.ashr(left, right)
+            if not is_float:
+                self._emit_shift_range_check(right, left.type.width)
+            return self.builder.lshr(left, right) if not signed else self.builder.ashr(left, right)
         elif op == "==":
             return self.builder.fcmp_ordered("==", left, right) if is_float else self.builder.icmp_signed("==", left, right)
         elif op == "!=":
             return self.builder.fcmp_ordered("!=", left, right) if is_float else self.builder.icmp_signed("!=", left, right)
         elif op == "<":
-            return self.builder.fcmp_ordered("<", left, right) if is_float else self.builder.icmp_signed("<", left, right)
+            if is_float:
+                return self.builder.fcmp_ordered("<", left, right)
+            return self.builder.icmp_unsigned("<", left, right) if not signed else self.builder.icmp_signed("<", left, right)
         elif op == "<=":
-            return self.builder.fcmp_ordered("<=", left, right) if is_float else self.builder.icmp_signed("<=", left, right)
+            if is_float:
+                return self.builder.fcmp_ordered("<=", left, right)
+            return self.builder.icmp_unsigned("<=", left, right) if not signed else self.builder.icmp_signed("<=", left, right)
         elif op == ">":
-            return self.builder.fcmp_ordered(">", left, right) if is_float else self.builder.icmp_signed(">", left, right)
+            if is_float:
+                return self.builder.fcmp_ordered(">", left, right)
+            return self.builder.icmp_unsigned(">", left, right) if not signed else self.builder.icmp_signed(">", left, right)
         elif op == ">=":
-            return self.builder.fcmp_ordered(">=", left, right) if is_float else self.builder.icmp_signed(">=", left, right)
+            if is_float:
+                return self.builder.fcmp_ordered(">=", left, right)
+            return self.builder.icmp_unsigned(">=", left, right) if not signed else self.builder.icmp_signed(">=", left, right)
 
     def _codegen_union_binary_op(self, node, left_is_union, right_is_union):
         """Handle binary operations where one or both operands are unions, with runtime dispatch."""
@@ -5685,9 +6017,9 @@ class CodeGen:
 
             # Perform binary op
             if union_on_left:
-                result = self._emit_binop_scalar(loaded, fixed_val, node.op)
+                result = self._emit_binop_scalar(loaded, fixed_val, node.op, elem_leash=vdata["type_name"])
             else:
-                result = self._emit_binop_scalar(fixed_val, loaded, node.op)
+                result = self._emit_binop_scalar(fixed_val, loaded, node.op, elem_leash=vdata["type_name"])
 
             # Convert to common type for phi
             if node.op in ("==", "!=", "<", ">", "<=", ">=", "&&", "||"):
@@ -5756,9 +6088,9 @@ class CodeGen:
                 loaded = self.builder.ptrtoint(loaded, ir.IntType(64))
 
             if union_on_left:
-                result = self._emit_binop_scalar(loaded, fixed_val, binary_op.op)
+                result = self._emit_binop_scalar(loaded, fixed_val, binary_op.op, elem_leash=vdata["type_name"])
             else:
-                result = self._emit_binop_scalar(fixed_val, loaded, binary_op.op)
+                result = self._emit_binop_scalar(fixed_val, loaded, binary_op.op, elem_leash=vdata["type_name"])
 
             # Store back to the same variant, preserving the tag
             stored_val = self._emit_cast(result, vdata["llvm_type"])
@@ -5877,33 +6209,37 @@ class CodeGen:
                 rep = self.builder.gep(right_data, [i_val], inbounds=True)
                 lv = self.builder.load(lep); rv = self.builder.load(rep)
                 # Optimization: Add fast math flags to float ops, nuw/nsw to int ops
+                # No nsw/nuw on user element arithmetic: Leash integers
+                # wrap, and the overflow flags make results poison at -O1+.
                 if node.op == "+":
                     if is_float_elem:
                         res_e = self.builder.fadd(lv, rv)
                         res_e.flags = ['fast']
                     else:
                         res_e = self.builder.add(lv, rv)
-                        res_e.flags = ['nuw', 'nsw']
                 elif node.op == "-":
                     if is_float_elem:
                         res_e = self.builder.fsub(lv, rv)
                         res_e.flags = ['fast']
                     else:
                         res_e = self.builder.sub(lv, rv)
-                        res_e.flags = ['nuw', 'nsw']
                 elif node.op == "*":
                     if is_float_elem:
                         res_e = self.builder.fmul(lv, rv)
                         res_e.flags = ['fast']
                     else:
                         res_e = self.builder.mul(lv, rv)
-                        res_e.flags = ['nuw', 'nsw']
                 elif node.op == "/":
                     if is_float_elem:
                         res_e = self.builder.fdiv(lv, rv)
                         res_e.flags = ['fast']
                     else:
-                        res_e = (self._emit_division_by_zero_check(rv) or self.builder.sdiv(lv, rv))
+                        self._emit_division_by_zero_check(rv)
+                        if self._leash_type_is_signed(inner_type_name):
+                            self._emit_signed_div_overflow_check(lv, rv)
+                            res_e = self.builder.sdiv(lv, rv)
+                        else:
+                            res_e = self.builder.udiv(lv, rv)
                 sep = self.builder.gep(result_data, [i_val], inbounds=True)
                 self.builder.store(res_e, sep)
                 self.builder.branch(loop_inc_bb)
@@ -6027,27 +6363,26 @@ class CodeGen:
                     else:
                         a_op = lv
                         b_op = scalar_val
+                # No nsw/nuw on user element arithmetic: Leash integers
+                # wrap, and the overflow flags make results poison at -O1+.
                 if node.op == "+":
                     if is_float_elem:
                         res_e = self.builder.fadd(a_op, b_op)
                         res_e.flags = ['fast']
                     else:
                         res_e = self.builder.add(a_op, b_op)
-                        res_e.flags = ['nuw', 'nsw']
                 elif node.op == "-":
                     if is_float_elem:
                         res_e = self.builder.fsub(a_op, b_op)
                         res_e.flags = ['fast']
                     else:
                         res_e = self.builder.sub(a_op, b_op)
-                        res_e.flags = ['nuw', 'nsw']
                 elif node.op == "*":
                     if is_float_elem:
                         res_e = self.builder.fmul(a_op, b_op)
                         res_e.flags = ['fast']
                     else:
                         res_e = self.builder.mul(a_op, b_op)
-                        res_e.flags = ['nuw', 'nsw']
                 elif node.op == "/":
                     if is_float_elem:
                         res_e = self.builder.fdiv(a_op, b_op)
@@ -6057,6 +6392,7 @@ class CodeGen:
                         if is_unsigned_elem:
                             res_e = self.builder.udiv(a_op, b_op)
                         else:
+                            self._emit_signed_div_overflow_check(a_op, b_op)
                             res_e = self.builder.sdiv(a_op, b_op)
                 sep = self.builder.gep(result_data, [i_val], inbounds=True)
                 self.builder.store(res_e, sep)
@@ -6123,12 +6459,17 @@ class CodeGen:
             and (is_ptr(left.type) or left_is_char_ptr)
             and isinstance(right.type, ir.IntType)
         ):
+            # GEP indices are signed i64: widen with the integer operand's
+            # own signedness (H6) — the old unconditional zext turned a
+            # negative `int` offset like -1 into 4294967295 elements.
             return self.builder.gep(
                 left,
                 [
-                    self.builder.zext(right, ir.IntType(64))
-                    if right.type.width < 64
-                    else right
+                    self._emit_cast(
+                        right,
+                        ir.IntType(64),
+                        src_type=self._get_leash_type_name(node.right),
+                    )
                 ],
             )
         if (
@@ -6139,9 +6480,11 @@ class CodeGen:
             return self.builder.gep(
                 right,
                 [
-                    self.builder.zext(left, ir.IntType(64))
-                    if left.type.width < 64
-                    else left
+                    self._emit_cast(
+                        left,
+                        ir.IntType(64),
+                        src_type=self._get_leash_type_name(node.left),
+                    )
                 ],
             )
         if (
@@ -6149,10 +6492,10 @@ class CodeGen:
             and (is_ptr(left.type) or left_is_char_ptr)
             and isinstance(right.type, ir.IntType)
         ):
-            idx = (
-                self.builder.zext(right, ir.IntType(64))
-                if right.type.width < 64
-                else right
+            idx = self._emit_cast(
+                right,
+                ir.IntType(64),
+                src_type=self._get_leash_type_name(node.right),
             )
             neg_idx = self.builder.neg(idx)
             return self.builder.gep(left, [neg_idx])
@@ -6186,12 +6529,14 @@ class CodeGen:
         is_numeric_l = isinstance(left.type, (ir.IntType, ir.HalfType, ir.FloatType, ir.DoubleType))
         is_numeric_r = isinstance(right.type, (ir.IntType, ir.HalfType, ir.FloatType, ir.DoubleType))
 
-        if (
-            node.op == "+"
-            and (
+        if node.op == "+" and (
+            (
                 (is_string_l or is_slice_l)
                 and (is_string_r or is_slice_r or is_numeric_r or is_char_r)
             )
+            # The second disjunct used to escape the `op == "+"` guard
+            # (Python binds `and` tighter than `or`), letting mixed-type
+            # `-`, `*` etc. fall into the concat path.
             or ((is_string_r or is_slice_r) and (is_numeric_l or is_char_l))
         ):
             # Convert non-strings to strings
@@ -6446,10 +6791,11 @@ class CodeGen:
             else:
                 raise Exception(f"Unknown string binary op {node.op}")
 
-        # Determine signedness for int type promotion
-        def _is_uint_expr(node):
-            t = self._get_leash_type_name(node)
-            return t.startswith("uint") or t == "uint"
+        # Determine signedness for int type promotion. char/bool are part of
+        # the unsigned family (M1): `char(200) >> 1` must lshr to 100, not
+        # ashr to -28, and `char(200) > 'A'` compares unsigned.
+        def _is_uint_expr(n):
+            return not self._leash_type_is_signed(self._get_leash_type_name(n))
 
         # Type promotion
         if left.type != right.type:
@@ -6470,11 +6816,15 @@ class CodeGen:
             elif isinstance(left.type, (ir.HalfType, ir.FloatType, ir.DoubleType)) and isinstance(
                 right.type, ir.IntType
             ):
-                right = self._emit_cast(right, left.type)
+                right = self._emit_cast(
+                    right, left.type, src_type=self._get_leash_type_name(node.right)
+                )
             elif isinstance(left.type, ir.IntType) and isinstance(
                 right.type, (ir.HalfType, ir.FloatType, ir.DoubleType)
             ):
-                left = self._emit_cast(left, right.type)
+                left = self._emit_cast(
+                    left, right.type, src_type=self._get_leash_type_name(node.left)
+                )
 
         # Determine if float or int based on types (assume matching types for now)
         is_float = isinstance(left.type, (ir.HalfType, ir.FloatType, ir.DoubleType))
@@ -6483,8 +6833,12 @@ class CodeGen:
         if not is_float and isinstance(left.type, ir.IntType) and isinstance(right.type, ir.IntType):
             left_type = self._get_leash_type_name(node.left)
             right_type = self._get_leash_type_name(node.right)
-            is_unsigned = (left_type.startswith("uint") or left_type == "uint") or \
-                          (right_type.startswith("uint") or right_type == "uint")
+            # M1: char/bool are unsigned like uint — the old uint-prefix
+            # test alone put them in the signed bucket for / % >> < <= > >=.
+            is_unsigned = not (
+                self._leash_type_is_signed(left_type)
+                and self._leash_type_is_signed(right_type)
+            )
         else:
             is_unsigned = False
 
@@ -6509,6 +6863,8 @@ class CodeGen:
         elif node.op == "/":
             if not is_float:
                 self._emit_division_by_zero_check(right)
+                if not is_unsigned:
+                    self._emit_signed_div_overflow_check(left, right)
             if is_float:
                 return self.builder.fdiv(left, right)
             elif is_unsigned:
@@ -6518,6 +6874,8 @@ class CodeGen:
         elif node.op == "%":
             if not is_float:
                 self._emit_division_by_zero_check(right)
+                if not is_unsigned:
+                    self._emit_signed_div_overflow_check(left, right)
             if is_float:
                 return self.builder.frem(left, right)
             elif is_unsigned:
@@ -6531,8 +6889,12 @@ class CodeGen:
         elif node.op == "^":
             return self.builder.xor(left, right)
         elif node.op == "<<":
+            if not is_float:
+                self._emit_shift_range_check(right, left.type.width)
             return self.builder.shl(left, right)
         elif node.op == ">>":
+            if not is_float:
+                self._emit_shift_range_check(right, left.type.width)
             return self.builder.lshr(left, right) if is_unsigned else self.builder.ashr(left, right)
         elif node.op == "==":
             if isinstance(left.type, (ir.LiteralStructType, ir.IdentifiedStructType, ir.ArrayType, ir.VectorType)):
@@ -6686,6 +7048,7 @@ class CodeGen:
             ir.IntType(8).as_pointer(), name="input_buf_ptr"
         )
         initial_buf = self._gc_alloc_string(ir.Constant(ir.IntType(64), 256))
+        self._emit_oom_check(initial_buf, "input buffer")
         self.builder.store(initial_buf, buffer_ptr_ptr)
 
         # 3. Read loop
@@ -6729,6 +7092,7 @@ class CodeGen:
         self.builder.store(new_cap, capacity_ptr)
         old_buf = self.builder.load(buffer_ptr_ptr)
         new_buf = self.builder.call(self.realloc, [old_buf, new_cap])
+        self._emit_oom_check(new_buf, "input buffer growth")
         self.builder.store(new_buf, buffer_ptr_ptr)
         self.builder.branch(store_char_bb)
 
@@ -6795,9 +7159,18 @@ class CodeGen:
             )
             # Bounds-limited format: sprintf would overflow this fixed 256-byte
             # buffer (and smash the heap) for any command longer than ~220 chars.
-            self.builder.call(self.func_symtab["snprintf"], [
+            needed = self.builder.call(self.func_symtab["snprintf"], [
                 cmd_buf, ir.Constant(ir.IntType(64), 256), redirect_cmd, command_val
             ])
+            # L8: a truncated command would silently run a DIFFERENT
+            # command than the one written in the source.
+            truncated = self.builder.icmp_signed(
+                ">=", needed, ir.Constant(ir.IntType(32), 256)
+            )
+            self._emit_runtime_check(
+                self.builder.not_(truncated),
+                "Runtime error: exec command too long (would be truncated).\n",
+            )
             pipe = self.builder.call(
                 self.popen_fn, [cmd_buf, self._emit_const_str("r")]
             )
@@ -6805,12 +7178,37 @@ class CodeGen:
             read_buffer = self.builder.call(
                 self.malloc_fn, [ir.Constant(ir.IntType(64), 64)]
             )
+            # A failed popen or an empty command output yields NULL, which
+            # would crash the first strlen/use of the returned string.
+            # Return an empty string in both cases instead.
+            empty_str = self._emit_const_str("")
+            pipe_null = self.builder.icmp_unsigned(
+                "==", pipe, ir.Constant(pipe.type, None)
+            )
+            ok_bb = self.builder.function.append_basic_block("exec_code_ok")
+            null_bb = self.builder.function.append_basic_block("exec_code_null")
+            merge_bb = self.builder.function.append_basic_block("exec_code_merge")
+            self.builder.cbranch(pipe_null, null_bb, ok_bb)
+
+            self.builder.position_at_end(null_bb)
+            self.builder.branch(merge_bb)
+
+            self.builder.position_at_end(ok_bb)
             line = self.builder.call(
                 self.fgets_fn, [read_buffer, ir.Constant(ir.IntType(32), 64), pipe]
             )
             self.builder.call(self.pclose_fn, [pipe])
+            line_null = self.builder.icmp_unsigned(
+                "==", line, ir.Constant(line.type, None)
+            )
+            safe_line = self.builder.select(line_null, empty_str, line)
+            self.builder.branch(merge_bb)
 
-            return line
+            self.builder.position_at_end(merge_bb)
+            phi = self.builder.phi(ir.IntType(8).as_pointer())
+            phi.add_incoming(empty_str, null_bb)
+            phi.add_incoming(safe_line, ok_bb)
+            return phi
         elif mode == "silent" or mode == "wait":
             # On Windows, use cmd /c prefix for popen
             if self.target_platform == "win64":
@@ -6821,20 +7219,59 @@ class CodeGen:
                 )
                 # Bounds-limited format: sprintf would overflow this fixed
                 # 1024-byte buffer for commands longer than ~1010 chars.
-                self.builder.call(self.func_symtab["snprintf"], [
+                needed = self.builder.call(self.func_symtab["snprintf"], [
                     new_cmd_buf, ir.Constant(ir.IntType(64), 1024), cmd_prefix_fmt, cmd_val
                 ])
+                # L8: a truncated command would silently run a DIFFERENT
+                # command than the one written in the source.
+                truncated = self.builder.icmp_signed(
+                    ">=", needed, ir.Constant(ir.IntType(32), 1024)
+                )
+                self._emit_runtime_check(
+                    self.builder.not_(truncated),
+                    "Runtime error: exec command too long (would be truncated).\n",
+                )
                 popen_cmd = new_cmd_buf
             else:
                 popen_cmd = command_val
             popen_mode = self._emit_const_str("r")
             pipe = self.builder.call(self.popen_fn, [popen_cmd, popen_mode])
 
+            # M5: popen may fail (command not found, out of descriptors).
+            # Returning an empty string beats fgets/pclose on a NULL FILE*.
+            empty_result = self._emit_const_str("")
+            pipe_null = self.builder.icmp_unsigned(
+                "==", pipe, ir.Constant(pipe.type, None)
+            )
+            popen_ok_bb = self.builder.function.append_basic_block("exec_popen_ok")
+            popen_null_bb = self.builder.function.append_basic_block(
+                "exec_popen_null"
+            )
+            popen_merge_bb = self.builder.function.append_basic_block(
+                "exec_popen_merge"
+            )
+            self.builder.cbranch(pipe_null, popen_null_bb, popen_ok_bb)
+
+            self.builder.position_at_end(popen_null_bb)
+            self.builder.branch(popen_merge_bb)
+
+            self.builder.position_at_end(popen_ok_bb)
+
             read_buffer = self.builder.call(
                 self.malloc_fn, [ir.Constant(ir.IntType(64), 4096)]
             )
+            self._emit_oom_check(read_buffer, "exec read buffer")
 
             alloc_size = ir.Constant(ir.IntType(64), 4096)
+            # The accumulating result buffer must be a DIFFERENT allocation
+            # than read_buffer: fgets reuses read_buffer every iteration, so
+            # aliasing them made each fgets clobber the output collected so
+            # far and made strcpy copy overlapping memory (UB) — exec(...,
+            # "wait"/"silent") returned garbage instead of the full output.
+            result_buffer = self.builder.call(
+                self.malloc_fn, [ir.Constant(ir.IntType(64), 4096)]
+            )
+            self._emit_oom_check(result_buffer, "exec result buffer")
             result_ptr_ptr = self.builder.alloca(
                 ir.IntType(8).as_pointer(), name="exec_result_ptr"
             )
@@ -6843,7 +7280,7 @@ class CodeGen:
             )
             capacity_ptr = self.builder.alloca(ir.IntType(64), name="exec_capacity")
 
-            self.builder.store(read_buffer, result_ptr_ptr)
+            self.builder.store(result_buffer, result_ptr_ptr)
             self.builder.store(ir.Constant(ir.IntType(64), 0), result_size_ptr)
             self.builder.store(alloc_size, capacity_ptr)
 
@@ -6887,14 +7324,21 @@ class CodeGen:
             new_buffer = self.builder.call(
                 self.realloc_fn, [curr_result_ptr, new_alloc_size]
             )
+            self._emit_oom_check(new_buffer, "exec result growth")
             self.builder.store(new_buffer, result_ptr_ptr)
             self.builder.store(new_alloc_size, capacity_ptr)
             self.builder.branch(copy_bb)
 
             self.builder.position_at_end(copy_bb)
 
+            # Append the freshly read line after the bytes accumulated so far.
+            # Copying to the buffer start (as before) let each line overwrite
+            # the previous ones, so exec(..., "wait") only ever returned the
+            # LAST line of output.
             copy_result_ptr = self.builder.load(result_ptr_ptr)
-            self.builder.call(self.strcpy_fn, [copy_result_ptr, line])
+            copy_offset = self.builder.load(result_size_ptr)
+            copy_dst = self.builder.gep(copy_result_ptr, [copy_offset])
+            self.builder.call(self.strcpy_fn, [copy_dst, line])
 
             self.builder.store(
                 self.builder.add(self.builder.load(result_size_ptr), line_len),
@@ -6912,7 +7356,17 @@ class CodeGen:
             term_ptr = self.builder.gep(final_result_ptr, [final_result_size])
             self.builder.store(ir.Constant(ir.IntType(8), 0), term_ptr)
 
-            return final_result_ptr
+            # L4: track the returned buffer so autofree mode frees it; the
+            # intermediate (pre-realloc) buffers are NOT tracked — they
+            # were already released by realloc.
+            self._track_alloc(final_result_ptr)
+            self.builder.branch(popen_merge_bb)
+
+            self.builder.position_at_end(popen_merge_bb)
+            phi = self.builder.phi(ir.IntType(8).as_pointer())
+            phi.add_incoming(empty_result, popen_null_bb)
+            phi.add_incoming(final_result_ptr, loop_end_bb)
+            return phi
         else:
             # On Windows, system() works with cmd, but let's use prefixed command if needed
             if self.target_platform == "win64":
@@ -6953,6 +7407,59 @@ class CodeGen:
         if isinstance(size.type, ir.IntType) and size.type.width != 64:
             size = self.builder.zext(size, ir.IntType(64))
         return self.builder.call(self.c_realloc, [ptr, size])
+
+    def _emit_deep_equal(self, a, b, llvm_ty):
+        """Structural equality of two loaded values: scalars by value,
+        strings by content, nested aggregates field/element-wise, other
+        pointers by identity."""
+        if isinstance(llvm_ty, ir.IntType):
+            if llvm_ty.width == 1:
+                return self.builder.icmp_unsigned("==", a, b)
+            return self.builder.icmp_signed("==", a, b)
+        if isinstance(llvm_ty, (ir.HalfType, ir.FloatType, ir.DoubleType)):
+            return self.builder.fcmp_ordered("==", a, b)
+        if isinstance(llvm_ty, ir.PointerType):
+            if (
+                isinstance(llvm_ty.pointee, ir.IntType)
+                and llvm_ty.pointee.width == 8
+            ):
+                # Strings: content equality, treating NULL == NULL.
+                a_null = self.builder.icmp_unsigned(
+                    "==", a, ir.Constant(llvm_ty, None)
+                )
+                b_null = self.builder.icmp_unsigned(
+                    "==", b, ir.Constant(llvm_ty, None)
+                )
+                both_null = self.builder.and_(a_null, b_null)
+                either_null = self.builder.or_(a_null, b_null)
+                cmp_res = self.builder.call(self.strcmp, [a, b])
+                content_eq = self.builder.icmp_signed(
+                    "==", cmp_res, ir.Constant(ir.IntType(32), 0)
+                )
+                safe_eq = self.builder.and_(self.builder.not_(either_null), content_eq)
+                return self.builder.or_(both_null, safe_eq)
+            return self.builder.icmp_unsigned("==", a, b)
+        if isinstance(llvm_ty, (ir.LiteralStructType, ir.IdentifiedStructType)):
+            elements = llvm_ty.elements
+            if elements is None:
+                raise LeashError("cannot compare values of an incomplete struct type")
+            eq = ir.Constant(ir.IntType(1), 1)
+            for i, fty in enumerate(elements):
+                fa = self.builder.extract_value(a, i)
+                fb = self.builder.extract_value(b, i)
+                eq = self.builder.and_(eq, self._emit_deep_equal(fa, fb, fty))
+            return eq
+        if isinstance(llvm_ty, ir.ArrayType):
+            eq = ir.Constant(ir.IntType(1), 1)
+            for i in range(llvm_ty.count):
+                ea = self.builder.extract_value(a, i)
+                eb = self.builder.extract_value(b, i)
+                eq = self.builder.and_(
+                    eq, self._emit_deep_equal(ea, eb, llvm_ty.element)
+                )
+            return eq
+        # Unknown types: fall back to identity.
+        return self.builder.icmp_unsigned("==", a, b)
 
     def _codegen_MethodCall(self, node):
         from .ast_nodes import Identifier
@@ -7282,7 +7789,9 @@ class CodeGen:
 
         if method == "pushb":
             val = self._codegen(args[0])
-            val = self._emit_cast(val, inner_llvm)
+            val = self._emit_cast(
+                val, inner_llvm, src_type=self._get_leash_type_name(args[0])
+            )
 
             new_data, new_cap = self._vector_check_capacity(
                 vec_ptr, data, size, cap, inner_llvm
@@ -7360,7 +7869,9 @@ class CodeGen:
                 in_bounds, "Runtime error: Vector index out of bounds in set().\n"
             )
             val = self._codegen(args[1])
-            val = self._emit_cast(val, inner_llvm)
+            val = self._emit_cast(
+                val, inner_llvm, src_type=self._get_leash_type_name(args[1])
+            )
             ptr = self.builder.gep(data, [idx64], inbounds=True)
             self.builder.store(val, ptr)
             return None
@@ -7371,7 +7882,9 @@ class CodeGen:
 
         elif method == "pushf":
             val = self._codegen(args[0])
-            val = self._emit_cast(val, inner_llvm)
+            val = self._emit_cast(
+                val, inner_llvm, src_type=self._get_leash_type_name(args[0])
+            )
 
             new_data, new_cap = self._vector_check_capacity(
                 vec_ptr, data, size, cap, inner_llvm
@@ -7444,7 +7957,11 @@ class CodeGen:
         elif method == "insert":
             idx = self._codegen(args[0])
             idx = self._emit_cast(idx, ir.IntType(32))
-            idx64 = self.builder.zext(idx, ir.IntType(64))
+            idx64 = self.builder.sext(idx, ir.IntType(64))
+            # Normalize negative index like get/set: idx < 0 -> idx + size
+            is_negative = self.builder.icmp_signed("<", idx64, ir.Constant(ir.IntType(64), 0))
+            wrapped = self.builder.add(idx64, size)
+            idx64 = self.builder.select(is_negative, wrapped, idx64)
             # Bounds check: 0 <= idx <= size (inserting at size == append)
             idx_nonneg = self.builder.icmp_signed(">=", idx64, ir.Constant(ir.IntType(64), 0))
             idx_in_bounds = self.builder.icmp_unsigned("<=", idx64, size)
@@ -7453,7 +7970,9 @@ class CodeGen:
                 in_bounds, "Runtime error: Vector insert index out of bounds.\n"
             )
             val = self._codegen(args[1])
-            val = self._emit_cast(val, inner_llvm)
+            val = self._emit_cast(
+                val, inner_llvm, src_type=self._get_leash_type_name(args[1])
+            )
 
             new_data, new_cap = self._vector_check_capacity(
                 vec_ptr, data, size, cap, inner_llvm
@@ -7463,7 +7982,9 @@ class CodeGen:
             elem_size_val = self._type_byte_size(inner_llvm)
 
             data_bytes = self.builder.bitcast(new_data, ir.IntType(8).as_pointer())
-            idx_64 = self.builder.zext(idx, ir.IntType(64))
+            # Use the NORMALIZED idx64: re-deriving from the raw i32 `idx`
+            # zext'd a negative index to a huge byte offset.
+            idx_64 = idx64
             idx_offset = self.builder.mul(idx_64, ir.Constant(ir.IntType(64), elem_size_val))
             idx_offset.flags = ['nuw']
             src_bytes = self.builder.gep(
@@ -7523,15 +8044,23 @@ class CodeGen:
             elif isinstance(inner_llvm, (ir.HalfType, ir.FloatType, ir.DoubleType)):
                 eq = self.builder.fcmp_ordered("==", elem_val, val)
                 eq.flags = ['fast']
-            elif isinstance(inner_llvm, ir.LiteralStructType):
-                # For structs, compare by pointer address
-                elem_ptr_int = self.builder.ptrtoint(elem_ptr, ir.IntType(64))
-                val_ptr = self.builder.alloca(inner_llvm)
-                self.builder.store(val, val_ptr)
-                val_ptr_int = self.builder.ptrtoint(val_ptr, ir.IntType(64))
-                eq = self.builder.icmp_signed("==", elem_ptr_int, val_ptr_int)
+            elif isinstance(
+                inner_llvm,
+                (
+                    ir.LiteralStructType,
+                    ir.IdentifiedStructType,
+                    ir.ArrayType,
+                    ir.PointerType,
+                ),
+            ):
+                # Aggregates compare field-wise (strings by content), and
+                # string elements compare by content. The old code compared
+                # ptrtoint(elem_ptr) with a fresh alloca's address, which is
+                # always false — `v.isin(Node{...})` never matched anything,
+                # and equal heap strings compared unequal.
+                eq = self._emit_deep_equal(elem_val, val, inner_llvm)
             else:
-                # For pointers and other types, compare by pointer address
+                # Other pointer-like values (class references): identity.
                 elem_ptr_int = self.builder.ptrtoint(elem_ptr, ir.IntType(64))
                 val_int = self.builder.ptrtoint(val, ir.IntType(64))
                 eq = self.builder.icmp_signed("==", elem_ptr_int, val_int)
@@ -7555,7 +8084,11 @@ class CodeGen:
             # vec.remove(index) - remove element at index
             idx = self._codegen(args[0])
             idx = self._emit_cast(idx, ir.IntType(32))
-            idx_64 = self.builder.zext(idx, ir.IntType(64))
+            idx_64 = self.builder.sext(idx, ir.IntType(64))
+            # Normalize negative index like get/set: idx < 0 -> idx + size
+            is_negative = self.builder.icmp_signed("<", idx_64, ir.Constant(ir.IntType(64), 0))
+            wrapped = self.builder.add(idx_64, size)
+            idx_64 = self.builder.select(is_negative, wrapped, idx_64)
 
             # Bounds check: 0 <= idx < size
             idx_nonneg = self.builder.icmp_signed(">=", idx_64, ir.Constant(ir.IntType(64), 0))
@@ -7669,7 +8202,11 @@ class CodeGen:
         elif method == "insertv":
             idx = self._codegen(args[0])
             idx = self._emit_cast(idx, ir.IntType(32))
-            idx_64 = self.builder.zext(idx, ir.IntType(64))
+            idx_64 = self.builder.sext(idx, ir.IntType(64))
+            # Normalize negative index like get/set: idx < 0 -> idx + size
+            is_negative = self.builder.icmp_signed("<", idx_64, ir.Constant(ir.IntType(64), 0))
+            wrapped = self.builder.add(idx_64, size)
+            idx_64 = self.builder.select(is_negative, wrapped, idx_64)
 
             old_target = self.current_target_type
             self.current_target_type = f"vec<{inner_type_name}>"
@@ -7724,7 +8261,11 @@ class CodeGen:
         elif method == "inserta":
             idx = self._codegen(args[0])
             idx = self._emit_cast(idx, ir.IntType(32))
-            idx_64 = self.builder.zext(idx, ir.IntType(64))
+            idx_64 = self.builder.sext(idx, ir.IntType(64))
+            # Normalize negative index like get/set: idx < 0 -> idx + size
+            is_negative = self.builder.icmp_signed("<", idx_64, ir.Constant(ir.IntType(64), 0))
+            wrapped = self.builder.add(idx_64, size)
+            idx_64 = self.builder.select(is_negative, wrapped, idx_64)
 
             old_target = self.current_target_type
             self.current_target_type = f"{inner_type_name}[]"
@@ -7976,7 +8517,11 @@ class CodeGen:
         elif method == "insert":
             idx = self._codegen(args[0])
             idx = self._emit_cast(idx, ir.IntType(32))
-            idx64 = self.builder.zext(idx, ir.IntType(64))
+            idx64 = self.builder.sext(idx, ir.IntType(64))
+            # Normalize negative index like get/set: idx < 0 -> idx + size
+            is_negative = self.builder.icmp_signed("<", idx64, ir.Constant(ir.IntType(64), 0))
+            wrapped = self.builder.add(idx64, size)
+            idx64 = self.builder.select(is_negative, wrapped, idx64)
             idx_nonneg = self.builder.icmp_signed(
                 ">=", idx64, ir.Constant(ir.IntType(64), 0)
             )
@@ -8585,6 +9130,18 @@ class CodeGen:
             # Rewind to beginning
             self.builder.call(self.frewind, [file_handle])
 
+            # M2: a non-seekable stream (pipe, FIFO) makes ftell return -1;
+            # that used to become buffer_size 0 -> a NULL allocation and
+            # then fread(NULL, 1, (size_t)-1, ...).
+            if not self.in_unsafe_func:
+                size_ok = self.builder.icmp_signed(
+                    ">=", file_size, ir.Constant(ir.IntType(64), 0)
+                )
+                self._emit_runtime_check(
+                    size_ok,
+                    "Runtime error: cannot determine the size of the stream (File.read).\n",
+                )
+
             # Allocate buffer for file content + null terminator
             buffer_size = self.builder.add(file_size, ir.Constant(ir.IntType(64), 1))
             buffer = self._gc_alloc_string(buffer_size)
@@ -8653,8 +9210,21 @@ class CodeGen:
             file_size = self.builder.call(self.ftell, [file_handle])
             self.builder.call(self.frewind, [file_handle])
 
-            # Allocate buffer
-            buffer = self._gc_alloc_string(file_size)
+            # M2: ftell < 0 on a non-seekable stream used to request a
+            # (size_t)-1 allocation; M3: a zero-byte file used to request
+            # a 0-byte (NULL) buffer. Allocate size+1 so the buffer always
+            # exists.
+            if not self.in_unsafe_func:
+                size_ok = self.builder.icmp_signed(
+                    ">=", file_size, ir.Constant(ir.IntType(64), 0)
+                )
+                self._emit_runtime_check(
+                    size_ok,
+                    "Runtime error: cannot determine the size of the stream (File.readb).\n",
+                )
+            buffer = self._gc_alloc_string(
+                self.builder.add(file_size, ir.Constant(ir.IntType(64), 1))
+            )
             self._track_alloc(buffer)
 
             # Read the file
@@ -8854,6 +9424,17 @@ class CodeGen:
         file_size = self.builder.call(self.ftell, [file_handle])
         self.builder.call(self.frewind, [file_handle])
 
+        # M2: ftell < 0 on a non-seekable stream made buffer_size 0 (a
+        # NULL allocation) and the gep below compute buffer-1.
+        if not self.in_unsafe_func:
+            size_ok = self.builder.icmp_signed(
+                ">=", file_size, ir.Constant(ir.IntType(64), 0)
+            )
+            self._emit_runtime_check(
+                size_ok,
+                "Runtime error: cannot determine the size of the file for replace.\n",
+            )
+
         # Allocate buffer for file content + null terminator
         buffer_size = self.builder.add(file_size, ir.Constant(ir.IntType(64), 1))
         buffer = self._gc_alloc_string(buffer_size)
@@ -8870,14 +9451,36 @@ class CodeGen:
         old_len = self.builder.call(self.strlen, [old_str])
         new_len = self.builder.call(self.strlen, [new_str])
 
+        # An empty old_str must be a no-op: strstr(haystack, "") returns
+        # haystack itself, so the replace-all loop below would spin forever
+        # (advancing src by old_len == 0) and the first-match path would
+        # prepend new_str to the entire file. Report 0 replacements instead.
+        old_empty = self.builder.icmp_unsigned(
+            "==", old_len, ir.Constant(ir.IntType(64), 0)
+        )
+        empty_bb = self.builder.function.append_basic_block("replace_old_empty")
+        work_bb = self.builder.function.append_basic_block("replace_work")
+        done_bb = self.builder.function.append_basic_block("replace_done")
+        ret_ptr = self.builder.alloca(ir.IntType(32), name="replace_ret")
+        self.builder.cbranch(old_empty, empty_bb, work_bb)
+
+        self.builder.position_at_end(empty_bb)
+        self.builder.store(ir.Constant(ir.IntType(32), 0), ret_ptr)
+        self.builder.branch(done_bb)
+
+        self.builder.position_at_end(work_bb)
+
         # Allocate result buffer.
-        # Worst case: every input byte is a standalone match of old_str
-        # (old_len == 1) replaced by the full new_str, so the output is at most
-        # file_size * new_len bytes plus the NUL terminator. The previous
-        # estimate (file_size * 4 + 4096) overflowed the buffer whenever
-        # new_len > 4, corrupting the heap via strcpy.
+        # Worst case: the non-matching bytes (file_size) plus every match
+        # (at most file_size of them, old_len >= 1) replaced by the full
+        # new_str, so the output is at most file_size * (new_len + 1) bytes
+        # plus the NUL terminator. This also covers new_len == 0 (deletion),
+        # where the old estimate (file_size * new_len + 1 == 1 byte) let the
+        # non-matching copy overflow the heap.
         result_size = self.builder.add(
-            self.builder.mul(file_size, new_len),
+            self.builder.mul(
+                file_size, self.builder.add(new_len, ir.Constant(ir.IntType(64), 1))
+            ),
             ir.Constant(ir.IntType(64), 1),
         )
         result = self._gc_alloc_string(result_size)
@@ -8970,7 +9573,8 @@ class CodeGen:
             self._truncate_file(file_handle, result_len)
             self.builder.call(self.frewind, [file_handle])
 
-            return count
+            self.builder.store(count, ret_ptr)
+            self.builder.branch(done_bb)
         else:
             # Replace first occurrence
             found_ptr = self.builder.call(self.strstr, [buffer, old_str])
@@ -9023,9 +9627,18 @@ class CodeGen:
             self._truncate_file(file_handle, result_len)
             self.builder.call(self.frewind, [file_handle])
 
-            return self.builder.select(
-                is_found, ir.Constant(ir.IntType(32), 1), ir.Constant(ir.IntType(32), 0)
+            self.builder.store(
+                self.builder.select(
+                    is_found,
+                    ir.Constant(ir.IntType(32), 1),
+                    ir.Constant(ir.IntType(32), 0),
+                ),
+                ret_ptr,
             )
+            self.builder.branch(done_bb)
+
+        self.builder.position_at_end(done_bb)
+        return self.builder.load(ret_ptr)
 
     def _truncate_file(self, file_handle, size):
         """Truncate a file to the given size using fileno and ftruncate."""
@@ -9114,32 +9727,21 @@ class CodeGen:
                         return self.builder.call(val_func, [this_ptr])
                     else:
                         return self.builder.call(val_func, [])
-            # format based on type
-            if isinstance(arg_val.type, ir.IntType):
-                # Integers wider than 64 bits overflow a 64-byte buffer and must
-                # not be passed to sprintf's variadic %lld (ABI mismatch).
-                if arg_val.type.width > 64:
-                    return self._emit_wide_int_string(
-                        arg_val, self._get_leash_type_name(node.args[0]))
-                buf = self._gc_alloc_string(ir.Constant(ir.IntType(64), 64))
-                self._track_alloc(buf)
-                fmt = self._emit_const_str("%lld")
-                # cast if needed
-                if arg_val.type.width < 64:
-                    arg_val = self.builder.sext(arg_val, ir.IntType(64))
-                self.builder.call(self.sprintf, [buf, fmt, arg_val])
-                return buf
-            elif isinstance(arg_val.type, (ir.FloatType, ir.DoubleType, ir.HalfType)):
-                # "%f" can exceed 64 bytes for large/small doubles.
-                buf = self._gc_alloc_string(ir.Constant(ir.IntType(64), 400))
-                self._track_alloc(buf)
-                if not isinstance(arg_val.type, ir.DoubleType):
-                    arg_val = self.builder.fpext(arg_val, ir.DoubleType())
-                fmt = self._emit_const_str("%f")
-                self.builder.call(
-                    self.func_symtab["snprintf"],
-                    [buf, ir.Constant(ir.IntType(64), 400), fmt, arg_val])
-                return buf
+            # format based on type — delegate to _emit_tostring, which
+            # handles bool ("true"/"false"), unsigned (%llu), char, wide
+            # integers and the bounded 400-byte snprintf buffer. The old
+            # inline path always used %lld + sext, so tostring(true)
+            # produced "-1", uint values printed negative, and char(200)
+            # printed "-56".
+            if isinstance(
+                arg_val.type,
+                (ir.IntType, ir.HalfType, ir.FloatType, ir.DoubleType),
+            ):
+                return self._emit_tostring(
+                    arg_val,
+                    arg_val.type,
+                    self._get_leash_type_name(node.args[0]),
+                )
             else:
                 return arg_val
 
@@ -9148,16 +9750,30 @@ class CodeGen:
             # Uses rand() % (max - min + 1) + min
             min_val = self._codegen(node.args[0])
             max_val = self._codegen(node.args[1])
-            # Cast to i32 for calculation (rand returns i32)
-            if isinstance(min_val.type, ir.IntType) and min_val.type.width != 32:
-                min_val = self.builder.trunc(min_val, ir.IntType(32))
-            if isinstance(max_val.type, ir.IntType) and max_val.type.width != 32:
-                max_val = self.builder.trunc(max_val, ir.IntType(32))
+            # Compute in i64: the old code truncated i64 limits to i32,
+            # silently wrapping large ranges, and never validated
+            # max >= min (a negative range turned into srem by 0 or less).
+            if isinstance(min_val.type, ir.IntType) and min_val.type.width != 64:
+                min_val = self._emit_cast(
+                    min_val, ir.IntType(64),
+                    src_type=self._get_leash_type_name(node.args[0]),
+                )
+            if isinstance(max_val.type, ir.IntType) and max_val.type.width != 64:
+                max_val = self._emit_cast(
+                    max_val, ir.IntType(64),
+                    src_type=self._get_leash_type_name(node.args[1]),
+                )
+            ok_order = self.builder.icmp_signed(">=", max_val, min_val)
+            self._emit_runtime_check(
+                ok_order,
+                "Runtime error: rand(min, max) requires max >= min.\n",
+            )
             # range = max - min + 1
             range_val = self.builder.sub(max_val, min_val)
-            range_val = self.builder.add(range_val, ir.Constant(ir.IntType(32), 1))
+            range_val = self.builder.add(range_val, ir.Constant(ir.IntType(64), 1))
             # rand() % range + min
             rand_val = self.builder.call(self.rand, [])
+            rand_val = self._emit_cast(rand_val, ir.IntType(64), src_type="int")
             rand_val = self.builder.srem(rand_val, range_val)
             result = self.builder.add(rand_val, min_val)
             return result
@@ -9762,7 +10378,10 @@ class CodeGen:
                         v = self._codegen(arg_expr)
                 else:
                     v = self._codegen(arg_expr)
-                v = self._emit_cast(v, target_llvm, node=arg_expr)
+                v = self._emit_cast(
+                    v, target_llvm, node=arg_expr,
+                    src_type=self._get_leash_type_name(arg_expr),
+                )
                 args.append(v)
             else:
                 v = self._codegen(arg_expr)
@@ -9932,7 +10551,21 @@ class CodeGen:
                 return err_ptr
             else:
                 raise LeashError(f"Undefined variable: '{node.name}'", node=node)
-        val = self.builder.load(ptr)
+        # Fusion globals: atomic load so every thread observes the latest
+        # write (docs/concurrency.html). LLVM atomics must be byte-sized, so
+        # bool (i1) and sub-byte values keep plain access; composite fusion
+        # values are also excluded.
+        if (
+            node.name in self.fusion_globals
+            and isinstance(ptr, ir.GlobalVariable)
+            and isinstance(ptr.type.pointee, ir.IntType)
+            and ptr.type.pointee.width >= 8
+            and ptr.type.pointee.width % 8 == 0
+        ):
+            align = self._get_abi_align(ptr.type.pointee)
+            val = self.builder.load_atomic(ptr, "seq_cst", align=align)
+        else:
+            val = self.builder.load(ptr)
         resolved = self._resolve_type_name(type_name)
         while resolved.startswith("&"):
             val = self.builder.load(val)
@@ -10155,9 +10788,95 @@ class CodeGen:
         """Emit a runtime check that divisor is not zero. Skipped in unsafe functions."""
         if self.in_unsafe_func:
             return
+        if isinstance(divisor, ir.Constant):
+            # Constant propagation runs after the typechecker, so a runtime
+            # variable divisor can reach codegen as a literal the static
+            # checks never saw. Validate it here instead of emitting UB.
+            v = getattr(divisor, "constant", None)
+            if isinstance(v, int) and v == 0:
+                raise LeashError(
+                    "Division by zero detected statically (constant-propagated divisor).",
+                    tip="The divisor folds to the constant 0 at compile time, so this operation always crashes. Guard the divisor or remove the division.",
+                )
+            return
         zero = ir.Constant(divisor.type, 0)
         is_nonzero = self.builder.icmp_signed("!=", divisor, zero)
         self._emit_runtime_check(is_nonzero, "Runtime error: Division by zero.\n")
+
+    def _emit_signed_div_overflow_check(self, lhs, rhs):
+        """`INT_MIN / -1` (and srem) is UB in LLVM and raises SIGFPE on x86."""
+        if self.in_unsafe_func:
+            return
+        if isinstance(lhs, ir.Constant) and isinstance(rhs, ir.Constant):
+            lv = getattr(lhs, "constant", None)
+            rv = getattr(rhs, "constant", None)
+            if isinstance(lv, int) and isinstance(rv, int):
+                width = lhs.type.width
+                if lv == -(1 << (width - 1)) and rv == -1:
+                    raise LeashError(
+                        "Signed division overflow (INT_MIN / -1) detected statically.",
+                        tip="INT_MIN divided by -1 overflows and is undefined behavior. Cast to a wider type first or guard the divisor.",
+                    )
+                return
+        width = lhs.type.width
+        is_min = self.builder.icmp_signed(
+            "==", lhs, ir.Constant(lhs.type, -(1 << (width - 1)))
+        )
+        is_neg1 = self.builder.icmp_signed("==", rhs, ir.Constant(rhs.type, -1))
+        bad = self.builder.and_(is_min, is_neg1)
+        # _emit_runtime_check aborts when its condition is FALSE.
+        self._emit_runtime_check(
+            self.builder.not_(bad),
+            "Runtime error: Signed division overflow (INT_MIN / -1).\n",
+        )
+
+    def _emit_shift_range_check(self, amount, width):
+        """A shift amount outside [0, width-1] is poison in LLVM and
+        arbitrary after optimization; guard variable amounts at runtime."""
+        if self.in_unsafe_func:
+            return
+        if isinstance(amount, ir.Constant):
+            # Constant propagation runs after the typechecker: a variable
+            # shift amount can reach codegen as a literal the static
+            # checks never saw (e.g. `m := 33; x >> m`). Validate it here.
+            v = getattr(amount, "constant", None)
+            if isinstance(v, int) and not (0 <= v < width):
+                raise LeashError(
+                    f"Shift amount {v} is out of range [0, {width - 1}] (constant-propagated).",
+                    tip="Shifting by this amount is undefined behavior. Use a value within the operand's bit width.",
+                )
+            return
+        amt = amount
+        if amt.type.width < 32:
+            amt = self._emit_cast(amt, ir.IntType(32))
+        lo_ok = self.builder.icmp_signed(">=", amt, ir.Constant(amt.type, 0))
+        hi_ok = self.builder.icmp_signed("<", amt, ir.Constant(amt.type, width))
+        ok = self.builder.and_(lo_ok, hi_ok)
+        self._emit_runtime_check(
+            ok, f"Runtime error: Shift amount out of range [0, {width - 1}].\n"
+        )
+
+    def _emit_oom_check(self, ptr, what):
+        """Abort with a clear message when an allocation returned NULL.
+
+        GC-mode allocations abort inside the allocator, but the NO_GC and
+        autofree builds use plain malloc/realloc, which return NULL."""
+        is_null = self.builder.icmp_unsigned(
+            "==", ptr, ir.Constant(ptr.type, None)
+        )
+        ok_bb = self.builder.function.append_basic_block("oom_ok")
+        fail_bb = self.builder.function.append_basic_block("oom_fail")
+        self.builder.cbranch(is_null, fail_bb, ok_bb)
+
+        self.builder.position_at_end(fail_bb)
+        msg = self._emit_const_str(
+            f"Runtime error: out of memory allocating the {what}.\n"
+        )
+        self.builder.call(self.printf, [msg])
+        self.builder.call(self.exit_fn, [ir.Constant(ir.IntType(32), 1)])
+        self.builder.unreachable()
+
+        self.builder.position_at_end(ok_bb)
 
     def _emit_null_pointer_check(self, ptr, message=None):
         """Emit a runtime check that a pointer is not null. Skipped in unsafe functions."""
@@ -10305,15 +11024,22 @@ class CodeGen:
             target_llvm = self._get_llvm_type(self.current_target_type)
             if isinstance(target_llvm, ir.IntType):
                 width = target_llvm.width
-                is_unsigned = self._is_uint_type_name(self.current_target_type)
+                is_unsigned = not self._leash_type_is_signed(self.current_target_type)
                 # Only use the target width if the value fits. Otherwise fall
                 # back to i64 so large literals (e.g. 4096 under a (char) cast
                 # target context) don't get truncated to 0.
-                fits = (
-                    -(2 ** (width - 1)) <= value < 2 ** width
-                    if width > 1
-                    else value in (0, 1)
-                )
+                if width > 1:
+                    # Signed targets use a symmetric range; unsigned targets
+                    # use 0..2^width-1. (The old bound used the unsigned upper
+                    # limit for signed types, letting e.g. 2^64-1 pass as
+                    # int<64>.)
+                    fits = (
+                        0 <= value < 2 ** width
+                        if is_unsigned
+                        else -(2 ** (width - 1)) <= value <= 2 ** (width - 1) - 1
+                    )
+                else:
+                    fits = value in (0, 1)
                 if width >= 64 and not fits:
                     raise LeashError(
                         f"Integer literal '{value}' does not fit in type "
@@ -10347,7 +11073,7 @@ class CodeGen:
                     hfits = 0 <= value <= 2 ** hw - 1 if hw > 1 else value in (0, 1)
                 else:
                     hfits = (
-                        -(2 ** (hw - 1)) <= value <= 2 ** hw - 1
+                        -(2 ** (hw - 1)) <= value <= 2 ** (hw - 1) - 1
                         if hw > 1
                         else value in (0, -1)
                     )
@@ -11101,7 +11827,21 @@ class CodeGen:
         return lo, hi
 
     def _codegen_ToUnionExpr(self, node):
-        return self._codegen(node.expr)
+        """`tounion(U, value)` boxes the value into a fresh union instance.
+
+        Previously this returned the raw expression value, which only
+        worked because variable initialization happens to re-box through
+        the union auto-store path; storing it into a struct field or
+        passing it directly crashed the cast machinery.
+        """
+        resolved = self._resolve_type_name(node.union_name)
+        if resolved not in self.union_symtab:
+            return self._codegen(node.expr)
+        val = self._codegen(node.expr)
+        union_info = self.union_symtab[resolved]
+        ptr = self.builder.alloca(union_info["type"])
+        self._union_auto_store(ptr, val, union_info, node=node)
+        return self.builder.load(ptr)
 
     def _codegen_ByteConvExpr(self, node):
         size_val = self._codegen(node.size_expr)
@@ -11116,11 +11856,17 @@ class CodeGen:
         else:
             size_is_const = False
             if isinstance(size_val.type, ir.IntType):
-                size_ir = (
-                    self.builder.zext(size_val, ir.IntType(64))
-                    if size_val.type.width <= 64
-                    else self.builder.trunc(size_val, ir.IntType(64))
-                )
+                # Widen with the count's own signedness: zext'ing a negative
+                # signed count turned it into ~4 billion, which then drove a
+                # giant allocation. The _check_positive runtime guard below
+                # now rejects it before the allocation happens.
+                size_leash = self._get_leash_type_name(node.size_expr)
+                if size_val.type.width <= 64:
+                    size_ir = self._emit_cast(
+                        size_val, ir.IntType(64), src_type=size_leash
+                    )
+                else:
+                    size_ir = self.builder.trunc(size_val, ir.IntType(64))
             else:
                 size_ir = size_val
 
@@ -11149,6 +11895,13 @@ class CodeGen:
             if size_is_const and size_int_const <= 0:
                 raise LeashError(
                     f"{node.name} byte count must be > 0 (got {size_int_const})", node=node)
+            if not size_is_const and isinstance(size_ir.type, ir.IntType):
+                self._emit_runtime_check(
+                    self.builder.icmp_signed(
+                        ">", size_ir, ir.Constant(ir.IntType(64), 0)
+                    ),
+                    "Runtime error: " + node.name + " byte count must be > 0.\n",
+                )
 
         if node.name == "inttobytes":
             _check_positive()
@@ -11281,12 +12034,18 @@ class CodeGen:
             )
 
         target_type = self._get_llvm_type(node.target_type)
-        return self._emit_cast(val, target_type)
+        return self._emit_cast(
+            val, target_type, src_type=src_type_name, dst_type=dst_type_name
+        )
 
     def _codegen_AsExpr(self, node):
         val = self._codegen(node.expr)
         target_type = self._get_llvm_type(node.target_type)
-        return self._emit_cast(val, target_type)
+        src_type_name = self._get_leash_type_name(node.expr)
+        dst_type_name = self._resolve_type_name(node.target_type)
+        return self._emit_cast(
+            val, target_type, src_type=src_type_name, dst_type=dst_type_name
+        )
 
     def _codegen_IsExpr(self, node):
         """Generate code for 'is' and 'isnt' expressions."""
@@ -11413,8 +12172,16 @@ class CodeGen:
 
             return result
 
-    def _emit_cast(self, val, target_type, is_signed=True, node=None):
-        """Cast a value to the target LLVM type. is_signed controls sext vs zext for int widening."""
+    def _emit_cast(self, val, target_type, is_signed=None, node=None, src_type=None, dst_type=None):
+        """Cast a value to the target LLVM type.
+
+        Signedness (H2/H3): for int widening (sext vs zext) and int<->float
+        conversion (sitofp/uitofp, fptosi/fptoui) the source/destination
+        signedness is taken from the Leash type names `src_type`/`dst_type`
+        when provided, else from `is_signed` (source side), defaulting to
+        signed — which preserves the historical behavior for callers that
+        pass neither.
+        """
         src = val.type
         dst = target_type
         if src == dst:
@@ -11427,6 +12194,16 @@ class CodeGen:
         src_is_ptr = isinstance(src, ir.PointerType)
         dst_is_ptr = isinstance(dst, ir.PointerType)
 
+        if src_type is not None:
+            src_signed = self._leash_type_is_signed(src_type)
+        elif is_signed is not None:
+            src_signed = bool(is_signed)
+        else:
+            src_signed = True
+        dst_signed = (
+            self._leash_type_is_signed(dst_type) if dst_type is not None else True
+        )
+
         # Handle null pointer to non-pointer destination (e.g., returning nil for struct type)
         # This can happen when a generic function returns nil for a value type
         if (
@@ -11437,11 +12214,6 @@ class CodeGen:
         ):
             # Return undef for the destination type since we can't convert null to a value type
             return ir.Constant(dst, ir.Undefined)
-        dst_is_int = isinstance(dst, ir.IntType)
-        src_is_float = isinstance(src, (ir.FloatType, ir.DoubleType, ir.HalfType))
-        dst_is_float = isinstance(dst, (ir.FloatType, ir.DoubleType, ir.HalfType))
-        src_is_ptr = isinstance(src, ir.PointerType)
-        dst_is_ptr = isinstance(dst, ir.PointerType)
 
         # int -> int (trunc / zext / sext)
         if src_is_int and dst_is_int:
@@ -11451,7 +12223,7 @@ class CodeGen:
                 # bool (i1) values should always be zero-extended to preserve 0/1
                 if src.width == 1:
                     return self.builder.zext(val, dst)
-                return self.builder.sext(val, dst) if is_signed else self.builder.zext(val, dst)
+                return self.builder.sext(val, dst) if src_signed else self.builder.zext(val, dst)
             return val
         # float -> float (fpext / fptrunc)
         elif src_is_float and dst_is_float:
@@ -11468,10 +12240,10 @@ class CodeGen:
             return val
         # int -> float
         elif src_is_int and dst_is_float:
-            return self.builder.sitofp(val, dst)
+            return self.builder.sitofp(val, dst) if src_signed else self.builder.uitofp(val, dst)
         # float -> int
         elif src_is_float and dst_is_int:
-            return self.builder.fptosi(val, dst)
+            return self.builder.fptosi(val, dst) if dst_signed else self.builder.fptoui(val, dst)
         # ptr -> ptr (bitcast)
         elif src_is_ptr and dst_is_ptr:
             return self.builder.bitcast(val, dst)
@@ -11507,8 +12279,10 @@ class CodeGen:
             and isinstance(dst.elements[1], ir.PointerType)
         ):
             new_slice = ir.Constant(dst, ir.Undefined)
+            # The length field is i64 in real slices: the old hard-coded
+            # i32 constant crashed insert_value with a TypeError.
             new_slice = self.builder.insert_value(
-                new_slice, ir.Constant(ir.IntType(32), 1), 0
+                new_slice, ir.Constant(dst.elements[0], 1), 0
             )
             new_slice = self.builder.insert_value(new_slice, val, 1)
             return new_slice
@@ -11652,8 +12426,16 @@ class CodeGen:
                 result = self.builder.insert_value(result, field_val, idx)
             return result
 
-        # Fallback: no conversion needed (identity / passthrough cast)
-        return val
+        # Fallback: only pass the value through when the types already
+        # match. Returning an ill-typed value here used to surface later
+        # as a bare llvmlite TypeError (a compiler crash) instead of a
+        # proper diagnostic.
+        if val.type == target_type:
+            return val
+        raise LeashError(
+            f"Cannot cast value of type '{val.type}' to '{target_type}'",
+            node=node,
+        )
 
     def _codegen_string_replace_from_value(self, str_val, args):
         """Implement string.replace(old, new) for StringLiteral - replace first occurrence."""

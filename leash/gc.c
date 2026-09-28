@@ -54,7 +54,37 @@
 #else
 #include <unistd.h>
 #include <pthread.h>
+#include <sched.h>
 #include <sys/mman.h>
+#endif
+
+/* ---- showb output-buffer mutex ---------------------------------------
+   The module-level showb globals (_leash_showb_buffer/_size/_cap) are
+   shared by every thread: unserialised growth lets two workers realloc
+   the same base (use-after-realloc / lost stores / heap corruption).
+   Implemented as a small atomic spin lock so it works identically in
+   full-GC and NO_GC (autofree) builds with no extra link dependencies;
+   the critical sections are a few instructions long. */
+#ifdef _WIN32
+static volatile LONG lsh_showb_spin = 0;
+void leash_showb_lock(void) {
+    while (InterlockedCompareExchange(&lsh_showb_spin, 1, 0) != 0) {
+        Sleep(0);
+    }
+}
+void leash_showb_unlock(void) {
+    InterlockedExchange(&lsh_showb_spin, 0);
+}
+#else
+static volatile int lsh_showb_spin = 0;
+void leash_showb_lock(void) {
+    while (__sync_lock_test_and_set(&lsh_showb_spin, 1)) {
+        sched_yield();
+    }
+}
+void leash_showb_unlock(void) {
+    __sync_lock_release(&lsh_showb_spin);
+}
 #endif
 
 #ifdef NO_GC
@@ -102,6 +132,7 @@ void* leash_gc_malloc_rooted(size_t size) { return leash_gc_malloc(size); }
 void* leash_gc_alloc_string(size_t len) { return leash_gc_malloc(len + 1); }
 void* leash_gc_alloc_vector_data(size_t elem_size, size_t capacity) { return leash_gc_malloc(elem_size * capacity); }
 void leash_gc_thread_spawned(void) {}
+void leash_gc_thread_attach(void) {}
 void leash_gc_worker_begin(void) {}
 void leash_gc_worker_end(void) {}
 size_t leash_gc_get_allocated(void) { return 0; }
@@ -215,6 +246,20 @@ void leash_gc_thread_spawned(void) {
     __sync_synchronize();
     gc_is_multithreaded = 1;
 #endif
+}
+
+void leash_gc_thread_attach(void) {
+    /* M6: explicit hook for threads created by native libraries (FFI) that
+       will call back into Leash code. Marking the thread as a worker and
+       flipping the multithreaded flag BEFORE its first GC operation makes
+       the switch to locked mode deterministic; without this, the first
+       GC touch raced any in-flight lock-free section on the main thread.
+       The remaining window (main thread already inside a lock-free
+       section when an UNANNOUNCED foreign thread first touches the GC)
+       cannot be closed from the foreign side alone — native code spawning
+       callbacks into Leash should call this from the new thread. */
+    gc_thread_worker = 1;
+    leash_gc_thread_spawned();
 }
 
 /* ===== Configuration ===== */
@@ -663,9 +708,14 @@ accounted:
 
 static void* gc_alloc_large(size_t size, unsigned int flags, size_t alignment) {
     if (alignment < 16) alignment = 16;
-    /* round alignment up to a power of two */
+    /* round alignment up to a power of two. The old loop capped at 2 MiB
+       and silently under-satisfied anything larger. */
     size_t al = 16;
-    while (al < alignment && al <= (size_t)1 << 20) al <<= 1;
+    while (al < alignment && al < ((size_t)1 << 62)) al <<= 1;
+    if (al < alignment) {
+        fprintf(stderr, "Leash GC: unsupported alignment %zu\n", alignment);
+        abort();
+    }
     alignment = al;
     if (size > SIZE_MAX - alignment - 64) gc_oom("allocation too large");
     size_t need = size + alignment + 64;
@@ -688,6 +738,9 @@ static void* gc_alloc_large(size_t size, unsigned int flags, size_t alignment) {
 
 static void gc_free_cell_payload(void* payload) {
     struct gc_cell* c = (struct gc_cell*)((char*)payload - CELL_HDR);
+    /* M8: a double free pushed the same cell onto the freelist twice (or
+       built a self-referential list), handing it to two live objects. */
+    if (!(c->flags & CELL_IN_USE)) return;
     c->flags &= ~CELL_IN_USE;
     gc.total_allocated -= c->size;
     gc.object_count--;
@@ -704,6 +757,7 @@ static void gc_free_cell_payload(void* payload) {
 
 static void gc_free_large_payload(void* payload) {
     struct gc_cell* c = (struct gc_cell*)((char*)payload - CELL_HDR);
+    if (!(c->flags & CELL_IN_USE)) return; /* double free */
     gc.total_allocated -= c->size;
     gc.object_count--;
     size_t idx = gc_large_find_index((char*)payload);
@@ -918,6 +972,12 @@ static unsigned long long gc_now_ns(void) {
    is cached here — the low bound is the collector's own frame. Without
    trustworthy bounds the collector refuses to run rather than do a partial
    scan that could miss live roots. */
+#ifdef _WIN32
+static volatile DWORD gc_stack_top_thread = 0;
+#else
+static volatile pthread_t gc_stack_top_thread;
+#endif
+
 static void gc_capture_stack_bounds(void) {
     char* top = NULL;
 #if defined(_WIN32)
@@ -952,7 +1012,24 @@ static void gc_capture_stack_bounds(void) {
 #else
     (void)top; /* unknown platform: bounds stay unknown, collection refuses */
 #endif
-    if (top) gc.stack_top = top; /* keep the last good value on failure */
+    if (top) {
+        gc.stack_top = top;
+#ifdef _WIN32
+        gc_stack_top_thread = GetCurrentThreadId();
+#else
+        gc_stack_top_thread = pthread_self();
+#endif
+    } else {
+        /* M7: a failed capture must NOT keep another thread's (higher)
+           top: scanning from this thread's frame up to that address
+           crosses an unmapped gap. Invalidate instead. */
+        gc.stack_top = NULL;
+#ifdef _WIN32
+        gc_stack_top_thread = 0;
+#else
+        memset((void*)&gc_stack_top_thread, 0, sizeof(gc_stack_top_thread));
+#endif
+    }
 }
 
 /* ===== Marking (iterative worklist, no recursion) ===== */
@@ -979,7 +1056,22 @@ static void gc_mark_candidate(const void* p) {
 }
 
 /* Treat every aligned word in [start, start+nbytes) as a candidate pointer. */
-static void gc_mark_words(const void* start, size_t nbytes) {
+#if defined(__SANITIZE_ADDRESS__) /* GCC */
+#  define GC_NO_ASAN __attribute__((no_sanitize_address))
+#elif defined(__has_feature) /* clang */
+#  if __has_feature(address_sanitizer)
+#    define GC_NO_ASAN __attribute__((no_sanitize_address))
+#  endif
+#endif
+#ifndef GC_NO_ASAN
+#  define GC_NO_ASAN
+#endif
+
+/* The conservative scanner deliberately reads raw stack/heap bytes; ASan
+   frame redzones make that look like an overflow, so exclude the scanning
+   entry points the same way Boehm GC does. Everything else (allocator,
+   memmove, freelist code) stays fully sanitized. */
+static GC_NO_ASAN void gc_mark_words(const void* start, size_t nbytes) {
     const char* s = (const char*)start;
     if (!s || nbytes < sizeof(uintptr_t)) return;
     uintptr_t end = (uintptr_t)s + nbytes;
@@ -1007,7 +1099,7 @@ static void gc_mark_roots(void) {
     }
 }
 
-static void gc_mark_stack(void) {
+static GC_NO_ASAN void gc_mark_stack(void) {
     char probe = 0; /* address-only, but initialized to keep -Wmaybe-uninit quiet */
     char* sp = &probe;
     char* top = gc.stack_top;
@@ -1090,7 +1182,13 @@ static void gc_collect_locked_impl(void) {
        spilled by setjmp. */
     gc_capture_stack_bounds();
     char probe;
-    if (!gc.stack_top || &probe > gc.stack_top) {
+    int stack_owner_ok;
+#ifdef _WIN32
+    stack_owner_ok = (gc_stack_top_thread == GetCurrentThreadId());
+#else
+    stack_owner_ok = pthread_equal(gc_stack_top_thread, pthread_self()) != 0;
+#endif
+    if (!gc.stack_top || !stack_owner_ok || &probe > gc.stack_top) {
         /* Unknown bounds, or bounds captured on a different thread (mismatch
            would make the scan cross unmapped memory). Refuse: a partial scan
            could free live objects. */
@@ -1964,8 +2062,10 @@ void leash_vec_batch_pushb(void* vec_ptr, const void* elements, int64_t count, i
 
 void leash_vec_bulk_copy(void* restrict dst, const void* restrict src, int64_t n, int64_t elem_size) {
     if (n <= 0 || elem_size <= 0) return;
-    /* Guard against signed overflow of the byte count. */
-    if (n > (int64_t)(SIZE_MAX / (size_t)elem_size)) {
+    /* Guard against overflow of the byte count. The old signed cast
+       made SIZE_MAX/(size_t)1 come out as -1, so every copy with 1-byte
+       elements aborted. */
+    if ((uint64_t)n > (uint64_t)SIZE_MAX / (uint64_t)elem_size) {
         fprintf(stderr, "Leash: vector copy too large!\n");
         abort();
     }
@@ -1980,6 +2080,7 @@ void leash_vec_reverse(void* data, int64_t size, int64_t elem_size) {
     char* d = (char*)data;
     void* tmp;
     char small_tmp[64];
+    if (size <= 1 || elem_size <= 0) return;
     int use_heap = (elem_size > (int64_t)sizeof(small_tmp));
     if (use_heap) {
         tmp = malloc((size_t)elem_size);
@@ -2003,6 +2104,9 @@ static int i32_cmp(const void* a, const void* b) {
 }
 
 void leash_vec_sort_i32(int32_t* data, int64_t size) {
+    /* A negative size used to become a huge size_t and walk qsort far out
+       of bounds. */
+    if (size <= 1) return;
     qsort(data, (size_t)size, sizeof(int32_t), i32_cmp);
 }
 
@@ -2012,6 +2116,9 @@ static int i64_cmp(const void* a, const void* b) {
 }
 
 void leash_vec_sort_i64(int64_t* data, int64_t size) {
+    /* A negative size used to become a huge size_t and walk qsort far out
+       of bounds. */
+    if (size <= 1) return;
     qsort(data, (size_t)size, sizeof(int64_t), i64_cmp);
 }
 
@@ -2021,6 +2128,9 @@ static int f32_cmp(const void* a, const void* b) {
 }
 
 void leash_vec_sort_f32(float* data, int64_t size) {
+    /* A negative size used to become a huge size_t and walk qsort far out
+       of bounds. */
+    if (size <= 1) return;
     qsort(data, (size_t)size, sizeof(float), f32_cmp);
 }
 
@@ -2030,6 +2140,9 @@ static int f64_cmp(const void* a, const void* b) {
 }
 
 void leash_vec_sort_f64(double* data, int64_t size) {
+    /* A negative size used to become a huge size_t and walk qsort far out
+       of bounds. */
+    if (size <= 1) return;
     qsort(data, (size_t)size, sizeof(double), f64_cmp);
 }
 
@@ -2314,7 +2427,10 @@ void* leash_future_new(void) {
 #endif
     f->done = 0;
     f->value = NULL;
-    leash_gc_register_root(f);
+    /* M9: leash_gc_malloc_rooted ALREADY added the future to gc.roots;
+       registering again made every future a permanent double root (its
+       await unregisters only once), so futures — and everything they
+       keep alive — leaked forever. */
     return f;
 }
 

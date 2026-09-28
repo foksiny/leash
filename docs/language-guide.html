@@ -415,7 +415,7 @@ result: <span class="kw">vec</span>&lt;<span class="kw">int</span>&gt; = vec1 + 
 <h2>Control Flow</h2>
 
 <h3>Branching</h3>
-<p>Use <code>if</code>, <code>also</code> (acts like <code>else if</code>), and <code>else</code> for conditional branching.</p>
+<p>Use <code>if</code>, <code>also</code> (acts like <code>else if</code>), and <code>else</code> for conditional branching. Conditions must be <code>bool</code> expressions &mdash; comparing or calling something that produces a value is a compile-time error, not an implicit truthiness test.</p>
 <pre><code><span class="kw">if</span> a &lt; b {
     <span class="fn">show</span>(<span class="str">"a is less than b"</span>);
 } <span class="kw">also</span> a &gt; b {
@@ -591,6 +591,9 @@ len: <span class="kw">int</span> = a.size;
 <span class="kw">foreach</span> index, value <span class="kw">in&lt;array&gt;</span> a {
     <span class="fn">show</span>(index, <span class="str">": "</span>, value);
 }</code></pre>
+
+<h3>Indexing</h3>
+<p>Indices are bounds-checked at runtime. Negative indices wrap from the end of the array (&mdash;1 is the last element, &mdash;N the first); an index beyond that range aborts with a runtime error, and constant indices outside <code>[-N, N-1]</code> are rejected at compile time.</p>
 
 <h3>Dynamic Array Sizes</h3>
 <p>Leash supports using variables, member access, and even math expressions to specify array sizes at runtime.</p>

@@ -267,7 +267,10 @@ static void lsh_dbg_trim(char *s) {
 }
 
 static void lsh_dbg_lazy_init(void) {
-    if (lsh_dbg_state != -1) return;
+    /* Init-once via an atomic CAS: the plain `!= -1` check let two
+       threads run the setup concurrently (leaked fopen handle, racy
+       breakpoint count). -2 marks "initialization in progress". */
+    if (!__sync_bool_compare_and_swap(&lsh_dbg_state, -1, -2)) return;
     lsh_dbg_state = 0;
     const char *env = getenv("LEASH_DBG");
     if (!env || !env[0] || (env[0] == '0' && env[1] == '\0')) return;

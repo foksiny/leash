@@ -237,14 +237,20 @@ void leash_wait_for_workers(void) {
 #define LSH_DBG_MAX_BREAKS 128
 #define LSH_DBG_LINE_LEN   1024
 
-static int     lsh_dbg_state = -1;
+static volatile LONG lsh_dbg_state = -1;
 static int     lsh_dbg_running = 0;
 static int     lsh_dbg_breaks[LSH_DBG_MAX_BREAKS];
 static int     lsh_dbg_nbreaks = 0;
 static char    lsh_dbg_src[4096] = "";
 static FILE   *lsh_dbg_src_file = NULL;
 static CRITICAL_SECTION lsh_dbg_cs;
+static INIT_ONCE lsh_dbg_cs_once = INIT_ONCE_STATIC_INIT;
 static int     lsh_dbg_cs_init = 0;
+static BOOL CALLBACK lsh_dbg_cs_initfn(PINIT_ONCE once, PVOID param, PVOID *ctx) {
+    (void)once; (void)param; (void)ctx;
+    InitializeCriticalSection(&lsh_dbg_cs);
+    return TRUE;
+}
 
 static void lsh_dbg_trim(char *s) {
     size_t n = strlen(s);
@@ -252,16 +258,18 @@ static void lsh_dbg_trim(char *s) {
 }
 
 static void lsh_dbg_lazy_init(void) {
-    if (lsh_dbg_state != -1) return;
+    /* Init-once via an atomic CAS (the plain `!= -1` check let two threads
+       run the setup concurrently) plus InitOnceExecuteOnce for the
+       CRITICAL_SECTION (check-then-InitializeCriticalSection outside the
+       CS used to race and corrupt the heap-backed DebugInfo). */
+    if (InterlockedCompareExchange(&lsh_dbg_state, -2, -1) != -1) return;
     lsh_dbg_state = 0;
     const char *env = getenv("LEASH_DBG");
     if (!env || !env[0] || (env[0] == '0' && env[1] == '\0')) return;
     lsh_dbg_state = 1;
 
-    if (!lsh_dbg_cs_init) {
-        InitializeCriticalSection(&lsh_dbg_cs);
-        lsh_dbg_cs_init = 1;
-    }
+    InitOnceExecuteOnce(&lsh_dbg_cs_once, lsh_dbg_cs_initfn, NULL, NULL);
+    lsh_dbg_cs_init = 1;
 
     const char *src = getenv("LEASH_DBG_SRC");
     if (src && src[0]) {
@@ -331,7 +339,7 @@ void __leash_dbg_stmt(const char *func, int line) {
     if (!lsh_dbg_state || line <= 0) return;
 
     if (!lsh_dbg_cs_init) {
-        InitializeCriticalSection(&lsh_dbg_cs);
+        InitOnceExecuteOnce(&lsh_dbg_cs_once, lsh_dbg_cs_initfn, NULL, NULL);
         lsh_dbg_cs_init = 1;
     }
     EnterCriticalSection(&lsh_dbg_cs);

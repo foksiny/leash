@@ -52,6 +52,7 @@
 <h2>Shared Variables (<code>shared</code>)</h2>
 
 <p>A <code>shared</code> variable allows <strong>one thread to write</strong> while any number of threads read. This is the default safe pattern for producer-consumer scenarios where a single worker produces data and multiple workers consume it. Since only one writer is allowed, there's no risk of write-write conflicts, making <code>shared</code> the simplest and safest choice for one-to-many communication patterns.</p>
+<p>The one-writer rule is enforced at compile time: assigning to a <code>shared</code> variable (including through an element or field write) from two different functions is an error &mdash; use a <code>fusion</code> variable instead if several workers must write it.</p>
 
 <pre><code><span class="kw">shared</span> result: <span class="kw">int</span> = 0;  <span class="cm">// Only one writer, many readers</span></code></pre>
 
@@ -64,7 +65,7 @@
 
 <h2>Fusion Variables (<code>fusion</code>)</h2>
 
-<p>A <code>fusion</code> variable allows <strong>multiple threads</strong> to both read and write concurrently. Writes use atomic stores and reads use atomic loads, so every thread eventually sees the latest value. This makes <code>fusion</code> the right choice for counters, flags, and coordination variables that many threads need to share and update.</p>
+<p>A <code>fusion</code> variable allows <strong>multiple threads</strong> to both read and write concurrently. Scalar integer <code>fusion</code> variables compile to atomic (sequentially consistent) loads and stores, and the counter idiom <code>counter = counter + n</code> lowers to a single atomic read-modify-write, so concurrent updates never lose increments. This makes <code>fusion</code> the right choice for counters, flags, and coordination variables that many threads need to share and update. Sub-byte values (such as <code>bool</code>) and composite values (arrays, vectors, structs) do not have atomic forms and keep plain access.</p>
 
 <pre><code><span class="kw">fusion</span> counter: <span class="kw">int</span> = 0;  <span class="cm">// Multiple readers and writers</span></code></pre>
 
@@ -200,9 +201,9 @@
 
 <table>
     <tr><th>Feature</th><th>Safety</th></tr>
-    <tr><td><code>shared</code> variables</td><td>No atomicity guarantees &mdash; use when only one worker writes</td></tr>
-    <tr><td><code>fusion</code> variables</td><td>Atomic loads/stores &mdash; writes visible across threads</td></tr>
-    <tr><td>Garbage collector</td><td>Fully thread-safe &mdash; allocations from any worker are safe</td></tr>
+    <tr><td><code>shared</code> variables</td><td>No atomicity guarantees &mdash; the one-writer rule is enforced at compile time</td></tr>
+    <tr><td><code>fusion</code> variables</td><td>Atomic loads/stores (and atomic read-modify-write for <code>x = x + n</code>) &mdash; writes visible across threads</td></tr>
+    <tr><td>Garbage collector</td><td>Fully thread-safe &mdash; allocations from any worker are safe. A thread that reaches the GC without being spawned by Leash (e.g. an FFI callback) permanently disables automatic collection (its stack is never scanned); native libraries that call back into Leash should call <code>leash_gc_thread_attach()</code> from the new thread first.</td></tr>
     <tr><td><code>show()</code> function</td><td>Thread-safe (output lines may interleave)</td></tr>
     <tr><td>Mutex / locks</td><td>Not built-in &mdash; use <code>fusion</code> variables for coordination</td></tr>
 </table>

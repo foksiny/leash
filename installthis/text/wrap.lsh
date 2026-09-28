@@ -49,8 +49,9 @@ pub def Wrap : class {
                     col = 0;
                 }
                 j: int = 0;
+                take: int = width;
                 while j < ws.size {
-                    take: int = width;
+                    take = width;
                     if j + take > ws.size {
                         take = ws.size - j;
                     }
