@@ -1,0 +1,5 @@
+[build-system]
+# llvmlite is needed at BUILD time: stage 0 of the installation compiles the
+# self-hosted compiler with the Python implementation (leash.codegen).
+requires = ["setuptools>=61", "wheel", "llvmlite"]
+build-backend = "setuptools.build_meta"

@@ -1,0 +1,507 @@
+use tokens::*;
+
+pub def Lexer : class {
+    pub src: string;
+    pub pos: int;
+    pub len: int;
+    pub line: int;
+    pub col: int;
+
+    static pub fnc is_digit(c char) : bool {
+        return c >= '0' && c <= '9';
+    }
+
+    static pub fnc is_alpha(c char) : bool {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+    }
+
+    static pub fnc is_ident_start(c char) : bool {
+        return Lexer.is_alpha(c) || c == '_';
+    }
+
+    static pub fnc is_ident_part(c char) : bool {
+        return Lexer.is_ident_start(c) || Lexer.is_digit(c);
+    }
+
+    static pub fnc is_hex_digit(c char) : bool {
+        return Lexer.is_digit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+    }
+
+    static pub fnc make(src string) : Lexer {
+        return Lexer { src: src, pos: 0, len: src.size, line: 1, col: 1 };
+    }
+
+    pub fnc peek() : char {
+        if this.pos >= this.len {
+            return '\0';
+        }
+        return this.src[this.pos];
+    }
+
+    pub fnc peek_at(offset int) : char {
+        p: int = this.pos + offset;
+        if p >= this.len {
+            return '\0';
+        }
+        return this.src[p];
+    }
+
+    pub fnc advance() : char {
+        if this.pos >= this.len {
+            return '\0';
+        }
+        c: char = this.src[this.pos];
+        this.pos = this.pos + 1;
+        this.col = this.col + 1;
+        if c == '\n' {
+            this.line = this.line + 1;
+            this.col = 1;
+        }
+        return c;
+    }
+
+    pub fnc skip_whitespace_and_comments() : void {
+        loop {
+            c: char = this.peek();
+            if c == ' ' || c == '\t' || c == '\r' || c == '\n' {
+                this.advance();
+            } also c == '/' && this.peek_at(1) == '/' {
+                // Line comment
+                this.advance();
+                this.advance();
+                while this.peek() != '\n' && this.peek() != '\0' {
+                    this.advance();
+                }
+            } also c == '/' && this.peek_at(1) == '*' {
+                // Block comment
+                this.advance();
+                this.advance();
+                while this.peek() != '\0' {
+                    if this.peek() == '*' && this.peek_at(1) == '/' {
+                        this.advance();
+                        this.advance();
+                        stop;
+                    }
+                    this.advance();
+                }
+            } else {
+                stop;
+            }
+        }
+    }
+
+    pub fnc read_identifier() : Token {
+        start_line: int = this.line;
+        start_col: int = this.col;
+        ident: string = "";
+
+        while Lexer.is_ident_part(this.peek()) {
+            ident = ident + this.advance();
+        }
+
+        // Keywords mapping
+        kind: int = Tok.IDENT;
+        if ident == "fnc" { kind = Tok.FNC; }
+        also ident == "return" { kind = Tok.RETURN; }
+        also ident == "if" { kind = Tok.IF; }
+        also ident == "also" { kind = Tok.ALSO; }
+        also ident == "else" { kind = Tok.ELSE; }
+        also ident == "while" { kind = Tok.WHILE; }
+        also ident == "for" { kind = Tok.FOR; }
+        also ident == "loop" { kind = Tok.LOOP; }
+        also ident == "stop" { kind = Tok.STOP; }
+        also ident == "skip" { kind = Tok.CONTINUE; }
+        also ident == "continue" { kind = Tok.CONTINUE; }
+        also ident == "switch" { kind = Tok.SWITCH; }
+        also ident == "case" { kind = Tok.CASE; }
+        also ident == "default" { kind = Tok.DEFAULT; }
+        also ident == "def" { kind = Tok.DEF; }
+        also ident == "struct" { kind = Tok.STRUCT; }
+        also ident == "class" { kind = Tok.CLASS; }
+        also ident == "enum" { kind = Tok.ENUM; }
+        also ident == "union" { kind = Tok.UNION; }
+        also ident == "type" { kind = Tok.TYPE; }
+        also ident == "pub" { kind = Tok.PUB; }
+        also ident == "priv" { kind = Tok.PRIV; }
+        also ident == "imut" { kind = Tok.IMUT; }
+        also ident == "static" { kind = Tok.STATIC; }
+        also ident == "unsafe" { kind = Tok.UNSAFE; }
+        also ident == "inline" { kind = Tok.INLINE; }
+        also ident == "nogc" { kind = Tok.NOGC; }
+        also ident == "async" { kind = Tok.ASYNC; }
+        also ident == "show" { kind = Tok.SHOW; }
+        also ident == "showb" { kind = Tok.SHOWB; }
+        also ident == "exec" { kind = Tok.EXEC; }
+        also ident == "use" { kind = Tok.USE; }
+        also ident == "import" { kind = Tok.IMPORT; }
+        also ident == "is" { kind = Tok.IS; }
+        also ident == "isnt" { kind = Tok.ISNT; }
+        also ident == "in" { kind = Tok.IN; }
+        also ident == "foreach" { kind = Tok.FOREACH; }
+        also ident == "do" { kind = Tok.DO; }
+        also ident == "unless" { kind = Tok.UNLESS; }
+        also ident == "alsou" { kind = Tok.ALSOU; }
+        also ident == "as" { kind = Tok.AS; }
+        also ident == "delete" { kind = Tok.DELETE; }
+        also ident == "del" { kind = Tok.DELETE; }
+        also ident == "true" { kind = Tok.BOOL; }
+        also ident == "false" { kind = Tok.BOOL; }
+        also ident == "nil" { kind = Tok.NIL; }
+        also ident == "null" { kind = Tok.NIL; }
+
+        return Token.make(kind, ident, start_line, start_col);
+    }
+
+    pub fnc read_number() : Token {
+        start_line: int = this.line;
+        start_col: int = this.col;
+        num_str: string = "";
+        is_flt: bool = false;
+
+        // Check for hex 0x or binary 0b
+        if this.peek() == '0' && (this.peek_at(1) == 'x' || this.peek_at(1) == 'X') {
+            num_str = num_str + this.advance();
+            num_str = num_str + this.advance();
+            while Lexer.is_hex_digit(this.peek()) {
+                num_str = num_str + this.advance();
+            }
+            return Token.make(Tok.INT, num_str, start_line, start_col);
+        }
+        if this.peek() == '0' && (this.peek_at(1) == 'b' || this.peek_at(1) == 'B') {
+            num_str = num_str + this.advance();
+            num_str = num_str + this.advance();
+            while this.peek() == '0' || this.peek() == '1' {
+                num_str = num_str + this.advance();
+            }
+            return Token.make(Tok.INT, num_str, start_line, start_col);
+        }
+
+        while Lexer.is_digit(this.peek()) {
+            num_str = num_str + this.advance();
+        }
+
+        if this.peek() == '.' && Lexer.is_digit(this.peek_at(1)) {
+            is_flt = true;
+            num_str = num_str + this.advance(); // consume '.'
+            while Lexer.is_digit(this.peek()) {
+                num_str = num_str + this.advance();
+            }
+        }
+
+        if this.peek() == 'e' || this.peek() == 'E' {
+            is_flt = true;
+            num_str = num_str + this.advance();
+            if this.peek() == '+' || this.peek() == '-' {
+                num_str = num_str + this.advance();
+            }
+            while Lexer.is_digit(this.peek()) {
+                num_str = num_str + this.advance();
+            }
+        }
+
+        if is_flt {
+            return Token.make(Tok.FLOAT, num_str, start_line, start_col);
+        }
+        return Token.make(Tok.INT, num_str, start_line, start_col);
+    }
+
+    pub fnc read_string() : Token {
+        start_line: int = this.line;
+        start_col: int = this.col;
+        this.advance(); // consume opening "
+        val: string = "";
+
+        while this.peek() != '"' && this.peek() != '\0' {
+            c: char = this.advance();
+            if c == '\\' {
+                esc: char = this.advance();
+                if esc == 'n' { val = val + '\n'; }
+                also esc == 't' { val = val + '\t'; }
+                also esc == 'r' { val = val + '\r'; }
+                also esc == '\\' { val = val + '\\'; }
+                also esc == '"' { val = val + '"'; }
+                also esc == '0' { val = val + "\\0"; }
+                else { val = val + esc; }
+            } else {
+                val = val + c;
+            }
+        }
+
+        if this.peek() == '"' {
+            this.advance(); // consume closing "
+        }
+
+        return Token.make(Tok.STRING, val, start_line, start_col);
+    }
+
+    pub fnc read_multiline_string() : Token {
+        start_line: int = this.line;
+        start_col: int = this.col;
+        this.advance();
+        this.advance();
+        this.advance(); // consume opening """
+        val: string = "";
+
+        while this.peek() != '\0' {
+            if this.peek() == '"' && this.peek_at(1) == '"' && this.peek_at(2) == '"' {
+                this.advance();
+                this.advance();
+                this.advance();
+                return Token.make(Tok.STRING, val, start_line, start_col);
+            }
+            c: char = this.advance();
+            if c == '\\' {
+                if this.peek() == '"' {
+                    this.advance();
+                    val = val + '"';
+                } also this.peek() == '\\' {
+                    this.advance();
+                    val = val + '\\';
+                } also this.peek() == 'n' {
+                    this.advance();
+                    val = val + '\n';
+                } also this.peek() == 't' {
+                    this.advance();
+                    val = val + '\t';
+                } else {
+                    val = val + c;
+                }
+            } else {
+                val = val + c;
+            }
+        }
+
+        return Token.make(Tok.STRING, val, start_line, start_col);
+    }
+
+    pub fnc read_char() : Token {
+        start_line: int = this.line;
+        start_col: int = this.col;
+        this.advance(); // consume opening '
+        val: string = "";
+
+        if this.peek() != '\'' && this.peek() != '\0' {
+            c: char = this.advance();
+            if c == '\\' {
+                esc: char = this.advance();
+                if esc == 'n' { val = val + '\n'; }
+                also esc == 't' { val = val + '\t'; }
+                also esc == 'r' { val = val + '\r'; }
+                also esc == '\\' { val = val + '\\'; }
+                also esc == '\'' { val = val + '\''; }
+                also esc == '0' { val = "\\0"; }
+                else { val = val + esc; }
+            } else {
+                val = val + c;
+            }
+        }
+
+        if this.peek() == '\'' {
+            this.advance(); // consume closing '
+        }
+
+        return Token.make(Tok.CHAR, val, start_line, start_col);
+    }
+
+    pub fnc tokenize() : vec<Token> {
+        tokens: vec<Token>;
+
+        loop {
+            this.skip_whitespace_and_comments();
+            c: char = this.peek();
+
+            if c == '\0' {
+                tokens.pushb(Token.make(Tok.EOF, "", this.line, this.col));
+                stop;
+            }
+
+            cur_line: int = this.line;
+            cur_col: int = this.col;
+
+            // Identifier or keyword
+            if Lexer.is_ident_start(c) {
+                tokens.pushb(this.read_identifier());
+                continue;
+            }
+
+            // Number (also leading-dot float literals like `.5`)
+            if Lexer.is_digit(c) || (c == '.' && Lexer.is_digit(this.peek_at(1))) {
+                tokens.pushb(this.read_number());
+                continue;
+            }
+
+            // String
+            if c == '"' {
+                if this.peek_at(1) == '"' && this.peek_at(2) == '"' {
+                    tokens.pushb(this.read_multiline_string());
+                } else {
+                    tokens.pushb(this.read_string());
+                }
+                continue;
+            }
+
+            // Char
+            if c == '\'' {
+                tokens.pushb(this.read_char());
+                continue;
+            }
+
+            // Two-character operators and delimiters
+            c2: char = this.peek_at(1);
+            if c == ':' && c2 == ':' {
+                this.advance(); this.advance();
+                tokens.pushb(Token.make(Tok.COLONCOLON, "::", cur_line, cur_col));
+                continue;
+            }
+            if c == ':' && c2 == '=' {
+                this.advance(); this.advance();
+                tokens.pushb(Token.make(Tok.COLONEQ, ":=", cur_line, cur_col));
+                continue;
+            }
+            if c == '-' && c2 == '>' {
+                this.advance(); this.advance();
+                tokens.pushb(Token.make(Tok.ARROW, "->", cur_line, cur_col));
+                continue;
+            }
+            if c == '=' && c2 == '=' {
+                this.advance(); this.advance();
+                tokens.pushb(Token.make(Tok.EQ, "==", cur_line, cur_col));
+                continue;
+            }
+            if c == '!' && c2 == '=' {
+                this.advance(); this.advance();
+                tokens.pushb(Token.make(Tok.NEQ, "!=", cur_line, cur_col));
+                continue;
+            }
+            if c == '<' && c2 == '=' {
+                this.advance(); this.advance();
+                tokens.pushb(Token.make(Tok.LTE, "<=", cur_line, cur_col));
+                continue;
+            }
+            if c == '>' && c2 == '=' {
+                this.advance(); this.advance();
+                tokens.pushb(Token.make(Tok.GTE, ">=", cur_line, cur_col));
+                continue;
+            }
+            if c == '<' && c2 == '<' && this.peek_at(2) == '=' {
+                this.advance(); this.advance(); this.advance();
+                tokens.pushb(Token.make(Tok.SHIFTEQL, "<<=", cur_line, cur_col));
+                continue;
+            }
+            if c == '<' && c2 == '<' {
+                this.advance(); this.advance();
+                tokens.pushb(Token.make(Tok.LSHIFT, "<<", cur_line, cur_col));
+                continue;
+            }
+            if c == '>' && c2 == '>' && this.peek_at(2) == '=' {
+                this.advance(); this.advance(); this.advance();
+                tokens.pushb(Token.make(Tok.SHIFTEQR, ">>=", cur_line, cur_col));
+                continue;
+            }
+            if c == '>' && c2 == '>' {
+                this.advance(); this.advance();
+                tokens.pushb(Token.make(Tok.RSHIFT, ">>", cur_line, cur_col));
+                continue;
+            }
+            if c == '&' && c2 == '&' {
+                this.advance(); this.advance();
+                tokens.pushb(Token.make(Tok.AND, "&&", cur_line, cur_col));
+                continue;
+            }
+            if c == '&' && c2 == '=' {
+                this.advance(); this.advance();
+                tokens.pushb(Token.make(Tok.AMPEQ, "&=", cur_line, cur_col));
+                continue;
+            }
+            if c == '|' && c2 == '|' {
+                this.advance(); this.advance();
+                tokens.pushb(Token.make(Tok.OR, "||", cur_line, cur_col));
+                continue;
+            }
+            if c == '|' && c2 == '=' {
+                this.advance(); this.advance();
+                tokens.pushb(Token.make(Tok.PIPEEQ, "|=", cur_line, cur_col));
+                continue;
+            }
+            if c == '^' && c2 == '=' {
+                this.advance(); this.advance();
+                tokens.pushb(Token.make(Tok.CARETEQ, "^=", cur_line, cur_col));
+                continue;
+            }
+            if c == '+' && c2 == '+' {
+                this.advance(); this.advance();
+                tokens.pushb(Token.make(Tok.PLUSPLUS, "++", cur_line, cur_col));
+                continue;
+            }
+            if c == '-' && c2 == '-' {
+                this.advance(); this.advance();
+                tokens.pushb(Token.make(Tok.MINUSMINUS, "--", cur_line, cur_col));
+                continue;
+            }
+            if c == '+' && c2 == '=' {
+                this.advance(); this.advance();
+                tokens.pushb(Token.make(Tok.PLUSEQ, "+=", cur_line, cur_col));
+                continue;
+            }
+            if c == '-' && c2 == '=' {
+                this.advance(); this.advance();
+                tokens.pushb(Token.make(Tok.MINUSEQ, "-=", cur_line, cur_col));
+                continue;
+            }
+            if c == '*' && c2 == '=' {
+                this.advance(); this.advance();
+                tokens.pushb(Token.make(Tok.STAREQ, "*=", cur_line, cur_col));
+                continue;
+            }
+            if c == '/' && c2 == '=' {
+                this.advance(); this.advance();
+                tokens.pushb(Token.make(Tok.SLASHEQ, "/=", cur_line, cur_col));
+                continue;
+            }
+            if c == '%' && c2 == '=' {
+                this.advance(); this.advance();
+                tokens.pushb(Token.make(Tok.PERCENTEQ, "%=", cur_line, cur_col));
+                continue;
+            }
+
+            // Single-character tokens
+            this.advance();
+            if c == '(' { tokens.pushb(Token.make(Tok.LPAREN, "(", cur_line, cur_col)); }
+            also c == ')' { tokens.pushb(Token.make(Tok.RPAREN, ")", cur_line, cur_col)); }
+            also c == '{' { tokens.pushb(Token.make(Tok.LBRACE, "{", cur_line, cur_col)); }
+            also c == '}' { tokens.pushb(Token.make(Tok.RBRACE, "}", cur_line, cur_col)); }
+            also c == '[' { tokens.pushb(Token.make(Tok.LBRACKET, "[", cur_line, cur_col)); }
+            also c == ']' { tokens.pushb(Token.make(Tok.RBRACKET, "]", cur_line, cur_col)); }
+            also c == ';' { tokens.pushb(Token.make(Tok.SEMI, ";", cur_line, cur_col)); }
+            also c == ':' { tokens.pushb(Token.make(Tok.COLON, ":", cur_line, cur_col)); }
+            also c == ',' { tokens.pushb(Token.make(Tok.COMMA, ",", cur_line, cur_col)); }
+            also c == '.' { tokens.pushb(Token.make(Tok.DOT, ".", cur_line, cur_col)); }
+            also c == '?' { tokens.pushb(Token.make(Tok.QUESTION, "?", cur_line, cur_col)); }
+            also c == '=' { tokens.pushb(Token.make(Tok.ASSIGN, "=", cur_line, cur_col)); }
+            also c == '+' { tokens.pushb(Token.make(Tok.PLUS, "+", cur_line, cur_col)); }
+            also c == '-' { tokens.pushb(Token.make(Tok.MINUS, "-", cur_line, cur_col)); }
+            also c == '*' { tokens.pushb(Token.make(Tok.STAR, "*", cur_line, cur_col)); }
+            also c == '/' { tokens.pushb(Token.make(Tok.SLASH, "/", cur_line, cur_col)); }
+            also c == '%' { tokens.pushb(Token.make(Tok.PERCENT, "%", cur_line, cur_col)); }
+            also c == '&' { tokens.pushb(Token.make(Tok.AMP, "&", cur_line, cur_col)); }
+            also c == '|' { tokens.pushb(Token.make(Tok.PIPE, "|", cur_line, cur_col)); }
+            also c == '^' { tokens.pushb(Token.make(Tok.CARET, "^", cur_line, cur_col)); }
+            also c == '~' { tokens.pushb(Token.make(Tok.TILDE, "~", cur_line, cur_col)); }
+            also c == '<' {
+                if this.peek() == '>' {
+                    this.advance();
+                    tokens.pushb(Token.make(Tok.ISINOP, "<>", cur_line, cur_col));
+                } else {
+                    tokens.pushb(Token.make(Tok.LT, "<", cur_line, cur_col));
+                }
+            }
+            also c == '>' { tokens.pushb(Token.make(Tok.GT, ">", cur_line, cur_col)); }
+            also c == '!' { tokens.pushb(Token.make(Tok.NOT, "!", cur_line, cur_col)); }
+            else {
+                show("lexer warning: unknown character '", c, "' at ", cur_line, ":", cur_col);
+            }
+        }
+
+        return tokens;
+    }
+}

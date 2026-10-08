@@ -5,7 +5,182 @@ All notable changes to the Leash compiler are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## [1.0.0] - 2026-10-08
+
+First stable release. The compiler is now self-hosted: the shipped `leashc`
+binary is produced by the compiler it contains (bootstrap fixed point), and
+installation builds it from source.
+
+### Added — 1.0 installation flow (self-hosted by default)
+- `pip install .` bootstraps the toolchain at install time: the Python
+  compiler builds `leashc` stage 1 from `compiler/*.lsh`, then stage 1
+  compiles itself — the binary shipped in the wheel is literally the
+  compiler's own output (bootstrap fixed point, `scripts/bootstrap.sh`
+  verifies Stage 2 IR == Stage 3 IR).
+- Command naming: **`leash` is now the self-hosted compiler** and it
+  implements the *entire* toolchain natively — `compile`, `run` (file and
+  project modes, with the `--- Executed at ...`` banner, temp binaries and
+  exit-code propagation), `check`, `dump`, `<file.lsh>` shorthand (now
+  honoring `-o` and all compile flags), `init`, `build`, `install`,
+  `update`, `self-host` (3-stage bootstrap + fixed-point check), and `dbg`
+  (the interactive source-level debugger: statement instrumentation via
+  `__leash_dbg_stmt`, breakpoints, stepping — powered by statement
+  line/column tracking in the parser and a new `run` exec mode that
+  inherits the terminal and returns the exit code). `leashp` is the pure
+  Python compiler/toolchain; `leashc` remains an alias of `leash`. Python
+  is only used for non-linux64 `--target` builds, when the native binary
+  is unavailable, or with `LEASH_FORCE_PYTHON=1`.
+- The compiler binary locates its runtime (`gc.c`, link stubs) from any
+  working directory: CWD, `$LEASH_RUNTIME`, or relative to `argv[0]`
+  (pip layout: `leash/native/leashc` next to `leash/gc.c`).
+- `pyproject.toml` (build isolation now has llvmlite for stage 0),
+  `MANIFEST.in`, `leash/native.py` dispatcher; version 1.0.0 everywhere
+  (`leash version` / `leashp`).
+
+### Added — Output-parity completion (88/88 examples)
+- Every example in `tests/expected/` now compiles and runs with identical
+  output on the self-hosted compiler: generics (`class<T>`, `def T : template`,
+  multi-type `[int, float, ...]` params with monomorphization), `opdef`
+  operator/method overloading with `error`/`throw`, `is`/`isnt`, matrices,
+  `async`/`await` futures, File API, and full `int<N>`/`uint<N>` big
+  integers (1..512-bit, exact decimal formatting/parsing, `toint(int<N>, s)`).
+- `showb` is buffered and flushed once at exit (Python parity); structural
+  `show(vec)` prints `[a, b, ...]`.
+
+### Changed — Vector runtime redesign (speed + memory parity)
+- `vec<T>` elements are now **unboxed inline values** (raw `i64`/`double`/
+  `i1`/`i8`/`iN` in the data array; reference-typed elements stay 8-byte
+  handles). Wide ints (`vec<int<128>>` etc.) no longer heap-box per element.
+- **Precise GC tracing**: element buffers of pointer-free types are
+  allocated `FLAG_ATOMIC`, so the collector never scans them — no false
+  pins from integer payloads and no marking cost. Buffers are also
+  lazily allocated (an empty vector costs one 40-byte header).
+- Hot paths are inlined at the IR level: `pushb`/`get`/`set`/`popb`/
+  indexing compile to direct loads/stores with Python-parity bounds
+  checks (negative-index wrap + `Runtime error: ...` aborts); only the
+  rare growth case calls into the runtime.
+- Measured: identical-semantics `vec<int<64>>` push+get at **parity**
+  with the Python compiler's binaries (0.38s vs 0.37s for 30M+30M ops);
+  scalar and string workloads at parity; binary sizes at parity
+  (`-no-pie -Wl,--gc-sections -Wl,--strip-all ...` link flags now match).
+
+### Fixed
+- `&&`/`||` now short-circuit (was: eager `and i1`/`or i1`), which broke
+  the 3-stage bootstrap.
+- Token enum collisions (`LT/LTE/GT/GTE` vs `ISINOP/DO/UNLESS/ALSOU`).
+- Array literals feeding narrower vectors (`(vec<uint<2>>){1,0,...}`)
+  now convert element widths instead of misreading the buffer.
+
+### Added — Self-hosted Leash compiler (`compiler/*.lsh`)
+- Compiler written in Leash (tokens/ast/lexer/parser/typechecker/codegen/optimize/driver/main)
+  that compiles Leash source to LLVM IR and links with `leash/gc.c` +
+  `leash/cross_compile_stubs.c` via clang.
+- `leash self-host` CLI command and `scripts/bootstrap.sh` run the 3-stage
+  bootstrap (python -> stage1 -> stage2 -> stage3) and verify the fixed-point:
+  Stage 2 IR == Stage 3 IR. `bin/leashc` installed thereafter.
+- `scripts/ir_diff.py` — parity harness comparing self-hosted program output
+  against the Python compiler's expected outputs (tests/expected/*.out),
+  with ulimit address-space guardrails on every child so runaway binaries
+  die with OOM instead of eating host memory.
+- `tests/test_self_hosted.py` (10 tests) and `docs/self-hosted.html`.
+
+### Added — Self-hosted compiler feature parity (this pass)
+- CLI: `-O<level>/--opt`, `--check`, `dump`/`check` commands, `--emit-llvm`,
+  `-l<lib>` link flags, `-oi/--other-imports`, `--verbose` phase tracing,
+  `--warnings-as-errors` (flag), `--target linux64`.
+- AST constant folding (compiler/optimize.lsh): int/float/string/bool binops,
+  unary fold, constant-if pruning, `tostring(literal)` fold.
+- Syntax: `a: int` params, `-> ret` arrows, `fnc main {}` w/o parens,
+  Java-style constructors (`pub Person(...)`), `create Type(...)`, `imut`
+  type modifiers, reference types `&T`, tuple types `(T1, T2)` with
+  multi-value returns and destructuring `a, b: int, int = f();`,
+  do-while loops, `as` casts with proper precedence, `<>` containment
+  operator, `use X alias Y`-style imports tolerated.
+- Builtins: `get()`, `keyget()`, `normescape()`, `lstr()`, `cstr()` (slice
+  semantics), `tostring(float)` via `leash_float_to_str`, global variables,
+  `self`/`self::Class`/`self::Parent`, enum values + `.name` tables,
+  hash literals `{"k": v}`, hash methods `getKey/delete/keys/values`,
+  string `-` (remove), `str.replace()`, vec `isin`, string-interpolated
+  show kwargs (`end=`), `{expr}` string interpolation with the Python
+  parser's sub-expression EOF guard.
+- Type system: type aliases (`def T : type X`), `float<N>`/`int<N>`
+  normalization, param/local name collision dedupe, `vec<T>`/`hash<K,V>`
+  INDEX inference, tuple element inference.
+
+### Added — Class vtables & inheritance (this pass)
+- Every class instance carries an `i8*` vtable slot at field 0; class type
+  definitions, all field loads/stores (member get/assign, struct-init
+  defaults and provided fields) and the heap allocation are offset by one.
+  `ClassInfo.method_order` (parent's non-static slots first, then own new
+  methods) drives `@C_vtable` emission; instance-method calls dispatch
+  through the receiver's runtime vtable (bitcast to the static side's
+  signature), while static methods and non-class receivers keep direct
+  calls — `examples/advanced_class.lsh` now reaches output parity.
+- Inheritance: parent instance fields are prepended to each child's layout
+  in the typechecker, method lookup walks the parent chain to the defining
+  class (`this` bitcast to it), inherited `ClassInfo`/`is_method_static`
+  queries, `self`/`self::Class`/`self::Parent` statics, and a Java-style
+  `@main` wrapper calling a class-static `main()` when no top-level main
+  exists (`examples/javasyntax.lsh`, `examples/self_advanced.lsh`).
+- Vec `extend`/`insertv` (incl. boxed element copy via
+  `leash_sh_vec_extend`/`_insertv`), `<>` array containment dispatch for
+  i64/i8/f64/string needles (`leash_sh_arr_isin_*`),
+  `safecast T(x)` / plain `(T)x` cast parsing with `sizeof(int<64>)`
+  width preservation, and `tofloat`/`toint` string conversion via
+  `atof`/`atoll` (`examples/totype.lsh`).
+
+### Fixed — Struct value semantics (this pass)
+- Struct-typed values now copy on every python-side value boundary via the
+  new `leash_sh_clone_obj` runtime helper (byte copy + recursive copy of
+  nested struct-typed pointer fields): value parameters are cloned in the
+  callee prologue (`&T` refs stay by-reference), `VAR_DECL`/plain
+  assignment/struct-field assignment/struct-init field stores clone the
+  RHS, and struct-typed `return` clones the result. `examples/structlval.lsh`
+  now reaches output parity — the self-hosted compiler has zero output
+  mismatches left on the parity corpus; the remainder are parse-level
+  feature gaps.
+- `scripts/ir_diff.py`: honours the `LEASHC` env var to point the harness
+  at a specific stage binary (e.g. `bin/leashc_stage1`) while validating a
+  change before bootstrap.
+
+### Added — Unsafe / pointer / byte builtins (this pass)
+- Modifiers: `inline`, `nogc`, `async` function flags and the `unsafe`
+  block/function flag (parse + codegen gating: unsafe skips runtime checks
+  and marks struct GEPs `inbounds`), `->` pointer-member access `p->field`
+  (new `PointerMemberAccess` AST node, gep `{0, idx}` with class field
+  offset), and `*T` pointer types with pointer arithmetic (`*T ± int` →
+  `gep`, `&`-of-struct returning the heap pointer value).
+- Reference semantics: scalar `&T` params/locals unwrap to the referenced
+  cell on assignment (compound and `*p = v` deref stores included), `&`-ref
+  arguments pass the lvalue cell through call boundaries, `show` prints
+  pointers as `%p` and `*char` as `%s`, and per-function `var_ptrs`/
+  `var_types` reset in `gen_function` so params/locals no longer leak
+  between top-level functions.
+- Byte builtins: `inttobytes`/`floattobytes` (→ `char[]` slice via
+  `leash_gc_malloc` + `memmove`, copy clamped by `sizeof`), `bytestoint`/
+  `bytestofloat` (compile-time `sizeof`-derived width, `iN` load + `zext`),
+  `cstr()` slice→`*char` coercion (`extractvalue 1`), and `parse_int_text`
+  for `0b`/`0o`/`0x` literals in the self-hosted parser.
+- `scripts/ir_diff.py` normalizes `0x…` addresses in outputs; the
+  `int<…>`/`float<…>` show aliases print as `int`/`float`.
+
+### Fixed
+- `leash/ast_optimize.py`: constant-folding double-rescanned every BinaryOp/
+  UnaryOp node (O(2^depth) on deep string-concat chains), hanging compilation
+  of `compiler/main.lsh`. The attr loop already folds children once; the
+  extra `_deep_fold` recursion per Binary/Unary node is removed.
+- `leash/gc.c`: new self-hosted runtime helpers — `leash_sh_str_sub`,
+  `leash_sh_str_replace`, `leash_sh_normescape`, `leash_sh_slice_to_str`,
+  `leash_sh_vec_isin`, `leash_sh_arr_isin_i64`, `leash_sh_str_isin`,
+  `leash_sh_hash_getkey/delete/keys/values`.
+- Self-hosted compiler: struct-literal disambiguation in condition contexts
+  (`no_struct_init`), nested-generic `>>` splitting, `exec()` expressions,
+  static class fields/methods, per-method typechecking, duplicate alloca
+  dedupe (incl. param shadowing), static-call emission, char->string concat,
+  float/int mixed ops + `fneg`, exact float literal text, `int[]`/`Type[N]`
+  slices, ARRAY_LIT generation, member compound assignment (`p.x += n`),
+  uninitialized pointer/aggregate default init, and the builtin table's
+  `cstr` type (was `*char`, breaking concat conversions).
 
 ## [0.25.0] - 2026-09-27
 

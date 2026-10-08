@@ -1,0 +1,397 @@
+pub def ExprKind : class {
+    static pub INT: int = 1;
+    static pub FLOAT: int = 2;
+    static pub STRING: int = 3;
+    static pub CHAR: int = 4;
+    static pub BOOL: int = 5;
+    static pub NIL: int = 6;
+    static pub IDENT: int = 7;
+    static pub BINOP: int = 8;
+    static pub UNARY: int = 9;
+    static pub CALL: int = 10;
+    static pub METHOD_CALL: int = 11;
+    static pub MEMBER: int = 12;
+    static pub INDEX: int = 13;
+    static pub TERNARY: int = 14;
+    static pub CAST: int = 15;
+    static pub STRUCT_INIT: int = 16;
+    static pub ARRAY_LIT: int = 17;
+    static pub POINTER_MEMBER: int = 18;
+}
+
+pub def Expr : class {
+    pub kind: int;
+    pub ival: int;
+    pub fval: float;
+    pub sval: string;
+    pub cval: char;
+    pub bval: bool;
+    pub op: string;
+    pub left: Expr;
+    pub right: Expr;
+    pub cond: Expr;
+    pub args: vec<Expr>;
+    pub field_names: vec<string>;
+    pub inferred_type: string;
+
+    static pub fnc make_int(v int) : Expr {
+        e: Expr = Expr { kind: ExprKind.INT, ival: v, fval: 0.0, sval: "", cval: ' ', bval: false, op: "", left: null, right: null, cond: null };
+        return e;
+    }
+
+    static pub fnc make_float(v float) : Expr {
+        e: Expr = Expr { kind: ExprKind.FLOAT, ival: 0, fval: v, sval: "", cval: ' ', bval: false, op: "", left: null, right: null, cond: null };
+        return e;
+    }
+
+    static pub fnc make_string(s string) : Expr {
+        e: Expr = Expr { kind: ExprKind.STRING, ival: 0, fval: 0.0, sval: s, cval: ' ', bval: false, op: "", left: null, right: null, cond: null };
+        return e;
+    }
+
+    static pub fnc make_char(c char) : Expr {
+        e: Expr = Expr { kind: ExprKind.CHAR, ival: 0, fval: 0.0, sval: "", cval: c, bval: false, op: "", left: null, right: null, cond: null };
+        return e;
+    }
+
+    static pub fnc make_bool(b bool) : Expr {
+        e: Expr = Expr { kind: ExprKind.BOOL, ival: 0, fval: 0.0, sval: "", cval: ' ', bval: b, op: "", left: null, right: null, cond: null };
+        return e;
+    }
+
+    static pub fnc make_nil() : Expr {
+        e: Expr = Expr { kind: ExprKind.NIL, ival: 0, fval: 0.0, sval: "", cval: ' ', bval: false, op: "", left: null, right: null, cond: null };
+        return e;
+    }
+
+    static pub fnc make_ident(name string) : Expr {
+        e: Expr = Expr { kind: ExprKind.IDENT, ival: 0, fval: 0.0, sval: name, cval: ' ', bval: false, op: "", left: null, right: null, cond: null };
+        return e;
+    }
+
+    static pub fnc make_binop(op string, l Expr, r Expr) : Expr {
+        e: Expr = Expr { kind: ExprKind.BINOP, ival: 0, fval: 0.0, sval: "", cval: ' ', bval: false, op: op, left: l, right: r, cond: null };
+        return e;
+    }
+
+    static pub fnc make_unary(op string, operand Expr) : Expr {
+        e: Expr = Expr { kind: ExprKind.UNARY, ival: 0, fval: 0.0, sval: "", cval: ' ', bval: false, op: op, left: operand, right: null, cond: null };
+        return e;
+    }
+
+    static pub fnc make_call(callee string, args vec<Expr>) : Expr {
+        e: Expr = Expr { kind: ExprKind.CALL, ival: 0, fval: 0.0, sval: callee, cval: ' ', bval: false, op: "", left: null, right: null, cond: null, args: args };
+        return e;
+    }
+
+    static pub fnc make_method_call(obj Expr, method string, args vec<Expr>) : Expr {
+        e: Expr = Expr { kind: ExprKind.METHOD_CALL, ival: 0, fval: 0.0, sval: method, cval: ' ', bval: false, op: "", left: obj, right: null, cond: null, args: args };
+        return e;
+    }
+
+    static pub fnc make_member(obj Expr, member string) : Expr {
+        e: Expr = Expr { kind: ExprKind.MEMBER, ival: 0, fval: 0.0, sval: member, cval: ' ', bval: false, op: "", left: obj, right: null, cond: null };
+        return e;
+    }
+
+    // left->member : raw pointer member access (deref + field)
+    static pub fnc make_pointer_member(obj Expr, member string) : Expr {
+        e: Expr = Expr { kind: ExprKind.POINTER_MEMBER, ival: 0, fval: 0.0, sval: member, cval: ' ', bval: false, op: "", left: obj, right: null, cond: null };
+        return e;
+    }
+
+    static pub fnc make_index(arr Expr, idx Expr) : Expr {
+        e: Expr = Expr { kind: ExprKind.INDEX, ival: 0, fval: 0.0, sval: "", cval: ' ', bval: false, op: "", left: arr, right: idx, cond: null };
+        return e;
+    }
+
+    static pub fnc make_ternary(c Expr, t Expr, e Expr) : Expr {
+        res: Expr = Expr { kind: ExprKind.TERNARY, ival: 0, fval: 0.0, sval: "", cval: ' ', bval: false, op: "", left: t, right: e, cond: c };
+        return res;
+    }
+
+    static pub fnc make_cast(typ string, target Expr) : Expr {
+        e: Expr = Expr { kind: ExprKind.CAST, ival: 0, fval: 0.0, sval: typ, cval: ' ', bval: false, op: "", left: target, right: null, cond: null };
+        return e;
+    }
+
+    static pub fnc make_struct_init(name string, fnames vec<string>, fvals vec<Expr>) : Expr {
+        e: Expr = Expr { kind: ExprKind.STRUCT_INIT, ival: 0, fval: 0.0, sval: name, cval: ' ', bval: false, op: "", left: null, right: null, cond: null, args: fvals, field_names: fnames };
+        return e;
+    }
+
+    static pub fnc make_array_lit(elements vec<Expr>) : Expr {
+        e: Expr = Expr { kind: ExprKind.ARRAY_LIT, ival: 0, fval: 0.0, sval: "", cval: ' ', bval: false, op: "", left: null, right: null, cond: null, args: elements };
+        return e;
+    }
+}
+
+pub def StmtKind : class {
+    static pub VAR_DECL: int = 1;
+    static pub ASSIGN: int = 2;
+    static pub RETURN: int = 3;
+    static pub IF: int = 4;
+    static pub WHILE: int = 5;
+    static pub FOR: int = 6;
+    static pub LOOP: int = 7;
+    static pub STOP: int = 8;
+    static pub SKIP: int = 9;
+    static pub EXPR: int = 10;
+    static pub BLOCK: int = 11;
+    static pub SHOW: int = 12;
+    static pub SWITCH: int = 13;
+    static pub CASE: int = 14;
+    static pub FOREACH_STRUCT: int = 15;
+    static pub WORKS: int = 16;
+    static pub DEFER: int = 17;
+    static pub THROW: int = 18;
+}
+
+pub def Stmt : class {
+    pub kind: int;
+    pub name: string;
+    pub var_type: string;
+    pub is_infer: bool;
+    pub is_imut: bool;
+    pub op: string;
+    pub target: Expr;
+    pub value: Expr;
+    pub cond: Expr;
+    pub then_block: vec<Stmt>;
+    pub else_block: vec<Stmt>;
+    pub body: vec<Stmt>;
+    pub for_init: Stmt;
+    pub for_step: Stmt;
+    pub args: vec<Expr>;
+    pub is_showb: bool;
+    pub switch_cases: vec<Stmt>;
+    pub default_block: vec<Stmt>;
+    pub line: int;
+    pub col: int;
+
+    static pub fnc make_var_decl(name string, typ string, is_infer bool, is_imut bool, init Expr) : Stmt {
+        s: Stmt = Stmt { kind: StmtKind.VAR_DECL, name: name, var_type: typ, is_infer: is_infer, is_imut: is_imut, op: "", target: null, value: init, cond: null, for_init: null, for_step: null, is_showb: false };
+        return s;
+    }
+
+    static pub fnc make_assign(target Expr, op string, val Expr) : Stmt {
+        s: Stmt = Stmt { kind: StmtKind.ASSIGN, name: "", var_type: "", is_infer: false, is_imut: false, op: op, target: target, value: val, cond: null, for_init: null, for_step: null, is_showb: false };
+        return s;
+    }
+
+    static pub fnc make_throw(name string, args vec<Expr>) : Stmt {
+        s: Stmt = Stmt { kind: StmtKind.THROW, name: name, var_type: "", is_infer: false, is_imut: false, op: "", target: null, value: null, cond: null, for_init: null, for_step: null, args: args, is_showb: false };
+        return s;
+    }
+
+    static pub fnc make_return(val Expr) : Stmt {
+        s: Stmt = Stmt { kind: StmtKind.RETURN, name: "", var_type: "", is_infer: false, is_imut: false, op: "", target: null, value: val, cond: null, for_init: null, for_step: null, is_showb: false };
+        return s;
+    }
+
+    static pub fnc make_if(cond Expr, then_b vec<Stmt>, else_b vec<Stmt>) : Stmt {
+        s: Stmt = Stmt { kind: StmtKind.IF, name: "", var_type: "", is_infer: false, is_imut: false, op: "", target: null, value: null, cond: cond, then_block: then_b, else_block: else_b, for_init: null, for_step: null, is_showb: false };
+        return s;
+    }
+
+    static pub fnc make_while(cond Expr, body vec<Stmt>) : Stmt {
+        s: Stmt = Stmt { kind: StmtKind.WHILE, name: "", var_type: "", is_infer: false, is_imut: false, op: "", target: null, value: null, cond: cond, body: body, for_init: null, for_step: null, is_showb: false };
+        return s;
+    }
+
+    static pub fnc make_for(init Stmt, cond Expr, step Stmt, body vec<Stmt>) : Stmt {
+        s: Stmt = Stmt { kind: StmtKind.FOR, name: "", var_type: "", is_infer: false, is_imut: false, op: "", target: null, value: null, cond: cond, body: body, for_init: init, for_step: step, is_showb: false };
+        return s;
+    }
+
+    static pub fnc make_loop(body vec<Stmt>) : Stmt {
+        s: Stmt = Stmt { kind: StmtKind.LOOP, name: "", var_type: "", is_infer: false, is_imut: false, op: "", target: null, value: null, cond: null, body: body, for_init: null, for_step: null, is_showb: false };
+        return s;
+    }
+
+    static pub fnc make_stop() : Stmt {
+        s: Stmt = Stmt { kind: StmtKind.STOP, name: "", var_type: "", is_infer: false, is_imut: false, op: "", target: null, value: null, cond: null, for_init: null, for_step: null, is_showb: false };
+        return s;
+    }
+
+    static pub fnc make_skip() : Stmt {
+        s: Stmt = Stmt { kind: StmtKind.SKIP, name: "", var_type: "", is_infer: false, is_imut: false, op: "", target: null, value: null, cond: null, for_init: null, for_step: null, is_showb: false };
+        return s;
+    }
+
+    static pub fnc make_expr(e Expr) : Stmt {
+        s: Stmt = Stmt { kind: StmtKind.EXPR, name: "", var_type: "", is_infer: false, is_imut: false, op: "", target: null, value: e, cond: null, for_init: null, for_step: null, is_showb: false };
+        return s;
+    }
+
+    static pub fnc make_block(body vec<Stmt>) : Stmt {
+        s: Stmt = Stmt { kind: StmtKind.BLOCK, name: "", var_type: "", is_infer: false, is_imut: false, op: "", target: null, value: null, cond: null, body: body, for_init: null, for_step: null, is_showb: false };
+        return s;
+    }
+
+    static pub fnc make_show(args vec<Expr>, is_showb bool) : Stmt {
+        s: Stmt = Stmt { kind: StmtKind.SHOW, name: "", var_type: "", is_infer: false, is_imut: false, op: "", target: null, value: null, cond: null, args: args, for_init: null, for_step: null, is_showb: is_showb };
+        return s;
+    }
+
+    static pub fnc make_switch(val Expr, cases vec<Stmt>, default_b vec<Stmt>) : Stmt {
+        s: Stmt = Stmt { kind: StmtKind.SWITCH, name: "", var_type: "", is_infer: false, is_imut: false, op: "", target: null, value: val, cond: null, switch_cases: cases, default_block: default_b, for_init: null, for_step: null, is_showb: false };
+        return s;
+    }
+
+    static pub fnc make_struct_foreach(name_var string, value_var string, coll Expr, body_stmts vec<Stmt>) : Stmt {
+        s: Stmt = Stmt { kind: StmtKind.FOREACH_STRUCT, name: name_var, var_type: value_var, is_infer: false, is_imut: false, op: "", target: coll, value: null, cond: null, then_block: null, else_block: null, body: body_stmts, for_init: null, for_step: null, args: null, is_showb: false, switch_cases: null, default_block: null };
+        return s;
+    }
+
+    static pub fnc make_works(body vec<Stmt>, err_var string, otherwise_block vec<Stmt>) : Stmt {
+        s: Stmt = Stmt { kind: StmtKind.WORKS, name: err_var, var_type: "", is_infer: false, is_imut: false, op: "", target: null, value: null, cond: null, then_block: null, else_block: otherwise_block, body: body, for_init: null, for_step: null, args: null, is_showb: false, switch_cases: null, default_block: null };
+        return s;
+    }
+
+    static pub fnc make_defer(deferred Stmt) : Stmt {
+        one_deferred: vec<Stmt>;
+        one_deferred.pushb(deferred);
+        s: Stmt = Stmt { kind: StmtKind.DEFER, name: "", var_type: "", is_infer: false, is_imut: false, op: "", target: null, value: null, cond: null, then_block: null, else_block: null, body: one_deferred, for_init: null, for_step: null, args: null, is_showb: false, switch_cases: null, default_block: null };
+        return s;
+    }
+
+    static pub fnc make_case(val Expr, body vec<Stmt>) : Stmt {
+        s: Stmt = Stmt { kind: StmtKind.CASE, name: "", var_type: "", is_infer: false, is_imut: false, op: "", target: null, value: val, cond: null, body: body, for_init: null, for_step: null, is_showb: false };
+        return s;
+    }
+}
+
+pub def FuncParam : class {
+    pub name: string;
+    pub typ: string;
+    pub is_imut: bool;
+    pub default_val: Expr;
+
+    static pub fnc make(name string, typ string, is_imut bool, default_val Expr) : FuncParam {
+        return FuncParam { name: name, typ: typ, is_imut: is_imut, default_val: default_val };
+    }
+}
+
+pub def FuncDecl : class {
+    pub name: string;
+    pub owner: string;          // struct/class this function is bound to (`-> Type`)
+    pub params: vec<FuncParam>;
+    pub ret_type: string;
+    pub body: vec<Stmt>;
+    pub is_static: bool;
+    pub is_pub: bool;
+    pub is_unsafe: bool;
+    pub is_nogc: bool;
+    pub is_inline: bool;
+    pub is_async: bool;
+
+    static pub fnc make(name string, params vec<FuncParam>, ret string, body vec<Stmt>, is_stat bool, is_p bool) : FuncDecl {
+        return FuncDecl { name: name, owner: "", params: params, ret_type: ret, body: body, is_static: is_stat, is_pub: is_p, is_unsafe: false, is_nogc: false, is_inline: false, is_async: false };
+    }
+}
+
+pub def FieldDecl : class {
+    pub name: string;
+    pub typ: string;
+    pub is_pub: bool;
+    pub is_static: bool;
+    pub init: Expr;
+
+    static pub fnc make(name string, typ string, is_p bool, is_s bool, init Expr) : FieldDecl {
+        return FieldDecl { name: name, typ: typ, is_pub: is_p, is_static: is_s, init: init };
+    }
+}
+
+pub def StructDecl : class {
+    pub name: string;
+    pub fields: vec<FieldDecl>;
+    pub methods: vec<FuncDecl>;
+
+    static pub fnc make(name string, fields vec<FieldDecl>, methods vec<FuncDecl>) : StructDecl {
+        return StructDecl { name: name, fields: fields, methods: methods };
+    }
+}
+
+pub def ClassDecl : class {
+    pub name: string;
+    pub parent: string;
+    pub fields: vec<FieldDecl>;
+    pub methods: vec<FuncDecl>;
+    pub type_params: vec<string>;   // generic parameters: class<T1, T2>
+
+    static pub fnc make(name string, parent string, fields vec<FieldDecl>, methods vec<FuncDecl>, type_params vec<string>) : ClassDecl {
+        return ClassDecl { name: name, parent: parent, fields: fields, methods: methods, type_params: type_params };
+    }
+}
+
+pub def EnumVariant : class {
+    pub name: string;
+    pub val: int;
+    pub typ: string;      // declared member type (`NAME: T = v`), "" when untyped
+    pub str_val: string;  // string custom value, "" when not a string
+    pub has_str: bool;
+
+    static pub fnc make(name string, val int) : EnumVariant {
+        return EnumVariant { name: name, val: val, typ: "", str_val: "", has_str: false };
+    }
+}
+
+pub def EnumDecl : class {
+    pub name: string;
+    pub variants: vec<EnumVariant>;
+
+    static pub fnc make(name string, vars vec<EnumVariant>) : EnumDecl {
+        return EnumDecl { name: name, variants: vars };
+    }
+}
+
+pub def UnionVariant : class {
+    pub name: string;
+    pub typ: string;
+
+    static pub fnc make(name string, typ string) : UnionVariant {
+        return UnionVariant { name: name, typ: typ };
+    }
+}
+
+pub def UnionDecl : class {
+    pub name: string;
+    pub variants: vec<UnionVariant>;
+
+    static pub fnc make(name string, vars vec<UnionVariant>) : UnionDecl {
+        return UnionDecl { name: name, variants: vars };
+    }
+}
+
+pub def GlobalDecl : class {
+    pub name: string;
+    pub typ: string;
+    pub init_val: Expr;
+
+    static pub fnc make(name string, typ string, init Expr) : GlobalDecl {
+        return GlobalDecl { name: name, typ: typ, init_val: init };
+    }
+}
+
+pub def MacroDef : class {
+    pub name: string;
+    pub params: vec<string>;
+    pub body: Expr;
+}
+
+pub def Program : class {
+    pub templates: vec<string>;      // `def T : template;` names
+    pub funcs: vec<FuncDecl>;
+    pub structs: vec<StructDecl>;
+    pub classes: vec<ClassDecl>;
+    pub enums: vec<EnumDecl>;
+    pub unions: vec<UnionDecl>;
+    pub globals: vec<GlobalDecl>;
+    pub imports: vec<string>;
+    pub import_aliases: hash<string, string>; // modulePath -> aliasName
+
+    static pub fnc make() : Program {
+        return Program {};
+    }
+}

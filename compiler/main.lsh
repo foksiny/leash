@@ -1,0 +1,962 @@
+use driver::*;
+
+// ---------------------------------------------------------------------------
+// Small shell/file helpers (exec is length-capped: keep commands short).
+// ---------------------------------------------------------------------------
+
+// First line of a command's output, trimmed.
+fnc xout(cmd string) : string {
+    out: string = exec(cmd, "wait");
+    trimmed: string = "";
+    i: int = 0;
+    while i < out.size && out[i] != '\n' {
+        trimmed = trimmed + out[i];
+        i = i + 1;
+    }
+    return trimmed;
+}
+
+// Exit code of a command ("code" mode; runtimes differ by trailing newline).
+fnc xcode(cmd string) : int {
+    out: string = exec(cmd, "code");
+    v: int = 0;
+    i: int = 0;
+    neg: bool = false;
+    if out.size > 0 && out[0] == '-' {
+        neg = true;
+        i = 1;
+    }
+    while i < out.size && out[i] >= '0' && out[i] <= '9' {
+        v = v * 10 + (out[i] - '0');
+        i = i + 1;
+    }
+    if neg { return 0 - v; }
+    return v;
+}
+
+fnc xsuffix() : string {
+    return xout("date +%s%N");
+}
+
+fnc xfile_exists(p string) : bool {
+    f: File = File.open(p, "r");
+    if f != null {
+        f.close();
+        return true;
+    }
+    return false;
+}
+
+fnc xis_dir(p string) : bool {
+    return xout("test -d " + p + " && echo 1") == "1";
+}
+
+fnc xis_symlink(p string) : bool {
+    return xout("test -L " + p + " && echo 1") == "1";
+}
+
+fnc xread_text(path string) : string {
+    f: File = File.open(path, "r");
+    if f == null { return ""; }
+    c: string = f.read();
+    f.close();
+    return c;
+}
+
+fnc xwrite_text(path string, content string) : bool {
+    f: File = File.open(path, "w");
+    if f == null { return false; }
+    f.write(content);
+    f.close();
+    return true;
+}
+
+fnc xcopy_text(src string, dst string) : bool {
+    c: string = xread_text(src);
+    if c.size == 0 { return false; }
+    return xwrite_text(dst, c);
+}
+
+fnc xstrip_ws(s string) : string {
+    a: int = 0;
+    while a < s.size && (s[a] == ' ' || s[a] == '\t' || s[a] == '\r') { a = a + 1; }
+    b: int = s.size;
+    while b > a && (s[b - 1] == ' ' || s[b - 1] == '\t' || s[b - 1] == '\r') { b = b - 1; }
+    out: string = "";
+    i: int = a;
+    while i < b {
+        out = out + s[i];
+        i = i + 1;
+    }
+    return out;
+}
+
+fnc xstrip_quotes(s string) : string {
+    if s.size >= 2 && s[0] == '"' && s[s.size - 1] == '"' {
+        return xstrip_ws2(s, 1, s.size - 1);
+    }
+    return s;
+}
+
+fnc xstrip_ws2(s string, a int, b int) : string {
+    while a < b && (s[a] == ' ' || s[a] == '\t') { a = a + 1; }
+    while b > a && (s[b - 1] == ' ' || s[b - 1] == '\t') { b = b - 1; }
+    out: string = "";
+    i: int = a;
+    while i < b {
+        out = out + s[i];
+        i = i + 1;
+    }
+    return out;
+}
+
+// Conservative containment for config.lshc values: no absolute paths and
+// no ".." segments (mirrors the Python toolchain's project-sandbox rules).
+fnc xpath_contained(p string) : bool {
+    if p.size > 0 && p[0] == '/' { return false; }
+    i: int = 0;
+    while i < p.size {
+        if p[i] == '.' && i + 1 < p.size && p[i + 1] == '.' { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// config.lshc parsing (key: value lines; # comments; "quoted" strings;
+// clibs: {name: version} dicts expose their keys as "clibs_keys").
+// ---------------------------------------------------------------------------
+
+fnc parse_lshc(path string) : hash<string, string> {
+    res: hash<string, string>;
+    content: string = xread_text(path);
+    if content.size == 0 { return res; }
+    line: string = "";
+    i: int = 0;
+    while i <= content.size {
+        if i == content.size || content[i] == '\n' {
+            ln: string = xstrip_ws(line);
+            line = "";
+            if ln.size > 0 && ln[0] != '#' {
+                // cut a trailing comment (" #...")
+                ci: int = 0;
+                cut: int = ln.size;
+                while ci + 1 < ln.size {
+                    if ln[ci] == ' ' && ln[ci + 1] == '#' { cut = ci; stop; }
+                    ci = ci + 1;
+                }
+                ln = xstrip_ws2(ln, 0, cut);
+                ci = 0;
+                while ci < ln.size {
+                    if ln[ci] == ':' { stop; }
+                    ci = ci + 1;
+                }
+                if ci > 0 && ci + 1 < ln.size {
+                    key: string = xstrip_ws2(ln, 0, ci);
+                    val: string = xstrip_ws2(ln, ci + 1, ln.size);
+                    if key.size > 0 && val.size > 0 {
+                        if val[0] == '{' {
+                            // dict value: collect keys ("clibs: {m: 1.0}")
+                            keys: string = "";
+                            di: int = 1;
+                            part: string = "";
+                            while di < val.size {
+                                c2: char = val[di];
+                                if c2 == ',' || c2 == '}' {
+                                    ki: int = 0;
+                                    while ki < part.size {
+                                        if part[ki] == ':' { stop; }
+                                        ki = ki + 1;
+                                    }
+                                    k2: string = xstrip_ws2(part, 0, ki);
+                                    if k2.size > 0 {
+                                        if keys.size > 0 { keys = keys + ","; }
+                                        keys = keys + k2;
+                                    }
+                                    part = "";
+                                } else {
+                                    part = part + c2;
+                                }
+                                di = di + 1;
+                            }
+                            res.push(key + "_keys", keys);
+                            res.push(key, val);
+                        } else {
+                            res.push(key, xstrip_quotes(val));
+                        }
+                    }
+                }
+            }
+        } else {
+            line = line + content[i];
+        }
+        i = i + 1;
+    }
+    return res;
+}
+
+// ---------------------------------------------------------------------------
+// Project running (Python parity: temp binary, "Executed at" banner, cleanup)
+// ---------------------------------------------------------------------------
+
+// The driver's run_mode executes the temp binary (inheriting the terminal),
+// prints the "Executed at" banner and propagates the exit code.
+fnc cleanup_temp(bin string) : void {
+    exec("rm -f " + bin, nil);
+}
+
+// Run a program with env-var prefixes, inheriting the terminal (dbg needs
+// this: the driver cannot set environment variables).
+fnc xrun(cmd string) : int {
+    out: string = exec(cmd, "run");
+    v: int = 0;
+    i: int = 0;
+    neg: bool = false;
+    if out.size > 0 && out[0] == '-' {
+        neg = true;
+        i = 1;
+    }
+    while i < out.size && out[i] >= '0' && out[i] <= '9' {
+        v = v * 10 + (out[i] - '0');
+        i = i + 1;
+    }
+    if neg { return 0 - v; }
+    return v;
+}
+
+// ---------------------------------------------------------------------------
+// Usage / help
+// ---------------------------------------------------------------------------
+
+fnc print_usage() : void {
+    show("Leash 1.0.0 — Self-Hosted Compiler");
+    show("Usage: leash <command> [options]");
+    show("");
+    show("Commands:");
+    show("  compile <file.lsh> [to <out>] [-o <out>] [--emit-llvm] [--check]   Compile or type-check");
+    show("  run [<file.lsh>] [-- <args...>]                                    Compile and run (file or project)");
+    show("  check <file.lsh>                                                   Type-check only");
+    show("  dump <file.lsh>                                                    Emit LLVM IR");
+    show("  <file.lsh> [compile options]                                       Shorthand for compile");
+    show("  init [dir]                                                         Scaffold a new project");
+    show("  build                                                              Build the project (config.lshc)");
+    show("  install <path>...                                                  Install libraries into ~/.leash/libs");
+    show("  update                                                             Check GitHub and pull the latest release");
+    show("  self-host                                                          3-stage bootstrap + fixed-point check");
+    show("  dbg [<file.lsh>] [-b <line>] [--run] [-- <args...>]                 Interactive source-level debugger");
+    show("  version, --version                                                  Show compiler version");
+    show("  help, --help                                                       Show this help message");
+    show("");
+    show("Options:");
+    show("  --opt <level> / -O<level>    Optimization level: 0, 1, 2, 3, s, z  (default: 2)");
+    show("  --check                      Type-check only, do not produce output");
+    show("  --warnings-as-errors / -oe   Treat warnings as errors");
+    show("  --emit-llvm                  Emit LLVM IR instead of linking");
+    show("  --verbose / -vb              Print pipeline phases");
+    show("  -l<lib>                      Link a native library (repeatable)");
+    show("  --other-imports / -oi <dir>  Extra module search directory");
+}
+
+// ---------------------------------------------------------------------------
+// init — scaffold a project
+// ---------------------------------------------------------------------------
+
+fnc cmd_init(args string[]) : int {
+    dir: string = ".";
+    if args.size > 2 {
+        dir = args[2];
+    }
+    abs: string = xout("realpath -m " + dir);
+    if xis_dir(abs) {
+        first: string = xout("find " + abs + " -mindepth 1 -maxdepth 1 -print -quit");
+        if first.size > 0 {
+            show("error: Directory '", abs, "' is not empty");
+            return 1;
+        }
+    }
+    exec("mkdir -p " + abs + "/src " + abs + "/imports " + abs + "/out", nil);
+
+    q: char = '"';
+    main_src: string = "fnc main |> show(" + q + "Hello, World!" + q + ");\n";
+    xwrite_text(abs + "/src/main.lsh", main_src);
+
+    out_name: string = Path.basename(abs);
+    cfg: string = "main: " + q + "src/main.lsh" + q + "\n" +
+                   "clibs: {}\n" +
+                   "imports: " + q + "imports/" + q + "\n" +
+                   "opt_level: " + q + "O3" + q + "\n" +
+                   "out_name: " + q + out_name + q + "\n";
+    xwrite_text(abs + "/config.lshc", cfg);
+
+    show("Initialized leash project in '", abs, "'");
+    show("  ", abs + "/src/main.lsh");
+    show("  ", abs + "/config.lshc");
+    show("  ", abs + "/imports/");
+    show("  ", abs + "/out/");
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// build — compile the project described by config.lshc in the CWD
+// ---------------------------------------------------------------------------
+
+fnc project_config_and_main() : int {
+    if !xfile_exists("config.lshc") {
+        show("error: No config.lshc found in the current directory");
+        show("  Run 'leash init' to create a project");
+        return 1;
+    }
+    return 0;
+}
+
+fnc cmd_build(args string[]) : int {
+    if project_config_and_main() != 0 { return 1; }
+    cfg: hash<string, string> = parse_lshc("config.lshc");
+
+    if !cfg.isin("main") || cfg["main"].size == 0 {
+        show("error: 'main' not set in config.lshc");
+        return 1;
+    }
+    main_rel: string = cfg["main"];
+    if !xpath_contained(main_rel) {
+        show("error: 'main' in config.lshc must stay inside the project directory (got '", main_rel, "')");
+        return 1;
+    }
+    if !xfile_exists(main_rel) {
+        show("error: Main file '", main_rel, "' not found");
+        return 1;
+    }
+
+    opt_level: string = "2";
+    if cfg.isin("opt_level") && cfg["opt_level"].size > 0 {
+        opt_level = cfg["opt_level"];
+        if opt_level[0] == 'O' {
+            opt_level = xstrip_ws2(opt_level, 1, opt_level.size);
+        }
+    }
+
+    extra_dirs: vec<string>;
+    if cfg.isin("imports") && cfg["imports"].size > 0 {
+        imp: string = cfg["imports"];
+        if !xpath_contained(imp) {
+            show("error: 'imports' in config.lshc must stay inside the project directory (got '", imp, "')");
+            return 1;
+        }
+        if xis_dir(imp) {
+            extra_dirs.pushb(xout("realpath " + imp));
+        }
+    }
+
+    // command-line -oi dirs too
+    ai: int = 2;
+    while ai + 1 < args.size {
+        if args[ai] == "--other-imports" || args[ai] == "-oi" {
+            extra_dirs.pushb(xout("realpath -m " + args[ai + 1]));
+        }
+        ai = ai + 1;
+    }
+
+    extra_libs: vec<string>;
+    if cfg.isin("clibs_keys") && cfg["clibs_keys"].size > 0 {
+        clibs: string = cfg["clibs_keys"];
+        li: int = 0;
+        part: string = "";
+        while li <= clibs.size {
+            if li == clibs.size || clibs[li] == ',' {
+                lib: string = xstrip_ws(part);
+                if lib.size > 0 { extra_libs.pushb(lib); }
+                part = "";
+            } else {
+                part = part + clibs[li];
+            }
+            li = li + 1;
+        }
+    }
+
+    out_base: string = Path.basename(xout("realpath ."));
+    if cfg.isin("out_name") && cfg["out_name"].size > 0 {
+        out_base = cfg["out_name"];
+    }
+    if !xpath_contained(out_base) {
+        show("error: invalid 'out_name' in config.lshc ('", out_base, "') — must stay inside out/");
+        return 1;
+    }
+
+    exec("mkdir -p out", nil);
+    driver: CompilerDriver = CompilerDriver.make();
+    driver.self_path = args[0];
+    foreach _, d in<vector> extra_dirs { driver.add_import_dir(d); }
+    return driver.compile_file(main_rel, "out/" + out_base, false, false, "",
+                               opt_level, false, extra_libs, false, false, false);
+}
+
+// ---------------------------------------------------------------------------
+// run — file mode or project mode (Python parity)
+// ---------------------------------------------------------------------------
+
+fnc cmd_run(args string[]) : int {
+    // find the file operand, skipping options and their values
+    operand: string = "";
+    ri: int = 2;
+    sep_idx: int = args.size;
+    while ri < args.size {
+        if args[ri] == "--" {
+            sep_idx = ri;
+            stop;
+        }
+        if args[ri] == "--target" || args[ri] == "--opt" || args[ri] == "-o" ||
+           args[ri] == "--other-imports" || args[ri] == "-oi" {
+            ri = ri + 2;
+            continue;
+        }
+        if args[ri].size > 0 && args[ri][0] == '-' {
+            ri = ri + 1;
+            continue;
+        }
+        operand = args[ri];
+        stop;
+    }
+    if ri >= args.size && sep_idx == args.size {
+        // no operand and no "--": check for a late separator
+        si: int = 2;
+        while si < args.size {
+            if args[si] == "--" { sep_idx = si; stop; }
+            si = si + 1;
+        }
+    }
+
+    prog_args: string = "";
+    pi: int = sep_idx + 1;
+    while pi < args.size {
+        if prog_args.size > 0 { prog_args = prog_args + " "; }
+        prog_args = prog_args + args[pi];
+        pi = pi + 1;
+    }
+
+    // compile-side options (before the operand, minus the operand itself)
+    opt_level: string = "2";
+    extra_dirs: vec<string>;
+    oi: int = 2;
+    while oi < sep_idx {
+        a: string = args[oi];
+        if a == operand && oi > 2 && args[oi - 1] != "--target" && args[oi - 1] != "--opt" && args[oi - 1] != "-o" && args[oi - 1] != "--other-imports" && args[oi - 1] != "-oi" {
+            oi = oi + 1;
+            continue;
+        }
+        if a == "--target" && oi + 1 < sep_idx {
+            if args[oi + 1] != "linux64" {
+                show("error: leash currently supports --target linux64 only");
+                return 1;
+            }
+            oi = oi + 2;
+            continue;
+        }
+        if a == "--opt" && oi + 1 < sep_idx {
+            opt_level = args[oi + 1];
+            oi = oi + 2;
+            continue;
+        }
+        if a.size > 2 && a[0] == '-' && a[1] == 'O' {
+            opt_level = xstrip_ws2(a, 2, a.size);
+            oi = oi + 1;
+            continue;
+        }
+        if (a == "--other-imports" || a == "-oi") && oi + 1 < sep_idx {
+            extra_dirs.pushb(xout("realpath -m " + args[oi + 1]));
+            oi = oi + 2;
+            continue;
+        }
+        oi = oi + 1;
+    }
+
+    if operand.size == 0 {
+        // project mode: build config.lshc's main to a temp binary and run it
+        if project_config_and_main() != 0 { return 1; }
+        cfg: hash<string, string> = parse_lshc("config.lshc");
+        if !cfg.isin("main") || cfg["main"].size == 0 {
+            show("error: 'main' not set in config.lshc");
+            return 1;
+        }
+        main_rel: string = cfg["main"];
+        if !xpath_contained(main_rel) || !xfile_exists(main_rel) {
+            show("error: Main file '", main_rel, "' not found");
+            return 1;
+        }
+        if cfg.isin("imports") && cfg["imports"].size > 0 && xis_dir(cfg["imports"]) {
+            extra_dirs.pushb(xout("realpath " + cfg["imports"]));
+        }
+        p_opt: string = "2";
+        if cfg.isin("opt_level") && cfg["opt_level"].size > 0 {
+            p_opt = cfg["opt_level"];
+            if p_opt[0] == 'O' { p_opt = xstrip_ws2(p_opt, 1, p_opt.size); }
+        }
+        extra_libs: vec<string>;
+        if cfg.isin("clibs_keys") && cfg["clibs_keys"].size > 0 {
+            clibs: string = cfg["clibs_keys"];
+            li: int = 0;
+            part: string = "";
+            while li <= clibs.size {
+                if li == clibs.size || clibs[li] == ',' {
+                    lib: string = xstrip_ws(part);
+                    if lib.size > 0 { extra_libs.pushb(lib); }
+                    part = "";
+                } else {
+                    part = part + clibs[li];
+                }
+                li = li + 1;
+            }
+        }
+        tmp: string = "./.__temp_run_leash_exe_" + xsuffix();
+        drv: CompilerDriver = CompilerDriver.make();
+        drv.self_path = args[0];
+        foreach _, d in<vector> extra_dirs { drv.add_import_dir(d); }
+        rc: int = drv.compile_file(main_rel, tmp, false, true, prog_args, p_opt, false, extra_libs, false, false, false);
+        cleanup_temp(tmp);
+        return rc;
+    }
+
+    // file mode
+    tmp2: string = "./.__temp_run_leash_exe_" + xsuffix();
+    drv2: CompilerDriver = CompilerDriver.make();
+    drv2.self_path = args[0];
+    foreach _, d2 in<vector> extra_dirs { drv2.add_import_dir(d2); }
+    rc2: int = drv2.compile_file(operand, tmp2, false, true, prog_args, opt_level, false, empty_libs_global(), false, false, false);
+    cleanup_temp(tmp2);
+    return rc2;
+}
+
+fnc empty_libs_global() : vec<string> {
+    v: vec<string>;
+    return v;
+}
+
+// ---------------------------------------------------------------------------
+// install — libraries into ~/.leash/libs
+// ---------------------------------------------------------------------------
+
+fnc cmd_install(args string[]) : int {
+    if args.size < 3 {
+        show("Usage: install <path>...   Install libraries into ~/.leash/libs");
+        return 1;
+    }
+    libs: string = xout("echo $HOME") + "/.leash/libs";
+    exec("mkdir -p " + libs, nil);
+    ai: int = 2;
+    installed: int = 0;
+    while ai < args.size {
+        p: string = args[ai];
+        abs: string = xout("realpath -m " + p);
+        if xis_symlink(abs) {
+            show("error: refusing to install a symlink: ", abs);
+            return 1;
+        }
+        if !xfile_exists(abs) && !xis_dir(abs) {
+            show("Error: Path does not exist: ", abs);
+            return 1;
+        }
+        if xis_dir(abs) {
+            exec("cp -r " + abs + "/. " + libs + "/", nil);
+            show("Installed items from ", abs, " -> ", libs);
+            installed = installed + 1;
+        } else {
+            dst: string = libs + "/" + Path.basename(abs);
+            if xfile_exists(dst) && xread_text(dst) == xread_text(abs) {
+                show("Skipped (unchanged): ", Path.basename(abs));
+            } also xcopy_text(abs, dst) {
+                show("Installed library: ", abs, " -> ", dst);
+            } else {
+                show("Error: could not copy ", abs);
+                return 1;
+            }
+            installed = installed + 1;
+        }
+        ai = ai + 1;
+    }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// update — GitHub release check + git pull in the installation root
+// ---------------------------------------------------------------------------
+
+fnc find_git_root(start_dir string) : string {
+    cand: string = start_dir;
+    hops: int = 0;
+    while hops < 5 {
+        if xis_dir(cand + "/.git") {
+            return cand;
+        }
+        if cand == "/" || cand == "." { return ""; }
+        cand = xout("realpath " + cand + "/..");
+        if cand.size == 0 { return ""; }
+        hops = hops + 1;
+    }
+    return "";
+}
+
+fnc cmd_update(args string[]) : int {
+    show("Leash Update Checker");
+    show("Current version: 1.0.0");
+    show("");
+    latest: string = xout("curl -s -m 10 https://api.github.com/repos/foksiny/leash/releases/latest");
+    tag: string = "";
+    ti: int = 0;
+    while ti + 9 < latest.size {
+        if latest[ti] == '"' && latest[ti + 1] == 't' && latest[ti + 2] == 'a' && latest[ti + 3] == 'g' &&
+           latest[ti + 4] == '_' && latest[ti + 5] == 'n' && latest[ti + 6] == 'a' && latest[ti + 7] == 'm' &&
+           latest[ti + 8] == 'e' && latest[ti + 9] == '"' {
+            // find "value"
+            vi: int = ti + 10;
+            while vi < latest.size && latest[vi] != '"' { vi = vi + 1; }
+            vi = vi + 1;
+            vstart: int = vi;
+            while vi < latest.size && latest[vi] != '"' { vi = vi + 1; }
+            if vi > vstart {
+                tag = xstrip_ws2(latest, vstart, vi);
+            }
+            stop;
+        }
+        ti = ti + 1;
+    }
+    if tag.size > 0 {
+        show("Latest remote version: ", tag);
+    } else {
+        show("Could not fetch latest version from GitHub");
+        show("Proceeding with git pull anyway...");
+    }
+    show("");
+    show("Pulling latest changes from GitHub...");
+    root: string = find_git_root(Path.dirname(xout("realpath " + args[0])));
+    if root.size == 0 && xis_dir(".git") { root = xout("realpath ."); }
+    if root.size == 0 {
+        show("error: Leash is not installed from a git checkout; cannot self-update via git pull.");
+        return 1;
+    }
+    return xcode("git -C " + root + " pull");
+}
+
+// ---------------------------------------------------------------------------
+// self-host — 3-stage bootstrap + fixed-point verification
+// ---------------------------------------------------------------------------
+
+fnc find_repo_root(start_dir string) : string {
+    cand: string = start_dir;
+    hops: int = 0;
+    while hops < 6 {
+        if xfile_exists(cand + "/compiler/main.lsh") {
+            return cand;
+        }
+        if cand == "/" || cand == "." { return ""; }
+        cand = xout("realpath " + cand + "/..");
+        if cand.size == 0 { return ""; }
+        hops = hops + 1;
+    }
+    return "";
+}
+
+fnc cmd_self_host(args string[]) : int {
+    root: string = find_repo_root(Path.dirname(xout("realpath " + args[0])));
+    if root.size == 0 && xfile_exists("compiler/main.lsh") { root = xout("realpath ."); }
+    if root.size == 0 {
+        show("error: self-host needs a repository checkout (compiler/main.lsh not found)");
+        return 1;
+    }
+    exec("mkdir -p " + root + "/bin", nil);
+
+    show("[self-host] Stage 0: python compiler -> bin/leashc_stage1");
+    rc: int = xcode("cd " + root + " && python3 -m leash.cli compile compiler/main.lsh to bin/leashc_stage1");
+    if rc != 0 {
+        show("error: stage 0 failed (is the Python toolchain installed? try: leashp)");
+        return rc;
+    }
+    show("[self-host] Stage 1: bin/leashc_stage1 compiles itself -> bin/leashc_stage2");
+    rc = xcode("cd " + root + " && bin/leashc_stage1 compile compiler/main.lsh -o bin/leashc_stage2");
+    if rc != 0 { show("error: stage 1 failed"); return rc; }
+    show("[self-host] Stage 2: bin/leashc_stage2 compiles itself -> bin/leashc_stage3");
+    rc = xcode("cd " + root + " && bin/leashc_stage2 compile compiler/main.lsh -o bin/leashc_stage3");
+    if rc != 0 { show("error: stage 2 failed"); return rc; }
+
+    show("[self-host] Comparing Stage 2 IR vs Stage 3 IR for fixed point...");
+    rc = xcode("cd " + root + " && bin/leashc_stage2 compile compiler/main.lsh --emit-llvm -o /tmp/leashc_stage2");
+    if rc != 0 { show("error: stage 2 IR dump failed"); return rc; }
+    rc = xcode("cd " + root + " && bin/leashc_stage3 compile compiler/main.lsh --emit-llvm -o /tmp/leashc_stage3");
+    if rc != 0 { show("error: stage 3 IR dump failed"); return rc; }
+    if xcode("diff /tmp/leashc_stage2.ll /tmp/leashc_stage3.ll") == 0 {
+        show("[self-host] OK: fixed point reached (Stage 2 IR == Stage 3 IR).");
+    } else {
+        show("[self-host] warning: IR differs between stages");
+    }
+    exec("cd " + root + " && cp bin/leashc_stage3 bin/leashc", nil);
+    show("[self-host] Installed bin/leashc");
+    show("[self-host] Done. Try: bin/leashc run examples/hello.lsh");
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// dbg — compile with instrumentation and run under the interactive debugger
+// ---------------------------------------------------------------------------
+
+fnc cmd_dbg(args string[]) : int {
+    target_file: string = "";
+    breaks: string = "";
+    start_run: bool = false;
+    extra_dirs: vec<string>;
+    opt_level: string = "0";
+
+    // split at "--": compile args before, program args after
+    sep_idx: int = args.size;
+    si: int = 2;
+    while si < args.size {
+        if args[si] == "--" { sep_idx = si; stop; }
+        si = si + 1;
+    }
+    prog_args: string = "";
+    pi: int = sep_idx + 1;
+    while pi < args.size {
+        if prog_args.size > 0 { prog_args = prog_args + " "; }
+        prog_args = prog_args + args[pi];
+        pi = pi + 1;
+    }
+
+    i: int = 2;
+    while i < sep_idx {
+        a: string = args[i];
+        if (a == "-b" || a == "--break") && i + 1 < sep_idx {
+            if breaks.size > 0 { breaks = breaks + ","; }
+            breaks = breaks + args[i + 1];
+            i = i + 2;
+            continue;
+        }
+        if a == "--run" {
+            start_run = true;
+            i = i + 1;
+            continue;
+        }
+        if (a == "--other-imports" || a == "-oi") && i + 1 < sep_idx {
+            extra_dirs.pushb(xout("realpath -m " + args[i + 1]));
+            i = i + 2;
+            continue;
+        }
+        if a.size > 2 && a[0] == '-' && a[1] == 'O' {
+            opt_level = xstrip_ws2(a, 2, a.size);
+            i = i + 1;
+            continue;
+        }
+        if a == "--opt" && i + 1 < sep_idx {
+            opt_level = args[i + 1];
+            i = i + 2;
+            continue;
+        }
+        if a.size > 0 && a[0] != '-' && target_file.size == 0 {
+            target_file = a;
+        }
+        i = i + 1;
+    }
+
+    if target_file.size == 0 {
+        // project mode: the main file from config.lshc
+        if project_config_and_main() != 0 { return 1; }
+        cfg: hash<string, string> = parse_lshc("config.lshc");
+        if !cfg.isin("main") || cfg["main"].size == 0 {
+            show("error: 'main' not set in config.lshc");
+            return 1;
+        }
+        target_file = cfg["main"];
+        if cfg.isin("imports") && cfg["imports"].size > 0 && xis_dir(cfg["imports"]) {
+            extra_dirs.pushb(xout("realpath " + cfg["imports"]));
+        }
+    }
+    if !xfile_exists(target_file) {
+        show("error: Not found: ", target_file);
+        return 1;
+    }
+
+    abs: string = xout("realpath " + target_file);
+    tmp: string = ".__temp_leash_dbg_" + xsuffix();
+    drv: CompilerDriver = CompilerDriver.make();
+    drv.self_path = args[0];
+    foreach _, d in<vector> extra_dirs { drv.add_import_dir(d); }
+    rc: int = drv.compile_file(target_file, tmp, false, false, "", opt_level, false, empty_libs_global(), false, false, true);
+    if rc != 0 {
+        exec("rm -f " + tmp, nil);
+        return rc;
+    }
+
+    env: string = "LEASH_DBG=1 LEASH_DBG_SRC=" + abs + " LEASH_DBG_BREAKS=" + breaks;
+    if start_run {
+        env = env + " LEASH_DBG_RUN=1";
+    }
+    show("--- Debug session for '", Path.basename(abs), "' (leash dbg) ---");
+    show("    commands: s/next, c/continue, b <line>, d <line>, l/list, q/quit");
+    dbg_cmd: string = env + " ./" + tmp;
+    if prog_args.size > 0 {
+        dbg_cmd = dbg_cmd + " " + prog_args;
+    }
+    rc2: int = xrun(dbg_cmd);
+    exec("rm -f " + tmp, nil);
+    return rc2;
+}
+
+// ---------------------------------------------------------------------------
+// main dispatch
+// ---------------------------------------------------------------------------
+
+fnc main(args string[]) : int {
+    if args.size < 2 {
+        print_usage();
+        return 0;
+    }
+
+    cmd: string = args[1];
+
+    if cmd == "version" || cmd == "--version" || cmd == "-v" {
+        show("leash 1.0.0 (self-hosted)");
+        return 0;
+    }
+
+    if cmd == "help" || cmd == "--help" || cmd == "-h" {
+        print_usage();
+        return 0;
+    }
+
+    is_sh: bool = cmd.size > 4 && cmd[cmd.size - 4] == '.' && cmd[cmd.size - 3] == 'l' && cmd[cmd.size - 2] == 's' && cmd[cmd.size - 1] == 'h';
+
+    if cmd == "compile" || cmd == "dump" || cmd == "check" || is_sh {
+        in_idx: int = 2;
+        loop_start: int = 3;
+        emit_llvm: bool = (cmd == "dump");
+        check_mode: bool = (cmd == "check");
+        if is_sh {
+            in_idx = 1;
+            loop_start = 2;
+        }
+        if args.size <= in_idx {
+            show("error: ", cmd, " requires an input file");
+            return 1;
+        }
+
+        input_file: string = args[in_idx];
+        output_file: string = "";
+        opt_level: string = "2";
+        verbose: bool = false;
+        warn_err: bool = false;
+        extra_dirs: vec<string>;
+        extra_libs: vec<string>;
+
+        i: int = loop_start;
+        while i < args.size {
+            arg: string = args[i];
+            if arg == "-o" && i + 1 < args.size {
+                output_file = args[i + 1];
+                i = i + 2;
+                continue;
+            }
+            if arg == "to" && i + 1 < args.size {
+                output_file = args[i + 1];
+                i = i + 2;
+                continue;
+            }
+            if arg == "--emit-llvm" {
+                emit_llvm = true;
+                i = i + 1;
+                continue;
+            }
+            if arg == "--check" {
+                check_mode = true;
+                i = i + 1;
+                continue;
+            }
+            if arg == "--warnings-as-errors" || arg == "-oe" {
+                warn_err = true;
+                i = i + 1;
+                continue;
+            }
+            if arg == "--verbose" || arg == "-vb" {
+                verbose = true;
+                i = i + 1;
+                continue;
+            }
+            if arg == "--opt" && i + 1 < args.size {
+                opt_level = args[i + 1];
+                i = i + 2;
+                continue;
+            }
+            if arg == "-O0" { opt_level = "0"; i = i + 1; continue; }
+            if arg == "-O1" { opt_level = "1"; i = i + 1; continue; }
+            if arg == "-O2" { opt_level = "2"; i = i + 1; continue; }
+            if arg == "-O3" { opt_level = "3"; i = i + 1; continue; }
+            if arg == "-Os" { opt_level = "s"; i = i + 1; continue; }
+            if arg == "-Oz" { opt_level = "z"; i = i + 1; continue; }
+            if arg == "--other-imports" || arg == "-oi" {
+                if i + 1 < args.size {
+                    extra_dirs.pushb(xout("realpath -m " + args[i + 1]));
+                    i = i + 2;
+                    continue;
+                }
+            }
+            if arg.size > 2 && arg[0] == '-' && arg[1] == 'l' {
+                lib: string = "";
+                bi: int = 2;
+                while bi < arg.size {
+                    lib = lib + arg[bi];
+                    bi = bi + 1;
+                }
+                extra_libs.pushb(lib);
+                i = i + 1;
+                continue;
+            }
+            if arg == "--target" && i + 1 < args.size {
+                if args[i + 1] != "linux64" {
+                    show("error: leash currently supports --target linux64 only");
+                    return 1;
+                }
+                i = i + 2;
+                continue;
+            }
+            i = i + 1;
+        }
+
+        driver: CompilerDriver = CompilerDriver.make();
+        driver.self_path = args[0];
+        foreach _, d in<vector> extra_dirs { driver.add_import_dir(d); }
+        return driver.compile_file(input_file, output_file, emit_llvm, false, "",
+                                   opt_level, check_mode, extra_libs, verbose, warn_err, false);
+    }
+
+    if cmd == "run" {
+        return cmd_run(args);
+    }
+
+    if cmd == "runp" {
+        show("warning: 'runp' is deprecated; use 'leash run' without a file instead");
+        return cmd_run(args);
+    }
+
+    if cmd == "init" {
+        return cmd_init(args);
+    }
+
+    if cmd == "build" {
+        return cmd_build(args);
+    }
+
+    if cmd == "install" {
+        return cmd_install(args);
+    }
+
+    if cmd == "update" {
+        return cmd_update(args);
+    }
+
+    if cmd == "self-host" {
+        return cmd_self_host(args);
+    }
+
+    if cmd == "dbg" || cmd == "debug" {
+        return cmd_dbg(args);
+    }
+
+    show("error: unknown command '", cmd, "'");
+    print_usage();
+    return 1;
+}

@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v0.24.3 Beta</div>
+        <div class="version">v1.0.0 Release</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -28,6 +28,7 @@
             <div class="nav-section-title">Language Guide</div>
             <a href="language-guide.html">Language Reference</a>
             <a href="compiler.html">Compiler &amp; CLI</a>
+            <a href="self-hosted.html">Self-Hosted Compiler</a>
             <a href="stdlib.html">Standard Library</a>
         </div>
         <div class="nav-section">
@@ -42,7 +43,7 @@
 <main class="main">
 
 <div class="hero">
-    <div class="version-badge">v0.24.3 Beta</div>
+    <div class="version-badge">v1.0.0 Release</div>
     <h1>Leash</h1>
     <p class="tagline">A strongly-typed, modern compiled programming language built on LLVM.</p>
 </div>
@@ -59,6 +60,10 @@
     <div class="feature-card">
         <h3>LLVM-Powered</h3>
         <p>Compiles to native code via LLVM with multiple optimization levels including LTO and PGO.</p>
+    </div>
+    <div class="feature-card">
+        <h3>Self-Hosted Compiler</h3>
+        <p>Since 1.0 the shipped <code>leash</code> compiler is written in Leash: installation bootstraps it (Python builds stage 1, stage 1 builds itself) and verifies the bootstrap fixed point &mdash; 88/88 example programs match the reference compiler byte-for-byte.</p>
     </div>
     <div class="feature-card">
         <h3>Zero-Cost Abstractions</h3>
@@ -100,15 +105,15 @@
     <span class="fn">show</span>(<span class="str">"Hello, World!"</span>);
 }</code></pre>
 
-<pre><code><span class="cm"># Install</span>
-pip install -e .
-leash --version
+<pre><code><span class="cm"># Install (builds and installs the self-hosted compiler)</span>
+pip install .
+leash version
 
-<span class="cm"># Run directly</span>
-python3 -m leash.cli run hello.lsh
+<span class="cm"># Run directly &mdash; the compiler is written in Leash itself</span>
+leash run hello.lsh
 
 <span class="cm"># Compile to native binary</span>
-python3 -m leash.cli compile hello.lsh
+leash compile hello.lsh -o hello
 ./hello</code></pre>
 
 <div class="quick-links">

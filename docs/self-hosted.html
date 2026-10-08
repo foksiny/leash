@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Crect width=%27100%27 height=%27100%27 rx=%2722%27 fill=%27%237c3aed%27/%3E%3Ctext x=%2750%27 y=%2768%27 font-size=%2752%27 text-anchor=%27middle%27 font-family=%27monospace%27 fill=%27white%27%3EL%3C/text%3E%3C/svg%3E">
+<title>Self-Hosted Compiler - Leash</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<button class="menu-toggle" onclick="document.querySelector('.sidebar').classList.toggle('open')">&#9776;</button>
+
+<aside class="sidebar">
+    <div class="sidebar-header">
+        <h1>Leash</h1>
+        <div class="version">v1.0.0 Release</div>
+        <div class="subtitle">Programming Language</div>
+    </div>
+    <nav class="sidebar-nav">
+        <div class="nav-section">
+            <div class="nav-section-title">Getting Started</div>
+            <a href="index.html">Overview</a>
+            <a href="getting-started.html">Installation &amp; Setup</a>
+        </div>
+        <div class="nav-section">
+            <div class="nav-section-title">Language Guide</div>
+            <a href="language-guide.html">Language Reference</a>
+            <a href="compiler.html" class="active">Compiler &amp; CLI</a>
+            <a href="self-hosted.html">Self-Hosted Compiler</a>
+            <a href="stdlib.html">Standard Library</a>
+        </div>
+        <div class="nav-section">
+            <div class="nav-section-title">Ecosystem</div>
+            <a href="package-manager.html">Package Manager</a>
+            <a href="concurrency.html">Concurrency Model</a>
+            <a href="advanced.html">Advanced Topics</a>
+        </div>
+    </nav>
+</aside>
+
+<main class="main">
+
+<div class="breadcrumb">
+    <a href="index.html">Home</a> <span class="sep">/</span> <span class="current">Self-Hosted Compiler</span>
+</div>
+
+<h1>Self-Hosted Compiler</h1>
+
+<p>Since the 1.0 release, the compiler you install as <code>leash</code> is written in Leash itself. The sources live in <code>compiler/*.lsh</code>: <code>tokens.lsh</code>, <code>ast.lsh</code>, <code>lexer.lsh</code>, <code>parser.lsh</code>, <code>typechecker.lsh</code>, <code>optimize.lsh</code>, <code>codegen.lsh</code>, <code>driver.lsh</code>, and <code>main.lsh</code>. It emits LLVM IR text and links against the same Leash runtime/GC (<code>leash/gc.c</code>) through <code>clang</code>.</p>
+
+<p>The self-hosted compiler is a <strong>1:1 replica of the Python reference compiler</strong> on the whole example corpus &mdash; <strong>88/88 programs compile and run with identical output</strong> &mdash; and it implements the <strong>entire toolchain natively</strong>: <code>compile</code>, <code>run</code> (file and project modes), <code>check</code>, <code>dump</code>, <code>init</code>, <code>build</code>, <code>install</code>, <code>update</code>, <code>self-host</code>, and the interactive <code>dbg</code> debugger. The Python implementation remains available as <code>leashp</code> (for cross-compilation targets other than <code>linux64</code>, and as the reference for parity testing).</p>
+
+<h2>Bootstrap Pipeline</h2>
+
+<table>
+    <tr><th>Stage</th><th>Action</th></tr>
+    <tr><td>Stage 0</td><td>Python compiler builds <code>compiler/main.lsh</code> into <code>bin/leashc_stage1</code></td></tr>
+    <tr><td>Stage 1</td><td><code>leashc_stage1</code> compiles <code>compiler/main.lsh</code> into <code>bin/leashc_stage2</code></td></tr>
+    <tr><td>Stage 2</td><td><code>leashc_stage2</code> compiles <code>compiler/main.lsh</code> into <code>bin/leashc_stage3</code></td></tr>
+    <tr><td>Fixed point</td><td>Stage 2 IR and Stage 3 IR must be textually identical (modulo comments/whitespace)</td></tr>
+</table>
+
+<h2>How to Build</h2>
+
+<pre><code>bash scripts/bootstrap.sh
+# or
+leash self-host
+</code></pre>
+
+<p>Installing the package already bootstraps the compiler (stage 0 + one self-compilation). From a repository checkout, <code>leash self-host</code> runs the full pipeline natively &mdash; Stage 0&ndash;2, a fixed-point check that diffs the stage 2 and stage 3 IR, and installs <code>bin/leashc</code> as the official self-hosted compiler.</p>
+
+<h2>Using the Self-Hosted Compiler</h2>
+
+<pre><code>leash compile examples/hello.lsh -o /tmp/hello
+/tmp/hello
+
+# run directly (temp binary, "Executed at" banner, exit code propagation)
+leash run examples/hello.lsh
+
+# emit LLVM IR only
+leash compile file.lsh --emit-llvm -o file
+
+# rebuild itself from source
+leash self-host
+</code></pre>
+
+<p>Tests live in <code>tests/test_self_hosted.py</code> (<code>python3 -m unittest tests.test_self_hosted</code>).</p>
+
+<h2>Parity and Verification</h2>
+
+<p>The self-hosted frontend covers the full language: primitives, pointers, references, arrays, slices, <code>vec<T></code>, <code>matrix<T></code>, <code>hash<K,V></code>, structs, classes (instance + static methods and fields, vtables, inheritance), enums, unions, generics (<code>class<T></code>, <code>def T : template</code>, multi-type <code>[int, float, ...]</code> parameters with monomorphization), <code>opdef</code> operator overloading, <code>error</code>/<code>throw</code>, big integers (<code>int<N></code>/<code>uint<N></code> up to 512 bits), <code>async</code>/<code>await</code> futures, the File API, lambdas, tuples, macros, and the string-interpolated <code>show</code> family (including buffered <code>showb</code>).</p>
+
+<ul>
+    <li><code>scripts/ir_diff.py</code> &mdash; the parity harness: runs every example under both compilers and compares outputs (<strong>88/88</strong> exact match, 0 mismatches, 0 compile failures)</li>
+    <li><code>scripts/bootstrap.sh</code> / <code>leash self-host</code> &mdash; the 3-stage bootstrap with a hard fixed-point check</li>
+    <li><code>tests/test_self_hosted.py</code> &mdash; the compiler test suite (<code>python3 -m unittest tests.test_self_hosted</code>)</li>
+</ul>
+
+</main>
+
+<script src="docs.js"></script>
+</body>
+</html>

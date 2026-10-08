@@ -140,6 +140,9 @@ syn region	leashMLString	start=/"""/ end=/"""/ keepend
 syn region	leashMLString	start=/'''/ end=/'''/ keepend
 " Regular strings and chars
 syn region	leashString	start=/"/ skip=/\\./ end=/"/ contains=leashInterpolation
+" Chars are NOT strings: '{' and '}' are character literals. The region
+" contains nothing (in particular no interpolation), so braces inside
+" single-quoted text are never highlighted as {expr} delimiters.
 syn region	leashChar		start=/'/ skip=/\\./ end=/'/
 " String interpolation: {expr} inside strings (but not \{)
 syn region leashInterpolation matchgroup=leashInterpolationDelimiter start='\%(\\\)\@<!{' end='\%(\\\)\@<!}' contained containedin=leashString

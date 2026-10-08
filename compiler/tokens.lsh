@@ -1,0 +1,193 @@
+pub def Tok : class {
+    // End of input
+    static pub EOF: int = 0;
+
+    // Literals
+    static pub INT: int = 1;
+    static pub FLOAT: int = 2;
+    static pub STRING: int = 3;
+    static pub CHAR: int = 4;
+    static pub BOOL: int = 5;
+    static pub NIL: int = 6;
+
+    // Identifiers
+    static pub IDENT: int = 7;
+
+    // Keywords
+    static pub FNC: int = 10;
+    static pub RETURN: int = 11;
+    static pub IF: int = 12;
+    static pub ALSO: int = 13;
+    static pub ELSE: int = 14;
+    static pub WHILE: int = 15;
+    static pub FOR: int = 16;
+    static pub LOOP: int = 17;
+    static pub STOP: int = 18;
+    static pub CONTINUE: int = 19;
+    static pub SKIP: int = 19;
+    static pub SWITCH: int = 20;
+    static pub CASE: int = 21;
+    static pub DEFAULT: int = 22;
+    static pub DEF: int = 23;
+    static pub STRUCT: int = 24;
+    static pub CLASS: int = 25;
+    static pub ENUM: int = 26;
+    static pub UNION: int = 27;
+    static pub TYPE: int = 28;
+    static pub PUB: int = 29;
+    static pub PRIV: int = 30;
+    static pub IMUT: int = 31;
+    static pub STATIC: int = 32;
+    static pub UNSAFE: int = 33;
+    static pub SHOW: int = 34;
+    static pub SHOWB: int = 35;
+    static pub EXEC: int = 36;
+    static pub USE: int = 37;
+    static pub IMPORT: int = 38;
+    static pub IS: int = 39;
+    static pub ISNT: int = 40;
+    static pub IN: int = 41;
+    static pub AS: int = 42;
+    static pub DELETE: int = 43;
+    static pub FOREACH: int = 44;
+
+    // Delimiters
+    static pub LPAREN: int = 50;
+    static pub RPAREN: int = 51;
+    static pub LBRACE: int = 52;
+    static pub RBRACE: int = 53;
+    static pub LBRACKET: int = 54;
+    static pub RBRACKET: int = 55;
+    static pub SEMI: int = 56;
+    static pub COLON: int = 57;
+    static pub COLONCOLON: int = 58;
+    static pub COMMA: int = 59;
+    static pub DOT: int = 60;
+    static pub QUESTION: int = 61;
+    static pub ARROW: int = 62;
+
+    // Assignment
+    static pub ASSIGN: int = 70;
+    static pub COLONEQ: int = 71;
+    static pub PLUSEQ: int = 72;
+    static pub MINUSEQ: int = 73;
+    static pub STAREQ: int = 74;
+    static pub SLASHEQ: int = 75;
+    static pub PERCENTEQ: int = 76;
+    static pub SHIFTEQL: int = 77;
+    static pub SHIFTEQR: int = 78;
+    static pub AMPEQ: int = 79;
+
+    // Arithmetic & Bitwise
+    static pub PLUS: int = 80;
+    static pub MINUS: int = 81;
+    static pub STAR: int = 82;
+    static pub SLASH: int = 83;
+    static pub PERCENT: int = 84;
+    static pub AMP: int = 85;
+    static pub PIPE: int = 86;
+    static pub CARET: int = 87;
+    static pub TILDE: int = 88;
+    static pub LSHIFT: int = 89;
+    static pub RSHIFT: int = 90;
+    static pub PLUSPLUS: int = 91;
+    static pub MINUSMINUS: int = 92;
+    static pub PIPEEQ: int = 93;
+    static pub CARETEQ: int = 94;
+
+    // Comparison & Logical
+    static pub EQ: int = 100;
+    static pub NEQ: int = 101;
+    static pub ISINOP: int = 102;
+    static pub DO: int = 103;
+    static pub UNLESS: int = 104;
+    static pub ALSOU: int = 105;
+    static pub LT: int = 112;
+    static pub LTE: int = 113;
+    static pub GT: int = 114;
+    static pub GTE: int = 115;
+    static pub AND: int = 106;
+    static pub OR: int = 107;
+    static pub NOT: int = 108;
+    static pub INLINE: int = 109;
+    static pub NOGC: int = 110;
+    static pub ASYNC: int = 111;
+
+    static pub fnc name(kind int) : string {
+        if kind == Tok.EOF { return "EOF"; }
+        if kind == Tok.IDENT { return "identifier"; }
+        if kind == Tok.INT { return "integer"; }
+        if kind == Tok.FLOAT { return "float"; }
+        if kind == Tok.STRING { return "string"; }
+        if kind == Tok.CHAR { return "char"; }
+        if kind == Tok.BOOL { return "bool"; }
+        if kind == Tok.NIL { return "nil"; }
+        if kind == Tok.FNC { return "fnc"; }
+        if kind == Tok.RETURN { return "return"; }
+        if kind == Tok.IF { return "if"; }
+        if kind == Tok.ALSO { return "also"; }
+        if kind == Tok.ELSE { return "else"; }
+        if kind == Tok.WHILE { return "while"; }
+        if kind == Tok.FOR { return "for"; }
+        if kind == Tok.LOOP { return "loop"; }
+        if kind == Tok.STOP { return "stop"; }
+        if kind == Tok.SKIP { return "skip"; }
+        if kind == Tok.SWITCH { return "switch"; }
+        if kind == Tok.CASE { return "case"; }
+        if kind == Tok.DEFAULT { return "default"; }
+        if kind == Tok.DEF { return "def"; }
+        if kind == Tok.STRUCT { return "struct"; }
+        if kind == Tok.CLASS { return "class"; }
+        if kind == Tok.ENUM { return "enum"; }
+        if kind == Tok.TYPE { return "type"; }
+        if kind == Tok.SHOW { return "show"; }
+        if kind == Tok.USE { return "use"; }
+        if kind == Tok.FOREACH { return "foreach"; }
+        if kind == Tok.LPAREN { return "("; }
+        if kind == Tok.RPAREN { return ")"; }
+        if kind == Tok.LBRACE { return "{"; }
+        if kind == Tok.RBRACE { return "}"; }
+        if kind == Tok.LBRACKET { return "["; }
+        if kind == Tok.RBRACKET { return "]"; }
+        if kind == Tok.SEMI { return ";"; }
+        if kind == Tok.COLON { return ":"; }
+        if kind == Tok.COLONEQ { return ":="; }
+        if kind == Tok.ASSIGN { return "="; }
+        if kind == Tok.COMMA { return ","; }
+        if kind == Tok.DOT { return "."; }
+        if kind == Tok.PLUS { return "+"; }
+        if kind == Tok.MINUS { return "-"; }
+        if kind == Tok.STAR { return "*"; }
+        if kind == Tok.SLASH { return "/"; }
+        if kind == Tok.PERCENT { return "%"; }
+        if kind == Tok.EQ { return "=="; }
+        if kind == Tok.NEQ { return "!="; }
+        if kind == Tok.ISINOP { return "<>"; }
+        if kind == Tok.DO { return "do"; }
+        if kind == Tok.UNLESS { return "unless"; }
+        if kind == Tok.ALSOU { return "alsou"; }
+        if kind == Tok.LT { return "<"; }
+        if kind == Tok.LTE { return "<="; }
+        if kind == Tok.GT { return ">"; }
+        if kind == Tok.GTE { return ">="; }
+        if kind == Tok.AND { return "&&"; }
+        if kind == Tok.OR { return "||"; }
+        if kind == Tok.NOT { return "!"; }
+        return "token(" + tostring(kind) + ")";
+    }
+}
+
+pub def Token : class {
+    pub kind: int;
+    pub val: string;
+    pub line: int;
+    pub col: int;
+
+    static pub fnc make(kind int, val string, line int, col int) : Token {
+        return Token { kind: kind, val: val, line: line, col: col };
+    }
+
+    pub fnc to_str() : string {
+        return "Token(" + tostring(this.kind) + ", \"" + this.val + "\", " + tostring(this.line) + ":" + tostring(this.col) + ")";
+    }
+}

@@ -94,7 +94,7 @@
                     ]
                 },
                 {
-                    "name": "string.quoted.single.leash",
+                    "name": "constant.character.char.leash",
                     "begin": "'",
                     "end": "'",
                     "patterns": [

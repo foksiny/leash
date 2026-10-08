@@ -1,0 +1,228 @@
+use ast::*;
+
+// AST-level constant folding / dead-code elimination (Stage 2 quality parity).
+// Port of the core of leash/ast_optimize.py to Leash. In-place mutation on class nodes.
+
+pub def Optimizer : class {
+
+    pub fnc opt_expr(e Expr) : Expr {
+        if e == null { return e; }
+
+        if e.kind == ExprKind.BINOP {
+            l: Expr = this.opt_expr(e.left);
+            r: Expr = this.opt_expr(e.right);
+            if l.kind == ExprKind.INT && r.kind == ExprKind.INT {
+                lv: int = l.ival;
+                rv: int = r.ival;
+                // Big literals keep their raw text in sval: folding through
+                // the i64 ival would wrap them. Leave those to codegen.
+                if e.left.kind == ExprKind.INT && e.left.sval.size > 0 { return e; }
+                if e.right.kind == ExprKind.INT && e.right.sval.size > 0 { return e; }
+                if e.op == "+" { return Expr.make_int(lv + rv); }
+                if e.op == "-" { return Expr.make_int(lv - rv); }
+                if e.op == "*" { return Expr.make_int(lv * rv); }
+                if e.op == "/" && rv != 0 { return Expr.make_int(lv / rv); }
+                if e.op == "%" && rv != 0 { return Expr.make_int(lv % rv); }
+                if e.op == "==" { return Expr.make_bool(lv == rv); }
+                if e.op == "!=" { return Expr.make_bool(lv != rv); }
+                if e.op == "<" { return Expr.make_bool(lv < rv); }
+                if e.op == ">" { return Expr.make_bool(lv > rv); }
+                if e.op == "<=" { return Expr.make_bool(lv <= rv); }
+                if e.op == ">=" { return Expr.make_bool(lv >= rv); }
+            }
+            if l.kind == ExprKind.FLOAT && r.kind == ExprKind.FLOAT {
+                lf: float = l.fval;
+                rf: float = r.fval;
+                if e.op == "+" { return Expr.make_float(lf + rf); }
+                if e.op == "-" { return Expr.make_float(lf - rf); }
+                if e.op == "*" { return Expr.make_float(lf * rf); }
+                if e.op == "/" && rf != 0 { return Expr.make_float(lf / rf); }
+                if e.op == "==" { return Expr.make_bool(lf == rf); }
+                if e.op == "!=" { return Expr.make_bool(lf != rf); }
+                if e.op == "<" { return Expr.make_bool(lf < rf); }
+                if e.op == ">" { return Expr.make_bool(lf > rf); }
+                if e.op == "<=" { return Expr.make_bool(lf <= rf); }
+                if e.op == ">=" { return Expr.make_bool(lf >= rf); }
+            }
+            if l.kind == ExprKind.STRING && r.kind == ExprKind.STRING {
+                ls: string = l.sval;
+                rs: string = r.sval;
+                if e.op == "+" { return Expr.make_string(ls + rs); }
+                if e.op == "==" { return Expr.make_bool(ls == rs); }
+                if e.op == "!=" { return Expr.make_bool(ls != rs); }
+            }
+            if l.kind == ExprKind.BOOL && r.kind == ExprKind.BOOL {
+                lb: bool = l.bval;
+                rb: bool = r.bval;
+                if e.op == "&&" { return Expr.make_bool(lb && rb); }
+                if e.op == "||" { return Expr.make_bool(lb || rb); }
+                if e.op == "==" { return Expr.make_bool(lb == rb); }
+                if e.op == "!=" { return Expr.make_bool(lb != rb); }
+            }
+            e.left = l;
+            e.right = r;
+            return e;
+        }
+
+        if e.kind == ExprKind.UNARY {
+            o: Expr = this.opt_expr(e.left);
+            if e.op == "-" && o.kind == ExprKind.INT && o.sval.size == 0 { return Expr.make_int(-o.ival); }
+            if e.op == "-" && o.kind == ExprKind.FLOAT { return Expr.make_float(-o.fval); }
+            if e.op == "!" && o.kind == ExprKind.BOOL { return Expr.make_bool(!o.bval); }
+            e.left = o;
+            return e;
+        }
+
+        if e.kind == ExprKind.CALL {
+            // Compile-time builtin folds on literals (python parity)
+            if e.sval == "tostring" && e.args.size == 1 && e.args.get(0).kind == ExprKind.STRING {
+                return e.args.get(0);
+            }
+            na: vec<Expr>;
+            foreach _, a in<vector> e.args { na.pushb(this.opt_expr(a)); }
+            e.args = na;
+            return e;
+        }
+
+        if e.kind == ExprKind.METHOD_CALL {
+            e.left = this.opt_expr(e.left);
+            na: vec<Expr>;
+            foreach _, a in<vector> e.args { na.pushb(this.opt_expr(a)); }
+            e.args = na;
+            return e;
+        }
+
+        if e.kind == ExprKind.MEMBER {
+            e.left = this.opt_expr(e.left);
+            return e;
+        }
+
+        if e.kind == ExprKind.INDEX {
+            e.left = this.opt_expr(e.left);
+            e.right = this.opt_expr(e.right);
+            return e;
+        }
+
+        if e.kind == ExprKind.TERNARY {
+            e.cond = this.opt_expr(e.cond);
+            e.left = this.opt_expr(e.left);
+            e.right = this.opt_expr(e.right);
+            if e.cond.kind == ExprKind.BOOL {
+                if e.cond.bval { return e.left; }
+                return e.right;
+            }
+            return e;
+        }
+
+        if e.kind == ExprKind.CAST {
+            e.left = this.opt_expr(e.left);
+            return e;
+        }
+
+        if e.kind == ExprKind.STRUCT_INIT {
+            na: vec<Expr>;
+            foreach _, a in<vector> e.args { na.pushb(this.opt_expr(a)); }
+            e.args = na;
+            return e;
+        }
+
+        if e.kind == ExprKind.ARRAY_LIT {
+            na: vec<Expr>;
+            foreach _, a in<vector> e.args { na.pushb(this.opt_expr(a)); }
+            e.args = na;
+            return e;
+        }
+
+        return e;
+    }
+
+    pub fnc opt_stmts(stmts vec<Stmt>) : void {
+        ai: int = 0;
+        while ai < stmts.size {
+            s: Stmt = stmts.get(ai);
+            this.opt_stmt(s);
+            ai = ai + 1;
+        }
+    }
+
+    pub fnc opt_stmt(s Stmt) : void {
+        if s == null { return; }
+        if s.kind == StmtKind.VAR_DECL && s.value != null {
+            s.value = this.opt_expr(s.value);
+            return;
+        }
+        if s.kind == StmtKind.ASSIGN {
+            s.value = this.opt_expr(s.value);
+            return;
+        }
+        if s.kind == StmtKind.RETURN && s.value != null {
+            s.value = this.opt_expr(s.value);
+            return;
+        }
+        if s.kind == StmtKind.IF {
+            s.cond = this.opt_expr(s.cond);
+            this.opt_stmts(s.then_block);
+            this.opt_stmts(s.else_block);
+            if s.cond.kind == ExprKind.BOOL {
+                if s.cond.bval { s.kind = StmtKind.BLOCK; s.body = s.then_block; s.cond = null; s.then_block = null; s.else_block = null; }
+                else { s.kind = StmtKind.BLOCK; s.body = s.else_block; s.cond = null; s.then_block = null; s.else_block = null; }
+            }
+            return;
+        }
+        if s.kind == StmtKind.WHILE {
+            s.cond = this.opt_expr(s.cond);
+            this.opt_stmts(s.body);
+            return;
+        }
+        if s.kind == StmtKind.LOOP {
+            this.opt_stmts(s.body);
+            return;
+        }
+        if s.kind == StmtKind.FOR {
+            if s.for_init != null { this.opt_stmt(s.for_init); }
+            if s.cond != null { s.cond = this.opt_expr(s.cond); }
+            if s.for_step != null { this.opt_stmt(s.for_step); }
+            this.opt_stmts(s.body);
+            return;
+        }
+        if s.kind == StmtKind.BLOCK {
+            this.opt_stmts(s.body);
+            return;
+        }
+        if s.kind == StmtKind.SHOW {
+            na: vec<Expr>;
+            foreach _, a in<vector> s.args { na.pushb(this.opt_expr(a)); }
+            s.args = na;
+            return;
+        }
+        if s.kind == StmtKind.EXPR {
+            s.value = this.opt_expr(s.value);
+            return;
+        }
+        if s.kind == StmtKind.SWITCH {
+            s.value = this.opt_expr(s.value);
+            this.opt_stmts(s.switch_cases);
+            this.opt_stmts(s.default_block);
+            return;
+        }
+        if s.kind == StmtKind.CASE {
+            if s.value != null { s.value = this.opt_expr(s.value); }
+            this.opt_stmts(s.body);
+            return;
+        }
+    }
+
+    pub fnc opt_program(prog Program) : void {
+        foreach _, f in<vector> prog.funcs {
+            this.opt_stmts(f.body);
+        }
+        foreach _, c in<vector> prog.classes {
+            foreach _, m in<vector> c.methods {
+                this.opt_stmts(m.body);
+            }
+        }
+        foreach _, g in<vector> prog.globals {
+            if g.init_val != null { g.init_val = this.opt_expr(g.init_val); }
+        }
+    }
+}

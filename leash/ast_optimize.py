@@ -195,8 +195,8 @@ def _deep_fold(node):
             setattr(node, a, _deep_fold(attr))
 
     if isinstance(node, BinaryOp):
-        l = _deep_fold(node.left)
-        r = _deep_fold(node.right)
+        l = node.left
+        r = node.right
         node.left, node.right = l, r
 
         if isinstance(l, NumberLiteral) and isinstance(r, NumberLiteral):
@@ -313,7 +313,7 @@ def _deep_fold(node):
         return node
 
     if isinstance(node, UnaryOp):
-        e = _deep_fold(node.expr)
+        e = node.expr
         node.expr = e
         if node.op == "!" and isinstance(e, BoolLiteral):
             _opt_log("CF", f"folded '!{e.value}' -> {not e.value}", node)

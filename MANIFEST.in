@@ -1,0 +1,31 @@
+# Source distribution contents
+include README.md
+include LICENSE
+include CHANGELOG.md
+include setup.py
+include pyproject.toml
+
+# Self-hosted compiler sources (rebuilt at install time by the Python stage)
+recursive-include compiler *.lsh
+
+# Development / verification tooling
+include scripts/bootstrap.sh
+include scripts/ir_diff.py
+
+# Example programs and expected outputs used by the parity harness
+recursive-include examples *.lsh
+recursive-include tests *.py *.lsh *.out *.c
+
+# Runtime sources shipped inside the package
+include leash/gc.c
+include leash/gc.h
+include leash/cross_compile_stubs.c
+include leash/windows_stubs.c
+
+# never ship build artifacts
+exclude leash/native/leashc
+exclude leash/native/leashc_stage1
+prune bin
+prune .venv
+prune .pytest_cache
+global-exclude *.ll *.o *.pyc __pycache__

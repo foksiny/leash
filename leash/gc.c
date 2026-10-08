@@ -56,6 +56,7 @@
 #include <pthread.h>
 #include <sched.h>
 #include <sys/mman.h>
+#include <sys/wait.h>
 #endif
 
 /* ---- showb output-buffer mutex ---------------------------------------
@@ -371,7 +372,29 @@ static struct {
     /* environment */
     char* stack_top;            /* conservative scan upper bound (NULL = unknown) */
     int auto_collect;
+    size_t max_rss_bytes;      /* hard host-protection ceiling (0 = off) */
 } gc = {0};
+
+/* ===== Hard RSS ceiling =====
+ * Every leash-compiled program links this GC. If resident memory exceeds
+ * LEASH_GC_MAX_RSS_MB (default 1024), we force an emergency collection;
+ * if RSS is still above the ceiling afterwards, we abort rather than
+ * eat the host machine. This fires even when auto-collect is disabled. */
+static size_t gc_rss_bytes(void) {
+#if !defined(_WIN32)
+    FILE* f = fopen("/proc/self/statm", "r");
+    if (!f) return 0;
+    unsigned long total_pages = 0, resident_pages = 0;
+    int ok = fscanf(f, "%lu %lu", &total_pages, &resident_pages);
+    fclose(f);
+    if (ok != 2) return 0;
+    long ps = sysconf(_SC_PAGESIZE);
+    size_t page = ps > 0 ? (size_t)ps : 4096;
+    return (size_t)resident_pages * page;
+#else
+    return 0;
+#endif
+}
 
 /* Quiescence counters (atomics; written without the GC lock) */
 static volatile int gc_active_workers = 0;
@@ -1217,6 +1240,30 @@ static void gc_collect_locked_impl(void) {
     gc.collect_count++;
     gc.gc_time_ns += gc_now_ns() - t0;
     gc_in_collect = 0;
+
+    /* Host protection: if resident memory is still above the ceiling after
+     * a full collection, the program is genuinely leaking (or the limit is
+     * too small). Abort instead of pushing the machine into OOM death. */
+    if (gc.max_rss_bytes != 0) {
+        size_t rss = gc_rss_bytes();
+        if (rss > gc.max_rss_bytes) {
+            fprintf(stderr,
+                    "Leash GC: memory ceiling exceeded (%.0f MB used, limit %.0f MB)\n"
+                    "Set LEASH_GC_MAX_RSS_MB higher if this program legitimately needs more.\n",
+                    (double)rss / (1024.0 * 1024.0),
+                    (double)gc.max_rss_bytes / (1024.0 * 1024.0));
+            fflush(stderr);
+            exit(70);
+        }
+    }
+
+#if defined(__GLIBC__)
+    /* Return freed libc arena pages to the OS after big sweeps. */
+    {
+        extern int malloc_trim(size_t);
+        malloc_trim(0);
+    }
+#endif
 }
 
 /* ===== Auto-collection gating ===== */
@@ -1227,7 +1274,14 @@ static int gc_quiescent(void) {
 }
 
 static int gc_should_auto_collect(void) {
-    if (!gc.auto_collect || gc_in_collect) return 0;
+    if (gc_in_collect) return 0;
+    /* Host protection: force a collection when resident memory blows past
+     * the ceiling. Probed at most about once per MB allocated so the
+     * /proc read never shows up in profiles. */
+    if (gc.max_rss_bytes != 0 && gc.bytes_since_gc >= ((size_t)1 << 20)) {
+        if (gc_rss_bytes() > gc.max_rss_bytes) return 1;
+    }
+    if (!gc.auto_collect) return 0;
     if (!gc_quiescent()) return 0;
     size_t threshold = gc.live_bytes * 2;
     if (threshold < (size_t)gc.threshold_floor) threshold = (size_t)gc.threshold_floor;
@@ -1307,6 +1361,14 @@ void leash_gc_init(void) {
     if (env && (*env == '0' || *env == 'n' || *env == 'N' ||
                 *env == 'f' || *env == 'F')) {
         gc.auto_collect = 0;
+    }
+    env = getenv("LEASH_GC_MAX_RSS_MB");
+    if (env && *env) {
+        long mb = strtol(env, NULL, 10);
+        if (mb > 0) gc.max_rss_bytes = (size_t)mb << 20;
+        if (mb == 0) gc.max_rss_bytes = 0; /* explicitly disabled */
+    } else {
+        gc.max_rss_bytes = (size_t)1024 << 20; /* default 1 GiB ceiling */
     }
     env = getenv("LEASH_GC_STATS");
     if (env && *env && *env != '0') {
@@ -2492,3 +2554,1071 @@ int leash_future_is_done(void* fut) {
 #endif
     return done;
 }
+
+/* =========================================================================
+ * Leash Self-Hosted Compiler Runtime Helpers: Vec, Hash, File, Exec
+ * ========================================================================= */
+
+typedef struct LeashVec {
+    void*   data;       /* element array, byte-addressed */
+    int64_t size;
+    int64_t cap;
+    int64_t elem_size; /* bytes per element (>= 1) */
+    int64_t scan;      /* 1: data may contain GC pointers */
+} LeashVec;
+
+#ifndef FLAG_ATOMIC
+#define FLAG_ATOMIC 0x02U  /* matches the real GC's pointer-free payload flag */
+#endif
+
+/* Element slot address (byte addressing for any element width). */
+static inline void* lv_at(const LeashVec* v, int64_t i) {
+    return (char*)v->data + (size_t)i * (size_t)v->elem_size;
+}
+
+/* Data buffers of pointer-free elements are ATOMIC: the collector never
+ * scans them (precise tracing — no false pins from raw integer payloads)
+ * and marking them costs nothing. */
+static void* lv_alloc_data(int64_t cap, int64_t esz, int64_t scan) {
+    if (esz <= 0) esz = 8;
+    if (cap < 0) cap = 0;
+    return leash_gc_malloc_ex((size_t)cap * (size_t)esz,
+                               scan ? 0 : FLAG_ATOMIC);
+}
+
+static void leash_sh_vec_ensure(void* vec_ptr, int64_t need);
+
+void* leash_sh_vec_new(int64_t elem_size, int64_t scan) {
+    LeashVec* v = (LeashVec*)leash_gc_malloc(sizeof(LeashVec));
+    v->elem_size = elem_size > 0 ? elem_size : 8;
+    v->scan = scan ? 1 : 0;
+    /* Lazy data: never-pushed vectors cost one small header only. The
+     * first reserve/ensure allocates the buffer. */
+    v->cap = 0;
+    v->size = 0;
+    v->data = NULL;
+    return (void*)v;
+}
+
+/* Slow path for pushb: grow when full, then byte-copy the element in. */
+void leash_sh_vec_pushb(void* vec_ptr, const void* elem) {
+    LeashVec* v = (LeashVec*)vec_ptr;
+    if (!v || !elem) return;
+    leash_sh_vec_ensure(v, v->size + 1);
+    memcpy(lv_at(v, v->size), elem, (size_t)v->elem_size);
+    v->size++;
+}
+
+void leash_sh_vec_get(void* vec_ptr, int64_t idx, void* out) {
+    LeashVec* v = (LeashVec*)vec_ptr;
+    if (!v || !v->data || idx < 0 || idx >= v->size || !out) {
+        fprintf(stderr, "Runtime error: Vector index out of bounds.\n");
+        exit(1);
+    }
+    memcpy(out, lv_at(v, idx), (size_t)v->elem_size);
+}
+
+void leash_sh_vec_set(void* vec_ptr, int64_t idx, const void* elem) {
+    LeashVec* v = (LeashVec*)vec_ptr;
+    if (!v || !v->data || idx < 0 || idx >= v->size || !elem) {
+        fprintf(stderr, "Runtime error: Vector index out of bounds.\n");
+        exit(1);
+    }
+    memcpy(lv_at(v, idx), elem, (size_t)v->elem_size);
+}
+
+void leash_sh_vec_remove(void* vec_ptr, int64_t idx, void* out) {
+    LeashVec* v = (LeashVec*)vec_ptr;
+    if (!v || !v->data) return;
+    if (idx < 0) idx += v->size;
+    if (idx < 0 || idx >= v->size) {
+        fprintf(stderr, "Runtime error: Vector remove index out of bounds.\n");
+        exit(1);
+    }
+    if (out) memcpy(out, lv_at(v, idx), (size_t)v->elem_size);
+    if (idx + 1 < v->size) {
+        memmove(lv_at(v, idx), lv_at(v, idx + 1),
+                (size_t)(v->size - idx - 1) * (size_t)v->elem_size);
+    }
+    v->size--;
+}
+
+/* GC-allocating wrapper around leash_bigint_fmt: returns a decimal string. */
+char* leash_bigint_to_str(const unsigned char* bytes, int64_t nbits, int64_t is_signed) {
+    size_t cap;
+    char* out;
+    if (nbits > 512) nbits = 512;
+    cap = (size_t)(nbits / 3 + 8);
+    out = (char*)leash_gc_malloc(cap);
+    leash_bigint_fmt(out, bytes, (unsigned)nbits, (int)is_signed);
+    return out;
+}
+
+/* =========================================================================
+ * showb: buffered output. Content accumulates in a private buffer and is
+ * flushed once at program exit (Python parity).
+ * ========================================================================= */
+
+static char* leash_showb_buf = NULL;
+static size_t leash_showb_len = 0;
+static size_t leash_showb_cap = 0;
+
+void leash_sh_showb_append(const char* s) {
+    size_t n;
+    if (!s) return;
+    n = strlen(s);
+    if (leash_showb_len + n + 1 > leash_showb_cap) {
+        size_t nc = leash_showb_cap ? leash_showb_cap * 2 : 256;
+        while (nc < leash_showb_len + n + 1) nc *= 2;
+        leash_showb_buf = (char*)realloc(leash_showb_buf, nc);
+        leash_showb_cap = nc;
+    }
+    memcpy(leash_showb_buf + leash_showb_len, s, n);
+    leash_showb_len += n;
+    leash_showb_buf[leash_showb_len] = 0;
+}
+
+void leash_sh_showb_flush(void) {
+    if (leash_showb_len > 0 && leash_showb_buf) {
+        fwrite(leash_showb_buf, 1, leash_showb_len, stdout);
+    }
+}
+
+/* showb format for vectors: elements appended with NO separators.
+ * mode: 0=int, 1=string, 2=float, 3=char, 4=bool */
+void leash_sh_vec_append_buf(void* vec_ptr, int64_t mode) {
+    LeashVec* v = (LeashVec*)vec_ptr;
+    int64_t i;
+    char tmp[64];
+    if (!v) return;
+    for (i = 0; i < v->size; i++) {
+        void* slot = lv_at(v, i);
+        int64_t iv = 0;
+        double d = 0.0;
+        switch (mode) {
+        case 1:
+            leash_sh_showb_append(*(const char* const*)slot ? *(const char* const*)slot : "");
+            break;
+        case 2:
+            memcpy(&d, slot, sizeof(d));
+            snprintf(tmp, sizeof tmp, "%f", d);
+            leash_sh_showb_append(tmp);
+            break;
+        case 3:
+            tmp[0] = *(const char*)slot;
+            tmp[1] = 0;
+            leash_sh_showb_append(tmp);
+            break;
+        case 4:
+            leash_sh_showb_append(*(const unsigned char*)slot ? "true" : "false");
+            break;
+        default:
+            memset(&iv, 0, sizeof(iv));
+            memcpy(&iv, slot, (size_t)(v->elem_size < 8 ? v->elem_size : 8));
+            snprintf(tmp, sizeof tmp, "%lld", (long long)iv);
+            leash_sh_showb_append(tmp);
+            break;
+        }
+    }
+}
+
+void leash_sh_vec_append_buf_wide(void* vec_ptr, int64_t nbits, int64_t is_signed) {
+    LeashVec* v = (LeashVec*)vec_ptr;
+    int64_t i;
+    if (!v) return;
+    for (i = 0; i < v->size; i++) {
+        char* str = leash_bigint_to_str((const unsigned char*)lv_at(v, i), nbits, is_signed);
+        leash_sh_showb_append(str);
+    }
+}
+
+/* Structural show() for vectors: "[e1, e2, ...]".
+ * mode: 0=int, 1=string, 2=float, 3=char, 4=bool */
+void leash_sh_vec_print(void* vec_ptr, int64_t mode) {
+    LeashVec* v = (LeashVec*)vec_ptr;
+    int64_t i;
+    char tmp[64];
+    if (!v) { printf("[]"); return; }
+    putchar('[');
+    for (i = 0; i < v->size; i++) {
+        void* slot = lv_at(v, i);
+        int64_t iv = 0;
+        double d = 0.0;
+        if (i) printf(", ");
+        switch (mode) {
+        case 1:
+            printf("%s", *(const char* const*)slot ? *(const char* const*)slot : "");
+            break;
+        case 2:
+            memcpy(&d, slot, sizeof(d));
+            printf("%f", d);
+            break;
+        case 3:
+            printf("%c", *(const char*)slot);
+            break;
+        case 4:
+            printf("%s", *(const unsigned char*)slot ? "true" : "false");
+            break;
+        default:
+            memset(&iv, 0, sizeof(iv));
+            memcpy(&iv, slot, (size_t)(v->elem_size < 8 ? v->elem_size : 8));
+            printf("%lld", (long long)iv);
+            break;
+        }
+    }
+    putchar(']');
+}
+
+/* Structural show() for vectors of wide ints (raw inline elements). */
+void leash_sh_vec_print_wide(void* vec_ptr, int64_t nbits, int64_t is_signed) {
+    LeashVec* v = (LeashVec*)vec_ptr;
+    int64_t i;
+    if (!v) { printf("[]"); return; }
+    putchar('[');
+    for (i = 0; i < v->size; i++) {
+        if (i) printf(", ");
+        char* str = leash_bigint_to_str((const unsigned char*)lv_at(v, i), nbits, is_signed);
+        printf("%s", str);
+    }
+    putchar(']');
+}
+
+
+void leash_sh_vec_popb(void* vec_ptr, void* out) {
+    LeashVec* v = (LeashVec*)vec_ptr;
+    if (!v || v->size <= 0 || !out) {
+        fprintf(stderr, "Runtime error: popb called on empty vector.\n");
+        exit(1);
+    }
+    v->size--;
+    memcpy(out, lv_at(v, v->size), (size_t)v->elem_size);
+}
+
+static void leash_sh_vec_ensure(void* vec_ptr, int64_t need) {
+    LeashVec* v = (LeashVec*)vec_ptr;
+    if (!v || v->cap >= need) return;
+    int64_t nc = v->cap ? v->cap : 8;
+    while (nc < need) nc *= 2;
+    void* nd = lv_alloc_data(nc, v->elem_size, v->scan);
+    if (v->data && v->size > 0)
+        memcpy(nd, v->data, (size_t)v->size * (size_t)v->elem_size);
+    v->data = nd;
+    v->cap = nc;
+}
+
+/* extend: append `len` elements from a packed source buffer (elements laid
+   out at src_elem_size bytes). Matching widths take the one-memcpy path. */
+void leash_sh_vec_extend(void* vec_ptr, const void* src, int64_t len, int64_t src_elem_size) {
+    LeashVec* v = (LeashVec*)vec_ptr;
+    if (!v || !src || len <= 0) return;
+    leash_sh_vec_ensure(v, v->size + len);
+    if (src_elem_size == v->elem_size) {
+        memcpy(lv_at(v, v->size), src, (size_t)len * (size_t)v->elem_size);
+        v->size += len;
+        return;
+    }
+    const unsigned char* p = (const unsigned char*)src;
+    int64_t i;
+    size_t cp = (size_t)(src_elem_size < v->elem_size ? src_elem_size : v->elem_size);
+    for (i = 0; i < len; i++) {
+        memset(lv_at(v, v->size + i), 0, (size_t)v->elem_size);
+        memcpy(lv_at(v, v->size + i), p + (size_t)i * (size_t)src_elem_size, cp);
+    }
+    v->size += len;
+}
+
+/* insertv: splice all elements of another vec at idx (negative idx wraps). */
+void leash_sh_vec_insertv(void* vec_ptr, int64_t idx, void* other_vec_ptr) {
+    LeashVec* v = (LeashVec*)vec_ptr;
+    LeashVec* o = (LeashVec*)other_vec_ptr;
+    if (!v || !o || o->size <= 0) return;
+    if (idx < 0) idx += v->size;
+    if (idx < 0) idx = 0;
+    if (idx > v->size) idx = v->size;
+    leash_sh_vec_ensure(v, v->size + o->size);
+    if (v->elem_size == o->elem_size) {
+        memmove(lv_at(v, idx + o->size), lv_at(v, idx),
+                (size_t)(v->size - idx) * (size_t)v->elem_size);
+        memcpy(lv_at(v, idx), o->data, (size_t)o->size * (size_t)o->elem_size);
+    } else {
+        int64_t i;
+        for (i = o->size - 1; i >= 0; i--) {
+            memset(lv_at(v, idx + v->size), 0, (size_t)v->elem_size);
+            memcpy(lv_at(v, idx + v->size), lv_at(o, i),
+                   (size_t)(o->elem_size < v->elem_size ? o->elem_size : v->elem_size));
+        }
+    }
+    v->size += o->size;
+}
+
+/* Public growth entry: ensure capacity for `need` elements. Called by the
+ * compiler's inline pushb fast path when the vector is full. */
+void leash_sh_vec_reserve(void* vec_ptr, int64_t need) {
+    leash_sh_vec_ensure(vec_ptr, need);
+}
+
+void* leash_sh_vec_from_parts(void* data, int64_t size, int64_t elem_size, int64_t scan) {
+    LeashVec* v = (LeashVec*)leash_gc_malloc(sizeof(LeashVec));
+    v->elem_size = elem_size > 0 ? elem_size : 8;
+    v->scan = scan ? 1 : 0;
+    v->size = size;
+    v->cap = size > 0 ? size : 8;
+    /* Takes ownership of `data`; empty input falls back to a fresh buffer. */
+    if (data && size > 0) {
+        v->data = data;
+    } else {
+        v->data = lv_alloc_data(v->cap, v->elem_size, v->scan);
+        v->size = 0;
+    }
+    return (void*)v;
+}
+
+/* Value-semantics copy for struct-typed params/assignments (python parity). */
+void* leash_sh_clone_obj(void* p, int64_t n) {
+    if (!p || n <= 0) return p;
+    void* q = leash_gc_malloc((size_t)n);
+    if (!q) return p;
+    memcpy(q, p, (size_t)n);
+    return q;
+}
+
+int64_t leash_sh_vec_size(void* vec_ptr) {
+    LeashVec* v = (LeashVec*)vec_ptr;
+    if (!v) return 0;
+    return v->size;
+}
+
+typedef struct LeashHashNode {
+    char* key;
+    void* val;
+    struct LeashHashNode* next;
+} LeashHashNode;
+
+typedef struct LeashHash {
+    LeashHashNode** buckets;
+    int64_t num_buckets;
+    int64_t count;
+} LeashHash;
+
+static inline uint64_t _leash_sh_str_hash(const char* s) {
+    uint64_t h = 14695981039346656037ULL;
+    if (!s) return 0;
+    while (*s) {
+        h ^= (uint8_t)(*s++);
+        h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+void* leash_sh_hash_new(void) {
+    LeashHash* h = (LeashHash*)leash_gc_malloc(sizeof(LeashHash));
+    h->num_buckets = 16;
+    h->count = 0;
+    h->buckets = (LeashHashNode**)leash_gc_malloc(h->num_buckets * sizeof(LeashHashNode*));
+    return (void*)h;
+}
+
+void leash_sh_hash_push(void* hash_ptr, const char* key, void* val) {
+    LeashHash* h = (LeashHash*)hash_ptr;
+    if (!h || !key) return;
+    if (!h->buckets) {
+        h->num_buckets = 16;
+        h->buckets = (LeashHashNode**)leash_gc_malloc(h->num_buckets * sizeof(LeashHashNode*));
+    }
+    uint64_t hash = _leash_sh_str_hash(key);
+    int64_t idx = (int64_t)(hash % (uint64_t)h->num_buckets);
+    LeashHashNode* cur = h->buckets[idx];
+    while (cur) {
+        if (strcmp(cur->key, key) == 0) {
+            cur->val = val;
+            return;
+        }
+        cur = cur->next;
+    }
+    if (h->count >= h->num_buckets * 3 / 4) {
+        int64_t old_num = h->num_buckets;
+        LeashHashNode** old_b = h->buckets;
+        int64_t new_num = old_num * 2;
+        LeashHashNode** new_b = (LeashHashNode**)leash_gc_malloc(new_num * sizeof(LeashHashNode*));
+        for (int64_t i = 0; i < old_num; i++) {
+            LeashHashNode* node = old_b[i];
+            while (node) {
+                LeashHashNode* next = node->next;
+                uint64_t nh = _leash_sh_str_hash(node->key);
+                int64_t nidx = (int64_t)(nh % (uint64_t)new_num);
+                node->next = new_b[nidx];
+                new_b[nidx] = node;
+                node = next;
+            }
+        }
+        h->buckets = new_b;
+        h->num_buckets = new_num;
+        idx = (int64_t)(hash % (uint64_t)new_num);
+    }
+    LeashHashNode* node = (LeashHashNode*)leash_gc_malloc(sizeof(LeashHashNode));
+    size_t klen = strlen(key);
+    node->key = (char*)leash_gc_malloc(klen + 1);
+    memcpy(node->key, key, klen + 1);
+    node->val = val;
+    node->next = h->buckets[idx];
+    h->buckets[idx] = node;
+    h->count++;
+}
+
+void* leash_sh_hash_get(void* hash_ptr, const char* key) {
+    LeashHash* h = (LeashHash*)hash_ptr;
+    if (!h || !h->buckets || !key) return NULL;
+    uint64_t hash = _leash_sh_str_hash(key);
+    int64_t idx = (int64_t)(hash % (uint64_t)h->num_buckets);
+    LeashHashNode* cur = h->buckets[idx];
+    while (cur) {
+        if (strcmp(cur->key, key) == 0) {
+            return cur->val;
+        }
+        cur = cur->next;
+    }
+    return NULL;
+}
+
+int64_t leash_sh_hash_isin(void* hash_ptr, const char* key) {
+    LeashHash* h = (LeashHash*)hash_ptr;
+    if (!h || !h->buckets || !key) return 0;
+    uint64_t hash = _leash_sh_str_hash(key);
+    int64_t idx = (int64_t)(hash % (uint64_t)h->num_buckets);
+    LeashHashNode* cur = h->buckets[idx];
+    while (cur) {
+        if (strcmp(cur->key, key) == 0) {
+            return 1;
+        }
+        cur = cur->next;
+    }
+    return 0;
+}
+
+int64_t leash_sh_hash_size(void* hash_ptr) {
+    LeashHash* h = (LeashHash*)hash_ptr;
+    if (!h) return 0;
+    return h->count;
+}
+
+void* leash_sh_hash_getkey(void* hash_ptr, void* val) {
+    LeashHash* h = (LeashHash*)hash_ptr;
+    if (!h || !h->buckets) return NULL;
+    for (int64_t i = 0; i < h->num_buckets; i++) {
+        LeashHashNode* cur = h->buckets[i];
+        while (cur) {
+            if (cur->val == val) return (void*)cur->key;
+            cur = cur->next;
+        }
+    }
+    return NULL;
+}
+
+void leash_sh_hash_delete(void* hash_ptr, const char* key) {
+    LeashHash* h = (LeashHash*)hash_ptr;
+    if (!h || !h->buckets) return;
+    uint64_t hash = _leash_sh_str_hash(key);
+    int64_t idx = (int64_t)(hash % (uint64_t)h->num_buckets);
+    LeashHashNode* cur = h->buckets[idx];
+    LeashHashNode* prev = NULL;
+    while (cur) {
+        if (strcmp(cur->key, key) == 0) {
+            if (prev) prev->next = cur->next;
+            else h->buckets[idx] = cur->next;
+            h->count--;
+            return;
+        }
+        prev = cur;
+        cur = cur->next;
+    }
+}
+
+#include <time.h>
+#include <stdarg.h>
+#include <unistd.h>
+
+static struct timespec _leash_sh_start_ts = {0, 0};
+
+void leash_sh_timepass_init(void) {
+    clock_gettime(CLOCK_MONOTONIC, &_leash_sh_start_ts);
+}
+
+double leash_sh_timepass(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    double secs = (double)(now.tv_sec - _leash_sh_start_ts.tv_sec);
+    double nsecs = (double)(now.tv_nsec - _leash_sh_start_ts.tv_nsec);
+    return secs + nsecs / 1e9;
+}
+
+void leash_sh_wait(double seconds) {
+    if (seconds <= 0) return;
+    usleep((useconds_t)(seconds * 1e6));
+}
+
+void leash_sh_seed(int64_t s) {
+    srand((unsigned int)s);
+}
+
+int64_t leash_sh_rand(int64_t min, int64_t max) {
+    if (max < min) return min;
+    int64_t range = max - min + 1;
+    return ((int64_t)rand()) % range + min;
+}
+
+double leash_sh_randf(double min, double max) {
+    double fraction = (double)rand() / 2147483647.0;
+    return fraction * (max - min) + min;
+}
+
+char* leash_sh_choose(int64_t n, ...) {
+    if (n <= 0) return NULL;
+    int idx = rand() % (int)n;
+    va_list ap;
+    va_start(ap, n);
+    char* result = NULL;
+    for (int64_t i = 0; i < n; i++) {
+        char* s = va_arg(ap, char*);
+        if (i == idx) result = s;
+    }
+    va_end(ap);
+    return result;
+}
+
+char* leash_sh_vec_join(void* vec_ptr, const char* sep) {
+    LeashVec* v = (LeashVec*)vec_ptr;
+    if (!v || !v->data || v->size == 0) {
+        char* empty = (char*)leash_gc_malloc(1);
+        empty[0] = '\0';
+        return empty;
+    }
+    size_t sep_len = strlen(sep);
+    size_t total = 0;
+    for (int64_t i = 0; i < v->size; i++) {
+        const char* s = *(const char* const*)lv_at(v, i);
+        total += (s ? strlen(s) : 0) + sep_len;
+    }
+    char* out = (char*)leash_gc_malloc(total + 1);
+    size_t o = 0;
+    for (int64_t i = 0; i < v->size; i++) {
+        const char* s = *(const char* const*)lv_at(v, i);
+        if (s) {
+            size_t l = strlen(s);
+            memcpy(out + o, s, l);
+            o += l;
+        }
+        if (sep_len) {
+            memcpy(out + o, sep, sep_len);
+            o += sep_len;
+        }
+    }
+    out[o] = '\0';
+    return out;
+}
+
+char* leash_sh_str_sub(const char* a, const char* b) {
+    if (!a) return NULL;
+    size_t alen = strlen(a);
+    size_t blen = (b && *b) ? strlen(b) : 0;
+    char* out = (char*)leash_gc_malloc(alen + 1);
+    size_t o = 0;
+    if (blen == 0) {
+        memcpy(out, a, alen + 1);
+        return out;
+    }
+    size_t i = 0;
+    while (i < alen) {
+        if (i + blen <= alen && memcmp(a + i, b, blen) == 0) {
+            i += blen;
+        } else {
+            out[o++] = a[i];
+            i++;
+        }
+    }
+    out[o] = '\0';
+    return out;
+}
+
+char* leash_sh_str_replace(const char* s, const char* from, const char* to) {
+    if (!s) return NULL;
+    size_t slen = strlen(s);
+    size_t flen = (from && *from) ? strlen(from) : 0;
+    size_t tlen = (to) ? strlen(to) : 0;
+    if (flen == 0) {
+        char* out = (char*)leash_gc_malloc(slen + 1);
+        memcpy(out, s, slen + 1);
+        return out;
+    }
+    /* upper bound: every occurrence replaced by tlen */
+    size_t count = 0;
+    for (size_t i = 0; i + flen <= slen; ) {
+        if (memcmp(s + i, from, flen) == 0) { count++; i += flen; }
+        else i++;
+    }
+    size_t need = slen + count * (tlen > flen ? tlen - flen : 0) + 1;
+    char* out = (char*)leash_gc_malloc(need);
+    size_t o = 0;
+    for (size_t i = 0; i < slen; ) {
+        if (i + flen <= slen && memcmp(s + i, from, flen) == 0) {
+            memcpy(out + o, to, tlen);
+            o += tlen;
+            i += flen;
+        } else {
+            out[o++] = s[i];
+            i++;
+        }
+    }
+    out[o] = '\0';
+    return out;
+}
+
+char* leash_sh_normescape(const char* s) {
+    if (!s) return NULL;
+    size_t len = strlen(s);
+    char* out = (char*)leash_gc_malloc(len + 1);
+    size_t o = 0;
+    for (size_t i = 0; i < len; i++) {
+        if (s[i] == '\\' && i + 1 < len) {
+            char c = s[i + 1];
+            i++;
+            switch (c) {
+                case 'n': out[o++] = '\n'; break;
+                case 't': out[o++] = '\t'; break;
+                case 'r': out[o++] = '\r'; break;
+                case '0': out[o++] = '\0'; break;
+                case '\\': out[o++] = '\\'; break;
+                case '"': out[o++] = '"'; break;
+                case '\'': out[o++] = '\''; break;
+                default: out[o++] = '\\'; out[o++] = c; break;
+            }
+        } else {
+            out[o++] = s[i];
+        }
+    }
+    out[o] = '\0';
+    return out;
+}
+
+char* leash_sh_slice_to_str(int64_t len, const char* ptr) {
+    if (!ptr || len < 0) len = 0;
+    char* out = (char*)leash_gc_malloc((size_t)len + 1);
+    if (len > 0) memcpy(out, ptr, (size_t)len);
+    out[len] = '\0';
+    return out;
+}
+
+int64_t leash_sh_arr_isin_i64(int64_t val, const int64_t* data, int64_t len) {
+    if (!data || len <= 0) return 0;
+    for (int64_t i = 0; i < len; i++) {
+        if (data[i] == val) return 1;
+    }
+    return 0;
+}
+
+int64_t leash_sh_arr_isin_i8(int8_t val, const int8_t* data, int64_t len) {
+    if (!data || len <= 0) return 0;
+    for (int64_t i = 0; i < len; i++) {
+        if (data[i] == val) return 1;
+    }
+    return 0;
+}
+
+int64_t leash_sh_arr_isin_f64(double val, const double* data, int64_t len) {
+    if (!data || len <= 0) return 0;
+    for (int64_t i = 0; i < len; i++) {
+        if (data[i] == val) return 1;
+    }
+    return 0;
+}
+
+int64_t leash_sh_arr_isin_str(const char* val, const char* const* data, int64_t len) {
+    if (!data || len <= 0) return 0;
+    for (int64_t i = 0; i < len; i++) {
+        if (data[i] && val && strcmp(data[i], val) == 0) return 1;
+    }
+    return 0;
+}
+
+int64_t leash_sh_str_isin(const char* needle, const char* haystack) {
+    if (!needle || !haystack) return 0;
+    if (!*needle) return 1;
+    size_t nl = strlen(needle);
+    const char* p = strstr(haystack, needle);
+    (void)nl;
+    return p ? 1 : 0;
+}
+
+/* mode 0: byte compare of an elem_size slot against `elem` (int/float/
+   char/bool/wide). mode 1: element is a C string, compare contents. */
+int64_t leash_sh_vec_isin(void* vec_ptr, const void* elem, int64_t mode) {
+    LeashVec* v = (LeashVec*)vec_ptr;
+    if (!v || !v->data || !elem) return 0;
+    for (int64_t i = 0; i < v->size; i++) {
+        if (mode == 1) {
+            const char* a = *(const char* const*)lv_at(v, i);
+            const char* b = (const char*)elem;
+            if (a == b || (a && b && strcmp(a, b) == 0)) return 1;
+        } else {
+            if (memcmp(lv_at(v, i), elem, (size_t)v->elem_size) == 0) return 1;
+        }
+    }
+    return 0;
+}
+
+void leash_sh_vec_clear(void* p) {
+    if (!p) return;
+    ((LeashVec*)p)->size = 0;
+}
+
+static double leash_unbox_f64(void* p) {
+    double d;
+    int64_t v = (int64_t)(intptr_t)p;
+    memcpy(&d, &v, sizeof(d));
+    return d;
+}
+
+static void* leash_box_f64(double d) {
+    int64_t v;
+    memcpy(&v, &d, sizeof(v));
+    return (void*)(intptr_t)v;
+}
+
+/* Element-wise arithmetic on two dynamic containers. Elements are read
+   raw from the byte-addressed arrays (int64 or double by mode). */
+void* leash_sh_vec_binop(void* pa, void* pb, int64_t op, int64_t mode) {
+    LeashVec* a = (LeashVec*)pa;
+    LeashVec* b = (LeashVec*)pb;
+    void* out = leash_sh_vec_new(8, 0);
+    if (!a || !b) return out;
+    int64_t n = a->size < b->size ? a->size : b->size;
+    for (int64_t i = 0; i < n; i++) {
+        if (mode == 1) {
+            double dx = 0.0, dy = 0.0, dr = 0.0;
+            memcpy(&dx, lv_at(a, i), sizeof(double));
+            memcpy(&dy, lv_at(b, i), sizeof(double));
+            if (op == 1) dr = dx - dy;
+            else if (op == 2) dr = dx * dy;
+            else if (op == 3) dr = dy == 0.0 ? 0.0 : dx / dy;
+            else dr = dx + dy;
+            leash_sh_vec_pushb(out, &dr);
+        } else {
+            int64_t ix = 0, iy = 0, r = 0;
+            memcpy(&ix, lv_at(a, i), (size_t)a->elem_size);
+            memcpy(&iy, lv_at(b, i), (size_t)b->elem_size);
+            if (op == 1) r = ix - iy;
+            else if (op == 2) r = ix * iy;
+            else if (op == 3) r = (iy == 0) ? 0 : ix / iy;
+            else r = ix + iy;
+            leash_sh_vec_pushb(out, &r);
+        }
+    }
+    return out;
+}
+
+/* Deep equality for two vecs. mode 2: elements are C strings (compare
+   contents); otherwise raw bytes compare element by element. */
+int64_t leash_sh_vec_eq(void* pa, void* pb, int64_t mode) {
+    LeashVec* a = (LeashVec*)pa;
+    LeashVec* b = (LeashVec*)pb;
+    if (!a || !b) return (a == b) ? 1 : 0;
+    if (a->size != b->size) return 0;
+    if (a->size == 0) return 1;
+    if (mode == 2) {
+        for (int64_t i = 0; i < a->size; i++) {
+            const char* sx = *(const char* const*)lv_at(a, i);
+            const char* sy = *(const char* const*)lv_at(b, i);
+            if (sx != sy && (!sx || !sy || strcmp(sx, sy) != 0)) return 0;
+        }
+        return 1;
+    }
+    if (a->elem_size == b->elem_size) {
+        return memcmp(a->data, b->data,
+                      (size_t)a->size * (size_t)a->elem_size) == 0;
+    }
+    for (int64_t i = 0; i < a->size; i++) {
+        if (memcmp(lv_at(a, i), lv_at(b, i),
+                   (size_t)(a->elem_size < b->elem_size ? a->elem_size : b->elem_size)) != 0)
+            return 0;
+    }
+    return 1;
+}
+
+void* leash_sh_hash_keys(void* hash_ptr) {
+    LeashHash* h = (LeashHash*)hash_ptr;
+    void* vec = leash_sh_vec_new(8, 1);
+    if (!h || !h->buckets) return vec;
+    for (int64_t i = 0; i < h->num_buckets; i++) {
+        LeashHashNode* cur = h->buckets[i];
+        while (cur) {
+            leash_sh_vec_pushb(vec, (void*)cur->key);
+            cur = cur->next;
+        }
+    }
+    return vec;
+}
+
+void* leash_sh_hash_values(void* hash_ptr) {
+    LeashHash* h = (LeashHash*)hash_ptr;
+    void* vec = leash_sh_vec_new(8, 1);
+    if (!h || !h->buckets) return vec;
+    for (int64_t i = 0; i < h->num_buckets; i++) {
+        LeashHashNode* cur = h->buckets[i];
+        while (cur) {
+            leash_sh_vec_pushb(vec, cur->val);
+            cur = cur->next;
+        }
+    }
+    return vec;
+}
+
+void* leash_sh_file_open(const char* path, const char* mode) {
+    if (!path || !mode) return NULL;
+    return (void*)fopen(path, mode);
+}
+
+char* leash_sh_file_read(void* fp) {
+    if (!fp) return "";
+    FILE* f = (FILE*)fp;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz < 0) sz = 0;
+    char* buf = (char*)leash_gc_malloc(sz + 1);
+    size_t read_bytes = fread(buf, 1, sz, f);
+    buf[read_bytes] = '\0';
+    return buf;
+}
+
+typedef struct { int64_t len; char* ptr; } leash_slice_t;
+
+int64_t leash_sh_file_write(void* fp, const char* str) {
+    if (!fp || !str) return -1;
+    size_t n = strlen(str);
+    size_t w = fwrite(str, 1, n, (FILE*)fp);
+    return (w == n) ? 0 : -1;
+}
+
+int64_t leash_sh_file_close(void* fp) {
+    if (!fp) return -1;
+    return (fclose((FILE*)fp) == 0) ? 0 : -1;
+}
+
+int64_t leash_sh_file_writeb(void* fp, const char* buf, int64_t len) {
+    if (!fp || !buf) return -1;
+    if (len < 0) len = 0;
+    size_t w = fwrite(buf, 1, (size_t)len, (FILE*)fp);
+    return (w == (size_t)len) ? 0 : -1;
+}
+
+static leash_slice_t leash_file_slurp(FILE* f) {
+    leash_slice_t s;
+    s.len = 0;
+    s.ptr = NULL;
+    if (!f) return s;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz < 0) sz = 0;
+    char* buf = (char*)leash_gc_malloc(sz + 1);
+    size_t rb = fread(buf, 1, (size_t)sz, f);
+    buf[rb] = '\0';
+    s.len = (int64_t)rb;
+    s.ptr = buf;
+    return s;
+}
+
+leash_slice_t leash_sh_file_readb(void* fp) {
+    leash_slice_t s;
+    s.len = 0;
+    s.ptr = NULL;
+    if (!fp) return s;
+    return leash_file_slurp((FILE*)fp);
+}
+
+char* leash_sh_file_readln(void* fp) {
+    if (!fp) return "";
+    char tmp[4096];
+    if (!fgets(tmp, sizeof(tmp), (FILE*)fp)) return "";
+    size_t n = strlen(tmp);
+    while (n > 0 && (tmp[n - 1] == '\n' || tmp[n - 1] == '\r')) { tmp[--n] = '\0'; }
+    char* buf = (char*)leash_gc_malloc(n + 1);
+    memcpy(buf, tmp, n + 1);
+    return buf;
+}
+
+leash_slice_t leash_sh_file_readlnb(void* fp) {
+    leash_slice_t s;
+    s.len = 0;
+    s.ptr = NULL;
+    if (!fp) return s;
+    char tmp[4096];
+    if (!fgets(tmp, sizeof(tmp), (FILE*)fp)) {
+        s.ptr = (char*)leash_gc_malloc(1);
+        s.ptr[0] = '\0';
+        return s;
+    }
+    size_t n = strlen(tmp);
+    while (n > 0 && (tmp[n - 1] == '\n' || tmp[n - 1] == '\r')) { tmp[--n] = '\0'; }
+    char* buf = (char*)leash_gc_malloc(n + 1);
+    memcpy(buf, tmp, n + 1);
+    s.len = (int64_t)n;
+    s.ptr = buf;
+    return s;
+}
+
+void leash_sh_file_rewind(void* fp) {
+    if (fp) fseek((FILE*)fp, 0, SEEK_SET);
+}
+
+int64_t leash_sh_file_rename(const char* oldn, const char* newn) {
+    if (!oldn || !newn) return -1;
+    return (rename(oldn, newn) == 0) ? 0 : -1;
+}
+
+int64_t leash_sh_file_delete(const char* path) {
+    if (!path) return -1;
+    return (remove(path) == 0) ? 0 : -1;
+}
+
+static char* leash_replace_build(const char* buf, const char* oldstr, const char* newstr,
+                                 int64_t replace_all, int64_t* out_count) {
+    size_t old_len = strlen(oldstr);
+    size_t new_len = strlen(newstr);
+    size_t file_size = strlen(buf);
+    int64_t count = 0;
+    if (old_len == 0) {
+        *out_count = 0;
+        return NULL;
+    }
+    char* result = (char*)leash_gc_malloc(file_size * (new_len + 1) + 1);
+    if (replace_all) {
+        const char* src = buf;
+        char* dst = result;
+        while (*src) {
+            if (strncmp(src, oldstr, old_len) == 0) {
+                memcpy(dst, newstr, new_len);
+                src += old_len;
+                dst += new_len;
+                count++;
+            } else {
+                *dst++ = *src++;
+            }
+        }
+        *dst = '\0';
+    } else {
+        const char* found = strstr(buf, oldstr);
+        if (!found) {
+            memcpy(result, buf, file_size + 1);
+            *out_count = 0;
+            return result;
+        }
+        size_t prefix = (size_t)(found - buf);
+        memcpy(result, buf, prefix);
+        memcpy(result + prefix, newstr, new_len);
+        strcpy(result + prefix + new_len, found + old_len);
+        count = 1;
+    }
+    *out_count = count;
+    return result;
+}
+
+int64_t leash_sh_file_replace(void* fp, const char* oldstr, const char* newstr, int64_t all) {
+    if (!fp) return 0;
+    FILE* f = (FILE*)fp;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz < 0) sz = 0;
+    char* buf = (char*)leash_gc_malloc(sz + 1);
+    size_t rb = fread(buf, 1, (size_t)sz, f);
+    buf[rb] = '\0';
+
+    int64_t count = 0;
+    char* result = leash_replace_build(buf, oldstr, newstr, all, &count);
+    if (result == NULL) { fseek(f, 0, SEEK_SET); return 0; }
+
+    size_t out_len = strlen(result);
+    fseek(f, 0, SEEK_SET);
+    fwrite(result, 1, out_len, f);
+    fflush(f);
+    ftruncate(fileno(f), (off_t)out_len);
+    fseek(f, 0, SEEK_SET);
+    return count;
+}
+
+char* leash_sh_exec(const char* cmd, const char* mode) {
+    if (!cmd) return "";
+    if (mode && strcmp(mode, "silent") == 0) {
+        /* capture but do not forward to stdout */
+        FILE* fp = popen(cmd, "r");
+        if (!fp) return "";
+        size_t cap = 8192, len = 0;
+        char* buf = (char*)leash_gc_malloc(cap);
+        size_t n;
+        while ((n = fread(buf + len, 1, cap - len - 1, fp)) > 0) {
+            len += n;
+            if (cap - len < 2) break;
+        }
+        buf[len] = '\0';
+        pclose(fp);
+        return buf;
+    }
+    if (mode && strcmp(mode, "wait") == 0) {
+        /* run and forward stdout, also capture and return */
+        FILE* fp = popen(cmd, "r");
+        if (!fp) return "";
+        size_t cap = 8192, len = 0;
+        char* buf = (char*)leash_gc_malloc(cap);
+        size_t n;
+        while ((n = fread(buf + len, 1, cap - len - 1, fp)) > 0) {
+            len += n;
+            if (cap - len < 2) break;
+        }
+        buf[len] = '\0';
+        pclose(fp);
+        return buf;
+    }
+    if (mode && strcmp(mode, "run") == 0) {
+        /* run inheriting stdin/stdout/stderr, wait, return the exit code */
+        int code = system(cmd);
+        int exit_code = 0;
+#ifndef _WIN32
+        if (WIFEXITED(code)) {
+            exit_code = WEXITSTATUS(code);
+        } else {
+            exit_code = code;
+        }
+#else
+        exit_code = code;
+#endif
+        char* buf = (char*)leash_gc_malloc(16);
+        snprintf(buf, 16, "%d", exit_code);
+        return buf;
+    }
+    if (mode && strcmp(mode, "code") == 0) {
+        int code = 0;
+        FILE* fp = popen(cmd, "r");
+        if (fp) {
+            char sink[512];
+            while (fread(sink, 1, sizeof(sink), fp) > 0) {}
+            code = pclose(fp);
+        }
+        int exit_code = 0;
+#ifndef _WIN32
+        if (WIFEXITED(code)) {
+            exit_code = WEXITSTATUS(code);
+        } else {
+            exit_code = code;
+        }
+#else
+        exit_code = code;
+#endif
+        char* buf = (char*)leash_gc_malloc(16);
+        snprintf(buf, 16, "%d", exit_code);
+        return buf;
+    } else {
+        system(cmd);
+        return "";
+    }
+}
+

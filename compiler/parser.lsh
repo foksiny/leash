@@ -1,0 +1,2353 @@
+use tokens::*;
+use ast::*;
+use lexer::*;
+
+pub def Precedence : class {
+    static pub LOWEST: int = 0;
+    static pub ASSIGN: int = 1;
+    static pub TERNARY: int = 2;
+    static pub OR: int = 3;
+    static pub AND: int = 4;
+    static pub BITOR: int = 5;
+    static pub BITXOR: int = 6;
+    static pub BITAND: int = 7;
+    static pub EQUALITY: int = 8;
+    static pub COMPARE: int = 9;
+    static pub SHIFT: int = 10;
+    static pub ADD: int = 11;
+    static pub MUL: int = 12;
+    static pub UNARY: int = 13;
+    static pub POSTFIX: int = 14;
+
+    static pub fnc get_infix_prec(kind int) : int {
+        if kind == Tok.OR { return Precedence.OR; }
+        if kind == Tok.AND { return Precedence.AND; }
+        if kind == Tok.PIPE { return Precedence.BITOR; }
+        if kind == Tok.CARET { return Precedence.BITXOR; }
+        if kind == Tok.AMP { return Precedence.BITAND; }
+        if kind == Tok.EQ || kind == Tok.NEQ { return Precedence.EQUALITY; }
+        if kind == Tok.LT || kind == Tok.LTE || kind == Tok.GT || kind == Tok.GTE || kind == Tok.ISINOP || kind == Tok.IS || kind == Tok.ISNT { return Precedence.COMPARE; }
+        if kind == Tok.LSHIFT || kind == Tok.RSHIFT { return Precedence.SHIFT; }
+        if kind == Tok.PLUS || kind == Tok.MINUS { return Precedence.ADD; }
+        if kind == Tok.STAR || kind == Tok.SLASH || kind == Tok.PERCENT { return Precedence.MUL; }
+        if kind == Tok.QUESTION { return Precedence.TERNARY; }
+        if kind == Tok.LPAREN || kind == Tok.DOT || kind == Tok.ARROW || kind == Tok.LBRACKET || kind == Tok.AS { return Precedence.POSTFIX; }
+        return Precedence.LOWEST;
+    }
+}
+
+pub def Parser : class {
+    pub tokens: vec<Token>;
+    pub pos: int;
+    pub len: int;
+    pub fe_counter: int;
+    pub no_struct_init: bool;
+    pub type_aliases: hash<string, string>;
+    pub keep_sized: bool;
+    pub import_aliases: hash<string, string>; // aliasName -> modulePath
+    pub quiet: bool;
+    pub mod_unsafe: bool;   // pending `unsafe` modifier for next `fnc`
+    pub mod_nogc: bool;     // pending `nogc` modifier
+    pub mod_inline: bool;   // pending `inline` modifier
+    pub mod_async: bool;    // pending `async` modifier
+    pub hoisted_funcs: vec<FuncDecl>; // nested `fnc` decls lifted to top level
+    pub hoisted_mark: int;   // index of the first un-drained hoisted function
+    pub macros: hash<string, MacroDef>; // top-level `def X : macro(...)` definitions
+    pub lambda_counter: int;   // naming for `fnc(...) { }` function literals
+
+    static pub fnc make(tokens vec<Token>) : Parser {
+        empty_aliases: hash<string, string>;
+        empty_import_aliases: hash<string, string>;
+        empty_hf: vec<FuncDecl>;
+        empty_macros: hash<string, MacroDef>;
+        return Parser { tokens: tokens, pos: 0, len: tokens.size, fe_counter: 0, no_struct_init: false, type_aliases: empty_aliases, import_aliases: empty_import_aliases, quiet: false, keep_sized: false, mod_unsafe: false, mod_nogc: false, mod_inline: false, mod_async: false, hoisted_funcs: empty_hf, hoisted_mark: 0, macros: empty_macros, lambda_counter: 0 };
+    }
+
+    // Function literal: fnc(a int, b int) : int { ... }  (hoisted, used as a value)
+    pub fnc parse_lambda() : Expr {
+        this.consume(Tok.FNC, "expected 'fnc'");
+        this.consume(Tok.LPAREN, "expected '(' after 'fnc'");
+        lparams: vec<FuncParam>;
+        if !this.check(Tok.RPAREN) {
+            lp_tok: Token = this.consume(Tok.IDENT, "expected lambda parameter name");
+            this.match_tok(Tok.COLON);
+            lp_typ: string = this.parse_type();
+            lp_def: Expr = null;
+            if this.match_tok(Tok.ASSIGN) { lp_def = this.parse_expression(Precedence.LOWEST); }
+            lparams.pushb(FuncParam.make(lp_tok.val, lp_typ, false, lp_def));
+            while this.match_tok(Tok.COMMA) {
+                lp_tok2: Token = this.consume(Tok.IDENT, "expected lambda parameter name");
+                this.match_tok(Tok.COLON);
+                lp_typ2: string = this.parse_type();
+                lp_def2: Expr = null;
+                if this.match_tok(Tok.ASSIGN) { lp_def2 = this.parse_expression(Precedence.LOWEST); }
+                lparams.pushb(FuncParam.make(lp_tok2.val, lp_typ2, false, lp_def2));
+            }
+        }
+        this.consume(Tok.RPAREN, "expected ')' after lambda parameters");
+        lp_ret: string = "void";
+        if this.match_tok(Tok.COLON) {
+            lp_ret = this.parse_type();
+        } also this.match_tok(Tok.ARROW) {
+            lp_ret = this.parse_type();
+        }
+        lp_body: vec<Stmt>;
+        if this.check(Tok.PIPE) {
+            this.pos = this.pos + 1;
+            this.match_tok(Tok.GT);
+            lp_body.pushb(this.parse_statement());
+            this.match_tok(Tok.SEMI);
+        } else {
+            lp_body = this.parse_block();
+        }
+        this.lambda_counter = this.lambda_counter + 1;
+        lp_name: string = "lambda_" + tostring(this.lambda_counter);
+        lp_fd: FuncDecl = FuncDecl.make(lp_name, lparams, lp_ret, lp_body, false, true);
+        this.hoisted_funcs.pushb(lp_fd);
+        return Expr.make_unary("&", Expr.make_ident(lp_name));
+    }
+
+    // `def Name : macro(a, b) |> expr;`  /  `def Name : macro(a) { stmts }`
+    pub fnc parse_macro_def() : void {
+        this.consume(Tok.DEF, "expected 'def'");
+        mname: Token = this.consume(Tok.IDENT, "expected macro name");
+        this.consume(Tok.COLON, "expected ':' after macro name");
+        this.consume(Tok.IDENT, "expected 'macro'");
+        this.consume(Tok.LPAREN, "expected '(' after 'macro'");
+        mparams: vec<string>;
+        if !this.check(Tok.RPAREN) {
+            mp_tok: Token = this.consume(Tok.IDENT, "expected macro parameter name");
+            mparams.pushb(mp_tok.val);
+            while this.match_tok(Tok.COMMA) {
+                mp_tok2: Token = this.consume(Tok.IDENT, "expected macro parameter name");
+                mparams.pushb(mp_tok2.val);
+            }
+        }
+        this.consume(Tok.RPAREN, "expected ')' after macro parameters");
+        mbody: Expr = null;
+        if this.check(Tok.PIPE) {
+            this.pos = this.pos + 1;
+            this.match_tok(Tok.GT);
+            mb_stmt: Stmt = this.parse_statement();
+            if mb_stmt.kind == StmtKind.EXPR { mbody = mb_stmt.value; }
+        } also this.check(Tok.LBRACE) {
+            this.pos = this.pos + 1;
+            block_stmts: vec<Stmt>;
+            while !this.check(Tok.RBRACE) && !this.check(Tok.EOF) {
+                block_stmts.pushb(this.parse_statement());
+            }
+            this.consume(Tok.RBRACE, "expected '}' after macro body");
+            if block_stmts.size == 1 {
+                one: Stmt = block_stmts.get(0);
+                if one.kind == StmtKind.EXPR { mbody = one.value; }
+            }
+        } else {
+            show("parse error: expected '|' or '{' after macro parameters");
+        }
+        md: MacroDef = MacroDef {};
+        md.name = mname.val;
+        md.params = mparams;
+        md.body = mbody;
+        this.macros.push(mname.val, md);
+        this.match_tok(Tok.SEMI);
+    }
+
+    // Replace macro parameters with the actual call arguments.
+    pub fnc subst_macro(e Expr, params vec<string>, args vec<Expr>) : Expr {
+        if e == null { return e; }
+        if e.kind == ExprKind.IDENT {
+            si: int = 0;
+            while si < params.size {
+                if params.get(si) == e.sval {
+                    if si < args.size { return args.get(si); }
+                    stop;
+                }
+                si = si + 1;
+            }
+            return e;
+        }
+        if e.kind == ExprKind.INT || e.kind == ExprKind.FLOAT || e.kind == ExprKind.STRING ||
+           e.kind == ExprKind.CHAR || e.kind == ExprKind.BOOL || e.kind == ExprKind.NIL {
+            return e;
+        }
+        if e.kind == ExprKind.BINOP {
+            return Expr.make_binop(e.op, this.subst_macro(e.left, params, args), this.subst_macro(e.right, params, args));
+        }
+        if e.kind == ExprKind.UNARY {
+            return Expr.make_unary(e.op, this.subst_macro(e.left, params, args));
+        }
+        if e.kind == ExprKind.TERNARY {
+            return Expr.make_ternary(this.subst_macro(e.cond, params, args), this.subst_macro(e.left, params, args), this.subst_macro(e.right, params, args));
+        }
+        if e.kind == ExprKind.CAST {
+            return Expr.make_cast(e.sval, this.subst_macro(e.left, params, args));
+        }
+        if e.kind == ExprKind.MEMBER {
+            return Expr.make_member(this.subst_macro(e.left, params, args), e.sval);
+        }
+        if e.kind == ExprKind.POINTER_MEMBER {
+            return Expr.make_pointer_member(this.subst_macro(e.left, params, args), e.sval);
+        }
+        if e.kind == ExprKind.INDEX {
+            return Expr.make_index(this.subst_macro(e.left, params, args), this.subst_macro(e.right, params, args));
+        }
+        if e.kind == ExprKind.METHOD_CALL {
+            sub_args: vec<Expr>;
+            ma_i: int = 0;
+            while ma_i < e.args.size {
+                sub_args.pushb(this.subst_macro(e.args.get(ma_i), params, args));
+                ma_i = ma_i + 1;
+            }
+            return Expr.make_method_call(this.subst_macro(e.left, params, args), e.sval, sub_args);
+        }
+        if e.kind == ExprKind.CALL {
+            call_args: vec<Expr>;
+            ca_i: int = 0;
+            while ca_i < e.args.size {
+                call_args.pushb(this.subst_macro(e.args.get(ca_i), params, args));
+                ca_i = ca_i + 1;
+            }
+            return Expr.make_call(e.sval, call_args);
+        }
+        if e.kind == ExprKind.STRUCT_INIT {
+            si_args: vec<Expr>;
+            st_i: int = 0;
+            while st_i < e.args.size {
+                si_args.pushb(this.subst_macro(e.args.get(st_i), params, args));
+                st_i = st_i + 1;
+            }
+            return Expr.make_struct_init(e.sval, e.field_names, si_args);
+        }
+        if e.kind == ExprKind.ARRAY_LIT {
+            al_args: vec<Expr>;
+            al_i: int = 0;
+            while al_i < e.args.size {
+                al_args.pushb(this.subst_macro(e.args.get(al_i), params, args));
+                al_i = al_i + 1;
+            }
+            return Expr.make_array_lit(al_args);
+        }
+        return e;
+    }
+
+    // Move every nested `fnc` parsed so far onto `prog`.
+    pub fnc drain_hoisted(prog Program) : void {
+        while this.hoisted_mark < this.hoisted_funcs.size {
+            prog.funcs.pushb(this.hoisted_funcs.get(this.hoisted_mark));
+            this.hoisted_mark = this.hoisted_mark + 1;
+        }
+    }
+
+    pub fnc current() : Token {
+        if this.pos >= this.len {
+            return Token.make(Tok.EOF, "", 0, 0);
+        }
+        return this.tokens.get(this.pos);
+    }
+
+    pub fnc peek(offset int) : Token {
+        p: int = this.pos + offset;
+        if p >= this.len {
+            return Token.make(Tok.EOF, "", 0, 0);
+        }
+        return this.tokens.get(p);
+    }
+
+    pub fnc check(kind int) : bool {
+        return this.current().kind == kind;
+    }
+
+    pub fnc match_tok(kind int) : bool {
+        if this.check(kind) {
+            this.pos = this.pos + 1;
+            return true;
+        }
+        return false;
+    }
+
+    pub fnc consume(kind int, err_msg string) : Token {
+        tok: Token = this.current();
+        if tok.kind == kind {
+            this.pos = this.pos + 1;
+            return tok;
+        }
+        if !this.quiet {
+            show("parse error: ", err_msg, " at line ", tok.line, ":", tok.col, " (got ", Tok.name(tok.kind), " '", tok.val, "')");
+        }
+        return tok;
+    }
+
+    // --- Type Parsing ---
+    pub fnc parse_type() : string {
+        t: string = "";
+        // Multi-type syntax: [T1, T2, ...] — only valid at the start of a
+        // type (an array suffix `T[]` is parsed after a base type).
+        if this.check(Tok.LBRACKET) {
+            this.pos = this.pos + 1;
+            t = "[" + this.parse_type();
+            while this.match_tok(Tok.COMMA) {
+                t = t + ", " + this.parse_type();
+            }
+            this.consume(Tok.RBRACKET, "expected ']' after multi-type");
+            return t + "]";
+        }
+        // Function type: fnc(T1, T2) : R
+        if this.check(Tok.FNC) {
+            this.pos = this.pos + 1;
+            this.consume(Tok.LPAREN, "expected '(' after 'fnc' in a type");
+            t = "fnc(";
+            if !this.check(Tok.RPAREN) {
+                t = t + this.parse_type();
+                while this.match_tok(Tok.COMMA) {
+                    t = t + ", " + this.parse_type();
+                }
+            }
+            this.consume(Tok.RPAREN, "expected ')' after fnc parameter types");
+            t = t + ")";
+            if this.match_tok(Tok.COLON) {
+                t = t + ": " + this.parse_type();
+            }
+            return t;
+        }
+
+        if this.match_tok(Tok.STAR) {
+            t = "*" + this.parse_type();
+            return t;
+        }
+
+        // imut modifier: type is the underlying one
+        if this.match_tok(Tok.IMUT) {
+            t = this.parse_type();
+            return t;
+        }
+
+        // Reference type: &T
+        if this.match_tok(Tok.AMP) {
+            t = "&" + this.parse_type();
+            return t;
+        }
+
+        // Tuple type: (T1, T2, ...)
+        if this.check(Tok.LPAREN) {
+            this.pos = this.pos + 1;
+            t = "(" + this.parse_type();
+            while this.match_tok(Tok.COMMA) {
+                t = t + ", " + this.parse_type();
+            }
+            this.consume(Tok.RPAREN, "expected ')' after tuple type");
+            t = t + ")";
+            return t;
+        }
+
+        tok: Token = this.current();
+        if tok.kind == Tok.IDENT {
+            this.pos = this.pos + 1;
+            t = tok.val;
+            // Resolve type aliases: def Name : type T;
+            alias_guard: int = 0;
+            while this.type_aliases.isin(t) && alias_guard < 8 {
+                t = this.type_aliases[t];
+                alias_guard = alias_guard + 1;
+            }
+            // `thisop.typ` — the inner type of the enclosing opdef container
+            if t == "thisop" && this.check(Tok.DOT) {
+                this.pos = this.pos + 1;
+                if this.check(Tok.IDENT) { this.pos = this.pos + 1; }
+                return "thisop.typ";
+            }
+            // Normalize sized primitives to the supported widths
+            if !this.keep_sized {
+                if t == "float<64>" || t == "float<32>" || t == "float<16>" || t == "float<128>" { t = "float"; }
+                if t == "int<64>" || t == "int<32>" || t == "int<16>" || t == "int<8>" { t = "int"; }
+            }
+            // Check for generics: vec<T>, hash<K,V>
+            if this.match_tok(Tok.LT) {
+                t = t + "<" + this.parse_type();
+                while this.match_tok(Tok.COMMA) {
+                    t = t + ", " + this.parse_type();
+                }
+                if this.check(Tok.RSHIFT) {
+                    new_toks: vec<Token>;
+                    bi: int = 0;
+                    while bi < this.tokens.size {
+                        t_tok2: Token = this.tokens.get(bi);
+                        if bi == this.pos {
+                            t_tok2.kind = Tok.GT;
+                            t_tok2.val = ">";
+                            new_toks.pushb(t_tok2);
+                            extra: Token = Token.make(Tok.GT, ">", t_tok2.line, t_tok2.col);
+                            new_toks.pushb(extra);
+                        } else {
+                            new_toks.pushb(t_tok2);
+                        }
+                        bi = bi + 1;
+                    }
+                    this.tokens = new_toks;
+                    this.len = this.tokens.size;
+                }
+                this.consume(Tok.GT, "expected '>' after generic type argument");
+                t = t + ">";
+            }
+            also this.check(Tok.LPAREN) {
+                // Parent class annotation: Type(Parent) — informational
+                // (inheritance is handled elsewhere); parse and discard.
+                this.pos = this.pos + 1;
+                if this.check(Tok.IDENT) { this.pos = this.pos + 1; }
+                this.consume(Tok.RPAREN, "expected ')' after parent class annotation");
+            }
+        } else {
+            this.pos = this.pos + 1;
+            t = tok.val;
+        }
+
+        // Normalize sized primitives assembled from `name<width>` (the early
+        // check in the IDENT branch runs before `<...>` is appended).
+        if !this.keep_sized {
+            if t == "float<64>" || t == "float<32>" || t == "float<16>" || t == "float<128>" { t = "float"; }
+            if t == "int<64>" || t == "int<32>" || t == "int<16>" || t == "int<8>" { t = "int"; }
+        }
+
+        // Check for array suffix: Type[], Type[N] or Type[expr]
+        while this.match_tok(Tok.LBRACKET) {
+            if this.check(Tok.INT) {
+                size_tok: Token = this.consume(Tok.INT, "expected array size");
+                t = t + "[" + size_tok.val + "]";
+            } else {
+                if !this.check(Tok.RBRACKET) {
+                    // runtime-size expression: consume it, treat as unsized slice
+                    this.parse_expression(Precedence.LOWEST);
+                }
+                t = t + "[]";
+            }
+            this.consume(Tok.RBRACKET, "expected ']' after array type");
+        }
+
+        return t;
+    }
+
+    // --- Expression Parsing (Pratt Parser) ---
+    pub fnc has_braces(s string) : bool {
+        seen_open: bool = false;
+        seen_close: bool = false;
+        bi: int = 0;
+        while bi < s.size {
+            if s[bi] == '{' { seen_open = true; }
+            if s[bi] == '}' { seen_close = true; }
+            bi = bi + 1;
+        }
+        return seen_open && seen_close;
+    }
+
+    pub fnc append_interp_part(result Expr, node Expr) : Expr {
+        if result == null { return node; }
+        return Expr.make_binop("+", result, node);
+    }
+
+    pub fnc parse_interpolated(s string) : Expr {
+        result: Expr = null;
+        lit: string = "";
+        i: int = 0;
+        while i < s.size {
+            c: char = s[i];
+            if c == '{' {
+                // find the matching '}' (depth counting)
+                depth: int = 1;
+                j: int = i + 1;
+                expr_src: string = "";
+                closed: bool = false;
+                while j < s.size {
+                    cj: char = s[j];
+                    if cj == '{' {
+                        depth = depth + 1;
+                        expr_src = expr_src + cj;
+                    } also cj == '}' {
+                        depth = depth - 1;
+                        if depth == 0 {
+                            j = j + 1;
+                            closed = true;
+                            stop;
+                        }
+                        expr_src = expr_src + cj;
+                    } else {
+                        expr_src = expr_src + cj;
+                    }
+                    j = j + 1;
+                }
+                if !closed {
+                    // no matching '}': keep the '{' as literal text
+                    lit = lit + c;
+                    i = i + 1;
+                    continue;
+                }
+                // the brace content must be one complete expression,
+                // otherwise the braces stay literal text (Python parity)
+                inner: Expr = null;
+                is_expr: bool = false;
+                if this.has_nonspace(expr_src) {
+                    sub_lex: Lexer = Lexer.make(expr_src);
+                    sub_toks: vec<Token> = sub_lex.tokenize();
+                    if sub_toks.size > 0 {
+                        sub_par: Parser = Parser.make(sub_toks);
+                        sub_par.quiet = true;
+                        inner = sub_par.parse_expression(Precedence.LOWEST);
+                        if inner != null && inner.kind != ExprKind.NIL && sub_par.current().kind == Tok.EOF {
+                            is_expr = true;
+                        }
+                    }
+                }
+                if is_expr {
+                    if lit.size > 0 {
+                        lnode: Expr = Expr.make_string(lit);
+                        result = this.append_interp_part(result, lnode);
+                        lit = "";
+                    }
+                    if inner.kind != ExprKind.STRING {
+                        targs: vec<Expr>;
+                        targs.pushb(inner);
+                        inner = Expr.make_call("tostring", targs);
+                    }
+                    result = this.append_interp_part(result, inner);
+                } else {
+                    lit = lit + "{" + expr_src + "}";
+                }
+                i = j;
+                continue;
+            }
+            lit = lit + c;
+            i = i + 1;
+        }
+        if lit.size > 0 {
+            lnode: Expr = Expr.make_string(lit);
+            result = this.append_interp_part(result, lnode);
+        }
+        if result == null {
+            return Expr.make_string(s);
+        }
+        return result;
+    }
+
+    pub fnc has_nonspace(s string) : bool {
+        hi: int = 0;
+        while hi < s.size {
+            if s[hi] != ' ' {
+                return true;
+            }
+            hi = hi + 1;
+        }
+        return false;
+    }
+
+    pub fnc parse_cond() : Expr {
+        prev: bool = this.no_struct_init;
+        this.no_struct_init = true;
+        e: Expr = this.parse_expression(Precedence.LOWEST);
+        this.no_struct_init = prev;
+        return e;
+    }
+
+    pub fnc parse_expression(prec int) : Expr {
+        left: Expr = this.parse_prefix();
+
+        loop {
+            cur_prec: int = Precedence.get_infix_prec(this.current().kind);
+            if prec >= cur_prec {
+                stop;
+            }
+            left = this.parse_infix(left);
+        }
+
+        return left;
+    }
+
+    // strtoll(text,0) does not understand the 0b/0B prefix (glibc), so
+    // binary literals are converted here like python's int(text, 0).
+    pub fnc parse_int_text(s string) : int {
+        if s.size > 2 && s[0] == '0' && (s[1] == 'b' || s[1] == 'B') {
+            v: int = 0;
+            i: int = 2;
+            while i < s.size {
+                v = v * 2;
+                if s[i] == '1' { v = v + 1; }
+                i = i + 1;
+            }
+            return v;
+        }
+        return (int)strtoll(s, nil, 0);
+    }
+
+    // Try to consume explicit generic type arguments `name<T1, T2>` in an
+    // expression. Commits only when the '<...>' is followed by '(' (a call)
+    // or '.' (a member access) — otherwise restores so '<' stays a
+    // comparison. Type arguments are discarded: concrete types are inferred
+    // from the call arguments at type-check time.
+    pub fnc try_skip_type_args() : bool {
+        if !this.check(Tok.LT) { return false; }
+        saved: int = this.pos;
+        this.pos = this.pos + 1;
+        ok: bool = false;
+        quiet_saved: bool = this.quiet;
+        this.quiet = true;
+        while !this.check(Tok.EOF) {
+            if this.check(Tok.GT) {
+                this.pos = this.pos + 1;
+                ok = true;
+                stop;
+            }
+            this.keep_sized = true;
+            this.parse_type();
+            this.keep_sized = false;
+            if this.match_tok(Tok.COMMA) {
+                continue;
+            } also this.check(Tok.GT) {
+                continue;
+            } else {
+                stop;
+            }
+        }
+        this.quiet = quiet_saved;
+        if ok && (this.check(Tok.LPAREN) || this.check(Tok.DOT)) {
+            return true;
+        }
+        this.pos = saved;
+        this.quiet = quiet_saved;
+        return false;
+    }
+
+    pub fnc parse_prefix() : Expr {
+        tok: Token = this.current();
+
+        // Integer literal (raw text kept for arbitrary-width constants)
+        if this.match_tok(Tok.INT) {
+            val: int = this.parse_int_text(tok.val);
+            ie: Expr = Expr.make_int(val);
+            ie.sval = tok.val;
+            return ie;
+        }
+
+        // Float literal (keeps raw text for exact LLVM constants)
+        if this.match_tok(Tok.FLOAT) {
+            f_val: float = (float)strtod(tok.val, nil);
+            fe: Expr = Expr.make_float(f_val);
+            fe.sval = tok.val;
+            return fe;
+        }
+
+        // String literal (with optional {expr} interpolation)
+        if this.match_tok(Tok.STRING) {
+            if this.has_braces(tok.val) {
+                return this.parse_interpolated(tok.val);
+            }
+            return Expr.make_string(tok.val);
+        }
+
+        // Char literal
+        if this.match_tok(Tok.CHAR) {
+            c_val: char = ' ';
+            if tok.val == "\\0" {
+                c_val = '\0';
+            } also tok.val.size > 0 {
+                c_val = tok.val[0];
+            }
+            return Expr.make_char(c_val);
+        }
+
+        // Bool literal
+        if this.match_tok(Tok.BOOL) {
+            return Expr.make_bool(tok.val == "true");
+        }
+
+        // Nil literal
+        if this.match_tok(Tok.NIL) {
+            return Expr.make_nil();
+        }
+
+        // exec builtin: exec(cmd, mode)
+        if this.match_tok(Tok.EXEC) {
+            this.consume(Tok.LPAREN, "expected '(' after exec");
+            ex_args: vec<Expr>;
+            if !this.check(Tok.RPAREN) {
+                ex_args.pushb(this.parse_expression(Precedence.LOWEST));
+                while this.match_tok(Tok.COMMA) {
+                    ex_args.pushb(this.parse_expression(Precedence.LOWEST));
+                }
+            }
+            this.consume(Tok.RPAREN, "expected ')' after exec arguments");
+            return Expr.make_call("exec", ex_args);
+        }
+
+        // Unary operators: - ! ~ * & ++ --
+        if this.match_tok(Tok.MINUS) {
+            operand: Expr = this.parse_expression(Precedence.UNARY);
+            // Fold `-<literal>` into a single negative literal so the raw
+            // text survives for arbitrary-width constants.
+            if operand.kind == ExprKind.INT && operand.sval.size > 0 {
+                ne: Expr = Expr.make_int(-operand.ival);
+                ne.sval = "-" + operand.sval;
+                return ne;
+            }
+            return Expr.make_unary("-", operand);
+        }
+        if this.match_tok(Tok.NOT) {
+            operand: Expr = this.parse_expression(Precedence.UNARY);
+            return Expr.make_unary("!", operand);
+        }
+        if this.match_tok(Tok.TILDE) {
+            operand: Expr = this.parse_expression(Precedence.UNARY);
+            return Expr.make_unary("~", operand);
+        }
+        if this.match_tok(Tok.STAR) {
+            operand: Expr = this.parse_expression(Precedence.UNARY);
+            return Expr.make_unary("*", operand);
+        }
+        if this.match_tok(Tok.AMP) {
+            operand: Expr = this.parse_expression(Precedence.UNARY);
+            return Expr.make_unary("&", operand);
+        }
+
+        // Parentheses or Cast: (expr) or (Type)expr
+        if this.match_tok(Tok.LPAREN) {
+            // Check if cast: (Type)expr — mirror python's _is_cast lookahead
+            p_tok: Token = this.current();
+            is_cast: bool = false;
+            cast_type: string = "";
+            if p_tok.kind == Tok.IDENT || p_tok.kind == Tok.STAR || p_tok.kind == Tok.AMP
+               || p_tok.kind == Tok.FNC || p_tok.kind == Tok.IMUT {
+                saved_pos: int = this.pos;
+                cast_type = this.parse_type();
+                if this.check(Tok.RPAREN) {
+                    is_cast = true;
+                } else {
+                    this.pos = saved_pos;
+                    cast_type = "";
+                }
+            }
+            if is_cast {
+                this.pos = this.pos + 1; // consume ')'
+                target_expr: Expr = this.parse_expression(Precedence.UNARY);
+                return Expr.make_cast(cast_type, target_expr);
+            }
+
+            inner_expr: Expr = this.parse_expression(Precedence.LOWEST);
+            this.consume(Tok.RPAREN, "expected ')' after expression");
+            return inner_expr;
+        }
+
+        // Array literal { e1, e2, ... } or hash literal { "k": v, ... }
+        if this.match_tok(Tok.LBRACE) {
+            elems: vec<Expr>;
+            hkeys: vec<string>;
+            is_hash_lit: bool = false;
+            if !this.check(Tok.RBRACE) {
+                first: Expr = this.parse_expression(Precedence.LOWEST);
+                if this.check(Tok.COLON) && first.kind == ExprKind.STRING {
+                    is_hash_lit = true;
+                    this.pos = this.pos + 1;
+                    hkeys.pushb(first.sval);
+                    elems.pushb(this.parse_expression(Precedence.LOWEST));
+                    while this.match_tok(Tok.COMMA) {
+                        if this.check(Tok.RBRACE) { stop; }
+                        kexpr: Expr = this.parse_expression(Precedence.LOWEST);
+                        if kexpr.kind == ExprKind.STRING {
+                            hkeys.pushb(kexpr.sval);
+                        }
+                        this.consume(Tok.COLON, "expected ':' after hash key");
+                        elems.pushb(this.parse_expression(Precedence.LOWEST));
+                    }
+                } else {
+                    elems.pushb(first);
+                    while this.match_tok(Tok.COMMA) {
+                        if this.check(Tok.RBRACE) { stop; }
+                        elems.pushb(this.parse_expression(Precedence.LOWEST));
+                    }
+                }
+            }
+            this.consume(Tok.RBRACE, "expected '}' after literal");
+            if is_hash_lit {
+                he: Expr = Expr.make_array_lit(elems);
+                he.field_names = hkeys;
+                return he;
+            }
+            return Expr.make_array_lit(elems);
+        }
+
+        // Function literal used as a value
+        if this.check(Tok.FNC) {
+            return this.parse_lambda();
+        }
+
+        // `await fut` — join a future<T> and yield T
+        if this.check(Tok.IDENT) && this.current().val == "await" {
+            this.pos = this.pos + 1;
+            aw_op: Expr = this.parse_expression(Precedence.UNARY);
+            return Expr.make_unary("await", aw_op);
+        }
+
+        // Identifier or Call or Enum::Val or StructInit
+        if this.match_tok(Tok.IDENT) {
+            name: string = tok.val;
+
+            // Explicit generic args: name<T>(args) / Name<T>.member — parsed
+            // and discarded (types are inferred from the call arguments).
+            this.try_skip_type_args();
+
+            // create Type(args...) allocation expression
+            if name == "create" && this.check(Tok.IDENT) && this.peek(1).kind == Tok.LPAREN {
+                cname_tok: Token = this.consume(Tok.IDENT, "expected type name after 'create'");
+                cargs: vec<Expr>;
+                this.consume(Tok.LPAREN, "expected '(' after 'create'");
+                if !this.check(Tok.RPAREN) {
+                    cargs.pushb(this.parse_expression(Precedence.LOWEST));
+                    while this.match_tok(Tok.COMMA) {
+                        cargs.pushb(this.parse_expression(Precedence.LOWEST));
+                    }
+                }
+                this.consume(Tok.RPAREN, "expected ')' after 'create' arguments");
+                return Expr.make_call(cname_tok.val, cargs);
+            }
+
+            // Enum access: Name::VARIANT
+            if this.match_tok(Tok.COLONCOLON) {
+                v_tok: Token = this.consume(Tok.IDENT, "expected variant name after '::'");
+                return Expr.make_ident(name + "::" + v_tok.val);
+            }
+
+            // toint(TargetType, value) — two-arg form converts to an
+            // arbitrary-width type; the type rides along as a string.
+            if name == "toint" && this.check(Tok.LPAREN) {
+                tc_saved: int = this.pos;
+                this.pos = this.pos + 1;
+                this.keep_sized = true;
+                tc_ty: string = this.parse_type();
+                this.keep_sized = false;
+                // Only SIZED targets (int<128>, uint<7>, ...) take this path;
+                // `toint(int, x)` keeps the plain 2-arg cast handling.
+                tc_has_lt: bool = false;
+                tci: int = 0;
+                while tci < tc_ty.size {
+                    if tc_ty[tci] == '<' { tc_has_lt = true; stop; }
+                    tci = tci + 1;
+                }
+                if tc_has_lt && this.check(Tok.COMMA) {
+                    this.pos = this.pos + 1;
+                    tc_val: Expr = this.parse_expression(Precedence.LOWEST);
+                    this.consume(Tok.RPAREN, "expected ')' after toint arguments");
+                    tc_args: vec<Expr>;
+                    tc_args.pushb(Expr.make_string(tc_ty));
+                    tc_args.pushb(tc_val);
+                    return Expr.make_call("__toint_conv", tc_args);
+                }
+                this.pos = tc_saved;
+            }
+
+            // Function call: name(args...)
+            if this.match_tok(Tok.LPAREN) {
+                args: vec<Expr>;
+                // scast(TargetType, value) - target is a type
+                if name == "scast" {
+                    this.keep_sized = true;
+                    sc_t: string = this.parse_type();
+                    this.keep_sized = false;
+                    args.pushb(Expr.make_string(sc_t));
+                    this.consume(Tok.COMMA, "expected ',' after scast target type");
+                    args.pushb(this.parse_expression(Precedence.LOWEST));
+                    this.consume(Tok.RPAREN, "expected ')' after scast arguments");
+                    return Expr.make_call(name, args);
+                }
+                // sizeof/typeof take a type-or-expression argument
+                if name == "sizeof" || name == "typeof" {
+                    this.keep_sized = true;
+                    type_text: string = this.parse_type();
+                    this.keep_sized = false;
+                    args.pushb(Expr.make_string(type_text));
+                    this.consume(Tok.RPAREN, "expected ')' after " + name + " argument");
+                    return Expr.make_call(name, args);
+                }
+                // tounion(UnionType, expr) — first argument is a type name
+                if name == "tounion" {
+                    utype_text: string = this.parse_type();
+                    args.pushb(Expr.make_string(utype_text));
+                    this.consume(Tok.COMMA, "expected ',' after tounion type");
+                    args.pushb(this.parse_expression(Precedence.LOWEST));
+                    this.consume(Tok.RPAREN, "expected ')' after tounion arguments");
+                    return Expr.make_call(name, args);
+                }
+                if !this.check(Tok.RPAREN) {
+                    args.pushb(this.parse_call_arg());
+                    while this.match_tok(Tok.COMMA) {
+                        args.pushb(this.parse_call_arg());
+                    }
+                }
+                this.consume(Tok.RPAREN, "expected ')' after call arguments");
+                if this.macros.isin(name) {
+                    pm_def: MacroDef = this.macros[name];
+                    if pm_def.body != null { return this.subst_macro(pm_def.body, pm_def.params, args); }
+                }
+                return Expr.make_call(name, args);
+            }
+
+            // Struct initialization: Name { field: val, ... } or Name {}
+            if !this.no_struct_init && this.check(Tok.LBRACE) && (this.peek(1).kind == Tok.RBRACE || (this.peek(1).kind == Tok.IDENT && this.peek(2).kind == Tok.COLON)) {
+                this.consume(Tok.LBRACE, "expected '{'");
+                fnames: vec<string>;
+                fvals: vec<Expr>;
+                while !this.check(Tok.RBRACE) && !this.check(Tok.EOF) {
+                    fname_tok: Token = this.consume(Tok.IDENT, "expected field name in struct init");
+                    this.consume(Tok.COLON, "expected ':' after field name");
+                    fval: Expr = this.parse_expression(Precedence.LOWEST);
+                    fnames.pushb(fname_tok.val);
+                    fvals.pushb(fval);
+                    if !this.match_tok(Tok.COMMA) {
+                        stop;
+                    }
+                }
+                this.consume(Tok.RBRACE, "expected '}' after struct init");
+                return Expr.make_struct_init(name, fnames, fvals);
+            }
+
+            return Expr.make_ident(name);
+        }
+
+        if !this.quiet {
+            show("parse error: unexpected token in expression: ", Tok.name(tok.kind), " '", tok.val, "' at ", tok.line, ":", tok.col);
+        }
+        this.pos = this.pos + 1;
+        return Expr.make_nil();
+    }
+
+    // Does the token after `is` / `isnt` start a type rather than a value?
+    pub fnc is_type_check_start() : bool {
+        tok: Token = this.current();
+        if tok.kind == Tok.STAR || tok.kind == Tok.AMP || tok.kind == Tok.IMUT || tok.kind == Tok.LT { return true; }
+        if tok.kind == Tok.LBRACKET { return true; }
+        if tok.kind == Tok.IDENT {
+            v: string = tok.val;
+            if v == "int" || v == "uint" || v == "float" || v == "string" || v == "char" || v == "bool" || v == "void" || v == "vec" || v == "matrix" || v == "fnc" || v == "auto" { return true; }
+            nx: Token = this.peek(1);
+            if nx.kind == Tok.LT || nx.kind == Tok.LBRACKET { return true; }
+            if v.size > 0 && v[0] >= 'A' && v[0] <= 'Z' { return true; }
+            return false;
+        }
+        return false;
+    }
+
+    // A member name may be a plain identifier or a keyword token (python
+    // keeps `delete`, `true`, ... usable as field/method names after '.').
+    pub fnc consume_member_name(msg string) : Token {
+        tok: Token = this.current();
+        ok: bool = tok.kind == Tok.IDENT;
+        if !ok && tok.val.size > 0 {
+            c: char = tok.val[0];
+            if c >= 'a' && c <= 'z' { ok = true; }
+            if c >= 'A' && c <= 'Z' { ok = true; }
+            if c == '_' { ok = true; }
+        }
+        if !ok { return this.consume(Tok.IDENT, msg); }
+        this.pos = this.pos + 1;
+        return tok;
+    }
+
+    pub fnc parse_infix(left Expr) : Expr {
+        tok: Token = this.current();
+
+        // `expr is Type` / `expr is value` (and `isnt`)
+        if tok.kind == Tok.IS || tok.kind == Tok.ISNT {
+            this.pos = this.pos + 1;
+            is_op: string = "is";
+            if tok.kind == Tok.ISNT { is_op = "isnt"; }
+            if this.is_type_check_start() {
+                tc_ty: string = this.parse_type();
+                return Expr.make_binop(is_op + "T", left, Expr.make_ident(tc_ty));
+            }
+            is_right: Expr = this.parse_expression(Precedence.COMPARE);
+            return Expr.make_binop(is_op, left, is_right);
+        }
+
+        // Cast: expr as Type
+        if tok.kind == Tok.AS {
+            this.pos = this.pos + 1;
+            target_type: string = this.parse_type();
+            return Expr.make_cast(target_type, left);
+        }
+
+        // Binary operators
+        if tok.kind == Tok.PLUS || tok.kind == Tok.MINUS || tok.kind == Tok.STAR ||
+           tok.kind == Tok.SLASH || tok.kind == Tok.PERCENT || tok.kind == Tok.EQ ||
+           tok.kind == Tok.NEQ || tok.kind == Tok.LT || tok.kind == Tok.LTE ||
+           tok.kind == Tok.GT || tok.kind == Tok.GTE || tok.kind == Tok.AND ||
+           tok.kind == Tok.OR || tok.kind == Tok.AMP || tok.kind == Tok.PIPE ||
+           tok.kind == Tok.CARET || tok.kind == Tok.LSHIFT || tok.kind == Tok.RSHIFT ||
+           tok.kind == Tok.ISINOP {
+            this.pos = this.pos + 1;
+            prec: int = Precedence.get_infix_prec(tok.kind);
+            right: Expr = this.parse_expression(prec);
+            return Expr.make_binop(tok.val, left, right);
+        }
+
+        // Ternary operator: cond ? then : else
+        if this.match_tok(Tok.QUESTION) {
+            then_expr: Expr = this.parse_expression(Precedence.LOWEST);
+            this.consume(Tok.COLON, "expected ':' in ternary operator");
+            else_expr: Expr = this.parse_expression(Precedence.TERNARY - 1);
+            return Expr.make_ternary(left, then_expr, else_expr);
+        }
+
+        // Member access or method call: left.member or left.method(...)
+        if this.match_tok(Tok.DOT) {
+            mem_tok: Token = this.consume_member_name("expected member name after '.'");
+            if this.match_tok(Tok.LPAREN) {
+                args: vec<Expr>;
+                if !this.check(Tok.RPAREN) {
+                    args.pushb(this.parse_call_arg());
+                    while this.match_tok(Tok.COMMA) {
+                        args.pushb(this.parse_call_arg());
+                    }
+                }
+                this.consume(Tok.RPAREN, "expected ')' after method arguments");
+                if left.kind == ExprKind.IDENT && this.import_aliases.isin(left.sval) {
+                    return Expr.make_call(left.sval + "_" + mem_tok.val, args);
+                }
+                return Expr.make_method_call(left, mem_tok.val, args);
+            }
+            return Expr.make_member(left, mem_tok.val);
+        }
+
+        // Pointer member access: left->member (raw pointer field read)
+        if this.match_tok(Tok.ARROW) {
+            pm_tok: Token = this.consume_member_name("expected member name after '->'");
+            return Expr.make_pointer_member(left, pm_tok.val);
+        }
+
+        // Index access: left[idx]
+        if this.match_tok(Tok.LBRACKET) {
+            idx_expr: Expr = this.parse_expression(Precedence.LOWEST);
+            this.consume(Tok.RBRACKET, "expected ']' after index");
+            return Expr.make_index(left, idx_expr);
+        }
+
+        // Function call on expression: expr(...)
+        if this.match_tok(Tok.LPAREN) {
+            args: vec<Expr>;
+            if !this.check(Tok.RPAREN) {
+                args.pushb(this.parse_call_arg());
+                while this.match_tok(Tok.COMMA) {
+                    args.pushb(this.parse_call_arg());
+                }
+            }
+            this.consume(Tok.RPAREN, "expected ')' after call arguments");
+            if left.kind == ExprKind.IDENT && this.macros.isin(left.sval) {
+                m_def: MacroDef = this.macros[left.sval];
+                if m_def.body != null { return this.subst_macro(m_def.body, m_def.params, args); }
+            }
+            if left.kind == ExprKind.IDENT {
+                return Expr.make_call(left.sval, args);
+            }
+            return Expr.make_method_call(left, "call", args);
+        }
+
+        return left;
+    }
+
+
+    // Call argument: allows `name = value` named arguments.
+    pub fnc parse_call_arg() : Expr {
+        if this.check(Tok.IDENT) && this.peek(1).kind == Tok.ASSIGN {
+            aname: Token = this.current();
+            this.pos = this.pos + 2;
+            aval: Expr = this.parse_expression(Precedence.LOWEST);
+            return Expr.make_binop("=", Expr.make_ident(aname.val), aval);
+        }
+        return this.parse_expression(Precedence.LOWEST);
+    }
+
+    // --- Statement Parsing ---
+    pub fnc parse_with_decl() : Stmt {
+        wd_name: Token = this.consume(Tok.IDENT, "expected variable name in with declaration");
+        if this.check(Tok.COLONEQ) {
+            this.pos = this.pos + 1;
+            wd_expr: Expr = this.parse_expression(Precedence.LOWEST);
+            return Stmt.make_var_decl(wd_name.val, "", true, false, wd_expr);
+        }
+        this.consume(Tok.COLON, "expected ':' after with variable name");
+        wd_type: string = this.parse_type();
+        wd_init: Expr = null;
+        if this.match_tok(Tok.ASSIGN) {
+            wd_init = this.parse_expression(Precedence.LOWEST);
+        }
+        return Stmt.make_var_decl(wd_name.val, wd_type, false, false, wd_init);
+    }
+
+    // Every statement records the source position of its first token —
+    // used by the debugger instrumentation (`leash dbg`).
+    pub fnc parse_statement() : Stmt {
+        pos_tok: Token = this.current();
+        inner: Stmt = this.parse_statement_inner();
+        if inner != null {
+            inner.line = pos_tok.line;
+            inner.col = pos_tok.col;
+        }
+        return inner;
+    }
+
+    pub fnc parse_statement_inner() : Stmt {
+        // Multi-assignment: a, b: T1, T2 = expr;
+        if this.check(Tok.IDENT) && this.peek(1).kind == Tok.COMMA {
+            ma_ok: bool = true;
+            ma_names: vec<string>;
+            scan_i: int = this.pos;
+            loop {
+                if scan_i >= this.len || this.tokens.get(scan_i).kind != Tok.IDENT {
+                    ma_ok = false;
+                    stop;
+                }
+                ma_names.pushb(this.tokens.get(scan_i).val);
+                scan_i = scan_i + 1;
+                if scan_i < this.len && this.tokens.get(scan_i).kind == Tok.COMMA {
+                    scan_i = scan_i + 1;
+                    continue;
+                }
+                stop;
+            }
+            if ma_ok && scan_i < this.len && this.tokens.get(scan_i).kind == Tok.COLON {
+                this.pos = scan_i + 1;
+                ma_types: vec<string>;
+                ma_types.pushb(this.parse_type());
+                while this.match_tok(Tok.COMMA) {
+                    ma_types.pushb(this.parse_type());
+                }
+                this.consume(Tok.ASSIGN, "expected '=' in multi-assignment");
+                ma_expr: Expr = this.parse_expression(Precedence.LOWEST);
+                this.consume(Tok.SEMI, "expected ';' after multi-assignment");
+                ma_block: vec<Stmt>;
+                tmp_decl: Stmt = Stmt.make_var_decl("__tup_tmp", "", true, false, ma_expr);
+                ma_block.pushb(tmp_decl);
+                ma_i: int = 0;
+                while ma_i < ma_names.size {
+                    ma_gargs: vec<Expr>;
+                    ma_gargs.pushb(Expr.make_ident("__tup_tmp"));
+                    ma_gargs.pushb(Expr.make_int(ma_i));
+                    ma_getter: Expr = Expr.make_call("__tupget", ma_gargs);
+                    ma_block.pushb(Stmt.make_var_decl(ma_names.get(ma_i), ma_types.get(ma_i), false, false, ma_getter));
+                    ma_i = ma_i + 1;
+                }
+                return Stmt.make_block(ma_block);
+            }
+        }
+
+        // throw ErrorName(args);
+        if this.check(Tok.IDENT) && this.current().val == "throw"
+           && this.peek(1).kind == Tok.IDENT && this.peek(2).kind == Tok.LPAREN {
+            throw_tok: Token = this.current();
+            this.pos = this.pos + 1;
+            tname_tok: Token = this.consume(Tok.IDENT, "expected error name after 'throw'");
+            this.consume(Tok.LPAREN, "expected '(' after error name");
+            targs: vec<Expr>;
+            if !this.check(Tok.RPAREN) {
+                targs.pushb(this.parse_expression(Precedence.LOWEST));
+                while this.match_tok(Tok.COMMA) {
+                    targs.pushb(this.parse_expression(Precedence.LOWEST));
+                }
+            }
+            this.consume(Tok.RPAREN, "expected ')' after throw arguments");
+            this.consume(Tok.SEMI, "expected ';' after throw");
+            throw_stmt: Stmt = Stmt.make_throw(tname_tok.val, targs);
+            throw_stmt.line = throw_tok.line;
+            throw_stmt.col = throw_tok.col;
+            return throw_stmt;
+        }
+
+        // defer stmt; (runs at scope/function exit)
+        if this.check(Tok.IDENT) && this.current().val == "defer" {
+            this.pos = this.pos + 1;
+            deferred_stmt: Stmt = this.parse_statement();
+            return Stmt.make_defer(deferred_stmt);
+        }
+
+        // works { ... } otherwise err { ... }
+        if this.check(Tok.IDENT) && this.current().val == "works" && this.peek(1).kind == Tok.LBRACE {
+            this.pos = this.pos + 1;
+            works_body: vec<Stmt> = this.parse_block();
+            if this.check(Tok.IDENT) && this.current().val == "otherwise" {
+                this.pos = this.pos + 1;
+                err_tok: Token = this.consume(Tok.IDENT, "expected error variable after 'otherwise'");
+                works_handler: vec<Stmt> = this.parse_block();
+                return Stmt.make_works(works_body, err_tok.val, works_handler);
+            }
+            return Stmt.make_block(works_body);
+        }
+
+        // with decl { ... } or with { decls } { ... }
+        if this.check(Tok.IDENT) && this.current().val == "with" {
+            this.pos = this.pos + 1;
+            with_decls: vec<Stmt>;
+            if this.match_tok(Tok.LBRACE) {
+                while !this.check(Tok.RBRACE) && !this.check(Tok.EOF) {
+                    wd_stmt: Stmt = this.parse_with_decl();
+                    with_decls.pushb(wd_stmt);
+                    this.match_tok(Tok.SEMI);
+                }
+                this.consume(Tok.RBRACE, "expected '}' after with declarations");
+            } else {
+                wd_single: Stmt = this.parse_with_decl();
+                with_decls.pushb(wd_single);
+                this.match_tok(Tok.SEMI);
+            }
+            with_body: vec<Stmt> = this.parse_block();
+            merged: vec<Stmt>;
+            foreach _, wd in<vector> with_decls { merged.pushb(wd); }
+            foreach _, wb in<vector> with_body { merged.pushb(wb); }
+            return Stmt.make_block(merged);
+        }
+
+        // Variable declaration with explicit type: name: Type = expr; or name: Type;
+        if this.check(Tok.IDENT) && this.peek(1).kind == Tok.COLON && this.peek(2).kind != Tok.COLON {
+            name_tok: Token = this.current();
+            this.pos = this.pos + 2; // consume name and ':'
+            is_imut: bool = false;
+            if this.current().val == "imut" {
+                is_imut = true;
+                this.pos = this.pos + 1;
+            }
+            var_type: string = this.parse_type();
+            init_val: Expr = null;
+            if this.match_tok(Tok.ASSIGN) {
+                init_val = this.parse_expression(Precedence.LOWEST);
+            }
+            this.consume(Tok.SEMI, "expected ';' after variable declaration");
+            return Stmt.make_var_decl(name_tok.val, var_type, false, is_imut, init_val);
+        }
+
+        // Variable declaration with inference: name := expr;
+        if this.check(Tok.IDENT) && this.peek(1).kind == Tok.COLONEQ {
+            name_tok: Token = this.current();
+            this.pos = this.pos + 2; // consume name and ':='
+            init_val: Expr = this.parse_expression(Precedence.LOWEST);
+            this.consume(Tok.SEMI, "expected ';' after variable declaration");
+            return Stmt.make_var_decl(name_tok.val, "", true, false, init_val);
+        }
+
+        // Return statement
+        if this.match_tok(Tok.RETURN) {
+            val: Expr = null;
+            if !this.check(Tok.SEMI) {
+                val = this.parse_expression(Precedence.LOWEST);
+                // Multi-value return: return e1, e2, ...;
+                if this.check(Tok.COMMA) {
+                    mvals: vec<Expr>;
+                    mvals.pushb(val);
+                    while this.match_tok(Tok.COMMA) {
+                        mvals.pushb(this.parse_expression(Precedence.LOWEST));
+                    }
+                    tup: Expr = Expr.make_array_lit(mvals);
+                    tup.sval = "__tuple__";
+                    val = tup;
+                }
+            }
+            this.consume(Tok.SEMI, "expected ';' after return");
+            return Stmt.make_return(val);
+        }
+
+        // If statement: if cond { ... } also cond { ... } else { ... }
+        // Nested function declaration: `fnc name(...) { ... }`
+        // Hoisted to top level (python resolves the name in the enclosing scope).
+        if this.check(Tok.FNC) {
+            nested_fd: FuncDecl = this.parse_function(false, true);
+            this.hoisted_funcs.pushb(nested_fd);
+            nf_body: vec<Stmt>;
+            return Stmt.make_block(nf_body);
+        }
+
+        if this.match_tok(Tok.IF) {
+            return this.parse_if();
+        }
+
+        // Unless statement: unless cond { ... } (alsou cond { ... })
+        if this.match_tok(Tok.UNLESS) {
+            u_stmt: Stmt = this.parse_if();
+            if u_stmt != null && u_stmt.cond != null {
+                u_stmt.cond = Expr.make_unary("!", u_stmt.cond);
+            }
+            return u_stmt;
+        }
+
+        // While loop: while cond { ... }
+        if this.match_tok(Tok.WHILE) {
+            cond: Expr = this.parse_cond();
+            body: vec<Stmt> = this.parse_block();
+            return Stmt.make_while(cond, body);
+        }
+
+        // For loop: for init; cond; step { ... }
+        if this.match_tok(Tok.FOR) {
+            init: Stmt = this.parse_statement();
+            cond: Expr = this.parse_cond();
+            this.consume(Tok.SEMI, "expected ';' after for condition");
+            step: Stmt = null;
+            if !this.check(Tok.LBRACE) {
+                target: Expr = this.parse_expression(Precedence.LOWEST);
+                op: string = "=";
+                val: Expr = null;
+                if this.match_tok(Tok.ASSIGN) { op = "="; val = this.parse_expression(Precedence.LOWEST); }
+                also this.match_tok(Tok.PLUSEQ) { op = "+="; val = this.parse_expression(Precedence.LOWEST); }
+                also this.match_tok(Tok.MINUSEQ) { op = "-="; val = this.parse_expression(Precedence.LOWEST); }
+                step = Stmt.make_assign(target, op, val);
+            }
+            body: vec<Stmt> = this.parse_block();
+            return Stmt.make_for(init, cond, step, body);
+        }
+
+    // Foreach loop: foreach [idx,] item in [<type>] coll { body }
+        if this.match_tok(Tok.FOREACH) {
+            first_tok: Token = this.consume(Tok.IDENT, "expected loop variable in foreach");
+            idx_name: string = "";
+            item_name: string = "";
+            if this.match_tok(Tok.COMMA) {
+                idx_name = first_tok.val;
+                item_tok: Token = this.consume(Tok.IDENT, "expected item variable after ',' in foreach");
+                item_name = item_tok.val;
+            } else {
+                item_name = first_tok.val;
+            }
+
+            this.consume(Tok.IN, "expected 'in' in foreach");
+
+            is_string_loop: bool = false;
+            is_struct_loop: bool = false;
+            has_type_tag: bool = this.match_tok(Tok.LT);
+            if has_type_tag {
+                if this.check(Tok.STRUCT) {
+                    this.pos = this.pos + 1;
+                    is_struct_loop = true;
+                } else {
+                    typ_tok: Token = this.consume(Tok.IDENT, "expected type after '<' in foreach");
+                    if typ_tok.val == "string" { is_string_loop = true; }
+                }
+                this.consume(Tok.GT, "expected '>' after type in foreach");
+            }
+
+            coll_expr: Expr = this.parse_cond();
+            body: vec<Stmt> = this.parse_block();
+
+            if is_struct_loop {
+                if idx_name.size == 0 || item_name.size == 0 {
+                    show("error: in<struct> foreach needs 'name, value' loop vars");
+                    return Stmt.make_block(body);
+                }
+                return Stmt.make_struct_foreach(idx_name, item_name, coll_expr, body);
+            }
+            return this.desugar_foreach(idx_name, item_name, is_string_loop, coll_expr, body);
+        }
+
+        // Do-while: do { body } while (cond);
+        if this.match_tok(Tok.DO) {
+            do_body: vec<Stmt> = this.parse_block();
+            this.consume(Tok.WHILE, "expected 'while' after do block");
+            do_cond: Expr = this.parse_cond();
+            this.match_tok(Tok.SEMI);
+            not_cond: Expr = Expr.make_unary("!", do_cond);
+            dw_stop: vec<Stmt>;
+            dw_stop.pushb(Stmt.make_stop());
+            dw_empty: vec<Stmt>;
+            exit_check: Stmt = Stmt.make_if(not_cond, dw_stop, dw_empty);
+            inner: vec<Stmt> = do_body;
+            inner.pushb(exit_check);
+            return Stmt.make_loop(inner);
+        }
+
+        // Loop statement: loop { ... }
+        if this.match_tok(Tok.LOOP) {
+            body: vec<Stmt> = this.parse_block();
+            return Stmt.make_loop(body);
+        }
+
+        // Delete statement: del expr;
+        if this.match_tok(Tok.DELETE) {
+            del_target: Expr = this.parse_expression(Precedence.LOWEST);
+            this.consume(Tok.SEMI, "expected ';' after 'del'");
+            del_stmt: Stmt = Stmt.make_expr(del_target);
+            del_stmt.name = "__del__";
+            return del_stmt;
+        }
+
+        // Stop statement: stop;
+        if this.match_tok(Tok.STOP) {
+            this.consume(Tok.SEMI, "expected ';' after stop");
+            return Stmt.make_stop();
+        }
+
+        // Continue statement: continue; or skip;
+        if this.match_tok(Tok.CONTINUE) {
+            this.consume(Tok.SEMI, "expected ';' after continue");
+            return Stmt.make_skip();
+        }
+
+        // Show statement: show(...) or showb(...)
+        if this.check(Tok.SHOW) || this.check(Tok.SHOWB) {
+            is_showb: bool = this.current().kind == Tok.SHOWB;
+            this.pos = this.pos + 1; // consume show/showb
+            this.consume(Tok.LPAREN, "expected '(' after show");
+            args: vec<Expr>;
+            if !this.check(Tok.RPAREN) {
+                args.pushb(this.parse_expression(Precedence.LOWEST));
+                while this.match_tok(Tok.COMMA) {
+                    if this.check(Tok.IDENT) && this.peek(1).kind == Tok.ASSIGN {
+                        kw: Token = this.consume(Tok.IDENT, "expected kwarg name");
+                        this.pos = this.pos + 1;
+                        this.parse_expression(Precedence.LOWEST);
+                    } else {
+                        args.pushb(this.parse_expression(Precedence.LOWEST));
+                    }
+                }
+            }
+            this.consume(Tok.RPAREN, "expected ')' after show arguments");
+            this.consume(Tok.SEMI, "expected ';' after show call");
+            return Stmt.make_show(args, is_showb);
+        }
+
+        // Switch statement: switch expr { case ... { } default { } }
+        if this.match_tok(Tok.SWITCH) {
+            val: Expr = this.parse_cond();
+            this.consume(Tok.LBRACE, "expected '{' after switch expression");
+            cases: vec<Stmt>;
+            default_b: vec<Stmt>;
+
+            while !this.check(Tok.RBRACE) && !this.check(Tok.EOF) {
+                if this.match_tok(Tok.CASE) {
+                    c_val: Expr = this.parse_cond();
+                    c_body: vec<Stmt> = this.parse_block();
+                    cases.pushb(Stmt.make_case(c_val, c_body));
+                } also this.match_tok(Tok.DEFAULT) {
+                    default_b = this.parse_block();
+                } else {
+                    show("parse error: expected 'case' or 'default' in switch");
+                    this.pos = this.pos + 1;
+                }
+            }
+            this.consume(Tok.RBRACE, "expected '}' after switch body");
+            return Stmt.make_switch(val, cases, default_b);
+        }
+
+        // Block statement: { ... }
+        if this.check(Tok.LBRACE) {
+            body: vec<Stmt> = this.parse_block();
+            return Stmt.make_block(body);
+        }
+
+        // Expression statement or Assignment
+        expr: Expr = this.parse_expression(Precedence.LOWEST);
+
+        if this.match_tok(Tok.ASSIGN) {
+            val: Expr = this.parse_expression(Precedence.LOWEST);
+            this.consume(Tok.SEMI, "expected ';' after assignment");
+            return Stmt.make_assign(expr, "=", val);
+        }
+        if this.match_tok(Tok.PLUSEQ) {
+            val: Expr = this.parse_expression(Precedence.LOWEST);
+            this.consume(Tok.SEMI, "expected ';' after '+='");
+            return Stmt.make_assign(expr, "+=", val);
+        }
+        if this.match_tok(Tok.MINUSEQ) {
+            val: Expr = this.parse_expression(Precedence.LOWEST);
+            this.consume(Tok.SEMI, "expected ';' after '-='");
+            return Stmt.make_assign(expr, "-=", val);
+        }
+        if this.match_tok(Tok.STAREQ) {
+            val: Expr = this.parse_expression(Precedence.LOWEST);
+            this.consume(Tok.SEMI, "expected ';' after '*='");
+            return Stmt.make_assign(expr, "*=", val);
+        }
+        if this.match_tok(Tok.SLASHEQ) {
+            val: Expr = this.parse_expression(Precedence.LOWEST);
+            this.consume(Tok.SEMI, "expected ';' after '/='");
+            return Stmt.make_assign(expr, "/=", val);
+        }
+        if this.match_tok(Tok.PERCENTEQ) {
+            val: Expr = this.parse_expression(Precedence.LOWEST);
+            this.consume(Tok.SEMI, "expected ';' after '%='");
+            return Stmt.make_assign(expr, "%=", val);
+        }
+        if this.match_tok(Tok.SHIFTEQL) {
+            val: Expr = this.parse_expression(Precedence.LOWEST);
+            this.consume(Tok.SEMI, "expected ';' after '<<='");
+            return Stmt.make_assign(expr, "<<=", val);
+        }
+        if this.match_tok(Tok.SHIFTEQR) {
+            val: Expr = this.parse_expression(Precedence.LOWEST);
+            this.consume(Tok.SEMI, "expected ';' after '>>='");
+            return Stmt.make_assign(expr, ">>=", val);
+        }
+        if this.match_tok(Tok.AMPEQ) {
+            val: Expr = this.parse_expression(Precedence.LOWEST);
+            this.consume(Tok.SEMI, "expected ';' after '&='");
+            return Stmt.make_assign(expr, "&=", val);
+        }
+        if this.match_tok(Tok.PIPEEQ) {
+            val: Expr = this.parse_expression(Precedence.LOWEST);
+            this.consume(Tok.SEMI, "expected ';' after '|='");
+            return Stmt.make_assign(expr, "|=", val);
+        }
+        if this.match_tok(Tok.CARETEQ) {
+            val: Expr = this.parse_expression(Precedence.LOWEST);
+            this.consume(Tok.SEMI, "expected ';' after '^='");
+            return Stmt.make_assign(expr, "^=", val);
+        }
+        if this.match_tok(Tok.PLUSPLUS) {
+            this.consume(Tok.SEMI, "expected ';' after '++'");
+            return Stmt.make_assign(expr, "++", Expr.make_int(1));
+        }
+        if this.match_tok(Tok.MINUSMINUS) {
+            this.consume(Tok.SEMI, "expected ';' after '--'");
+            return Stmt.make_assign(expr, "--", Expr.make_int(1));
+        }
+
+        this.consume(Tok.SEMI, "expected ';' after expression statement");
+        return Stmt.make_expr(expr);
+    }
+
+    pub fnc parse_if() : Stmt {
+        cond: Expr = this.parse_cond();
+        then_b: vec<Stmt> = this.parse_block();
+        else_b: vec<Stmt>;
+
+        if this.match_tok(Tok.ALSO) {
+            // Desugar 'also cond { body }' into 'else { if cond { body } }'
+            also_if: Stmt = this.parse_if();
+            else_b.pushb(also_if);
+        } also this.match_tok(Tok.ALSOU) {
+            alsou_if: Stmt = this.parse_if();
+            if alsou_if != null && alsou_if.cond != null {
+                alsou_if.cond = Expr.make_unary("!", alsou_if.cond);
+            }
+            else_b.pushb(alsou_if);
+        } also this.match_tok(Tok.ELSE) {
+            if this.match_tok(Tok.IF) {
+                nested_if: Stmt = this.parse_if();
+                else_b.pushb(nested_if);
+            } else {
+                else_b = this.parse_block();
+            }
+        }
+
+        return Stmt.make_if(cond, then_b, else_b);
+    }
+
+    pub fnc parse_block() : vec<Stmt> {
+        this.consume(Tok.LBRACE, "expected '{' at start of block");
+        body: vec<Stmt>;
+        while !this.check(Tok.RBRACE) && !this.check(Tok.EOF) {
+            body.pushb(this.parse_statement());
+        }
+        this.consume(Tok.RBRACE, "expected '}' at end of block");
+        return body;
+    }
+
+    pub fnc desugar_foreach(idx_name string, item_name string, is_string_loop bool, coll_expr Expr, body vec<Stmt>) : Stmt {
+        fe_idx: string = "__fe_" + tostring(this.fe_counter);
+        this.fe_counter = this.fe_counter + 1;
+
+        // Init: __fe_X: int = 0;
+        init_stmt: Stmt = Stmt.make_var_decl(fe_idx, "int", false, false, Expr.make_int(0));
+
+        // Cond: __fe_X < coll.size
+        size_expr: Expr = Expr.make_member(coll_expr, "size");
+        cond_expr: Expr = Expr.make_binop("<", Expr.make_ident(fe_idx), size_expr);
+
+        // Body:
+        new_body: vec<Stmt>;
+        if idx_name.size > 0 && idx_name != "_" {
+            new_body.pushb(Stmt.make_var_decl(idx_name, "int", false, false, Expr.make_ident(fe_idx)));
+        }
+        if item_name.size > 0 && item_name != "_" {
+            if is_string_loop {
+                item_val: Expr = Expr.make_index(coll_expr, Expr.make_ident(fe_idx));
+                new_body.pushb(Stmt.make_var_decl(item_name, "char", false, false, item_val));
+            } else {
+                item_val: Expr = Expr.make_index(coll_expr, Expr.make_ident(fe_idx));
+                new_body.pushb(Stmt.make_var_decl(item_name, "", false, false, item_val));
+            }
+        }
+
+        bi: int = 0;
+        while bi < body.size {
+            new_body.pushb(this.foreach_fix_skips(body.get(bi), fe_idx));
+            bi = bi + 1;
+        }
+
+        // Step: __fe_X += 1
+        step_stmt: Stmt = Stmt.make_assign(Expr.make_ident(fe_idx), "+=", Expr.make_int(1));
+        new_body.pushb(step_stmt);
+
+        while_stmt: Stmt = Stmt.make_while(cond_expr, new_body);
+
+        blk_stmts: vec<Stmt>;
+        blk_stmts.pushb(init_stmt);
+        blk_stmts.pushb(while_stmt);
+        return Stmt.make_block(blk_stmts);
+    }
+
+    pub fnc foreach_fix_skips(s Stmt, fe_idx string) : Stmt {
+        if s == null { return s; }
+        if s.kind == StmtKind.SKIP {
+            two: vec<Stmt>;
+            two.pushb(Stmt.make_assign(Expr.make_ident(fe_idx), "+=", Expr.make_int(1)));
+            two.pushb(s);
+            return Stmt.make_block(two);
+        }
+        if s.kind == StmtKind.BLOCK {
+            nb: vec<Stmt>;
+            foreach _, st in<vector> s.body { nb.pushb(this.foreach_fix_skips(st, fe_idx)); }
+            return Stmt.make_block(nb);
+        }
+        if s.kind == StmtKind.IF {
+            a: vec<Stmt>;
+            foreach _, st in<vector> s.then_block { a.pushb(this.foreach_fix_skips(st, fe_idx)); }
+            b: vec<Stmt>;
+            foreach _, st in<vector> s.else_block { b.pushb(this.foreach_fix_skips(st, fe_idx)); }
+            return Stmt.make_if(s.cond, a, b);
+        }
+        return s;
+    }
+
+    pub fnc parse_method_nofn(is_static bool, is_pub bool) : FuncDecl {
+        name_tok: Token = this.consume(Tok.IDENT, "expected method name");
+        this.consume(Tok.LPAREN, "expected '(' after method name");
+        params: vec<FuncParam>;
+        if !this.check(Tok.RPAREN) {
+            pn: Token = this.consume(Tok.IDENT, "expected parameter name");
+            this.match_tok(Tok.COLON);
+            pt: string = this.parse_type();
+            pdef: Expr = null;
+            if this.match_tok(Tok.ASSIGN) { pdef = this.parse_expression(Precedence.LOWEST); }
+            params.pushb(FuncParam.make(pn.val, pt, false, pdef));
+            while this.match_tok(Tok.COMMA) {
+                pn2: Token = this.consume(Tok.IDENT, "expected parameter name");
+                this.match_tok(Tok.COLON);
+                pt2: string = this.parse_type();
+                pdef2: Expr = null;
+                if this.match_tok(Tok.ASSIGN) { pdef2 = this.parse_expression(Precedence.LOWEST); }
+                params.pushb(FuncParam.make(pn2.val, pt2, false, pdef2));
+            }
+        }
+        this.consume(Tok.RPAREN, "expected ')' after method parameter list");
+        ret_type: string = "void";
+        if this.match_tok(Tok.COLON) {
+            ret_type = this.parse_type();
+        } also this.match_tok(Tok.ARROW) {
+            ret_type = this.parse_type();
+        }
+        body: vec<Stmt> = this.parse_block();
+        return FuncDecl.make(name_tok.val, params, ret_type, body, is_static, is_pub);
+    }
+
+
+    // --- Declarations Parsing ---
+    // Map an operator token to a word safe for LLVM symbol names.
+    pub fnc op_word_of(op string) : string {
+        if op == "+" { return "add"; }
+        if op == "-" { return "sub"; }
+        if op == "*" { return "mul"; }
+        if op == "/" { return "div"; }
+        if op == "%" { return "mod"; }
+        if op == "==" { return "eq"; }
+        if op == "!=" { return "neq"; }
+        if op == "<" { return "lt"; }
+        if op == ">" { return "gt"; }
+        if op == "<=" { return "lte"; }
+        if op == ">=" { return "gte"; }
+        if op == "&" { return "band"; }
+        if op == "|" { return "bor"; }
+        if op == "^" { return "bxor"; }
+        if op == "<<" { return "shl"; }
+        if op == ">>" { return "shr"; }
+        if op == "<>" { return "isin"; }
+        if op == "[]" { return "idx"; }
+        return op;
+    }
+
+    pub fnc opdef_subst_type(t string, otarget string, tparams vec<string>) : string {
+        if t.size == 0 { return t; }
+        if t == "thisop.typ" {
+            if tparams.size > 0 { return tparams.get(0); }
+            return t;
+        }
+        if t == otarget && tparams.size > 0 {
+            joined: string = t;
+            if otarget.size > 0 {
+                joined = otarget + "<";
+                foreach ti, tp in<vector> tparams {
+                    if ti > 0 { joined = joined + ", "; }
+                    joined = joined + tp;
+                }
+                joined = joined + ">";
+            }
+            return joined;
+        }
+        return t;
+    }
+
+    pub fnc parse_opdef(prog Program) : void {
+        this.pos = this.pos + 1; // consume 'opdef'
+
+        // Target type
+        otok: Token = this.current();
+        otarget: string = "";
+        if otok.kind == Tok.IDENT {
+            otarget = otok.val;
+            this.pos = this.pos + 1;
+        } also otok.kind == Tok.STRING { otarget = "string"; this.pos = this.pos + 1; }
+        also otok.kind == Tok.INT { otarget = "int"; this.pos = this.pos + 1; }
+        also otok.kind == Tok.FLOAT { otarget = "float"; this.pos = this.pos + 1; }
+        also otok.kind == Tok.CHAR { otarget = "char"; this.pos = this.pos + 1; }
+        also otok.kind == Tok.BOOL { otarget = "bool"; this.pos = this.pos + 1; }
+        also otok.kind == Tok.NIL { otarget = "void"; this.pos = this.pos + 1; }
+        else {
+            show("parse error: expected a type name after 'opdef' at ", otok.line, ":", otok.col);
+            this.pos = this.pos + 1;
+            return;
+        }
+
+        // Operator or method name
+        oop_word: string = "";
+        if this.match_tok(Tok.DOT) {
+            omem: Token = this.consume(Tok.IDENT, "expected method name after '.' in opdef");
+            oop_word = omem.val;
+        } also this.match_tok(Tok.LBRACKET) {
+            this.consume(Tok.RBRACKET, "expected ']' after '[' in opdef");
+            oop_word = "idx";
+        } else {
+            otok2: Token = this.current();
+            if otok2.kind == Tok.PLUS { oop_word = "add"; this.pos = this.pos + 1; }
+            also otok2.kind == Tok.MINUS { oop_word = "sub"; this.pos = this.pos + 1; }
+            also otok2.kind == Tok.STAR { oop_word = "mul"; this.pos = this.pos + 1; }
+            also otok2.kind == Tok.SLASH { oop_word = "div"; this.pos = this.pos + 1; }
+            also otok2.kind == Tok.PERCENT { oop_word = "mod"; this.pos = this.pos + 1; }
+            also otok2.kind == Tok.EQ { oop_word = "eq"; this.pos = this.pos + 1; }
+            also otok2.kind == Tok.NEQ { oop_word = "neq"; this.pos = this.pos + 1; }
+            also otok2.kind == Tok.LT { oop_word = "lt"; this.pos = this.pos + 1; }
+            also otok2.kind == Tok.GT { oop_word = "gt"; this.pos = this.pos + 1; }
+            also otok2.kind == Tok.LTE { oop_word = "lte"; this.pos = this.pos + 1; }
+            also otok2.kind == Tok.GTE { oop_word = "gte"; this.pos = this.pos + 1; }
+            also otok2.kind == Tok.AMP { oop_word = "band"; this.pos = this.pos + 1; }
+            also otok2.kind == Tok.PIPE { oop_word = "bor"; this.pos = this.pos + 1; }
+            also otok2.kind == Tok.CARET { oop_word = "bxor"; this.pos = this.pos + 1; }
+            also otok2.kind == Tok.LSHIFT { oop_word = "shl"; this.pos = this.pos + 1; }
+            also otok2.kind == Tok.RSHIFT { oop_word = "shr"; this.pos = this.pos + 1; }
+            also otok2.kind == Tok.ISINOP { oop_word = "isin"; this.pos = this.pos + 1; }
+            else {
+                show("parse error: expected '.method' or operator after opdef type at ", otok2.line, ":", otok2.col);
+                this.pos = this.pos + 1;
+                return;
+            }
+        }
+
+        // Parameters
+        this.consume(Tok.LPAREN, "expected '(' in opdef");
+        oparams: vec<FuncParam>;
+        if !this.check(Tok.RPAREN) {
+            opn: Token = this.consume(Tok.IDENT, "expected opdef parameter name");
+            this.match_tok(Tok.COLON);
+            opt: string = this.parse_type();
+            odef: Expr = null;
+            if this.match_tok(Tok.ASSIGN) { odef = this.parse_expression(Precedence.LOWEST); }
+            oparams.pushb(FuncParam.make(opn.val, opt, false, odef));
+            while this.match_tok(Tok.COMMA) {
+                opn2: Token = this.consume(Tok.IDENT, "expected opdef parameter name");
+                this.match_tok(Tok.COLON);
+                opt2: string = this.parse_type();
+                odef2: Expr = null;
+                if this.match_tok(Tok.ASSIGN) { odef2 = this.parse_expression(Precedence.LOWEST); }
+                oparams.pushb(FuncParam.make(opn2.val, opt2, false, odef2));
+            }
+        }
+        this.consume(Tok.RPAREN, "expected ')' after opdef parameters");
+
+        // Return type
+        oret: string = "void";
+        if this.match_tok(Tok.COLON) {
+            oret = this.parse_type();
+        } also this.match_tok(Tok.ARROW) {
+            oret = this.parse_type();
+        }
+
+        // Body
+        obody: vec<Stmt>;
+        if this.check(Tok.PIPE) {
+            this.pos = this.pos + 1;
+            this.match_tok(Tok.GT);
+            obody.pushb(this.parse_statement());
+            this.match_tok(Tok.SEMI);
+        } else {
+            obody = this.parse_block();
+        }
+
+        // Generic target (vec/matrix/hash): derive implicit type parameters,
+        // substitute the bare container and `thisop.typ` in the signature.
+        otparams: vec<string>;
+        if otarget == "vec" || otarget == "matrix" {
+            otparams.pushb("__T_OPDEF__");
+        } also otarget == "hash" {
+            otparams.pushb("__T_OPDEF_K__");
+            otparams.pushb("__T_OPDEF_V__");
+        }
+        if otparams.size > 0 {
+            foreach _, otp in<vector> otparams {
+                prog.templates.pushb(otp);
+            }
+            foreach _, op_ in<vector> oparams {
+                op_.typ = this.opdef_subst_type(op_.typ, otarget, otparams);
+            }
+            oret = this.opdef_subst_type(oret, otarget, otparams);
+        }
+
+        prog.funcs.pushb(FuncDecl.make("_opdef_" + otarget + "_" + oop_word, oparams, oret, obody, false, true));
+    }
+
+    pub fnc parse_function(is_static bool, is_pub bool) : FuncDecl {
+        // Absorb pending top-level modifiers (unsafe/nogc/inline/async)
+        m_unsafe: bool = this.mod_unsafe;
+        m_nogc: bool = this.mod_nogc;
+        m_inline: bool = this.mod_inline;
+        m_async: bool = this.mod_async;
+        this.mod_unsafe = false;
+        this.mod_nogc = false;
+        this.mod_inline = false;
+        this.mod_async = false;
+        this.consume(Tok.FNC, "expected 'fnc'");
+        name_tok: Token = this.consume(Tok.IDENT, "expected function name");
+        has_params: bool = this.match_tok(Tok.LPAREN);
+
+        params: vec<FuncParam>;
+        if has_params {
+            if !this.check(Tok.RPAREN) {
+                p_name: Token = this.consume(Tok.IDENT, "expected parameter name");
+                p_imut: bool = false;
+                if this.current().val == "imut" {
+                    p_imut = true;
+                    this.pos = this.pos + 1;
+                }
+                this.match_tok(Tok.COLON);
+                p_type: string = this.parse_type();
+                pdef: Expr = null;
+                if this.match_tok(Tok.ASSIGN) { pdef = this.parse_expression(Precedence.LOWEST); }
+                params.pushb(FuncParam.make(p_name.val, p_type, p_imut, pdef));
+
+                while this.match_tok(Tok.COMMA) {
+                    pn: Token = this.consume(Tok.IDENT, "expected parameter name");
+                    pi: bool = false;
+                    if this.current().val == "imut" {
+                        pi = true;
+                        this.pos = this.pos + 1;
+                    }
+                    this.match_tok(Tok.COLON);
+                    pt: string = this.parse_type();
+                    pdef2: Expr = null;
+                    if this.match_tok(Tok.ASSIGN) { pdef2 = this.parse_expression(Precedence.LOWEST); }
+                    params.pushb(FuncParam.make(pn.val, pt, pi, pdef2));
+                }
+            }
+            this.consume(Tok.RPAREN, "expected ')' after parameter list");
+        }
+
+        ret_type: string = "void";
+        has_ret: bool = false;
+        if this.match_tok(Tok.COLON) {
+            ret_type = this.parse_type();
+            has_ret = true;
+        } also this.match_tok(Tok.ARROW) {
+            ret_type = this.parse_type();
+            has_ret = true;
+        }
+        // `fnc name(...) : T -> Owner { ... }` binds the function to a type
+        f_owner: string = "";
+        if has_ret && this.check(Tok.ARROW) {
+            this.pos = this.pos + 1;
+            f_owner = this.parse_type();
+        }
+
+        body: vec<Stmt>;
+        if this.check(Tok.PIPE) {
+            this.pos = this.pos + 1;
+            this.match_tok(Tok.GT);
+            one_body: vec<Stmt>;
+            one_body.pushb(this.parse_statement());
+            this.match_tok(Tok.SEMI);
+            body = one_body;
+        } else {
+            body = this.parse_block();
+        }
+        fd: FuncDecl = FuncDecl.make(name_tok.val, params, ret_type, body, is_static, is_pub);
+        fd.owner = f_owner;
+        fd.is_unsafe = m_unsafe;
+        fd.is_nogc = m_nogc;
+        fd.is_inline = m_inline;
+        fd.is_async = m_async;
+        return fd;
+    }
+
+    pub fnc parse_struct() : StructDecl {
+        this.consume(Tok.DEF, "expected 'def'");
+        name_tok: Token = this.consume(Tok.IDENT, "expected struct name");
+        this.consume(Tok.COLON, "expected ':' after struct name");
+        this.consume(Tok.STRUCT, "expected 'struct'");
+        this.consume(Tok.LBRACE, "expected '{' after 'struct'");
+
+        fields: vec<FieldDecl>;
+        methods: vec<FuncDecl>;
+
+        while !this.check(Tok.RBRACE) && !this.check(Tok.EOF) {
+            is_pub: bool = true;
+            is_static: bool = false;
+            loop {
+                if this.match_tok(Tok.STATIC) { is_static = true; }
+                also this.match_tok(Tok.PUB) { is_pub = true; }
+                also this.match_tok(Tok.PRIV) { is_pub = false; }
+                else { stop; }
+            }
+
+            if this.check(Tok.FNC) {
+                methods.pushb(this.parse_function(false, is_pub));
+            } else {
+                fname: Token = this.consume(Tok.IDENT, "expected field name");
+                this.consume(Tok.COLON, "expected ':' after field name");
+                ftype: string = this.parse_type();
+                init_v: Expr = null;
+                if this.match_tok(Tok.ASSIGN) {
+                    init_v = this.parse_expression(Precedence.LOWEST);
+                }
+                if !this.match_tok(Tok.SEMI) {
+                    this.match_tok(Tok.COMMA);
+                }
+                fields.pushb(FieldDecl.make(fname.val, ftype, is_pub, is_static, init_v));
+            }
+        }
+        this.consume(Tok.RBRACE, "expected '}' after struct body");
+        this.match_tok(Tok.SEMI); // optional semi after struct
+
+        return StructDecl.make(name_tok.val, fields, methods);
+    }
+
+    pub fnc parse_class() : ClassDecl {
+        this.consume(Tok.DEF, "expected 'def'");
+        name_tok: Token = this.consume(Tok.IDENT, "expected class name");
+        parent: string = "";
+        this.consume(Tok.COLON, "expected ':' after class name");
+        this.consume(Tok.CLASS, "expected 'class'");
+
+        // Generic parameters: class<T1, T2>
+        class_tps: vec<string>;
+        if this.check(Tok.LT) {
+            this.pos = this.pos + 1;
+            this.keep_sized = true;
+            class_tps.pushb(this.parse_type());
+            this.keep_sized = false;
+            while this.match_tok(Tok.COMMA) {
+                this.keep_sized = true;
+                class_tps.pushb(this.parse_type());
+                this.keep_sized = false;
+            }
+            this.consume(Tok.GT, "expected '>' after class type parameters");
+        }
+
+        if this.match_tok(Tok.LPAREN) {
+            parent_tok: Token = this.consume(Tok.IDENT, "expected parent class name");
+            parent = parent_tok.val;
+            this.consume(Tok.RPAREN, "expected ')' after parent class name");
+        }
+
+        this.consume(Tok.LBRACE, "expected '{' after 'class'");
+
+        fields: vec<FieldDecl>;
+        methods: vec<FuncDecl>;
+
+        while !this.check(Tok.RBRACE) && !this.check(Tok.EOF) {
+            is_pub: bool = true;
+            is_static: bool = false;
+
+            loop {
+                if this.match_tok(Tok.STATIC) { is_static = true; }
+                also this.match_tok(Tok.PUB) { is_pub = true; }
+                also this.match_tok(Tok.PRIV) { is_pub = false; }
+                else { stop; }
+            }
+
+            if this.check(Tok.FNC) {
+                methods.pushb(this.parse_function(is_static, is_pub));
+            } also this.check(Tok.IDENT) && this.peek(1).kind == Tok.LPAREN {
+                methods.pushb(this.parse_method_nofn(is_static, is_pub));
+            } else {
+                fname: Token = this.consume(Tok.IDENT, "expected field or method in class");
+                this.consume(Tok.COLON, "expected ':' after field name");
+                ftype: string = this.parse_type();
+                init_v: Expr = null;
+                if this.match_tok(Tok.ASSIGN) {
+                    init_v = this.parse_expression(Precedence.LOWEST);
+                }
+                if !this.match_tok(Tok.SEMI) {
+                    this.match_tok(Tok.COMMA);
+                }
+                fields.pushb(FieldDecl.make(fname.val, ftype, is_pub, is_static, init_v));
+            }
+        }
+        this.consume(Tok.RBRACE, "expected '}' after class body");
+        this.match_tok(Tok.SEMI); // optional semi after class
+
+        return ClassDecl.make(name_tok.val, parent, fields, methods, class_tps);
+    }
+
+    pub fnc parse_enum() : EnumDecl {
+        this.consume(Tok.DEF, "expected 'def'");
+        name_tok: Token = this.consume(Tok.IDENT, "expected enum name");
+        this.consume(Tok.COLON, "expected ':' after enum name");
+        this.consume(Tok.ENUM, "expected 'enum'");
+        this.consume(Tok.LBRACE, "expected '{' after 'enum'");
+
+        variants: vec<EnumVariant>;
+        val_counter: int = 0;
+
+        while !this.check(Tok.RBRACE) && !this.check(Tok.EOF) {
+            vname: Token = this.consume(Tok.IDENT, "expected enum variant name");
+            cur_val: int = val_counter;
+            v_typ: string = "";
+            v_sval: string = "";
+            v_has_str: bool = false;
+            if this.match_tok(Tok.COLON) {
+                v_typ = this.parse_type();
+                if this.match_tok(Tok.ASSIGN) {
+                    if this.check(Tok.STRING) {
+                        v_sval = this.current().val;
+                        this.pos = this.pos + 1;
+                        v_has_str = true;
+                    } also this.check(Tok.INT) {
+                        cur_val = this.parse_int_text(this.current().val);
+                        this.pos = this.pos + 1;
+                        val_counter = cur_val + 1;
+                    } also this.check(Tok.BOOL) {
+                        cur_val = 0;
+                        if this.current().val == "true" { cur_val = 1; }
+                        this.pos = this.pos + 1;
+                    } else {
+                        this.pos = this.pos + 1;
+                    }
+                } else {
+                    val_counter = val_counter + 1;
+                }
+            } else {
+                val_counter = val_counter + 1;
+            }
+            ev: EnumVariant = EnumVariant.make(vname.val, cur_val);
+            ev.typ = v_typ;
+            ev.str_val = v_sval;
+            ev.has_str = v_has_str;
+            variants.pushb(ev);
+            if !this.match_tok(Tok.COMMA) {
+                stop;
+            }
+        }
+        this.consume(Tok.RBRACE, "expected '}' after enum body");
+        this.match_tok(Tok.SEMI);
+
+        return EnumDecl.make(name_tok.val, variants);
+    }
+
+    pub fnc parse_union() : UnionDecl {
+        this.consume(Tok.DEF, "expected 'def'");
+        name_tok: Token = this.consume(Tok.IDENT, "expected union name");
+        this.consume(Tok.COLON, "expected ':' after union name");
+        this.consume(Tok.UNION, "expected 'union'");
+        this.consume(Tok.LBRACE, "expected '{' after 'union'");
+
+        variants: vec<UnionVariant>;
+        while !this.check(Tok.RBRACE) && !this.check(Tok.EOF) {
+            vname: Token = this.consume(Tok.IDENT, "expected union variant name");
+            this.consume(Tok.COLON, "expected ':' after union variant name");
+            vtype: string = this.parse_type();
+            variants.pushb(UnionVariant.make(vname.val, vtype));
+            if !this.match_tok(Tok.SEMI) {
+                this.match_tok(Tok.COMMA);
+            }
+        }
+        this.consume(Tok.RBRACE, "expected '}' after union body");
+        this.match_tok(Tok.SEMI);
+
+        return UnionDecl.make(name_tok.val, variants);
+    }
+
+    pub fnc parse_program() : Program {
+        prog: Program = Program.make();
+        this.parse_top_level_into(prog, false);
+        this.drain_hoisted(prog);
+        return prog;
+    }
+
+    pub fnc parse_top_level_into(prog Program, nested bool) : void {
+        while !this.check(Tok.EOF) && (!nested || !this.check(Tok.RBRACE)) {
+            tok: Token = this.current();
+
+            // Function modifiers: unsafe / nogc / inline / async (any order,
+            // only before the top-level declaration they qualify)
+            this.mod_unsafe = false;
+            this.mod_nogc = false;
+            this.mod_inline = false;
+            this.mod_async = false;
+            while this.check(Tok.NOGC) || this.check(Tok.UNSAFE) || this.check(Tok.INLINE) || this.check(Tok.ASYNC) {
+                if this.match_tok(Tok.NOGC) { this.mod_nogc = true; }
+                also this.match_tok(Tok.UNSAFE) { this.mod_unsafe = true; }
+                also this.match_tok(Tok.INLINE) { this.mod_inline = true; }
+                also this.match_tok(Tok.ASYNC) { this.mod_async = true; }
+            }
+
+            // Top-level conditional declarations: if <cond> { ... } else { ... }
+            if this.check(Tok.IF) || this.check(Tok.UNLESS) {
+                this.parse_top_level_conditional(prog);
+                continue;
+            }
+
+            // use module::*;
+            if this.match_tok(Tok.USE) {
+                mod_path: string = "";
+                first_seg: Token = this.consume(Tok.IDENT, "expected module name in 'use'");
+                mod_path = first_seg.val;
+                while this.match_tok(Tok.COLONCOLON) {
+                    if this.match_tok(Tok.STAR) {
+                        mod_path = mod_path + "::*";
+                        stop;
+                    }
+                    next_seg: Token = this.consume(Tok.IDENT, "expected identifier in module path");
+                    mod_path = mod_path + "::" + next_seg.val;
+                }
+                // Optional: `use mod alias name;`
+                if this.check(Tok.IDENT) && this.current().val == "alias" {
+                    this.pos = this.pos + 1;
+                    alias_tok: Token = this.consume(Tok.IDENT, "expected alias name after 'alias'");
+                    this.import_aliases.push(alias_tok.val, mod_path);
+                    prog.import_aliases.push(mod_path, alias_tok.val);
+                }
+                this.consume(Tok.SEMI, "expected ';' after 'use'");
+                prog.imports.pushb(mod_path);
+                continue;
+            }
+
+            // Function declaration: fnc name(...) or pub fnc name(...)
+            if this.check(Tok.FNC) {
+                prog.funcs.pushb(this.parse_function(false, true));
+                this.drain_hoisted(prog);
+                continue;
+            }
+            if this.match_tok(Tok.PUB) {
+                if this.check(Tok.FNC) {
+                    prog.funcs.pushb(this.parse_function(false, true));
+                    this.drain_hoisted(prog);
+                    continue;
+                }
+            }
+
+            // Type definitions: def Name : struct / class / enum / type
+            if this.check(Tok.DEF) {
+                // Lookahead to see if struct, class, enum
+                if this.peek(3).kind == Tok.STRUCT {
+                    prog.structs.pushb(this.parse_struct());
+                    continue;
+                }
+                if this.peek(3).kind == Tok.CLASS {
+                    prog.classes.pushb(this.parse_class());
+                    continue;
+                }
+                if this.peek(3).kind == Tok.ENUM {
+                    prog.enums.pushb(this.parse_enum());
+                    continue;
+                }
+                if this.peek(3).kind == Tok.UNION {
+                    prog.unions.pushb(this.parse_union());
+                    continue;
+                }
+                // Macro definition: def Name : macro(params) |> expr;
+                if this.peek(3).kind == Tok.IDENT && this.peek(3).val == "macro" {
+                    this.parse_macro_def();
+                    continue;
+                }
+                // Generic parameter marker: def T : template;
+                if this.peek(3).kind == Tok.IDENT && this.peek(3).val == "template" {
+                    this.consume(Tok.DEF, "expected 'def'");
+                    tpl_tok: Token = this.consume(Tok.IDENT, "expected template name");
+                    this.consume(Tok.COLON, "expected ':' after template name");
+                    this.consume(Tok.IDENT, "expected 'template'");
+                    this.match_tok(Tok.SEMI);
+                    prog.templates.pushb(tpl_tok.val);
+                    continue;
+                }
+                // Type alias: def Name : type T;
+                if this.peek(3).kind == Tok.TYPE {
+                    this.consume(Tok.DEF, "expected 'def'");
+                    alias_name: Token = this.consume(Tok.IDENT, "expected alias name");
+                    this.consume(Tok.COLON, "expected ':' after alias name");
+                    this.consume(Tok.TYPE, "expected 'type'");
+                    alias_target: string = this.parse_type();
+                    this.consume(Tok.SEMI, "expected ';' after type alias");
+                    this.type_aliases.push(alias_name.val, alias_target);
+                    continue;
+                }
+            }
+
+            // Error definition: error Name(params?) -> "message";
+            // Desugars to a plain function `_error_Name(params) : string`
+            // that returns the formatted message.
+            if this.check(Tok.IDENT) && this.current().val == "error"
+               && this.peek(1).kind == Tok.IDENT && this.peek(2).kind == Tok.LPAREN {
+                this.pos = this.pos + 1;
+                ename_tok: Token = this.consume(Tok.IDENT, "expected error name");
+                this.consume(Tok.LPAREN, "expected '(' after error name");
+                eparams: vec<FuncParam>;
+                if !this.check(Tok.RPAREN) {
+                    epn: Token = this.consume(Tok.IDENT, "expected error parameter name");
+                    this.match_tok(Tok.COLON);
+                    eparams.pushb(FuncParam.make(epn.val, this.parse_type(), false, null));
+                    while this.match_tok(Tok.COMMA) {
+                        epn2: Token = this.consume(Tok.IDENT, "expected error parameter name");
+                        this.match_tok(Tok.COLON);
+                        eparams.pushb(FuncParam.make(epn2.val, this.parse_type(), false, null));
+                    }
+                }
+                this.consume(Tok.RPAREN, "expected ')' after error parameters");
+                this.consume(Tok.ARROW, "expected '->' after error parameters");
+                emsg: Expr = this.parse_expression(Precedence.LOWEST);
+                this.consume(Tok.SEMI, "expected ';' after error definition");
+                ebody: vec<Stmt>;
+                ebody.pushb(Stmt.make_return(emsg));
+                prog.funcs.pushb(FuncDecl.make("_error_" + ename_tok.val, eparams, "string", ebody, false, true));
+                continue;
+            }
+
+            // Operator/method definition: opdef Type.op(args) : ret { body }
+            if this.check(Tok.IDENT) && this.current().val == "opdef" {
+                this.parse_opdef(prog);
+                continue;
+            }
+
+            // Global variable: name: Type = expr;
+            if this.check(Tok.IDENT) && this.peek(1).kind == Tok.COLON && this.peek(2).kind != Tok.COLON {
+                name_tok: Token = this.current();
+                this.pos = this.pos + 2;
+                var_type: string = this.parse_type();
+                init_val: Expr = null;
+                if this.match_tok(Tok.ASSIGN) {
+                    init_val = this.parse_expression(Precedence.LOWEST);
+                }
+                this.consume(Tok.SEMI, "expected ';' after global variable");
+                prog.globals.pushb(GlobalDecl.make(name_tok.val, var_type, init_val));
+                continue;
+            }
+
+            show("parse error: unexpected top-level token: ", Tok.name(tok.kind), " '", tok.val, "' at ", tok.line, ":", tok.col);
+            this.pos = this.pos + 1;
+        }
+    }
+
+    // Top-level conditional compilation: `if <const-cond> { decls } also ... else { decls }`
+    pub fnc parse_top_level_conditional(prog Program) : void {
+        matched: bool = false;
+
+        invert: bool = this.match_tok(Tok.UNLESS);
+        if !invert { this.consume(Tok.IF, "expected 'if' in top-level conditional"); }
+        cond: Expr = this.parse_top_cond_expr();
+        then_taken: bool = this.eval_const_cond(cond);
+        if invert { then_taken = !then_taken; }
+        then_prog: Program = Program.make();
+        this.consume(Tok.LBRACE, "expected '{' after top-level condition");
+        this.parse_top_level_into(then_prog, true);
+        this.consume(Tok.RBRACE, "expected '}' after conditional branch");
+        if then_taken && !matched {
+            this.merge_program(prog, then_prog);
+            matched = true;
+        }
+
+        while this.check(Tok.ALSO) || this.check(Tok.ALSOU) {
+            also_inv: bool = this.match_tok(Tok.ALSOU);
+            if !also_inv { this.consume(Tok.ALSO, "expected 'also' in top-level conditional"); }
+            also_cond: Expr = this.parse_top_cond_expr();
+            also_taken: bool = this.eval_const_cond(also_cond);
+            if also_inv { also_taken = !also_taken; }
+            also_prog: Program = Program.make();
+            this.consume(Tok.LBRACE, "expected '{' after top-level condition");
+            this.parse_top_level_into(also_prog, true);
+            this.consume(Tok.RBRACE, "expected '}' after conditional branch");
+            if also_taken && !matched {
+                this.merge_program(prog, also_prog);
+                matched = true;
+            }
+        }
+
+        if this.check(Tok.ELSE) {
+            this.pos = this.pos + 1;
+            else_prog: Program = Program.make();
+            this.consume(Tok.LBRACE, "expected '{' after 'else'");
+            this.parse_top_level_into(else_prog, true);
+            this.consume(Tok.RBRACE, "expected '}' after else branch");
+            if !matched {
+                this.merge_program(prog, else_prog);
+                matched = true;
+            }
+        }
+    }
+
+    // Parse a condition that must be resolvable at compile time.
+    pub fnc parse_top_cond_expr() : Expr {
+        prev: bool = this.no_struct_init;
+        this.no_struct_init = true;
+        e: Expr = this.parse_expression(Precedence.LOWEST);
+        this.no_struct_init = prev;
+        return e;
+    }
+
+    pub fnc is_const_strlike(e Expr) : bool {
+        if e == null { return false; }
+        if e.kind == ExprKind.STRING { return true; }
+        if e.kind == ExprKind.IDENT && e.sval == "_PLATFORM" { return true; }
+        return false;
+    }
+
+    pub fnc eval_const_str(e Expr) : string {
+        if e == null { return ""; }
+        if e.kind == ExprKind.STRING { return e.sval; }
+        if e.kind == ExprKind.IDENT && e.sval == "_PLATFORM" { return "linux64"; }
+        if e.kind == ExprKind.BOOL { if e.bval { return "true"; } return "false"; }
+        if e.kind == ExprKind.INT { return tostring(e.ival); }
+        return "";
+    }
+
+    pub fnc eval_const_cond(e Expr) : bool {
+        if e == null { return false; }
+        if e.kind == ExprKind.BOOL { return e.bval; }
+        if e.kind == ExprKind.STRING { return e.sval.size > 0; }
+        if e.kind == ExprKind.IDENT && (e.sval == "_PLATFORM" || e.sval == "_FILEPATH" || e.sval == "_FILENAME") { return true; }
+        if e.kind == ExprKind.UNARY && e.op == "!" { return !this.eval_const_cond(e.left); }
+        if e.kind == ExprKind.BINOP {
+            if e.op == "&&" { return this.eval_const_cond(e.left) && this.eval_const_cond(e.right); }
+            if e.op == "||" { return this.eval_const_cond(e.left) || this.eval_const_cond(e.right); }
+            if e.op == "==" { return this.eval_const_eq(e); }
+            if e.op == "!=" { return !this.eval_const_eq(e); }
+        }
+        return false;
+    }
+
+    pub fnc eval_const_eq(e Expr) : bool {
+        if this.is_const_strlike(e.left) || this.is_const_strlike(e.right) {
+            return this.eval_const_str(e.left) == this.eval_const_str(e.right);
+        }
+        if e.left.kind == ExprKind.INT && e.right.kind == ExprKind.INT {
+            return e.left.ival == e.right.ival;
+        }
+        if e.left.kind == ExprKind.BOOL && e.right.kind == ExprKind.BOOL {
+            return e.left.bval == e.right.bval;
+        }
+        return this.eval_const_cond(e.left) == this.eval_const_cond(e.right);
+    }
+
+    pub fnc merge_program(dst Program, src Program) : void {
+        foreach _, f in<vector> src.funcs { dst.funcs.pushb(f); }
+        foreach _, sd in<vector> src.structs { dst.structs.pushb(sd); }
+        foreach _, c in<vector> src.classes { dst.classes.pushb(c); }
+        foreach _, en in<vector> src.enums { dst.enums.pushb(en); }
+        foreach _, un in<vector> src.unions { dst.unions.pushb(un); }
+        foreach _, g in<vector> src.globals { dst.globals.pushb(g); }
+        foreach _, im in<vector> src.imports { dst.imports.pushb(im); }
+    }
+}

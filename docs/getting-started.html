@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v0.24.3 Beta</div>
+        <div class="version">v1.0.0 Release</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -28,6 +28,7 @@
             <div class="nav-section-title">Language Guide</div>
             <a href="language-guide.html">Language Reference</a>
             <a href="compiler.html">Compiler &amp; CLI</a>
+            <a href="self-hosted.html">Self-Hosted Compiler</a>
             <a href="stdlib.html">Standard Library</a>
         </div>
         <div class="nav-section">
@@ -98,19 +99,25 @@ winget install Git.Git GitHub.cli</code></pre>
 
 <h2>Install Leash</h2>
 
-<p>Once the prerequisites are installed, install Leash and its Python dependencies. The <code>-e</code> flag installs in editable mode, which is useful during development as changes to the source are immediately reflected.</p>
+<p>Once the prerequisites are installed, install Leash from the project directory. The installation <strong>bootstraps the self-hosted compiler</strong>: the Python reference compiler builds the first native binary from <code>compiler/*.lsh</code>, and that binary then compiles itself &mdash; the result ships inside the package and is what the <code>leash</code> command runs.</p>
 
 <pre><code><span class="cm"># Navigate to the Leash project directory, then:</span>
+pip install .
+
+<span class="cm"># Editable mode (development)</span>
 pip install -e .</code></pre>
 
-<p>This installs two CLI tools:</p>
+<p>This installs four CLI tools:</p>
 <ul>
-    <li><code>leash</code> &mdash; the Leash compiler CLI for compiling, running, and analyzing programs</li>
+    <li><code>leash</code> &mdash; the <strong>self-hosted compiler</strong> (written in Leash): compiling, running, checking, debugging, projects, and <code>leash self-host</code></li>
+    <li><code>leashp</code> &mdash; the pure Python compiler/toolchain, the reference implementation and cross-compile backend</li>
+    <li><code>leashc</code> &mdash; an alias of <code>leash</code></li>
     <li><code>leashed</code> &mdash; the Leash package manager for publishing and installing libraries</li>
 </ul>
 
 <pre><code><span class="cm"># Verify installation</span>
-leash --version
+leash version
+<span class="cm"># leash 1.0.0 (self-hosted)</span>
 leashed --version</code></pre>
 
 <h2>Running Leash Programs</h2>
@@ -118,31 +125,27 @@ leashed --version</code></pre>
 <p>You can run Leash files (<code>.lsh</code>) directly using the <code>run</code> command, or compile them to a native executable using the <code>compile</code> command. Leash also supports project-level workflows with <code>init</code>, <code>build</code>, and <code>run</code> (without a file) for larger projects with configuration files. The old <code>runp</code> command is deprecated and now an alias for <code>run</code> without a file.</p>
 
 <h3>Direct Execution</h3>
-<p>To execute a Leash program without creating an output binary executable (and optionally pass command line arguments):</p>
-<pre><code>python3 -m leash.cli run program.lsh [arguments...]</code></pre>
+<p>To execute a Leash program without creating an output binary (and optionally pass command line arguments):</p>
+<pre><code>leash run program.lsh [arguments...]
+leash run program.lsh -- arg1 arg2</code></pre>
 
 <h3>Compiling to a Binary</h3>
 <pre><code><span class="cm"># Default output (same name as input)</span>
-python3 -m leash.cli compile program.lsh
+leash compile program.lsh
 ./program
 
 <span class="cm"># Custom output name</span>
-python3 -m leash.cli compile program.lsh to my_custom_binary
+leash compile program.lsh -o my_custom_binary
 ./my_custom_binary
 
-<span class="cm"># Dynamic library (.so)</span>
-python3 -m leash.cli compile program.lsh to-dynamic mylib
-
-<span class="cm"># Static library (.a)</span>
-python3 -m leash.cli compile program.lsh to-static mylib
-
 <span class="cm"># Link with external libraries</span>
-python3 -m leash.cli compile program.lsh -lm
-python3 -m leash.cli run program.lsh -lcurl</code></pre>
+leash compile program.lsh -lm
+leash run program.lsh -lcurl</code></pre>
+
+<p>Dynamic (<code>.so</code>) and static (<code>.a</code>) library outputs are provided by the Python toolchain: <code>leashp compile program.lsh to-dynamic mylib</code> / <code>to-static mylib</code>.</p>
 
 <h3>Dumping LLVM IR</h3>
-<pre><code>python3 -m leash.cli dump program.lsh
-python3 -m leash.cli dump program.lsh to myoutput</code></pre>
+<pre><code>leash dump program.lsh</code></pre>
 
 <h2>Project Workflow</h2>
 

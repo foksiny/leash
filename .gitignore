@@ -30,6 +30,15 @@ share/python-wheels/
 
 # Leash generated files
 *.ll
+# any extensionless compiled binary dropped next to an example
+examples/*
+!examples/*/
+!examples/*.lsh
+# build outputs
+bin/
+compiler/main
+leash/native/
+.pytest_cache/
 *.__temp_run*
 examples/*.exe
 examples/*.wasm

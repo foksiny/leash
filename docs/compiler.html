@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v0.24.3 Beta</div>
+        <div class="version">v1.0.0 Release</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -28,6 +28,7 @@
             <div class="nav-section-title">Language Guide</div>
             <a href="language-guide.html">Language Reference</a>
             <a href="compiler.html" class="active">Compiler &amp; CLI</a>
+            <a href="self-hosted.html">Self-Hosted Compiler</a>
             <a href="stdlib.html">Standard Library</a>
         </div>
         <div class="nav-section">
@@ -70,20 +71,20 @@
 
 <p>Leash supports multiple compilation targets, allowing you to compile your code for different platforms. The default target compiles to a native binary for your current system. Cross-compilation to Windows, macOS, and Linux (including ARM64) is supported when the appropriate toolchains are installed.</p>
 
-<pre><code><span class="cm"># Current system (default)</span>
-python3 -m leash.cli compile program.lsh
+<pre><code><span class="cm"># Current system (default) &mdash; the self-hosted compiler</span>
+leash compile program.lsh
 
-<span class="cm"># Windows 64-bit (cross-compile via MinGW)</span>
-python3 -m leash.cli compile program.lsh --target win64
+<span class="cm"># Windows 64-bit (cross-compile via MinGW &mdash; Python toolchain)</span>
+leashp compile program.lsh --target win64
 
 <span class="cm"># macOS (cross-compile)</span>
-python3 -m leash.cli compile program.lsh --target macos
+leashp compile program.lsh --target macos
 
 <span class="cm"># Linux 32-bit</span>
-python3 -m leash.cli compile program.lsh --target linux32
+leashp compile program.lsh --target linux32
 
 <span class="cm"># Linux ARM64 (Raspberry Pi 4/5, ARM servers, Ampere, AWS Graviton)</span>
-python3 -m leash.cli compile program.lsh --target linux-arm</code></pre>
+leashp compile program.lsh --target linux-arm</code></pre>
 
 <p>For <code>linux-arm</code> on a non-ARM host, install the cross toolchain (<code>gcc-aarch64-linux-gnu</code>) — <code>leash run --target linux-arm</code> executes the produced binary through <code>qemu-aarch64</code> (qemu-user) when the host is x86. On native ARM64 Linux (e.g. a Raspberry Pi) no extra setup is needed.</p>
 
@@ -147,7 +148,7 @@ leash compile utils.lsh to-static utils  <span class="cm"># libutils.a</span></c
 <p>Leash provides thorough static analysis to catch errors and potential issues before your code runs. You can analyze a file without compiling it using the <code>check</code> command, which runs the full type checker with enhanced safety analysis.</p>
 
 <h3>The <code>check</code> Command</h3>
-<pre><code>python3 -m leash.cli check program.lsh</code></pre>
+<pre><code>leash check program.lsh</code></pre>
 
 <p>The checker reports:</p>
 <ul>
@@ -165,15 +166,15 @@ leash compile utils.lsh to-static utils  <span class="cm"># libutils.a</span></c
 </ul>
 
 <h3>The <code>--check</code> Flag</h3>
-<pre><code>python3 -m leash.cli compile program.lsh --check
-python3 -m leash.cli run program.lsh --check</code></pre>
+<pre><code>leash compile program.lsh --check
+leash run program.lsh --check</code></pre>
 
 <h3>Warnings as Errors</h3>
-<pre><code>python3 -m leash.cli compile program.lsh --warnings-as-errors</code></pre>
+<pre><code>leash compile program.lsh --warnings-as-errors</code></pre>
 
 <h3>Verbose Diagnostics</h3>
-<pre><code>python3 -m leash.cli check program.lsh --verbose
-python3 -m leash.cli compile program.lsh -vb</code></pre>
+<pre><code>leash check program.lsh --verbose
+leash compile program.lsh -vb</code></pre>
 
 <p>For strict builds (e.g., CI/CD), use the <code>--warnings-as-errors</code> flag to treat all warnings as errors, ensuring your codebase stays clean.</p>
 
@@ -235,14 +236,14 @@ leash compile myprogram.lsh -af         <span class="cm"># GC-free, auto free()<
     <tr><td><code>-Oz</code></td><td>Minimum size</td><td>Additional size reductions</td></tr>
 </table>
 
-<pre><code>python3 -m leash.cli compile program.lsh --opt 3
-python3 -m leash.cli run program.lsh -O s</code></pre>
+<pre><code>leash compile program.lsh --opt 3
+leash run program.lsh -O s</code></pre>
 
 <div class="callout callout-info">Optimization occurs at <strong>three layers</strong>: Leash AST (frontend), LLVM IR (middle-end), and C runtime (link-time). The <code>-O</code> flag controls all three simultaneously.</div>
 
 <h3>Optimization Verbosity</h3>
-<pre><code>python3 -m leash.cli compile program.lsh -ov
-python3 -m leash.cli run program.lsh --opt 3 -ov</code></pre>
+<pre><code>leash compile program.lsh -ov
+leash run program.lsh --opt 3 -ov</code></pre>
 
 <p>Displays detailed logs per phase:</p>
 <ul>
@@ -299,23 +300,23 @@ python3 -m leash.cli run program.lsh --opt 3 -ov</code></pre>
 </ul>
 
 <pre><code><span class="cm"># ThinLTO &mdash; best balance of speed and optimization</span>
-python3 -m leash.cli compile program.lsh --opt 2 --lto thin
+leash compile program.lsh --opt 2 --lto thin
 
 <span class="cm"># Full LTO &mdash; maximum cross-module optimization</span>
-python3 -m leash.cli compile program.lsh --opt 3 --lto full</code></pre>
+leash compile program.lsh --opt 3 --lto full</code></pre>
 
 <h2>Profile-Guided Optimization (PGO)</h2>
 
 <p>PGO uses runtime profiling data to optimize hot paths in your program. The workflow is a three-step process: first compile with instrumentation, run the program to collect real execution data, then recompile using that data to make better optimization decisions. This enables optimizations that would be impossible with purely static analysis.</p>
 
 <pre><code><span class="cm"># Step 1: Compile with instrumentation</span>
-python3 -m leash.cli compile program.lsh --opt 2 --pgo-generate
+leash compile program.lsh --opt 2 --pgo-generate
 
 <span class="cm"># Step 2: Run to collect profile data</span>
 ./program
 
 <span class="cm"># Step 3: Recompile with profile data</span>
-python3 -m leash.cli compile program.lsh --opt 3 --pgo-use</code></pre>
+leash compile program.lsh --opt 3 --pgo-use</code></pre>
 
 <p>PGO enables hot/cold code splitting, accurate branch prediction, and informed inlining and unrolling decisions based on actual execution frequency.</p>
 

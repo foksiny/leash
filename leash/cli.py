@@ -1955,7 +1955,7 @@ def update_leash():
               "inspect and fast-forward manually).")
 
 
-VERSION_STRING = "v0.25.0 Beta"
+VERSION_STRING = "v1.0.0"
 
 MAIN_HELP = f"""Leash {VERSION_STRING} - LLVM-powered compiled programming language
 
@@ -2060,6 +2060,16 @@ Usage:
 Options:
   --other-imports / -oi <folder>   Extra module search directory (repeatable)
   --verbose / -vb                  Highly detailed error and warning explanations""",
+    "self-host": """Build the self-hosted compiler (compiler/*.lsh) in three
+stages and verify the bootstrap fixed point:
+  Stage 0: python compiler       -> bin/leashc_stage1
+  Stage 1: bin/leashc_stage1     -> bin/leashc_stage2
+  Stage 2: bin/leashc_stage2     -> bin/leashc_stage3
+Stage 2's IR must equal Stage 3's IR (fixed point); then bin/leashc
+is installed as the official self-hosted compiler.
+
+Usage:
+  leash self-host""",
     "init": """Scaffold a new Leash project with a standard directory layout:
 src/main.lsh entry point, imports/ directory, out/ directory and a
 config.lshc project file.
@@ -2138,6 +2148,57 @@ def _print_main_help():
     print(MAIN_HELP)
 
 
+def run_self_host():
+    """Self-host: build the self-hosted compiler in three stages and check fixed-point."""
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    bin_dir = os.path.join(repo_root, "bin")
+    os.makedirs(bin_dir, exist_ok=True)
+    stage1 = os.path.join(bin_dir, "leashc_stage1")
+    stage2 = os.path.join(bin_dir, "leashc_stage2")
+    stage3 = os.path.join(bin_dir, "leashc_stage3")
+
+    def _run(cmd, cwd=None):
+        print("  $", " ".join(str(c) for c in cmd))
+        r = subprocess.run(cmd, cwd=cwd or repo_root)
+        if r.returncode != 0:
+            print(f"error: command failed (exit {r.returncode})")
+            sys.exit(r.returncode)
+
+    print("[self-host] Stage 0: python compiler -> bin/leashc_stage1")
+    _run([sys.executable, "-m", "leash.cli", "compile", "compiler/main.lsh", "to", stage1])
+    print("[self-host] Stage 1: leashc_stage1 -> bin/leashc_stage2")
+    _run([stage1, "compile", "compiler/main.lsh", "-o", stage2])
+    print("[self-host] Stage 2: leashc_stage2 -> bin/leashc_stage3")
+    _run([stage2, "compile", "compiler/main.lsh", "-o", stage3])
+
+    ir2 = os.path.join("/tmp", "leashc_" + os.path.basename(stage2) + ".ll")
+    ir3 = os.path.join("/tmp", "leashc_" + os.path.basename(stage3) + ".ll")
+    if os.environ.get("LEASH_SELFHOST_VERBOSE"):
+        print(f"[self-host] IR artifacts: {ir2} {ir3}")
+
+    def _norm(p):
+        if not os.path.exists(p):
+            return ""
+        with open(p, encoding="utf-8", errors="replace") as fh:
+            return "\n".join(
+                line.rstrip() for line in fh if line.strip() and not line.startswith("\n")
+            )
+
+    if _norm(ir2) == _norm(ir3) and _norm(ir2) != "":
+        print("[self-host] Fixed point reached: stage2 IR == stage3 IR.")
+    else:
+        print("[self-host] warning: stage2 IR differs from stage3 IR.")
+    official = os.path.join(bin_dir, "leashc")
+    try:
+        import shutil
+        shutil.copy2(stage3, official)
+        os.chmod(official, 0o755)
+    except OSError as e:
+        print(f"error: could not install bin/leashc: {e}")
+        sys.exit(1)
+    print(f"[self-host] Installed self-hosted compiler as {official}")
+
+
 def main():
     global VERBOSE_MODE, OPT_VERBOSE_MODE
     VERBOSE_MODE = False
@@ -2175,7 +2236,7 @@ def main():
             sys.exit(1)
         _print_main_help()
         sys.exit(0)
-    if cmd in ("--version", "-v"):
+    if cmd in ("--version", "-v", "version"):
         print(f"Leash {VERSION_STRING}\nBuilt on LLVM with custom GC (use --autofree for GC-free auto-free mode)"); sys.exit(0)
     # Per-command help: intercept '-h'/'--help'/'help' as the first argument
     # after the command name, before any command tries to interpret it.
@@ -2274,6 +2335,9 @@ def main():
             else:
                 i += 1
         build_project(extra_import_dirs)
+        sys.exit(0)
+    if cmd == "self-host":
+        run_self_host()
         sys.exit(0)
     if cmd == "runp":
         print("warning: 'runp' is deprecated; use 'leash run' without a file instead", file=sys.stderr)

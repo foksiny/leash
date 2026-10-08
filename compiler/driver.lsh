@@ -1,0 +1,583 @@
+use optimize::*;
+use tokens::*;
+use ast::*;
+use lexer::*;
+use parser::*;
+use typechecker::*;
+use codegen::*;
+
+pub def Path : class {
+    static pub fnc dirname(p string) : string {
+        last_slash: int = -1;
+        foreach i, c in<string> p {
+            if c == '/' || c == '\\' {
+                last_slash = i;
+            }
+        }
+        if last_slash < 0 {
+            return ".";
+        }
+        if last_slash == 0 {
+            return "/";
+        }
+        out: string = "";
+        idx: int = 0;
+        while idx < last_slash {
+            out = out + p[idx];
+            idx = idx + 1;
+        }
+        return out;
+    }
+
+    static pub fnc basename(p string) : string {
+        last_slash: int = -1;
+        foreach i, c in<string> p {
+            if c == '/' || c == '\\' {
+                last_slash = i;
+            }
+        }
+        if last_slash < 0 {
+            return p;
+        }
+        out: string = "";
+        idx: int = last_slash + 1;
+        while idx < p.size {
+            out = out + p[idx];
+            idx = idx + 1;
+        }
+        return out;
+    }
+
+    static pub fnc strip_ext(p string) : string {
+        if p.size > 4 && p[p.size - 4] == '.' && p[p.size - 3] == 'l' && p[p.size - 2] == 's' && p[p.size - 1] == 'h' {
+            out: string = "";
+            idx: int = 0;
+            while idx < p.size - 4 {
+                out = out + p[idx];
+                idx = idx + 1;
+            }
+            return out;
+        }
+        return p;
+    }
+}
+
+pub def CompilerDriver : class {
+    pub extra_import_dirs: vec<string>;
+    pub loaded_modules: hash<string, bool>;
+    pub self_path: string;   // argv[0]: how this compiler was invoked
+
+    static pub fnc make() : CompilerDriver {
+        return CompilerDriver {};
+    }
+
+    pub fnc add_import_dir(d string) : void {
+        this.extra_import_dirs.pushb(d);
+    }
+
+    pub fnc read_file_string(path string) : string {
+        f: File = File.open(path, "r");
+        if f == null {
+            show("error: cannot open file '", path, "'");
+            return "";
+        }
+        content: string = f.read();
+        f.close();
+        return content;
+    }
+
+    pub fnc find_module_file(mod_path string, base_dir string) : string {
+        // Convert module::name into module/name.lsh or name.lsh
+        rel_path: string = "";
+        last_seg: string = "";
+        cur_seg: string = "";
+
+        i: int = 0;
+        while i < mod_path.size {
+            c: char = mod_path[i];
+            if c == ':' && i + 1 < mod_path.size && mod_path[i + 1] == ':' {
+                if cur_seg != "*" {
+                    if rel_path.size > 0 { rel_path = rel_path + "/"; }
+                    rel_path = rel_path + cur_seg;
+                    last_seg = cur_seg;
+                }
+                cur_seg = "";
+                i = i + 2;
+                continue;
+            }
+            cur_seg = cur_seg + c;
+            i = i + 1;
+        }
+        if cur_seg != "*" && cur_seg.size > 0 {
+            if rel_path.size > 0 { rel_path = rel_path + "/"; }
+            rel_path = rel_path + cur_seg;
+            last_seg = cur_seg;
+        }
+
+        // Try base_dir / rel_path + ".lsh"
+        p1: string = base_dir + "/" + rel_path + ".lsh";
+        f1: File = File.open(p1, "r");
+        if f1 != null { f1.close(); return p1; }
+
+        // Try base_dir / last_seg + ".lsh"
+        p2: string = base_dir + "/" + last_seg + ".lsh";
+        f2: File = File.open(p2, "r");
+        if f2 != null { f2.close(); return p2; }
+
+        // Try extra import dirs
+        foreach _, ed in<vector> this.extra_import_dirs {
+            p3: string = ed + "/" + rel_path + ".lsh";
+            f3: File = File.open(p3, "r");
+            if f3 != null { f3.close(); return p3; }
+
+            p4: string = ed + "/" + last_seg + ".lsh";
+            f4: File = File.open(p4, "r");
+            if f4 != null { f4.close(); return p4; }
+        }
+
+        return "";
+    }
+
+    pub fnc resolve_imports(prog Program, base_dir string) : void {
+        imports_to_process: vec<string> = prog.imports;
+        empty_imps: vec<string>;
+        prog.imports = empty_imps; // clear so we don't duplicate
+
+        foreach _, imp in<vector> imports_to_process {
+            mod_file: string = this.find_module_file(imp, base_dir);
+            if mod_file.size == 0 {
+                show("error: could not find imported module '", imp, "'");
+                continue;
+            }
+
+            if this.loaded_modules.isin(mod_file) {
+                continue;
+            }
+            this.loaded_modules.push(mod_file, true);
+
+            mod_code: string = this.read_file_string(mod_file);
+            mod_lex: Lexer = Lexer.make(mod_code);
+            mod_toks: vec<Token> = mod_lex.tokenize();
+            mod_parser: Parser = Parser.make(mod_toks);
+            mod_prog: Program = mod_parser.parse_program();
+
+            // Recursively resolve sub-imports
+            this.resolve_imports(mod_prog, Path.dirname(mod_file));
+
+            // A module imported with an alias gets its contents namespaced
+            alias_for_this: string = "";
+            if prog.import_aliases.isin(imp) {
+                alias_for_this = prog.import_aliases[imp];
+            }
+
+            // Splice module declarations into current program
+            foreach _, s in<vector> mod_prog.structs { prog.structs.pushb(s); }
+            foreach _, c in<vector> mod_prog.classes { prog.classes.pushb(c); }
+            foreach _, e in<vector> mod_prog.enums { prog.enums.pushb(e); }
+            foreach _, u in<vector> mod_prog.unions { prog.unions.pushb(u); }
+            foreach _, g in<vector> mod_prog.globals {
+                if alias_for_this.size > 0 { g.name = alias_for_this + "_" + g.name; }
+                prog.globals.pushb(g);
+            }
+            foreach _, f in<vector> mod_prog.funcs {
+                if alias_for_this.size > 0 { f.name = alias_for_this + "_" + f.name; }
+                prog.funcs.pushb(f);
+            }
+        }
+    }
+
+    pub fnc fnv_char(h int, c char) : int {
+        h = h ^ c;
+        h = h * 16777619;
+        return h;
+    }
+
+    pub fnc fnv_str(s string) : int {
+        h: int = -2128831035;
+        i: int = 0;
+        while i < s.size {
+            h = this.fnv_char(h, s[i]);
+            i = i + 1;
+        }
+        return h;
+    }
+
+    pub fnc fnv_lines(lines vec<string>) : int {
+        h: int = -2128831035;
+        foreach _, ln in<vector> lines {
+            i: int = 0;
+            while i < ln.size {
+                h = this.fnv_char(h, ln[i]);
+                i = i + 1;
+            }
+            h = this.fnv_char(h, '\n');
+        }
+        return h;
+    }
+
+    pub fnc file_exists(p string) : bool {
+        f: File = File.open(p, "r");
+        if f != null {
+            f.close();
+            return true;
+        }
+        return false;
+    }
+
+    pub fnc exec_code(cmd string) : string {
+        // Python-compiled exec("x","code") returns "N\n"; self-hosted returns "N".
+        ec: string = exec(cmd, "code");
+        trimmed: string = "";
+        i: int = 0;
+        while i < ec.size && ec[i] != '\n' {
+            trimmed = trimmed + ec[i];
+            i = i + 1;
+        }
+        return trimmed;
+    }
+
+    pub fnc exec_out(cmd string) : string {
+        out: string = exec(cmd, "wait");
+        trimmed: string = "";
+        i: int = 0;
+        while i < out.size && out[i] != '\n' {
+            trimmed = trimmed + out[i];
+            i = i + 1;
+        }
+        return trimmed;
+    }
+
+    pub fnc compile_file(input_file string, output_file string, emit_llvm bool, run_mode bool, run_args string, opt_level string, check_mode bool, extra_libs vec<string>, verbose bool, warn_err bool, debug_instrument bool) : int {
+        source: string = this.read_file_string(input_file);
+        if source.size == 0 {
+            return 1;
+        }
+
+        base_dir: string = Path.dirname(input_file);
+
+        // Lex
+        lexer: Lexer = Lexer.make(source);
+        tokens: vec<Token> = lexer.tokenize();
+
+        // Parse
+        parser: Parser = Parser.make(tokens);
+        prog: Program = parser.parse_program();
+
+        // Resolve imports
+        this.resolve_imports(prog, base_dir);
+
+        // AST optimization
+        opt_driver: Optimizer = Optimizer {};
+        opt_driver.opt_program(prog);
+
+        // Typecheck
+        tc: TypeChecker = TypeChecker.make();
+        tc.check_program(prog);
+        if verbose {
+        }
+        if check_mode {
+            if tc.errors.size == 0 {
+                show("[leash] Type-check OK");
+                return 0;
+            }
+            foreach _, e in<vector> tc.errors {
+                show("error: ", e);
+            }
+            return 1;
+        }
+
+        // Codegen
+        cg: CodeGen = CodeGen.make(tc);
+        abs_file: string = exec("realpath " + input_file, "wait");
+        if abs_file.size > 0 {
+            trimmed: string = "";
+            ai: int = 0;
+            while ai < abs_file.size && abs_file[ai] != '\n' {
+                trimmed = trimmed + abs_file[ai];
+                ai = ai + 1;
+            }
+            if trimmed.size > 0 { cg.main_file = trimmed; }
+        }
+        if cg.main_file.size == 0 {
+            cg.main_file = input_file;
+        }
+        cg.debug_instrument = debug_instrument;
+        ir_lines: vec<string> = cg.generate_module(prog);
+        if verbose {
+        }
+
+        out_bin: string = output_file;
+        if out_bin.size == 0 {
+            out_bin = Path.strip_ext(input_file);
+        }
+
+        if emit_llvm {
+            ll_path: string = out_bin + ".ll";
+            f_ll: File = File.open(ll_path, "w");
+            if f_ll == null {
+                show("error: cannot write to '", ll_path, "'");
+                return 1;
+            }
+            foreach _, ir_ln in<vector> ir_lines {
+                f_ll.write(ir_ln);
+                f_ll.write("\n");
+            }
+            f_ll.close();
+            show("[leash] Wrote LLVM IR to ", ll_path);
+            return 0;
+        }
+
+        // ---- Object cache (mirrors the Python compiler's ~/.leash/objcache) ----
+        // Keyed by an FNV-1a hash of the IR lines + opt level; the runtime
+        // (gc.c + stubs) is compiled once per (size,mtime) tag. Warm compiles
+        // link prebuilt objects only: fast and ~70MB total RSS.
+        opt_flag: string = "-O2";
+        if opt_level == "0" { opt_flag = "-O0"; }
+        also opt_level == "1" { opt_flag = "-O1"; }
+        also opt_level == "3" { opt_flag = "-O3"; }
+        also opt_level == "s" { opt_flag = "-Os"; }
+        also opt_level == "z" { opt_flag = "-Oz"; }
+        lib_flags: string = "";
+        foreach _, lib in<vector> extra_libs {
+            lib_flags = lib_flags + " -l" + lib;
+        }
+
+        home_dir: string = this.exec_out("echo $HOME");
+        cache_dir: string = home_dir + "/.leash/shcache";
+        if home_dir.size > 0 {
+            exec("mkdir -p " + cache_dir, nil);
+        }
+
+        // Find leash gc.c location
+        // Locate the runtime sources (gc.c + cross_compile_stubs.c):
+        //   1. repo layout: run from the repository root (leash/gc.c)
+        //   2. pip layout: the launcher exports LEASH_RUNTIME=<pkg>/leash
+        //   3. argv[0]-relative: the binary sits next to the runtime
+        //      (dev: <repo>/bin/leashc, pip: <pkg>/leash/native/leashc)
+        gc_path: string = "leash/gc.c";
+        if !this.file_exists(gc_path) {
+            rt_env: string = this.exec_out("printenv LEASH_RUNTIME");
+            if rt_env.size > 0 {
+                env_cand: string = rt_env + "/gc.c";
+                if this.file_exists(env_cand) { gc_path = env_cand; }
+            }
+        }
+        if !this.file_exists(gc_path) && this.self_path.size > 0 {
+            sp: string = this.self_path;
+            sp_has_slash: bool = false;
+            spi: int = 0;
+            while spi < sp.size {
+                if sp[spi] == '/' { sp_has_slash = true; }
+                spi = spi + 1;
+            }
+            if !sp_has_slash { sp = this.exec_out("command -v " + sp); }
+            if sp.size > 0 {
+                abs_exe: string = this.exec_out("readlink -f " + sp);
+                slash: int = -1;
+                si: int = 0;
+                while si < abs_exe.size {
+                    if abs_exe[si] == '/' { slash = si; }
+                    si = si + 1;
+                }
+                if slash > 0 {
+                    exe_dir: string = "";
+                    si = 0;
+                    while si < slash {
+                        exe_dir = exe_dir + abs_exe[si];
+                        si = si + 1;
+                    }
+                    // dev build:  <repo>/bin/leashc         -> <repo>/leash/gc.c
+                    // pip build:  <pkg>/leash/native/leashc  -> <pkg>/leash/gc.c
+                    cand1: string = exe_dir + "/../leash/gc.c";
+                    cand2: string = exe_dir + "/../gc.c";
+                    cand3: string = exe_dir + "/gc.c";
+                    if this.file_exists(cand1) { gc_path = cand1; }
+                    also this.file_exists(cand2) { gc_path = cand2; }
+                    also this.file_exists(cand3) { gc_path = cand3; }
+                }
+            }
+        }
+        if !this.file_exists(gc_path) {
+            show("error: cannot find the Leash runtime (leash/gc.c)");
+            show("       run from the repository root, or install the leash package");
+            return 1;
+        }
+
+        // Runtime stubs live next to gc.c
+        dir_part: string = "";
+        di: int = 0;
+        while di < gc_path.size - 4 {
+            dir_part = dir_part + gc_path[di];
+            di = di + 1;
+        }
+        stubs_path: string = dir_part + "cross_compile_stubs.c";
+        if !this.file_exists(stubs_path) {
+            stubs_path = "";
+        }
+
+        use_cache: bool = home_dir.size > 0 && this.file_exists(cache_dir);
+
+        obj_path: string = "";
+        runtime_objs: string = "";
+
+        // Prebuild the runtime objects once per (size, mtime) tag
+        if use_cache {
+            // Key on (mtime, size, flags): a runtime-flag change must
+            // invalidate the cached object or --gc-sections finds no
+            // function sections to strip (Python does the same).
+            gc_tag: string = this.exec_out("stat -c '%s_%Y' " + gc_path) + "|O2|fsections";
+            rt_gc: string = cache_dir + "/rt" + tostring(this.fnv_str(gc_tag)) + "_gc.o";
+            if !this.file_exists(rt_gc) {
+                ec_rt: string = this.exec_code("clang " + gc_path + " -c -o " + rt_gc + " -O2 -pthread -ffunction-sections -fdata-sections");
+                if ec_rt != "0" {
+                    show("error: cannot compile runtime gc.c");
+                    return 1;
+                }
+            }
+            runtime_objs = rt_gc;
+
+            if stubs_path.size > 0 {
+                stubs_tag: string = this.exec_out("stat -c '%s_%Y' " + stubs_path) + "|O2|fsections";
+                rt_stubs: string = cache_dir + "/rt" + tostring(this.fnv_str(stubs_tag)) + "_stubs.o";
+                if !this.file_exists(rt_stubs) {
+                    ec_st: string = this.exec_code("clang " + stubs_path + " -c -o " + rt_stubs + " -O2 -pthread -ffunction-sections -fdata-sections");
+                    if ec_st != "0" {
+                        show("error: cannot compile runtime stubs");
+                        return 1;
+                    }
+                }
+                runtime_objs = runtime_objs + " " + rt_stubs;
+            }
+
+            // Program object keyed by IR content + opt level
+            ir_key: int = this.fnv_lines(ir_lines);
+            obj_path = cache_dir + "/o" + tostring(this.fnv_str(opt_flag + "|" + tostring(ir_key))) + ".o";
+
+            if !this.file_exists(obj_path) {
+                temp_ll: string = "/tmp/leashc_" + Path.basename(out_bin) + ".ll";
+                f_tmp: File = File.open(temp_ll, "w");
+                if f_tmp == null {
+                    show("error: cannot write to '", temp_ll, "'");
+                    return 1;
+                }
+                foreach _, ir_ln2 in<vector> ir_lines {
+                    f_tmp.write(ir_ln2);
+                    f_tmp.write("\n");
+                }
+                f_tmp.close();
+                ec_obj: string = this.exec_code("clang " + temp_ll + " -c -o " + obj_path + " " + opt_flag);
+                if ec_obj != "0" {
+                    show("error: clang IR compilation failed");
+                    return 1;
+                }
+            }
+        } else {
+            // Cold path, no usable cache dir: compile + link in one go
+            temp_ll: string = "/tmp/leashc_" + Path.basename(out_bin) + ".ll";
+            f_tmp: File = File.open(temp_ll, "w");
+            if f_tmp == null {
+                show("error: cannot write to '", temp_ll, "'");
+                return 1;
+            }
+            foreach _, ir_ln2 in<vector> ir_lines {
+                f_tmp.write(ir_ln2);
+                f_tmp.write("\n");
+            }
+            f_tmp.close();
+            rt_files_cold: string = gc_path;
+            if stubs_path.size > 0 {
+                rt_files_cold = rt_files_cold + " " + stubs_path;
+            }
+            rsp_cold: string = "/tmp/leashc_" + Path.basename(out_bin) + ".rsp";
+            clang_cmd: string = "clang " + temp_ll + " " + rt_files_cold + " -o " + out_bin + " " + opt_flag + " -pthread -lm -ldl" + lib_flags;
+            f_rc: File = File.open(rsp_cold, "w");
+            if f_rc != null {
+                f_rc.write(temp_ll + "\n");
+                f_rc.write(rt_files_cold + "\n");
+                f_rc.write("-no-pie\n");
+                f_rc.write("-Wl,--gc-sections\n");
+                f_rc.write("-Wl,--strip-all\n");
+                f_rc.write("-Wl,--build-id=none\n");
+                f_rc.write("-Wl,-O1\n");
+                f_rc.write("-Wl,--hash-style=gnu\n");
+                f_rc.close();
+                clang_cmd = "clang @" + rsp_cold + " -o " + out_bin + " " + opt_flag + " -pthread -lm -ldl" + lib_flags;
+            }
+            ec_cold: string = this.exec_code(clang_cmd);
+            if ec_cold != "0" {
+                show("error: clang compilation failed");
+                return 1;
+            }
+            if !run_mode {
+                show("[leash] Compiled ", input_file, " -> ", out_bin);
+            }
+            if run_mode {
+                run_cmd: string = out_bin;
+                if run_args.size > 0 {
+                    run_cmd = run_cmd + " " + run_args;
+                }
+                exec(run_cmd, nil);
+            }
+            return 0;
+        }
+
+        // The link command must stay short: exec() commands are length-
+        // capped by the language runtime. Everything bulky (object paths,
+        // the Python-parity link flags) rides in a clang response file.
+        rsp_file: string = "/tmp/leashc_" + Path.basename(out_bin) + ".rsp";
+        link_cmd: string = "clang " + obj_path + " " + runtime_objs + " -o " + out_bin + " " + opt_flag + " -pthread -lm -ldl" + lib_flags;
+        f_rsp: File = File.open(rsp_file, "w");
+        if f_rsp != null {
+            f_rsp.write(obj_path + "\n");
+            f_rsp.write(runtime_objs + "\n");
+            f_rsp.write("-no-pie\n");
+            f_rsp.write("-Wl,--gc-sections\n");
+            f_rsp.write("-Wl,--strip-all\n");
+            f_rsp.write("-Wl,--build-id=none\n");
+            f_rsp.write("-Wl,-O1\n");
+            f_rsp.write("-Wl,--hash-style=gnu\n");
+            f_rsp.close();
+            link_cmd = "clang @" + rsp_file + " -o " + out_bin + " " + opt_flag + " -pthread -lm -ldl" + lib_flags;
+        }
+
+        // Link-only: prebuilt program object + runtime objects
+        ec_link: string = this.exec_code(link_cmd);
+        if ec_link != "0" {
+            show("error: clang link failed");
+            return 1;
+        }
+
+        if !run_mode {
+            show("[leash] Compiled ", input_file, " -> ", out_bin);
+        }
+
+        // If run mode, execute the binary (inheriting the terminal) and
+        // propagate its exit code (Python parity: temp run + banner + rc).
+        if run_mode {
+            run_cmd: string = out_bin;
+            if run_cmd.size > 0 && run_cmd[0] != '/' && run_cmd[0] != '.' {
+                run_cmd = "./" + run_cmd;
+            }
+            if run_args.size > 0 {
+                run_cmd = run_cmd + " " + run_args;
+            }
+            show("--- Executed at ", this.exec_out("date '+%Y-%m-%d %H:%M:%S'"), " ---");
+            rc_out: string = exec(run_cmd, "run");
+            rv: int = 0;
+            ri2: int = 0;
+            rneg: bool = false;
+            if rc_out.size > 0 && rc_out[0] == '-' {
+                rneg = true;
+                ri2 = 1;
+            }
+            while ri2 < rc_out.size && rc_out[ri2] >= '0' && rc_out[ri2] <= '9' {
+                rv = rv * 10 + (rc_out[ri2] - '0');
+                ri2 = ri2 + 1;
+            }
+            if rneg { rv = 0 - rv; }
+            return rv;
+        }
+
+        return 0;
+    }
+}

@@ -77,8 +77,14 @@
    ;; Method calls (with or without parentheses)
    '("\\.\\([a-zA-Z_][a-zA-Z0-9_]*\\)\\s-*(" 1 font-lock-function-name-face)
     '("\\.\\([a-zA-Z_][a-zA-Z0-9_]*\\)\\s-*[;:{]" 1 font-lock-function-name-face)
-    ;; String interpolation: highlight {expr} inside double-quoted strings
-    '("\"[^\"]*?\\({\\)[^{}]*\\(}\\)" (1 font-lock-variable-name-face t) (2 font-lock-variable-name-face t))
+    ;; String interpolation: highlight the { } delimiters, but ONLY
+    ;; inside one double-quoted string. Both ends are anchored by a quote
+    ;; and the middle cannot cross one, so a match can never leak into
+    ;; single-quoted char literals such as '{' or '}'.
+    '("\"[^\"]*?\\({\\)[^{}]*\\(}\\)[^\"]*?\"" (1 font-lock-variable-name-face t) (2 font-lock-variable-name-face t))
+    ;; Char literals ('x', '\n', '{'): single-quoted text is a CHARACTER,
+    ;; not a string — its own face, and never string-interpolated.
+    '("'\\(\\\\.\\|[^'\\\\]\\)'" (0 font-lock-constant-face t))
     )
   "Default font-lock keywords for Leash mode")
 
