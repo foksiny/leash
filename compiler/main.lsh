@@ -229,7 +229,7 @@ fnc xrun(cmd string) : int {
 // ---------------------------------------------------------------------------
 
 fnc print_usage() : void {
-    show("Leash 1.0.1 (self-hosted) - LLVM-powered compiled programming language");
+    show("Leash 1.0.0 (self-hosted) - LLVM-powered compiled programming language");
     show("");
     show("Usage:");
     show("  leash <command> [arguments] [options]");
@@ -938,7 +938,7 @@ fnc main(args string[]) : int {
     cmd: string = args[1];
 
     if cmd == "version" || cmd == "--version" || cmd == "-v" {
-        show("leash 1.0.1 (self-hosted)");
+        show("leash 1.0.0 (self-hosted)");
         return 0;
     }
 

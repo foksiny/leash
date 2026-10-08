@@ -5,8 +5,6 @@ All notable changes to the Leash compiler are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [1.0.1] - 2026-10-08
-
 ### Added — Full CLI parity with the Python toolchain
 - **Cross-compilation, natively**: all six targets
   (`linux64`, `linux32`, `linux-arm`, `win64`, `macos`, `macos-arm`) are
@@ -22,14 +20,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `-ov` / `--optimization-verbosity` accepted (implies `--verbose`).
 - `help <command>` per-command help topics; usage text now mirrors
   `leashp` (Global Options section, runp deprecation note).
-
-### Fixed
-- Generated IR referenced `@stdin` directly, which does not link on
-  Windows (`stdin` is not a symbol under mingw); input now goes through
-  the new `leash_sh_stdin()` runtime helper. `leash --target win64`
-  compiles and runs (wine) — previously a hard link error.
-- Failed clang invocations now surface the actual compiler error
-  (previously swallowed: only "clang link failed" was printed).
 
 ### Changed — Install ships the true fixed-point binary
 - `pip install .` now runs the **full 3-stage bootstrap**: Python builds
@@ -104,6 +94,12 @@ installation builds it from source.
 - Token enum collisions (`LT/LTE/GT/GTE` vs `ISINOP/DO/UNLESS/ALSOU`).
 - Array literals feeding narrower vectors (`(vec<uint<2>>){1,0,...}`)
   now convert element widths instead of misreading the buffer.
+- Generated IR referenced `@stdin` directly, which does not link on
+  Windows (`stdin` is not a symbol under mingw); input now goes through
+  the new `leash_sh_stdin()` runtime helper. `leash --target win64`
+  compiles and runs (wine) — previously a hard link error.
+- Failed clang invocations now surface the actual compiler error
+  (previously swallowed: only "clang link failed" was printed).
 
 ### Added — Self-hosted Leash compiler (`compiler/*.lsh`)
 - Compiler written in Leash (tokens/ast/lexer/parser/typechecker/codegen/optimize/driver/main)

@@ -52,6 +52,8 @@
 
 <p>Leash uses a <strong>custom garbage collector</strong> with a mark-and-sweep algorithm, a slab-based allocator, and hybrid root finding. Memory is managed automatically &mdash; you never need to call <code>free()</code> or worry about memory leaks.</p>
 
+<p>Since 1.0, container storage is <strong>unboxed and element-width-aware</strong>: a <code>vec<int></code> is one raw 8-byte-per-element array (values stored inline, not heap-boxed), wide integers (<code>int<128></code> etc.) live inline at their exact width, and reference-typed elements (strings, structs, nested vectors) are stored as 8-byte handles. Element buffers of pointer-free types are allocated <strong>ATOMIC</strong> &mdash; the collector never scans them, so integer payloads can never falsely pin unrelated objects and marking a vector costs nothing.</p>
+
 <h3>How It Works</h3>
 <ol>
     <li><strong>Mark Phase</strong>: Starting from root pointers (globals, stack variables), the GC traces all reachable objects</li>
@@ -66,6 +68,8 @@
     <li>Manual control from Leash code via the <code>gc_collect()</code> and <code>gc_stats()</code> builtins</li>
     <li>Slab allocator with per-size-class free lists &mdash; no per-object <code>malloc</code>, and no lock while the program is single-threaded</li>
     <li>Type-aware: strings, vectors, arrays, structs, classes, unions all handled properly</li>
+    <li>Precise container tracing (1.0) &mdash; pointer-free vector/matrix/array buffers are never scanned; only buffers that can hold references are</li>
+    <li>Lazy buffers &mdash; a vector that never grows costs one small header; the data array is allocated on first push</li>
     <li>Built-in GC stats via <code>leash_gc_print_stats()</code></li>
 </ul>
 
@@ -145,6 +149,8 @@ autofree: true</code></pre>
 </ul>
 
 <div class="callout callout-info"><code>--autofree</code> is stricter than <code>-ngc</code>: it not only disables the GC but also <em>frees everything for you</em>. Use it whenever you want GC-free semantics without manual memory management.</div>
+
+<div class="callout callout-warning">Since 1.0 the autofree <em>instrumentation</em> is provided by the Python compiler: <code>leash --autofree</code> delegates to <code>leashp</code> automatically (and prints a note), and a project config with <code>autofree: true</code> must be built with <code>leashp build</code>. The self-hosted compiler implements every other toolchain path natively.</div>
 
 <h2>Error Handling &amp; Safety</h2>
 
@@ -273,7 +279,7 @@ gcc -shared -fPIC math_utils.c -o libmath.so</code></pre>
 
 <h2>C Runtime Optimizations</h2>
 
-<p>The Leash runtime (<code>gc.c</code> / <code>gc.h</code>) is compiled at <code>-O3</code> and includes:</p>
+<p>The Leash runtime (<code>gc.c</code> / <code>gc.h</code>) is compiled at <code>-O2</code> with <code>-ffunction-sections</code> (so the linker dead-strips unused helpers &mdash; binaries only carry the runtime they touch) and includes:</p>
 
 <table>
     <tr><th>#</th><th>Optimization</th></tr>
@@ -285,11 +291,15 @@ gcc -shared -fPIC math_utils.c -o libmath.so</code></pre>
     <tr><td>6</td><td><strong>Slab allocator</strong> &mdash; 64 KB pages split into size-class cells with free-list reuse (replaces per-object <code>malloc</code>)</td></tr>
     <tr><td>7</td><td><strong>Iterative mark phase</strong> &mdash; explicit worklist instead of recursion, scanning an open-addressed page directory</td></tr>
     <tr><td>8</td><td><strong>Fast memcpy</strong> &mdash; thin wrapper with <code>__restrict__</code> hints</td></tr>
+    <tr><td>9</td><td><strong>Unboxed byte-addressed vectors (1.0)</strong> &mdash; raw element arrays at the exact element width; inline fast paths in generated code for <code>pushb</code>/<code>get</code>/<code>set</code>/<code>popb</code>, calling into the runtime only to grow</td></tr>
+    <tr><td>10</td><td><strong>Big-integer runtime (1.0)</strong> &mdash; exact decimal formatting and parsing for <code>int<N></code>/<code>uint<N></code> up to 512 bits (schoolbook division over 32-bit limbs)</td></tr>
+    <tr><td>11</td><td><strong>Buffered <code>showb</code> (1.0)</strong> &mdash; output accumulates in a growable buffer flushed once at exit; vec elements unpack without separators</td></tr>
+    <tr><td>12</td><td><strong>Portable stdin access (1.0)</strong> &mdash; generated code reaches <code>stdin</code> through <code>leash_sh_stdin()</code>, so Windows binaries (where <code>stdin</code> is not a linkable symbol) build and run</td></tr>
 </table>
 
 <h2>Syntax Highlighting</h2>
 
-<p>Leash provides native syntax highlighting for popular editors. Files are in the <code>syntax_highlighters/</code> directory.</p>
+<p>Leash provides native syntax highlighting for popular editors. Files are in the <code>syntax_highlighters/</code> directory. Character literals are highlighted as <em>characters</em>, not strings &mdash; braces inside single-quoted text (like <code>'{'</code>) are never treated as <code>{expr}</code> interpolation.</p>
 
 <h3>Vim / Neovim</h3>
 <pre><code>mkdir -p ~/.vim/syntax
