@@ -51,21 +51,34 @@ def exec_native(argv):
 
 
 def _python_needed(argv):
-    """True when this invocation must run on the Python toolchain."""
+    """(needs_python, reason): why this invocation must run on Python."""
     if os.environ.get("LEASH_FORCE_PYTHON"):
-        return True
+        return True, "LEASH_FORCE_PYTHON is set"
     if not have_native():
-        return True
+        return True, "the native compiler was not built for this install"
     for i, a in enumerate(argv):
         if a == "--target" and i + 1 < len(argv):
             if argv[i + 1] not in _NATIVE_TARGETS:
-                return True
-    return False
+                return True, "cross-compile target %r uses the Python toolchain" % argv[i + 1]
+    return False, ""
 
 
 def main():
     argv = sys.argv[1:]
-    if not _python_needed(argv):
+    needs_python, reason = _python_needed(argv)
+    if needs_python:
+        if not have_native() and not os.environ.get("LEASH_FORCE_PYTHON"):
+            # Be loud: a missing native binary is an install problem, not a
+            # routing decision. Reinstall the package to rebuild it.
+            sys.stderr.write(
+                "leash: native self-hosted compiler not found "
+                "(%s/leash/native/leashc) -- using the Python implementation.\n"
+                "       Reinstall the package (`pip install -e .`) to rebuild it.\n"
+                % os.path.dirname(os.path.abspath(__file__))
+            )
+        else:
+            sys.stderr.write("leash: using the Python toolchain (%s)\n" % reason)
+    else:
         exec_native(argv)  # returns False only if the binary vanished
     from .cli import main as _python_main
     _python_main()

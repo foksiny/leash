@@ -49,13 +49,34 @@ def build_native_compiler():
     os.remove(stage1)
 
 
+def _native_is_stale():
+    """True when the shipped binary predates any compiler/*.lsh source.
+
+    Editable installs keep the binary inside the repository; without this
+    check a `pip install -e .` after editing the compiler would silently
+    keep shipping the old binary and `leash` would behave like `leashp`.
+    """
+    if not os.path.exists(NATIVE_BIN):
+        return True
+    bin_mtime = os.path.getmtime(NATIVE_BIN)
+    src_dir = os.path.join(ROOT, "compiler")
+    if not os.path.isdir(src_dir):
+        return False
+    for name in sorted(os.listdir(src_dir)):
+        if name.endswith(".lsh"):
+            if os.path.getmtime(os.path.join(src_dir, name)) > bin_mtime:
+                return True
+    return False
+
+
 def _maybe_build_native():
     if os.environ.get("LEASH_SKIP_NATIVE"):
         return
-    if os.path.exists(NATIVE_BIN):
+    if os.path.exists(NATIVE_BIN) and not _native_is_stale():
         return
     try:
         build_native_compiler()
+        print("leash: built self-hosted compiler -> %s" % NATIVE_BIN)
     except Exception as exc:  # missing clang/llvmlite, non-Linux, ...
         sys.stderr.write(
             "WARNING: skipping the self-hosted compiler build: %s\n"
