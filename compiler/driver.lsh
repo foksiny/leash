@@ -335,6 +335,14 @@ pub def CompilerDriver : class {
         if opt_level == "0" { opt_flag = "-O0"; }
         also opt_level == "1" { opt_flag = "-O1"; }
         also opt_level == "3" { opt_flag = "-O3"; }
+        also opt_level == "4" {
+            // Python-parity O4: the O3 pipeline with a raised inliner
+            // threshold (default 225 -> 600) so more functions inline and
+            // downstream GVN/LICM/DSE find more; SLP vectorization is part
+            // of clang's -O3 already, and the extra cleanup passes (GVN,
+            // SCCP, DCE, global DCE) run inside -O3.
+            opt_flag = "-O3 -mllvm -inline-threshold=600";
+        }
         also opt_level == "s" { opt_flag = "-Os"; }
         also opt_level == "z" { opt_flag = "-Oz"; }
         lib_flags: string = "";

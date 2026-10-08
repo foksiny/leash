@@ -248,7 +248,7 @@ fnc print_usage() : void {
     show("  help, --help                                                       Show this help message");
     show("");
     show("Options:");
-    show("  --opt <level> / -O<level>    Optimization level: 0, 1, 2, 3, s, z  (default: 2)");
+    show("  --opt <level> / -O<level>    Optimization level: 0, 1, 2, 3, 4, s (size), z (aggressive size)  (default: 2)");
     show("  --check                      Type-check only, do not produce output");
     show("  --warnings-as-errors / -oe   Treat warnings as errors");
     show("  --emit-llvm                  Emit LLVM IR instead of linking");
@@ -885,6 +885,7 @@ fnc main(args string[]) : int {
             if arg == "-O1" { opt_level = "1"; i = i + 1; continue; }
             if arg == "-O2" { opt_level = "2"; i = i + 1; continue; }
             if arg == "-O3" { opt_level = "3"; i = i + 1; continue; }
+            if arg == "-O4" { opt_level = "4"; i = i + 1; continue; }
             if arg == "-Os" { opt_level = "s"; i = i + 1; continue; }
             if arg == "-Oz" { opt_level = "z"; i = i + 1; continue; }
             if arg == "--other-imports" || arg == "-oi" {

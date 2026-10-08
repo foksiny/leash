@@ -70,7 +70,7 @@ leash self-host   # 3-stage bootstrap + fixed-point check, installs bin/leashc
 
 - **Self-hosted compiler** — the language's own compiler is written in the language, with a verified bootstrap fixed point and 88/88 output parity against the reference implementation
 - **Strongly typed** with full type inference, generics (`class<T>`, multi-type `[int, float, ...]` parameters), operator overloading (`opdef`) and explicit bit-width integers/floats (`int<128>`, `uint<512>`, …)
-- **LLVM-powered** compilation with optimization levels O0-O3, Os, Oz
+- **LLVM-powered** compilation with optimization levels O0-O4, Os, Oz (O4 = O3 pipeline + aggressive inlining)
 - **Precise garbage collection** — pointer-free vector buffers are never scanned (no false pins from integer payloads); unboxed inline element storage with reference semantics
 - **Package manager** (`leashed`) with fully self-service publishing — registry updates are validated and merged by a bot, no human review; install from the index or any git URL; **reproducible project builds** with `leash.lock`
 - **Concurrency model** with workers, `shared` and `fusion` variables — plus native **`async fnc`/`await`** returning `future<T>`
