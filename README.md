@@ -74,7 +74,7 @@ leash self-host   # 3-stage bootstrap + fixed-point check, installs bin/leashc
 - **Precise garbage collection** — pointer-free vector buffers are never scanned (no false pins from integer payloads); unboxed inline element storage with reference semantics
 - **Package manager** (`leashed`) with fully self-service publishing — registry updates are validated and merged by a bot, no human review; install from the index or any git URL; **reproducible project builds** with `leash.lock`
 - **Concurrency model** with workers, `shared` and `fusion` variables — plus native **`async fnc`/`await`** returning `future<T>`
-- **Cross-platform** compilation for Linux (x86-64 and ARM64), Windows, and macOS (via `leashp` for non-native targets)
+- **Cross-platform** compilation for Linux (x86-64, x86, ARM64), Windows, and macOS — all targets built by the native compiler (`--target win64`, `--target linux-arm`, …), with `wine`/`qemu` execution for cross binaries
 - **100+ standard-library packages** — vectors, matrices, hash tables, file I/O, string/text tools, math, crypto, SQL, HTTP, games, AI, testing helpers…
 - **Native HTTP/HTTPS client** (`http`) and **multiplexed keep-alive HTTP/1.1 server** (`httpserver`) — full web stack with no external dependencies
 - **Native source-level debugger** (`leash dbg`) — step/breakpoint debugging without GDB/LLDB, breakpoints from the CLI (`-b <line>`) or interactively

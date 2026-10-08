@@ -2588,6 +2588,12 @@ static void* lv_alloc_data(int64_t cap, int64_t esz, int64_t scan) {
 
 static void leash_sh_vec_ensure(void* vec_ptr, int64_t need);
 
+/* stdin as an opaque handle: on Windows `stdin` is not a linkable symbol,
+   so generated code must go through here instead of @stdin. */
+void* leash_sh_stdin(void) {
+    return (void*)stdin;
+}
+
 void* leash_sh_vec_new(int64_t elem_size, int64_t scan) {
     LeashVec* v = (LeashVec*)leash_gc_malloc(sizeof(LeashVec));
     v->elem_size = elem_size > 0 ? elem_size : 8;

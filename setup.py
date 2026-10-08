@@ -23,9 +23,16 @@ NATIVE_BIN = os.path.join(NATIVE_DIR, "leashc")
 
 
 def build_native_compiler():
-    """Bootstrap and self-compile the native compiler. Raises on failure."""
+    """Full 3-stage bootstrap. The SHIPPED binary is stage 3: compiled by
+    the self-hosted compiler that was itself compiled by the self-hosted
+    compiler, so it carries exactly the speed, size and feature set of
+    the compiler compiling itself with its own optimizations. The fixed
+    point (stage 2 IR == stage 3 IR) is verified like `leash self-host`.
+    """
     os.makedirs(NATIVE_DIR, exist_ok=True)
     stage1 = os.path.join(NATIVE_DIR, "leashc_stage1")
+    stage2 = os.path.join(NATIVE_DIR, "leashc_stage2")
+    stage3 = NATIVE_BIN
     env = dict(os.environ)
     # Never recurse into the native launcher while building it
     env["LEASH_FORCE_PYTHON"] = "1"
@@ -39,14 +46,42 @@ def build_native_compiler():
     )
     os.chmod(stage1, 0o755)
 
-    # Stage 1: the self-hosted compiler compiles itself (the binary that
-    # ships is literally the product of the compiler it contains)
-    subprocess.run(
-        [stage1, "compile", "compiler/main.lsh", "-o", NATIVE_BIN],
-        cwd=ROOT, check=True,
-    )
-    os.chmod(NATIVE_BIN, 0o755)
-    os.remove(stage1)
+    # Stage 1: first self-compilation
+    subprocess.run([stage1, "compile", "compiler/main.lsh", "-o", stage2],
+                   cwd=ROOT, check=True)
+    os.chmod(stage2, 0o755)
+
+    # Stage 2: SECOND self-compilation -- this is the binary that ships,
+    # produced by a compiler that was itself produced by the self-hosted
+    # compiler (its own codegen quality, size and link flags)
+    subprocess.run([stage2, "compile", "compiler/main.lsh", "-o", stage3],
+                   cwd=ROOT, check=True)
+    os.chmod(stage3, 0o755)
+
+    # Fixed-point verification: stages 2 and 3 emit identical IR
+    ir2 = os.path.join(NATIVE_DIR, "fp_stage2")
+    ir3 = os.path.join(NATIVE_DIR, "fp_stage3")
+    try:
+        subprocess.run([stage2, "compile", "compiler/main.lsh",
+                        "--emit-llvm", "-o", ir2], cwd=ROOT, check=True)
+        subprocess.run([stage3, "compile", "compiler/main.lsh",
+                        "--emit-llvm", "-o", ir3], cwd=ROOT, check=True)
+        with open(ir2 + ".ll") as f2, open(ir3 + ".ll") as f3:
+            if f2.read() == f3.read():
+                print("leash: bootstrap fixed point verified "
+                      "(stage 2 IR == stage 3 IR)")
+            else:
+                sys.stderr.write("WARNING: bootstrap IR differs between "
+                                 "stages 2 and 3\n")
+    except Exception:
+        sys.stderr.write("WARNING: could not verify the bootstrap fixed "
+                         "point\n")
+    finally:
+        for tmp in (ir2, ir3, ir2 + ".ll", ir3 + ".ll", stage1, stage2):
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass
 
 
 def _native_is_stale():
@@ -96,7 +131,7 @@ if os.path.exists(NATIVE_BIN):
 
 setup(
     name="leash",
-    version="1.0.0",
+    version="1.0.1",
     description="Leash programming language — self-hosted compiler, toolchain and package manager",
     packages=find_packages(),
     package_data=_package_data,

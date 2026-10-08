@@ -71,20 +71,21 @@
 
 <p>Leash supports multiple compilation targets, allowing you to compile your code for different platforms. The default target compiles to a native binary for your current system. Cross-compilation to Windows, macOS, and Linux (including ARM64) is supported when the appropriate toolchains are installed.</p>
 
-<pre><code><span class="cm"># Current system (default) &mdash; the self-hosted compiler</span>
+<pre><code><span class="cm"># Current system (default)</span>
 leash compile program.lsh
 
-<span class="cm"># Windows 64-bit (cross-compile via MinGW &mdash; Python toolchain)</span>
-leashp compile program.lsh --target win64
+<span class="cm"># Windows 64-bit (cross-compile; runs under wine via `leash run`)</span>
+leash compile program.lsh --target win64
 
-<span class="cm"># macOS (cross-compile)</span>
-leashp compile program.lsh --target macos
+<span class="cm"># macOS / macOS ARM64 (needs a macOS SDK to link)</span>
+leash compile program.lsh --target macos
+leash compile program.lsh --target macos-arm
 
-<span class="cm"># Linux 32-bit</span>
-leashp compile program.lsh --target linux32
+<span class="cm"># Linux 32-bit (needs gcc multilib)</span>
+leash compile program.lsh --target linux32
 
 <span class="cm"># Linux ARM64 (Raspberry Pi 4/5, ARM servers, Ampere, AWS Graviton)</span>
-leashp compile program.lsh --target linux-arm</code></pre>
+leash compile program.lsh --target linux-arm</code></pre>
 
 <p>For <code>linux-arm</code> on a non-ARM host, install the cross toolchain (<code>gcc-aarch64-linux-gnu</code>) — <code>leash run --target linux-arm</code> executes the produced binary through <code>qemu-aarch64</code> (qemu-user) when the host is x86. On native ARM64 Linux (e.g. a Raspberry Pi) no extra setup is needed.</p>
 

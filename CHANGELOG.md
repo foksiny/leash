@@ -5,6 +5,40 @@ All notable changes to the Leash compiler are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.1] - 2026-10-08
+
+### Added — Full CLI parity with the Python toolchain
+- **Cross-compilation, natively**: all six targets
+  (`linux64`, `linux32`, `linux-arm`, `win64`, `macos`, `macos-arm`) are
+  built by the self-hosted compiler through clang driver flags
+  (`-m32`, `--target=...`), with per-target runtime objects, Windows
+  stubs + `.exe` output for win64, and `wine`/`qemu-aarch64` execution
+  under `leash run` (verified end-to-end: a win64 binary built by `leash`
+  runs under wine). Python routing is now only for `--autofree`.
+- `-ngc` / `--no-garbage-collector`: plain malloc/free runtime
+  (`-DNO_GC`), keyed into the runtime object cache.
+- `--static` / `-static`: fully-static binaries (musl-clang/musl-gcc when
+  present, `--target=...-musl -static` fallback — Python parity).
+- `-ov` / `--optimization-verbosity` accepted (implies `--verbose`).
+- `help <command>` per-command help topics; usage text now mirrors
+  `leashp` (Global Options section, runp deprecation note).
+
+### Fixed
+- Generated IR referenced `@stdin` directly, which does not link on
+  Windows (`stdin` is not a symbol under mingw); input now goes through
+  the new `leash_sh_stdin()` runtime helper. `leash --target win64`
+  compiles and runs (wine) — previously a hard link error.
+- Failed clang invocations now surface the actual compiler error
+  (previously swallowed: only "clang link failed" was printed).
+
+### Changed — Install ships the true fixed-point binary
+- `pip install .` now runs the **full 3-stage bootstrap**: Python builds
+  stage 1, stage 1 builds stage 2, stage 2 builds stage 3 — and stage 3
+  (compiled by the self-hosted compiler that was itself compiled by the
+  self-hosted compiler: its own codegen quality, size and link flags) is
+  what ships. The fixed point is verified during install and the pip
+  binary emits IR identical to `bin/leashc`.
+
 ## [1.0.0] - 2026-10-08
 
 First stable release. The compiler is now self-hosted: the shipped `leashc`

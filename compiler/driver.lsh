@@ -226,7 +226,13 @@ pub def CompilerDriver : class {
 
     pub fnc exec_code(cmd string) : string {
         // Python-compiled exec("x","code") returns "N\n"; self-hosted returns "N".
+        // "code" mode drains output silently, so on failure the command is
+        // re-run with the terminal attached: the user sees clang's actual
+        // error instead of a bare "compilation failed".
         ec: string = exec(cmd, "code");
+        if ec != "0" && ec != "0\n" {
+            exec(cmd, nil);
+        }
         trimmed: string = "";
         i: int = 0;
         while i < ec.size && ec[i] != '\n' {
@@ -247,7 +253,41 @@ pub def CompilerDriver : class {
         return trimmed;
     }
 
-    pub fnc compile_file(input_file string, output_file string, emit_llvm bool, run_mode bool, run_args string, opt_level string, check_mode bool, extra_libs vec<string>, verbose bool, warn_err bool, debug_instrument bool) : int {
+    // Validate cross-execution of a built binary (Python parity): wine for
+    // win64 off-Windows, qemu-aarch64 for ARM64 off-ARM, hard error for
+    // macOS. Returns the validated prefix, or "" on failure after printing.
+    pub fnc cross_run_prefix(target_name string) : string {
+        if target_name.size == 0 || target_name == "linux64" || target_name == "linux32" {
+            return "";
+        }
+        if target_name == "linux-arm" {
+            if this.exec_out("uname -m") == "aarch64" {
+                return "";
+            }
+            if this.exec_out("command -v qemu-aarch64").size == 0 {
+                show("error: Cannot run linux-arm binary on a non-ARM host. Install qemu-user (qemu-aarch64) to execute ARM64 binaries.");
+                return "";
+            }
+            return "qemu-aarch64 -L /usr/aarch64-linux-gnu ";
+        }
+        if target_name == "win64" {
+            if this.exec_out("uname -m") != "x86_64" {
+                return "wine ";
+            }
+            if this.exec_out("command -v wine").size == 0 {
+                show("error: Cannot run win64 binary on non-Windows without wine");
+                return "";
+            }
+            return "wine ";
+        }
+        if target_name == "macos" || target_name == "macos-arm" {
+            show("error: Cannot run macOS binary on non-macOS");
+            return "";
+        }
+        return "";
+    }
+
+    pub fnc compile_file(input_file string, output_file string, emit_llvm bool, run_mode bool, run_args string, opt_level string, check_mode bool, extra_libs vec<string>, verbose bool, warn_err bool, debug_instrument bool, target_name string, no_gc bool, static_link bool) : int {
         source: string = this.read_file_string(input_file);
         if source.size == 0 {
             return 1;
@@ -350,6 +390,88 @@ pub def CompilerDriver : class {
             lib_flags = lib_flags + " -l" + lib;
         }
 
+        // ---- Target / link-mode flags (Python parity) -----------------------
+        // The self-hosted compiler drives the host clang, so cross targets
+        // are clang driver flags. Objects and the runtime are compiled for
+        // the target; the IR text itself is target-agnostic (clang warns
+        // and overrides the module triple with the --target given here).
+        cc_bin: string = "clang";
+        cc_flags: string = "";
+        rt_extra: string = "";
+        is_win: bool = false;
+        is_macos: bool = false;
+        run_prefix: string = "";
+        if target_name == "linux32" {
+            cc_flags = "-m32";
+        } also target_name == "linux-arm" {
+            cc_flags = "--target=aarch64-linux-gnu";
+            if this.exec_out("uname -m") != "aarch64" {
+                run_prefix = "qemu-aarch64 -L /usr/aarch64-linux-gnu ";
+            }
+        } also target_name == "win64" {
+            cc_flags = "--target=x86_64-w64-mingw32";
+            is_win = true;
+            if this.exec_out("uname -m") != "x86_64" {
+                run_prefix = "wine ";
+            }
+        } also target_name == "macos" {
+            cc_flags = "--target=x86_64-apple-darwin";
+            is_macos = true;
+        } also target_name == "macos-arm" {
+            cc_flags = "--target=aarch64-apple-darwin";
+            is_macos = true;
+        }
+        if no_gc {
+            // Stub runtime: plain malloc/free behind the same API
+            rt_extra = rt_extra + " -DNO_GC";
+        }
+        if static_link {
+            if target_name.size > 0 && target_name != "linux64" && target_name != "linux32" {
+                show("error: --static is supported for linux64/linux32 only");
+                return 1;
+            }
+            if this.exec_out("command -v musl-clang").size > 0 {
+                cc_bin = "musl-clang";
+                cc_flags = cc_flags + " -static";
+            } also this.exec_out("command -v musl-gcc").size > 0 {
+                cc_bin = "musl-gcc";
+                cc_flags = cc_flags + " -static";
+            } else {
+                cc_flags = cc_flags + " --target=x86_64-linux-musl -static";
+            }
+        }
+
+        // Windows output naming: out.exe (Python parity)
+        if is_win && out_bin.size > 4 {
+            win_sfx: bool = true;
+            wi: int = out_bin.size - 4;
+            if out_bin[wi] == '.' && out_bin[wi + 1] == 'e' && out_bin[wi + 2] == 'x' && out_bin[wi + 3] == 'e' { win_sfx = false; }
+            if win_sfx { out_bin = out_bin + ".exe"; }
+        }
+
+        // Link flags vary by target (Python's targets.py). rsp form rides in
+        // a response file; inline form is the no-rsp fallback.
+        link_rsp_flags: string = "-no-pie\n" +
+                                 "-Wl,--gc-sections\n" +
+                                 "-Wl,--strip-all\n" +
+                                 "-Wl,--build-id=none\n" +
+                                 "-Wl,-O1\n" +
+                                 "-Wl,--hash-style=gnu\n";
+        link_flags_inline: string = "-no-pie -Wl,--gc-sections -Wl,--strip-all -Wl,--build-id=none -Wl,-O1 -Wl,--hash-style=gnu";
+        tail_flags: string = " -pthread -lm -ldl";
+        if is_win {
+            link_rsp_flags = "-mconsole\n" +
+                             "-Wl,--gc-sections\n" +
+                             "-Wl,--strip-all\n";
+            link_flags_inline = "-mconsole -Wl,--gc-sections -Wl,--strip-all";
+            tail_flags = "";
+        } also is_macos {
+            link_rsp_flags = "-Wl,-dead_strip\n" +
+                             "-Wl,-S\n";
+            link_flags_inline = "-Wl,-dead_strip -Wl,-S";
+            tail_flags = " -lm";
+        }
+
         home_dir: string = this.exec_out("echo $HOME");
         cache_dir: string = home_dir + "/.leash/shcache";
         if home_dir.size > 0 {
@@ -419,6 +541,9 @@ pub def CompilerDriver : class {
             di = di + 1;
         }
         stubs_path: string = dir_part + "cross_compile_stubs.c";
+        if is_win {
+            stubs_path = dir_part + "windows_stubs.c";
+        }
         if !this.file_exists(stubs_path) {
             stubs_path = "";
         }
@@ -428,15 +553,29 @@ pub def CompilerDriver : class {
         obj_path: string = "";
         runtime_objs: string = "";
 
-        // Prebuild the runtime objects once per (size, mtime) tag
+        // Response file with the cc flags for this invocation: exec()
+        // commands are length-capped, and target/static/O4 flag sets do
+        // not fit inline. One rsp per purpose, written under the cache dir
+        // (or /tmp without one).
+        rsp_dir: string = cache_dir;
+        if !use_cache { rsp_dir = "/tmp"; }
+        rsp_rt: string = rsp_dir + "/ccrt_" + tostring(this.fnv_str("rt|" + cc_bin + "|" + cc_flags + "|" + rt_extra)) + ".rsp";
+        f_rt_rsp: File = File.open(rsp_rt, "w");
+        if f_rt_rsp != null {
+            f_rt_rsp.write("-O2 -pthread -ffunction-sections -fdata-sections" + rt_extra + "\n");
+            f_rt_rsp.write(cc_flags + "\n");
+            f_rt_rsp.close();
+        }
+
+        // Prebuild the runtime objects once per (size, mtime, flags) tag
         if use_cache {
             // Key on (mtime, size, flags): a runtime-flag change must
             // invalidate the cached object or --gc-sections finds no
             // function sections to strip (Python does the same).
-            gc_tag: string = this.exec_out("stat -c '%s_%Y' " + gc_path) + "|O2|fsections";
+            gc_tag: string = this.exec_out("stat -c '%s_%Y' " + gc_path) + "|O2|fsections|" + cc_flags + "|" + rt_extra;
             rt_gc: string = cache_dir + "/rt" + tostring(this.fnv_str(gc_tag)) + "_gc.o";
             if !this.file_exists(rt_gc) {
-                ec_rt: string = this.exec_code("clang " + gc_path + " -c -o " + rt_gc + " -O2 -pthread -ffunction-sections -fdata-sections");
+                ec_rt: string = this.exec_code(cc_bin + " " + gc_path + " -c -o " + rt_gc + " @" + rsp_rt);
                 if ec_rt != "0" {
                     show("error: cannot compile runtime gc.c");
                     return 1;
@@ -445,10 +584,10 @@ pub def CompilerDriver : class {
             runtime_objs = rt_gc;
 
             if stubs_path.size > 0 {
-                stubs_tag: string = this.exec_out("stat -c '%s_%Y' " + stubs_path) + "|O2|fsections";
+                stubs_tag: string = this.exec_out("stat -c '%s_%Y' " + stubs_path) + "|O2|fsections|" + cc_flags + "|" + rt_extra;
                 rt_stubs: string = cache_dir + "/rt" + tostring(this.fnv_str(stubs_tag)) + "_stubs.o";
                 if !this.file_exists(rt_stubs) {
-                    ec_st: string = this.exec_code("clang " + stubs_path + " -c -o " + rt_stubs + " -O2 -pthread -ffunction-sections -fdata-sections");
+                    ec_st: string = this.exec_code(cc_bin + " " + stubs_path + " -c -o " + rt_stubs + " @" + rsp_rt);
                     if ec_st != "0" {
                         show("error: cannot compile runtime stubs");
                         return 1;
@@ -457,9 +596,9 @@ pub def CompilerDriver : class {
                 runtime_objs = runtime_objs + " " + rt_stubs;
             }
 
-            // Program object keyed by IR content + opt level
+            // Program object keyed by IR content + opt level + target flags
             ir_key: int = this.fnv_lines(ir_lines);
-            obj_path = cache_dir + "/o" + tostring(this.fnv_str(opt_flag + "|" + tostring(ir_key))) + ".o";
+            obj_path = cache_dir + "/o" + tostring(this.fnv_str(opt_flag + "|" + cc_flags + "|" + tostring(ir_key))) + ".o";
 
             if !this.file_exists(obj_path) {
                 temp_ll: string = "/tmp/leashc_" + Path.basename(out_bin) + ".ll";
@@ -473,10 +612,23 @@ pub def CompilerDriver : class {
                     f_tmp.write("\n");
                 }
                 f_tmp.close();
-                ec_obj: string = this.exec_code("clang " + temp_ll + " -c -o " + obj_path + " " + opt_flag);
-                if ec_obj != "0" {
-                    show("error: clang IR compilation failed");
-                    return 1;
+                rsp_obj: string = "/tmp/leashc_" + Path.basename(out_bin) + "_obj.rsp";
+                f_obj_rsp: File = File.open(rsp_obj, "w");
+                if f_obj_rsp != null {
+                    f_obj_rsp.write(opt_flag + "\n");
+                    f_obj_rsp.write(cc_flags + "\n");
+                    f_obj_rsp.close();
+                    ec_obj: string = this.exec_code(cc_bin + " " + temp_ll + " -c -o " + obj_path + " @" + rsp_obj);
+                    if ec_obj != "0" {
+                        show("error: clang IR compilation failed");
+                        return 1;
+                    }
+                } else {
+                    ec_obj2: string = this.exec_code(cc_bin + " " + temp_ll + " -c -o " + obj_path + " " + opt_flag + " " + cc_flags);
+                    if ec_obj2 != "0" {
+                        show("error: clang IR compilation failed");
+                        return 1;
+                    }
                 }
             }
         } else {
@@ -497,19 +649,12 @@ pub def CompilerDriver : class {
                 rt_files_cold = rt_files_cold + " " + stubs_path;
             }
             rsp_cold: string = "/tmp/leashc_" + Path.basename(out_bin) + ".rsp";
-            clang_cmd: string = "clang " + temp_ll + " " + rt_files_cold + " -o " + out_bin + " " + opt_flag + " -pthread -lm -ldl" + lib_flags;
             f_rc: File = File.open(rsp_cold, "w");
+            clang_cmd: string = cc_bin + " " + temp_ll + " " + rt_files_cold + " -o " + out_bin + " " + opt_flag + " " + cc_flags + link_flags_inline + tail_flags + lib_flags;
             if f_rc != null {
-                f_rc.write(temp_ll + "\n");
-                f_rc.write(rt_files_cold + "\n");
-                f_rc.write("-no-pie\n");
-                f_rc.write("-Wl,--gc-sections\n");
-                f_rc.write("-Wl,--strip-all\n");
-                f_rc.write("-Wl,--build-id=none\n");
-                f_rc.write("-Wl,-O1\n");
-                f_rc.write("-Wl,--hash-style=gnu\n");
+                f_rc.write(link_rsp_flags);
                 f_rc.close();
-                clang_cmd = "clang @" + rsp_cold + " -o " + out_bin + " " + opt_flag + " -pthread -lm -ldl" + lib_flags;
+                clang_cmd = cc_bin + " " + temp_ll + " " + rt_files_cold + " @" + rsp_cold + " -o " + out_bin + " " + opt_flag + " " + cc_flags + tail_flags + lib_flags;
             }
             ec_cold: string = this.exec_code(clang_cmd);
             if ec_cold != "0" {
@@ -520,11 +665,32 @@ pub def CompilerDriver : class {
                 show("[leash] Compiled ", input_file, " -> ", out_bin);
             }
             if run_mode {
+                xpre: string = this.cross_run_prefix(target_name);
+                if target_name == "macos" || target_name == "macos-arm" {
+                    return 1;
+                }
                 run_cmd: string = out_bin;
+                if xpre.size == 0 && run_cmd.size > 0 && run_cmd[0] != '/' && run_cmd[0] != '.' {
+                    run_cmd = "./" + run_cmd;
+                }
                 if run_args.size > 0 {
                     run_cmd = run_cmd + " " + run_args;
                 }
-                exec(run_cmd, nil);
+                show("--- Executed at ", this.exec_out("date '+%Y-%m-%d %H:%M:%S'"), " ---");
+                rc_out0: string = exec(xpre + run_cmd, "run");
+                rv0: int = 0;
+                p0: int = 0;
+                neg0: bool = false;
+                if rc_out0.size > 0 && rc_out0[0] == '-' {
+                    neg0 = true;
+                    p0 = 1;
+                }
+                while p0 < rc_out0.size && rc_out0[p0] >= '0' && rc_out0[p0] <= '9' {
+                    rv0 = rv0 * 10 + (rc_out0[p0] - '0');
+                    p0 = p0 + 1;
+                }
+                if neg0 { rv0 = 0 - rv0; }
+                return rv0;
             }
             return 0;
         }
@@ -533,19 +699,14 @@ pub def CompilerDriver : class {
         // capped by the language runtime. Everything bulky (object paths,
         // the Python-parity link flags) rides in a clang response file.
         rsp_file: string = "/tmp/leashc_" + Path.basename(out_bin) + ".rsp";
-        link_cmd: string = "clang " + obj_path + " " + runtime_objs + " -o " + out_bin + " " + opt_flag + " -pthread -lm -ldl" + lib_flags;
+        link_cmd: string = cc_bin + " " + obj_path + " " + runtime_objs + " -o " + out_bin + " " + opt_flag + " " + cc_flags + link_flags_inline + tail_flags + lib_flags;
         f_rsp: File = File.open(rsp_file, "w");
         if f_rsp != null {
             f_rsp.write(obj_path + "\n");
             f_rsp.write(runtime_objs + "\n");
-            f_rsp.write("-no-pie\n");
-            f_rsp.write("-Wl,--gc-sections\n");
-            f_rsp.write("-Wl,--strip-all\n");
-            f_rsp.write("-Wl,--build-id=none\n");
-            f_rsp.write("-Wl,-O1\n");
-            f_rsp.write("-Wl,--hash-style=gnu\n");
+            f_rsp.write(link_rsp_flags);
             f_rsp.close();
-            link_cmd = "clang @" + rsp_file + " -o " + out_bin + " " + opt_flag + " -pthread -lm -ldl" + lib_flags;
+            link_cmd = cc_bin + " @" + rsp_file + " -o " + out_bin + " " + opt_flag + " " + cc_flags + tail_flags + lib_flags;
         }
 
         // Link-only: prebuilt program object + runtime objects
@@ -561,16 +722,21 @@ pub def CompilerDriver : class {
 
         // If run mode, execute the binary (inheriting the terminal) and
         // propagate its exit code (Python parity: temp run + banner + rc).
+        // Cross targets run through wine / qemu-aarch64.
         if run_mode {
+            xpre: string = this.cross_run_prefix(target_name);
+            if target_name == "macos" || target_name == "macos-arm" {
+                return 1;
+            }
             run_cmd: string = out_bin;
-            if run_cmd.size > 0 && run_cmd[0] != '/' && run_cmd[0] != '.' {
+            if xpre.size == 0 && run_cmd.size > 0 && run_cmd[0] != '/' && run_cmd[0] != '.' {
                 run_cmd = "./" + run_cmd;
             }
             if run_args.size > 0 {
                 run_cmd = run_cmd + " " + run_args;
             }
             show("--- Executed at ", this.exec_out("date '+%Y-%m-%d %H:%M:%S'"), " ---");
-            rc_out: string = exec(run_cmd, "run");
+            rc_out: string = exec(xpre + run_cmd, "run");
             rv: int = 0;
             ri2: int = 0;
             rneg: bool = false;

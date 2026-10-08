@@ -5,21 +5,22 @@ sources live in `compiler/*.lsh`) and ships the resulting binary inside this
 package as `leash/native/leashc`.
 
 The native compiler implements the whole toolchain — compile, run, check,
-dump, init, build, install, update, self-host, dbg — so every `leash`
-command is served by it. The Python implementation (`leashp`) is used only
-when:
+dump, init, build, install, update, self-host, dbg — and every
+cross-compile target (linux32, linux-arm, win64, macos, macos-arm) via
+clang driver flags, so every `leash` command is served by it. The Python
+implementation (`leashp`) is used only when:
 
   * the native binary is unavailable (non-Linux installs), or
   * LEASH_FORCE_PYTHON=1 is set (debugging the toolchain), or
-  * a cross-compile target other than linux64 is requested (the native
-    compiler links with the host clang for linux64).
+  * --autofree is requested (allocation-tracking codegen lives in the
+    Python compiler).
 """
 
 import os
 import sys
 
-# Non-linux64 cross-compile targets stay on the Python toolchain
-_NATIVE_TARGETS = {"linux64"}
+# --autofree needs the Python compiler's allocation-tracking codegen
+_PYTHON_FLAGS = {"--autofree", "-af"}
 
 
 def native_binary_path():
@@ -56,10 +57,9 @@ def _python_needed(argv):
         return True, "LEASH_FORCE_PYTHON is set"
     if not have_native():
         return True, "the native compiler was not built for this install"
-    for i, a in enumerate(argv):
-        if a == "--target" and i + 1 < len(argv):
-            if argv[i + 1] not in _NATIVE_TARGETS:
-                return True, "cross-compile target %r uses the Python toolchain" % argv[i + 1]
+    for a in argv:
+        if a in _PYTHON_FLAGS:
+            return True, "autofree instrumentation is implemented by the Python compiler"
     return False, ""
 
 

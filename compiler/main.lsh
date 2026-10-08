@@ -229,32 +229,124 @@ fnc xrun(cmd string) : int {
 // ---------------------------------------------------------------------------
 
 fnc print_usage() : void {
-    show("Leash 1.0.0 — Self-Hosted Compiler");
-    show("Usage: leash <command> [options]");
+    show("Leash 1.0.1 (self-hosted) - LLVM-powered compiled programming language");
+    show("");
+    show("Usage:");
+    show("  leash <command> [arguments] [options]");
     show("");
     show("Commands:");
-    show("  compile <file.lsh> [to <out>] [-o <out>] [--emit-llvm] [--check]   Compile or type-check");
-    show("  run [<file.lsh>] [-- <args...>]                                    Compile and run (file or project)");
-    show("  check <file.lsh>                                                   Type-check only");
-    show("  dump <file.lsh>                                                    Emit LLVM IR");
-    show("  <file.lsh> [compile options]                                       Shorthand for compile");
-    show("  init [dir]                                                         Scaffold a new project");
-    show("  build                                                              Build the project (config.lshc)");
-    show("  install <path>...                                                  Install libraries into ~/.leash/libs");
-    show("  update                                                             Check GitHub and pull the latest release");
-    show("  self-host                                                          3-stage bootstrap + fixed-point check");
-    show("  dbg [<file.lsh>] [-b <line>] [--run] [-- <args...>]                 Interactive source-level debugger");
-    show("  version, --version                                                  Show compiler version");
-    show("  help, --help                                                       Show this help message");
+    show("  compile <file.lsh>    Compile to an executable binary");
+    show("  run [<file.lsh>]      Compile and immediately execute (file or project)");
+    show("  dbg [<file.lsh>]      Run under the interactive source-level debugger");
+    show("  dump <file.lsh>       Dump generated LLVM IR instead of linking");
+    show("  check <file.lsh>      Type-check only; report errors and warnings");
+    show("  init [dir]            Scaffold a new Leash project (default: .)");
+    show("  build                 Compile the project described by config.lshc");
+    show("  install <path>...     Install libraries into ~/.leash/libs/");
+    show("  update                Check for updates and pull the latest source");
+    show("  self-host             3-stage bootstrap + fixed-point check");
+    show("  <file.lsh>            Shorthand for 'leash compile <file.lsh>'");
+    show("  version / --version   Print version information");
+    show("  help [command]        Show help, optionally for one command");
     show("");
-    show("Options:");
-    show("  --opt <level> / -O<level>    Optimization level: 0, 1, 2, 3, 4, s (size), z (aggressive size)  (default: 2)");
-    show("  --check                      Type-check only, do not produce output");
-    show("  --warnings-as-errors / -oe   Treat warnings as errors");
-    show("  --emit-llvm                  Emit LLVM IR instead of linking");
-    show("  --verbose / -vb              Print pipeline phases");
-    show("  -l<lib>                      Link a native library (repeatable)");
-    show("  --other-imports / -oi <dir>  Extra module search directory");
+    show("Global Options:");
+    show("  --target <target>                Cross-compile target: linux64, linux32, linux-arm, win64, macos, macos-arm");
+    show("  --check                          Type-check only, do not produce output");
+    show("  --warnings-as-errors / -oe       Treat warnings as errors");
+    show("  --opt <level> / -O<level>        Optimization level: 0, 1, 2, 3, 4, s (size), z (aggressive size)");
+    show("  -l<lib>                          Link a native library (repeatable), e.g. -lraylib");
+    show("  --other-imports / -oi <folder>   Extra module search directory (repeatable)");
+    show("  --no-garbage-collector / -ngc    Disable garbage collector (plain C malloc/free runtime)");
+    show("  --static / -static               Fully-static musl-linked binary (linux64/linux32 only)");
+    show("  --emit-llvm                      Emit LLVM IR instead of linking");
+    show("  --verbose / -vb                  Print pipeline phases");
+    show("  --optimization-verbosity / -ov   Accepted for CLI parity (implies --verbose)");
+    show("  --version / -v                   Print version information");
+    show("  --help / -h                      Show this help, or 'leash help <command>' for details");
+    show("");
+    show("Note: 'runp' is deprecated -- use 'leash run' without a file to run the current project.");
+    show("Note: --autofree (-af) instrumentation is provided by the Python compiler: 'leashp'.");
+}
+
+fnc print_command_help(topic string) : bool {
+    if topic == "compile" {
+        show("compile <file.lsh> [to <out>] [-o <out>]");
+        show("");
+        show("Compile a Leash source file into an executable binary.");
+        show("Output defaults to the input name without the .lsh extension.");
+        show("Cross-compile with --target; disable the GC with -ngc; produce a");
+        show("fully static binary with --static (musl). --emit-llvm writes the");
+        show("LLVM IR (out.ll) instead of linking.");
+        return true;
+    }
+    if topic == "run" {
+        show("run [<file.lsh>] [-- <args...>]");
+        show("");
+        show("Compile and immediately execute. With a file: temp binary, 'Executed at'");
+        show("banner, exit-code propagation, cleanup. Without a file: build and run");
+        show("the project described by config.lshc in the current directory.");
+        show("Program arguments go after '--'. Cross binaries run through wine/qemu.");
+        return true;
+    }
+    if topic == "dbg" {
+        show("dbg [<file.lsh>] [-b <line>] [--run] [-- <args...>]");
+        show("");
+        show("Interactive source-level debugger. Every statement is instrumented;");
+        show("step with s/Enter, continue with c, set breakpoints with 'b <line>' or");
+        show("-b <line> from the CLI. Without a file, debugs the config.lshc project.");
+        return true;
+    }
+    if topic == "dump" {
+        show("dump <file.lsh>");
+        show("");
+        show("Compile a Leash source file and dump the generated LLVM IR");
+        show("(writes <file>.ll) instead of linking an executable.");
+        return true;
+    }
+    if topic == "check" {
+        show("check <file.lsh>");
+        show("");
+        show("Type-check a Leash source file without compiling. Reports all");
+        show("errors and warnings that would be raised during a full compile.");
+        return true;
+    }
+    if topic == "init" {
+        show("init [dir]");
+        show("");
+        show("Scaffold a new Leash project: src/main.lsh, config.lshc,");
+        show("imports/ and out/ directories.");
+        return true;
+    }
+    if topic == "build" {
+        show("build [-oi <dir>]");
+        show("");
+        show("Compile the project described by config.lshc in the current");
+        show("directory into out/<out_name>.");
+        return true;
+    }
+    if topic == "install" {
+        show("install <path>...");
+        show("");
+        show("Install one or more libraries (files or directories of .lsh files)");
+        show("into ~/.leash/libs for global imports.");
+        return true;
+    }
+    if topic == "update" {
+        show("update");
+        show("");
+        show("Check GitHub for a newer Leash release and pull the latest source");
+        show("(git pull in the installation root).");
+        return true;
+    }
+    if topic == "self-host" {
+        show("self-host");
+        show("");
+        show("Build the self-hosted compiler in three stages (Python -> stage1 ->");
+        show("stage2 -> stage3), verify the fixed point (Stage 2 IR == Stage 3 IR)");
+        show("and install bin/leashc. Requires a repository checkout.");
+        return true;
+    }
+    return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -382,12 +474,22 @@ fnc cmd_build(args string[]) : int {
         return 1;
     }
 
+    b_static: bool = false;
+    if cfg.isin("static") && cfg["static"] == "true" {
+        b_static = true;
+    }
+    if cfg.isin("autofree") && cfg["autofree"] == "true" {
+        show("error: config.lshc 'autofree' requires the Python compiler; build with 'leashp build'");
+        return 1;
+    }
+
     exec("mkdir -p out", nil);
     driver: CompilerDriver = CompilerDriver.make();
     driver.self_path = args[0];
     foreach _, d in<vector> extra_dirs { driver.add_import_dir(d); }
     return driver.compile_file(main_rel, "out/" + out_base, false, false, "",
-                               opt_level, false, extra_libs, false, false, false);
+                               opt_level, false, extra_libs, false, false, false,
+                               "", false, b_static);
 }
 
 // ---------------------------------------------------------------------------
@@ -444,10 +546,6 @@ fnc cmd_run(args string[]) : int {
             continue;
         }
         if a == "--target" && oi + 1 < sep_idx {
-            if args[oi + 1] != "linux64" {
-                show("error: leash currently supports --target linux64 only");
-                return 1;
-            }
             oi = oi + 2;
             continue;
         }
@@ -510,17 +608,41 @@ fnc cmd_run(args string[]) : int {
         drv: CompilerDriver = CompilerDriver.make();
         drv.self_path = args[0];
         foreach _, d in<vector> extra_dirs { drv.add_import_dir(d); }
-        rc: int = drv.compile_file(main_rel, tmp, false, true, prog_args, p_opt, false, extra_libs, false, false, false);
+        rc: int = drv.compile_file(main_rel, tmp, false, true, prog_args, p_opt, false, extra_libs, false, false, false, "", false, false);
         cleanup_temp(tmp);
         return rc;
     }
 
-    // file mode
+    // file mode: scan the run options for target / runtime modes
+    r_target: string = "";
+    r_ngc: bool = false;
+    r_static: bool = false;
+    ri3: int = 2;
+    while ri3 < sep_idx {
+        ra: string = args[ri3];
+        if ra == "--target" && ri3 + 1 < sep_idx {
+            r_target = args[ri3 + 1];
+            ri3 = ri3 + 2;
+            continue;
+        }
+        if ra == "--no-garbage-collector" || ra == "-ngc" {
+            r_ngc = true;
+        }
+        if ra == "--static" || ra == "-static" {
+            r_static = true;
+        }
+        if ra == "--optimization-verbosity" || ra == "-ov" {
+            // accepted for CLI parity; the self-hosted pipeline has no
+            // separate pass-verbosity channel
+        }
+        ri3 = ri3 + 1;
+    }
+
     tmp2: string = "./.__temp_run_leash_exe_" + xsuffix();
     drv2: CompilerDriver = CompilerDriver.make();
     drv2.self_path = args[0];
     foreach _, d2 in<vector> extra_dirs { drv2.add_import_dir(d2); }
-    rc2: int = drv2.compile_file(operand, tmp2, false, true, prog_args, opt_level, false, empty_libs_global(), false, false, false);
+    rc2: int = drv2.compile_file(operand, tmp2, false, true, prog_args, opt_level, false, empty_libs_global(), false, false, false, r_target, r_ngc, r_static);
     cleanup_temp(tmp2);
     return rc2;
 }
@@ -776,7 +898,13 @@ fnc cmd_dbg(args string[]) : int {
     drv: CompilerDriver = CompilerDriver.make();
     drv.self_path = args[0];
     foreach _, d in<vector> extra_dirs { drv.add_import_dir(d); }
-    rc: int = drv.compile_file(target_file, tmp, false, false, "", opt_level, false, empty_libs_global(), false, false, true);
+    d_ngc: bool = false;
+    di3: int = 2;
+    while di3 < sep_idx {
+        if args[di3] == "--no-garbage-collector" || args[di3] == "-ngc" { d_ngc = true; }
+        di3 = di3 + 1;
+    }
+    rc: int = drv.compile_file(target_file, tmp, false, false, "", opt_level, false, empty_libs_global(), false, false, true, "", d_ngc, false);
     if rc != 0 {
         exec("rm -f " + tmp, nil);
         return rc;
@@ -810,11 +938,18 @@ fnc main(args string[]) : int {
     cmd: string = args[1];
 
     if cmd == "version" || cmd == "--version" || cmd == "-v" {
-        show("leash 1.0.0 (self-hosted)");
+        show("leash 1.0.1 (self-hosted)");
         return 0;
     }
 
     if cmd == "help" || cmd == "--help" || cmd == "-h" {
+        if args.size > 2 {
+            if !print_command_help(args[2]) {
+                show("No help topic for '", args[2], "'. Run 'leash --help' for the command list.");
+                return 1;
+            }
+            return 0;
+        }
         print_usage();
         return 0;
     }
@@ -842,6 +977,9 @@ fnc main(args string[]) : int {
         warn_err: bool = false;
         extra_dirs: vec<string>;
         extra_libs: vec<string>;
+        target_name: string = "";
+        no_gc: bool = false;
+        static_link: bool = false;
 
         i: int = loop_start;
         while i < args.size {
@@ -907,11 +1045,29 @@ fnc main(args string[]) : int {
                 continue;
             }
             if arg == "--target" && i + 1 < args.size {
-                if args[i + 1] != "linux64" {
-                    show("error: leash currently supports --target linux64 only");
+                if args[i + 1] != "linux64" && args[i + 1] != "linux32" &&
+                   args[i + 1] != "linux-arm" && args[i + 1] != "win64" &&
+                   args[i + 1] != "macos" && args[i + 1] != "macos-arm" {
+                    show("error: unknown target '", args[i + 1], "' (supported: linux64, linux32, linux-arm, win64, macos, macos-arm)");
                     return 1;
                 }
+                target_name = args[i + 1];
                 i = i + 2;
+                continue;
+            }
+            if arg == "--no-garbage-collector" || arg == "-ngc" {
+                no_gc = true;
+                i = i + 1;
+                continue;
+            }
+            if arg == "--static" || arg == "-static" {
+                static_link = true;
+                i = i + 1;
+                continue;
+            }
+            if arg == "--optimization-verbosity" || arg == "-ov" {
+                verbose = true;
+                i = i + 1;
                 continue;
             }
             i = i + 1;
@@ -921,7 +1077,8 @@ fnc main(args string[]) : int {
         driver.self_path = args[0];
         foreach _, d in<vector> extra_dirs { driver.add_import_dir(d); }
         return driver.compile_file(input_file, output_file, emit_llvm, false, "",
-                                   opt_level, check_mode, extra_libs, verbose, warn_err, false);
+                                   opt_level, check_mode, extra_libs, verbose, warn_err, false,
+                                   target_name, no_gc, static_link);
     }
 
     if cmd == "run" {
