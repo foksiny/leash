@@ -129,6 +129,8 @@ pub def Lexer : class {
         also ident == "inline" { kind = Tok.INLINE; }
         also ident == "nogc" { kind = Tok.NOGC; }
         also ident == "async" { kind = Tok.ASYNC; }
+        also ident == "worker" { kind = Tok.WORKER; }
+        also ident == "spawn" { kind = Tok.SPAWN; }
         also ident == "show" { kind = Tok.SHOW; }
         also ident == "showb" { kind = Tok.SHOWB; }
         also ident == "exec" { kind = Tok.EXEC; }
@@ -497,6 +499,7 @@ pub def Lexer : class {
             }
             also c == '>' { tokens.pushb(Token.make(Tok.GT, ">", cur_line, cur_col)); }
             also c == '!' { tokens.pushb(Token.make(Tok.NOT, "!", cur_line, cur_col)); }
+            also c == '@' { tokens.pushb(Token.make(Tok.AT, "@", cur_line, cur_col)); }
             else {
                 show("lexer warning: unknown character '", c, "' at ", cur_line, ":", cur_col);
             }

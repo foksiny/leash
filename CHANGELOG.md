@@ -12,7 +12,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   (`-m32`, `--target=...`), with per-target runtime objects, Windows
   stubs + `.exe` output for win64, and `wine`/`qemu-aarch64` execution
   under `leash run` (verified end-to-end: a win64 binary built by `leash`
-  runs under wine). Python routing is now only for `--autofree`.
+  runs under wine). Python routing is now only for `--autofree` and the
+  `to-dynamic`/`to-static` library outputs.
 - `-ngc` / `--no-garbage-collector`: plain malloc/free runtime
   (`-DNO_GC`), keyed into the runtime object cache.
 - `--static` / `-static`: fully-static binaries (musl-clang/musl-gcc when

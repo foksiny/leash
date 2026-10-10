@@ -37,7 +37,9 @@ pub def Precedence : class {
 }
 
 pub def Parser : class {
+    pub empty_body: vec<Stmt>;   // shared, never mutated (@from externs)
     pub tokens: vec<Token>;
+    pub src_file: string;   // file being parsed (for @from security attribution)
     pub pos: int;
     pub len: int;
     pub fe_counter: int;
@@ -50,9 +52,11 @@ pub def Parser : class {
     pub mod_nogc: bool;     // pending `nogc` modifier
     pub mod_inline: bool;   // pending `inline` modifier
     pub mod_async: bool;    // pending `async` modifier
+    pub mod_worker: bool;   // pending `worker` modifier
     pub hoisted_funcs: vec<FuncDecl>; // nested `fnc` decls lifted to top level
     pub hoisted_mark: int;   // index of the first un-drained hoisted function
     pub macros: hash<string, MacroDef>; // top-level `def X : macro(...)` definitions
+    pub macro_list: vec<MacroDef>;       // same, ordered (for Program.macros)
     pub lambda_counter: int;   // naming for `fnc(...) { }` function literals
 
     static pub fnc make(tokens vec<Token>) : Parser {
@@ -60,7 +64,8 @@ pub def Parser : class {
         empty_import_aliases: hash<string, string>;
         empty_hf: vec<FuncDecl>;
         empty_macros: hash<string, MacroDef>;
-        return Parser { tokens: tokens, pos: 0, len: tokens.size, fe_counter: 0, no_struct_init: false, type_aliases: empty_aliases, import_aliases: empty_import_aliases, quiet: false, keep_sized: false, mod_unsafe: false, mod_nogc: false, mod_inline: false, mod_async: false, hoisted_funcs: empty_hf, hoisted_mark: 0, macros: empty_macros, lambda_counter: 0 };
+        empty_ml: vec<MacroDef>;
+        return Parser { tokens: tokens, pos: 0, len: tokens.size, fe_counter: 0, no_struct_init: false, type_aliases: empty_aliases, import_aliases: empty_import_aliases, quiet: false, keep_sized: false, mod_unsafe: false, mod_nogc: false, mod_inline: false, mod_async: false, mod_worker: false, hoisted_funcs: empty_hf, hoisted_mark: 0, macros: empty_macros, lambda_counter: 0, macro_list: empty_ml };
     }
 
     // Function literal: fnc(a int, b int) : int { ... }  (hoisted, used as a value)
@@ -149,6 +154,7 @@ pub def Parser : class {
         md.params = mparams;
         md.body = mbody;
         this.macros.push(mname.val, md);
+        this.macro_list.pushb(md);
         this.match_tok(Tok.SEMI);
     }
 
@@ -305,7 +311,8 @@ pub def Parser : class {
             this.consume(Tok.RPAREN, "expected ')' after fnc parameter types");
             t = t + ")";
             if this.match_tok(Tok.COLON) {
-                t = t + ": " + this.parse_type();
+                // Python spells fnc types "fnc(...) : R" — match exactly
+                t = t + " : " + this.parse_type();
             }
             return t;
         }
@@ -362,9 +369,10 @@ pub def Parser : class {
             }
             // Check for generics: vec<T>, hash<K,V>
             if this.match_tok(Tok.LT) {
-                t = t + "<" + this.parse_type();
+                gargs: vec<string>;
+                gargs.pushb(this.parse_type());
                 while this.match_tok(Tok.COMMA) {
-                    t = t + ", " + this.parse_type();
+                    gargs.pushb(this.parse_type());
                 }
                 if this.check(Tok.RSHIFT) {
                     new_toks: vec<Token>;
@@ -386,7 +394,20 @@ pub def Parser : class {
                     this.len = this.tokens.size;
                 }
                 this.consume(Tok.GT, "expected '>' after generic type argument");
-                t = t + ">";
+                // Canonicalize pointer<T> to *T (raw pointer syntax) —
+                // Python's parser does the same, keeping the type strings
+                // identical across the two compilers.
+                if t == "pointer" && gargs.size == 1 {
+                    t = "*" + gargs.get(0);
+                } else {
+                    t = t + "<" + gargs.get(0);
+                    gi: int = 1;
+                    while gi < gargs.size {
+                        t = t + ", " + gargs.get(gi);
+                        gi = gi + 1;
+                    }
+                    t = t + ">";
+                }
             }
             also this.check(Tok.LPAREN) {
                 // Parent class annotation: Type(Parent) — informational
@@ -561,9 +582,26 @@ pub def Parser : class {
 
     // strtoll(text,0) does not understand the 0b/0B prefix (glibc), so
     // binary literals are converted here like python's int(text, 0).
-    pub fnc parse_int_text(s string) : int {
+    pub fnc char_digit_val(c char) : int<64> {
+        if c == '0' { return 0; }
+        if c == '1' { return 1; }
+        if c == '2' { return 2; }
+        if c == '3' { return 3; }
+        if c == '4' { return 4; }
+        if c == '5' { return 5; }
+        if c == '6' { return 6; }
+        if c == '7' { return 7; }
+        if c == '8' { return 8; }
+        if c == '9' { return 9; }
+        return 0;
+    }
+
+    pub fnc parse_int_text(s string) : int<64> {
+        // Manual 64-bit accumulation: the C strtoll stub is typed as a
+        // 32-bit int at the ABI boundary (python parity), which would
+        // truncate every literal at 2^31.
         if s.size > 2 && s[0] == '0' && (s[1] == 'b' || s[1] == 'B') {
-            v: int = 0;
+            v: int<64> = 0;
             i: int = 2;
             while i < s.size {
                 v = v * 2;
@@ -572,7 +610,30 @@ pub def Parser : class {
             }
             return v;
         }
-        return (int)strtoll(s, nil, 0);
+        if s.size > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X') {
+            hv: int<64> = 0;
+            hi: int = 2;
+            while hi < s.size {
+                c: char = s[hi];
+                d: int<64> = -1;
+                if c >= '0' && c <= '9' { d = this.char_digit_val(c); }
+                also c >= 'a' && c <= 'f' { d = 10 + (c - 'a'); }
+                also c >= 'A' && c <= 'F' { d = 10 + (c - 'A'); }
+                if d < 0 { d = 0; }
+                hv = hv * 16 + d;
+                hi = hi + 1;
+            }
+            return hv;
+        }
+        dv: int<64> = 0;
+        di: int = 0;
+        while di < s.size {
+            if s[di] >= '0' && s[di] <= '9' {
+                dv = dv * 10 + this.char_digit_val(s[di]);
+            }
+            di = di + 1;
+        }
+        return dv;
     }
 
     // Try to consume explicit generic type arguments `name<T1, T2>` in an
@@ -618,7 +679,7 @@ pub def Parser : class {
 
         // Integer literal (raw text kept for arbitrary-width constants)
         if this.match_tok(Tok.INT) {
-            val: int = this.parse_int_text(tok.val);
+            val: int<64> = this.parse_int_text(tok.val);
             ie: Expr = Expr.make_int(val);
             ie.sval = tok.val;
             return ie;
@@ -904,6 +965,15 @@ pub def Parser : class {
                 return Expr.make_struct_init(name, fnames, fvals);
             }
 
+            // Zero-parameter macro used as a bare identifier (Python
+            // expands these at parse time): `def WHITE : macro() |> Color {...};`
+            if this.macros.isin(name) {
+                bm_def: MacroDef = this.macros[name];
+                if bm_def.body != null && bm_def.params.size == 0 {
+                    bm_args: vec<Expr>;
+                    return this.subst_macro(bm_def.body, bm_def.params, bm_args);
+                }
+            }
             return Expr.make_ident(name);
         }
 
@@ -1223,6 +1293,28 @@ pub def Parser : class {
             init_val: Expr = this.parse_expression(Precedence.LOWEST);
             this.consume(Tok.SEMI, "expected ';' after variable declaration");
             return Stmt.make_var_decl(name_tok.val, "", true, false, init_val);
+        }
+
+        // Spawn a worker function: spawn name(args); / spawn name;
+        if this.match_tok(Tok.SPAWN) {
+            n_tok: Token = this.consume(Tok.IDENT, "expected function name after 'spawn'");
+            sp_args: vec<Expr>;
+            was_call: bool = false;
+            if this.match_tok(Tok.LPAREN) {
+                was_call = true;
+                if !this.check(Tok.RPAREN) {
+                    sp_args.pushb(this.parse_expression(Precedence.LOWEST));
+                    while this.match_tok(Tok.COMMA) {
+                        sp_args.pushb(this.parse_expression(Precedence.LOWEST));
+                    }
+                }
+                this.consume(Tok.RPAREN, "expected ')' after spawn arguments");
+            }
+            this.consume(Tok.SEMI, "expected ';' after spawn statement");
+            sp_op: string = "";
+            if was_call { sp_op = "call"; }
+            sp_stmt: Stmt = Stmt { kind: StmtKind.SPAWN, name: n_tok.val, var_type: "", is_infer: false, is_imut: false, op: sp_op, target: null, value: null, cond: null, for_init: null, for_step: null, args: sp_args, is_showb: false };
+            return sp_stmt;
         }
 
         // Return statement
@@ -1608,7 +1700,7 @@ pub def Parser : class {
     }
 
     pub fnc parse_method_nofn(is_static bool, is_pub bool) : FuncDecl {
-        name_tok: Token = this.consume(Tok.IDENT, "expected method name");
+        name_tok: Token = this.consume_member_name("expected method name");
         this.consume(Tok.LPAREN, "expected '(' after method name");
         params: vec<FuncParam>;
         if !this.check(Tok.RPAREN) {
@@ -1807,12 +1899,14 @@ pub def Parser : class {
         m_nogc: bool = this.mod_nogc;
         m_inline: bool = this.mod_inline;
         m_async: bool = this.mod_async;
+        m_worker: bool = this.mod_worker;
         this.mod_unsafe = false;
         this.mod_nogc = false;
         this.mod_inline = false;
         this.mod_async = false;
+        this.mod_worker = false;
         this.consume(Tok.FNC, "expected 'fnc'");
-        name_tok: Token = this.consume(Tok.IDENT, "expected function name");
+        name_tok: Token = this.consume_member_name("expected function name");
         has_params: bool = this.match_tok(Tok.LPAREN);
 
         params: vec<FuncParam>;
@@ -1880,6 +1974,7 @@ pub def Parser : class {
         fd.is_nogc = m_nogc;
         fd.is_inline = m_inline;
         fd.is_async = m_async;
+        fd.is_worker = m_worker;
         return fd;
     }
 
@@ -1974,7 +2069,7 @@ pub def Parser : class {
             } also this.check(Tok.IDENT) && this.peek(1).kind == Tok.LPAREN {
                 methods.pushb(this.parse_method_nofn(is_static, is_pub));
             } else {
-                fname: Token = this.consume(Tok.IDENT, "expected field or method in class");
+                fname: Token = this.consume_member_name("expected field or method in class");
                 this.consume(Tok.COLON, "expected ':' after field name");
                 ftype: string = this.parse_type();
                 init_v: Expr = null;
@@ -2075,6 +2170,12 @@ pub def Parser : class {
         prog: Program = Program.make();
         this.parse_top_level_into(prog, false);
         this.drain_hoisted(prog);
+        // Macros ride on the Program so the post-import expansion pass
+        // (Optimizer) can resolve names defined in imported modules too.
+        foreach _, md in<vector> this.macro_list {
+            prog.macros.push(md.name, md);
+            prog.macro_defs.pushb(md);
+        }
         return prog;
     }
 
@@ -2088,11 +2189,13 @@ pub def Parser : class {
             this.mod_nogc = false;
             this.mod_inline = false;
             this.mod_async = false;
-            while this.check(Tok.NOGC) || this.check(Tok.UNSAFE) || this.check(Tok.INLINE) || this.check(Tok.ASYNC) {
+            this.mod_worker = false;
+            while this.check(Tok.NOGC) || this.check(Tok.UNSAFE) || this.check(Tok.INLINE) || this.check(Tok.ASYNC) || this.check(Tok.WORKER) {
                 if this.match_tok(Tok.NOGC) { this.mod_nogc = true; }
                 also this.match_tok(Tok.UNSAFE) { this.mod_unsafe = true; }
                 also this.match_tok(Tok.INLINE) { this.mod_inline = true; }
                 also this.match_tok(Tok.ASYNC) { this.mod_async = true; }
+                also this.match_tok(Tok.WORKER) { this.mod_worker = true; }
             }
 
             // Top-level conditional declarations: if <cond> { ... } else { ... }
@@ -2101,7 +2204,13 @@ pub def Parser : class {
                 continue;
             }
 
-            // use module::*;
+            // use module::*;  (also `pub use ...` — visibility-prefixed)
+            if this.match_tok(Tok.PUB) || this.match_tok(Tok.PRIV) {
+                if !this.check(Tok.USE) && !this.check(Tok.IMPORT) {
+                    // not a use: restore the token and fall through
+                    this.pos = this.pos - 1;
+                }
+            }
             if this.match_tok(Tok.USE) {
                 mod_path: string = "";
                 first_seg: Token = this.consume(Tok.IDENT, "expected module name in 'use'");
@@ -2185,6 +2294,102 @@ pub def Parser : class {
                     this.type_aliases.push(alias_name.val, alias_target);
                     continue;
                 }
+            }
+
+            // Native library import: @from("lib.so") { decls };
+            if this.check(Tok.AT) && this.peek(1).kind == Tok.IDENT && this.peek(1).val == "from" {
+                nat_line: int = this.current().line;
+                // Python-parity: diagnostics display 0-based columns
+                nat_col: int = this.current().col - 1;
+                if nat_col < 0 { nat_col = 0; }
+                this.pos = this.pos + 2;
+                this.consume(Tok.LPAREN, "expected '(' after @from");
+                lib_tok: Token = this.consume(Tok.STRING, "expected library path string");
+                this.consume(Tok.RPAREN, "expected ')' after library path");
+                this.consume(Tok.LBRACE, "expected '{' after @from(...)");
+                while !this.check(Tok.RBRACE) && !this.check(Tok.EOF) {
+                    if this.check(Tok.FNC) {
+                        // external declaration: signature only, no body
+                        this.pos = this.pos + 1;
+                        nf_tok: Token = this.consume(Tok.IDENT, "expected function name in @from");
+                        this.consume(Tok.LPAREN, "expected '(' after function name");
+                        nparams: vec<FuncParam>;
+                        if !this.check(Tok.RPAREN) {
+                            npn: Token = this.consume(Tok.IDENT, "expected parameter name");
+                            this.match_tok(Tok.COLON);
+                            nparams.pushb(FuncParam.make(npn.val, this.parse_type(), false, null));
+                            while this.match_tok(Tok.COMMA) {
+                                npn2: Token = this.consume(Tok.IDENT, "expected parameter name");
+                                this.match_tok(Tok.COLON);
+                                nparams.pushb(FuncParam.make(npn2.val, this.parse_type(), false, null));
+                            }
+                        }
+                        this.consume(Tok.RPAREN, "expected ')' after parameters");
+                        nret: string = "void";
+                        if this.match_tok(Tok.COLON) {
+                            nret = this.parse_type();
+                        } also this.match_tok(Tok.ARROW) {
+                            nret = this.parse_type();
+                        }
+                        this.consume(Tok.SEMI, "expected ';' after native declaration");
+                        nf: FuncDecl = FuncDecl.make(nf_tok.val, nparams, nret, this.empty_body, false, true);
+                        nf.is_external = true;
+                        prog.funcs.pushb(nf);
+                        continue;
+                    }
+                    if this.check(Tok.DEF) {
+                        // structs/unions/enums/type aliases use the colon form: def Name : struct { ... };
+                        if this.peek(3).kind == Tok.STRUCT {
+                            prog.structs.pushb(this.parse_struct());
+                            continue;
+                        }
+                        if this.peek(3).kind == Tok.ENUM {
+                            prog.enums.pushb(this.parse_enum());
+                            continue;
+                        }
+                        if this.peek(3).kind == Tok.UNION {
+                            prog.unions.pushb(this.parse_union());
+                            continue;
+                        }
+                        // Type alias: def Name : type T;
+                        if this.peek(3).kind == Tok.TYPE {
+                            this.consume(Tok.DEF, "expected 'def'");
+                            ta_name: Token = this.consume(Tok.IDENT, "expected alias name");
+                            this.consume(Tok.COLON, "expected ':' after alias name");
+                            this.consume(Tok.TYPE, "expected 'type'");
+                            ta_target: string = this.parse_type();
+                            this.consume(Tok.SEMI, "expected ';' after type alias");
+                            this.type_aliases.push(ta_name.val, ta_target);
+                            continue;
+                        }
+                        // Typed native global: def Name : Type;
+                        this.consume(Tok.DEF, "expected 'def'");
+                        nv_tok: Token = this.consume(Tok.IDENT, "expected native name");
+                        this.consume(Tok.COLON, "expected ':' after native name");
+                        nv_type: string = this.parse_type();
+                        this.consume(Tok.SEMI, "expected ';' after native declaration");
+                        prog.globals.pushb(GlobalDecl.make(nv_tok.val, nv_type, null));
+                        continue;
+                    }
+                    // external global: name: Type;
+                    if this.check(Tok.IDENT) && this.peek(1).kind == Tok.COLON {
+                        gn_tok: Token = this.current();
+                        this.pos = this.pos + 2;
+                        gtype: string = this.parse_type();
+                        this.consume(Tok.SEMI, "expected ';' after native global");
+                        prog.globals.pushb(GlobalDecl.make(gn_tok.val, gtype, null));
+                        continue;
+                    }
+                    show("parse error: unexpected token in @from block at ", this.current().line, ":", this.current().col);
+                    this.pos = this.pos + 1;
+                }
+                this.consume(Tok.RBRACE, "expected '}' after @from declarations");
+                this.match_tok(Tok.SEMI);
+                prog.native_libs.pushb(lib_tok.val);
+                prog.native_lib_files.pushb(this.src_file);
+                prog.native_lib_lines.pushb(nat_line);
+                prog.native_lib_cols.pushb(nat_col);
+                continue;
             }
 
             // Error definition: error Name(params?) -> "message";
@@ -2349,5 +2554,15 @@ pub def Parser : class {
         foreach _, un in<vector> src.unions { dst.unions.pushb(un); }
         foreach _, g in<vector> src.globals { dst.globals.pushb(g); }
         foreach _, im in<vector> src.imports { dst.imports.pushb(im); }
+        foreach _, nl in<vector> src.native_libs { dst.native_libs.pushb(nl); }
+        foreach _, md in<vector> src.macro_defs {
+            dst.macros.push(md.name, md);
+            dst.macro_defs.pushb(md);
+        }
+        foreach j, nf in<vector> src.native_lib_files {
+            dst.native_lib_files.pushb(nf);
+            dst.native_lib_lines.pushb(src.native_lib_lines[j]);
+            dst.native_lib_cols.pushb(src.native_lib_cols[j]);
+        }
     }
 }

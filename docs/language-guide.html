@@ -1108,8 +1108,11 @@ d = (Dog)a2;                           <span class="cm">// downcast (explicit)</
 <span class="fn">show</span>(<span class="kw">self</span>::Class);        <span class="cm">// current class name</span>
 <span class="fn">show</span>(<span class="kw">self</span>::Parent);       <span class="cm">// parent class name (subclasses only)</span>
 
-<span class="cm">// Practical use: error messages that stay in sync</span>
-<span class="kw">error</span> DatabaseError(msg <span class="kw">string</span>) -&gt; <span class="str">"["</span> + <span class="kw">self</span> + <span class="str">"]: "</span> + msg;</code></pre>
+<span class="cm">// Practical use: error messages that stay in sync. Thrown errors are
+// also prefixed automatically: the runtime prints
+// "Runtime error [DatabaseError]: ..." &mdash; the error's name rides in
+// the message as its code, the same way static diagnostics carry LEASH-Exxx.</span>
+<span class="kw">error</span> DatabaseError(msg <span class="kw">string</span>) -&gt; msg;</code></pre>
 
 <h2>Input Handling</h2>
 <p><code>get()</code> reads an entire line of text and returns it as a <code>string</code>, with an optional prompt. <code>keyget()</code> reads a single key press immediately without waiting for Enter, useful for menu-driven apps and game controls.</p>
@@ -1137,8 +1140,37 @@ code: <span class="kw">string</span> = <span class="fn">exec</span>(<span class=
     <tr><td><code>nil</code></td><td>Execute and return output</td><td>Output string</td></tr>
     <tr><td><code>"wait"</code></td><td>Wait and return output</td><td>Output string</td></tr>
     <tr><td><code>"silent"</code></td><td>Suppress all output</td><td><code>""</code></td></tr>
-    <tr><td><code>"code"</code></td><td>Return exit code</td><td>Exit code as string</td></tr>
+    <tr><td><code>"code"</code></td><td>Return exit code (output suppressed)</td><td>Exit code as string</td></tr>
+    <tr><td><code>"run"</code></td><td>Execute inheriting the terminal (stdin/stdout/stderr), wait</td><td>Exit code as string</td></tr>
 </table>
+
+<h2>Design Rationale</h2>
+
+<p>Why the syntax looks the way it does &mdash; the reasoning behind the choices that make Leash learnable rather than arbitrary.</p>
+
+<h3><code><></code> asks a question; <code>in<type></code> starts a loop</h3>
+<p>The containment operator <code><></code> is two arrows looking at its operands: <code>x <> xs</code> reads "is x among xs?" &mdash; the brackets point from the value toward the collection. Iteration is a different word entirely: <code>foreach x in<vector> xs</code>. Languages that overload <code>in</code> for both membership and iteration force you to remember which meaning applies; Leash gives each its own symbol, so the code reads the same way it runs.</p>
+
+<h3>Containment dispatch: <code><></code> vs <code>.isin()</code></h3>
+<p>Both ask "is it there?", and the dispatch is categorical, not arbitrary:</p>
+<ul>
+    <li><code><></code> is the free-standing question about a collection's <strong>elements</strong>: strings (<code>"ab" <> s</code>), vectors (<code>5 <> v</code>), and arrays (<code>2 <> arr</code>).</li>
+    <li><code>.isin()</code> is the <strong>method</strong> form: on a hash it means <em>key membership</em> (<code>h.isin("k")</code> &mdash; the question a hash answers); on a vector it is value membership (<code>v.isin(5)</code>).</li>
+</ul>
+<p>Using <code><></code> on a hash is a compile-time error &mdash; a hash is queried by key, and the method form says so.</p>
+
+<h3><code>works...otherwise</code> is a quarantine layer</h3>
+<p>The <code>works</code> block isolates the code the compiler cannot fully prove. Errors the checker sees inside the block are captured &mdash; never silently swallowed &mdash; and what the block proves clean runs as written. It is the language's <code>pcall</code>: <code>err</code> is the dynamic failure wearing a string costume, the message you would have crashed with, handed to the handler instead.</p>
+<p>Which static errors are captured, and which are reported? <strong>Identifier-resolution failures are captured and routed to <code>otherwise</code></strong> (an unresolved variable becomes the runtime <code>err</code>); <strong>every other static error &mdash; a type mismatch, an unknown type, a bad call &mdash; is re-reported at compile time</strong>, exactly as it would be outside the block.</p>
+
+<h3><code>imut</code> is a contract, and it is contagious</h3>
+<p><code>imut</code> is a stronger promise than <code>const</code> in C or C++, Java's <code>final</code>, or Rust's <code>let</code>: it does not just forbid reassignment, it forbids mutation <em>through</em> the value. And the promise is enforced by soundness rather than convention: a value declared <code>imut</code> cannot flow into a slot that could mutate it, so the immutability travels with the value instead of stopping at the declaration.</p>
+
+<h3><code>fnc</code> sits in the fn/func/fun family</h3>
+<p>Short like Rust's <code>fn</code>, read like "function", and deliberately distinct from <code>def</code>: functions are declared with <code>fnc</code>, types with <code>def</code> &mdash; a declaration's kind is the first word you read.</p>
+
+<h3><code>.size</code> is a property; <code>.size()</code> is a method</h3>
+<p>Strings and vectors expose <code>.size</code> as a property &mdash; for a vector it is a direct read of the header's size field, no call. Matrices accept both <code>.size</code> and <code>.size()</code>. The rule: if the value is a field, it reads like one.</p>
 
 </main>
 

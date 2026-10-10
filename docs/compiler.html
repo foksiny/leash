@@ -139,8 +139,10 @@ leash dbg                             <span class="cm"># debug the current proje
     <tr><td>Static Library</td><td><code>to-static &lt;name&gt;</code></td><td><code>lib&lt;name&gt;.a</code></td></tr>
 </table>
 
-<pre><code>leash compile math.lsh to-dynamic math   <span class="cm"># libmath.so</span>
-leash compile utils.lsh to-static utils  <span class="cm"># libutils.a</span></code></pre>
+<pre><code>leashp compile math.lsh to-dynamic math   <span class="cm"># libmath.so (Python toolchain)</span>
+leashp compile utils.lsh to-static utils  <span class="cm"># libutils.a (Python toolchain)</span></code></pre>
+
+<p>Library outputs (<code>to-dynamic</code> / <code>to-static</code>) are provided by the Python toolchain: the self-hosted compiler prints a note pointing at the equivalent <code>leashp</code> command.</p>
 
 <p>Native targets produce standalone binaries with full access to the system's C library, garbage collector, and OS APIs.</p>
 

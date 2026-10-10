@@ -112,6 +112,9 @@ pub def Tok : class {
     static pub INLINE: int = 109;
     static pub NOGC: int = 110;
     static pub ASYNC: int = 111;
+    static pub WORKER: int = 112;
+    static pub SPAWN: int = 113;
+    static pub AT: int = 116;
 
     static pub fnc name(kind int) : string {
         if kind == Tok.EOF { return "EOF"; }

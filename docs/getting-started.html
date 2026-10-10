@@ -54,8 +54,8 @@
 
 <table>
     <tr><th>Dependency</th><th>Required for</th><th>Version</th></tr>
-    <tr><td><strong>Python 3</strong></td><td>Running the Leash compiler</td><td>3.8+</td></tr>
-    <tr><td><strong>LLVM</strong></td><td>Code generation via <code>llvmlite</code></td><td>11+ (development libraries)</td></tr>
+    <tr><td><strong>Python 3</strong></td><td>Installation (the bootstrap builds the self-hosted compiler) and cross-compilation via <code>leashp</code> &mdash; <em>not</em> needed to compile or run programs</td><td>3.8+</td></tr>
+    <tr><td><strong>LLVM</strong></td><td>Code generation via <code>llvmlite</code> (build stage 0 + <code>leashp</code>)</td><td>11+ (development libraries)</td></tr>
     <tr><td><strong>C compiler</strong> (<code>gcc</code> / <code>clang</code>)</td><td>Linking with the GC runtime</td><td>Any recent version</td></tr>
 </table>
 

@@ -4,9 +4,75 @@ use ast::*;
 // Port of the core of leash/ast_optimize.py to Leash. In-place mutation on class nodes.
 
 pub def Optimizer : class {
+    pub macros: hash<string, MacroDef>;   // zero-arg macros (post-import)
+    pub macro_depth: int;
+
+    // Deep copy of an expression node tree (macro bodies are shared, every
+    // use site needs its own copy before mutation).
+    pub fnc copy_expr(e Expr) : Expr {
+        if e == null { return e; }
+        if e.kind == ExprKind.IDENT || e.kind == ExprKind.INT || e.kind == ExprKind.FLOAT
+           || e.kind == ExprKind.STRING || e.kind == ExprKind.CHAR
+           || e.kind == ExprKind.BOOL || e.kind == ExprKind.NIL {
+            return e;
+        }
+        if e.kind == ExprKind.BINOP {
+            return Expr.make_binop(e.op, this.copy_expr(e.left), this.copy_expr(e.right));
+        }
+        if e.kind == ExprKind.UNARY {
+            return Expr.make_unary(e.op, this.copy_expr(e.left));
+        }
+        if e.kind == ExprKind.TERNARY {
+            return Expr.make_ternary(this.copy_expr(e.cond), this.copy_expr(e.left), this.copy_expr(e.right));
+        }
+        if e.kind == ExprKind.CAST {
+            return Expr.make_cast(e.sval, this.copy_expr(e.left));
+        }
+        if e.kind == ExprKind.MEMBER {
+            return Expr.make_member(this.copy_expr(e.left), e.sval);
+        }
+        if e.kind == ExprKind.POINTER_MEMBER {
+            return Expr.make_pointer_member(this.copy_expr(e.left), e.sval);
+        }
+        if e.kind == ExprKind.INDEX {
+            return Expr.make_index(this.copy_expr(e.left), this.copy_expr(e.right));
+        }
+        if e.kind == ExprKind.CALL {
+            ca: vec<Expr>;
+            foreach _, a in<vector> e.args { ca.pushb(this.copy_expr(a)); }
+            return Expr.make_call(e.sval, ca);
+        }
+        if e.kind == ExprKind.METHOD_CALL {
+            ma: vec<Expr>;
+            foreach _, a in<vector> e.args { ma.pushb(this.copy_expr(a)); }
+            return Expr.make_method_call(this.copy_expr(e.left), e.sval, ma);
+        }
+        if e.kind == ExprKind.STRUCT_INIT || e.kind == ExprKind.ARRAY_LIT {
+            sa: vec<Expr>;
+            foreach _, a in<vector> e.args { sa.pushb(this.copy_expr(a)); }
+            if e.kind == ExprKind.STRUCT_INIT {
+                return Expr.make_struct_init(e.sval, e.field_names, sa);
+            }
+            return Expr.make_array_lit(sa);
+        }
+        return e;
+    }
 
     pub fnc opt_expr(e Expr) : Expr {
         if e == null { return e; }
+
+        // Zero-parameter macro used as a bare identifier: expand it here,
+        // after import splicing, so macros defined in imported modules
+        // resolve too (Python expands macros after resolve_imports).
+        if e.kind == ExprKind.IDENT && this.macro_depth < 8 && this.macros.isin(e.sval) {
+            m: MacroDef = this.macros[e.sval];
+            if m.body != null && m.params.size == 0 {
+                this.macro_depth = this.macro_depth + 1;
+                expanded: Expr = this.opt_expr(this.copy_expr(m.body));
+                this.macro_depth = this.macro_depth - 1;
+                return expanded;
+            }
+        }
 
         if e.kind == ExprKind.BINOP {
             l: Expr = this.opt_expr(e.left);
@@ -213,6 +279,7 @@ pub def Optimizer : class {
     }
 
     pub fnc opt_program(prog Program) : void {
+        this.macros = prog.macros;
         foreach _, f in<vector> prog.funcs {
             this.opt_stmts(f.body);
         }

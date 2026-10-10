@@ -150,7 +150,7 @@ autofree: true</code></pre>
 
 <div class="callout callout-info"><code>--autofree</code> is stricter than <code>-ngc</code>: it not only disables the GC but also <em>frees everything for you</em>. Use it whenever you want GC-free semantics without manual memory management.</div>
 
-<div class="callout callout-warning">Since 1.0 the autofree <em>instrumentation</em> is provided by the Python compiler: <code>leash --autofree</code> delegates to <code>leashp</code> automatically (and prints a note), and a project config with <code>autofree: true</code> must be built with <code>leashp build</code>. The self-hosted compiler implements every other toolchain path natively.</div>
+<div class="callout callout-warning">Since 1.0 the autofree <em>instrumentation</em> is provided by the Python compiler: <code>leash --autofree</code> delegates to <code>leashp</code> automatically (and prints a note), and a project config with <code>autofree: true</code> must be built with <code>leashp build</code>. The self-hosted compiler implements every other toolchain path natively &mdash; except the <code>to-dynamic</code>/<code>to-static</code> library outputs, which also route to the Python toolchain.</div>
 
 <h2>Error Handling &amp; Safety</h2>
 
@@ -192,7 +192,7 @@ fnc fill(a &amp;<span class="kw">int</span>[3]) {   <span class="cm">// '&amp;' 
 <p>When an error is thrown, the message is printed with file, line, and column info, and the program terminates with exit code 1.</p>
 
 <h3>Works-Otherwise Error Handling</h3>
-<p>Leash provides a <code>works...otherwise</code> construct for catching and handling errors. Unlike traditional try-catch, it can catch <strong>any</strong> error &mdash; undefined variables, type errors, runtime errors, and more &mdash; allowing the program to recover and continue gracefully.</p>
+<p>Leash provides a <code>works...otherwise</code> construct for catching errors <strong>while the compiler checks the block</strong>. Its contract is precise: <em>errors the checker sees inside the block are captured and handled; what the block proves clean runs as written</em>. Undefined variables and unknown identifiers are the canonical case &mdash; the block compiles, and at runtime control routes to the <code>otherwise</code> handler with the captured message as the <code>err</code> string. Runtime failures (bounds violations, division by zero) are <strong>not</strong> caught &mdash; they terminate the program.</p>
 <pre><code><span class="kw">fnc</span> <span class="fn">main</span>() : <span class="kw">void</span> {
     <span class="kw">works</span> {
         a: <span class="kw">int</span> = unknown_var;  <span class="cm">// normally an error</span>
@@ -202,7 +202,7 @@ fnc fill(a &amp;<span class="kw">int</span>[3]) {   <span class="cm">// '&amp;' 
     <span class="fn">show</span>(<span class="str">"Program continues..."</span>);
 }</code></pre>
 
-<p><strong>How it works:</strong> The <code>works</code> block attempts to execute its statements. If any error occurs, instead of crashing, control jumps to the <code>otherwise</code> block where the error variable contains a string describing what went wrong. After the <code>otherwise</code> block completes, the program continues normally.</p>
+<p><strong>How it works:</strong> The checker runs the <code>works</code> block's statements and captures the first static error it can see there (an undefined variable, an unknown identifier). The codegen then knows at compile time which path is real: if a static error was captured, the <code>otherwise</code> block runs with <code>err</code> holding the message; if the block checked clean, the body runs as written and <code>otherwise</code> is skipped entirely. Either way the program is valid &mdash; nothing is left to chance at runtime.</p>
 
 <div class="callout callout-info">If no error occurs, the <code>otherwise</code> block is skipped entirely. This makes <code>works...otherwise</code> useful for graceful error handling, fallback logic, and recovering from unexpected conditions.</div>
 
@@ -210,7 +210,12 @@ fnc fill(a &amp;<span class="kw">int</span>[3]) {   <span class="cm">// '&amp;' 
 
 <p>The <code>unsafe</code> keyword disables runtime safety checks and static safety warnings within a function. This is useful for low-level operations like bit manipulation, type punning through unions, or performance-critical code where you want to bypass the overhead of safety checks. <code>unsafe</code> also works on class methods.</p>
 
-<pre><code><span class="kw">unsafe</span> <span class="kw">fnc</span> <span class="fn">fabs</span>(x <span class="kw">float</span>&lt;64&gt;) : <span class="kw">float</span>&lt;64&gt; {
+<pre><code><span class="kw">def</span> Memory : <span class="kw">union</span> {
+    i: <span class="kw">int</span>;
+    f: <span class="kw">float</span>&lt;64&gt;;
+};
+
+<span class="kw">unsafe</span> <span class="kw">fnc</span> <span class="fn">fabs</span>(x <span class="kw">float</span>&lt;64&gt;) : <span class="kw">float</span>&lt;64&gt; {
     mem: Memory = x;
     mem.i = mem.i &amp; 0x7FFFFFFFFFFFFFFF;  <span class="cm">// Clear sign bit</span>
     <span class="kw">return</span> mem.f;

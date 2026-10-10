@@ -1,4 +1,5 @@
 
-Runtime error: [ExpectedArguments]: Expected 2 or more arguments but only got only 1.
+Runtime error: [ExpectedArguments] Expected 2 or more arguments but only got 1.
   --> /home/foksiny/projects/leash/examples/errors.lsh:5:8
---- Executed at 2026-08-24 00:15:32 ---
+
+--- Executed at 2026-10-09 12:00:00 ---

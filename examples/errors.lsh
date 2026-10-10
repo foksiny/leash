@@ -1,4 +1,4 @@
-error ExpectedArguments(amount int, got int) -> "[" + self + "]: Expected " + tostring(amount) + " or more arguments but only got only " + tostring(got) + ".";
+error ExpectedArguments(amount int, got int) -> "Expected " + tostring(amount) + " or more arguments but only got " + tostring(got) + ".";
 
 fnc main(args string[]) {
     if args.size < 2 {

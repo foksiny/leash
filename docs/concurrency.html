@@ -99,7 +99,19 @@
 
 <p>Use <code>spawn</code> to launch a worker function in a new OS thread. Each <code>spawn</code> call creates a dedicated thread, passes arguments by value (copied into a heap-allocated struct), and starts execution immediately. Spawned threads run concurrently with <code>main</code> and with each other.</p>
 
-<pre><code><span class="kw">fnc</span> <span class="fn">main</span>() {
+<pre><code><span class="kw">worker</span> <span class="kw">fnc</span> <span class="fn">calculate</span>(a <span class="kw">int</span>, b <span class="kw">int</span>) : <span class="kw">void</span> {
+    <span class="fn">show</span>(a + b);
+}
+
+<span class="kw">worker</span> <span class="kw">fnc</span> <span class="fn">increment_counter</span>() : <span class="kw">void</span> {
+    <span class="fn">show</span>(<span class="str">"counting..."</span>);
+}
+
+<span class="kw">worker</span> <span class="kw">fnc</span> <span class="fn">show_result</span>() : <span class="kw">void</span> {
+    <span class="fn">show</span>(<span class="str">"done"</span>);
+}
+
+<span class="kw">fnc</span> <span class="fn">main</span>() {
     <span class="kw">spawn</span> calculate(3, 5);
     <span class="kw">spawn</span> increment_counter();
     <span class="kw">spawn</span> show_result();
@@ -116,7 +128,11 @@
 
 <p>Where <code>spawn</code> is fire-and-forget, <strong>async/await</strong> gives you a value back. Declare a function with <code>async fnc</code> and calling it returns a <code>future<T></code> handle immediately — the body runs on a worker thread. <code>await</code> joins the future and yields the result <code>T</code>.</p>
 
-<pre><code><span class="kw">async</span> <span class="kw">fnc</span> <span class="fn">fetch_score</span>(user <span class="kw">string</span>) : <span class="kw">int</span> {
+<pre><code><span class="kw">fnc</span> <span class="fn">heavy_computation</span>(user <span class="kw">string</span>) : <span class="kw">int</span> {
+    <span class="kw">return</span> user.size * 10;
+}
+
+<span class="kw">async</span> <span class="kw">fnc</span> <span class="fn">fetch_score</span>(user <span class="kw">string</span>) : <span class="kw">int</span> {
     <span class="cm">// runs on a worker thread</span>
     <span class="kw">return</span> heavy_computation(user);
 }

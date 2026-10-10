@@ -45,6 +45,10 @@ import llvmlite.binding as llvm
 
 VERBOSE_MODE = False
 
+# -tfs / --treat-from-as-safe: suppress the W_SECURITY warnings about
+# transitive @from native-library links (E_SECURITY errors still fire).
+TREAT_FROM_AS_SAFE = False
+
 
 def get_verbose_explanation(msg, code=None):
     c = str(code).upper() if code else ""
@@ -893,6 +897,10 @@ def security_scan(program, main_source_file):
                         "code": "W_SECURITY",
                         "file": src,
                     })
+    # -tfs silences the transitive-@from warnings only; E_SECURITY errors
+    # (untrusted paths / symlink escapes) are always reported.
+    if TREAT_FROM_AS_SAFE:
+        warnings = []
     return errors, warnings
 
 def resolve_conditionals(program, target_config):
@@ -1211,14 +1219,17 @@ def compile_file(input_file, output_name=None, output_type="executable", is_run_
                 for err in _sec_errs:
                     _print_error(err, input_file, code)
                 sys.exit(1)
-            for w in _sec_warns:
-                _print_warning(w, warnings_as_errors, code=code, input_file=input_file)
             main_hash = hashlib.sha256(code.encode("utf-8")).hexdigest()
             cache_key = _object_cache_key(main_hash, import_hashes, target_config.name,
                                           parsed_opt, size_opt, no_gc, autofree,
                                           debug_instrument)
             cached_obj = _object_cache_get(cache_key)
             if cached_obj is not None:
+                # Only print the transitive-@from warnings here, on the path
+                # that returns early; a cache miss falls through to the main
+                # scan below, which prints them (exactly once either way).
+                for w in _sec_warns:
+                    _print_warning(w, warnings_as_errors, code=code, input_file=input_file)
                 obj_name = output_name + ".o"
                 _safe_write_bytes(obj_name, cached_obj)
                 native_libs = _native_libs_from_ast(ast, target_config)
@@ -1981,6 +1992,7 @@ Global Options:
   --opt <level> / -O<level>        Optimization level: 0, 1, 2, 3, 4, s (size), z (aggressive size)
   -l<lib>                          Link a native library (repeatable), e.g. -lraylib
   --other-imports / -oi <folder>   Extra module search directory (repeatable)
+  --treat-from-as-safe / -tfs      Suppress @from native-library security warnings (W_SECURITY)
   --no-garbage-collector / -ngc    Disable garbage collector (use C malloc/free everywhere)
   --autofree / -af                 Smart auto-free mode (tracks allocations, frees on scope exit; no GC needed)
   --static / -static               Fully-static musl-linked binary (linux64/linux32 only)
@@ -1998,6 +2010,7 @@ _SHARED_COMPILE_OPTIONS = """  --target <target>                Cross-compile ta
   --opt <level> / -O<level>        Optimization level: 0, 1, 2, 3, 4, s (size), z (aggressive size)
   -l<lib>                          Link a native library (repeatable), e.g. -lraylib
   --other-imports / -oi <folder>   Extra module search directory (repeatable)
+  --treat-from-as-safe / -tfs      Suppress @from native-library security warnings (W_SECURITY)
   --no-garbage-collector / -ngc    Disable garbage collector (use C malloc/free everywhere)
   --autofree / -af                 Smart auto-free mode (tracks allocations, frees on scope exit; no GC needed)
   --static / -static               Fully-static musl-linked binary (linux64/linux32 only)
@@ -2097,7 +2110,7 @@ Usage:
 Options:
   --break N / -b N       Set a breakpoint at line N (repeatable)
   --run                  Run until the first breakpoint instead of stepping
-  --other-imports / -oi <folder>  Extra module search directory (repeatable)
+  --other-imports / -oi <folder>   Extra module search directory (repeatable)
   --opt N / -ON          Optimization level (default 0 for exact line mapping)
   --no-garbage-collector / -ngc    Compile without the GC
   --autofree / -af                 Auto-free mode
@@ -2164,10 +2177,27 @@ def run_self_host():
             print(f"error: command failed (exit {r.returncode})")
             sys.exit(r.returncode)
 
+    def _clear_obj_cache(stale_arts):
+        # The self-hosted compiler's object cache is keyed by IR content:
+        # when two stages emit identical IR the second compile hits the
+        # cache and never writes its /tmp/leashc_*.ll artifact, leaving the
+        # fixed-point comparison with a stale (or missing) file. Clear it
+        # between stages so every stage materializes its IR — but only the
+        # NEXT stage's artifact is dropped, never the one just produced.
+        import shutil
+        shutil.rmtree(os.path.expanduser("~/.leash/shcache"), ignore_errors=True)
+        for p in stale_arts:
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
     print("[self-host] Stage 0: python compiler -> bin/leashc_stage1")
     _run([sys.executable, "-m", "leash.cli", "compile", "compiler/main.lsh", "to", stage1])
+    _clear_obj_cache(["/tmp/leashc_leashc_stage2.ll", "/tmp/leashc_leashc_stage3.ll"])
     print("[self-host] Stage 1: leashc_stage1 -> bin/leashc_stage2")
     _run([stage1, "compile", "compiler/main.lsh", "-o", stage2])
+    _clear_obj_cache(["/tmp/leashc_leashc_stage3.ll"])
     print("[self-host] Stage 2: leashc_stage2 -> bin/leashc_stage3")
     _run([stage2, "compile", "compiler/main.lsh", "-o", stage3])
 
@@ -2200,10 +2230,11 @@ def run_self_host():
 
 
 def main():
-    global VERBOSE_MODE, OPT_VERBOSE_MODE
+    global VERBOSE_MODE, OPT_VERBOSE_MODE, TREAT_FROM_AS_SAFE
     VERBOSE_MODE = False
     OPT_VERBOSE_MODE = False
-    
+    TREAT_FROM_AS_SAFE = False
+
     # Extract --verbose / -vb globally and remove from sys.argv
     for arg in list(sys.argv):
         if arg in ("--verbose", "-vb"):
@@ -2212,11 +2243,20 @@ def main():
                 sys.argv.remove(arg)
             except ValueError:
                 pass
-    
+
     # Extract --optimization-verbosity / -ov globally and remove from sys.argv
     for arg in list(sys.argv):
         if arg in ("--optimization-verbosity", "-ov"):
             OPT_VERBOSE_MODE = True
+            try:
+                sys.argv.remove(arg)
+            except ValueError:
+                pass
+
+    # Extract --treat-from-as-safe / -tfs globally and remove from sys.argv
+    for arg in list(sys.argv):
+        if arg in ("--treat-from-as-safe", "-tfs"):
+            TREAT_FROM_AS_SAFE = True
             try:
                 sys.argv.remove(arg)
             except ValueError:

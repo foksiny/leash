@@ -185,7 +185,7 @@ pub fnc init_window(window &LshWindow,
         BeginDrawing();
             ClearBackground(window.bgc);
             updatef();
-        EndDrawing(0);
+        EndDrawing();
     }
 
     endf();

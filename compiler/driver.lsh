@@ -66,6 +66,7 @@ pub def CompilerDriver : class {
     pub extra_import_dirs: vec<string>;
     pub loaded_modules: hash<string, bool>;
     pub self_path: string;   // argv[0]: how this compiler was invoked
+    pub treat_from_safe: bool;   // -tfs: suppress @from native-lib security warnings
 
     static pub fnc make() : CompilerDriver {
         return CompilerDriver {};
@@ -84,6 +85,18 @@ pub def CompilerDriver : class {
         content: string = f.read();
         f.close();
         return content;
+    }
+
+    pub fnc realpath_str(p string) : string {
+        out: string = exec("realpath -m " + p, "wait");
+        trimmed: string = "";
+        ti: int = 0;
+        while ti < out.size && out[ti] != '\n' {
+            trimmed = trimmed + out[ti];
+            ti = ti + 1;
+        }
+        if trimmed.size == 0 { return p; }
+        return trimmed;
     }
 
     pub fnc find_module_file(mod_path string, base_dir string) : string {
@@ -159,6 +172,7 @@ pub def CompilerDriver : class {
             mod_lex: Lexer = Lexer.make(mod_code);
             mod_toks: vec<Token> = mod_lex.tokenize();
             mod_parser: Parser = Parser.make(mod_toks);
+            mod_parser.src_file = this.realpath_str(mod_file);
             mod_prog: Program = mod_parser.parse_program();
 
             // Recursively resolve sub-imports
@@ -183,7 +197,216 @@ pub def CompilerDriver : class {
                 if alias_for_this.size > 0 { f.name = alias_for_this + "_" + f.name; }
                 prog.funcs.pushb(f);
             }
+            // Macro definitions ride along too: the post-import
+            // expansion pass resolves them in the importing program.
+            foreach _, md in<vector> mod_prog.macro_defs {
+                prog.macros.push(md.name, md);
+            }
+            // Native library requests (@from blocks) carry their source
+            // attribution along so the security scan can tell transitive
+            // links from the main file's own declarations.
+            foreach _, nl in<vector> mod_prog.native_libs { prog.native_libs.pushb(nl); }
+            foreach mj, nf in<vector> mod_prog.native_lib_files {
+                prog.native_lib_files.pushb(nf);
+                prog.native_lib_lines.pushb(mod_prog.native_lib_lines[mj]);
+                prog.native_lib_cols.pushb(mod_prog.native_lib_cols[mj]);
+            }
         }
+    }
+
+    // Fetch one line (1-based) from a source file for diagnostic display.
+    pub fnc read_source_line(path string, line_no int) : string {
+        if line_no < 1 { return ""; }
+        content: string = this.read_file_string(path);
+        if content.size == 0 { return ""; }
+        cur: int = 1;
+        start: int = 0;
+        i: int = 0;
+        while i < content.size {
+            if content[i] == '\n' {
+                if cur == line_no {
+                    out: string = "";
+                    k: int = start;
+                    while k < i { out = out + content[k]; k = k + 1; }
+                    return out;
+                }
+                cur = cur + 1;
+                start = i + 1;
+            }
+            i = i + 1;
+        }
+        if cur == line_no {
+            out: string = "";
+            k: int = start;
+            while k < content.size { out = out + content[k]; k = k + 1; }
+            return out;
+        }
+        return "";
+    }
+
+    // The gutter pad Python's diagnostics use: spaces to the line-number column.
+    pub fnc diag_pad(line_no int) : string {
+        if line_no < 1 { return "  "; }
+        digits: int = 0;
+        n: int = line_no;
+        while n > 0 { digits = digits + 1; n = n / 10; }
+        pad: string = "";
+        di: int = 0;
+        while di < digits + 1 { pad = pad + " "; di = di + 1; }
+        return pad;
+    }
+
+    pub fnc print_sec_error(msg string, tip string, disp string, line_no int, col int) : void {
+        show("error [E_SECURITY]: ", msg);
+        show("  --> ", disp, ":", line_no, ":", col);
+        pad: string = this.diag_pad(line_no);
+        src_line: string = this.read_source_line(disp, line_no);
+        if src_line.size > 0 {
+            show(pad, "|");
+            show(line_no, " | ", src_line);
+            cpad: string = "";
+            ci: int = 0;
+            while ci < col { cpad = cpad + " "; ci = ci + 1; }
+            show(pad, "| ", cpad, "^");
+            show(pad, "|");
+        }
+        if tip.size > 0 {
+            show(pad, "= tip: ", tip);
+        }
+    }
+
+    pub fnc print_sec_warning(msg string, tip string, src string, line_no int, col int) : void {
+        show("warning: ", msg);
+        show("  --> ", src, ":", line_no, ":", col, " [W_SECURITY]");
+        pad: string = this.diag_pad(line_no);
+        src_line: string = this.read_source_line(src, line_no);
+        if src_line.size > 0 {
+            show(pad, "|");
+            show(line_no, " | ", src_line);
+            cpad: string = "";
+            ci: int = 0;
+            while ci < col { cpad = cpad + " "; ci = ci + 1; }
+            show(pad, "| ", cpad, "^");
+            show(pad, "|");
+        }
+        if tip.size > 0 {
+            show(pad, "= tip: ", tip);
+        }
+    }
+
+    // Security pass over @from native-link declarations (Python cli.py parity).
+    //   E_SECURITY (fatal): lib paths escaping the module dir — absolute
+    //   paths, '~', '..' segments, or symlinked candidates outside it.
+    //   W_SECURITY: transitive @from from imported modules (unless -tfs).
+    // Returns the number of fatal errors. main_file is the realpath'd entry
+    // source (identity comparisons); input_file is the path as given (used
+    // verbatim in diagnostics pointing at the main file, like Python).
+    pub fnc security_scan(prog Program, main_file string, input_file string) : int {
+        fatal: int = 0;
+        exts: vec<string>;
+        exts.pushb(".so");
+        exts.pushb(".a");
+        exts.pushb(".dylib");
+        exts.pushb(".lib");
+        exts.pushb(".dll");
+
+        idx: int = 0;
+        while idx < prog.native_libs.size {
+            lib: string = prog.native_libs[idx];
+            src: string = prog.native_lib_files[idx];
+            sline: int = prog.native_lib_lines[idx];
+            scol: int = prog.native_lib_cols[idx];
+            if sline < 1 { sline = 1; }
+            if scol < 0 { scol = 0; }
+
+            // Path sanity: relative, no '~', no '..' segments
+            bad: bool = false;
+            if lib.size > 0 && (lib[0] == '/' || lib[0] == '~') { bad = true; }
+            norm: string = "";
+            bi: int = 0;
+            while bi < lib.size {
+                if lib[bi] == '\\' { norm = norm + "/"; } else { norm = norm + lib[bi]; }
+                bi = bi + 1;
+            }
+            seg: string = "";
+            si: int = 0;
+            while si < norm.size {
+                if norm[si] == '/' {
+                    if seg == ".." { bad = true; }
+                    seg = "";
+                } else {
+                    seg = seg + norm[si];
+                }
+                si = si + 1;
+            }
+            if seg == ".." { bad = true; }
+
+            base_dir: string = Path.dirname(main_file);
+            if src.size > 0 { base_dir = Path.dirname(src); }
+            real_base: string = this.realpath_str(base_dir);
+            // Diagnostics on the main file show the path as the user gave it
+            disp: string = src;
+            if disp.size == 0 || disp == main_file { disp = input_file; }
+
+            if bad {
+                this.print_sec_error(
+                    "Security: native library path '" + lib + "' in @from must be a relative path that stays inside the module directory — absolute paths and '..' segments can link an arbitrary binary into your program",
+                    "Place the library next to the source file and reference it by file name, e.g. @from(\"libfoo.a\").",
+                    disp, sline, scol);
+                fatal = fatal + 1;
+                idx = idx + 1;
+                continue;
+            }
+
+            // Symlink containment: every existing candidate must stay inside
+            // the declaring module's directory after realpath.
+            escaped: bool = false;
+            ci: int = 0;
+            while ci <= 5 && !escaped {
+                cand: string = lib;
+                if ci > 0 { cand = lib + exts[ci - 1]; }
+                cand_path: string = cand;
+                if cand_path.size > 0 && cand_path[0] != '/' {
+                    cand_path = base_dir + "/" + cand_path;
+                }
+                if this.file_exists(cand_path) {
+                    real_cand: string = this.realpath_str(cand_path);
+                    if real_cand != real_base {
+                        inside: bool = false;
+                        if real_cand.size > real_base.size {
+                            pref_ok: bool = true;
+                            ki: int = 0;
+                            while ki < real_base.size {
+                                if real_cand[ki] != real_base[ki] { pref_ok = false; }
+                                ki = ki + 1;
+                            }
+                            if pref_ok && real_cand[real_base.size] == '/' { inside = true; }
+                        }
+                        if !inside { escaped = true; }
+                    }
+                }
+                ci = ci + 1;
+            }
+            if escaped {
+                this.print_sec_error(
+                    "Security: native library path '" + lib + "' in @from resolves (via symlink) outside the module directory — it could link an arbitrary binary into your program",
+                    "Remove the symlink and place the real library next to the source file.",
+                    disp, sline, scol);
+                fatal = fatal + 1;
+                idx = idx + 1;
+                continue;
+            }
+
+            // Transitive native-link request from an imported module
+            if src.size > 0 && src != main_file && !this.treat_from_safe {
+                this.print_sec_warning(
+                    "Security: imported module '" + Path.basename(src) + "' links native library '" + lib + "' into this build via @from — native libraries from dependencies run with your program's full privileges",
+                    "Confirm the dependency is expected to ship a native library, or review/build it from source.",
+                    src, sline, scol);
+            }
+            idx = idx + 1;
+        }
+        return fatal;
     }
 
     pub fnc fnv_char(h int, c char) : int {
@@ -300,11 +523,19 @@ pub def CompilerDriver : class {
         tokens: vec<Token> = lexer.tokenize();
 
         // Parse
+        abs_main: string = this.realpath_str(input_file);
         parser: Parser = Parser.make(tokens);
+        parser.src_file = abs_main;
         prog: Program = parser.parse_program();
 
         // Resolve imports
         this.resolve_imports(prog, base_dir);
+
+        // Security scan (Python cli.py parity): @from path checks +
+        // transitive native-library warnings; fatal errors short-circuit.
+        if this.security_scan(prog, abs_main, input_file) > 0 {
+            return 1;
+        }
 
         // AST optimization
         opt_driver: Optimizer = Optimizer {};
@@ -314,6 +545,15 @@ pub def CompilerDriver : class {
         tc: TypeChecker = TypeChecker.make();
         tc.check_program(prog);
         if verbose {
+        }
+        if tc.errors.size > 0 {
+            // Gate codegen behind a clean type-check: a type-errored
+            // program used to reach clang and fail with confusing IR
+            // errors instead of the real diagnostics.
+            foreach _, e in<vector> tc.errors {
+                show("error: ", e);
+            }
+            return 1;
         }
         if check_mode {
             if tc.errors.size == 0 {
@@ -388,6 +628,16 @@ pub def CompilerDriver : class {
         lib_flags: string = "";
         foreach _, lib in<vector> extra_libs {
             lib_flags = lib_flags + " -l" + lib;
+        }
+        // @from("lib.so"/"lib.a") paths link directly; bare names link as -l
+        foreach _, nlib in<vector> prog.native_libs {
+            if nlib.size > 3 && (nlib[nlib.size - 3] == '.' && nlib[nlib.size - 2] == 's' && nlib[nlib.size - 1] == 'o') {
+                lib_flags = lib_flags + " " + nlib;
+            } also nlib.size > 2 && nlib[nlib.size - 2] == '.' && nlib[nlib.size - 1] == 'a' {
+                lib_flags = lib_flags + " " + nlib;
+            } else {
+                lib_flags = lib_flags + " -l" + nlib;
+            }
         }
 
         // ---- Target / link-mode flags (Python parity) -----------------------

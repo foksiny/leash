@@ -92,26 +92,14 @@ leash install installthis/
 
 <h2>Types Library (<code>types.lsh</code>)</h2>
 
-<p>Type aliases for explicit bit-width types:</p>
+<p>Explicit bit-width types use the <code>int<N></code> / <code>uint<N></code> / <code>float<N></code> syntax directly &mdash; there are no bare <code>int8</code>-style aliases (they are rejected as unknown types, like any other undefined name). Common widths:</p>
 
 <table>
-    <tr><th>Alias</th><th>Underlying Type</th></tr>
-    <tr><td><code>double</code></td><td><code>float&lt;64&gt;</code></td></tr>
-    <tr><td><code>float16</code></td><td><code>float&lt;16&gt;</code></td></tr>
-    <tr><td><code>float64</code></td><td><code>float&lt;64&gt;</code></td></tr>
-    <tr><td><code>float128</code></td><td><code>float&lt;128&gt;</code></td></tr>
-    <tr><td><code>uint8</code></td><td><code>uint&lt;8&gt;</code></td></tr>
-    <tr><td><code>uint16</code></td><td><code>uint&lt;16&gt;</code></td></tr>
-    <tr><td><code>uint64</code></td><td><code>uint&lt;64&gt;</code></td></tr>
-    <tr><td><code>uint128</code></td><td><code>uint&lt;128&gt;</code></td></tr>
-    <tr><td><code>uint256</code></td><td><code>uint&lt;256&gt;</code></td></tr>
-    <tr><td><code>uint512</code></td><td><code>uint&lt;512&gt;</code></td></tr>
-    <tr><td><code>int8</code></td><td><code>int&lt;8&gt;</code></td></tr>
-    <tr><td><code>int16</code></td><td><code>int&lt;16&gt;</code></td></tr>
-    <tr><td><code>int64</code></td><td><code>int&lt;64&gt;</code></td></tr>
-    <tr><td><code>int128</code></td><td><code>int&lt;128&gt;</code></td></tr>
-    <tr><td><code>int256</code></td><td><code>int&lt;256&gt;</code></td></tr>
-    <tr><td><code>int512</code></td><td><code>int&lt;512&gt;</code></td></tr>
+    <tr><th>Syntax</th><th>Meaning</th></tr>
+    <tr><td><code>int<8></code>, <code>int<16></code>, <code>int<32></code>, <code>int<64></code></td><td>Signed integers; plain <code>int</code> is 64-bit</td></tr>
+    <tr><td><code>int<128></code>, <code>int<256></code>, <code>int<512></code></td><td>Wide signed integers, exact decimal printing/parsing</td></tr>
+    <tr><td><code>uint<N></code></td><td>Unsigned integers, any width from 1 to 512</td></tr>
+    <tr><td><code>float<16></code>, <code>float<32></code>, <code>float<64></code>, <code>float<128></code></td><td>Floats, mapped to the closest hardware format</td></tr>
 </table>
 
 <h2>Tuple Library (<code>tuple.lsh</code>)</h2>
@@ -482,10 +470,14 @@ speed: <span class="kw">int</span> = 5;
     <span class="kw">also</span> Input.<span class="fn">key_down</span>(KEY_D) { pos.x += speed; }
 }
 
+<span class="kw">fnc</span> <span class="fn">end</span>() {
+    <span class="fn">show</span>(<span class="str">"game over"</span>);
+}
+
 <span class="kw">fnc</span> <span class="fn">main</span> {
     wind = <span class="fn">create_window</span>(800, 600, <span class="str">"My Game"</span>);
     <span class="fn">close_key</span>(KEY_ESCAPE);
-    <span class="fn">init_window</span>(wind, &amp;start, &amp;update, &amp;endd);
+    <span class="fn">init_window</span>(wind, &amp;start, &amp;update, &amp;end);
 }</code></pre>
 
 <h3>Key Structures</h3>
@@ -842,7 +834,7 @@ fnc main() {
 
 <pre><code><span class="kw">use</span> http::http::*;
 
-<span class="kw">fnc</span> <span class="fn">main</>() {
+<span class="kw">fnc</span> <span class="fn">main</span>() {
     r: HttpResponse = Http.<span class="fn">get</span>(<span class="str">"https://example.com/"</span>);
     <span class="kw">if</span> r.<span class="fn">success</span>() {
         show(<span class="str">"status: "</span>, r.status);
@@ -882,7 +874,7 @@ fnc main() {
 <pre><code><span class="kw">use</span> http::http::*;
 <span class="kw">use</span> encoding::url::Url;
 
-<span class="kw">fnc</span> <span class="fn">main</>() {
+<span class="kw">fnc</span> <span class="fn">main</span>() {
     <span class="cm">// POST JSON</span>
     body := <span class="str">"\{\"name\": \"leash\"}"</span>;
     r := Http.<span class="fn">request</span>(<span class="str">"POST"</span>, <span class="str">"https://api.example.com/v1/things"</span>, body, Http.<span class="fn">json_header</span>());
@@ -897,7 +889,7 @@ fnc main() {
 
 <pre><code><span class="kw">use</span> httpserver::httpserver::*;
 
-<span class="kw">fnc</span> <span class="fn">handle</>(method string, path string, query string,
+<span class="kw">fnc</span> <span class="fn">handle</span>(method string, path string, query string,
             headers string, body string) : <span class="kw">int</span> {
     <span class="kw">if</span> path == <span class="str">"/"</span> {
         <span class="kw">return</span> HttpServer.<span class="fn">reply</span>(200, <span class="str">"text/html"</span>, <span class="str">"&lt;h1&gt;Hello from Leash!&lt;/h1&gt;"</span>);
@@ -910,7 +902,7 @@ fnc main() {
     <span class="kw">return</span> HttpServer.<span class="fn">reply</span>(404, <span class="str">"text/plain"</span>, <span class="str">"not found: "</span> + path);
 }
 
-<span class="kw">fnc</span> <span class="fn">main</>() {
+<span class="kw">fnc</span> <span class="fn">main</span>() {
     <span class="fn">show</span>(<span class="str">"listening on http://localhost:8080 …"</span>);
     HttpServer.<span class="fn">serve</span>(8080, &amp;handle);   <span class="cm">// blocks until HttpServer.shutdown()</span>
 }</code></pre>
@@ -1070,7 +1062,9 @@ fnc main() {
 
 <h3><code>sys::argparse::Args</code></h3>
 <p>Parses <code>main(argv string[])</code>-style arguments into a <code>ParsedArgs</code> struct with <code>flags</code> (boolean), <code>opts</code> (key/value) and <code>positional</code>. Supports <code>--flag</code>, <code>--opt=value</code>, <code>--opt value</code>, short flag clusters like <code>-abc</code>, and <code>--</code> to stop option parsing.</p>
-<pre><code>fnc main(argv string[]) {
+<pre><code><span class="kw">use</span> sys::argparse::*;
+
+fnc main(argv string[]) {
     p := Args.parse(argv);
     <span class="kw">if</span> Args.get_flag(p, <span class="str">"verbose"</span>) { show(<span class="str">"chatty mode"</span>); }
     name: string = Args.get_opt(p, <span class="str">"name"</span>);

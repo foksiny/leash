@@ -21,7 +21,7 @@ pub def ExprKind : class {
 
 pub def Expr : class {
     pub kind: int;
-    pub ival: int;
+    pub ival: int<64>;   // full 64-bit value even when plain `int` is 32-bit
     pub fval: float;
     pub sval: string;
     pub cval: char;
@@ -34,7 +34,7 @@ pub def Expr : class {
     pub field_names: vec<string>;
     pub inferred_type: string;
 
-    static pub fnc make_int(v int) : Expr {
+    static pub fnc make_int(v int<64>) : Expr {
         e: Expr = Expr { kind: ExprKind.INT, ival: v, fval: 0.0, sval: "", cval: ' ', bval: false, op: "", left: null, right: null, cond: null };
         return e;
     }
@@ -145,6 +145,7 @@ pub def StmtKind : class {
     static pub WORKS: int = 16;
     static pub DEFER: int = 17;
     static pub THROW: int = 18;
+    static pub SPAWN: int = 19;
 }
 
 pub def Stmt : class {
@@ -285,9 +286,11 @@ pub def FuncDecl : class {
     pub is_nogc: bool;
     pub is_inline: bool;
     pub is_async: bool;
+    pub is_worker: bool;
+    pub is_external: bool;   // @from declaration: declare, never define
 
     static pub fnc make(name string, params vec<FuncParam>, ret string, body vec<Stmt>, is_stat bool, is_p bool) : FuncDecl {
-        return FuncDecl { name: name, owner: "", params: params, ret_type: ret, body: body, is_static: is_stat, is_pub: is_p, is_unsafe: false, is_nogc: false, is_inline: false, is_async: false };
+        return FuncDecl { name: name, owner: "", params: params, ret_type: ret, body: body, is_static: is_stat, is_pub: is_p, is_unsafe: false, is_nogc: false, is_inline: false, is_async: false, is_worker: false, is_external: false };
     }
 }
 
@@ -390,6 +393,12 @@ pub def Program : class {
     pub globals: vec<GlobalDecl>;
     pub imports: vec<string>;
     pub import_aliases: hash<string, string>; // modulePath -> aliasName
+    pub native_libs: vec<string>;             // @from("lib") paths for the link
+    pub macros: hash<string, MacroDef>;      // zero-arg macro defs (post-import expansion)
+    pub macro_defs: vec<MacroDef>;          // same, ordered (for import splicing)
+    pub native_lib_files: vec<string>;       // source file of each @from block
+    pub native_lib_lines: vec<int>;          // line of each @from block
+    pub native_lib_cols: vec<int>;           // column of each @from block
 
     static pub fnc make() : Program {
         return Program {};

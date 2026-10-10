@@ -2904,6 +2904,12 @@ class CodeGen:
         args = [self._codegen(a) for a in node.args]
         msg_val = self.builder.call(error_func, args)
 
+        # The error's name rides in the message as its code: runtime
+        # failures are prefixed `[Name] ` the same way static diagnostics
+        # carry LEASH-Exxx codes.
+        code_ptr = self._emit_const_str("[" + node.error_name + "] ")
+        msg_val = self._concat_strings(code_ptr, msg_val)
+
         # 2. Print error info: "Runtime error: [msg] at [file]:[line]:[col]"
         fmt_ptr = self._emit_const_str("\nRuntime error: %s\n  --> %s:%d:%d\n")
 

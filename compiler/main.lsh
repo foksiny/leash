@@ -256,6 +256,7 @@ fnc print_usage() : void {
     show("  --opt <level> / -O<level>        Optimization level: 0, 1, 2, 3, 4, s (size), z (aggressive size)");
     show("  -l<lib>                          Link a native library (repeatable), e.g. -lraylib");
     show("  --other-imports / -oi <folder>   Extra module search directory (repeatable)");
+    show("  --treat-from-as-safe / -tfs      Suppress @from native-library security warnings (W_SECURITY)");
     show("  --no-garbage-collector / -ngc    Disable garbage collector (plain C malloc/free runtime)");
     show("  --static / -static               Fully-static musl-linked binary (linux64/linux32 only)");
     show("  --emit-llvm                      Emit LLVM IR instead of linking");
@@ -535,6 +536,14 @@ fnc cmd_run(args string[]) : int {
         pi = pi + 1;
     }
 
+    // -tfs applies to both run modes (project + file)
+    r_tfs: bool = false;
+    tsi: int = 2;
+    while tsi < sep_idx {
+        if args[tsi] == "--treat-from-as-safe" || args[tsi] == "-tfs" { r_tfs = true; }
+        tsi = tsi + 1;
+    }
+
     // compile-side options (before the operand, minus the operand itself)
     opt_level: string = "2";
     extra_dirs: vec<string>;
@@ -607,6 +616,7 @@ fnc cmd_run(args string[]) : int {
         tmp: string = "./.__temp_run_leash_exe_" + xsuffix();
         drv: CompilerDriver = CompilerDriver.make();
         drv.self_path = args[0];
+        drv.treat_from_safe = r_tfs;
         foreach _, d in<vector> extra_dirs { drv.add_import_dir(d); }
         rc: int = drv.compile_file(main_rel, tmp, false, true, prog_args, p_opt, false, extra_libs, false, false, false, "", false, false);
         cleanup_temp(tmp);
@@ -641,6 +651,7 @@ fnc cmd_run(args string[]) : int {
     tmp2: string = "./.__temp_run_leash_exe_" + xsuffix();
     drv2: CompilerDriver = CompilerDriver.make();
     drv2.self_path = args[0];
+    drv2.treat_from_safe = r_tfs;
     foreach _, d2 in<vector> extra_dirs { drv2.add_import_dir(d2); }
     rc2: int = drv2.compile_file(operand, tmp2, false, true, prog_args, opt_level, false, empty_libs_global(), false, false, false, r_target, r_ngc, r_static);
     cleanup_temp(tmp2);
@@ -975,6 +986,7 @@ fnc main(args string[]) : int {
         opt_level: string = "2";
         verbose: bool = false;
         warn_err: bool = false;
+        tfs: bool = false;
         extra_dirs: vec<string>;
         extra_libs: vec<string>;
         target_name: string = "";
@@ -994,6 +1006,14 @@ fnc main(args string[]) : int {
                 i = i + 2;
                 continue;
             }
+            if arg == "to-dynamic" || arg == "to-static" {
+                // Library outputs need the Python toolchain's object
+                // pipeline; silently ignoring the flag used to produce a
+                // plain executable under the library's name.
+                show("error: '", arg, "' library outputs are provided by the Python compiler:");
+                show("       leashp compile ", input_file, " ", arg, " <name>");
+                return 1;
+            }
             if arg == "--emit-llvm" {
                 emit_llvm = true;
                 i = i + 1;
@@ -1006,6 +1026,11 @@ fnc main(args string[]) : int {
             }
             if arg == "--warnings-as-errors" || arg == "-oe" {
                 warn_err = true;
+                i = i + 1;
+                continue;
+            }
+            if arg == "--treat-from-as-safe" || arg == "-tfs" {
+                tfs = true;
                 i = i + 1;
                 continue;
             }
@@ -1075,6 +1100,7 @@ fnc main(args string[]) : int {
 
         driver: CompilerDriver = CompilerDriver.make();
         driver.self_path = args[0];
+        driver.treat_from_safe = tfs;
         foreach _, d in<vector> extra_dirs { driver.add_import_dir(d); }
         return driver.compile_file(input_file, output_file, emit_llvm, false, "",
                                    opt_level, check_mode, extra_libs, verbose, warn_err, false,

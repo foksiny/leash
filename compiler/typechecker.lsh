@@ -5,14 +5,16 @@ pub def StructInfo : class {
     pub name: string;
     pub field_names: vec<string>;
     pub field_types: vec<string>;
+    pub field_defaults: vec<bool>;   // field has a declared default value
 
     static pub fnc make(name string) : StructInfo {
         return StructInfo { name: name };
     }
 
-    pub fnc add_field(fname string, ftype string) : void {
+    pub fnc add_field(fname string, ftype string, has_default bool) : void {
         this.field_names.pushb(fname);
         this.field_types.pushb(ftype);
+        this.field_defaults.pushb(has_default);
     }
 
     pub fnc get_field_type(fname string) : string {
@@ -33,6 +35,7 @@ pub def ClassInfo : class {
     pub method_names: vec<string>;
     pub method_rets: vec<string>;
     pub method_statics: vec<bool>;
+    pub method_params: hash<string, vec<string>>;   // method name -> param types
     pub method_order: vec<string>;   // virtual slot order: parent slots + own new
 
     static pub fnc make(name string, parent string) : ClassInfo {
@@ -44,10 +47,19 @@ pub def ClassInfo : class {
         this.field_types.pushb(ftype);
     }
 
-    pub fnc add_method(mname string, ret string, is_static bool) : void {
+    pub fnc add_method(mname string, ret string, is_static bool, params vec<string>) : void {
         this.method_names.pushb(mname);
         this.method_rets.pushb(ret);
         this.method_statics.pushb(is_static);
+        this.method_params.push(mname, params);
+    }
+
+    pub fnc get_method_params(mname string) : vec<string> {
+        if this.method_params.isin(mname) {
+            return this.method_params[mname];
+        }
+        empty_ps: vec<string>;
+        return empty_ps;
     }
 
     pub fnc is_method_static(mname string) : bool {
@@ -112,6 +124,7 @@ pub def TypeChecker : class {
     pub union_names: hash<string, vec<string>>; // "UnionName" -> ordered variant names
     pub union_types: hash<string, vec<string>>; // "UnionName" -> variant types
     pub class_tparams: hash<string, vec<string>>; // class -> declared type params
+    pub template_types: hash<string, bool>;      // `def T : template` names
     pub class_decls: vec<ClassDecl>;             // every class decl (name lookup)
     pub generic_classes: hash<string, bool>;      // class<T> template names
     pub inst_classes: hash<string, bool>;        // mangled class instantiation -> true
@@ -122,41 +135,199 @@ pub def TypeChecker : class {
     pub generic_rtype: hash<string, string>;        // template name -> return type (substituted)
     pub inst_nodes: vec<FuncDecl>;                  // concrete instantiations
     pub inst_keys: hash<string, bool>;              // mangled name -> already built
+    pub variadic_builtins: vec<string>;             // C builtins callable with extra args
+    pub readonly_borrows: vec<string>;             // current function's read-only array params
+    pub fatal_idx: int;                            // raise-class error index (Python abort parity)
+    pub worker_funcs: hash<string, bool>;          // `worker fnc` names
+    pub async_funcs: hash<string, bool>;            // `async fnc` names
 
     static pub fnc make() : TypeChecker {
-        tc: TypeChecker = TypeChecker { current_func_ret: "void", works_error: "" };
+        tc: TypeChecker = TypeChecker { current_func_ret: "void", works_error: "", fatal_idx: -1 };
         tc.init_builtins();
         return tc;
+    }
+
+    // Register one C stub signature (Python _register_c_stubs parity).
+    // packed is "type name;type name;..." (empty for no params).
+    pub fnc seed_stub(name string, ret string, packed string) : void {
+        this.funcs.push(name, ret);
+        ps: vec<string>;
+        ns: vec<string>;
+        if packed.size > 0 {
+            cur: string = "";
+            pi: int = 0;
+            while pi <= packed.size {
+                at_end: bool = pi == packed.size;
+                c: char = ';';
+                if !at_end { c = packed[pi]; }
+                if at_end || c == ';' {
+                    sp: int = 0;
+                    while sp < cur.size && cur[sp] != ' ' { sp = sp + 1; }
+                    if sp > 0 && sp + 1 <= cur.size - 1 {
+                        ps.pushb(this.str_slice(cur, 0, sp));
+                        ns.pushb(this.str_slice(cur, sp + 1, cur.size));
+                    }
+                    cur = "";
+                } else {
+                    cur = cur + c;
+                }
+                pi = pi + 1;
+            }
+        }
+        this.func_params.push(name, ps);
+        this.func_param_names.push(name, ns);
     }
 
     pub fnc init_builtins() : void {
         // Standard C and Leash runtime built-ins
         this.funcs.push("show", "void");
         this.funcs.push("showb", "void");
+        // Special-cased builtins (special_builtin_call) also need their
+        // return types in the funcs table: codegen's get_expr_type reads
+        // them when typing enclosing expressions. The typechecker itself
+        // resolves these names through special_builtin_call first.
         this.funcs.push("exec", "string");
         this.funcs.push("cstr", "char[]");
         this.funcs.push("lstr", "string");
         this.funcs.push("tostring", "string");
         this.funcs.push("rand", "int");
-        this.funcs.push("printf", "int");
-        this.funcs.push("puts", "int");
-        this.funcs.push("malloc", "*char");
-        this.funcs.push("free", "void");
-        this.funcs.push("strlen", "int");
-        this.funcs.push("strcpy", "*char");
-        this.funcs.push("strcmp", "int");
-        this.funcs.push("strtoll", "int");
-        this.funcs.push("strtod", "float");
-        this.funcs.push("system", "int");
-        this.funcs.push("exit", "void");
-        this.funcs.push("leash_gc_init", "void");
-        this.funcs.push("leash_gc_shutdown", "void");
-        this.funcs.push("leash_gc_malloc", "*char");
-        this.funcs.push("leash_gc_collect", "void");
+        this.funcs.push("randf", "float");
+        this.funcs.push("seed", "void");
+        this.funcs.push("choose", "string");
+        this.funcs.push("wait", "void");
+        this.funcs.push("timepass", "float");
         this.funcs.push("keyget", "char");
         this.funcs.push("get", "string");
         this.funcs.push("normescape", "string");
+        this.funcs.push("exit", "void");
+        this.funcs.push("gc_collect", "void");
+        this.funcs.push("gc_stats", "void");
+        this.variadic_builtins.pushb("printf");
+        this.variadic_builtins.pushb("sprintf");
+        this.variadic_builtins.pushb("snprintf");
+        this.variadic_builtins.pushb("fprintf");
+        this.variadic_builtins.pushb("scanf");
+        this.variadic_builtins.pushb("fscanf");
+        this.variadic_builtins.pushb("sscanf");
+
+        // C library stubs (Python _register_c_stubs parity)
+        this.seed_stub("abort", "void", "");
+        this.seed_stub("abs", "int", "int x");
+        this.seed_stub("acos", "float", "float x");
+        this.seed_stub("asctime", "*char", "*char tm");
+        this.seed_stub("asin", "float", "float x");
+        this.seed_stub("atan", "float", "float x");
+        this.seed_stub("atan2", "float", "float y;float x");
+        this.seed_stub("atexit", "int", "*char func");
+        this.seed_stub("atoi", "int", "*char str");
+        this.seed_stub("atol", "int", "*char str");
+        this.seed_stub("atoll", "int", "*char str");
+        this.seed_stub("bsearch", "*char", "*char key;*char base;int nmemb;int size;*char compar");
+        this.seed_stub("calloc", "*char", "int nmemb;int size");
+        this.seed_stub("cbrt", "float", "float x");
+        this.seed_stub("ceil", "float", "float x");
+        this.seed_stub("clock", "int", "");
+        this.seed_stub("cos", "float", "float x");
+        this.seed_stub("cosh", "float", "float x");
+        this.seed_stub("ctime", "*char", "*char timer");
+        this.seed_stub("difftime", "float", "float t1;float t0");
+        this.seed_stub("exp", "float", "float x");
+        this.seed_stub("fabs", "float", "float x");
+        this.seed_stub("fclose", "int", "*char stream");
+        this.seed_stub("feof", "int", "*char stream");
+        this.seed_stub("fflush", "int", "*char stream");
+        this.seed_stub("fgetc", "int", "*char stream");
+        this.seed_stub("fgets", "*char", "*char str;int n;*char stream");
+        this.seed_stub("fileno", "int", "*char stream");
+        this.seed_stub("floor", "float", "float x");
+        this.seed_stub("fmod", "float", "float x;float y");
+        this.seed_stub("fopen", "*char", "*char path;*char mode");
+        this.seed_stub("fprintf", "int", "*char stream;*char fmt");
+        this.seed_stub("fputc", "int", "int c;*char stream");
+        this.seed_stub("fputs", "int", "*char str;*char stream");
+        this.seed_stub("fread", "int", "*char ptr;int size;int nmemb;*char stream");
+        this.seed_stub("free", "void", "*char ptr");
+        this.seed_stub("fscanf", "int", "*char stream;*char fmt");
+        this.seed_stub("fseek", "int", "*char stream;int offset;int whence");
+        this.seed_stub("ftell", "int", "*char stream");
+        this.seed_stub("fwrite", "int", "*char ptr;int size;int nmemb;*char stream");
+        this.seed_stub("getchar", "int", "");
+        this.seed_stub("getenv", "*char", "*char name");
+        this.seed_stub("gmtime", "*char", "*char timer");
+        this.seed_stub("isalnum", "int", "int c");
+        this.seed_stub("isalpha", "int", "int c");
+        this.seed_stub("iscntrl", "int", "int c");
+        this.seed_stub("isdigit", "int", "int c");
+        this.seed_stub("isgraph", "int", "int c");
+        this.seed_stub("islower", "int", "int c");
+        this.seed_stub("isprint", "int", "int c");
+        this.seed_stub("ispunct", "int", "int c");
+        this.seed_stub("isspace", "int", "int c");
+        this.seed_stub("isupper", "int", "int c");
+        this.seed_stub("isxdigit", "int", "int c");
+        this.seed_stub("labs", "int", "int x");
+        this.seed_stub("localtime", "*char", "*char timer");
+        this.seed_stub("log", "float", "float x");
+        this.seed_stub("log10", "float", "float x");
+        this.seed_stub("malloc", "*char", "int size");
+        this.seed_stub("memchr", "*char", "*char ptr;int val;int n");
+        this.seed_stub("memcmp", "int", "*char s1;*char s2;int n");
+        this.seed_stub("memcpy", "*char", "*char dst;*char src;int n");
+        this.seed_stub("memmove", "*char", "*char dst;*char src;int n");
+        this.seed_stub("memset", "*char", "*char ptr;int val;int n");
+        this.seed_stub("mktime", "int", "*char tm");
+        this.seed_stub("pclose", "int", "*char stream");
+        this.seed_stub("perror", "void", "*char str");
+        this.seed_stub("popen", "*char", "*char cmd;*char mode");
+        this.seed_stub("pow", "float", "float x;float y");
+        this.seed_stub("printf", "int", "*char fmt");
+        this.seed_stub("putchar", "int", "int c");
+        this.seed_stub("puts", "int", "*char str");
+        this.seed_stub("qsort", "void", "*char base;int nmemb;int size;*char compar");
+        this.seed_stub("realloc", "*char", "*char ptr;int size");
+        this.seed_stub("remove", "int", "*char path");
+        this.seed_stub("rename", "int", "*char old;*char new");
+        this.seed_stub("rewind", "void", "*char stream");
+        this.seed_stub("round", "float", "float x");
+        this.seed_stub("scanf", "int", "*char fmt");
+        this.seed_stub("setbuf", "void", "*char stream;*char buf");
+        this.seed_stub("setvbuf", "int", "*char stream;*char buf;int mode;int size");
+        this.seed_stub("sin", "float", "float x");
+        this.seed_stub("sinh", "float", "float x");
+        this.seed_stub("snprintf", "int", "*char buf;int size;*char fmt");
+        this.seed_stub("sprintf", "int", "*char buf;*char fmt");
+        this.seed_stub("sqrt", "float", "float x");
+        this.seed_stub("sscanf", "int", "*char buf;*char fmt");
+        this.seed_stub("strcasecmp", "int", "*char s1;*char s2");
+        this.seed_stub("strcat", "*char", "*char dst;*char src");
+        this.seed_stub("strchr", "*char", "*char str;int c");
+        this.seed_stub("strcmp", "int", "*char s1;*char s2");
+        this.seed_stub("strcpy", "*char", "*char dst;*char src");
+        this.seed_stub("strdup", "*char", "*char str");
+        this.seed_stub("strlen", "int", "*char str");
+        this.seed_stub("strncat", "*char", "*char dst;*char src;int n");
+        this.seed_stub("strncmp", "int", "*char s1;*char s2;int n");
+        this.seed_stub("strncpy", "*char", "*char dst;*char src;int n");
+        this.seed_stub("strrchr", "*char", "*char str;int c");
+        this.seed_stub("strstr", "*char", "*char haystack;*char needle");
+        this.seed_stub("strtod", "float", "*char str;*char endptr");
+        this.seed_stub("strtof", "float", "*char str;*char endptr");
+        this.seed_stub("strtok", "*char", "*char str;*char delim");
+        this.seed_stub("strtol", "int", "*char str;*char endptr;int base");
+        this.seed_stub("strtoll", "int", "*char str;*char endptr;int base");
+        this.seed_stub("strtoul", "int", "*char str;*char endptr;int base");
+        this.seed_stub("tan", "float", "float x");
+        this.seed_stub("tanh", "float", "float x");
+        this.seed_stub("time", "int", "*char t");
+        this.seed_stub("tmpfile", "*char", "");
+        this.seed_stub("tolower", "int", "int c");
+        this.seed_stub("toupper", "int", "int c");
+        this.seed_stub("trunc", "float", "float x");
+        this.seed_stub("ungetc", "int", "int c;*char stream");
+        this.seed_stub("vfprintf", "int", "*char stream;*char fmt;*char args");
+        this.seed_stub("vprintf", "int", "*char fmt;*char args");
     }
+
 
     pub fnc enter_scope() : void {
         s: hash<string, string>;
@@ -194,6 +365,919 @@ pub def TypeChecker : class {
         // Search globals
         if this.globals.isin(name) {
             return this.globals[name];
+        }
+
+        return "";
+    }
+
+    // True when name is declared in one of the local (call-frame) scopes.
+    // Globals and class statics do not live on the frame, so borrowing
+    // from them does not dangle.
+    pub fnc is_local_var(name string) : bool {
+        i: int = 0;
+        while i < this.scopes.size {
+            s: hash<string, string> = this.scopes.get(i);
+            if s.isin(name) { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    // The identifier at the root of an access chain: (&v).m[0] -> "v".
+    // Returns "" when the chain is not rooted at a plain identifier.
+    pub fnc root_identifier(e Expr) : string {
+        while e != null && (e.kind == ExprKind.MEMBER || e.kind == ExprKind.INDEX || e.kind == ExprKind.POINTER_MEMBER) {
+            e = e.left;
+        }
+        if e != null && e.kind == ExprKind.IDENT { return e.sval; }
+        return "";
+    }
+
+    // If expr contains an address-of rooted at a local variable — a value
+    // living in the current call frame — return that variable's name; else "".
+    // Mirrors Python's _frame_escape_in (LEASH-E010 dangling-return check).
+    pub fnc frame_escape_in(e Expr) : string {
+        if e == null { return ""; }
+        if e.kind == ExprKind.UNARY && e.op == "&" {
+            root: string = this.root_identifier(e.left);
+            if root.size > 0 && this.is_local_var(root) { return root; }
+            return "";
+        }
+        if e.kind == ExprKind.TERNARY {
+            a: string = this.frame_escape_in(e.left);
+            if a.size > 0 { return a; }
+            return this.frame_escape_in(e.right);
+        }
+        if e.kind == ExprKind.BINOP {
+            a: string = this.frame_escape_in(e.left);
+            if a.size > 0 { return a; }
+            return this.frame_escape_in(e.right);
+        }
+        // Multi-value return: return e1, e2, ...; (parser wraps in a tuple)
+        if e.kind == ExprKind.ARRAY_LIT && e.sval == "__tuple__" {
+            foreach _, v in<vector> e.args {
+                a: string = this.frame_escape_in(v);
+                if a.size > 0 { return a; }
+            }
+        }
+        return "";
+    }
+
+    // ---- Python-parity call-site diagnostics -------------------------------
+
+    pub fnc is_variadic_builtin(name string) : bool {
+        foreach _, v in<vector> this.variadic_builtins {
+            if v == name { return true; }
+        }
+        return false;
+    }
+
+    pub fnc is_numeric_type(t string) : bool {
+        return this.is_int_family(t) || this.is_float_family(t);
+    }
+
+    pub fnc char_digit(c char) : int {
+        if c == '0' { return 0; }
+        if c == '1' { return 1; }
+        if c == '2' { return 2; }
+        if c == '3' { return 3; }
+        if c == '4' { return 4; }
+        if c == '5' { return 5; }
+        if c == '6' { return 6; }
+        if c == '7' { return 7; }
+        if c == '8' { return 8; }
+        if c == '9' { return 9; }
+        return -1;
+    }
+
+    pub fnc parse_small_int(s string) : int {
+        out: int = 0;
+        pi: int = 0;
+        while pi < s.size {
+            d: int = this.char_digit(s[pi]);
+            if d < 0 { return -1; }
+            out = out * 10 + d;
+            pi = pi + 1;
+        }
+        if s.size == 0 { return -1; }
+        return out;
+    }
+
+    // LEASH-E015 parity: reject integer literals outside the target type's
+    // sign/width. The range math runs in int<64> so the bounds themselves
+    // never wrap (a bare `int` wraps at 32 bits in some builds). Widths
+    // where a bound would overflow int<64> (>= 63) are skipped.
+    pub fnc check_int_literal_fits(e Expr, tt string) : void {
+        if e == null || tt.size == 0 { return; }
+        neg: bool = false;
+        v: Expr = e;
+        while v != null && v.kind == ExprKind.UNARY && (v.op == "-" || v.op == "+") {
+            if v.op == "-" { neg = !neg; }
+            v = v.left;
+        }
+        if v == null || v.kind != ExprKind.INT { return; }
+        val: int<64> = v.ival;
+        if neg { val = 0 - val; }
+        t: string = this.strip_imut(tt);
+        bits: int<64> = -1;
+        signed: bool = true;
+        if t == "int" {
+            bits = 32;
+        } also t == "uint" {
+            bits = 32;
+            signed = false;
+        } also t.size > 5 && t[0] == 'i' && t[1] == 'n' && t[2] == 't' && t[3] == '<' && t[t.size - 1] == '>' {
+            bits = this.parse_small_int(this.str_slice(t, 4, t.size - 1));
+        } also t.size > 6 && t[0] == 'u' && t[1] == 'i' && t[2] == 'n' && t[3] == 't' && t[4] == '<' && t[t.size - 1] == '>' {
+            bits = this.parse_small_int(this.str_slice(t, 5, t.size - 1));
+            signed = false;
+        } else {
+            return;
+        }
+        if bits <= 0 || bits > 62 { return; }
+        limit: int<64> = 1;
+        bi: int<64> = 0;
+        while bi < bits - 1 {
+            limit = limit * 2;
+            bi = bi + 1;
+        }
+        lo: int<64> = 0;
+        hi: int<64> = 0;
+        if signed {
+            lo = 0 - limit;
+            hi = limit - 1;
+        } else {
+            hi = limit * 2 - 1;
+        }
+        if val < lo || val > hi {
+            this.errors.pushb("Number literal '" + tostring(val) + "' is out of range for type '" + t + "' (allowed: " + tostring(lo) + " to " + tostring(hi) + ").");
+        }
+    }
+
+    pub fnc str_less(a string, b string) : bool {
+        i: int = 0;
+        while i < a.size && i < b.size {
+            if a[i] < b[i] { return true; }
+            if a[i] > b[i] { return false; }
+            i = i + 1;
+        }
+        return a.size < b.size;
+    }
+
+    pub fnc sort_strs(v vec<string>) : void {
+        i: int = 1;
+        while i < v.size {
+            tmp: string = v.get(i);
+            j: int = i - 1;
+            while j >= 0 && this.str_less(tmp, v.get(j)) {
+                v.set(j + 1, v.get(j));
+                j = j - 1;
+            }
+            v.set(j + 1, tmp);
+            i = i + 1;
+        }
+    }
+
+    pub fnc sig_index_of(names vec<string>, name string) : int {
+        foreach i, n in<vector> names {
+            if n == name { return i; }
+        }
+        return -1;
+    }
+
+    pub fnc is_readonly_borrow(name string) : bool {
+        foreach _, r in<vector> this.readonly_borrows {
+            if r == name { return true; }
+        }
+        return false;
+    }
+
+    // Argument-type compatibility for call sites. `&T` parameters accept an
+    // explicit borrow (&T), a raw pointer (*T) or the bare value (the
+    // compiler auto-addresses at the call site) — Python _types_compatible
+    // grants the same leniency.
+    pub fnc ref_arg_compatible(at string, expected string) : bool {
+        if expected.size > 0 && expected[0] == '&' {
+            inner: string = this.str_slice(expected, 1, expected.size);
+            if at.size > 0 && at[0] == '&' {
+                return this.types_compatible(this.str_slice(at, 1, at.size), inner);
+            }
+            if at == "*" + inner { return true; }
+            return this.types_compatible(at, inner);
+        }
+        return this.types_compatible(at, expected);
+    }
+
+    // Display form of a type for diagnostics: Python prints fnc types
+    // with " : " before the return type ("fnc() : void").
+    pub fnc disp_type(t string) : string {
+        if t.size > 4 && t[0] == 'f' && t[1] == 'n' && t[2] == 'c' && t[3] == '(' {
+            ci: int = 4;
+            depth: int = 0;
+            while ci < t.size {
+                c: char = t[ci];
+                if c == '(' { depth = depth + 1; }
+                if c == ')' {
+                    if depth == 0 {
+                        if ci + 1 < t.size && t[ci + 1] == ':' {
+                            ri: int = ci + 2;
+                            while ri < t.size && (t[ri] == ' ' || t[ri] == '\t') { ri = ri + 1; }
+                            return this.str_slice(t, 0, ci + 1) + " : " + this.str_slice(t, ri, t.size);
+                        }
+                        stop;
+                    }
+                    depth = depth - 1;
+                }
+                ci = ci + 1;
+            }
+        }
+        return t;
+    }
+
+    // Full call-site check against a registered signature: kwargs,
+    // positional arity, duplicates, missing required arguments and
+    // per-argument type compatibility (Python _check_call parity).
+    pub fnc check_call_args(fname string, e Expr) : void {
+        if !this.func_params.isin(fname) { return; }
+        params: vec<string> = this.func_params[fname];
+        pnames: vec<string> = this.func_param_names[fname];
+
+        // Named arguments parse as BINOP "=" IDENT value; split them out.
+        pos_args: vec<Expr>;
+        kw_names: vec<string>;
+        kw_vals: vec<Expr>;
+        foreach _, a in<vector> e.args {
+            if a != null && a.kind == ExprKind.BINOP && a.op == "=" && a.left != null && a.left.kind == ExprKind.IDENT {
+                kw_names.pushb(a.left.sval);
+                kw_vals.pushb(a.right);
+            } else {
+                pos_args.pushb(a);
+            }
+        }
+
+        // Unknown keyword arguments
+        foreach _, kw in<vector> kw_names {
+            if this.sig_index_of(pnames, kw) < 0 {
+                this.errors.pushb("Unexpected keyword argument '" + kw + "' for function '" + fname + "'");
+            }
+        }
+
+        // Too many positional arguments (variadic C builtins exempt)
+        if pos_args.size > params.size && !this.is_variadic_builtin(fname) {
+            this.errors.pushb("Function '" + fname + "' expects at most " + tostring(params.size) + " argument(s), but got " + tostring(pos_args.size) + " positional");
+        }
+
+        // A parameter filled positionally and also given as a kwarg
+        dupes: vec<string>;
+        foreach _, kw in<vector> kw_names {
+            kidx: int = this.sig_index_of(pnames, kw);
+            if kidx >= 0 && kidx < pos_args.size {
+                seen: bool = false;
+                foreach _, d in<vector> dupes {
+                    if d == kw { seen = true; }
+                }
+                if !seen { dupes.pushb(kw); }
+            }
+        }
+        if dupes.size > 0 {
+            this.sort_strs(dupes);
+            msg: string = "Function '" + fname + "' got multiple values for argument(s): ";
+            di: int = 0;
+            while di < dupes.size {
+                if di > 0 { msg = msg + ", "; }
+                msg = msg + "'" + dupes[di] + "'";
+                di = di + 1;
+            }
+            this.errors.pushb(msg);
+        }
+
+        // Required arguments must be provided (positional, kwarg or default)
+        pi: int = 0;
+        while pi < pnames.size {
+            if pi < pos_args.size { pi = pi + 1; continue; }
+            if this.sig_index_of(kw_names, pnames[pi]) >= 0 { pi = pi + 1; continue; }
+            if this.func_defaults.isin(fname + "::" + tostring(pi)) { pi = pi + 1; continue; }
+            this.errors.pushb("Missing required argument '" + pnames[pi] + "' for function '" + fname + "'");
+            pi = pi + 1;
+        }
+
+        // Positional argument types (zip: extra positionals unchecked here)
+        ai2: int = 0;
+        while ai2 < pos_args.size && ai2 < params.size {
+            at: string = this.infer_expr(pos_args.get(ai2));
+            if at.size > 0 && !this.ref_arg_compatible(this.strip_imut(at), this.strip_imut(params.get(ai2))) {
+                this.errors.pushb("Argument " + tostring(ai2 + 1) + " of '" + fname + "' expects '" + this.strip_imut(params.get(ai2)) + "' but got '" + this.strip_imut(at) + "'.");
+            }
+            this.check_int_literal_fits(pos_args.get(ai2), params.get(ai2));
+            // A read-only borrowed array handed to a mutable `&T` parameter
+            pa: Expr = pos_args.get(ai2);
+            pt_i: string = params.get(ai2);
+            if pt_i.size > 0 && pt_i[0] == '&' && pa != null && pa.kind == ExprKind.IDENT
+               && this.is_readonly_borrow(pa.sval) {
+                this.errors.pushb("Argument " + tostring(ai2 + 1) + " of '" + fname + "' requires a mutable borrow ('&'), but '" + pa.sval + "' was borrowed read-only.");
+            }
+            ai2 = ai2 + 1;
+        }
+
+        // Keyword argument types
+        ki2: int = 0;
+        while ki2 < kw_names.size {
+            kidx2: int = this.sig_index_of(pnames, kw_names[ki2]);
+            if kidx2 >= 0 && kidx2 < params.size {
+                kat: string = this.infer_expr(kw_vals.get(ki2));
+                if kat.size > 0 && !this.ref_arg_compatible(this.strip_imut(kat), this.strip_imut(params.get(kidx2))) {
+                    this.errors.pushb("Argument '" + kw_names[ki2] + "' of '" + fname + "' expects '" + this.strip_imut(params.get(kidx2)) + "' but got '" + this.strip_imut(kat) + "'.");
+                }
+                this.check_int_literal_fits(kw_vals[ki2], params[kidx2]);
+            }
+            ki2 = ki2 + 1;
+        }
+    }
+
+    // Type of a vec<T> / matrix<T> element type.
+    pub fnc vec_inner_of(t string) : string {
+        if t.size > 8 && t[0] == 'm' && t[1] == 'a' && t[2] == 't' && t[3] == 'r'
+           && t[4] == 'i' && t[5] == 'x' && t[6] == '<' {
+            return this.str_slice(t, 7, t.size - 1);
+        }
+        if t.size > 5 && t[0] == 'v' && t[1] == 'e' && t[2] == 'c' && t[3] == '<' {
+            return this.str_slice(t, 4, t.size - 1);
+        }
+        return "";
+    }
+
+    pub fnc is_array_type(t string) : bool {
+        tt: string = this.strip_imut(t);
+        if tt.size == 0 { return false; }
+        if tt[tt.size - 1] != ']' { return false; }
+        has_bracket: bool = false;
+        ai: int = 0;
+        while ai < tt.size {
+            if tt[ai] == '[' { has_bracket = true; }
+            ai = ai + 1;
+        }
+        return has_bracket;
+    }
+
+    // Key type of hash<K, V>.
+    pub fnc hash_key_of(t string) : string {
+        if t.size > 6 && t[0] == 'h' && t[1] == 'a' && t[2] == 's' && t[3] == 'h' && t[4] == '<' {
+            depth: int = 0;
+            i: int = 5;
+            while i < t.size - 1 {
+                c: char = t[i];
+                if c == ',' && depth == 0 {
+                    return this.trim_ty(this.str_slice(t, 5, i));
+                }
+                if c == '<' { depth = depth + 1; }
+                if c == '>' { depth = depth - 1; }
+                i = i + 1;
+            }
+        }
+        return "";
+    }
+
+    // Value type of hash<K, V>.
+    pub fnc hash_value_of(t string) : string {
+        if t.size > 6 && t[0] == 'h' && t[1] == 'a' && t[2] == 's' && t[3] == 'h' && t[4] == '<' {
+            depth: int = 0;
+            i: int = 5;
+            while i < t.size - 1 {
+                c: char = t[i];
+                if c == ',' && depth == 0 {
+                    rest: string = this.trim_ty(this.str_slice(t, i + 1, t.size - 1));
+                    return rest;
+                }
+                if c == '<' { depth = depth + 1; }
+                if c == '>' { depth = depth - 1; }
+                i = i + 1;
+            }
+        }
+        return "";
+    }
+
+    // Special-cased builtin functions (Python _check_call prefix parity).
+    // Returns the inferred type, or "" when the name is not one of these.
+    pub fnc special_builtin_call(e Expr) : string {
+        n: string = e.sval;
+        if n == "show" { return "void"; }
+        if n == "cstr" {
+            if e.args.size != 1 {
+                this.errors.pushb("Function 'cstr' expects 1 argument");
+                return "char[]";
+            }
+            at: string = this.infer_expr(e.args.get(0));
+            if at.size > 0 && at != "string" && at != "char[]" {
+                this.errors.pushb("Argument 1 of 'cstr' must be 'string', got '" + at + "'");
+            }
+            return "char[]";
+        }
+        if n == "lstr" {
+            if e.args.size != 1 {
+                this.errors.pushb("Function 'lstr' expects 1 argument");
+                return "string";
+            }
+            at: string = this.infer_expr(e.args.get(0));
+            if at.size > 0 && at != "char[]" && at != "string" {
+                this.errors.pushb("Argument 1 of 'lstr' must be 'char[]', got '" + at + "'");
+            }
+            return "string";
+        }
+        if n == "get" {
+            if e.args.size > 1 {
+                this.errors.pushb("Function 'get' expects 0 or 1 argument(s), but got " + tostring(e.args.size));
+            }
+            if e.args.size == 1 {
+                at: string = this.infer_expr(e.args.get(0));
+                if at.size > 0 && at != "string" {
+                    this.errors.pushb("Argument 1 of 'get' must be 'string', got '" + at + "'");
+                }
+            }
+            return "string";
+        }
+        if n == "tostring" {
+            if e.args.size != 1 {
+                this.errors.pushb("Function 'tostring' expects 1 argument, but got " + tostring(e.args.size));
+                return "string";
+            }
+            return "string";
+        }
+        if n == "rand" {
+            if e.args.size != 2 {
+                this.errors.pushb("Function 'rand' expects 2 arguments (min, max), but got " + tostring(e.args.size));
+                return "int";
+            }
+            at1: string = this.infer_expr(e.args.get(0));
+            at2: string = this.infer_expr(e.args.get(1));
+            if at1.size > 0 && !this.is_int_family(at1) {
+                this.errors.pushb("Argument 1 of 'rand' must be an integer type, got '" + at1 + "'");
+            }
+            if at2.size > 0 && !this.is_int_family(at2) {
+                this.errors.pushb("Argument 2 of 'rand' must be an integer type, got '" + at2 + "'");
+            }
+            return "int";
+        }
+        if n == "randf" {
+            if e.args.size != 2 {
+                this.errors.pushb("Function 'randf' expects 2 arguments (min, max), but got " + tostring(e.args.size));
+                return "float";
+            }
+            at1: string = this.infer_expr(e.args.get(0));
+            at2: string = this.infer_expr(e.args.get(1));
+            if at1.size > 0 && !this.is_numeric_type(at1) {
+                this.errors.pushb("Argument 1 of 'randf' must be a numeric type, got '" + at1 + "'");
+            }
+            if at2.size > 0 && !this.is_numeric_type(at2) {
+                this.errors.pushb("Argument 2 of 'randf' must be a numeric type, got '" + at2 + "'");
+            }
+            return "float";
+        }
+        if n == "seed" {
+            if e.args.size != 1 {
+                this.errors.pushb("Function 'seed' expects 1 argument, but got " + tostring(e.args.size));
+                return "void";
+            }
+            at: string = this.infer_expr(e.args.get(0));
+            if at.size > 0 && !this.is_int_family(at) {
+                this.errors.pushb("Argument 1 of 'seed' must be an integer type, got '" + at + "'");
+            }
+            return "void";
+        }
+        if n == "choose" {
+            if e.args.size < 2 {
+                this.errors.pushb("Function 'choose' expects at least 2 arguments, but got " + tostring(e.args.size));
+            }
+            foreach ai, arg in<vector> e.args {
+                at: string = this.infer_expr(arg);
+                if at.size > 0 && at != "string" {
+                    this.errors.pushb("Argument " + tostring(ai + 1) + " of 'choose' must be 'string', got '" + at + "'");
+                }
+            }
+            return "string";
+        }
+        if n == "wait" {
+            if e.args.size != 1 {
+                this.errors.pushb("Function 'wait' expects 1 argument (seconds), but got " + tostring(e.args.size));
+                return "void";
+            }
+            at: string = this.infer_expr(e.args.get(0));
+            if at.size > 0 && !this.is_numeric_type(at) {
+                this.errors.pushb("Argument 1 of 'wait' must be a numeric type, got '" + at + "'");
+            }
+            return "void";
+        }
+        if n == "exec" {
+            if e.args.size < 1 || e.args.size > 2 {
+                this.errors.pushb("Function 'exec' expects 1 or 2 arguments (command, mode), but got " + tostring(e.args.size));
+                return "string";
+            }
+            at1: string = this.infer_expr(e.args.get(0));
+            if at1.size > 0 && at1 != "string" {
+                this.errors.pushb("Argument 1 of 'exec' must be 'string', got '" + at1 + "'");
+            }
+            if e.args.size == 2 {
+                at2: string = this.infer_expr(e.args.get(1));
+                if at2.size > 0 && at2 != "string" && at2 != "nil" {
+                    this.errors.pushb("Argument 2 of 'exec' must be 'string' or 'nil', got '" + at2 + "'");
+                }
+            }
+            return "string";
+        }
+        if n == "timepass" {
+            if e.args.size != 0 {
+                this.errors.pushb("Function 'timepass' expects 0 arguments, but got " + tostring(e.args.size));
+            }
+            return "float";
+        }
+        if n == "keyget" {
+            if e.args.size != 0 {
+                this.errors.pushb("Function 'keyget' expects 0 arguments, but got " + tostring(e.args.size));
+            }
+            return "char";
+        }
+        if n == "exit" {
+            if e.args.size != 1 {
+                this.errors.pushb("Function 'exit' expects 1 argument (exit code), but got " + tostring(e.args.size));
+                return "void";
+            }
+            at: string = this.infer_expr(e.args.get(0));
+            if at.size > 0 && !this.is_int_family(at) {
+                this.errors.pushb("Argument 1 of 'exit' must be an integer type, got '" + at + "'");
+            }
+            return "void";
+        }
+        if n == "gc_collect" || n == "gc_stats" {
+            if e.args.size != 0 {
+                this.errors.pushb("Function '" + n + "' expects 0 arguments, but got " + tostring(e.args.size));
+            }
+            return "void";
+        }
+        if n == "normescape" {
+            if e.args.size != 1 {
+                this.errors.pushb("Function 'normescape' expects 1 argument, but got " + tostring(e.args.size));
+                return "string";
+            }
+            at: string = this.infer_expr(e.args.get(0));
+            if at.size > 0 && at != "string" {
+                this.errors.pushb("Argument 1 of 'normescape' must be 'string', got '" + at + "'");
+            }
+            return "string";
+        }
+        return "";
+    }
+
+    // Arity + argument types for the builtin File class methods
+    // (Python checks them like user class methods).
+    pub fnc file_method_arity(m string) : int {
+        if m == "open" { return 2; }
+        if m == "rename" { return 2; }
+        if m == "delete" { return 1; }
+        if m == "write" { return 1; }
+        if m == "writeb" { return 1; }
+        if m == "replace" { return 2; }
+        if m == "replaceall" { return 2; }
+        return 0;
+    }
+
+    pub fnc file_method_param(m string, i int) : string {
+        if m == "open" {
+            if i == 0 { return "string"; }
+            return "string";
+        }
+        if m == "rename" { return "string"; }
+        if m == "delete" { return "string"; }
+        if m == "write" { return "string"; }
+        if m == "writeb" { return "char[]"; }
+        if m == "replace" { return "string"; }
+        if m == "replaceall" { return "string"; }
+        return "";
+    }
+
+    pub fnc file_is_static_method(m string) : bool {
+        return m == "open" || m == "rename" || m == "delete";
+    }
+
+    pub fnc check_file_method(e Expr) : void {
+        want: int = this.file_method_arity(e.sval);
+        if e.args.size != want {
+            this.errors.pushb("Method '" + e.sval + "' of class 'File' expects " + tostring(want) + " arguments, but got " + tostring(e.args.size));
+            this.fatal_idx = this.errors.size - 1;
+            return;
+        }
+        ai: int = 0;
+        while ai < e.args.size {
+            pt: string = this.file_method_param(e.sval, ai);
+            at: string = this.infer_expr(e.args.get(ai));
+            if pt.size > 0 && at.size > 0 && !this.types_compatible(this.strip_imut(at), pt) {
+                this.errors.pushb("Argument " + tostring(ai + 1) + " of method '" + e.sval + "' expects '" + pt + "' but got '" + this.strip_imut(at) + "'");
+            }
+            ai = ai + 1;
+        }
+    }
+
+    // Container built-in method checks (vec / matrix / string / hash / array).
+    // Returns the inferred type, or "" when the receiver is not one of these
+    // (falling through to class / struct / opdef dispatch).
+    pub fnc container_method_check(e Expr, obj_t string) : string {
+        bare: string = this.strip_imut(obj_t);
+        base: string = this.base_of(bare);
+
+        if base == "vec" {
+            inner: string = this.vec_inner_of(bare);
+            m: string = e.sval;
+            if m == "pushb" || m == "pushf" {
+                if e.args.size != 1 {
+                    this.errors.pushb("Vector method '" + m + "' expects 1 argument, got " + tostring(e.args.size));
+                } else {
+                    at: string = this.infer_expr(e.args.get(0));
+                    if at.size > 0 && !this.types_compatible(at, inner) {
+                        this.errors.pushb("Vector method '" + m + "' expects argument of type '" + inner + "' but got '" + at + "'");
+                    }
+                }
+                return "void";
+            }
+            if m == "insert" {
+                if e.args.size != 2 {
+                    this.errors.pushb("Vector method '" + m + "' expects 2 arguments, got " + tostring(e.args.size));
+                }
+                return "void";
+            }
+            if m == "popb" || m == "popf" {
+                if e.args.size != 0 {
+                    this.errors.pushb("Vector method '" + m + "' expects 0 arguments, got " + tostring(e.args.size));
+                }
+                return inner;
+            }
+            if m == "size" {
+                if e.args.size != 0 {
+                    this.errors.pushb("Vector method '" + m + "' expects 0 arguments, got " + tostring(e.args.size));
+                }
+                return "int";
+            }
+            if m == "get" {
+                if e.args.size != 1 {
+                    this.errors.pushb("Vector method '" + m + "' expects 1 argument, got " + tostring(e.args.size));
+                }
+                return inner;
+            }
+            if m == "set" {
+                if e.args.size != 2 {
+                    this.errors.pushb("Vector method '" + m + "' expects 2 arguments, got " + tostring(e.args.size));
+                } else {
+                    vt: string = this.infer_expr(e.args.get(1));
+                    if vt.size > 0 && !this.types_compatible(vt, inner) {
+                        this.errors.pushb("Vector method '" + m + "' expects second argument of type '" + inner + "' but got '" + vt + "'");
+                    }
+                }
+                return "void";
+            }
+            if m == "clear" {
+                if e.args.size != 0 {
+                    this.errors.pushb("Vector method '" + m + "' expects 0 arguments, got " + tostring(e.args.size));
+                }
+                return "void";
+            }
+            if m == "remove" {
+                if e.args.size != 1 {
+                    this.errors.pushb("Vector method '" + m + "' expects 1 argument, got " + tostring(e.args.size));
+                }
+                return "void";
+            }
+            if m == "isin" {
+                if e.args.size != 1 {
+                    this.errors.pushb("Vector method '" + m + "' expects 1 argument, got " + tostring(e.args.size));
+                }
+                return "bool";
+            }
+            if m == "extend" {
+                if e.args.size != 1 {
+                    this.errors.pushb("Vector method '" + m + "' expects 1 argument, got " + tostring(e.args.size));
+                } else {
+                    at: string = this.infer_expr(e.args.get(0));
+                    if at.size > 0 && !this.types_compatible(at, inner + "[]") && !this.types_compatible(at, "*" + inner) {
+                        this.errors.pushb("Vector method '" + m + "' expects argument of type '" + inner + "[]' or '*" + inner + "', but got '" + at + "'");
+                    }
+                }
+                return "void";
+            }
+            if m == "extendv" {
+                if e.args.size != 1 {
+                    this.errors.pushb("Vector method '" + m + "' expects 1 argument, got " + tostring(e.args.size));
+                } else {
+                    at: string = this.infer_expr(e.args.get(0));
+                    if at.size > 0 && !this.types_compatible(at, "vec<" + inner + ">") {
+                        this.errors.pushb("Vector method '" + m + "' expects argument of type 'vec<" + inner + ">', but got '" + at + "'");
+                    }
+                }
+                return "void";
+            }
+            if m == "insertv" {
+                if e.args.size != 2 {
+                    this.errors.pushb("Vector method '" + m + "' expects 2 arguments, got " + tostring(e.args.size));
+                } else {
+                    at: string = this.infer_expr(e.args.get(1));
+                    if at.size > 0 && !this.types_compatible(at, "vec<" + inner + ">") {
+                        this.errors.pushb("Vector method '" + m + "' expects argument of type 'vec<" + inner + ">', but got '" + at + "'");
+                    }
+                }
+                return "void";
+            }
+            if m == "inserta" {
+                if e.args.size != 2 {
+                    this.errors.pushb("Vector method '" + m + "' expects 2 arguments, got " + tostring(e.args.size));
+                }
+                return "void";
+            }
+            this.errors.pushb("Vector has no method named '" + e.sval + "'");
+            this.fatal_idx = this.errors.size - 1;
+            return "void";
+        }
+
+        if base == "matrix" {
+            inner: string = this.vec_inner_of(bare);
+            m: string = e.sval;
+            if m == "pushb" || m == "pushf" {
+                if e.args.size == 1 {
+                    at: string = this.infer_expr(e.args.get(0));
+                    if at.size > 0 && !this.types_compatible(at, inner) {
+                        this.errors.pushb("Matrix method '" + m + "' expects argument of type '" + inner + "' but got '" + at + "'");
+                    }
+                } else {
+                    if e.args.size > 1 {
+                        this.errors.pushb("Matrix method '" + m + "' expects 0 or 1 arguments, got " + tostring(e.args.size));
+                    }
+                }
+                return "void";
+            }
+            if m == "insert" {
+                if e.args.size != 1 && e.args.size != 2 {
+                    this.errors.pushb("Matrix method '" + m + "' expects 1 or 2 arguments, got " + tostring(e.args.size));
+                }
+                return "void";
+            }
+            if m == "popb" || m == "popf" {
+                if e.args.size != 0 && e.args.size != 1 {
+                    this.errors.pushb("Matrix method '" + m + "' expects 0 or 1 arguments, got " + tostring(e.args.size));
+                }
+                return "void";
+            }
+            if m == "size" {
+                if e.args.size != 0 {
+                    this.errors.pushb("Matrix method '" + m + "' expects 0 arguments, got " + tostring(e.args.size));
+                }
+                return "int";
+            }
+            if m == "get" {
+                if e.args.size < 1 {
+                    this.errors.pushb("Matrix method '" + m + "' expects at least 1 argument, got " + tostring(e.args.size));
+                } else {
+                    foreach ai, arg in<vector> e.args {
+                        at: string = this.infer_expr(arg);
+                        if at.size > 0 && !this.types_compatible(at, "int") {
+                            this.errors.pushb("Matrix method '" + m + "' expects argument " + tostring(ai + 1) + " of type 'int' (index) but got '" + at + "'");
+                        }
+                    }
+                }
+                return inner;
+            }
+            if m == "set" {
+                if e.args.size < 2 {
+                    this.errors.pushb("Matrix method '" + m + "' expects at least 2 arguments, got " + tostring(e.args.size));
+                } else {
+                    vt: string = this.infer_expr(e.args.get(e.args.size - 1));
+                    if vt.size > 0 && !this.types_compatible(vt, inner) {
+                        this.errors.pushb("Matrix method '" + m + "' expects last argument of type '" + inner + "' but got '" + vt + "'");
+                    }
+                }
+                return "void";
+            }
+            if m == "clear" {
+                if e.args.size != 0 {
+                    this.errors.pushb("Matrix method '" + m + "' expects 0 arguments, got " + tostring(e.args.size));
+                }
+                return "void";
+            }
+            if m == "remove" {
+                if e.args.size < 1 {
+                    this.errors.pushb("Matrix method '" + m + "' expects at least 1 argument, got " + tostring(e.args.size));
+                } else {
+                    foreach ai, arg in<vector> e.args {
+                        at: string = this.infer_expr(arg);
+                        if at.size > 0 && !this.types_compatible(at, "int") {
+                            this.errors.pushb("Matrix method '" + m + "' expects argument " + tostring(ai + 1) + " of type 'int' (index) but got '" + at + "'");
+                        }
+                    }
+                }
+                return "void";
+            }
+            if m == "isin" {
+                if e.args.size != 1 {
+                    this.errors.pushb("Matrix method '" + m + "' expects 1 argument, got " + tostring(e.args.size));
+                } else {
+                    at: string = this.infer_expr(e.args.get(0));
+                    if at.size > 0 && !this.types_compatible(at, inner) {
+                        this.errors.pushb("Matrix method '" + m + "' expects argument of type '" + inner + "' but got '" + at + "'");
+                    }
+                }
+                return "bool";
+            }
+            if m == "shape" {
+                if e.args.size != 0 {
+                    this.errors.pushb("Matrix method '" + m + "' expects 0 arguments, got " + tostring(e.args.size));
+                }
+                return "vec<int>";
+            }
+            this.errors.pushb("Matrix has no method named '" + e.sval + "'");
+            this.fatal_idx = this.errors.size - 1;
+            return "void";
+        }
+
+        if this.is_array_type(bare) && e.sval == "size" {
+            return "int";
+        }
+
+        if base == "string" {
+            if e.sval == "size" { return "int"; }
+            if e.sval == "replace" {
+                if e.args.size != 2 {
+                    this.errors.pushb(".replace() requires exactly 2 arguments (old, new)");
+                    this.fatal_idx = this.errors.size - 1;
+                    return "string";
+                }
+                a1: string = this.infer_expr(e.args.get(0));
+                a2: string = this.infer_expr(e.args.get(1));
+                if a1 != "string" || a2 != "string" {
+                    this.errors.pushb(".replace() requires both arguments to be strings");
+                    this.fatal_idx = this.errors.size - 1;
+                }
+                return "string";
+            }
+            return "";
+        }
+
+        if base == "hash" {
+            key_t: string = this.hash_key_of(bare);
+            val_t: string = this.hash_value_of(bare);
+            m: string = e.sval;
+            if m == "size" {
+                if e.args.size != 0 {
+                    this.errors.pushb("Hash method '" + m + "' expects 0 arguments, got " + tostring(e.args.size));
+                }
+                return "int";
+            }
+            if m == "keys" {
+                if e.args.size != 0 {
+                    this.errors.pushb("Hash method '" + m + "' expects 0 arguments, got " + tostring(e.args.size));
+                }
+                return "vec<" + key_t + ">";
+            }
+            if m == "values" {
+                if e.args.size != 0 {
+                    this.errors.pushb("Hash method '" + m + "' expects 0 arguments, got " + tostring(e.args.size));
+                }
+                return "vec<" + val_t + ">";
+            }
+            if m == "getKey" {
+                if e.args.size != 1 {
+                    this.errors.pushb("Hash method '" + m + "' expects 1 argument, got " + tostring(e.args.size));
+                } else {
+                    at: string = this.infer_expr(e.args.get(0));
+                    if at.size > 0 && !this.types_compatible(at, val_t) {
+                        this.errors.pushb("Hash method '" + m + "' expects argument of type '" + val_t + "' but got '" + at + "'");
+                    }
+                }
+                return key_t;
+            }
+            if m == "isin" {
+                if e.args.size != 1 {
+                    this.errors.pushb("Hash method '" + m + "' expects 1 argument, got " + tostring(e.args.size));
+                }
+                return "bool";
+            }
+            if m == "delete" {
+                if e.args.size != 1 {
+                    this.errors.pushb("Hash method '" + m + "' expects 1 argument, got " + tostring(e.args.size));
+                }
+                return "void";
+            }
+            if m == "push" {
+                if e.args.size != 2 {
+                    this.errors.pushb("Hash method '" + m + "' expects 2 arguments, got " + tostring(e.args.size));
+                } else {
+                    at1: string = this.infer_expr(e.args.get(0));
+                    if at1.size > 0 && !this.types_compatible(at1, key_t) {
+                        this.errors.pushb("Hash method '" + m + "' expects first argument of type '" + key_t + "' but got '" + at1 + "'");
+                    }
+                    at2: string = this.infer_expr(e.args.get(1));
+                    if at2.size > 0 && !this.types_compatible(at2, val_t) {
+                        this.errors.pushb("Hash method '" + m + "' expects second argument of type '" + val_t + "' but got '" + at2 + "'");
+                    }
+                }
+                return "void";
+            }
+            this.errors.pushb("Hash has no method named '" + e.sval + "'");
+            this.fatal_idx = this.errors.size - 1;
+            return "void";
         }
 
         return "";
@@ -282,9 +1366,11 @@ pub def TypeChecker : class {
         }
         if close_i < 0 { res.pushb("int"); return res; }
         ret: string = "int";
-        if close_i + 1 < t.size && t[close_i + 1] == ':' {
+        rp: int = close_i + 1;
+        while rp < t.size && (t[rp] == ' ' || t[rp] == '\t') { rp = rp + 1; }
+        if rp < t.size && t[rp] == ':' {
             ret = "";
-            qi: int = close_i + 2;
+            qi: int = rp + 1;
             while qi < t.size { ret = ret + t[qi]; qi = qi + 1; }
             ret = this.trim_ty(ret);
             if ret.size == 0 { ret = "int"; }
@@ -317,7 +1403,7 @@ pub def TypeChecker : class {
                 pi = pi + 1;
             }
         }
-        out = out + "): ";
+        out = out + ") : ";
         if this.funcs.isin(name) { out = out + this.funcs[name]; }
         else { out = out + "int"; }
         return out;
@@ -390,6 +1476,7 @@ pub def TypeChecker : class {
     }
 
     pub fnc file_method_ret(m string) : string {
+        if m == "open" { return "File"; }
         if m == "read" { return "string"; }
         if m == "write" { return "int"; }
         if m == "close" { return "int"; }
@@ -420,6 +1507,11 @@ pub def TypeChecker : class {
             if (e.sval == "self" || e.sval == "self::Class" || e.sval == "self::Parent") && !this.lookup_var_fresh("self") {
                 return "string";
             }
+            // Compile-time builtin variables (codegen get_expr_type parity):
+            // unknown to the scopes but typed as strings
+            if (e.sval == "_PLATFORM" || e.sval == "_FILEPATH" || e.sval == "_FILENAME") && !this.lookup_var_fresh(e.sval) {
+                return "string";
+            }
             if this.enum_str_consts.isin(e.sval) { return "string"; }
             if this.enum_member_types.isin(e.sval) { return this.enum_member_types[e.sval]; }
             if this.enum_consts.isin(e.sval) {
@@ -434,6 +1526,11 @@ pub def TypeChecker : class {
             t: string = this.lookup_var(e.sval);
             if t.size > 0 { return t; }
             if this.funcs.isin(e.sval) { return this.funcs[e.sval]; }
+            // A bare type name used as a value (class/struct/union) has
+            // that type — needed for `Animal.new(...)` receivers.
+            if this.structs.isin(e.sval) || this.classes.isin(e.sval) || this.unions.isin(e.sval) {
+                return e.sval;
+            }
             return "int"; // fallback
         }
 
@@ -464,6 +1561,15 @@ pub def TypeChecker : class {
                     e.args = ocargs2;
                     return this.funcs[okey];
                 }
+            }
+            // Containment: value <> collection — strings, vectors, arrays
+            if e.op == "<>" {
+                rh_t2: string = this.strip_ref(this.infer_expr(e.right));
+                rh_ok2: bool = rh_t2 == "string" || this.is_vec_type2(rh_t2) || (rh_t2.size > 2 && rh_t2[rh_t2.size - 1] == ']');
+                if !rh_ok2 {
+                    this.errors.pushb("Operator '<>' is only supported for array types, got '" + rh_t2 + "'");
+                }
+                return "bool";
             }
             if e.op == "==" || e.op == "!=" || e.op == "<" || e.op == "<=" ||
                e.op == ">" || e.op == ">=" || e.op == "&&" || e.op == "||" ||
@@ -508,78 +1614,178 @@ pub def TypeChecker : class {
             if !this.funcs.isin(e.sval) && this.generic_funcs.isin(e.sval) {
                 this.handle_generic_call(e);
             }
+            // Function-pointer variable being called: arity + argument
+            // types against the declared signature (Python parity)
             if !this.funcs.isin(e.sval) && this.lookup_var_fresh(e.sval) && this.is_fnc_type(this.lookup_var(e.sval)) {
                 tc_fp: vec<string> = this.fnc_parts(this.lookup_var(e.sval));
+                fp_params: vec<string>;
+                fpi: int = 1;
+                while fpi < tc_fp.size {
+                    fp_params.pushb(tc_fp.get(fpi));
+                    fpi = fpi + 1;
+                }
+                if e.args.size != fp_params.size {
+                    this.errors.pushb("Function pointer expects " + tostring(fp_params.size) + " argument(s), but got " + tostring(e.args.size));
+                } else {
+                    fpai: int = 0;
+                    while fpai < fp_params.size {
+                        fpat: string = this.infer_expr(e.args.get(fpai));
+                        if fpat.size > 0 && !this.ref_arg_compatible(this.strip_imut(fpat), this.strip_imut(fp_params[fpai])) {
+                            this.errors.pushb("Argument " + tostring(fpai + 1) + " of function pointer expects '" + this.strip_imut(fp_params[fpai]) + "' but got '" + this.strip_imut(fpat) + "'.");
+                        }
+                        fpai = fpai + 1;
+                    }
+                }
                 return tc_fp.get(0);
             }
+            // Special-cased builtin functions run before user functions
+            // (Python checks them in this order too, so a user function
+            // shadowing one of these names loses, on both compilers)
+            sb: string = this.special_builtin_call(e);
+            if sb.size > 0 { return sb; }
             if this.funcs.isin(e.sval) {
+                this.check_call_args(e.sval, e);
                 return this.funcs[e.sval];
+            }
+            // Class constructor call (`create Item(...)` / `Person(...)`)
+            if this.classes.isin(e.sval) {
+                return e.sval;
             }
             if e.sval == "tounion" && e.args.size > 0 && e.args.get(0).kind == ExprKind.STRING {
                 return e.args.get(0).sval;
             }
-            if e.sval == "keyget" { return "char"; }
-            if e.sval == "get" { return "string"; }
-            if e.sval == "normescape" { return "string"; }
-            if e.sval == "lstr" { return "string"; }
+            // scast: the first parser argument carries the target type
+            if e.sval == "scast" && e.args.size > 0 && e.args.get(0).kind == ExprKind.STRING {
+                return e.args.get(0).sval;
+            }
+            // Leash conversion builtins without a Python Call-form
+            // counterpart (Python parses these as dedicated expression
+            // kinds, so they never reach its call checker)
+            if e.sval == "tofloat" { return "float"; }
+            if e.sval == "toint" { return "int"; }
+            if e.sval == "sizeof" { return "int"; }
+            if e.sval == "typeof" { return "string"; }
+            if e.sval == "inttobytes" || e.sval == "floattobytes" { return "char[]"; }
+            if e.sval == "bytestoint" { return "int"; }
+            if e.sval == "bytestofloat" { return "float"; }
             if e.sval == "__tupget" {
                 tup_t: string = this.infer_expr(e.args.get(0));
                 if tup_t.size > 1 && tup_t[0] == '(' {
                     return this.tuple_elem_type(tup_t, e.args.get(1).ival);
                 }
             }
-            if e.sval == "tostring" { return "string"; }
-            if e.sval == "cstr" { return "string"; }
-            if e.sval == "exec" { return "string"; }
+            this.errors.pushb("Call to undefined function: '" + e.sval + "'");
             return "int";
         }
 
         if e.kind == ExprKind.METHOD_CALL {
-            // Built-in method returns
-            if e.sval == "size" { return "int"; }
-            if e.sval == "isin" { return "bool"; }
-            if e.sval == "replace" { return "string"; }
-            if e.sval == "get" {
-                obj_t: string = this.strip_ref(this.infer_expr(e.left));
-                // vec<T> -> T
-                if (obj_t.size > 5 && obj_t[0] == 'v' && obj_t[1] == 'e' && obj_t[2] == 'c' && obj_t[3] == '<')
-                   || (obj_t.size > 7 && obj_t[0] == 'm' && obj_t[1] == 'a' && obj_t[2] == 't') {
-                    // extract inner
-                    inner: string = "";
-                    ic: int = 4;
-                    if obj_t.size > 7 && obj_t[0] == 'm' { ic = 7; }
-                    while ic < obj_t.size - 1 {
-                        inner = inner + obj_t[ic];
-                        ic = ic + 1;
-                    }
-                    return inner;
-                }
-            }
-            if e.sval == "open" && e.left.kind == ExprKind.IDENT && e.left.sval == "File" {
-                return "File";
-            }
-            if e.sval == "read" { return "string"; }
-            if e.sval == "write" { return "int"; }
-            if e.sval == "close" { return "int"; }
-
-            // Built-in File class
+            // File class: builtin methods with real signatures, checked
+            // like user class methods (arity + argument types)
+            file_recv: bool = false;
             if e.left != null && e.left.kind == ExprKind.IDENT && e.left.sval == "File" {
-                if e.sval == "rename" || e.sval == "delete" { return "int"; }
+                file_recv = true;
             }
-            if e.left != null {
-                f_obj: string = this.strip_ref(this.infer_expr(e.left));
-                if f_obj == "File" { return this.file_method_ret(e.sval); }
+            if !file_recv && e.left != null && e.left.kind == ExprKind.IDENT && this.lookup_var(e.left.sval) == "File" {
+                file_recv = true;
+            }
+            if !file_recv && e.left != null {
+                if this.strip_ref(this.infer_expr(e.left)) == "File" { file_recv = true; }
+            }
+            if file_recv {
+                this.check_file_method(e);
+                return this.file_method_ret(e.sval);
             }
 
             obj_type: string = this.strip_ref(this.infer_expr(e.left));
-            if e.sval == "getKey" { return "string"; }
-            if e.sval == "keys" { return "vec<string>"; }
-            if e.sval == "values" { return "vec<int>"; }
-            if e.sval == "delete" { return "void"; }
+
+            // Container built-in methods (vec / matrix / hash / string /
+            // array) with arity + type checks (Python _check_method_call)
+            cmc: string = this.container_method_check(e, obj_type);
+            if cmc.size > 0 { return cmc; }
+
+            // Generic STATIC class methods: instantiate for the concrete
+            // types and rewrite the call (VecMath<int>.sum -> VecMath_sum_int)
+            if e.left != null && e.left.kind == ExprKind.IDENT {
+                gs_key: string = e.left.sval + "_" + e.sval;
+                if this.generic_funcs.isin(gs_key) {
+                    this.handle_generic_method_call(e);
+                    if this.funcs.isin(e.sval) { return this.funcs[e.sval]; }
+                    return "void";
+                }
+            }
+            // User class methods: existence, static/instance, arity and
+            // per-argument types (Python parity). Methods live on the
+            // defining class, so resolve through the inheritance chain.
             if this.classes.isin(obj_type) {
-                ci: ClassInfo = this.classes[obj_type];
+                m_owner: string = obj_type;
+                m_walk: int = 0;
+                while this.classes.isin(m_owner) && m_walk < 16 {
+                    if this.classes[m_owner].has_method(e.sval) { stop; }
+                    m_owner = this.classes[m_owner].parent;
+                    m_walk = m_walk + 1;
+                }
+                if !this.classes.isin(m_owner) || m_walk >= 16 {
+                    this.errors.pushb("Class '" + obj_type + "' has no method named '" + e.sval + "'");
+                    this.fatal_idx = this.errors.size - 1;
+                    return "void";
+                }
+                ci: ClassInfo = this.classes[m_owner];
+                m_static: bool = ci.is_method_static(e.sval);
+                this_recv: bool = e.left != null && e.left.kind == ExprKind.IDENT && e.left.sval == "this";
+                static_call: bool = e.left != null && e.left.kind == ExprKind.IDENT
+                    && (this.classes.isin(e.left.sval) || this.generic_classes.isin(e.left.sval));
+                if static_call && !m_static {
+                    this.errors.pushb("Cannot call instance method '" + e.sval + "' statically on class '" + obj_type + "'");
+                }
+                if !static_call && m_static && !this_recv {
+                    this.errors.pushb("Cannot call static method '" + e.sval + "' on an instance of class '" + obj_type + "'");
+                }
+                mparams: vec<string> = ci.get_method_params(e.sval);
+                if e.args.size != mparams.size {
+                    this.errors.pushb("Method '" + e.sval + "' of class '" + obj_type + "' expects " + tostring(mparams.size) + " arguments, but got " + tostring(e.args.size));
+                    this.fatal_idx = this.errors.size - 1;
+                } else {
+                    // Generic class templates: only arity is checked (the
+                    // concrete types arrive at the instantiation)
+                    skip_types: bool = this.generic_classes.isin(obj_type);
+                    mai: int = 0;
+                    while mai < mparams.size {
+                        if !skip_types {
+                            mat: string = this.infer_expr(e.args.get(mai));
+                            if mat.size > 0 && !this.ref_arg_compatible(this.strip_imut(mat), this.strip_imut(mparams[mai])) {
+                                this.errors.pushb("Argument " + tostring(mai + 1) + " of method '" + e.sval + "' expects '" + this.strip_imut(mparams[mai]) + "' but got '" + this.strip_imut(mat) + "'");
+                            }
+                        }
+                        mai = mai + 1;
+                    }
+                }
                 mret: string = ci.get_method_ret(e.sval);
                 if mret.size > 0 { return mret; }
+                return "void";
+            }
+            // Struct methods (`fnc ... -> StructType`): resolved through
+            // the owner-mangled signature
+            if this.structs.isin(obj_type) {
+                skey: string = obj_type + "_" + e.sval;
+                if this.funcs.isin(skey) {
+                    if this.func_params.isin(skey) {
+                        mps: vec<string> = this.func_params[skey];
+                        if e.args.size != mps.size {
+                            this.errors.pushb("Struct method '" + e.sval + "' of struct '" + obj_type + "' expects " + tostring(mps.size) + " arguments, but got " + tostring(e.args.size));
+                            this.fatal_idx = this.errors.size - 1;
+                        } else {
+                            smi: int = 0;
+                            while smi < mps.size {
+                                smat: string = this.infer_expr(e.args.get(smi));
+                                if smat.size > 0 && !this.ref_arg_compatible(this.strip_imut(smat), this.strip_imut(mps[smi])) {
+                                    this.errors.pushb("Argument " + tostring(smi + 1) + " of struct method '" + e.sval + "' expects '" + this.strip_imut(mps[smi]) + "' but got '" + this.strip_imut(smat) + "'");
+                                }
+                                smi = smi + 1;
+                            }
+                        }
+                    }
+                    return this.funcs[skey];
+                }
             }
             // opdef extension methods: `recv.method(args)` becomes a plain
             // call of `_opdef_<base>_<method>` with the receiver first.
@@ -607,6 +1813,8 @@ pub def TypeChecker : class {
                     return this.funcs[mkey2];
                 }
             }
+            this.errors.pushb("Type '" + obj_type + "' has no method named '" + e.sval + "'");
+            this.fatal_idx = this.errors.size - 1;
             return "void";
         }
 
@@ -626,6 +1834,27 @@ pub def TypeChecker : class {
             if this.classes.isin(obj_type) {
                 cl: ClassInfo = this.classes[obj_type];
                 return cl.get_field_type(e.sval);
+            }
+            return "int";
+        }
+
+        if e.kind == ExprKind.POINTER_MEMBER {
+            // ptr->field: resolve the field against the pointee type
+            pobj: string = this.strip_ref(this.infer_expr(e.left));
+            if pobj.size > 1 && pobj[0] == '*' {
+                pobj = this.str_slice(pobj, 1, pobj.size);
+            }
+            if this.unions.isin(pobj) {
+                if e.sval == "cur" { return pobj; }
+                return this.union_variant_type(pobj, this.union_variant_index(pobj, e.sval));
+            }
+            if this.structs.isin(pobj) {
+                pst: StructInfo = this.structs[pobj];
+                return pst.get_field_type(e.sval);
+            }
+            if this.classes.isin(pobj) {
+                pcl: ClassInfo = this.classes[pobj];
+                return pcl.get_field_type(e.sval);
             }
             return "int";
         }
@@ -693,6 +1922,33 @@ pub def TypeChecker : class {
         }
 
         if e.kind == ExprKind.STRUCT_INIT {
+            // LEASH-E016 parity: every field without a declared default
+            // must be present in the initializer.
+            if this.structs.isin(e.sval) {
+                sinfo: StructInfo = this.structs[e.sval];
+                missing: vec<string>;
+                fi: int = 0;
+                while fi < sinfo.field_names.size {
+                    fname: string = sinfo.field_names.get(fi);
+                    provided: bool = false;
+                    foreach _, pn in<vector> e.field_names {
+                        if pn == fname { provided = true; }
+                    }
+                    has_def: bool = sinfo.field_defaults.get(fi);
+                    if !provided && !has_def { missing.pushb(fname); }
+                    fi = fi + 1;
+                }
+                if missing.size > 0 {
+                    msg: string = "Struct '" + e.sval + "' initializer is missing field(s): ";
+                    mi: int = 0;
+                    while mi < missing.size {
+                        if mi > 0 { msg = msg + ", "; }
+                        msg = msg + missing[mi];
+                        mi = mi + 1;
+                    }
+                    this.errors.pushb(msg + ".");
+                }
+            }
             return e.sval;
         }
 
@@ -708,9 +1964,17 @@ pub def TypeChecker : class {
 
     pub fnc check_statement(s Stmt) : void {
         if s == null { return; }
+        if this.fatal_idx >= 0 { return; }
 
         if s.kind == StmtKind.VAR_DECL {
             var_t: string = s.var_type;
+            // Unknown type names (int32, Bogus, ...) are rejected, not
+            // silently compiled to a fallback (Python E003 parity).
+            if var_t.size > 0 && !s.is_infer && !this.is_known_type(var_t) {
+                this.errors.pushb("Variable '" + s.name + "' declared with unknown type '" + var_t + "'");
+                this.define_var(s.name, var_t);
+                return;
+            }
             if s.is_infer || var_t.size == 0 {
                 var_t = this.infer_expr(s.value);
                 s.var_type = var_t;
@@ -731,8 +1995,10 @@ pub def TypeChecker : class {
                        && s.value.left.kind == ExprKind.IDENT && s.value.left.sval == gc_base
                        && s.value.sval == "new" {
                         s.value.left.sval = gc_mangled;
-                    } else {
-                        this.infer_expr(s.value);
+                    }
+                    v_gi: string = this.infer_expr(s.value);
+                    if this.fatal_idx < 0 && !this.types_compatible(v_gi, var_t) {
+                        this.errors.pushb("Variable '" + s.name + "' declared as '" + this.disp_type(s.var_type) + "' but assigned a value of type '" + this.disp_type(v_gi) + "'.");
                     }
                 } also s.value.kind == ExprKind.METHOD_CALL
                    && s.value.left != null && s.value.left.kind == ExprKind.IDENT
@@ -746,24 +2012,88 @@ pub def TypeChecker : class {
                     ph_m: string = this.instantiate_generic_class(s.value.left.sval, ph_args);
                     s.value.left.sval = ph_m;
                 } else {
-                    // Explicitly typed: still walk the initializer so generic
-                    // call sites are specialised during checking.
-                    this.infer_expr(s.value);
+                    // Explicitly typed: walk the initializer (generic call
+                    // sites specialise here) and check the assignment type.
+                    // Hash literals carry no type of their own: their keys
+                    // and values are checked against the declared hash.
+                    v_ei: string = this.infer_expr(s.value);
+                    v_hashlit: bool = s.value.kind == ExprKind.ARRAY_LIT && s.value.field_names.size > 0;
+                    if this.fatal_idx < 0 && !v_hashlit && !this.types_compatible(v_ei, var_t) {
+                        this.errors.pushb("Variable '" + s.name + "' declared as '" + this.disp_type(var_t) + "' but assigned a value of type '" + this.disp_type(v_ei) + "'.");
+                    }
                 }
+            }
+            // C2: a literal initializer must fit the declared type's
+            // sign/width (Python LEASH-E015 parity)
+            if s.value != null && var_t.size > 0 {
+                this.check_int_literal_fits(s.value, var_t);
             }
             this.define_var(s.name, var_t);
             return;
         }
 
         if s.kind == StmtKind.ASSIGN {
-            this.infer_expr(s.target);
-            this.infer_expr(s.value);
+            a_tt: string = this.infer_expr(s.target);
+            a_tv: string = this.infer_expr(s.value);
+            if this.fatal_idx < 0 && a_tt.size > 0 && a_tv.size > 0 && !this.types_compatible(a_tv, a_tt) {
+                this.errors.pushb("Cannot assign a value of type '" + this.disp_type(a_tv) + "' to a variable of type '" + this.disp_type(a_tt) + "'.");
+            }
+            // C2: a literal RHS must fit the target variable's sign/width
+            if a_tt.size > 0 {
+                this.check_int_literal_fits(s.value, a_tt);
+            }
             return;
         }
 
         if s.kind == StmtKind.RETURN {
             if s.value != null {
                 this.infer_expr(s.value);
+                // LEASH-E010: the address of a call-frame local escapes the
+                // function and would dangle once the frame is gone.
+                off: string = this.frame_escape_in(s.value);
+                if off.size > 0 {
+                    this.errors.pushb("Cannot return the address of local '" + off + "': it lives on the current call frame and would dangle.");
+                }
+            }
+            return;
+        }
+
+        if s.kind == StmtKind.SPAWN {
+            // Python _check_spawn parity
+            if s.op != "call" {
+                this.errors.pushb("spawn requires a function call");
+                return;
+            }
+            fname: string = s.name;
+            if this.async_funcs.isin(fname) {
+                this.errors.pushb("Cannot spawn async function '" + fname + "' — it already runs on a worker; just call it and await the future");
+                return;
+            }
+            if !this.funcs.isin(fname) {
+                this.errors.pushb("Cannot spawn unknown function '" + fname + "'");
+                return;
+            }
+            if !this.worker_funcs.isin(fname) {
+                this.errors.pushb("Cannot spawn non-worker function '" + fname + "' — spawn only runs `worker fnc` functions");
+                return;
+            }
+            sp_params: vec<string>;
+            if this.func_params.isin(fname) { sp_params = this.func_params[fname]; }
+            if s.args.size != sp_params.size {
+                this.errors.pushb("Function '" + fname + "' expects " + tostring(sp_params.size) + " arguments, but spawn call provides " + tostring(s.args.size));
+            } else {
+                spi: int = 0;
+                while spi < sp_params.size {
+                    spat: string = this.infer_expr(s.args.get(spi));
+                    if spat.size > 0 && !this.ref_arg_compatible(this.strip_imut(spat), this.strip_imut(sp_params.get(spi))) {
+                        this.errors.pushb("Argument " + tostring(spi + 1) + " of spawn '" + fname + "' expects '" + this.strip_imut(sp_params.get(spi)) + "', got '" + this.strip_imut(spat) + "'");
+                    }
+                    spi = spi + 1;
+                }
+            }
+            sp_ret: string = this.funcs[fname];
+            if sp_ret != "void" {
+                this.errors.pushb("Spawned function '" + fname + "' must return void, but returns '" + sp_ret + "'");
             }
             return;
         }
@@ -1059,7 +2389,13 @@ pub def TypeChecker : class {
         foreach _, p in<vector> f.params {
             if this.is_multi_type(p.typ) { has_mt = true; }
         }
-        if !has_mt { return false; }
+        has_tpl: bool = this.uses_template_type(f.ret_type);
+        if !has_tpl {
+            foreach _, p in<vector> f.params {
+                if this.uses_template_type(p.typ) { has_tpl = true; }
+            }
+        }
+        if !has_mt && !has_tpl { return false; }
 
         tset: vec<string>;
         tmap: hash<string, string>;
@@ -1075,16 +2411,159 @@ pub def TypeChecker : class {
             tmap.push(f.ret_type, rnm);
             tset.pushb(rnm);
         }
+        // template-type generics: the template names themselves are the
+        // parameters; concrete types arrive at the call site
+        if has_tpl {
+            rnames: vec<string> = this.template_names_in(f.ret_type);
+            foreach _, tn in<vector> rnames {
+                if !this.name_in_vec(tset, tn) { tset.pushb(tn); }
+            }
+            foreach _, p in<vector> f.params {
+                pnames: vec<string> = this.template_names_in(p.typ);
+                foreach _, tn2 in<vector> pnames {
+                    if !this.name_in_vec(tset, tn2) { tset.pushb(tn2); }
+                }
+            }
+        }
 
         ptypes: vec<string>;
         foreach _, p in<vector> f.params {
-            ptypes.pushb(this.substitute_type_params(p.typ, tmap));
+            if has_mt {
+                ptypes.pushb(this.substitute_type_params(p.typ, tmap));
+            } else {
+                ptypes.pushb(p.typ);
+            }
         }
         this.generic_funcs.push(f.name, f);
         this.generic_tparams.push(f.name, tset);
         this.generic_ptypes.push(f.name, ptypes);
-        this.generic_rtype.push(f.name, this.substitute_type_params(f.ret_type, tmap));
+        if has_mt {
+            this.generic_rtype.push(f.name, this.substitute_type_params(f.ret_type, tmap));
+        } else {
+            this.generic_rtype.push(f.name, f.ret_type);
+        }
         return true;
+    }
+
+    // Collect the template names inside a (possibly composite) type.
+    pub fnc template_names_in(t string) : vec<string> {
+        res: vec<string>;
+        tt: string = this.strip_imut(t);
+        if tt.size == 0 { return res; }
+        if this.template_types.isin(tt) {
+            if !this.name_in_vec(res, tt) { res.pushb(tt); }
+            return res;
+        }
+        if this.is_multi_type(tt) {
+            parts: vec<string> = this.parse_multi_type(tt);
+            foreach _, part in<vector> parts {
+                sub: vec<string> = this.template_names_in(part);
+                foreach _, s2 in<vector> sub {
+                    if !this.name_in_vec(res, s2) { res.pushb(s2); }
+                }
+            }
+            return res;
+        }
+        if tt.size > 1 && (tt[0] == '*' || tt[0] == '&') {
+            return this.template_names_in(this.str_slice(tt, 1, tt.size));
+        }
+        if tt.size > 3 && tt[tt.size - 1] == '>' {
+            lt3: int = -1;
+            li3: int = 0;
+            while li3 < tt.size {
+                if tt[li3] == '<' { lt3 = li3; stop; }
+                li3 = li3 + 1;
+            }
+            if lt3 > 0 {
+                inner: vec<string> = this.split_commas(this.str_slice(tt, lt3 + 1, tt.size - 1));
+                foreach _, part2 in<vector> inner {
+                    sub2: vec<string> = this.template_names_in(part2);
+                    foreach _, s3 in<vector> sub2 {
+                        if !this.name_in_vec(res, s3) { res.pushb(s3); }
+                    }
+                }
+            }
+        }
+        return res;
+    }
+
+    // Recursive template usage: a type uses a template if it is one, or
+    // contains one inside vec<...>/matrix<...>/hash<...>/[...]/Base<...>.
+    pub fnc uses_template_type(t string) : bool {
+        tt: string = this.strip_imut(t);
+        if tt.size == 0 { return false; }
+        if this.template_types.isin(tt) { return true; }
+        if this.is_multi_type(tt) {
+            parts: vec<string> = this.parse_multi_type(tt);
+            foreach _, part in<vector> parts {
+                if this.uses_template_type(part) { return true; }
+            }
+            return false;
+        }
+        if tt.size > 1 && (tt[0] == '*' || tt[0] == '&') {
+            return this.uses_template_type(this.str_slice(tt, 1, tt.size));
+        }
+        if tt.size > 3 && tt[tt.size - 1] == '>' {
+            lt2: int = -1;
+            li2: int = 0;
+            while li2 < tt.size {
+                if tt[li2] == '<' { lt2 = li2; stop; }
+                li2 = li2 + 1;
+            }
+            if lt2 > 0 {
+                inner: vec<string> = this.split_commas(this.str_slice(tt, lt2 + 1, tt.size - 1));
+                foreach _, part2 in<vector> inner {
+                    if this.uses_template_type(part2) { return true; }
+                }
+            }
+        }
+        return false;
+    }
+
+    // Detect a generic STATIC class method and record the template.
+    pub fnc derive_class_method(m FuncDecl, cname string, class_tps vec<string>) : bool {
+        has_tpl: bool = false;
+        rnames: vec<string> = this.template_names_in(m.ret_type);
+        foreach _, tn in<vector> rnames {
+            if this.name_in_vec(class_tps, tn) || this.template_types.isin(tn) { has_tpl = true; }
+        }
+        if !has_tpl {
+            foreach _, p in<vector> m.params {
+                pnames: vec<string> = this.template_names_in(p.typ);
+                foreach _, tn2 in<vector> pnames {
+                    if this.name_in_vec(class_tps, tn2) || this.template_types.isin(tn2) { has_tpl = true; }
+                }
+            }
+        }
+        if !has_tpl { return false; }
+
+        key: string = cname + "_" + m.name;
+        tset: vec<string>;
+        foreach _, tn3 in<vector> class_tps { tset.pushb(tn3); }
+        foreach _, tn4 in<vector> rnames {
+            if !this.name_in_vec(tset, tn4) { tset.pushb(tn4); }
+        }
+        foreach _, p in<vector> m.params {
+            pnames2: vec<string> = this.template_names_in(p.typ);
+            foreach _, tn5 in<vector> pnames2 {
+                if !this.name_in_vec(tset, tn5) { tset.pushb(tn5); }
+            }
+        }
+
+        ptypes: vec<string>;
+        foreach _, p2 in<vector> m.params { ptypes.pushb(p2.typ); }
+        this.generic_funcs.push(key, m);
+        this.generic_tparams.push(key, tset);
+        this.generic_ptypes.push(key, ptypes);
+        this.generic_rtype.push(key, m.ret_type);
+        return true;
+    }
+
+    pub fnc name_in_vec(v vec<string>, n string) : bool {
+        foreach _, x in<vector> v {
+            if x == n { return true; }
+        }
+        return false;
     }
 
     // If `t` names a generic class instantiation (`Hash<string, int>`),
@@ -1160,7 +2639,9 @@ pub def TypeChecker : class {
             }
         }
         foreach _, m2 in<vector> new_methods {
-            ci.add_method(m2.name, m2.ret_type, m2.is_static);
+            m2_ps: vec<string>;
+            foreach _, m2_p in<vector> m2.params { m2_ps.pushb(m2_p.typ); }
+            ci.add_method(m2.name, m2.ret_type, m2.is_static, m2_ps);
             this.funcs.push(mangled + "_" + m2.name, m2.ret_type);
             if !m2.is_static {
                 found2: bool = false;
@@ -1339,17 +2820,198 @@ pub def TypeChecker : class {
     }
 
     // Generic STATIC class method: rewrite the METHOD_CALL into a plain
-    // CALL of the mangled instance with the receiver as a real argument.
+    // CALL of the mangled instance. Static calls have no instance: the
+    // receiver (the class name) is not an argument.
     pub fnc handle_generic_method_call(e Expr) : string {
         gkey: string = e.left.sval + "_" + e.sval;
-        gcargs: vec<Expr>;
-        gcargs.pushb(e.left);
-        foreach _, ga in<vector> e.args { gcargs.pushb(ga); }
-        gm: string = this.instantiate_generic(gkey, gcargs);
+        gm: string = this.instantiate_generic(gkey, e.args);
         e.kind = ExprKind.CALL;
         e.sval = gm;
-        e.args = gcargs;
         return gm;
+    }
+
+    // Type compatibility for assignments/initializers (Python E004 parity).
+    // Base numeric category of a type: int/uint/float/char/bool, with
+    // sized variants (int<8>, uint<16>, float<32>, ...) reduced to the
+    // bare name. Python's _base_type does the same reduction.
+    pub fnc is_numeric_base(t string) : bool {
+        b: string = this.base_of(this.strip_imut(t));
+        if b == "int" { return true; }
+        if b == "uint" { return true; }
+        if b == "float" { return true; }
+        if b == "char" { return true; }
+        if b == "bool" { return true; }
+        return false;
+    }
+
+    pub fnc types_compatible(src string, dst string) : bool {
+        if src == dst { return true; }
+        if src.size == 0 || dst.size == 0 { return true; }
+        if src == "nil" { return true; }
+        if dst == "void" { return true; }
+        // Numeric types (incl. sized variants) are broadly compatible with
+        // each other — Python: int/uint/float/char/bool all interassign.
+        if this.is_numeric_base(src) && this.is_numeric_base(dst) { return true; }
+        // Pointers: *X -> *Y compares the pointee types (Python recursion)
+        if src.size > 1 && dst.size > 1 && src[0] == '*' && dst[0] == '*' {
+            return this.types_compatible(this.str_slice(src, 1, src.size), this.str_slice(dst, 1, dst.size));
+        }
+        // string <-> *char
+        if src == "string" && dst.size > 1 && dst[0] == '*' { return true; }
+        if dst == "string" && src.size > 1 && src[0] == '*' { return true; }
+        // arrays: int[N] <-> int[] when the bases match
+        if src.size > 2 && src[src.size - 1] == ']' && dst.size > 2 && dst[dst.size - 1] == ']' {
+            sbase: string = "";
+            sbi: int = 0;
+            while sbi < src.size && src[sbi] != '[' {
+                sbase = sbase + src[sbi];
+                sbi = sbi + 1;
+            }
+            dbase: string = "";
+            dbi: int = 0;
+            while dbi < dst.size && dst[dbi] != '[' {
+                dbase = dbase + dst[dbi];
+                dbi = dbi + 1;
+            }
+            if sbase == dbase && sbase.size > 0 { return true; }
+        }
+        // slices: T[] -> vec<T>, *T, T[]
+        if src.size > 2 && src[src.size - 1] == ']' {
+            base: string = "";
+            bi: int = 0;
+            while bi < src.size && src[bi] != '[' {
+                base = base + src[bi];
+                bi = bi + 1;
+            }
+            if this.is_vec_type2(dst) && this.vec_inner_type2(dst) == base { return true; }
+            if dst.size > 7 && dst[0] == 'm' && dst[1] == 'a' && dst[2] == 't' && dst[3] == 'r' && dst[4] == 'i' && dst[5] == 'x' && dst[6] == '<' && dst[dst.size - 1] == '>' {
+                if this.str_slice(dst, 7, dst.size - 1) == base { return true; }
+            }
+            if dst == "*" + base { return true; }
+        }
+        // class inheritance: a Dog is an Animal (walk the parent chain)
+        if this.classes.isin(src) && this.classes.isin(dst) {
+            cur: string = src;
+            hops: int = 0;
+            while hops < 16 {
+                if cur == dst { return true; }
+                if !this.classes.isin(cur) { return false; }
+                par: string = this.classes[cur].parent;
+                if par.size == 0 { return false; }
+                cur = par;
+                hops = hops + 1;
+            }
+            return false;
+        }
+        // union assignment: the value must match one of the variants
+        if this.unions.isin(dst) {
+            utypes: vec<string> = this.union_types[dst];
+            foreach _, uvt in<vector> utypes {
+                if this.types_compatible(src, uvt) { return true; }
+            }
+            return false;
+        }
+        // generic class template -> any of its instantiations
+        if this.generic_classes.isin(src) && dst.size > src.size {
+            pref_ok: bool = true;
+            pi: int = 0;
+            while pi < src.size {
+                if dst[pi] != src[pi] { pref_ok = false; stop; }
+                pi = pi + 1;
+            }
+            if pref_ok && (dst[src.size] == '_' || dst[src.size] == '<') { return true; }
+        }
+        return false;
+    }
+
+    pub fnc is_int_family(t string) : bool {
+        if t == "int" || t == "uint" { return true; }
+        return this.is_sized_int_type2(t);
+    }
+
+    pub fnc is_float_family(t string) : bool {
+        if t == "float" { return true; }
+        return t.size > 6 && t[0] == 'f' && t[1] == 'l' && t[2] == 'o' && t[3] == 'a' && t[4] == 't' && t[5] == '<';
+    }
+
+    // Known type names (Python E003 parity): unknown types like `int32`
+    // are rejected instead of silently compiling to a fallback.
+    pub fnc is_known_type(t string) : bool {
+        if t.size == 0 { return true; }
+        tt: string = this.strip_imut(t);
+        if tt == "int" || tt == "uint" || tt == "float" || tt == "char" || tt == "bool" || tt == "string" || tt == "void" { return true; }
+        // FFI conventions: macro-typed constants and pointer<T> spellings
+        if tt == "macro" { return true; }
+        if tt.size > 9 && tt[0] == 'p' && tt[1] == 'o' && tt[2] == 'i' && tt[3] == 'n' && tt[4] == 't' && tt[5] == 'e' && tt[6] == 'r' && tt[7] == '<' && tt[tt.size - 1] == '>' {
+            return true;
+        }
+        if this.is_sized_int_type2(tt) { return true; }
+        if this.is_float_family(tt) && tt.size > 6 { return true; }
+        if this.is_vec_type2(tt) { return this.is_known_type(this.vec_inner_type2(tt)); }
+        if tt.size > 7 && tt[0] == 'm' && tt[1] == 'a' && tt[2] == 't' && tt[3] == 'r' && tt[4] == 'i' && tt[5] == 'x' && tt[6] == '<' && tt[tt.size - 1] == '>' {
+            return this.is_known_type(this.str_slice(tt, 7, tt.size - 1));
+        }
+        if tt.size > 6 && tt[0] == 'h' && tt[1] == 'a' && tt[2] == 's' && tt[3] == 'h' && tt[4] == '<' && tt[tt.size - 1] == '>' {
+            parts: vec<string> = this.split_commas(this.str_slice(tt, 5, tt.size - 1));
+            foreach _, part in<vector> parts {
+                if !this.is_known_type(part) { return false; }
+            }
+            return true;
+        }
+        if tt.size > 1 && (tt[0] == '*' || tt[0] == '&') {
+            return this.is_known_type(this.str_slice(tt, 1, tt.size));
+        }
+        if tt.size > 8 && tt[0] == 'f' && tt[1] == 'u' && tt[2] == 't' && tt[3] == 'u' && tt[4] == 'r' && tt[5] == 'e' && tt[6] == '<' {
+            return this.is_known_type(this.str_slice(tt, 7, tt.size - 1));
+        }
+        if this.is_fnc_type(tt) { return true; }
+        if tt == "File" { return true; }
+        if this.template_types.isin(tt) { return true; }
+        // generic-class instantiation: Hash<string, int> -> known
+        if tt.size > 3 && tt[tt.size - 1] == '>' {
+            gbase: string = "";
+            gi2: int = 0;
+            while gi2 < tt.size {
+                if tt[gi2] == '<' { gbase = this.str_slice(tt, 0, gi2); stop; }
+                gi2 = gi2 + 1;
+            }
+            if this.generic_classes.isin(gbase) { return true; }
+        }
+        // array suffixes: T[] and T[N]
+        if tt.size > 2 && tt[tt.size - 1] == ']' {
+            abase: string = "";
+            abi2: int = 0;
+            while abi2 < tt.size && tt[abi2] != '[' {
+                abase = abase + tt[abi2];
+                abi2 = abi2 + 1;
+            }
+            if abase.size > 0 { return this.is_known_type(abase); }
+        }
+        if this.structs.isin(tt) || this.classes.isin(tt) || this.enums.isin(tt) || this.unions.isin(tt) { return true; }
+        if this.generic_classes.isin(tt) { return true; }
+        // tuple types (a, b)
+        if tt.size >= 2 && tt[0] == '(' && tt[tt.size - 1] == ')' { return true; }
+        return false;
+    }
+
+    pub fnc is_sized_int_type2(t string) : bool {
+        if t.size < 6 { return false; }
+        if t[t.size - 1] != '>' { return false; }
+        if t[0] == 'i' && t[1] == 'n' && t[2] == 't' && t[3] == '<' { return true; }
+        if t[0] == 'u' && t[1] == 'i' && t[2] == 'n' && t[3] == 't' && t[4] == '<' { return true; }
+        return false;
+    }
+
+    pub fnc vec_inner_type2(t string) : string {
+        if t.size > 4 && t[0] == 'v' && t[1] == 'e' && t[2] == 'c' && t[3] == '<' {
+            return this.str_slice(t, 4, t.size - 1);
+        }
+        return t;
+    }
+
+    pub fnc is_vec_type2(t string) : bool {
+        if t.size < 6 { return false; }
+        return t[t.size - 1] == '>' && t[0] == 'v' && t[1] == 'e' && t[2] == 'c' && t[3] == '<';
     }
 
     pub fnc check_program(prog Program) : void {
@@ -1360,10 +3022,14 @@ pub def TypeChecker : class {
                 if fd.is_static {
                     this.static_fields.push(s.name + "_" + fd.name, fd.typ);
                 } else {
-                    si.add_field(fd.name, fd.typ);
+                    si.add_field(fd.name, fd.typ, fd.init != null);
                 }
             }
             this.structs.push(s.name, si);
+        }
+
+        foreach _, tpl in<vector> prog.templates {
+            this.template_types.push(tpl, true);
         }
 
         foreach _, c in<vector> prog.classes {
@@ -1381,9 +3047,17 @@ pub def TypeChecker : class {
                 }
             }
             foreach _, m in<vector> c.methods {
-                ci.add_method(m.name, m.ret_type, m.is_static);
-                // Also register static methods: Class.method
-                this.funcs.push(c.name + "_" + m.name, m.ret_type);
+                m_ps: vec<string>;
+                foreach _, m_p in<vector> m.params { m_ps.pushb(m_p.typ); }
+                ci.add_method(m.name, m.ret_type, m.is_static, m_ps);
+                // Generic static methods (vec<T> params etc.) become
+                // templates under the Class_method key; concrete types
+                // arrive at the call site.
+                if m.is_static && this.derive_class_method(m, c.name, c.type_params) {
+                } else {
+                    // Also register static methods: Class.method
+                    this.funcs.push(c.name + "_" + m.name, m.ret_type);
+                }
                 // Constructor: record its parameter defaults for autoinit
                 if m.name == c.name {
                     ctor_defs: vec<Expr>;
@@ -1476,6 +3150,8 @@ pub def TypeChecker : class {
             }
             this.func_params.push(fkey, ptypes);
             this.func_param_names.push(fkey, pnames);
+            if f.is_async { this.async_funcs.push(fkey, true); }
+            if f.is_worker { this.worker_funcs.push(fkey, true); }
         }
 
         // Pass 3: Typecheck function bodies
@@ -1484,9 +3160,17 @@ pub def TypeChecker : class {
             this.current_func_ret = f.ret_type;
             this.enter_scope();
 
-            // Bind parameters
+            // Bind parameters; arrays passed without '&' alias the caller's
+            // storage and are read-only borrows inside the callee
+            rb_clear: vec<string>;
+            this.readonly_borrows = rb_clear;
             foreach _, p in<vector> f.params {
                 this.define_var(p.name, p.typ);
+                pbt: string = this.strip_imut(p.typ);
+                if p.typ.size > 0 && p.typ[0] != '&' && this.is_array_type(pbt)
+                   && !(pbt.size > 4 && pbt[0] == 'v' && pbt[1] == 'e' && pbt[2] == 'c' && pbt[3] == '<') {
+                    this.readonly_borrows.pushb(p.name);
+                }
             }
 
             // Check statements
@@ -1527,20 +3211,18 @@ pub def TypeChecker : class {
         // instantiations created while checking their call sites.
         if this.inst_nodes.size > 0 {
             new_funcs: vec<FuncDecl>;
-            gcount: int = 0;
             foreach _, f in<vector> prog.funcs {
                 if f.owner.size == 0 && this.generic_funcs.isin(f.name) {
-                    gcount = gcount + 1;
+                    // top-level generic template: never emitted
                 } else {
                     new_funcs.pushb(f);
                 }
             }
-            if gcount > 0 {
-                foreach _, nf in<vector> this.inst_nodes {
-                    new_funcs.pushb(nf);
-                }
-                prog.funcs = new_funcs;
+            foreach _, nf in<vector> this.inst_nodes {
+                new_funcs.pushb(nf);
             }
+            prog.funcs = new_funcs;
         }
+
     }
 }
