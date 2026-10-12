@@ -67,6 +67,7 @@ pub def CompilerDriver : class {
     pub loaded_modules: hash<string, bool>;
     pub self_path: string;   // argv[0]: how this compiler was invoked
     pub treat_from_safe: bool;   // -tfs: suppress @from native-lib security warnings
+    pub imports_fatal: bool;     // a use-import failed to resolve (python raises)
 
     static pub fnc make() : CompilerDriver {
         return CompilerDriver {};
@@ -85,6 +86,27 @@ pub def CompilerDriver : class {
         content: string = f.read();
         f.close();
         return content;
+    }
+
+    pub fnc str_slice(s string, a int, b int) : string {
+        out: string = "";
+        i: int = a;
+        while i < b && i < s.size {
+            out = out + s[i];
+            i = i + 1;
+        }
+        return out;
+    }
+
+    pub fnc home_dir() : string {
+        out: string = exec("echo $HOME", "wait");
+        trimmed: string = "";
+        ti: int = 0;
+        while ti < out.size && out[ti] != '\n' {
+            trimmed = trimmed + out[ti];
+            ti = ti + 1;
+        }
+        return trimmed;
     }
 
     pub fnc realpath_str(p string) : string {
@@ -148,7 +170,102 @@ pub def CompilerDriver : class {
             if f4 != null { f4.close(); return p4; }
         }
 
+        // Global installed libraries: ~/.leash/libs (python parity). The
+        // direct paths first, then a recursive walk matching the module
+        // name at any depth.
+        home: string = this.home_dir();
+        if home.size > 0 {
+            libs: string = home + "/.leash/libs";
+            pg1: string = libs + "/" + rel_path + ".lsh";
+            fg1: File = File.open(pg1, "r");
+            if fg1 != null { fg1.close(); return pg1; }
+
+            pg2: string = libs + "/" + last_seg + ".lsh";
+            fg2: File = File.open(pg2, "r");
+            if fg2 != null { fg2.close(); return pg2; }
+
+            if last_seg.size > 0 {
+                f_out: string = exec("find " + libs + " -type f -name '" + last_seg + ".lsh' 2>/dev/null", "wait");
+                f_count: int = 0;
+                f_first: string = "";
+                foi: int = 0;
+                while foi < f_out.size {
+                    f_ln: string = "";
+                    while foi < f_out.size && f_out[foi] != '\n' {
+                        f_ln = f_ln + f_out[foi];
+                        foi = foi + 1;
+                    }
+                    if f_ln.size > 0 {
+                        f_count = f_count + 1;
+                        if f_count == 1 { f_first = f_ln; }
+                    }
+                    foi = foi + 1;
+                }
+                if f_count == 1 { return f_first; }
+                if f_count > 1 {
+                    // Multiple matches: ambiguous (python raises the same)
+                    show("error: Module '" + this.strip_wildcard(mod_path) + "' not found or ambiguous");
+                    return "";
+                }
+            }
+        }
+
+        // Nothing resolved anywhere (python raises the same)
+        show("error: Module '" + this.strip_wildcard(mod_path) + "' not found or ambiguous");
         return "";
+    }
+
+    // Module path without a trailing `::*` wildcard, for diagnostics.
+    pub fnc strip_wildcard(mod_path string) : string {
+        if mod_path.size > 3 && mod_path[mod_path.size - 1] == '*' && mod_path[mod_path.size - 2] == ':' && mod_path[mod_path.size - 3] == ':' {
+            return this.str_slice(mod_path, 0, mod_path.size - 3);
+        }
+        return mod_path;
+    }
+
+    // True when every '::'-separated segment of a module path is a plain
+    // identifier (never '', '.', '..' or digit-leading — traversal defense,
+    // python parity).
+    pub fnc valid_module_path(imp string) : bool {
+        seg: string = "";
+        vi: int = 0;
+        while vi <= imp.size {
+            at_end: bool = vi == imp.size;
+            c: char = ':';
+            if !at_end { c = imp[vi]; }
+            // The `::*` wildcard tail is consumed by the parser's item
+            // section (python strips it from the path): skip it here.
+            if c == ':' && vi + 1 < imp.size && imp[vi + 1] == '*' {
+                vi = vi + 2;
+                continue;
+            }
+            if at_end || (c == ':' && vi + 1 < imp.size && imp[vi + 1] == ':') {
+                // A bare "*" — the wildcard item (the parser consumes it
+                // as the item section's wildcard): valid, skip it.
+                if seg == "*" {
+                    if at_end { return true; }
+                    seg = "";
+                    vi = vi + 1;
+                    continue;
+                }
+                if seg.size == 0 { return false; }
+                if seg == "." || seg == ".." { return false; }
+                if seg[0] >= '0' && seg[0] <= '9' { return false; }
+                si2: int = 0;
+                while si2 < seg.size {
+                    sc: char = seg[si2];
+                    okc: bool = (sc >= 'a' && sc <= 'z') || (sc >= 'A' && sc <= 'Z') || (sc >= '0' && sc <= '9') || sc == '_';
+                    if !okc { return false; }
+                    si2 = si2 + 1;
+                }
+                seg = "";
+                if !at_end { vi = vi + 2; continue; }
+            } else {
+                seg = seg + c;
+            }
+            vi = vi + 1;
+        }
+        return true;
     }
 
     pub fnc resolve_imports(prog Program, base_dir string) : void {
@@ -157,10 +274,17 @@ pub def CompilerDriver : class {
         prog.imports = empty_imps; // clear so we don't duplicate
 
         foreach _, imp in<vector> imports_to_process {
+            if !this.valid_module_path(imp) {
+                show("error: Invalid module path in import — module paths must be plain identifiers");
+                this.imports_fatal = true;
+                return;
+            }
             mod_file: string = this.find_module_file(imp, base_dir);
             if mod_file.size == 0 {
-                show("error: could not find imported module '", imp, "'");
-                continue;
+                // The not-found/ambiguous message was printed by the
+                // resolver; the import failure is fatal (python raises)
+                this.imports_fatal = true;
+                return;
             }
 
             if this.loaded_modules.isin(mod_file) {
@@ -171,12 +295,17 @@ pub def CompilerDriver : class {
             mod_code: string = this.read_file_string(mod_file);
             mod_lex: Lexer = Lexer.make(mod_code);
             mod_toks: vec<Token> = mod_lex.tokenize();
+            if mod_lex.errs > 0 {
+                this.imports_fatal = true;
+                return;
+            }
             mod_parser: Parser = Parser.make(mod_toks);
             mod_parser.src_file = this.realpath_str(mod_file);
             mod_prog: Program = mod_parser.parse_program();
 
             // Recursively resolve sub-imports
             this.resolve_imports(mod_prog, Path.dirname(mod_file));
+            if this.imports_fatal { return; }
 
             // A module imported with an alias gets its contents namespaced
             alias_for_this: string = "";
@@ -201,6 +330,13 @@ pub def CompilerDriver : class {
             // expansion pass resolves them in the importing program.
             foreach _, md in<vector> mod_prog.macro_defs {
                 prog.macros.push(md.name, md);
+            }
+            // Type aliases ride along as ordered name/target pairs.
+            ta_j: int = 0;
+            while ta_j + 1 < mod_prog.type_alias_defs.size {
+                prog.type_alias_defs.pushb(mod_prog.type_alias_defs.get(ta_j));
+                prog.type_alias_defs.pushb(mod_prog.type_alias_defs.get(ta_j + 1));
+                ta_j = ta_j + 2;
             }
             // Native library requests (@from blocks) carry their source
             // attribution along so the security scan can tell transitive
@@ -511,40 +647,64 @@ pub def CompilerDriver : class {
     }
 
     pub fnc compile_file(input_file string, output_file string, emit_llvm bool, run_mode bool, run_args string, opt_level string, check_mode bool, extra_libs vec<string>, verbose bool, warn_err bool, debug_instrument bool, target_name string, no_gc bool, static_link bool) : int {
+        if verbose { show("[verbose] reading ", input_file); }
         source: string = this.read_file_string(input_file);
         if source.size == 0 {
+            if verbose { show("[verbose] empty or unreadable source — aborting"); }
             return 1;
         }
 
         base_dir: string = Path.dirname(input_file);
 
         // Lex
+        if verbose { show("[verbose] lexing (", tostring(source.size), " bytes)"); }
         lexer: Lexer = Lexer.make(source);
         tokens: vec<Token> = lexer.tokenize();
+        if lexer.errs > 0 {
+            // Fatal lex errors (NUL in a string literal) stop the compile
+            // before parsing (python's lexer raises).
+            return 1;
+        }
 
         // Parse
+        if verbose { show("[verbose] parsing (", tostring(tokens.size), " tokens)"); }
         abs_main: string = this.realpath_str(input_file);
         parser: Parser = Parser.make(tokens);
         parser.src_file = abs_main;
         prog: Program = parser.parse_program();
+        if verbose {
+            show("[verbose] parsed: ", tostring(prog.funcs.size), " funcs, ",
+                 tostring(prog.structs.size), " structs, ", tostring(prog.classes.size), " classes, ",
+                 tostring(prog.globals.size), " globals");
+        }
 
         // Resolve imports
+        if verbose { show("[verbose] resolving imports (", tostring(prog.imports.size), ")"); }
         this.resolve_imports(prog, base_dir);
+        if this.imports_fatal {
+            if verbose { show("[verbose] import resolution failed"); }
+            return 1;
+        }
+        if verbose { show("[verbose] imports resolved: ", tostring(prog.funcs.size), " funcs after splice"); }
 
         // Security scan (Python cli.py parity): @from path checks +
         // transitive native-library warnings; fatal errors short-circuit.
+        if verbose { show("[verbose] security scan (", tostring(prog.native_libs.size), " @from blocks)"); }
         if this.security_scan(prog, abs_main, input_file) > 0 {
             return 1;
         }
 
         // AST optimization
+        if verbose { show("[verbose] optimizing AST"); }
         opt_driver: Optimizer = Optimizer {};
         opt_driver.opt_program(prog);
 
         // Typecheck
+        if verbose { show("[verbose] type-checking"); }
         tc: TypeChecker = TypeChecker.make();
         tc.check_program(prog);
         if verbose {
+            show("[verbose] type-check finished: ", tostring(tc.errors.size), " errors");
         }
         if tc.errors.size > 0 {
             // Gate codegen behind a clean type-check: a type-errored
@@ -567,6 +727,7 @@ pub def CompilerDriver : class {
         }
 
         // Codegen
+        if verbose { show("[verbose] generating LLVM IR"); }
         cg: CodeGen = CodeGen.make(tc);
         abs_file: string = exec("realpath " + input_file, "wait");
         if abs_file.size > 0 {
@@ -583,8 +744,7 @@ pub def CompilerDriver : class {
         }
         cg.debug_instrument = debug_instrument;
         ir_lines: vec<string> = cg.generate_module(prog);
-        if verbose {
-        }
+        if verbose { show("[verbose] generated ", tostring(ir_lines.size), " IR lines"); }
 
         out_bin: string = output_file;
         if out_bin.size == 0 {
@@ -629,15 +789,42 @@ pub def CompilerDriver : class {
         foreach _, lib in<vector> extra_libs {
             lib_flags = lib_flags + " -l" + lib;
         }
-        // @from("lib.so"/"lib.a") paths link directly; bare names link as -l
+        // @from("lib.so"/"lib.a") paths link directly; bare names link as -l.
+        // Relative paths resolve against the declaring module's directory
+        // (python parity: resolve_native_lib_path joins source_dir).
+        nl_i: int = 0;
         foreach _, nlib in<vector> prog.native_libs {
-            if nlib.size > 3 && (nlib[nlib.size - 3] == '.' && nlib[nlib.size - 2] == 's' && nlib[nlib.size - 1] == 'o') {
-                lib_flags = lib_flags + " " + nlib;
-            } also nlib.size > 2 && nlib[nlib.size - 2] == '.' && nlib[nlib.size - 1] == 'a' {
-                lib_flags = lib_flags + " " + nlib;
-            } else {
-                lib_flags = lib_flags + " -l" + nlib;
+            resolved: string = nlib;
+            if nlib.size > 0 && nlib[0] != '/' && nl_i < prog.native_lib_files.size {
+                nlib_dir: string = Path.dirname(prog.native_lib_files[nl_i]);
+                dot_i: int = -1;
+                di: int = nlib.size - 1;
+                while di >= 0 {
+                    if nlib[di] == '.' { dot_i = di; stop; }
+                    di = di - 1;
+                }
+                if dot_i <= 0 {
+                    // Extension-less: probe platform extensions next to the
+                    // module (python tries .so/.a, then falls back to .so).
+                    c1: string = nlib_dir + "/" + nlib + ".so";
+                    c2: string = nlib_dir + "/" + nlib + ".a";
+                    c3: string = nlib_dir + "/" + nlib + ".dylib";
+                    if this.file_exists(c1) { resolved = c1; }
+                    also this.file_exists(c2) { resolved = c2; }
+                    also this.file_exists(c3) { resolved = c3; }
+                    else { resolved = c1; }
+                } else {
+                    resolved = nlib_dir + "/" + nlib;
+                }
             }
+            if resolved.size > 3 && (resolved[resolved.size - 3] == '.' && resolved[resolved.size - 2] == 's' && resolved[resolved.size - 1] == 'o') {
+                lib_flags = lib_flags + " " + resolved;
+            } also resolved.size > 2 && resolved[resolved.size - 2] == '.' && resolved[resolved.size - 1] == 'a' {
+                lib_flags = lib_flags + " " + resolved;
+            } else {
+                lib_flags = lib_flags + " -l" + resolved;
+            }
+            nl_i = nl_i + 1;
         }
 
         // ---- Target / link-mode flags (Python parity) -----------------------
@@ -825,6 +1012,7 @@ pub def CompilerDriver : class {
             gc_tag: string = this.exec_out("stat -c '%s_%Y' " + gc_path) + "|O2|fsections|" + cc_flags + "|" + rt_extra;
             rt_gc: string = cache_dir + "/rt" + tostring(this.fnv_str(gc_tag)) + "_gc.o";
             if !this.file_exists(rt_gc) {
+                if verbose { show("[verbose] compiling runtime gc.c"); }
                 ec_rt: string = this.exec_code(cc_bin + " " + gc_path + " -c -o " + rt_gc + " @" + rsp_rt);
                 if ec_rt != "0" {
                     show("error: cannot compile runtime gc.c");
@@ -850,6 +1038,7 @@ pub def CompilerDriver : class {
             ir_key: int = this.fnv_lines(ir_lines);
             obj_path = cache_dir + "/o" + tostring(this.fnv_str(opt_flag + "|" + cc_flags + "|" + tostring(ir_key))) + ".o";
 
+            if verbose { show("[verbose] object cache: ", this.file_exists(obj_path) ? "hit" : "miss"); }
             if !this.file_exists(obj_path) {
                 temp_ll: string = "/tmp/leashc_" + Path.basename(out_bin) + ".ll";
                 f_tmp: File = File.open(temp_ll, "w");
@@ -903,8 +1092,9 @@ pub def CompilerDriver : class {
             clang_cmd: string = cc_bin + " " + temp_ll + " " + rt_files_cold + " -o " + out_bin + " " + opt_flag + " " + cc_flags + link_flags_inline + tail_flags + lib_flags;
             if f_rc != null {
                 f_rc.write(link_rsp_flags);
+                f_rc.write(lib_flags + "\n");
                 f_rc.close();
-                clang_cmd = cc_bin + " " + temp_ll + " " + rt_files_cold + " @" + rsp_cold + " -o " + out_bin + " " + opt_flag + " " + cc_flags + tail_flags + lib_flags;
+                clang_cmd = cc_bin + " " + temp_ll + " " + rt_files_cold + " @" + rsp_cold + " -o " + out_bin + " " + opt_flag + " " + cc_flags + tail_flags;
             }
             ec_cold: string = this.exec_code(clang_cmd);
             if ec_cold != "0" {
@@ -955,11 +1145,13 @@ pub def CompilerDriver : class {
             f_rsp.write(obj_path + "\n");
             f_rsp.write(runtime_objs + "\n");
             f_rsp.write(link_rsp_flags);
+            f_rsp.write(lib_flags + "\n");
             f_rsp.close();
-            link_cmd = cc_bin + " @" + rsp_file + " -o " + out_bin + " " + opt_flag + " " + cc_flags + tail_flags + lib_flags;
+            link_cmd = cc_bin + " @" + rsp_file + " -o " + out_bin + " " + opt_flag + " " + cc_flags + tail_flags;
         }
 
         // Link-only: prebuilt program object + runtime objects
+        if verbose { show("[verbose] linking: ", link_cmd); }
         ec_link: string = this.exec_code(link_cmd);
         if ec_link != "0" {
             show("error: clang link failed");

@@ -41,8 +41,19 @@ def normalize(text: str) -> str:
     return "\n".join(l.rstrip() for l in text.split("\n")).rstrip("\n") + "\n"
 
 
+def compiler_cmd():
+    # LEASHC overrides the compiler under test (e.g. LEASHC=bin/leashc_stage1
+    # runs the suite against the self-hosted compiler); default: the Python
+    # reference toolchain.
+    import os
+    override = os.environ.get("LEASHC")
+    if override:
+        return [override]
+    return [PYTHON, "-m", "leash.cli"]
+
+
 def run_test(path: Path):
-    cmd = [PYTHON, "-m", "leash.cli", "run", str(path), "--other-imports", str(STDLIB_DIR)]
+    cmd = compiler_cmd() + ["run", str(path), "--other-imports", str(STDLIB_DIR)]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, cwd=WORKSPACE, timeout=30)
         return r.stdout + r.stderr

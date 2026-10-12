@@ -6,6 +6,9 @@ pub def Lexer : class {
     pub len: int;
     pub line: int;
     pub col: int;
+    pub errs: int;   // fatal lex errors (e.g. NUL in a string literal)
+    pub warns: int;  // recoverable lex warnings (unknown characters)
+    pub quiet: bool; // suppress warnings (sub-lexers inside interpolation)
 
     static pub fnc is_digit(c char) : bool {
         return c >= '0' && c <= '9';
@@ -28,7 +31,7 @@ pub def Lexer : class {
     }
 
     static pub fnc make(src string) : Lexer {
-        return Lexer { src: src, pos: 0, len: src.size, line: 1, col: 1 };
+        return Lexer { src: src, pos: 0, len: src.size, line: 1, col: 1, errs: 0, warns: 0, quiet: false };
     }
 
     pub fnc peek() : char {
@@ -217,13 +220,22 @@ pub def Lexer : class {
             c: char = this.advance();
             if c == '\\' {
                 esc: char = this.advance();
-                if esc == 'n' { val = val + '\n'; }
-                also esc == 't' { val = val + '\t'; }
-                also esc == 'r' { val = val + '\r'; }
-                also esc == '\\' { val = val + '\\'; }
-                also esc == '"' { val = val + '"'; }
-                also esc == '0' { val = val + "\\0"; }
-                else { val = val + esc; }
+                if esc == '0' {
+                    // Python parity: `\0` in a string literal is a hard
+                    // error — Leash strings are C strings and an embedded
+                    // NUL would silently truncate. Keep the pair text so
+                    // later phases see sane tokens; the driver aborts on
+                    // the error count.
+                    if !this.quiet {
+                        show("error: NUL byte ('\\0') is not allowed inside string literals: Leash strings cannot hold embedded NULs.");
+                    }
+                    this.errs = this.errs + 1;
+                }
+                // Token values stay RAW (python keeps `tok.raw`): the parser
+                // unescapes exactly once after the interpolation scan, so
+                // `\\n` or `\\{` sequences are never decoded twice.
+                val = val + '\\';
+                val = val + esc;
             } else {
                 val = val + c;
             }
@@ -255,18 +267,22 @@ pub def Lexer : class {
             if c == '\\' {
                 if this.peek() == '"' {
                     this.advance();
-                    val = val + '"';
-                } also this.peek() == '\\' {
-                    this.advance();
                     val = val + '\\';
-                } also this.peek() == 'n' {
-                    this.advance();
-                    val = val + '\n';
-                } also this.peek() == 't' {
-                    this.advance();
-                    val = val + '\t';
+                    val = val + '"';
+                } also this.peek() == '0' {
+                    // Python parity: `\0` in a string literal is a hard
+                    // error (same as the single-quoted form)
+                    if !this.quiet {
+                        show("error: NUL byte ('\\0') is not allowed inside string literals: Leash strings cannot hold embedded NULs.");
+                    }
+                    this.errs = this.errs + 1;
+                    val = val + '\\';
+                    val = val + '0';
                 } else {
-                    val = val + c;
+                    // Raw escape pairs (python parity): the parser
+                    // unescapes exactly once
+                    val = val + '\\';
+                    if this.peek() != '\0' { val = val + this.advance(); }
                 }
             } else {
                 val = val + c;
@@ -289,9 +305,20 @@ pub def Lexer : class {
                 if esc == 'n' { val = val + '\n'; }
                 also esc == 't' { val = val + '\t'; }
                 also esc == 'r' { val = val + '\r'; }
+                also esc == 'a' { val = val + '\a'; }
+                also esc == 'b' { val = val + '\b'; }
+                also esc == 'f' { val = val + '\f'; }
+                also esc == 'v' { val = val + '\v'; }
                 also esc == '\\' { val = val + '\\'; }
                 also esc == '\'' { val = val + '\''; }
-                also esc == '0' { val = "\\0"; }
+                also esc == '0' { val = val + "\\0"; }
+                also esc == 'x' {
+                    // \xHH stays as raw text; the parser decodes it like \0
+                    val = val + '\\';
+                    val = val + 'x';
+                    val = val + this.advance();
+                    val = val + this.advance();
+                }
                 else { val = val + esc; }
             } else {
                 val = val + c;
@@ -501,7 +528,10 @@ pub def Lexer : class {
             also c == '!' { tokens.pushb(Token.make(Tok.NOT, "!", cur_line, cur_col)); }
             also c == '@' { tokens.pushb(Token.make(Tok.AT, "@", cur_line, cur_col)); }
             else {
-                show("lexer warning: unknown character '", c, "' at ", cur_line, ":", cur_col);
+                this.warns = this.warns + 1;
+                if !this.quiet {
+                    show("lexer warning: unknown character '", c, "' at ", cur_line, ":", cur_col);
+                }
             }
         }
 

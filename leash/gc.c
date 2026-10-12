@@ -2924,6 +2924,32 @@ void* leash_sh_hash_new(void) {
     return (void*)h;
 }
 
+// Scalar hash keys: the runtime hash is string-keyed, so int/uint/float
+// keys are stringified through these helpers before lookup/insert.
+char* leash_sh_int_key(int64_t v) {
+    char buf[32];
+    int n = snprintf(buf, sizeof(buf), "%lld", (long long)v);
+    char* out = (char*)leash_gc_malloc((size_t)n + 1);
+    memcpy(out, buf, (size_t)n + 1);
+    return out;
+}
+
+char* leash_sh_uint_key(uint64_t v) {
+    char buf[32];
+    int n = snprintf(buf, sizeof(buf), "%llu", (unsigned long long)v);
+    char* out = (char*)leash_gc_malloc((size_t)n + 1);
+    memcpy(out, buf, (size_t)n + 1);
+    return out;
+}
+
+char* leash_sh_float_key(double v) {
+    char buf[48];
+    int n = snprintf(buf, sizeof(buf), "%.17g", v);
+    char* out = (char*)leash_gc_malloc((size_t)n + 1);
+    memcpy(out, buf, (size_t)n + 1);
+    return out;
+}
+
 void leash_sh_hash_push(void* hash_ptr, const char* key, void* val) {
     LeashHash* h = (LeashHash*)hash_ptr;
     if (!h || !key) return;
@@ -3356,7 +3382,9 @@ void* leash_sh_hash_keys(void* hash_ptr) {
     for (int64_t i = 0; i < h->num_buckets; i++) {
         LeashHashNode* cur = h->buckets[i];
         while (cur) {
-            leash_sh_vec_pushb(vec, (void*)cur->key);
+            /* pushb copies FROM the given address — pass the address of
+               the key slot, not the string pointer itself */
+            leash_sh_vec_pushb(vec, &cur->key);
             cur = cur->next;
         }
     }
@@ -3370,7 +3398,7 @@ void* leash_sh_hash_values(void* hash_ptr) {
     for (int64_t i = 0; i < h->num_buckets; i++) {
         LeashHashNode* cur = h->buckets[i];
         while (cur) {
-            leash_sh_vec_pushb(vec, cur->val);
+            leash_sh_vec_pushb(vec, &cur->val);
             cur = cur->next;
         }
     }

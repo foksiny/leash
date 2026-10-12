@@ -538,6 +538,7 @@ fnc cmd_run(args string[]) : int {
 
     // -tfs applies to both run modes (project + file)
     r_tfs: bool = false;
+    r_verbose: bool = false;
     tsi: int = 2;
     while tsi < sep_idx {
         if args[tsi] == "--treat-from-as-safe" || args[tsi] == "-tfs" { r_tfs = true; }
@@ -653,7 +654,7 @@ fnc cmd_run(args string[]) : int {
     drv2.self_path = args[0];
     drv2.treat_from_safe = r_tfs;
     foreach _, d2 in<vector> extra_dirs { drv2.add_import_dir(d2); }
-    rc2: int = drv2.compile_file(operand, tmp2, false, true, prog_args, opt_level, false, empty_libs_global(), false, false, false, r_target, r_ngc, r_static);
+    rc2: int = drv2.compile_file(operand, tmp2, false, true, prog_args, opt_level, false, empty_libs_global(), r_verbose, false, false, r_target, r_ngc, r_static);
     cleanup_temp(tmp2);
     return rc2;
 }

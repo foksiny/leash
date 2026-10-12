@@ -396,6 +396,7 @@ pub def Program : class {
     pub native_libs: vec<string>;             // @from("lib") paths for the link
     pub macros: hash<string, MacroDef>;      // zero-arg macro defs (post-import expansion)
     pub macro_defs: vec<MacroDef>;          // same, ordered (for import splicing)
+    pub type_alias_defs: vec<string>;       // ordered "name" + "target" pairs (post-import alias resolution)
     pub native_lib_files: vec<string>;       // source file of each @from block
     pub native_lib_lines: vec<int>;          // line of each @from block
     pub native_lib_cols: vec<int>;           // column of each @from block

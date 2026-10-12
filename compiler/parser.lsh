@@ -48,6 +48,7 @@ pub def Parser : class {
     pub keep_sized: bool;
     pub import_aliases: hash<string, string>; // aliasName -> modulePath
     pub quiet: bool;
+    pub parse_errs: int;   // bumped by every failed consume (even when quiet)
     pub mod_unsafe: bool;   // pending `unsafe` modifier for next `fnc`
     pub mod_nogc: bool;     // pending `nogc` modifier
     pub mod_inline: bool;   // pending `inline` modifier
@@ -65,7 +66,7 @@ pub def Parser : class {
         empty_hf: vec<FuncDecl>;
         empty_macros: hash<string, MacroDef>;
         empty_ml: vec<MacroDef>;
-        return Parser { tokens: tokens, pos: 0, len: tokens.size, fe_counter: 0, no_struct_init: false, type_aliases: empty_aliases, import_aliases: empty_import_aliases, quiet: false, keep_sized: false, mod_unsafe: false, mod_nogc: false, mod_inline: false, mod_async: false, mod_worker: false, hoisted_funcs: empty_hf, hoisted_mark: 0, macros: empty_macros, lambda_counter: 0, macro_list: empty_ml };
+        return Parser { tokens: tokens, pos: 0, len: tokens.size, fe_counter: 0, no_struct_init: false, type_aliases: empty_aliases, import_aliases: empty_import_aliases, quiet: false, parse_errs: 0, keep_sized: false, mod_unsafe: false, mod_nogc: false, mod_inline: false, mod_async: false, mod_worker: false, hoisted_funcs: empty_hf, hoisted_mark: 0, macros: empty_macros, lambda_counter: 0, macro_list: empty_ml };
     }
 
     // Function literal: fnc(a int, b int) : int { ... }  (hoisted, used as a value)
@@ -277,6 +278,7 @@ pub def Parser : class {
             this.pos = this.pos + 1;
             return tok;
         }
+        this.parse_errs = this.parse_errs + 1;
         if !this.quiet {
             show("parse error: ", err_msg, " at line ", tok.line, ":", tok.col, " (got ", Tok.name(tok.kind), " '", tok.val, "')");
         }
@@ -362,10 +364,12 @@ pub def Parser : class {
                 if this.check(Tok.IDENT) { this.pos = this.pos + 1; }
                 return "thisop.typ";
             }
-            // Normalize sized primitives to the supported widths
+            // Normalize sized primitives to the supported widths. int<64>
+            // (and uint<64>) stay wide: crypto/hash code relies on true
+            // 64-bit arithmetic now that plain `int` is 32-bit.
             if !this.keep_sized {
                 if t == "float<64>" || t == "float<32>" || t == "float<16>" || t == "float<128>" { t = "float"; }
-                if t == "int<64>" || t == "int<32>" || t == "int<16>" || t == "int<8>" { t = "int"; }
+                if t == "int<32>" || t == "int<16>" || t == "int<8>" { t = "int"; }
             }
             // Check for generics: vec<T>, hash<K,V>
             if this.match_tok(Tok.LT) {
@@ -409,9 +413,13 @@ pub def Parser : class {
                     t = t + ">";
                 }
             }
-            also this.check(Tok.LPAREN) {
+            also this.check(Tok.LPAREN) && (this.peek(1).kind == Tok.RPAREN
+                || (this.peek(1).kind == Tok.IDENT && this.peek(2).kind == Tok.RPAREN)) {
                 // Parent class annotation: Type(Parent) — informational
                 // (inheritance is handled elsewhere); parse and discard.
+                // Guarded to the exact `Type(Parent)` shape so call-ish
+                // spellings like tofloat(double, i) in a cast lookahead
+                // don't get swallowed here.
                 this.pos = this.pos + 1;
                 if this.check(Tok.IDENT) { this.pos = this.pos + 1; }
                 this.consume(Tok.RPAREN, "expected ')' after parent class annotation");
@@ -423,9 +431,10 @@ pub def Parser : class {
 
         // Normalize sized primitives assembled from `name<width>` (the early
         // check in the IDENT branch runs before `<...>` is appended).
+        // int<64>/uint<64> stay wide (see the early normalization above).
         if !this.keep_sized {
             if t == "float<64>" || t == "float<32>" || t == "float<16>" || t == "float<128>" { t = "float"; }
-            if t == "int<64>" || t == "int<32>" || t == "int<16>" || t == "int<8>" { t = "int"; }
+            if t == "int<32>" || t == "int<16>" || t == "int<8>" { t = "int"; }
         }
 
         // Check for array suffix: Type[], Type[N] or Type[expr]
@@ -447,6 +456,50 @@ pub def Parser : class {
     }
 
     // --- Expression Parsing (Pratt Parser) ---
+    // Unescape a string literal after the interpolation scan (python's
+    // leash_unescape): known escapes decode, unknown ones keep the
+    // backslash.
+    pub fnc unescape_str(s string) : string {
+        out: string = "";
+        i: int = 0;
+        while i < s.size {
+            c: char = s[i];
+            if c == '\\' && i + 1 < s.size {
+                esc: char = s[i + 1];
+                if esc == 'n' { out = out + '\n'; }
+                also esc == 't' { out = out + '\t'; }
+                also esc == 'r' { out = out + '\r'; }
+                also esc == 'a' { out = out + '\a'; }
+                also esc == 'b' { out = out + '\b'; }
+                also esc == 'f' { out = out + '\f'; }
+                also esc == 'v' { out = out + '\v'; }
+                also esc == '0' {
+                    // The lexer already rejects REAL `\0` escapes; this
+                    // pair can only be a collapsed `\\0` (escaped
+                    // backslash + literal '0') — keep it literal text.
+                    out = out + c;
+                    out = out + esc;
+                }
+                also esc == '\\' { out = out + '\\'; }
+                also esc == '"' { out = out + '"'; }
+                also esc == '\'' { out = out + '\''; }
+                also esc == '?' { out = out + '?'; }
+                also esc == '{' { out = out + '{'; }
+                also esc == '}' { out = out + '}'; }
+                else {
+                    // Unknown escapes keep the backslash (python parity)
+                    out = out + c;
+                    out = out + esc;
+                }
+                i = i + 2;
+                continue;
+            }
+            out = out + c;
+            i = i + 1;
+        }
+        return out;
+    }
+
     pub fnc has_braces(s string) : bool {
         seen_open: bool = false;
         seen_close: bool = false;
@@ -470,6 +523,15 @@ pub def Parser : class {
         i: int = 0;
         while i < s.size {
             c: char = s[i];
+            if c == '\\' && i + 1 < s.size {
+                // Raw escape pairs from the lexer: the backslash escapes
+                // the next char, so a brace behind one is literal text
+                // (python parity)
+                lit = lit + c;
+                lit = lit + s[i + 1];
+                i = i + 2;
+                continue;
+            }
             if c == '{' {
                 // find the matching '}' (depth counting)
                 depth: int = 1;
@@ -478,6 +540,12 @@ pub def Parser : class {
                 closed: bool = false;
                 while j < s.size {
                     cj: char = s[j];
+                    if cj == '\\' && j + 1 < s.size {
+                        expr_src = expr_src + cj;
+                        expr_src = expr_src + s[j + 1];
+                        j = j + 2;
+                        continue;
+                    }
                     if cj == '{' {
                         depth = depth + 1;
                         expr_src = expr_src + cj;
@@ -506,8 +574,9 @@ pub def Parser : class {
                 is_expr: bool = false;
                 if this.has_nonspace(expr_src) {
                     sub_lex: Lexer = Lexer.make(expr_src);
+                    sub_lex.quiet = true;
                     sub_toks: vec<Token> = sub_lex.tokenize();
-                    if sub_toks.size > 0 {
+                    if sub_toks.size > 0 && sub_lex.warns == 0 && sub_lex.errs == 0 {
                         sub_par: Parser = Parser.make(sub_toks);
                         sub_par.quiet = true;
                         inner = sub_par.parse_expression(Precedence.LOWEST);
@@ -518,7 +587,7 @@ pub def Parser : class {
                 }
                 if is_expr {
                     if lit.size > 0 {
-                        lnode: Expr = Expr.make_string(lit);
+                        lnode: Expr = Expr.make_string(this.unescape_str(lit));
                         result = this.append_interp_part(result, lnode);
                         lit = "";
                     }
@@ -529,7 +598,15 @@ pub def Parser : class {
                     }
                     result = this.append_interp_part(result, inner);
                 } else {
-                    lit = lit + "{" + expr_src + "}";
+                    // Literal fallback (python parity): the `{...}` span
+                    // stays text — unescape it itself, since `lit` holds
+                    // raw pairs that get unescaped on flush.
+                    if lit.size > 0 {
+                        result = this.append_interp_part(result, Expr.make_string(this.unescape_str(lit)));
+                        lit = "";
+                    }
+                    fb: string = "{" + expr_src + "}";
+                    result = this.append_interp_part(result, Expr.make_string(this.unescape_str(fb)));
                 }
                 i = j;
                 continue;
@@ -538,11 +615,13 @@ pub def Parser : class {
             i = i + 1;
         }
         if lit.size > 0 {
-            lnode: Expr = Expr.make_string(lit);
+            // The accumulated literal still holds raw escape pairs AND the
+            // literal braces kept for fallbacks — unescape once at the end.
+            lnode: Expr = Expr.make_string(this.unescape_str(lit));
             result = this.append_interp_part(result, lnode);
         }
         if result == null {
-            return Expr.make_string(s);
+            return Expr.make_string(this.unescape_str(s));
         }
         return result;
     }
@@ -698,7 +777,7 @@ pub def Parser : class {
             if this.has_braces(tok.val) {
                 return this.parse_interpolated(tok.val);
             }
-            return Expr.make_string(tok.val);
+            return Expr.make_string(this.unescape_str(tok.val));
         }
 
         // Char literal
@@ -706,6 +785,19 @@ pub def Parser : class {
             c_val: char = ' ';
             if tok.val == "\\0" {
                 c_val = '\0';
+            } also tok.val.size == 4 && tok.val[0] == '\\' && tok.val[1] == 'x' {
+                // \xHH — hex byte escape
+                h1: int = 0;
+                h2: int = 0;
+                c1: char = tok.val[2];
+                c2: char = tok.val[3];
+                if c1 >= '0' && c1 <= '9' { h1 = c1 - '0'; }
+                also c1 >= 'a' && c1 <= 'f' { h1 = c1 - 'a' + 10; }
+                also c1 >= 'A' && c1 <= 'F' { h1 = c1 - 'A' + 10; }
+                if c2 >= '0' && c2 <= '9' { h2 = c2 - '0'; }
+                also c2 >= 'a' && c2 <= 'f' { h2 = c2 - 'a' + 10; }
+                also c2 >= 'A' && c2 <= 'F' { h2 = c2 - 'A' + 10; }
+                c_val = '\0' + h1 * 16 + h2;
             } also tok.val.size > 0 {
                 c_val = tok.val[0];
             }
@@ -774,12 +866,24 @@ pub def Parser : class {
             if p_tok.kind == Tok.IDENT || p_tok.kind == Tok.STAR || p_tok.kind == Tok.AMP
                || p_tok.kind == Tok.FNC || p_tok.kind == Tok.IMUT {
                 saved_pos: int = this.pos;
+                // Trial parse: `a < 0` in a grouping paren must NOT leak
+                // parse errors while parse_type probes the type path —
+                // quiet mirrors python's exception-swallowing _is_cast.
+                quiet_saved: bool = this.quiet;
+                err_saved: int = this.parse_errs;
+                this.quiet = true;
                 cast_type = this.parse_type();
-                if this.check(Tok.RPAREN) {
+                this.quiet = quiet_saved;
+                // A failed consume anywhere in the trial means the paren
+                // group is not a clean `(Type)` — treat it as grouping.
+                if this.check(Tok.RPAREN) && this.parse_errs == err_saved {
                     is_cast = true;
                 } else {
                     this.pos = saved_pos;
                     cast_type = "";
+                    // Failed trial consumes are not real errors — restore
+                    // the counter (the grouping path re-reports its own).
+                    this.parse_errs = err_saved;
                 }
             }
             if is_cast {
@@ -904,6 +1008,20 @@ pub def Parser : class {
             if this.match_tok(Tok.LPAREN) {
                 args: vec<Expr>;
                 // scast(TargetType, value) - target is a type
+                if name == "toint" || name == "tofloat" {
+                    // Typed conversions: toint(int<64>, x) / tofloat(double, x)
+                    // — the first argument is a type name (TypeConvExpr). Like
+                    // scast below, unconditionally parse a TYPE + COMMA + expr
+                    // (the type text lexes as several tokens, so no lookahead).
+                    this.keep_sized = true;
+                    tcv_t: string = this.parse_type();
+                    this.keep_sized = false;
+                    args.pushb(Expr.make_string(tcv_t));
+                    this.consume(Tok.COMMA, "expected ',' after conversion target type");
+                    args.pushb(this.parse_expression(Precedence.LOWEST));
+                    this.consume(Tok.RPAREN, "expected ')' after conversion arguments");
+                    return Expr.make_call(name, args);
+                }
                 if name == "scast" {
                     this.keep_sized = true;
                     sc_t: string = this.parse_type();
@@ -1199,10 +1317,35 @@ pub def Parser : class {
                     ma_block.pushb(Stmt.make_var_decl(ma_names.get(ma_i), ma_types.get(ma_i), false, false, ma_getter));
                     ma_i = ma_i + 1;
                 }
-                return Stmt.make_block(ma_block);
+                ma_ret: Stmt = Stmt.make_block(ma_block);
+                // The vars must land in the ENCLOSING scope (python's
+                // multi-assign is not a nested block).
+                ma_ret.name = "__ma__";
+                return ma_ret;
             }
         }
 
+        // `let x: T = v;` — `let` is not a Leash keyword (python rejects
+        // it) but stage1 tolerates it as a no-op prefix so older snippets
+        // still compile; only skip when an identifier follows, so `let` as
+        // a variable name keeps parsing as an expression.
+        if this.check(Tok.IDENT) && this.current().val == "let" && this.peek(1).kind == Tok.IDENT {
+            this.pos = this.pos + 1;
+            return this.parse_statement_inner();
+        }
+
+        // `empty;` — a deliberate no-op statement (python EMPTY token)
+        if this.check(Tok.IDENT) && this.current().val == "empty" && this.peek(1).kind == Tok.SEMI {
+            this.pos = this.pos + 2;
+            no_op: vec<Stmt>;
+            return Stmt.make_block(no_op);
+        }
+        // `ignore;` — return immediately with the default value (python
+        // IGNORE statement; nil becomes a typed zero at codegen)
+        if this.check(Tok.IDENT) && this.current().val == "ignore" && this.peek(1).kind == Tok.SEMI {
+            this.pos = this.pos + 2;
+            return Stmt.make_return(Expr.make_nil());
+        }
         // throw ErrorName(args);
         if this.check(Tok.IDENT) && this.current().val == "throw"
            && this.peek(1).kind == Tok.IDENT && this.peek(2).kind == Tok.LPAREN {
@@ -1379,8 +1522,13 @@ pub def Parser : class {
                 op: string = "=";
                 val: Expr = null;
                 if this.match_tok(Tok.ASSIGN) { op = "="; val = this.parse_expression(Precedence.LOWEST); }
-                also this.match_tok(Tok.PLUSEQ) { op = "+="; val = this.parse_expression(Precedence.LOWEST); }
-                also this.match_tok(Tok.MINUSEQ) { op = "-="; val = this.parse_expression(Precedence.LOWEST); }
+                also this.match_tok(Tok.PLUSEQ) { op = "+"; val = this.parse_expression(Precedence.LOWEST); }
+                also this.match_tok(Tok.MINUSEQ) { op = "-"; val = this.parse_expression(Precedence.LOWEST); }
+                if op != "=" && val != null {
+                    // Desugar like the statement form (python parity)
+                    val = Expr.make_binop(op, target, val);
+                    op = "=";
+                }
                 step = Stmt.make_assign(target, op, val);
             }
             body: vec<Stmt> = this.parse_block();
@@ -1419,14 +1567,36 @@ pub def Parser : class {
             coll_expr: Expr = this.parse_cond();
             body: vec<Stmt> = this.parse_block();
 
+            // Rebind the loop variables to fresh names: two loops may reuse
+            // `i, x` with different element types and the codegen's
+            // pre-alloca pass keeps one slot per name (python binds foreach
+            // vars per loop node, so re-use never collides there).
+            fe_ren: hash<string, string>;
+            fresh_idx: string = idx_name;
+            if idx_name.size > 0 && idx_name != "_" {
+                fresh_idx = "__fev" + tostring(this.fe_counter) + "_" + idx_name;
+                fe_ren.push(idx_name, fresh_idx);
+                this.fe_counter = this.fe_counter + 1;
+            }
+            fresh_item: string = item_name;
+            if item_name.size > 0 && item_name != "_" {
+                fresh_item = "__fev" + tostring(this.fe_counter) + "_" + item_name;
+                fe_ren.push(item_name, fresh_item);
+                this.fe_counter = this.fe_counter + 1;
+            }
+            coll_expr = this.rename_expr(coll_expr, fe_ren);
+            ren_body: vec<Stmt>;
+            foreach _, bs in<vector> body { ren_body.pushb(this.rename_stmt(bs, fe_ren)); }
+            body = ren_body;
+
             if is_struct_loop {
                 if idx_name.size == 0 || item_name.size == 0 {
                     show("error: in<struct> foreach needs 'name, value' loop vars");
                     return Stmt.make_block(body);
                 }
-                return Stmt.make_struct_foreach(idx_name, item_name, coll_expr, body);
+                return Stmt.make_struct_foreach(fresh_idx, fresh_item, coll_expr, body);
             }
-            return this.desugar_foreach(idx_name, item_name, is_string_loop, coll_expr, body);
+            return this.desugar_foreach(fresh_idx, fresh_item, is_string_loop, coll_expr, body);
         }
 
         // Do-while: do { body } while (cond);
@@ -1532,55 +1702,24 @@ pub def Parser : class {
             this.consume(Tok.SEMI, "expected ';' after assignment");
             return Stmt.make_assign(expr, "=", val);
         }
-        if this.match_tok(Tok.PLUSEQ) {
+        cs_op: string = "";
+        if this.match_tok(Tok.PLUSEQ) { cs_op = "+"; }
+        also this.match_tok(Tok.MINUSEQ) { cs_op = "-"; }
+        also this.match_tok(Tok.STAREQ) { cs_op = "*"; }
+        also this.match_tok(Tok.SLASHEQ) { cs_op = "/"; }
+        also this.match_tok(Tok.PERCENTEQ) { cs_op = "%"; }
+        also this.match_tok(Tok.SHIFTEQL) { cs_op = "<<"; }
+        also this.match_tok(Tok.SHIFTEQR) { cs_op = ">>"; }
+        also this.match_tok(Tok.AMPEQ) { cs_op = "&"; }
+        also this.match_tok(Tok.PIPEEQ) { cs_op = "|"; }
+        also this.match_tok(Tok.CARETEQ) { cs_op = "^"; }
+        if cs_op.size > 0 {
+            // Compound assignment desugars to a full read-modify-write
+            // (python parity): `x += y` becomes `x = x + y`, so string
+            // concat / pointer arithmetic / matrix ops all apply.
             val: Expr = this.parse_expression(Precedence.LOWEST);
-            this.consume(Tok.SEMI, "expected ';' after '+='");
-            return Stmt.make_assign(expr, "+=", val);
-        }
-        if this.match_tok(Tok.MINUSEQ) {
-            val: Expr = this.parse_expression(Precedence.LOWEST);
-            this.consume(Tok.SEMI, "expected ';' after '-='");
-            return Stmt.make_assign(expr, "-=", val);
-        }
-        if this.match_tok(Tok.STAREQ) {
-            val: Expr = this.parse_expression(Precedence.LOWEST);
-            this.consume(Tok.SEMI, "expected ';' after '*='");
-            return Stmt.make_assign(expr, "*=", val);
-        }
-        if this.match_tok(Tok.SLASHEQ) {
-            val: Expr = this.parse_expression(Precedence.LOWEST);
-            this.consume(Tok.SEMI, "expected ';' after '/='");
-            return Stmt.make_assign(expr, "/=", val);
-        }
-        if this.match_tok(Tok.PERCENTEQ) {
-            val: Expr = this.parse_expression(Precedence.LOWEST);
-            this.consume(Tok.SEMI, "expected ';' after '%='");
-            return Stmt.make_assign(expr, "%=", val);
-        }
-        if this.match_tok(Tok.SHIFTEQL) {
-            val: Expr = this.parse_expression(Precedence.LOWEST);
-            this.consume(Tok.SEMI, "expected ';' after '<<='");
-            return Stmt.make_assign(expr, "<<=", val);
-        }
-        if this.match_tok(Tok.SHIFTEQR) {
-            val: Expr = this.parse_expression(Precedence.LOWEST);
-            this.consume(Tok.SEMI, "expected ';' after '>>='");
-            return Stmt.make_assign(expr, ">>=", val);
-        }
-        if this.match_tok(Tok.AMPEQ) {
-            val: Expr = this.parse_expression(Precedence.LOWEST);
-            this.consume(Tok.SEMI, "expected ';' after '&='");
-            return Stmt.make_assign(expr, "&=", val);
-        }
-        if this.match_tok(Tok.PIPEEQ) {
-            val: Expr = this.parse_expression(Precedence.LOWEST);
-            this.consume(Tok.SEMI, "expected ';' after '|='");
-            return Stmt.make_assign(expr, "|=", val);
-        }
-        if this.match_tok(Tok.CARETEQ) {
-            val: Expr = this.parse_expression(Precedence.LOWEST);
-            this.consume(Tok.SEMI, "expected ';' after '^='");
-            return Stmt.make_assign(expr, "^=", val);
+            this.consume(Tok.SEMI, "expected ';' after compound assignment");
+            return Stmt.make_assign(expr, "=", Expr.make_binop(cs_op, expr, val));
         }
         if this.match_tok(Tok.PLUSPLUS) {
             this.consume(Tok.SEMI, "expected ';' after '++'");
@@ -1630,6 +1769,148 @@ pub def Parser : class {
         }
         this.consume(Tok.RBRACE, "expected '}' at end of block");
         return body;
+    }
+
+    // Rename IDENT references through a map (loop-var rebinding). The
+    // walkers rebuild nodes; untouched subtrees are shared.
+    pub fnc rename_expr(e Expr, renames hash<string, string>) : Expr {
+        if e == null { return e; }
+        if e.kind == ExprKind.IDENT {
+            if renames.isin(e.sval) {
+                return Expr.make_ident(renames[e.sval]);
+            }
+            return e;
+        }
+        if e.kind == ExprKind.BINOP {
+            // A `name = value` pair inside call args is a NAMED ARGUMENT:
+            // the left side is the argument label, not a variable.
+            if e.op == "=" {
+                return Expr.make_binop(e.op, e.left, this.rename_expr(e.right, renames));
+            }
+            return Expr.make_binop(e.op, this.rename_expr(e.left, renames), this.rename_expr(e.right, renames));
+        }
+        if e.kind == ExprKind.UNARY {
+            return Expr.make_unary(e.op, this.rename_expr(e.left, renames));
+        }
+        if e.kind == ExprKind.TERNARY {
+            return Expr.make_ternary(this.rename_expr(e.cond, renames), this.rename_expr(e.left, renames), this.rename_expr(e.right, renames));
+        }
+        if e.kind == ExprKind.CALL {
+            ra: vec<Expr>;
+            foreach _, a in<vector> e.args { ra.pushb(this.rename_expr(a, renames)); }
+            return Expr.make_call(e.sval, ra);
+        }
+        if e.kind == ExprKind.METHOD_CALL {
+            rma: vec<Expr>;
+            foreach _, a in<vector> e.args { rma.pushb(this.rename_expr(a, renames)); }
+            return Expr.make_method_call(this.rename_expr(e.left, renames), e.sval, rma);
+        }
+        if e.kind == ExprKind.MEMBER {
+            return Expr.make_member(this.rename_expr(e.left, renames), e.sval);
+        }
+        if e.kind == ExprKind.POINTER_MEMBER {
+            return Expr.make_pointer_member(this.rename_expr(e.left, renames), e.sval);
+        }
+        if e.kind == ExprKind.INDEX {
+            return Expr.make_index(this.rename_expr(e.left, renames), this.rename_expr(e.right, renames));
+        }
+        if e.kind == ExprKind.CAST {
+            return Expr.make_cast(e.sval, this.rename_expr(e.left, renames));
+        }
+        if e.kind == ExprKind.STRUCT_INIT {
+            rsa: vec<Expr>;
+            foreach _, a in<vector> e.args { rsa.pushb(this.rename_expr(a, renames)); }
+            return Expr.make_struct_init(e.sval, e.field_names, rsa);
+        }
+        if e.kind == ExprKind.ARRAY_LIT {
+            raa: vec<Expr>;
+            foreach _, a in<vector> e.args { raa.pushb(this.rename_expr(a, renames)); }
+            return Expr.make_array_lit(raa);
+        }
+        return e;
+    }
+
+    pub fnc rename_stmt(s Stmt, renames hash<string, string>) : Stmt {
+        if s == null { return s; }
+        if s.kind == StmtKind.VAR_DECL {
+            s.value = this.rename_expr(s.value, renames);
+            return s;
+        }
+        if s.kind == StmtKind.ASSIGN {
+            s.target = this.rename_expr(s.target, renames);
+            s.value = this.rename_expr(s.value, renames);
+            return s;
+        }
+        if s.kind == StmtKind.RETURN || s.kind == StmtKind.EXPR {
+            s.value = this.rename_expr(s.value, renames);
+            return s;
+        }
+        if s.kind == StmtKind.THROW || s.kind == StmtKind.SHOW {
+            ra: vec<Expr>;
+            foreach _, a in<vector> s.args { ra.pushb(this.rename_expr(a, renames)); }
+            s.args = ra;
+            return s;
+        }
+        if s.kind == StmtKind.IF {
+            s.cond = this.rename_expr(s.cond, renames);
+            rt: vec<Stmt>;
+            foreach _, st in<vector> s.then_block { rt.pushb(this.rename_stmt(st, renames)); }
+            s.then_block = rt;
+            re: vec<Stmt>;
+            foreach _, st in<vector> s.else_block { re.pushb(this.rename_stmt(st, renames)); }
+            s.else_block = re;
+            return s;
+        }
+        if s.kind == StmtKind.WHILE {
+            s.cond = this.rename_expr(s.cond, renames);
+            rb: vec<Stmt>;
+            foreach _, st in<vector> s.body { rb.pushb(this.rename_stmt(st, renames)); }
+            s.body = rb;
+            return s;
+        }
+        if s.kind == StmtKind.FOR {
+            if s.for_init != null { s.for_init = this.rename_stmt(s.for_init, renames); }
+            if s.cond != null { s.cond = this.rename_expr(s.cond, renames); }
+            if s.for_step != null { s.for_step = this.rename_stmt(s.for_step, renames); }
+            rb2: vec<Stmt>;
+            foreach _, st in<vector> s.body { rb2.pushb(this.rename_stmt(st, renames)); }
+            s.body = rb2;
+            return s;
+        }
+        if s.kind == StmtKind.LOOP || s.kind == StmtKind.BLOCK || s.kind == StmtKind.DEFER {
+            rb3: vec<Stmt>;
+            foreach _, st in<vector> s.body { rb3.pushb(this.rename_stmt(st, renames)); }
+            s.body = rb3;
+            return s;
+        }
+        if s.kind == StmtKind.SWITCH {
+            s.value = this.rename_expr(s.value, renames);
+            rc: vec<Stmt>;
+            foreach _, c in<vector> s.switch_cases { rc.pushb(this.rename_stmt(c, renames)); }
+            s.switch_cases = rc;
+            rd: vec<Stmt>;
+            foreach _, st in<vector> s.default_block { rd.pushb(this.rename_stmt(st, renames)); }
+            s.default_block = rd;
+            return s;
+        }
+        if s.kind == StmtKind.WORKS {
+            s.cond = this.rename_expr(s.cond, renames);
+            rw: vec<Stmt>;
+            foreach _, st in<vector> s.body { rw.pushb(this.rename_stmt(st, renames)); }
+            s.body = rw;
+            ro: vec<Stmt>;
+            foreach _, st in<vector> s.else_block { ro.pushb(this.rename_stmt(st, renames)); }
+            s.else_block = ro;
+            return s;
+        }
+        if s.kind == StmtKind.FOREACH_STRUCT {
+            s.target = this.rename_expr(s.target, renames);
+            rf: vec<Stmt>;
+            foreach _, st in<vector> s.body { rf.pushb(this.rename_stmt(st, renames)); }
+            s.body = rf;
+            return s;
+        }
+        return s;
     }
 
     pub fnc desugar_foreach(idx_name string, item_name string, is_string_loop bool, coll_expr Expr, body vec<Stmt>) : Stmt {
@@ -1687,7 +1968,11 @@ pub def Parser : class {
         if s.kind == StmtKind.BLOCK {
             nb: vec<Stmt>;
             foreach _, st in<vector> s.body { nb.pushb(this.foreach_fix_skips(st, fe_idx)); }
-            return Stmt.make_block(nb);
+            fx_blk: Stmt = Stmt.make_block(nb);
+            // Preserve markers (the multi-assign `__ma__` block must stay
+            // unscoped after the rebuild)
+            fx_blk.name = s.name;
+            return fx_blk;
         }
         if s.kind == StmtKind.IF {
             a: vec<Stmt>;
@@ -1700,6 +1985,15 @@ pub def Parser : class {
     }
 
     pub fnc parse_method_nofn(is_static bool, is_pub bool) : FuncDecl {
+        // Absorb pending member modifiers (unsafe/nogc/inline/async)
+        m_unsafe: bool = this.mod_unsafe;
+        m_nogc: bool = this.mod_nogc;
+        m_inline: bool = this.mod_inline;
+        m_async: bool = this.mod_async;
+        this.mod_unsafe = false;
+        this.mod_nogc = false;
+        this.mod_inline = false;
+        this.mod_async = false;
         name_tok: Token = this.consume_member_name("expected method name");
         this.consume(Tok.LPAREN, "expected '(' after method name");
         params: vec<FuncParam>;
@@ -1727,7 +2021,12 @@ pub def Parser : class {
             ret_type = this.parse_type();
         }
         body: vec<Stmt> = this.parse_block();
-        return FuncDecl.make(name_tok.val, params, ret_type, body, is_static, is_pub);
+        fd2: FuncDecl = FuncDecl.make(name_tok.val, params, ret_type, body, is_static, is_pub);
+        fd2.is_unsafe = m_unsafe;
+        fd2.is_nogc = m_nogc;
+        fd2.is_inline = m_inline;
+        fd2.is_async = m_async;
+        return fd2;
     }
 
 
@@ -1785,6 +2084,17 @@ pub def Parser : class {
         if otok.kind == Tok.IDENT {
             otarget = otok.val;
             this.pos = this.pos + 1;
+            // Generic target args (`opdef vec<T>.pushf`): consumed and
+            // discarded — the implicit __T_OPDEF__ params are derived from
+            // the target name below, so only the tokens must go.
+            if this.check(Tok.LT) {
+                this.pos = this.pos + 1;
+                this.parse_type();
+                while this.match_tok(Tok.COMMA) {
+                    this.parse_type();
+                }
+                this.consume(Tok.GT, "expected '>' after opdef target type parameters");
+            }
         } also otok.kind == Tok.STRING { otarget = "string"; this.pos = this.pos + 1; }
         also otok.kind == Tok.INT { otarget = "int"; this.pos = this.pos + 1; }
         also otok.kind == Tok.FLOAT { otarget = "float"; this.pos = this.pos + 1; }
@@ -1995,6 +2305,10 @@ pub def Parser : class {
                 if this.match_tok(Tok.STATIC) { is_static = true; }
                 also this.match_tok(Tok.PUB) { is_pub = true; }
                 also this.match_tok(Tok.PRIV) { is_pub = false; }
+                also this.match_tok(Tok.UNSAFE) { this.mod_unsafe = true; }
+                also this.match_tok(Tok.NOGC) { this.mod_nogc = true; }
+                also this.match_tok(Tok.INLINE) { this.mod_inline = true; }
+                also this.match_tok(Tok.ASYNC) { this.mod_async = true; }
                 else { stop; }
             }
 
@@ -2061,6 +2375,10 @@ pub def Parser : class {
                 if this.match_tok(Tok.STATIC) { is_static = true; }
                 also this.match_tok(Tok.PUB) { is_pub = true; }
                 also this.match_tok(Tok.PRIV) { is_pub = false; }
+                also this.match_tok(Tok.UNSAFE) { this.mod_unsafe = true; }
+                also this.match_tok(Tok.NOGC) { this.mod_nogc = true; }
+                also this.match_tok(Tok.INLINE) { this.mod_inline = true; }
+                also this.match_tok(Tok.ASYNC) { this.mod_async = true; }
                 else { stop; }
             }
 
@@ -2108,7 +2426,7 @@ pub def Parser : class {
                 v_typ = this.parse_type();
                 if this.match_tok(Tok.ASSIGN) {
                     if this.check(Tok.STRING) {
-                        v_sval = this.current().val;
+                        v_sval = this.unescape_str(this.current().val);
                         this.pos = this.pos + 1;
                         v_has_str = true;
                     } also this.check(Tok.INT) {
@@ -2215,13 +2533,32 @@ pub def Parser : class {
                 mod_path: string = "";
                 first_seg: Token = this.consume(Tok.IDENT, "expected module name in 'use'");
                 mod_path = first_seg.val;
-                while this.match_tok(Tok.COLONCOLON) {
-                    if this.match_tok(Tok.STAR) {
-                        mod_path = mod_path + "::*";
-                        stop;
-                    }
+                // Path-vs-item split (python parser parity): a `:: IDENT`
+                // only continues the PATH when another `:: (IDENT | *)`
+                // follows it. A trailing `:: Item` (before `;` or `alias`)
+                // is the item list — `use utils::str::Str;` resolves
+                // utils/str.lsh, not utils/str/Str.lsh.
+                while this.check(Tok.COLONCOLON)
+                   && this.peek(1).kind == Tok.IDENT
+                   && this.peek(2).kind == Tok.COLONCOLON
+                   && (this.peek(3).kind == Tok.IDENT || this.peek(3).kind == Tok.STAR) {
+                    this.match_tok(Tok.COLONCOLON);
                     next_seg: Token = this.consume(Tok.IDENT, "expected identifier in module path");
                     mod_path = mod_path + "::" + next_seg.val;
+                }
+                // Item section: `::*` (wildcard — marks the path) or a
+                // comma-separated item list (named items only restrict
+                // visibility in python; the self-hosted splice imports
+                // everything, so they are consumed here).
+                if this.match_tok(Tok.COLONCOLON) {
+                    if this.match_tok(Tok.STAR) {
+                        mod_path = mod_path + "::*";
+                    } else {
+                        this.consume(Tok.IDENT, "expected an item name after '::'");
+                        while this.match_tok(Tok.COMMA) {
+                            this.consume(Tok.IDENT, "expected an item name after ','");
+                        }
+                    }
                 }
                 // Optional: `use mod alias name;`
                 if this.check(Tok.IDENT) && this.current().val == "alias" {
@@ -2241,7 +2578,10 @@ pub def Parser : class {
                 this.drain_hoisted(prog);
                 continue;
             }
-            if this.match_tok(Tok.PUB) {
+            if this.match_tok(Tok.PUB) || this.match_tok(Tok.PRIV) {
+                // Visibility prefix before a declaration (`pub fnc`,
+                // `priv def T : template;`, ...). The self-hosted splice
+                // imports everything, so the marker itself is discarded.
                 if this.check(Tok.FNC) {
                     prog.funcs.pushb(this.parse_function(false, true));
                     this.drain_hoisted(prog);
@@ -2292,6 +2632,10 @@ pub def Parser : class {
                     alias_target: string = this.parse_type();
                     this.consume(Tok.SEMI, "expected ';' after type alias");
                     this.type_aliases.push(alias_name.val, alias_target);
+                    // Ride on the Program so imported aliases resolve at
+                    // type-check time (python registers them post-splice).
+                    prog.type_alias_defs.pushb(alias_name.val);
+                    prog.type_alias_defs.pushb(alias_target);
                     continue;
                 }
             }
@@ -2385,7 +2729,7 @@ pub def Parser : class {
                 }
                 this.consume(Tok.RBRACE, "expected '}' after @from declarations");
                 this.match_tok(Tok.SEMI);
-                prog.native_libs.pushb(lib_tok.val);
+                prog.native_libs.pushb(this.unescape_str(lib_tok.val));
                 prog.native_lib_files.pushb(this.src_file);
                 prog.native_lib_lines.pushb(nat_line);
                 prog.native_lib_cols.pushb(nat_col);

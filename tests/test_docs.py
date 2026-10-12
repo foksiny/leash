@@ -106,7 +106,8 @@ class TestDocs(unittest.TestCase):
                 # Registry packages aren't in a source checkout: a snippet
                 # importing one can't resolve here and documents behavior
                 # the package manager provides after `leashed install`.
-                if "could not find imported module" in out:
+                if ("could not find imported module" in out
+                        or "not found or ambiguous" in out):
                     skipped += 1
                     continue
                 checked += 1

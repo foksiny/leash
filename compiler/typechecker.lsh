@@ -129,6 +129,7 @@ pub def TypeChecker : class {
     pub generic_classes: hash<string, bool>;      // class<T> template names
     pub inst_classes: hash<string, bool>;        // mangled class instantiation -> true
     pub inst_class_nodes: vec<ClassDecl>;        // instantiated class clones
+    pub inst_tmaps: hash<string, vec<string>>;   // mangled -> [param names..., concrete types...]
     pub generic_funcs: hash<string, FuncDecl>;      // generic template name -> decl
     pub generic_tparams: hash<string, vec<string>>; // template name -> derived type params
     pub generic_ptypes: hash<string, vec<string>>;  // template name -> param types (substituted)
@@ -137,6 +138,7 @@ pub def TypeChecker : class {
     pub inst_keys: hash<string, bool>;              // mangled name -> already built
     pub variadic_builtins: vec<string>;             // C builtins callable with extra args
     pub readonly_borrows: vec<string>;             // current function's read-only array params
+    pub prog_aliases: hash<string, string>;        // post-import type aliases (def X : type Y)
     pub fatal_idx: int;                            // raise-class error index (Python abort parity)
     pub worker_funcs: hash<string, bool>;          // `worker fnc` names
     pub async_funcs: hash<string, bool>;            // `async fnc` names
@@ -801,6 +803,11 @@ pub def TypeChecker : class {
                 return "string";
             }
             return "string";
+        }
+        // Typed conversions: toint(int<64>, x) / tofloat(double, x) — the
+        // first argument is a type name (python's TypeConvExpr).
+        if (n == "toint" || n == "tofloat") && e.args.size == 2 && e.args.get(0).kind == ExprKind.STRING {
+            return this.resolve_type_alias(e.args.get(0).sval);
         }
         if n == "rand" {
             if e.args.size != 2 {
@@ -1531,14 +1538,36 @@ pub def TypeChecker : class {
             if this.structs.isin(e.sval) || this.classes.isin(e.sval) || this.unions.isin(e.sval) {
                 return e.sval;
             }
+            // Python parity: referencing an undefined variable is an error,
+            // not a silent int fallback (works blocks keep their own
+            // runtime-error path). `_` is the wildcard/discard name.
+            if !this.in_works && e.sval != "_" && e.sval != "this" {
+                this.errors.pushb("Undefined variable: '" + e.sval + "'");
+            }
             return "int"; // fallback
         }
 
         if e.kind == ExprKind.BINOP {
+            // Named-call-argument marker: `name = value` inside call args is
+            // encoded as a binop — the left ident is an argument NAME, not a
+            // variable reference.
+            if e.op == "=" && e.left != null && e.left.kind == ExprKind.IDENT {
+                return this.infer_expr(e.right);
+            }
+            // Operand types are computed ONCE here: the opdef rewrite and
+            // the promotion rules below both reuse them (inferring twice
+            // would duplicate any diagnostics the inference reports).
+            // `x is Type` / `x isnt Type` carry a type NAME on the right
+            // — never inferred as a value expression.
+            lt_full: string = this.infer_expr(e.left);
+            rt_full: string = "";
+            if e.op != "isT" && e.op != "isntT" {
+                rt_full = this.infer_expr(e.right);
+            }
             // opdef operator overload: rewrite into a call of the (possibly
             // generic) `_opdef_<base>_<op>` function with both operands.
-            obl: string = this.base_of(this.strip_ref(this.infer_expr(e.left)));
-            obr: string = this.base_of(this.strip_ref(this.infer_expr(e.right)));
+            obl: string = this.base_of(this.strip_ref(lt_full));
+            obr: string = this.base_of(this.strip_ref(rt_full));
             if obl.size > 0 && obl == obr {
                 okey: string = "_opdef_" + obl + "_" + this.op_word(e.op);
                 if !this.funcs.isin(okey) && this.generic_funcs.isin(okey) {
@@ -1564,7 +1593,7 @@ pub def TypeChecker : class {
             }
             // Containment: value <> collection — strings, vectors, arrays
             if e.op == "<>" {
-                rh_t2: string = this.strip_ref(this.infer_expr(e.right));
+                rh_t2: string = this.strip_ref(rt_full);
                 rh_ok2: bool = rh_t2 == "string" || this.is_vec_type2(rh_t2) || (rh_t2.size > 2 && rh_t2[rh_t2.size - 1] == ']');
                 if !rh_ok2 {
                     this.errors.pushb("Operator '<>' is only supported for array types, got '" + rh_t2 + "'");
@@ -1576,8 +1605,23 @@ pub def TypeChecker : class {
                e.op == "is" || e.op == "isnt" || e.op == "isT" || e.op == "isntT" {
                 return "bool";
             }
-            // For +, -, *, /, % return type of left operand
-            lt: string = this.infer_expr(e.left);
+            // For +, -, *, /, % the result follows the numeric promotion:
+            // float wins, uint+uint stays uint, char promotes to int
+            // (python _check_binary_op result rule). Only numeric operand
+            // pairs promote — string/struct concatenation keeps the left.
+            lt: string = lt_full;
+            rt_b: string = rt_full;
+            if this.is_numeric_base(lt) && this.is_numeric_base(rt_b) {
+                if lt == "float" || rt_b == "float" || lt == "double" || rt_b == "double" { return "float"; }
+                if lt == "uint" && rt_b == "uint" { return "uint"; }
+                if lt == "char" || rt_b == "char" { return "int"; }
+                // Wider int operands keep their width: the binop runs at the
+                // wider llvm type, so the inferred type must match it or
+                // store-side coercions would re-widen an already-wide reg.
+                if lt == "int64" || lt == "int<64>" || rt_b == "int64" || rt_b == "int<64>" {
+                    return "int<64>";
+                }
+            }
             if lt.size > 0 { return lt; }
             return "int";
         }
@@ -1637,6 +1681,12 @@ pub def TypeChecker : class {
                     }
                 }
                 return tc_fp.get(0);
+            }
+            // Interpolation parts arrive wrapped in tostring(): the inner
+            // expression must be type-checked (python infers interpolated
+            // parts directly).
+            if e.sval == "tostring" && e.args.size > 0 {
+                this.infer_expr(e.args.get(0));
             }
             // Special-cased builtin functions run before user functions
             // (Python checks them in this order too, so a user function
@@ -1967,7 +2017,8 @@ pub def TypeChecker : class {
         if this.fatal_idx >= 0 { return; }
 
         if s.kind == StmtKind.VAR_DECL {
-            var_t: string = s.var_type;
+            var_t: string = this.resolve_type_alias(s.var_type);
+            s.var_type = var_t;
             // Unknown type names (int32, Bogus, ...) are rejected, not
             // silently compiled to a fallback (Python E003 parity).
             if var_t.size > 0 && !s.is_infer && !this.is_known_type(var_t) {
@@ -1992,8 +2043,10 @@ pub def TypeChecker : class {
                     var_t = gc_mangled;
                     s.var_type = var_t;
                     if s.value.kind == ExprKind.METHOD_CALL && s.value.left != null
-                       && s.value.left.kind == ExprKind.IDENT && s.value.left.sval == gc_base
-                       && s.value.sval == "new" {
+                       && s.value.left.kind == ExprKind.IDENT && s.value.left.sval == gc_base {
+                        // `x: Tpl<A>.new()` and any other static method call
+                        // on the template base (`Set.from_vals(v)`) resolve to
+                        // the instantiated clone's method.
                         s.value.left.sval = gc_mangled;
                     }
                     v_gi: string = this.infer_expr(s.value);
@@ -2143,9 +2196,15 @@ pub def TypeChecker : class {
         }
 
         if s.kind == StmtKind.BLOCK {
-            this.enter_scope();
+            // Multi-assign desugars to a block whose vars belong to the
+            // enclosing scope — no nested scoping there.
+            if s.name != "__ma__" {
+                this.enter_scope();
+            }
             foreach _, st in<vector> s.body { this.check_statement(st); }
-            this.exit_scope();
+            if s.name != "__ma__" {
+                this.exit_scope();
+            }
             return;
         }
 
@@ -2357,6 +2416,10 @@ pub def TypeChecker : class {
                 out3 = out3 + this.substitute_type_params(part3, tmap);
             }
             return out3 + ">";
+        }
+        // Array suffix: T[] / K[] — substitute the base, re-suffix
+        if t.size > 2 && t[t.size - 1] == ']' && t[t.size - 2] == '[' {
+            return this.substitute_type_params(this.str_slice(t, 0, t.size - 2), tmap) + "[]";
         }
         return t;
     }
@@ -2628,14 +2691,23 @@ pub def TypeChecker : class {
         no_tps: vec<string>;
         clone: ClassDecl = ClassDecl.make(mangled, "", new_fields, new_methods, no_tps);
         this.inst_class_nodes.pushb(clone);
+        // Remember the parameter map as a flat [name, type, name, type...]
+        // list: method BODIES keep the placeholder spellings (vec<T>) and
+        // codegen resolves them through this.
+        tm_flat: vec<string>;
+        foreach _, tp in<vector> tmpl.type_params {
+            tm_flat.pushb(tp);
+            if tmap.isin(tp) { tm_flat.pushb(tmap[tp]); }
+        }
+        this.inst_tmaps.push(mangled, tm_flat);
 
         // Register like a normal class (mirrors pass 1)
         ci: ClassInfo = ClassInfo.make(mangled, "");
         foreach _, fd2 in<vector> new_fields {
             if fd2.is_static {
-                this.static_fields.push(mangled + "_" + fd2.name, fd2.typ);
+                this.static_fields.push(mangled + "_" + fd2.name, this.resolve_type_alias(fd2.typ));
             } else {
-                ci.add_field(fd2.name, fd2.typ);
+                ci.add_field(fd2.name, this.resolve_type_alias(fd2.typ));
             }
         }
         foreach _, m2 in<vector> new_methods {
@@ -2835,7 +2907,7 @@ pub def TypeChecker : class {
     // sized variants (int<8>, uint<16>, float<32>, ...) reduced to the
     // bare name. Python's _base_type does the same reduction.
     pub fnc is_numeric_base(t string) : bool {
-        b: string = this.base_of(this.strip_imut(t));
+        b: string = this.base_of(this.strip_imut(this.resolve_type_alias(t)));
         if b == "int" { return true; }
         if b == "uint" { return true; }
         if b == "float" { return true; }
@@ -2849,6 +2921,16 @@ pub def TypeChecker : class {
         if src.size == 0 || dst.size == 0 { return true; }
         if src == "nil" { return true; }
         if dst == "void" { return true; }
+        // A union variable accepts any variant-compatible value (the
+        // runtime tags it): python's assign path returns early for unions.
+        if this.unions.isin(this.strip_imut(dst)) { return true; }
+        // A char value assigns into a string (single-char materialization)
+        if src == "char" && dst == "string" { return true; }
+        // A generic-class value is compatible with its instantiation
+        // (python: dst.startswith(src + "_") for mangled clones)
+        if this.inst_classes.isin(dst) && dst.size > src.size && this.str_slice(dst, 0, src.size) == src {
+            return true;
+        }
         // Numeric types (incl. sized variants) are broadly compatible with
         // each other — Python: int/uint/float/char/bool all interassign.
         if this.is_numeric_base(src) && this.is_numeric_base(dst) { return true; }
@@ -2874,6 +2956,9 @@ pub def TypeChecker : class {
                 dbi = dbi + 1;
             }
             if sbase == dbase && sbase.size > 0 { return true; }
+            // Sized numeric spellings reduce to their bare base
+            // (int<64>[10] <-> int[] — python _base_type parity).
+            if sbase.size > 0 && this.is_numeric_base(sbase) && this.is_numeric_base(dbase) { return true; }
         }
         // slices: T[] -> vec<T>, *T, T[]
         if src.size > 2 && src[src.size - 1] == ']' {
@@ -2939,6 +3024,7 @@ pub def TypeChecker : class {
     pub fnc is_known_type(t string) : bool {
         if t.size == 0 { return true; }
         tt: string = this.strip_imut(t);
+        tt = this.resolve_type_alias(tt);
         if tt == "int" || tt == "uint" || tt == "float" || tt == "char" || tt == "bool" || tt == "string" || tt == "void" { return true; }
         // FFI conventions: macro-typed constants and pointer<T> spellings
         if tt == "macro" { return true; }
@@ -3014,7 +3100,28 @@ pub def TypeChecker : class {
         return t[t.size - 1] == '>' && t[0] == 'v' && t[1] == 'e' && t[2] == 'c' && t[3] == '<';
     }
 
+    // Resolve a type through the post-import alias table, then apply the
+    // width normalization the parser applies for same-file spellings.
+    pub fnc resolve_type_alias(t string) : string {
+        tt: string = t;
+        guard: int = 0;
+        while this.prog_aliases.isin(tt) && guard < 8 {
+            tt = this.prog_aliases[tt];
+            guard = guard + 1;
+        }
+        if tt == "float<64>" || tt == "float<32>" || tt == "float<16>" || tt == "float<128>" { return "float"; }
+        if tt == "int<32>" || tt == "int<16>" || tt == "int<8>" { return "int"; }
+        return tt;
+    }
+
     pub fnc check_program(prog Program) : void {
+        empty_al: hash<string, string>;
+        this.prog_aliases = empty_al;
+        pa_i: int = 0;
+        while pa_i + 1 < prog.type_alias_defs.size {
+            this.prog_aliases.push(prog.type_alias_defs.get(pa_i), prog.type_alias_defs.get(pa_i + 1));
+            pa_i = pa_i + 2;
+        }
         // Pass 1: Register structs, classes, enums, globals
         foreach _, s in<vector> prog.structs {
             si: StructInfo = StructInfo.make(s.name);
@@ -3048,8 +3155,8 @@ pub def TypeChecker : class {
             }
             foreach _, m in<vector> c.methods {
                 m_ps: vec<string>;
-                foreach _, m_p in<vector> m.params { m_ps.pushb(m_p.typ); }
-                ci.add_method(m.name, m.ret_type, m.is_static, m_ps);
+                foreach _, m_p in<vector> m.params { m_ps.pushb(this.resolve_type_alias(m_p.typ)); }
+                ci.add_method(m.name, this.resolve_type_alias(m.ret_type), m.is_static, m_ps);
                 // Generic static methods (vec<T> params etc.) become
                 // templates under the Class_method key; concrete types
                 // arrive at the call site.
@@ -3118,7 +3225,7 @@ pub def TypeChecker : class {
             uv_types: vec<string>;
             foreach _, uv in<vector> u.variants {
                 uv_names.pushb(uv.name);
-                uv_types.pushb(uv.typ);
+                uv_types.pushb(this.resolve_type_alias(uv.typ));
             }
             this.unions.push(u.name, true);
             this.union_names.push(u.name, uv_names);
@@ -3126,7 +3233,7 @@ pub def TypeChecker : class {
         }
 
         foreach _, g in<vector> prog.globals {
-            this.globals.push(g.name, g.typ);
+            this.globals.push(g.name, this.resolve_type_alias(g.typ));
         }
 
         // Pass 2: Register function signatures
@@ -3134,14 +3241,14 @@ pub def TypeChecker : class {
             if this.derive_generic_params(f) { continue; }
             fkey: string = f.name;
             if f.owner.size > 0 { fkey = f.owner + "_" + f.name; }
-            f_ret: string = f.ret_type;
+            f_ret: string = this.resolve_type_alias(f.ret_type);
             if f.is_async { f_ret = "future<" + f.ret_type + ">"; }
             this.funcs.push(fkey, f_ret);
             ptypes: vec<string>;
             pnames: vec<string>;
             pi_i: int = 0;
             foreach _, p in<vector> f.params {
-                ptypes.pushb(p.typ);
+                ptypes.pushb(this.resolve_type_alias(p.typ));
                 pnames.pushb(p.name);
                 if p.default_val != null {
                     this.func_defaults.push(fkey + "::" + tostring(pi_i), p.default_val);
@@ -3157,15 +3264,19 @@ pub def TypeChecker : class {
         // Pass 3: Typecheck function bodies
         foreach _, f in<vector> prog.funcs {
             if this.generic_funcs.isin(f.name) { continue; }
-            this.current_func_ret = f.ret_type;
+            this.current_func_ret = this.resolve_type_alias(f.ret_type);
             this.enter_scope();
+
+            // Worker functions accumulate into an implicit `result`
+            // (documented in the concurrency guide).
+            if f.is_worker { this.define_var("result", "int"); }
 
             // Bind parameters; arrays passed without '&' alias the caller's
             // storage and are read-only borrows inside the callee
             rb_clear: vec<string>;
             this.readonly_borrows = rb_clear;
             foreach _, p in<vector> f.params {
-                this.define_var(p.name, p.typ);
+                this.define_var(p.name, this.resolve_type_alias(p.typ));
                 pbt: string = this.strip_imut(p.typ);
                 if p.typ.size > 0 && p.typ[0] != '&' && this.is_array_type(pbt)
                    && !(pbt.size > 4 && pbt[0] == 'v' && pbt[1] == 'e' && pbt[2] == 'c' && pbt[3] == '<') {
@@ -3185,13 +3296,13 @@ pub def TypeChecker : class {
         foreach _, c in<vector> prog.classes {
             if this.generic_classes.isin(c.name) { continue; }
             foreach _, m in<vector> c.methods {
-                this.current_func_ret = m.ret_type;
+                this.current_func_ret = this.resolve_type_alias(m.ret_type);
                 this.enter_scope();
                 if !m.is_static {
                     this.define_var("this", c.name);
                 }
                 foreach _, p in<vector> m.params {
-                    this.define_var(p.name, p.typ);
+                    this.define_var(p.name, this.resolve_type_alias(p.typ));
                 }
                 foreach _, stmt in<vector> m.body {
                     this.check_statement(stmt);

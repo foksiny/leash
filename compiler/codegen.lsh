@@ -5,6 +5,7 @@ use typechecker::*;
 pub def CodeGen : class {
     pub debug_instrument: bool;   // `leash dbg`: emit __leash_dbg_stmt hooks
     pub opdef_inner: string;     // concrete inner type of the opdef container being compiled
+    pub cur_tmap_names: vec<string>;   // instantiated-class params (flat name,type pairs)
     pub lines: vec<string>;
     pub str_constants: vec<string>;
     pub str_pool: hash<string, string>;
@@ -65,9 +66,75 @@ pub def CodeGen : class {
     // literals are already emitted at their widened width — pass through.
     pub fnc i32_to_rt_i64(e Expr, val string) : string {
         if this.is_wide_int_lit(e) { return val; }
+        // The register may already be 64-bit (int<64> loads) or narrower
+        // (char) — widen through the value's own width.
+        elty: string = this.llvm_type(this.get_expr_type(e));
+        if elty == "i64" { return val; }
         r: string = this.new_reg();
-        this.emit("  " + r + " = sext i32 " + val + " to i64");
+        if elty == "i32" || elty.size == 0 {
+            this.emit("  " + r + " = sext i32 " + val + " to i64");
+            return r;
+        }
+        this.emit("  " + r + " = sext " + elty + " " + val + " to i64");
         return r;
+    }
+
+    // Coerce a value register to the slot's llvm type at store/param/return
+    // boundaries: the value's width comes from its leash type; plain int
+    // arithmetic produces i32, runtime values arrive i64, char-sized slots
+    // want i8. Integer literals embed at any width (small ones) — out-of-
+    // range literals are wrapped like a C narrowing conversion.
+    pub fnc coerce_store_val(e Expr, val string, lty string) : string {
+        if e == null { return val; }
+
+        if e.kind == ExprKind.INT || e.kind == ExprKind.FLOAT || e.kind == ExprKind.BOOL || e.kind == ExprKind.NIL {
+            // Literal: wrap when the target is narrower than the value.
+            // Widths above 64 bits embed the literal text unchanged — the
+            // int<64> modulus overflows to zero there and `% 0` would trap.
+            if e.kind == ExprKind.INT && this.is_int_lty(lty) && lty != "i64" && this.lty_width(lty) < 64 {
+                w: int = this.lty_width(lty);
+                mod_v: int<64> = 1;
+                mi: int = 0;
+                while mi < w { mod_v = mod_v * 2; mi = mi + 1; }
+                v64: int<64> = e.ival;
+                v64 = v64 % mod_v;
+                if v64 < 0 { v64 = v64 + mod_v; }
+                return tostring(v64);
+            }
+            return val;
+        }
+        // Tuple element extracts (multi-return) already land at the target
+        // width — __tupget has no coercible leash type.
+        if e.kind == ExprKind.CALL && e.sval == "__tupget" { return val; }
+        vt: string = this.get_expr_type(e);
+        vlty: string = this.llvm_type(vt);
+        if vlty == lty { return val; }
+        // char value into a string slot: materialize a 1-char string
+        if vt == "char" && lty == "i8*" {
+            m_r: string = this.new_reg();
+            this.emit("  " + m_r + " = call i8* @leash_gc_malloc(i64 2)");
+            this.emit("  store i8 " + val + ", i8* " + m_r);
+            z_r: string = this.new_reg();
+            this.emit("  " + z_r + " = getelementptr inbounds i8, i8* " + m_r + ", i64 1");
+            this.emit("  store i8 0, i8* " + z_r);
+            return m_r;
+        }
+        if this.is_int_lty(vlty) && this.is_int_lty(lty) {
+            r: string = this.new_reg();
+            if this.lty_width(vlty) > this.lty_width(lty) {
+                this.emit("  " + r + " = trunc " + vlty + " " + val + " to " + lty);
+            } also this.lty_width(lty) > this.lty_width(vlty) {
+                if this.is_uint_type(vt) {
+                    this.emit("  " + r + " = zext " + vlty + " " + val + " to " + lty);
+                } else {
+                    this.emit("  " + r + " = sext " + vlty + " " + val + " to " + lty);
+                }
+            } else {
+                return val;
+            }
+            return r;
+        }
+        return val;
     }
 
     pub fnc new_reg() : string {
@@ -260,6 +327,14 @@ pub def CodeGen : class {
         if (inner == "__T_OPDEF__" || inner == "thisop.typ") && this.opdef_inner.size > 0 {
             return this.opdef_inner;
         }
+        ti3: int = 0;
+        while ti3 + 1 < this.cur_tmap_names.size {
+            nm3: string = this.cur_tmap_names.get(ti3);
+            if nm3 == inner {
+                return this.cur_tmap_names.get(ti3 + 1);
+            }
+            ti3 = ti3 + 2;
+        }
         return inner;
     }
 
@@ -284,6 +359,55 @@ pub def CodeGen : class {
             i = i + 1;
         }
         return "int";
+    }
+
+    // hash<K,V> key type
+    pub fnc hash_key_type(typ string) : string {
+        if typ.size <= 7 { return "int"; }
+        depth: int = 1;
+        i: int = 5;
+        key_t: string = "";
+        while i < typ.size {
+            c: char = typ[i];
+            if c == '<' { depth = depth + 1; }
+            also c == '>' { depth = depth - 1; }
+            also c == ',' && depth == 1 {
+                return key_t;
+            }
+            key_t = key_t + c;
+            i = i + 1;
+        }
+        return "int";
+    }
+
+    // The runtime hash is string-keyed: coerce a key of any scalar type to
+    // its i8* string form (strings pass through untouched).
+    pub fnc hash_key_arg(key_val string, key_t string) : string {
+        klty: string = this.llvm_type(key_t);
+        if klty == "i8*" { return key_val; }
+        if klty == "double" {
+            fw: string = this.new_reg();
+            this.emit("  " + fw + " = call i8* @leash_sh_float_key(double " + key_val + ")");
+            return fw;
+        }
+        kw: string = this.new_reg();
+        if klty == "i64" {
+            if this.is_uint_type(key_t) {
+                this.emit("  " + kw + " = call i8* @leash_sh_uint_key(i64 " + key_val + ")");
+            } else {
+                this.emit("  " + kw + " = call i8* @leash_sh_int_key(i64 " + key_val + ")");
+            }
+            return kw;
+        }
+        // i32 / i16 / i8 / i1 / char: widen to i64 first
+        wide: string = this.new_reg();
+        if this.is_uint_type(key_t) || key_t == "bool" {
+            this.emit("  " + wide + " = zext " + klty + " " + key_val + " to i64");
+        } else {
+            this.emit("  " + wide + " = sext " + klty + " " + key_val + " to i64");
+        }
+        this.emit("  " + kw + " = call i8* @leash_sh_int_key(i64 " + wide + ")");
+        return kw;
     }
 
     // Build a LeashVec { data, size, cap } (i8*) from a slice value { len, T* }
@@ -1094,6 +1218,14 @@ pub def CodeGen : class {
         // with sext/trunc at the i64 runtime boundaries.
         if typ == "int" { return "i32"; }
         if typ == "uint" { return "i32"; }
+
+        // C-spelling aliases (types.lsh: def double : type float<64>;)
+        if typ == "double" || typ == "float64" { return "double"; }
+        if typ == "float32" { return "float"; }
+        if typ == "int64" || typ == "uint64" { return "i64"; }
+        if typ == "int32" || typ == "uint32" { return "i32"; }
+        if typ == "int16" || typ == "uint16" { return "i16"; }
+        if typ == "int8" || typ == "uint8" { return "i8"; }
         if this.tc.is_fnc_type(typ) {
             fparts: vec<string> = this.tc.fnc_parts(typ);
             fps: string = "";
@@ -1128,6 +1260,9 @@ pub def CodeGen : class {
                 inner = inner + typ[si];
                 si = si + 1;
             }
+            // `pointer<void>` (opaque native handle) is i8* — LLVM IR has
+            // no void* (clang rejects it inside aggregate types).
+            if inner == "void" { return "i8*"; }
             return this.llvm_type(inner) + "*";
         }
 
@@ -1203,6 +1338,17 @@ pub def CodeGen : class {
 
         if (typ == "__T_OPDEF__" || typ == "thisop.typ") && this.opdef_inner.size > 0 {
             return this.llvm_type(this.opdef_inner);
+        }
+
+        // Instantiated-generic placeholders: `vec<T>` inside Stack_string's
+        // methods resolves T through the instantiation's parameter map.
+        ti2: int = 0;
+        while ti2 + 1 < this.cur_tmap_names.size {
+            nm2: string = this.cur_tmap_names.get(ti2);
+            if nm2 == typ {
+                return this.llvm_type(this.cur_tmap_names.get(ti2 + 1));
+            }
+            ti2 = ti2 + 2;
         }
 
         return "i64";
@@ -1345,7 +1491,15 @@ pub def CodeGen : class {
                 if !this.tc.structs.isin(rst) && !this.tc.classes.isin(rst) { rt = rst; }
             }
             if lt == "string" || rt == "string" { return "string"; }
-            if lt == "float" || rt == "float" { return "float"; }
+            if lt == "float" || rt == "float" || lt == "double" || rt == "double" { return "float"; }
+            // Numeric ops promote like python's _check_binary_op: float
+            // wins, uint+uint stays uint, char promotes to int — and the
+            // wider int spelling survives so coercions match the real width.
+            if lt == "char" || rt == "char" { return "int"; }
+            if lt == "uint" && rt == "uint" { return "uint"; }
+            if lt == "int64" || lt == "int<64>" || rt == "int64" || rt == "int<64>" {
+                return "int<64>";
+            }
             return lt;
         }
 
@@ -1402,16 +1556,25 @@ pub def CodeGen : class {
             if e.sval == "choose" { return "string"; }
             if e.sval == "wait" { return "void"; }
             if e.sval == "timepass" { return "float"; }
-            if e.sval == "toint" { return "int"; }
-            if e.sval == "tofloat" { return "float"; }
+            if e.sval == "toint" {
+                // Typed form: toint(int<64>, x) yields the target type
+                if e.args.size == 2 && e.args.get(0).kind == ExprKind.STRING {
+                    return this.tc.resolve_type_alias(e.args.get(0).sval);
+                }
+                return "int";
+            }
+            if e.sval == "tofloat" {
+                if e.args.size == 2 && e.args.get(0).kind == ExprKind.STRING {
+                    return this.tc.resolve_type_alias(e.args.get(0).sval);
+                }
+                return "float";
+            }
             if e.sval == "tochar" { return "char"; }
             return "int";
         }
 
         if e.kind == ExprKind.METHOD_CALL {
-            // Built-in method returns
-            if e.sval == "size" { return "int"; }
-            if e.sval == "isin" { return "bool"; }
+
             // Built-in File class (statics + instance methods)
             if e.left != null && e.left.kind == ExprKind.IDENT && e.left.sval == "File" {
                 if e.sval == "open" { return "File"; }
@@ -1422,32 +1585,12 @@ pub def CodeGen : class {
                 return this.file_method_ret(e.sval);
             }
 
-            if e.sval == "replace" { return "string"; }
-            if e.sval == "pushb" || e.sval == "push" || e.sval == "write" || e.sval == "close" { return "void"; }
-            if e.sval == "read" { return "string"; }
-
             // File.open static method
             if e.sval == "open" && e.left.kind == ExprKind.IDENT && e.left.sval == "File" {
                 return "File";
             }
 
             obj_t: string = this.strip_ref(this.get_expr_type(e.left));
-
-            // vec<T>.get / vec<T>.popb -> T
-            if (e.sval == "get" || e.sval == "popb") && this.is_vec_type(obj_t) {
-                return this.vec_inner_type(obj_t);
-            }
-
-            // hash<K,V>.get -> V  (also hash[key])
-            if e.sval == "get" && this.is_hash_type(obj_t) {
-                return this.hash_val_type(obj_t);
-            }
-
-            // hash extras
-            if e.sval == "getKey" { return "string"; }
-            if e.sval == "keys" { return "vec<string>"; }
-            if e.sval == "values" { return "vec<int>"; }
-            if e.sval == "delete" { return "void"; }
 
             // Class method (walk parent chain for inherited methods)
             if this.tc.classes.isin(obj_t) {
@@ -1471,6 +1614,29 @@ pub def CodeGen : class {
             if this.tc.funcs.isin(mname) {
                 return this.tc.funcs[mname];
             }
+            // Built-in method returns for non-class receivers
+            if e.sval == "replace" { return "string"; }
+            if e.sval == "pushb" || e.sval == "push" || e.sval == "write" || e.sval == "close" { return "void"; }
+            if e.sval == "read" { return "string"; }
+            if e.sval == "size" { return "int"; }
+            if e.sval == "isin" { return "bool"; }
+
+            // vec<T>.get / vec<T>.popb -> T
+            if (e.sval == "get" || e.sval == "popb") && this.is_vec_type(obj_t) {
+                return this.vec_inner_type(obj_t);
+            }
+
+            // hash<K,V>.get -> V  (also hash[key])
+            if e.sval == "get" && this.is_hash_type(obj_t) {
+                return this.hash_val_type(obj_t);
+            }
+
+            // hash extras
+            if e.sval == "getKey" { return "string"; }
+            if e.sval == "keys" { return "vec<string>"; }
+            if e.sval == "values" { return "vec<int>"; }
+            if e.sval == "delete" { return "void"; }
+
             return "void";
         }
 
@@ -1557,6 +1723,16 @@ pub def CodeGen : class {
 
         if e.kind == ExprKind.STRUCT_INIT {
             return e.sval;
+        }
+
+        if e.kind == ExprKind.ARRAY_LIT {
+            // Resolve the element type via codegen-local var_types: the
+            // typechecker's scopes are already popped at codegen time, so
+            // tc.infer_expr would fall back to "int" for local idents and
+            // mis-type the slice ({i64, i32*} vs {i64, T**}), truncating
+            // class-pointer elements during slice->vec conversion.
+            if e.args.size > 0 { return this.get_expr_type(e.args.get(0)) + "[]"; }
+            return "int[]";
         }
 
         return this.tc.infer_expr(e);
@@ -1808,6 +1984,19 @@ pub def CodeGen : class {
                 // LLVM float literals require digits on both sides of '.'
                 if lit[0] == '.' { lit = "0" + lit; }
                 if lit[lit.size - 1] == '.' { lit = lit + "0"; }
+                // Scientific notation needs a '.' before the exponent:
+                // `1e-15` parses as hex in LLVM, `1.0e-15` does not.
+                has_dot: bool = false;
+                sci_i: int = -1;
+                li: int = 0;
+                while li < lit.size {
+                    if lit[li] == '.' { has_dot = true; }
+                    also (lit[li] == 'e' || lit[li] == 'E') && sci_i < 0 { sci_i = li; }
+                    li = li + 1;
+                }
+                if sci_i > 0 && !has_dot {
+                    lit = this.str_slice2(lit, 0, sci_i) + ".0" + this.str_slice2(lit, sci_i, lit.size);
+                }
                 return lit;
             }
             return tostring(e.fval);
@@ -2259,7 +2448,7 @@ pub def CodeGen : class {
             res: string = this.new_reg();
             lty: string = this.llvm_type(lt);
 
-            if lt == "float" || rt == "float" {
+            if lt == "float" || rt == "float" || lt == "double" || rt == "double" {
                 if lt == "int" || lt == "uint" {
                     conv_l: string = this.new_reg();
                     this.emit("  " + conv_l + " = sitofp " + this.llvm_type(lt) + " " + l_val + " to double");
@@ -2284,15 +2473,17 @@ pub def CodeGen : class {
                 return res;
             }
 
-            // Widen char operands to the int width for mixed int/char ops
-            if lt == "char" && rt == "int" {
+            // Char operands widen to the int width for numeric ops — a
+            // char-char result is 'int' (python's promotion), so the op
+            // must run at i32, not i8.
+            if lt == "char" && (rt == "int" || rt == "uint" || rt == "char") {
                 extc_l: string = this.new_reg();
                 this.emit("  " + extc_l + " = zext i8 " + l_val + " to i32");
                 l_val = extc_l;
                 lt = "int";
                 lty = "i32";
             }
-            if rt == "char" && lt == "int" {
+            if rt == "char" && (lt == "int" || lt == "uint" || lt == "char") {
                 extc_r: string = this.new_reg();
                 this.emit("  " + extc_r + " = zext i8 " + r_val + " to i32");
                 r_val = extc_r;
@@ -2313,25 +2504,35 @@ pub def CodeGen : class {
                 if rt == "nil" { r_val = nil_word; }
             }
 
-            // Widen mismatched integer widths to the wider operand
+            // Widen mismatched integer widths to the wider operand. Plain
+            // decimal literals skip the conversion: they already carry the
+            // full value, and `sext i32 <big> to i64` would wrap first.
             rlty: string = this.llvm_type(rt);
             if this.is_int_lty(lty) && this.is_int_lty(rlty) && lty != rlty {
+                r_is_lit: bool = r_val.size > 0 && r_val[0] != '%';
+                l_is_lit: bool = l_val.size > 0 && l_val[0] != '%';
                 if this.lty_width(lty) > this.lty_width(rlty) {
-                    ext_r: string = this.new_reg();
-                    if this.is_uint_type(rt) {
-                        this.emit("  " + ext_r + " = zext " + rlty + " " + r_val + " to " + lty);
-                    } else {
-                        this.emit("  " + ext_r + " = sext " + rlty + " " + r_val + " to " + lty);
+                    if !r_is_lit {
+                        ext_r: string = this.new_reg();
+                        if this.is_uint_type(rt) {
+                            this.emit("  " + ext_r + " = zext " + rlty + " " + r_val + " to " + lty);
+                        } else {
+                            this.emit("  " + ext_r + " = sext " + rlty + " " + r_val + " to " + lty);
+                        }
+                        r_val = ext_r;
                     }
-                    r_val = ext_r;
                 } also this.lty_width(rlty) > this.lty_width(lty) {
-                    ext_l: string = this.new_reg();
-                    if this.is_uint_type(lt) {
-                        this.emit("  " + ext_l + " = zext " + lty + " " + l_val + " to " + rlty);
-                    } else {
-                        this.emit("  " + ext_l + " = sext " + lty + " " + l_val + " to " + rlty);
+                    if !l_is_lit {
+                        ext_l: string = this.new_reg();
+                        if this.is_uint_type(lt) {
+                            this.emit("  " + ext_l + " = zext " + lty + " " + l_val + " to " + rlty);
+                        } else {
+                            this.emit("  " + ext_l + " = sext " + lty + " " + l_val + " to " + rlty);
+                        }
+                        l_val = ext_l;
                     }
-                    l_val = ext_l;
+                    // The OP runs at the wider width even when the literal
+                    // operand needs no conversion instruction.
                     lty = rlty;
                 }
             }
@@ -2364,7 +2565,15 @@ pub def CodeGen : class {
             also e.op == "|" { this.emit("  " + res + " = or " + lty + " " + l_val + ", " + r_val); }
             also e.op == "^" { this.emit("  " + res + " = xor " + lty + " " + l_val + ", " + r_val); }
             also e.op == "<<" { this.emit("  " + res + " = shl " + lty + " " + l_val + ", " + r_val); }
-            also e.op == ">>" { this.emit("  " + res + " = ashr " + lty + " " + l_val + ", " + r_val); }
+            also e.op == ">>" {
+                // Unsigned right shift zeroes the top bits; signed fills with
+                // the sign (python emits lshr for uint-family operands).
+                if this.is_uint_type(lt) {
+                    this.emit("  " + res + " = lshr " + lty + " " + l_val + ", " + r_val);
+                } else {
+                    this.emit("  " + res + " = ashr " + lty + " " + l_val + ", " + r_val);
+                }
+            }
             return res;
         }
 
@@ -2393,7 +2602,7 @@ pub def CodeGen : class {
             }
             if e.op == "-" {
                 operand_t: string = this.get_expr_type(e.left);
-                if operand_t == "float" {
+                if operand_t == "float" || operand_t == "double" {
                     this.emit("  " + res + " = fneg double " + u_val);
                     return res;
                 }
@@ -2608,34 +2817,17 @@ pub def CodeGen : class {
                     return this.gen_expr(sc_ce);
                 }
             }
-            // 2-arg casts: toint(int, x) / tofloat(float, x) / tochar(char, x)
+            // 2-arg typed conversions: toint(int<64>, x) / tofloat(double, x)
+            // / tochar(char, x) — the first argument names the TARGET type.
             if e.args.size == 2 && (e.sval == "toint" || e.sval == "tofloat" || e.sval == "tochar") {
                 cast2_val: string = this.gen_expr(e.args.get(1));
                 cast2_from: string = this.get_expr_type(e.args.get(1));
+                cast2_tgt: string = this.tc.resolve_type_alias(e.args.get(0).sval);
+                cast2_lty: string = this.llvm_type(cast2_tgt);
                 res: string = this.new_reg();
-                if e.sval == "toint" {
-                    if cast2_from == "float" {
-                        this.emit("  " + res + " = fptosi double " + cast2_val + " to i32");
-                        return res;
-                    }
-                    if cast2_from == "string" {
-                        this.emit("  " + res + " = call i64 @atoll(i8* " + cast2_val + ")");
-                        return this.rt_i64_to_i32(res);
-                        return res;
-                    }
-                    if cast2_from == "char" {
-                        this.emit("  " + res + " = zext i8 " + cast2_val + " to i32");
-                        return res;
-                    }
-                    if cast2_from == "bool" {
-                        this.emit("  " + res + " = zext i1 " + cast2_val + " to i32");
-                        return res;
-                    }
-                    return cast2_val;
-                }
                 if e.sval == "tofloat" {
-                    if cast2_from == "int" {
-                        this.emit("  " + res + " = sitofp i64 " + cast2_val + " to double");
+                    if this.is_int_lty(this.llvm_type(cast2_from)) {
+                        this.emit("  " + res + " = sitofp " + this.llvm_type(cast2_from) + " " + cast2_val + " to double");
                         return res;
                     }
                     if cast2_from == "string" {
@@ -2644,8 +2836,37 @@ pub def CodeGen : class {
                     }
                     return cast2_val;
                 }
-                if cast2_from == "int" {
-                    this.emit("  " + res + " = trunc i64 " + cast2_val + " to i8");
+                // toint / tochar: integer targets
+                if cast2_from == "float" || cast2_from == "double" {
+                    this.emit("  " + res + " = fptosi double " + cast2_val + " to " + cast2_lty);
+                    return res;
+                }
+                if cast2_from == "string" {
+                    a64: string = this.new_reg();
+                    this.emit("  " + a64 + " = call i64 @atoll(i8* " + cast2_val + ")");
+                    if this.lty_width(cast2_lty) > 64 { return a64; }
+                    if this.lty_width(cast2_lty) > 32 {
+                        this.emit("  " + res + " = trunc i64 " + a64 + " to " + cast2_lty);
+                        return res;
+                    }
+                    r32: string = this.new_reg();
+                    this.emit("  " + r32 + " = trunc i64 " + a64 + " to i32");
+                    return this.coerce_store_val(e.args.get(1), r32, cast2_lty);
+                }
+                from_lty2: string = this.llvm_type(cast2_from);
+                if this.is_int_lty(from_lty2) && this.is_int_lty(cast2_lty) {
+                    if from_lty2 == cast2_lty { return cast2_val; }
+                    if this.lty_width(from_lty2) > this.lty_width(cast2_lty) {
+                        this.emit("  " + res + " = trunc " + from_lty2 + " " + cast2_val + " to " + cast2_lty);
+                    } else {
+                        // char is an UNSIGNED byte (python: chars carry
+                        // their 0-255 codepoint, never negative)
+                        if this.is_uint_type(cast2_from) || cast2_from == "char" {
+                            this.emit("  " + res + " = zext " + from_lty2 + " " + cast2_val + " to " + cast2_lty);
+                        } else {
+                            this.emit("  " + res + " = sext " + from_lty2 + " " + cast2_val + " to " + cast2_lty);
+                        }
+                    }
                     return res;
                 }
                 return cast2_val;
@@ -2675,6 +2896,30 @@ pub def CodeGen : class {
             if e.sval == "__toint_conv" {
                 tc_target: string = e.args.get(0).sval;
                 tc_val: string = this.gen_expr(e.args.get(1));
+                // Integer / float values convert directly (width coercion /
+                // fptosi); only STRING values go through the parse paths.
+                tc_from: string = this.get_expr_type(e.args.get(1));
+                if this.is_int_lty(this.llvm_type(tc_from)) {
+                    tc_fl: string = this.llvm_type(tc_from);
+                    tc_tl: string = this.llvm_type(tc_target);
+                    if tc_fl == tc_tl { return tc_val; }
+                    tc_cr: string = this.new_reg();
+                    if this.lty_width(tc_fl) > this.lty_width(tc_tl) {
+                        this.emit("  " + tc_cr + " = trunc " + tc_fl + " " + tc_val + " to " + tc_tl);
+                    } else {
+                        if this.is_uint_type(tc_from) {
+                            this.emit("  " + tc_cr + " = zext " + tc_fl + " " + tc_val + " to " + tc_tl);
+                        } else {
+                            this.emit("  " + tc_cr + " = sext " + tc_fl + " " + tc_val + " to " + tc_tl);
+                        }
+                    }
+                    return tc_cr;
+                }
+                if tc_from == "float" || tc_from == "double" {
+                    tc_fr2: string = this.new_reg();
+                    this.emit("  " + tc_fr2 + " = fptosi double " + tc_val + " to " + this.llvm_type(tc_target));
+                    return tc_fr2;
+                }
                 if this.is_sized_int_type(tc_target) && this.sized_int_width(tc_target) > 64 {
                     tcw: int = this.sized_int_width(tc_target);
                     tcs: int = 0;
@@ -2746,6 +2991,13 @@ pub def CodeGen : class {
                 // Wide integers format through the big-int runtime
                 if this.is_sized_int_type(atyp) && this.sized_int_width(atyp) > 64 {
                     return this.wide_int_to_str(aval, atyp);
+                }
+                // Pointer-typed args pass through unchanged (python's
+                // tostring returns non-int/float args as-is; a
+                // pointer<char> already IS a C string pointer)
+                al_lty: string = this.llvm_type(atyp);
+                if al_lty.size > 0 && al_lty[al_lty.size - 1] == '*' {
+                    return aval;
                 }
                 // Fallback: treat as int
                 res: string = this.new_reg();
@@ -2897,6 +3149,19 @@ pub def CodeGen : class {
                 aval: string = this.gen_expr(arg);
                 atyp: string = this.get_expr_type(arg);
                 alty: string = this.llvm_type(atyp);
+                // Slice value into a vec param: copy into a real vec
+                // (same conversion the assignment path performs)
+                if this.tc.func_params.isin(e.sval) {
+                    fparamsS: vec<string> = this.tc.func_params[e.sval];
+                    if i < fparamsS.size {
+                        ptS: string = fparamsS.get(i);
+                        if this.is_vec_type(ptS) && atyp.size > 1 && atyp[0] != '&' && atyp[atyp.size - 1] == ']' {
+                            aval = this.slice_to_vec(aval, atyp, this.vec_inner_type(ptS));
+                            atyp = ptS;
+                            alty = this.llvm_type(ptS);
+                        }
+                    }
+                }
                 // '&T' parameters receive by reference (python parity):
                 // pointer/struct/class args pass their pointer value, scalar
                 // l-values pass the address of their cell, ref vars pass the
@@ -2930,6 +3195,22 @@ pub def CodeGen : class {
                         aval = "null";
                     } else {
                         aval = "0";
+                    }
+                }
+                // Int args embed/coerce to the declared param width:
+                // literals wrap/truncate at the param width, registers
+                // sext/trunc (clang zero-extends mistyped constants).
+                if this.tc.func_params.isin(e.sval) {
+                    fparamsW: vec<string> = this.tc.func_params[e.sval];
+                    if i < fparamsW.size {
+                        ptW: string = fparamsW.get(i);
+                        if ptW.size > 0 && ptW[0] != '&' {
+                            pltyW: string = this.llvm_type(ptW);
+                            if this.is_int_lty(alty) && this.is_int_lty(pltyW) && alty != pltyW {
+                                aval = this.coerce_store_val(arg, aval, pltyW);
+                                alty = pltyW;
+                            }
+                        }
                     }
                 }
                 if i > 0 { arg_strs = arg_strs + ", "; }
@@ -3051,6 +3332,54 @@ pub def CodeGen : class {
                     this.current_block_terminated = false;
                     return "";
                 }
+                // pushf: insert at the FRONT — grow if needed, shift the
+                // elements one slot right (memmove), store at [0].
+                if e.sval == "pushf" {
+                    aval: string = this.gen_expr(e.args.get(0));
+                    pf_size: string = this.vec_field(obj_val, 1);
+                    pf_cap: string = this.vec_field(obj_val, 2);
+                    pf_data: string = this.vec_field(obj_val, 0);
+                    pf_esz: int = this.vec_elem_bytes(inner_t);
+                    pf_full: string = this.new_reg();
+                    this.emit("  " + pf_full + " = icmp sge i64 " + pf_size + ", " + pf_cap);
+                    pf_grow: string = this.new_label("b_pf_grow");
+                    pf_fast: string = this.new_label("b_pf_fast");
+                    pf_done: string = this.new_label("b_pf_done");
+                    this.emit("  br i1 " + pf_full + ", label %" + pf_grow + ", label %" + pf_fast);
+                    this.emit(pf_grow + ":");
+                    this.current_block_terminated = false;
+                    pf_next: string = this.new_reg();
+                    this.emit("  " + pf_next + " = add i64 " + pf_size + ", 1");
+                    this.emit("  call void @leash_sh_vec_reserve(i8* " + obj_val + ", i64 " + pf_next + ")");
+                    pf_dg: string = this.vec_field(obj_val, 0);
+                    pf_dstg: string = this.new_reg();
+                    this.emit("  " + pf_dstg + " = getelementptr inbounds i8, i8* " + pf_dg + ", i64 " + tostring(pf_esz));
+                    pf_bytesg: string = this.new_reg();
+                    this.emit("  " + pf_bytesg + " = mul i64 " + pf_size + ", " + tostring(pf_esz));
+                    this.emit("  call i8* @memmove(i8* " + pf_dstg + ", i8* " + pf_dg + ", i64 " + pf_bytesg + ")");
+                    pf_epg: string = this.new_reg();
+                    this.emit("  " + pf_epg + " = bitcast i8* " + pf_dg + " to " + elt_lty + "*");
+                    this.emit("  store " + elt_lty + " " + aval + ", " + elt_lty + "* " + pf_epg);
+                    this.vec_store_size(obj_val, pf_next);
+                    this.emit("  br label %" + pf_done);
+                    this.emit(pf_fast + ":");
+                    this.current_block_terminated = false;
+                    pf_dstf: string = this.new_reg();
+                    this.emit("  " + pf_dstf + " = getelementptr inbounds i8, i8* " + pf_data + ", i64 " + tostring(pf_esz));
+                    pf_bytesf: string = this.new_reg();
+                    this.emit("  " + pf_bytesf + " = mul i64 " + pf_size + ", " + tostring(pf_esz));
+                    this.emit("  call i8* @memmove(i8* " + pf_dstf + ", i8* " + pf_data + ", i64 " + pf_bytesf + ")");
+                    pf_epf: string = this.new_reg();
+                    this.emit("  " + pf_epf + " = bitcast i8* " + pf_data + " to " + elt_lty + "*");
+                    this.emit("  store " + elt_lty + " " + aval + ", " + elt_lty + "* " + pf_epf);
+                    pf_nf: string = this.new_reg();
+                    this.emit("  " + pf_nf + " = add i64 " + pf_size + ", 1");
+                    this.vec_store_size(obj_val, pf_nf);
+                    this.emit("  br label %" + pf_done);
+                    this.emit(pf_done + ":");
+                    this.current_block_terminated = false;
+                    return "";
+                }
                 if e.sval == "get" {
                     idx_val: string = this.i32_to_rt_i64(e.args.get(0), this.gen_expr(e.args.get(0)));
                     gv_size: string = this.vec_field(obj_val, 1);
@@ -3090,6 +3419,106 @@ pub def CodeGen : class {
                     this.vec_store_size(obj_val, pp_ns);
                     return pp_val;
                 }
+                // popf: front element — res = data[0], shift left, size--
+                if e.sval == "popf" {
+                    pf2_size: string = this.vec_field(obj_val, 1);
+                    pf2_nonempty: string = this.new_reg();
+                    this.emit("  " + pf2_nonempty + " = icmp ugt i64 " + pf2_size + ", 0");
+                    pf2_bad: string = this.new_label("b_popf_bad");
+                    pf2_ok: string = this.new_label("b_popf_ok");
+                    this.emit("  br i1 " + pf2_nonempty + ", label %" + pf2_ok + ", label %" + pf2_bad);
+                    this.emit(pf2_bad + ":");
+                    pf2_msg: string = this.const_str_of("Runtime error: popf called on empty vector.\n");
+                    this.emit("  call i32 (i8*, ...) @printf(i8* " + pf2_msg + ")");
+                    this.emit("  call void @exit(i64 1)");
+                    this.emit("  unreachable");
+                    this.emit(pf2_ok + ":");
+                    this.current_block_terminated = false;
+                    pf2_ns: string = this.new_reg();
+                    this.emit("  " + pf2_ns + " = sub i64 " + pf2_size + ", 1");
+                    pf2_data: string = this.vec_field(obj_val, 0);
+                    pf2_esz: int = this.vec_elem_bytes(inner_t);
+                    pf2_ep: string = this.new_reg();
+                    this.emit("  " + pf2_ep + " = bitcast i8* " + pf2_data + " to " + elt_lty + "*");
+                    pf2_val: string = this.new_reg();
+                    this.emit("  " + pf2_val + " = load " + elt_lty + ", " + elt_lty + "* " + pf2_ep);
+                    pf2_src: string = this.new_reg();
+                    this.emit("  " + pf2_src + " = getelementptr inbounds i8, i8* " + pf2_data + ", i64 " + tostring(pf2_esz));
+                    pf2_bytes: string = this.new_reg();
+                    this.emit("  " + pf2_bytes + " = mul i64 " + pf2_ns + ", " + tostring(pf2_esz));
+                    this.emit("  call i8* @memmove(i8* " + pf2_data + ", i8* " + pf2_src + ", i64 " + pf2_bytes + ")");
+                    this.vec_store_size(obj_val, pf2_ns);
+                    return pf2_val;
+                }
+                // insert(idx, v): negative idx normalizes (+size), bounds
+                // 0 <= idx <= size, shift right from idx, store, size+1.
+                if e.sval == "insert" {
+                    iv_idx: string = this.i32_to_rt_i64(e.args.get(0), this.gen_expr(e.args.get(0)));
+                    iv_size: string = this.vec_field(obj_val, 1);
+                    iv_neg: string = this.new_reg();
+                    this.emit("  " + iv_neg + " = icmp slt i64 " + iv_idx + ", 0");
+                    iv_wrap: string = this.new_reg();
+                    this.emit("  " + iv_wrap + " = add i64 " + iv_idx + ", " + iv_size);
+                    iv_idx2: string = this.new_reg();
+                    this.emit("  " + iv_idx2 + " = select i1 " + iv_neg + ", i64 " + iv_wrap + ", i64 " + iv_idx);
+                    iv_nn: string = this.new_reg();
+                    this.emit("  " + iv_nn + " = icmp sge i64 " + iv_idx2 + ", 0");
+                    iv_ob: string = this.new_reg();
+                    this.emit("  " + iv_ob + " = icmp ule i64 " + iv_idx2 + ", " + iv_size);
+                    iv_ok: string = this.new_reg();
+                    this.emit("  " + iv_ok + " = and i1 " + iv_nn + ", " + iv_ob);
+                    iv_bad: string = this.new_label("b_ins_bad");
+                    iv_good: string = this.new_label("b_ins_ok");
+                    this.emit("  br i1 " + iv_ok + ", label %" + iv_good + ", label %" + iv_bad);
+                    this.emit(iv_bad + ":");
+                    iv_msg: string = this.const_str_of("Runtime error: Vector insert index out of bounds.\n");
+                    this.emit("  call i32 (i8*, ...) @printf(i8* " + iv_msg + ")");
+                    this.emit("  call void @exit(i64 1)");
+                    this.emit("  unreachable");
+                    this.emit(iv_good + ":");
+                    this.current_block_terminated = false;
+                    iv_val: string = this.gen_expr(e.args.get(1));
+                    iv_cap: string = this.vec_field(obj_val, 2);
+                    iv_full: string = this.new_reg();
+                    this.emit("  " + iv_full + " = icmp sge i64 " + iv_size + ", " + iv_cap);
+                    iv_grow: string = this.new_label("b_ins_grow");
+                    iv_fast: string = this.new_label("b_ins_fast");
+                    iv_done: string = this.new_label("b_ins_done");
+                    this.emit("  br i1 " + iv_full + ", label %" + iv_grow + ", label %" + iv_fast);
+                    this.emit(iv_grow + ":");
+                    this.current_block_terminated = false;
+                    iv_next: string = this.new_reg();
+                    this.emit("  " + iv_next + " = add i64 " + iv_size + ", 1");
+                    this.emit("  call void @leash_sh_vec_reserve(i8* " + obj_val + ", i64 " + iv_next + ")");
+                    this.emit("  br label %" + iv_fast);
+                    this.emit(iv_fast + ":");
+                    this.current_block_terminated = false;
+                    iv_data: string = this.vec_field(obj_val, 0);
+                    iv_esz: int = this.vec_elem_bytes(inner_t);
+                    iv_off: string = this.new_reg();
+                    this.emit("  " + iv_off + " = mul i64 " + iv_idx2 + ", " + tostring(iv_esz));
+                    iv_src: string = this.new_reg();
+                    this.emit("  " + iv_src + " = getelementptr inbounds i8, i8* " + iv_data + ", i64 " + iv_off);
+                    iv_dst: string = this.new_reg();
+                    this.emit("  " + iv_dst + " = getelementptr inbounds i8, i8* " + iv_src + ", i64 " + tostring(iv_esz));
+                    iv_cnt: string = this.new_reg();
+                    this.emit("  " + iv_cnt + " = sub i64 " + iv_size + ", " + iv_idx2);
+                    iv_bytes: string = this.new_reg();
+                    this.emit("  " + iv_bytes + " = mul i64 " + iv_cnt + ", " + tostring(iv_esz));
+                    this.emit("  call i8* @memmove(i8* " + iv_dst + ", i8* " + iv_src + ", i64 " + iv_bytes + ")");
+                    iv_ep: string = this.new_reg();
+                    this.emit("  " + iv_ep + " = bitcast i8* " + iv_data + " to " + elt_lty + "*");
+                    iv_slot: string = this.new_reg();
+                    this.emit("  " + iv_slot + " = getelementptr inbounds " + elt_lty + ", " + elt_lty + "* " + iv_ep + ", i64 " + iv_idx2);
+                    this.emit("  store " + elt_lty + " " + iv_val + ", " + elt_lty + "* " + iv_slot);
+                    iv_ns: string = this.new_reg();
+                    this.emit("  " + iv_ns + " = add i64 " + iv_size + ", 1");
+                    this.vec_store_size(obj_val, iv_ns);
+                    this.emit("  br label %" + iv_done);
+                    this.emit(iv_done + ":");
+                    this.current_block_terminated = false;
+                    return "";
+                }
                 if e.sval == "set" {
                     idx_val: string = this.i32_to_rt_i64(e.args.get(0), this.gen_expr(e.args.get(0)));
                     aval: string = this.gen_expr(e.args.get(1));
@@ -3123,11 +3552,16 @@ pub def CodeGen : class {
                 if e.sval == "isin" {
                     qval: string = this.gen_expr(e.args.get(0));
                     qtyp: string = this.get_expr_type(e.args.get(0));
-                    qelt: string = this.llvm_type(qtyp);
-                    qsc: string = this.new_reg();
-                    this.emit("  " + qsc + " = bitcast [64 x i8]* @__lsh_scratch to " + qelt + "*");
-                    this.emit("  store " + qelt + " " + qval + ", " + qelt + "* " + qsc);
-                    qsc8: string = this.scratch_i8p();
+                    qsc8: string = qval;
+                    if qtyp != "string" {
+                        // Non-string elements: stash raw bytes in the scratch
+                        // buffer; the runtime memcmp's elem_size bytes.
+                        qelt: string = this.llvm_type(qtyp);
+                        qsc: string = this.new_reg();
+                        this.emit("  " + qsc + " = bitcast [64 x i8]* @__lsh_scratch to " + qelt + "*");
+                        this.emit("  store " + qelt + " " + qval + ", " + qelt + "* " + qsc);
+                        qsc8 = this.scratch_i8p();
+                    }
                     qmode: int = 0;
                     if qtyp == "string" { qmode = 1; }
                     res: string = this.new_reg();
@@ -3172,6 +3606,7 @@ pub def CodeGen : class {
 
                 if e.sval == "push" {
                     key_val: string = this.gen_expr(e.args.get(0));
+                    key_val = this.hash_key_arg(key_val, this.hash_key_type(obj_t));
                     aval: string = this.gen_expr(e.args.get(1));
                     boxed: string = this.box_to_i8ptr(aval, val_t);
                     this.emit("  call void @leash_sh_hash_push(i8* " + obj_val + ", i8* " + key_val + ", i8* " + boxed + ")");
@@ -3179,6 +3614,7 @@ pub def CodeGen : class {
                 }
                 if e.sval == "isin" {
                     key_val: string = this.gen_expr(e.args.get(0));
+                    key_val = this.hash_key_arg(key_val, this.hash_key_type(obj_t));
                     res: string = this.new_reg();
                     this.emit("  " + res + " = call i64 @leash_sh_hash_isin(i8* " + obj_val + ", i8* " + key_val + ")");
                     bool_r: string = this.new_reg();
@@ -3187,6 +3623,7 @@ pub def CodeGen : class {
                 }
                 if e.sval == "get" {
                     key_val: string = this.gen_expr(e.args.get(0));
+                    key_val = this.hash_key_arg(key_val, this.hash_key_type(obj_t));
                     raw: string = this.new_reg();
                     this.emit("  " + raw + " = call i8* @leash_sh_hash_get(i8* " + obj_val + ", i8* " + key_val + ")");
                     return this.unbox_from_i8ptr(raw, val_t);
@@ -3206,6 +3643,7 @@ pub def CodeGen : class {
                 }
                 if e.sval == "delete" {
                     key_val: string = this.gen_expr(e.args.get(0));
+                    key_val = this.hash_key_arg(key_val, this.hash_key_type(obj_t));
                     this.emit("  call void @leash_sh_hash_delete(i8* " + obj_val + ", i8* " + key_val + ")");
                     return "";
                 }
@@ -3312,12 +3750,62 @@ pub def CodeGen : class {
                     arg_strs = this.llvm_type(m_owner) + " " + tbc;
                 }
             }
+            ai: int = 0;
             foreach _, arg in<vector> e.args {
                 aval: string = this.gen_expr(arg);
                 atyp: string = this.get_expr_type(arg);
                 alty: string = this.llvm_type(atyp);
+                // Slice value into a vec param: copy into a real vec
+                // (same conversion the assignment path performs)
+                if this.tc.classes.isin(m_owner) {
+                    mciS: ClassInfo = this.tc.classes[m_owner];
+                    if mciS.method_params.isin(e.sval) {
+                        mpsS: vec<string> = mciS.method_params[e.sval];
+                        if ai < mpsS.size {
+                            ptS2: string = mpsS.get(ai);
+                            if this.is_vec_type(ptS2) && atyp.size > 1 && atyp[0] != '&' && atyp[atyp.size - 1] == ']' {
+                                aval = this.slice_to_vec(aval, atyp, this.vec_inner_type(ptS2));
+                                atyp = ptS2;
+                                alty = this.llvm_type(ptS2);
+                            }
+                        }
+                    }
+                }
+                // Int args embed/coerce to the declared param width:
+                // literals wrap/truncate at the param width, registers
+                // sext/trunc (clang zero-extends mistyped constants).
+                if this.tc.func_params.isin(mname) {
+                    fparamsW: vec<string> = this.tc.func_params[mname];
+                    if ai < fparamsW.size {
+                        ptW: string = fparamsW.get(ai);
+                        if ptW.size > 0 && ptW[0] != '&' {
+                            pltyW: string = this.llvm_type(ptW);
+                            if this.is_int_lty(alty) && this.is_int_lty(pltyW) && alty != pltyW {
+                                aval = this.coerce_store_val(arg, aval, pltyW);
+                                alty = pltyW;
+                            }
+                        }
+                    }
+                }
+                if this.tc.classes.isin(m_owner) {
+                    mciW: ClassInfo = this.tc.classes[m_owner];
+                    if mciW.method_params.isin(e.sval) {
+                        mpsW: vec<string> = mciW.method_params[e.sval];
+                        if ai < mpsW.size {
+                            ptW2: string = mpsW.get(ai);
+                            if ptW2.size > 0 && ptW2[0] != '&' {
+                                pltyW2: string = this.llvm_type(ptW2);
+                                if this.is_int_lty(alty) && this.is_int_lty(pltyW2) && alty != pltyW2 {
+                                    aval = this.coerce_store_val(arg, aval, pltyW2);
+                                    alty = pltyW2;
+                                }
+                            }
+                        }
+                    }
+                }
                 if arg_strs.size > 0 { arg_strs = arg_strs + ", "; }
                 arg_strs = arg_strs + alty + " " + aval;
+                ai = ai + 1;
             }
 
             ret_t: string = "void";
@@ -3560,6 +4048,7 @@ pub def CodeGen : class {
             // hash<K,V>[key]
             if this.is_hash_type(arr_t) {
                 val_t: string = this.hash_val_type(arr_t);
+                idx_val = this.hash_key_arg(idx_val, this.hash_key_type(arr_t));
                 raw: string = this.new_reg();
                 this.emit("  " + raw + " = call i8* @leash_sh_hash_get(i8* " + arr_val + ", i8* " + idx_val + ")");
                 return this.unbox_from_i8ptr(raw, val_t);
@@ -3632,11 +4121,11 @@ pub def CodeGen : class {
                 return res;
             }
             if from_t == "char" && to_t == "int" {
-                this.emit("  " + res + " = zext i8 " + val + " to i64");
+                this.emit("  " + res + " = zext i8 " + val + " to i32");
                 return res;
             }
             if from_t == "int" && to_t == "char" {
-                this.emit("  " + res + " = trunc i64 " + val + " to i8");
+                this.emit("  " + res + " = trunc i32 " + val + " to i8");
                 return res;
             }
 
@@ -3951,6 +4440,7 @@ pub def CodeGen : class {
                 }
                 val = this.coerce_slice_ptr(val, rhs_t, vtyp);
                 val = this.maybe_clone_value(val, vtyp);
+                val = this.coerce_store_val(s.value, val, lty);
                 this.emit("  store " + lty + " " + val + ", " + lty + "* " + ptr);
             } else {
                 // Default-initialize union, vec and hash types
@@ -3973,6 +4463,110 @@ pub def CodeGen : class {
                     empty_gep: string = this.new_reg();
                     this.emit("  " + empty_gep + " = getelementptr inbounds [1 x i8], [1 x i8]* " + empty_lbl + ", i64 0, i64 0");
                     this.emit("  store i8* " + empty_gep + ", i8** " + ptr);
+                } also this.tc.structs.isin(vtyp) {
+                    // Default struct value: a zeroed, gc-allocated instance
+                    // (escapes into vecs), with empty containers for its
+                    // vec/hash fields — python parity.
+                    sdflt: StructInfo = this.tc.structs[vtyp];
+                    sd_bytes: int = sdflt.field_names.size * 8;
+                    if sd_bytes < 8 { sd_bytes = 8; }
+                    sraw: string = this.new_reg();
+                    this.emit("  " + sraw + " = call i8* @leash_gc_malloc(i64 " + tostring(sd_bytes) + ")");
+                    sp2: string = this.new_reg();
+                    this.emit("  " + sp2 + " = bitcast i8* " + sraw + " to %struct." + vtyp + "*");
+                    this.emit("  store %struct." + vtyp + " zeroinitializer, %struct." + vtyp + "* " + sp2);
+                    foreach sfi2, sfn2 in<vector> sdflt.field_names {
+                        sft2: string = sdflt.field_types.get(sfi2);
+                        if this.is_vec_type(sft2) {
+                            sve2_t: string = this.vec_inner_type(sft2);
+                            sve2_esz: int = this.vec_elem_bytes(sve2_t);
+                            sve2_sc: int = 0;
+                            if this.vec_elem_scan(sve2_t) { sve2_sc = 1; }
+                            sve2_val: string = this.new_reg();
+                            this.emit("  " + sve2_val + " = call i8* @leash_sh_vec_new(i64 " + tostring(sve2_esz) + ", i64 " + tostring(sve2_sc) + ")");
+                            sve2_gep: string = this.new_reg();
+                            this.emit("  " + sve2_gep + " = getelementptr inbounds %struct." + vtyp + ", %struct." + vtyp + "* " + sp2 + ", i32 0, i32 " + tostring(sfi2));
+                            this.emit("  store i8* " + sve2_val + ", i8** " + sve2_gep);
+                        } also this.is_hash_type(sft2) {
+                            shh2_val: string = this.new_reg();
+                            this.emit("  " + shh2_val + " = call i8* @leash_sh_hash_new()");
+                            shh2_gep: string = this.new_reg();
+                            this.emit("  " + shh2_gep + " = getelementptr inbounds %struct." + vtyp + ", %struct." + vtyp + "* " + sp2 + ", i32 0, i32 " + tostring(sfi2));
+                            this.emit("  store i8* " + shh2_val + ", i8** " + shh2_gep);
+                        }
+                    }
+                    this.emit("  store %struct." + vtyp + "* " + sp2 + ", %struct." + vtyp + "** " + ptr);
+                } also this.tc.classes.isin(vtyp) && !this.tc.ctor_defaults.isin(vtyp) {
+                    // Class default (no all-defaults ctor): empty instance
+                    // with vtable + zeroed/default fields (Name{}-literal
+                    // initialization, minus the explicit fields).
+                    cdflt: ClassInfo = this.tc.classes[vtyp];
+                    cd_bytes: int = (cdflt.field_names.size + 1) * 8;
+                    if cd_bytes < 8 { cd_bytes = 8; }
+                    craw: string = this.new_reg();
+                    this.emit("  " + craw + " = call i8* @leash_gc_malloc(i64 " + tostring(cd_bytes) + ")");
+                    cp2: string = this.new_reg();
+                    this.emit("  " + cp2 + " = bitcast i8* " + craw + " to %class." + vtyp + "*");
+                    this.emit("  store %class." + vtyp + " zeroinitializer, %class." + vtyp + "* " + cp2);
+                    if cdflt.method_order.size > 0 {
+                        cvt_ty: string = "{ ";
+                        cvt_i: int = 0;
+                        while cvt_i < cdflt.method_order.size {
+                            if cvt_i > 0 { cvt_ty = cvt_ty + ", "; }
+                            cvt_ty = cvt_ty + "i8*";
+                            cvt_i = cvt_i + 1;
+                        }
+                        cvt_ty = cvt_ty + " }";
+                        cvt_sp: string = this.new_reg();
+                        this.emit("  " + cvt_sp + " = getelementptr inbounds %class." + vtyp + ", %class." + vtyp + "* " + cp2 + ", i32 0, i32 0");
+                        this.emit("  store i8* bitcast(" + cvt_ty + "* @" + vtyp + "_vtable to i8*), i8** " + cvt_sp);
+                    }
+                    foreach cfi2, cfn2 in<vector> cdflt.field_names {
+                        cft2: string = cdflt.field_types.get(cfi2);
+                        cgep2: string = this.new_reg();
+                        this.emit("  " + cgep2 + " = getelementptr inbounds %class." + vtyp + ", %class." + vtyp + "* " + cp2 + ", i32 0, i32 " + tostring(cfi2 + 1));
+                        chas_dflt: bool = false;
+                        cdflt_expr: Expr = null;
+                        if this.class_field_inits.isin(vtyp) {
+                            cinits2: vec<Expr> = this.class_field_inits[vtyp];
+                            if cfi2 < cinits2.size {
+                                cd_e2: Expr = cinits2.get(cfi2);
+                                if cd_e2 != null {
+                                    cdflt_expr = cd_e2;
+                                    chas_dflt = true;
+                                }
+                            }
+                        }
+                        if this.is_vec_type(cft2) {
+                            cve2_t: string = this.vec_inner_type(cft2);
+                            cve2_esz: int = this.vec_elem_bytes(cve2_t);
+                            cve2_sc: int = 0;
+                            if this.vec_elem_scan(cve2_t) { cve2_sc = 1; }
+                            cve2_val: string = this.new_reg();
+                            this.emit("  " + cve2_val + " = call i8* @leash_sh_vec_new(i64 " + tostring(cve2_esz) + ", i64 " + tostring(cve2_sc) + ")");
+                            this.emit("  store i8* " + cve2_val + ", i8** " + cgep2);
+                        } also this.is_hash_type(cft2) {
+                            chh2_val: string = this.new_reg();
+                            this.emit("  " + chh2_val + " = call i8* @leash_sh_hash_new()");
+                            this.emit("  store i8* " + chh2_val + ", i8** " + cgep2);
+                        } also chas_dflt {
+                            // Declared field default: name: Type = expr;
+                            cdflt_val: string = this.gen_expr(cdflt_expr);
+                            cdflt_val = this.maybe_clone_value(cdflt_val, cft2);
+                            clft3: string = this.llvm_type(cft2);
+                            this.emit("  store " + clft3 + " " + cdflt_val + ", " + clft3 + "* " + cgep2);
+                        } else {
+                            clft2: string = this.llvm_type(cft2);
+                            if clft2 == "i64" { this.emit("  store i64 0, i64* " + cgep2); }
+                            also clft2 == "double" { this.emit("  store double 0.0, double* " + cgep2); }
+                            also clft2 == "i1" { this.emit("  store i1 0, i1* " + cgep2); }
+                            also clft2 == "i8" { this.emit("  store i8 0, i8* " + cgep2); }
+                            also clft2.size > 0 && clft2[0] == '{' { this.emit("  store " + clft2 + " zeroinitializer, " + clft2 + "* " + cgep2); }
+                            also this.is_int_lty(clft2) { this.emit("  store " + clft2 + " 0, " + clft2 + "* " + cgep2); }
+                            else { this.emit("  store " + clft2 + " null, " + clft2 + "* " + cgep2); }
+                        }
+                    }
+                    this.emit("  store %class." + vtyp + "* " + cp2 + ", %class." + vtyp + "** " + ptr);
                 } also this.tc.classes.isin(vtyp) && this.tc.ctor_defaults.isin(vtyp) {
                     // Auto-init: call the all-defaults constructor
                     cdefs: vec<Expr> = this.tc.ctor_defaults[vtyp];
@@ -4000,6 +4594,33 @@ pub def CodeGen : class {
                     this.emit("  store " + lty + " null, " + lty + "* " + ptr);
                 } also lty.size > 0 && lty[0] == '{' {
                     this.emit("  store " + lty + " zeroinitializer, " + lty + "* " + ptr);
+                    // Python parity: a default struct value gets empty
+                    // containers for its vec/hash fields (python's inline
+                    // zeroed headers are valid empty vecs; our runtime
+                    // needs real LeashVec/LeashHash objects).
+                    if this.tc.structs.isin(vtyp) {
+                        sinfo: StructInfo = this.tc.structs[vtyp];
+                        foreach sfi, sfn in<vector> sinfo.field_names {
+                            sft: string = sinfo.field_types.get(sfi);
+                            if this.is_vec_type(sft) {
+                                sve_t: string = this.vec_inner_type(sft);
+                                sve_esz: int = this.vec_elem_bytes(sve_t);
+                                sve_sc: int = 0;
+                                if this.vec_elem_scan(sve_t) { sve_sc = 1; }
+                                sve_val: string = this.new_reg();
+                                this.emit("  " + sve_val + " = call i8* @leash_sh_vec_new(i64 " + tostring(sve_esz) + ", i64 " + tostring(sve_sc) + ")");
+                                sve_gep: string = this.new_reg();
+                                this.emit("  " + sve_gep + " = getelementptr inbounds " + lty + ", " + lty + "* " + ptr + ", i32 0, i32 " + tostring(sfi));
+                                this.emit("  store i8* " + sve_val + ", i8** " + sve_gep);
+                            } also this.is_hash_type(sft) {
+                                shh_val: string = this.new_reg();
+                                this.emit("  " + shh_val + " = call i8* @leash_sh_hash_new()");
+                                shh_gep: string = this.new_reg();
+                                this.emit("  " + shh_gep + " = getelementptr inbounds " + lty + ", " + lty + "* " + ptr + ", i32 0, i32 " + tostring(sfi));
+                                this.emit("  store i8* " + shh_val + ", i8** " + shh_gep);
+                            }
+                        }
+                    }
                 }
             }
             return;
@@ -4064,6 +4685,7 @@ pub def CodeGen : class {
                         return;
                     }
 
+                    val = this.coerce_store_val(s.value, val, lty);
                     this.emit("  store " + lty + " " + val + ", " + lty + "* " + ptr);
                 }
             }
@@ -4297,8 +4919,25 @@ pub def CodeGen : class {
                     }
                     val = this.maybe_clone_value(val, this.current_func_ret);
                     lret: string = this.llvm_type(this.current_func_ret);
+                    // Widen/narrow the returned register to the function's
+                    // declared width (int -> int<64> returns, char -> int, ...).
+                    if s.value.kind != ExprKind.NIL {
+                        val = this.coerce_store_val(s.value, val, lret);
+                    }
                     // `return nil;` must become a typed zero for non-pointer returns
                     if s.value.kind == ExprKind.NIL {
+                        if lret == "void" {
+                            // void function: `ignore;` / `return nil;` ->
+                            // plain ret void (no operand)
+                            dvi2: int = this.defer_stack.size - 1;
+                            while dvi2 >= 0 {
+                                this.gen_statement(this.defer_stack.get(dvi2));
+                                dvi2 = dvi2 - 1;
+                            }
+                            this.emit("  ret void");
+                            this.current_block_terminated = true;
+                            return;
+                        }
                         if lret == "double" { val = "0.0"; }
                         also lret == "i1" { val = "false"; }
                         also lret.size > 1 && lret[lret.size - 1] == '*' { val = "null"; }
@@ -4651,6 +5290,40 @@ pub def CodeGen : class {
                         this.emit("  " + uz + " = zext i32 " + aval + " to i64");
                     }
                     this.emit("  call i32 (i8*, ...) @printf(i8* getelementptr inbounds ([5 x i8], [5 x i8]* @.fmt_u, i64 0, i64 0), i64 " + uz + ")");
+                } also this.tc.classes.isin(atyp) {
+                    // Class instance: VAL_<Base> method renders it (python
+                    // parity); without one, print a stable <ClassName> tag.
+                    clshow: ClassInfo = this.tc.classes[atyp];
+                    clbase: string = "";
+                    cb_i: int = 0;
+                    while cb_i < atyp.size {
+                        if atyp[cb_i] == '<' { stop; }
+                        clbase = clbase + atyp[cb_i];
+                        cb_i = cb_i + 1;
+                    }
+                    clm: string = "VAL_" + clbase;
+                    if clshow.has_method(clm) {
+                        clmr: string = "";
+                        cm_i: int = 0;
+                        while cm_i < clshow.method_names.size {
+                            if clshow.method_names.get(cm_i) == clm { clmr = clshow.method_rets.get(cm_i); stop; }
+                            cm_i = cm_i + 1;
+                        }
+                        clstr: string = this.new_reg();
+                        if clshow.is_method_static(clm) {
+                            this.emit("  " + clstr + " = call " + this.llvm_type(clmr) + " @" + atyp + "_" + clm + "()");
+                        } else {
+                            this.emit("  " + clstr + " = call " + this.llvm_type(clmr) + " @" + atyp + "_" + clm + "(" + this.llvm_type(atyp) + "* " + aval + ")");
+                        }
+                        this.emit("  call i32 (i8*, ...) @printf(i8* getelementptr inbounds ([3 x i8], [3 x i8]* @.fmt_s, i64 0, i64 0), i8* " + clstr + ")");
+                    } else {
+                        clph_s: string = "<" + clbase + ">";
+                        clph: string = this.get_str_constant(clph_s);
+                        clphlen: int = this.get_str_len(clph_s);
+                        clphp: string = this.new_reg();
+                        this.emit("  " + clphp + " = getelementptr inbounds [" + tostring(clphlen) + " x i8], [" + tostring(clphlen) + " x i8]* " + clph + ", i64 0, i64 0");
+                        this.emit("  call i32 (i8*, ...) @printf(i8* getelementptr inbounds ([3 x i8], [3 x i8]* @.fmt_s, i64 0, i64 0), i8* " + clphp + ")");
+                    }
                 } else {
                     this.emit("  call i32 (i8*, ...) @printf(i8* getelementptr inbounds ([5 x i8], [5 x i8]* @.fmt_d, i64 0, i64 0), i64 " + this.i32_to_rt_i64(arg, aval) + ")");
                 }
@@ -4875,6 +5548,11 @@ pub def CodeGen : class {
         // container placeholder (`vec<__T_OPDEF__>`); derive the concrete
         // inner type from the substituted parameter types.
         this.opdef_inner = "";
+        empty_tn: vec<string>;
+        this.cur_tmap_names = empty_tn;
+        if f.owner.size > 0 && this.tc.inst_tmaps.isin(f.owner) {
+            this.cur_tmap_names = this.tc.inst_tmaps[f.owner];
+        }
         if fn_name.size > 7 && fn_name[0] == '_' && fn_name[1] == 'o' && fn_name[2] == 'p'
            && fn_name[3] == 'd' && fn_name[4] == 'e' && fn_name[5] == 'f' && fn_name[6] == '_' {
             foreach _, op in<vector> f.params {
@@ -5051,6 +5729,9 @@ pub def CodeGen : class {
 
         // Build method signatures for vtable dispatch (needed before bodies)
         foreach _, c in<vector> prog.classes {
+            // Generic-class TEMPLATES are never codegen'd: only their
+            // instantiated clones (Queue_int, ...) have concrete types.
+            if this.tc.generic_classes.isin(c.name) { continue; }
             foreach _, m in<vector> c.methods {
                 if this.tc.generic_funcs.isin(c.name + "_" + m.name) { continue; }
                 mkey: string = c.name + "_" + m.name;
@@ -5085,6 +5766,7 @@ pub def CodeGen : class {
 
         // Class type definitions (from tc: includes inherited fields)
         foreach _, c in<vector> prog.classes {
+            if this.tc.generic_classes.isin(c.name) { continue; }
             fields_str: string = "";
             nfi: int = 0;
             if this.tc.classes.isin(c.name) {
@@ -5107,6 +5789,7 @@ pub def CodeGen : class {
 
         // Generate class methods
         foreach _, c in<vector> prog.classes {
+            if this.tc.generic_classes.isin(c.name) { continue; }
             foreach _, m in<vector> c.methods {
                 if this.tc.generic_funcs.isin(c.name + "_" + m.name) { continue; }
                 // Save/restore codegen state for each method
@@ -5122,9 +5805,16 @@ pub def CodeGen : class {
                 this.defer_stack = empty_mdefers;
                 fn_name: string = c.name + "_" + m.name;
                 this.current_func_name = fn_name;
+                // Instantiated-generic class methods: resolve the body's
+                // type-param placeholders through the instantiation map.
+                empty_tn_m: vec<string>;
+                this.cur_tmap_names = empty_tn_m;
+                if this.tc.inst_tmaps.isin(c.name) {
+                    this.cur_tmap_names = this.tc.inst_tmaps[c.name];
+                }
                 this.current_class_name = c.name;
                 this.current_class_parent = c.parent;
-                this.cur_func_unsafe = false;
+                this.cur_func_unsafe = m.is_unsafe;
                 lret: string = this.llvm_type(m.ret_type);
 
                 param_sigs: string = "";
@@ -5264,6 +5954,7 @@ pub def CodeGen : class {
 
         // Emit static class field globals
         foreach _, c in<vector> prog.classes {
+            if this.tc.generic_classes.isin(c.name) { continue; }
             foreach _, fd in<vector> c.fields {
                 if fd.is_static {
                     this.emit("@" + c.name + "_static_" + fd.name + " = global " + this.llvm_type(fd.typ) + " zeroinitializer");
@@ -5280,6 +5971,7 @@ pub def CodeGen : class {
 
         // Emit vtable globals (classes with instance methods)
         foreach _, c in<vector> prog.classes {
+            if this.tc.generic_classes.isin(c.name) { continue; }
             if this.tc.classes.isin(c.name) {
                 vcinfo: ClassInfo = this.tc.classes[c.name];
                 vord: vec<string> = vcinfo.method_order;
@@ -5318,6 +6010,7 @@ pub def CodeGen : class {
         class_main_name: string = "";
         if !has_main {
             foreach _, c in<vector> prog.classes {
+                if this.tc.generic_classes.isin(c.name) { continue; }
                 foreach _, m in<vector> c.methods {
                 if this.tc.generic_funcs.isin(c.name + "_" + m.name) { continue; }
                     if m.name == "main" && m.is_static {
@@ -5340,6 +6033,7 @@ pub def CodeGen : class {
                 }
             }
             foreach _, c in<vector> prog.classes {
+                if this.tc.generic_classes.isin(c.name) { continue; }
                 foreach _, fd in<vector> c.fields {
                     if fd.is_static {
                         ssz: int = this.gc_scan_size(fd.typ);
@@ -5384,6 +6078,7 @@ pub def CodeGen : class {
 
             // Initialize static fields
             foreach _, c in<vector> prog.classes {
+                if this.tc.generic_classes.isin(c.name) { continue; }
                 foreach _, fd in<vector> c.fields {
                     if fd.is_static && fd.init != null {
                         init_val: string = this.gen_expr(fd.init);
@@ -5525,6 +6220,9 @@ pub def CodeGen : class {
                     "declare void @__leash_dbg_stmt(i8*, i32)\n" +
                     "declare i8* @leash_sh_vec_binop(i8*, i8*, i64, i64)\n" +
                     "declare i8* @leash_sh_hash_new()\n" +
+                    "declare i8* @leash_sh_int_key(i64)\n" +
+                    "declare i8* @leash_sh_uint_key(i64)\n" +
+                    "declare i8* @leash_sh_float_key(double)\n" +
                     "declare void @leash_sh_hash_push(i8*, i8*, i8*)\n" +
                     "declare i8* @leash_sh_hash_get(i8*, i8*)\n" +
                     "declare i64 @leash_sh_hash_isin(i8*, i8*)\n" +
@@ -5575,6 +6273,168 @@ pub def CodeGen : class {
                     "declare i8* @fgets(i8*, i32, i8*)\n" +
                     "declare void @exit(i64)\n" +
                     "declare i8* @leash_sh_stdin()\n\n");
+
+        // C library stubs (mirrors python's func_symtab registrations:
+        // functions the typechecker seeds but that are never defined in
+        // the module — the system libc provides them at link time)
+        header_lines.pushb("declare i8* @calloc(i64, i64)\n");
+        header_lines.pushb("declare i8* @realloc(i8*, i64)\n");
+        header_lines.pushb("declare i32 @system(i8*)\n");
+        header_lines.pushb("declare i64 @atoi(i8*)\n");
+        header_lines.pushb("declare i64 @atol(i8*)\n");
+        header_lines.pushb("declare double @strtof(i8*, i8**)\n");
+        header_lines.pushb("declare double @strtold(i8*, i8**)\n");
+        header_lines.pushb("declare i64 @strtol(i8*, i8**, i32)\n");
+        header_lines.pushb("declare i64 @strtoul(i8*, i8**, i32)\n");
+        header_lines.pushb("declare i64 @strtoull(i8*, i8**, i32)\n");
+        header_lines.pushb("declare i32 @abs(i32)\n");
+        header_lines.pushb("declare i64 @labs(i64)\n");
+        header_lines.pushb("declare i64 @llabs(i64)\n");
+        header_lines.pushb("declare void @abort()\n");
+        header_lines.pushb("declare i32 @atexit(i32 ()*)\n");
+        header_lines.pushb("declare i8* @getenv(i8*)\n");
+        header_lines.pushb("declare void @qsort(i8*, i64, i64, i32 (i8*, i8*)*)\n");
+        header_lines.pushb("declare i8* @bsearch(i8*, i8*, i64, i64, i32 (i8*, i8*)*)\n");
+        header_lines.pushb("declare i64 @strncpy(i8*, i8*, i64)\n");
+        header_lines.pushb("declare i8* @strstr(i8*, i8*)\n");
+        header_lines.pushb("declare i8* @memset(i8*, i32, i64)\n");
+        header_lines.pushb("declare i8* @memcpy(i8*, i8*, i64)\n");
+        header_lines.pushb("declare i8* @memchr(i8*, i32, i64)\n");
+        header_lines.pushb("declare i8* @strncat(i8*, i8*, i64)\n");
+        header_lines.pushb("declare i32 @strncmp(i8*, i8*, i64)\n");
+        header_lines.pushb("declare i32 @strcasecmp(i8*, i8*, i64)\n");
+        header_lines.pushb("declare i32 @strncasecmp(i8*, i8*, i64)\n");
+        header_lines.pushb("declare i8* @strchr(i8*, i32)\n");
+        header_lines.pushb("declare i8* @strrchr(i8*, i32)\n");
+        header_lines.pushb("declare i8* @strtok(i8*, i8*)\n");
+        header_lines.pushb("declare i8* @strdup(i8*)\n");
+        header_lines.pushb("declare i8* @strndup(i8*, i64)\n");
+        header_lines.pushb("declare i8* @strpbrk(i8*, i8*)\n");
+        header_lines.pushb("declare i64 @strspn(i8*, i8*)\n");
+        header_lines.pushb("declare i64 @strcspn(i8*, i8*)\n");
+        header_lines.pushb("declare i8* @fopen(i8*, i8*)\n");
+        header_lines.pushb("declare i32 @fclose(i8*)\n");
+        header_lines.pushb("declare i64 @fread(i8*, i64, i64, i8*)\n");
+        header_lines.pushb("declare i64 @fwrite(i8*, i64, i64, i8*)\n");
+        header_lines.pushb("declare i32 @fseek(i8*, i64, i32)\n");
+        header_lines.pushb("declare i64 @ftell(i8*)\n");
+        header_lines.pushb("declare void @rewind(i8*)\n");
+        header_lines.pushb("declare i32 @rename(i8*, i8*)\n");
+        header_lines.pushb("declare i32 @remove(i8*)\n");
+        header_lines.pushb("declare i32 @fflush(i8*)\n");
+        header_lines.pushb("declare i32 @feof(i8*)\n");
+        header_lines.pushb("declare i32 @getchar()\n");
+        header_lines.pushb("declare i32 @putchar(i32)\n");
+        header_lines.pushb("declare i8* @popen(i8*, i8*)\n");
+        header_lines.pushb("declare i32 @pclose(i8*)\n");
+        header_lines.pushb("declare void @setbuf(i8*, i8*)\n");
+        header_lines.pushb("declare i32 @scanf(i8*)\n");
+        header_lines.pushb("declare i32 @fscanf(i8*, i8*)\n");
+        header_lines.pushb("declare i32 @sscanf(i8*, i8*)\n");
+        header_lines.pushb("declare i32 @fgetc(i8*)\n");
+        header_lines.pushb("declare i32 @fputc(i32, i8*)\n");
+        header_lines.pushb("declare i32 @ungetc(i32, i8*)\n");
+        header_lines.pushb("declare i32 @fputs(i8*, i8*)\n");
+        header_lines.pushb("declare void @perror(i8*)\n");
+        header_lines.pushb("declare i8* @tmpfile()\n");
+        header_lines.pushb("declare i32 @setvbuf(i8*, i8*, i32, i64)\n");
+        header_lines.pushb("declare i32 @fileno(i8*)\n");
+        header_lines.pushb("declare i32 @vprintf(i8*, i8*)\n");
+        header_lines.pushb("declare i32 @vsprintf(i8*, i8*, i8*)\n");
+        header_lines.pushb("declare i32 @vfprintf(i8*, i8*, i8*)\n");
+        header_lines.pushb("declare i32 @isalnum(i32)\n");
+        header_lines.pushb("declare i32 @isalpha(i32)\n");
+        header_lines.pushb("declare i32 @iscntrl(i32)\n");
+        header_lines.pushb("declare i32 @isdigit(i32)\n");
+        header_lines.pushb("declare i32 @isgraph(i32)\n");
+        header_lines.pushb("declare i32 @islower(i32)\n");
+        header_lines.pushb("declare i32 @isprint(i32)\n");
+        header_lines.pushb("declare i32 @ispunct(i32)\n");
+        header_lines.pushb("declare i32 @isspace(i32)\n");
+        header_lines.pushb("declare i32 @isupper(i32)\n");
+        header_lines.pushb("declare i32 @isxdigit(i32)\n");
+        header_lines.pushb("declare i32 @tolower(i32)\n");
+        header_lines.pushb("declare i32 @toupper(i32)\n");
+        header_lines.pushb("declare double @sin(double)\n");
+        header_lines.pushb("declare double @cos(double)\n");
+        header_lines.pushb("declare double @tan(double)\n");
+        header_lines.pushb("declare double @asin(double)\n");
+        header_lines.pushb("declare double @acos(double)\n");
+        header_lines.pushb("declare double @atan(double)\n");
+        header_lines.pushb("declare double @sinh(double)\n");
+        header_lines.pushb("declare double @cosh(double)\n");
+        header_lines.pushb("declare double @tanh(double)\n");
+        header_lines.pushb("declare double @exp(double)\n");
+        header_lines.pushb("declare double @log(double)\n");
+        header_lines.pushb("declare double @log10(double)\n");
+        header_lines.pushb("declare double @sqrt(double)\n");
+        header_lines.pushb("declare double @ceil(double)\n");
+        header_lines.pushb("declare double @floor(double)\n");
+        header_lines.pushb("declare double @fabs(double)\n");
+        header_lines.pushb("declare double @round(double)\n");
+        header_lines.pushb("declare double @trunc(double)\n");
+        header_lines.pushb("declare double @atan2(double, double)\n");
+        header_lines.pushb("declare double @pow(double, double)\n");
+        header_lines.pushb("declare double @fmod(double, double)\n");
+        header_lines.pushb("declare double @fmin(double, double)\n");
+        header_lines.pushb("declare double @fmax(double, double)\n");
+        header_lines.pushb("declare i64 @clock()\n");
+        header_lines.pushb("declare double @difftime(i64, i64)\n");
+        header_lines.pushb("declare i64 @mktime(i8*)\n");
+        header_lines.pushb("declare i8* @localtime(i8*)\n");
+        header_lines.pushb("declare i8* @gmtime(i8*)\n");
+        header_lines.pushb("declare i8* @asctime(i8*)\n");
+        header_lines.pushb("declare i8* @ctime(i8*)\n");
+        header_lines.pushb("declare i64 @strftime(i8*, i64, i8*, i8*)\n");
+        header_lines.pushb("declare i32 @usleep(i64)\n");
+        header_lines.pushb("declare i32 @rand()\n");
+
+        // C-stub declares must not collide with program-defined functions
+        // (python parity: user func_symtab entries overwrite the stubs —
+        // e.g. an unsafe fnc fabs would otherwise redeclare libc's fabs).
+        defined_syms: hash<string, bool>;
+        foreach _, pf in<vector> prog.funcs {
+            defined_syms.push(pf.name, true);
+        }
+        foreach _, pc in<vector> prog.classes {
+            if this.tc.generic_classes.isin(pc.name) { continue; }
+            foreach _, pm in<vector> pc.methods {
+                defined_syms.push(pc.name + "_" + pm.name, true);
+            }
+        }
+        filtered_hdr: vec<string>;
+        foreach _, hl in<vector> header_lines {
+            skip_hl: bool = false;
+            if hl.size > 9 && hl[0] == 'd' && hl[1] == 'e' && hl[2] == 'c' && hl[3] == 'l' && hl[4] == 'a' && hl[5] == 'r' && hl[6] == 'e' && hl[7] == ' ' && hl[hl.size - 1] == '\n' {
+                nl_cnt: int = 0;
+                fh_i: int = 0;
+                while fh_i < hl.size {
+                    if hl[fh_i] == '\n' { nl_cnt = nl_cnt + 1; }
+                    fh_i = fh_i + 1;
+                }
+                if nl_cnt == 1 {
+                    at_i: int = -1;
+                    hi2: int = 0;
+                    while hi2 < hl.size {
+                        if hl[hi2] == '@' { at_i = hi2; stop; }
+                        hi2 = hi2 + 1;
+                    }
+                    if at_i >= 0 {
+                        nm: string = "";
+                        ni: int = at_i + 1;
+                        while ni < hl.size {
+                            ch2: char = hl[ni];
+                            if ch2 == '(' || ch2 == ' ' || ch2 == '\n' { stop; }
+                            nm = nm + ch2;
+                            ni = ni + 1;
+                        }
+                        if defined_syms.isin(nm) { skip_hl = true; }
+                    }
+                }
+            }
+            if !skip_hl { filtered_hdr.pushb(hl); }
+        }
+        header_lines = filtered_hdr;
 
         // Runtime helper: leash_sh_input (the `get()` builtin)
         header_lines.pushb("; Runtime helper: leash_sh_input\n" +
