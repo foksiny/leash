@@ -748,6 +748,119 @@ class TestIntegrityHardening(unittest.TestCase):
         self.assertIn("good", data["packages"])
         self.assertNotIn("bad", data["packages"])
 
+    def test_parse_global_install_map(self):
+        self.assertEqual(
+            L._parse_global_install_map("{a: src/a.lsh, b: src/b.lsh}"),
+            {"a": "src/a.lsh", "b": "src/b.lsh"})
+        self.assertEqual(
+            L._parse_global_install_map('{"a": "src/a.lsh",}'),
+            {"a": "src/a.lsh"})
+        self.assertEqual(L._parse_global_install_map("{}"), {})
+        with self.assertRaises(ValueError):
+            L._parse_global_install_map("a: src/a.lsh")
+        with self.assertRaises(ValueError):
+            L._parse_global_install_map("{a}")
+        with self.assertRaises(ValueError):
+            L._parse_global_install_map("{a: }")
+
+    def test_map_tool_sources(self):
+        tmp = tempfile.mkdtemp(prefix="leashed_tools_")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        os.makedirs(os.path.join(tmp, "src"))
+        open(os.path.join(tmp, "src", "t.lsh"), "w").write("x")
+        src_root = os.path.realpath(os.path.join(tmp, "src"))
+        self.assertEqual(
+            L._map_tool_sources(tmp, src_root, {"t": "src/t.lsh"}),
+            {"t": "t.lsh"})
+        with self.assertRaises(ValueError):
+            L._map_tool_sources(tmp, src_root, {"../evil": "src/t.lsh"})
+        with self.assertRaises(ValueError):
+            L._map_tool_sources(tmp, src_root, {"t": "../outside.lsh"})
+        with self.assertRaises(ValueError):
+            L._map_tool_sources(tmp, src_root, {"t": "src/missing.lsh"})
+        with self.assertRaises(ValueError):
+            L._map_tool_sources(tmp, src_root, {"t": "other/t.lsh"})
+
+    def test_install_global_commands_with_fake_build(self):
+        tmp = tempfile.mkdtemp(prefix="leashed_gbin_")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        dest = os.path.join(tmp, "pkg")
+        os.makedirs(os.path.join(dest, "src"))
+        open(os.path.join(dest, "src", "t.lsh"), "w").write("x")
+        built = []
+
+        import leash.cli as cli_mod
+        orig_compile = cli_mod.compile_file
+
+        def fake_compile(src, out, *a, **k):
+            built.append((src, out))
+            with open(out, "w") as fh:
+                fh.write("bin")
+
+        cli_mod.compile_file = fake_compile
+        orig_libs = L.LEASH_LIBS_DIR
+        L.LEASH_LIBS_DIR = os.path.join(tmp, "libs")
+        try:
+            installed, failed = L._install_global_commands(
+                dest, {"t": "src/t.lsh", "../evil": "src/t.lsh",
+                       "ghost": "src/missing.lsh"})
+        finally:
+            cli_mod.compile_file = orig_compile
+            L.LEASH_LIBS_DIR = orig_libs
+        self.assertEqual(failed, ["../evil", "ghost"])
+        self.assertEqual(len(installed), 1)
+        self.assertTrue(installed[0].endswith("t"))
+        self.assertTrue(os.path.exists(installed[0]))
+        bindir = os.path.join(tmp, "bin")
+        self.assertEqual(os.path.dirname(installed[0]), bindir)
+
+    def test_remove_global_commands(self):
+        tmp = tempfile.mkdtemp(prefix="leashed_grm_")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        dest = os.path.join(tmp, "pkg")
+        os.makedirs(dest)
+        with open(os.path.join(dest, "package.lshc"), "w") as fh:
+            json.dump({"global_install": {"t": "src/t.lsh"}}, fh)
+        orig_libs = L.LEASH_LIBS_DIR
+        L.LEASH_LIBS_DIR = os.path.join(tmp, "libs")
+        try:
+            bindir = os.path.join(tmp, "bin")
+            os.makedirs(bindir)
+            keeper = os.path.join(bindir, "other")
+            target = os.path.join(bindir, "t")
+            target_exe = os.path.join(bindir, "t.exe")
+            for p in (keeper, target, target_exe):
+                open(p, "w").write("x")
+            removed = L._remove_global_commands(dest)
+            self.assertEqual(sorted(removed), sorted([target, target_exe]))
+            self.assertTrue(os.path.exists(keeper))
+            self.assertFalse(os.path.exists(target))
+        finally:
+            L.LEASH_LIBS_DIR = orig_libs
+
+    def test_uninstall_removes_global_commands(self):
+        tmp = tempfile.mkdtemp(prefix="leashed_uninst_")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        orig_libs = L.LEASH_LIBS_DIR
+        L.LEASH_LIBS_DIR = os.path.join(tmp, "libs")
+        try:
+            dest = os.path.join(L.LEASH_LIBS_DIR, "foo")
+            os.makedirs(dest)
+            with open(os.path.join(dest, "package.lshc"), "w") as fh:
+                json.dump({"global_install": {"t": "src/t.lsh"}}, fh)
+            with open(os.path.join(L.LEASH_LIBS_DIR, "foo.lsh"), "w") as fh:
+                fh.write("// stub\n")
+            bindir = os.path.join(tmp, "bin")
+            os.makedirs(bindir)
+            tool = os.path.join(bindir, "t")
+            open(tool, "w").write("x")
+            with contextlib.redirect_stdout(io.StringIO()):
+                L.cmd_uninstall(["foo"])
+            self.assertFalse(os.path.exists(tool))
+            self.assertFalse(os.path.exists(dest))
+        finally:
+            L.LEASH_LIBS_DIR = orig_libs
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

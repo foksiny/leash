@@ -170,6 +170,12 @@ clibs: {}
 imports: <span class="str">"imports/"</span>
 opt_level: <span class="str">"O3"</span></code></pre>
 
+<h3>Global Install (<code>install</code> / <code>rm</code>)</h3>
+<p>Add a single-line <code>global_install</code> map to <code>config.lshc</code>, then run <code>leash install</code> with no arguments to compile each entry to a host binary in <code>~/.leash/bin/</code> (<code>.exe</code> on Windows) so it runs straight from the terminal. Remove them again with <code>leash rm</code>, which asks for confirmation first (an empty answer means yes):</p>
+<pre><code>global_install: {tester: src/main_test.lsh, tester_unsafe: src/main_test_unsafe.lsh}</code></pre>
+<pre><code>leash install
+leash rm tester tester_unsafe</code></pre>
+
 <h3>Project Build (<code>build</code>)</h3>
 <p>The <code>build</code> command reads <code>config.lshc</code> from the current directory and compiles the project. This uses the project configuration to find the main entry file, resolve imports, link C libraries, and apply the configured optimization level.</p>
 <pre><code>leash build

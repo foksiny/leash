@@ -77,6 +77,9 @@ author: <span class="str">"your-github-username"</span>
 description: <span class="str">"The mylib library"</span>
 main: <span class="str">"src/main.lsh"</span></code></pre>
 
+<p>To ship command-line tools with your package, add a <code>global_install</code> field (single line, <code>{name: src, ...}</code> — sources must live under the main source tree). Installing the package compiles each entry to a host binary in <code>~/.leash/bin</code>; uninstalling the package removes them again:</p>
+<pre><code>global_install: <span class="str">{lint: src/lint.lsh, fmt: src/fmt.lsh}</span></code></pre>
+
 <p>To link to an existing GitHub repo, add a <code>repo</code> field:</p>
 <pre><code>repo: <span class="str">"https://github.com/you/mylib.git"</span></code></pre>
 

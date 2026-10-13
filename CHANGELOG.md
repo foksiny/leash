@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added — Global command installs (`global_install` + `leash rm`)
+- Projects can ship command-line tools: a single-line
+  `global_install: {name: src, ...}` map in `config.lshc`, installed
+  with bare `leash install` (no path args) to host binaries in
+  `~/.leash/bin/` (`.exe` on Windows, with a PATH hint when needed).
+  Build settings mirror `build` (opt level, imports, clibs); all
+  entries validate before anything compiles, and failures report
+  per-entry.
+- New `leash rm <name>...` removes installed binaries after an
+  interactive confirmation (empty answer means yes), refuses
+  non-identifier names, and reports missing entries without prompting.
+- Leashed packages support the same field in `leash-pkg.lshc`: publish
+  maps tool sources to library-relative paths in `package.lshc`,
+  installs build them to `~/.leash/bin`, and uninstalling the package
+  removes its commands with it.
+
 ### Fixed — Stale native compiler after reinstall
 - `pip install -e .` silently kept the old `leash/native/leashc`: the
   install-time bootstrap still passed `-o <out>`, which the compilers

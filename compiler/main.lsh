@@ -259,7 +259,8 @@ fnc print_usage() : void {
     show("  check <file.lsh>      Type-check only; report errors and warnings");
     show("  init [dir]            Scaffold a new Leash project (default: .)");
     show("  build                 Compile the project described by config.lshc");
-    show("  install <path>...     Install libraries into ~/.leash/libs/");
+    show("  install [<path>...]      Install libraries into ~/.leash/libs/ (no args: install global_install binaries)");
+    show("  rm <name>...            Remove globally installed binaries (asks first; empty answer means yes)");
     show("  update                Check for updates and pull the latest source");
     show("  self-host             3-stage bootstrap + fixed-point check");
     show("  <file.lsh>            Shorthand for 'leash compile <file.lsh>'");
@@ -344,9 +345,21 @@ fnc print_command_help(topic string) : bool {
     }
     if topic == "install" {
         show("install <path>...");
+        show("install (no args, in a project)");
         show("");
         show("Install one or more libraries (files or directories of .lsh files)");
         show("into ~/.leash/libs for global imports.");
+        show("With no path arguments, compiles every config.lshc global_install");
+        show("entry ({name: src/main.lsh, ...}, one line) to a host binary in");
+        show("~/.leash/bin so it runs straight from the terminal.");
+        show("Use `leash rm <name>...` to remove installed binaries.");
+        return true;
+    }
+    if topic == "rm" {
+        show("rm <name>...");
+        show("");
+        show("Remove globally installed binaries from ~/.leash/bin.");
+        show("Asks for confirmation first; an empty answer means yes.");
         return true;
     }
     if topic == "update" {
@@ -395,7 +408,8 @@ fnc cmd_init(args string[]) : int {
                    "clibs: {}\n" +
                    "imports: " + q + "imports/" + q + "\n" +
                    "opt_level: " + q + "O3" + q + "\n" +
-                   "out_name: " + q + out_name + q + "\n";
+                   "out_name: " + q + out_name + q + "\n" +
+                   "# global_install: {tester: src/main_test.lsh}  (one line; `leash install` builds these to ~/.leash/bin)\n";
     xwrite_text(abs + "/config.lshc", cfg);
 
     show("Initialized leash project in '", abs, "'");
@@ -687,8 +701,8 @@ fnc empty_libs_global() : vec<string> {
 
 fnc cmd_install(args string[]) : int {
     if args.size < 3 {
-        show("Usage: install <path>...   Install libraries into ~/.leash/libs");
-        return 1;
+        // No paths: global binary installs from config.lshc.
+        return cmd_install_global(args);
     }
     libs: string = xout("echo $HOME") + "/.leash/libs";
     exec("mkdir -p " + libs, nil);
@@ -723,6 +737,356 @@ fnc cmd_install(args string[]) : int {
         }
         ai = ai + 1;
     }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// global installs — config.lshc `global_install: {name: src, ...}` compiled
+// to host binaries in ~/.leash/bin (`leash install` with no path args),
+// removed again with `leash rm`.
+// ---------------------------------------------------------------------------
+
+// True on Windows hosts (exactly one form expands per platform shell:
+// $OS under POSIX sh — inherited as Windows_NT on git-bash/msys —
+// %OS% under cmd.exe).
+fnc host_is_windows() : bool {
+    if xout("echo $OS") == "Windows_NT" { return true; }
+    if xout("echo %OS%") == "Windows_NT" { return true; }
+    return false;
+}
+
+fnc leash_bin_dir() : string {
+    home: string = xout("echo $HOME");
+    if home.size == 0 { return ""; }
+    return home + "/.leash/bin";
+}
+
+// Binary entry names double as file names: no dots, slashes or spaces.
+fnc valid_bin_name(n string) : bool {
+    if n.size == 0 { return false; }
+    c0: char = n[0];
+    if !((c0 >= 'a' && c0 <= 'z') || (c0 >= 'A' && c0 <= 'Z') || c0 == '_') { return false; }
+    i: int = 1;
+    while i < n.size {
+        c: char = n[i];
+        if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-') { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+fnc str_lower_ascii(s string) : string {
+    out: string = "";
+    i: int = 0;
+    while i < s.size {
+        ch: char = s[i];
+        if ch >= 'A' && ch <= 'Z' { ch = (char)(ch + 32); }
+        out = out + ch;
+        i = i + 1;
+    }
+    return out;
+}
+
+// Parse single-line `{name: src, ...}` (quotes tolerated) into an
+// alternating [name, src, ...] vec. The config format is line-based, so
+// multi-line maps are not supported — keep it on one line.
+fnc parse_global_install(raw string) : vec<string> {
+    out: vec<string>;
+    s: string = xstrip_ws(raw);
+    if s.size < 2 || s[0] != '{' { return out; }
+    end: int = s.size - 1;
+    while end > 0 && s[end] != '}' { end = end - 1; }
+    if end <= 1 { return out; }
+    parts: vec<string>;
+    part: string = "";
+    in_q: bool = false;
+    i: int = 1;
+    while i < end {
+        c: char = s[i];
+        if c == '"' { in_q = !in_q; part = part + c; }
+        also c == ',' && !in_q {
+            parts.pushb(part);
+            part = "";
+        } else {
+            part = part + c;
+        }
+        i = i + 1;
+    }
+    parts.pushb(part);
+    foreach _, p in<vector> parts {
+        pp: string = xstrip_ws(p);
+        if pp.size == 0 { continue; }
+        // split on the first ':' outside quotes
+        ci: int = 0;
+        q2: bool = false;
+        while ci < pp.size {
+            cc: char = pp[ci];
+            if cc == '"' { q2 = !q2; }
+            also cc == ':' && !q2 { stop; }
+            ci = ci + 1;
+        }
+        if ci >= pp.size {
+            show("warning: skipping malformed global_install entry '", pp, "' (expected name: src)");
+            continue;
+        }
+        nm: string = xstrip_quotes(xstrip_ws2(pp, 0, ci));
+        src: string = xstrip_quotes(xstrip_ws2(pp, ci + 1, pp.size));
+        if nm.size == 0 || src.size == 0 {
+            show("warning: skipping malformed global_install entry '", pp, "' (expected name: src)");
+            continue;
+        }
+        out.pushb(nm);
+        out.pushb(src);
+    }
+    return out;
+}
+
+// True when bindir is on PATH (both %PATH% and $PATH forms probed; an
+// indeterminable PATH counts as absent so the hint still prints).
+fnc bin_dir_on_path(bindir string, windows bool) : bool {
+    pv: string = xout("echo $PATH");
+    if windows {
+        // Under cmd.exe only %PATH% expands; under git-bash only $PATH.
+        // If $PATH came back unexpanded, switch to the other form (a
+        // still-unexpanded value simply won't match, so the hint prints).
+        pv2: string = xout("echo %PATH%");
+        has_dollar: bool = false;
+        pi: int = 0;
+        while pi < pv.size {
+            if pv[pi] == '$' { has_dollar = true; }
+            pi = pi + 1;
+        }
+        if has_dollar { pv = pv2; }
+    }
+    sep: char = ':';
+    if windows { sep = ';'; }
+    cur: string = "";
+    si: int = 0;
+    while si <= pv.size {
+        c: char = ';';
+        if si < pv.size { c = pv[si]; }
+        if c == sep || si == pv.size {
+            a: string = xstrip_ws(cur);
+            while a.size > 0 && (a[a.size - 1] == '/' || a[a.size - 1] == '\\') {
+                a = xstrip_ws2(a, 0, a.size - 1);
+            }
+            b: string = bindir;
+            while b.size > 0 && (b[b.size - 1] == '/' || b[b.size - 1] == '\\') {
+                b = xstrip_ws2(b, 0, b.size - 1);
+            }
+            if windows {
+                if str_lower_ascii(a) == str_lower_ascii(b) { return true; }
+            } else {
+                if a == b { return true; }
+            }
+            cur = "";
+        } else {
+            cur = cur + c;
+        }
+        si = si + 1;
+    }
+    return false;
+}
+
+// Compile every `global_install` entry to a host binary in ~/.leash/bin.
+// Invoked by `install` with no path arguments.
+fnc cmd_install_global(args string[]) : int {
+    if project_config_and_main() != 0 { return 1; }
+    cfg: hash<string, string> = parse_lshc("config.lshc");
+    if !cfg.isin("global_install") || xstrip_ws(cfg["global_install"]).size == 0 {
+        show("error: no 'global_install' in config.lshc (single-line {name: src/main.lsh, ...})");
+        return 1;
+    }
+    entries: vec<string> = parse_global_install(cfg["global_install"]);
+    if entries.size == 0 {
+        show("error: no valid entries in 'global_install' (single-line {name: src/main.lsh, ...})");
+        return 1;
+    }
+    ai0: int = 2;
+    while ai0 < args.size {
+        if args[ai0].size > 0 && args[ai0][0] == '-' {
+            show("info: ignoring unknown option '", args[ai0], "'");
+        }
+        ai0 = ai0 + 1;
+    }
+    // Validate everything before compiling anything.
+    ni: int = 0;
+    while ni < entries.size {
+        nm: string = entries.get(ni);
+        src: string = entries.get(ni + 1);
+        if !valid_bin_name(nm) {
+            show("error: invalid binary name '", nm, "' in global_install (letters, digits, _, -; must start with letter or _)");
+            return 1;
+        }
+        if !xpath_contained(src) {
+            show("error: '", src, "' in global_install must stay inside the project directory");
+            return 1;
+        }
+        if !xfile_exists(src) {
+            show("error: global_install source not found: '", src, "'");
+            return 1;
+        }
+        ni = ni + 2;
+    }
+    windows: bool = host_is_windows();
+    sfx: string = "";
+    if windows { sfx = ".exe"; }
+    bindir: string = leash_bin_dir();
+    if bindir.size == 0 {
+        show("error: cannot determine home directory (HOME is not set)");
+        return 1;
+    }
+    exec("mkdir -p " + bindir, nil);
+    // Project build settings mirror `build`.
+    opt_level: string = "2";
+    if cfg.isin("opt_level") && cfg["opt_level"].size > 0 {
+        opt_level = cfg["opt_level"];
+        if opt_level[0] == 'O' {
+            opt_level = xstrip_ws2(opt_level, 1, opt_level.size);
+        }
+    }
+    extra_dirs: vec<string>;
+    if cfg.isin("imports") && cfg["imports"].size > 0 {
+        imp: string = cfg["imports"];
+        if !xpath_contained(imp) {
+            show("error: 'imports' in config.lshc must stay inside the project directory (got '", imp, "')");
+            return 1;
+        }
+        if xis_dir(imp) {
+            extra_dirs.pushb(xout("realpath " + imp));
+        }
+    }
+    extra_libs: vec<string>;
+    if cfg.isin("clibs_keys") && cfg["clibs_keys"].size > 0 {
+        clibs: string = cfg["clibs_keys"];
+        li: int = 0;
+        part: string = "";
+        while li <= clibs.size {
+            if li == clibs.size || clibs[li] == ',' {
+                lib: string = xstrip_ws(part);
+                if lib.size > 0 { extra_libs.pushb(lib); }
+                part = "";
+            } else {
+                part = part + clibs[li];
+            }
+            li = li + 1;
+        }
+    }
+    driver: CompilerDriver = CompilerDriver.make();
+    driver.self_path = args[0];
+    fails: int = 0;
+    ni = 0;
+    while ni < entries.size {
+        nm: string = entries.get(ni);
+        src: string = entries.get(ni + 1);
+        outpath: string = bindir + "/" + nm + sfx;
+        driver = CompilerDriver.make();
+        driver.self_path = args[0];
+        foreach _, d in<vector> extra_dirs { driver.add_import_dir(d); }
+        rc: int = driver.compile_file(src, outpath, false, false, "",
+                                      opt_level, false, extra_libs, false, false, false,
+                                      "", false, false);
+        if rc != 0 {
+            show("error: failed to install '", nm, "'");
+            fails = fails + 1;
+        } else {
+            show("Installed ", nm, " -> ", outpath);
+        }
+        ni = ni + 2;
+    }
+    if !bin_dir_on_path(bindir, windows) {
+        q: char = '"';
+        show("Installed binaries are not on your PATH.");
+        if windows {
+            show("  Run: setx PATH ", q, bindir, ";%PATH%", q, " (then reopen the terminal)");
+        } else {
+            show("  Run: export PATH=", q, bindir, ":$PATH", q);
+        }
+    }
+    if fails > 0 { return 1; }
+    return 0;
+}
+
+// Remove globally installed binaries (asks first; empty answer means yes).
+fnc cmd_rm(args string[]) : int {
+    if args.size < 3 {
+        show("Usage: rm <name>...   Remove globally installed binaries (asks first; empty answer means yes)");
+        return 1;
+    }
+    names: vec<string>;
+    ai: int = 2;
+    while ai < args.size {
+        a: string = args[ai];
+        if a.size > 0 && a[0] == '-' {
+            show("info: ignoring unknown option '", a, "'");
+            ai = ai + 1;
+            continue;
+        }
+        // A trailing .exe is convenience, not part of the name.
+        n: string = a;
+        ln: string = str_lower_ascii(n);
+        if ln.size > 4 && ln[ln.size - 4] == '.' && ln[ln.size - 3] == 'e' && ln[ln.size - 2] == 'x' && ln[ln.size - 1] == 'e' {
+            n = xstrip_ws2(n, 0, n.size - 4);
+        }
+        if !valid_bin_name(n) {
+            show("error: invalid binary name '", a, "'");
+            return 1;
+        }
+        names.pushb(n);
+        ai = ai + 1;
+    }
+    if names.size == 0 {
+        show("Usage: rm <name>...   Remove globally installed binaries (asks first; empty answer means yes)");
+        return 1;
+    }
+    bindir: string = leash_bin_dir();
+    if bindir.size == 0 {
+        show("error: cannot determine home directory (HOME is not set)");
+        return 1;
+    }
+    targets: vec<string>;
+    missing: vec<string>;
+    foreach _, n in<vector> names {
+        found: bool = false;
+        p1: string = bindir + "/" + n;
+        if xfile_exists(p1) {
+            targets.pushb(p1);
+            found = true;
+        }
+        p2: string = bindir + "/" + n + ".exe";
+        if xfile_exists(p2) {
+            targets.pushb(p2);
+            found = true;
+        }
+        if !found {
+            missing.pushb(n);
+        }
+    }
+    foreach _, m in<vector> missing {
+        show("Not installed: ", m);
+    }
+    if targets.size == 0 { return 1; }
+    show("Remove:");
+    foreach _, t in<vector> targets {
+        show("  ", t);
+    }
+    ans: string = get("Remove these file(s)? [Y/n] ");
+    norm: string = str_lower_ascii(xstrip_ws(ans));
+    if norm.size != 0 && norm != "y" && norm != "yes" {
+        show("Cancelled.");
+        return 0;
+    }
+    fails: int = 0;
+    foreach _, t in<vector> targets {
+        del_rc: int = File.delete(t);
+        if del_rc != 0 || xfile_exists(t) {
+            show("error: could not remove ", t);
+            fails = fails + 1;
+        } else {
+            show("Removed ", t);
+        }
+    }
+    if fails > 0 { return 1; }
     return 0;
 }
 
@@ -1200,6 +1564,10 @@ fnc main(args string[]) : int {
 
     if cmd == "install" {
         return cmd_install(args);
+    }
+
+    if cmd == "rm" {
+        return cmd_rm(args);
     }
 
     if cmd == "update" {

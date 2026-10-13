@@ -796,6 +796,24 @@ def cmd_publish(args):
         "main": main_file,
         "published_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
+    # Global commands ride into the install manifest as library-relative
+    # paths, so installs can build them without the source manifest.
+    gi_raw = config.get("global_install", "")
+    if gi_raw.strip():
+        try:
+            gi_map = _parse_global_install_map(gi_raw)
+        except ValueError as e:
+            eprint(f"error: invalid 'global_install' in leash-pkg.lshc: {e}")
+            tmp_cleanup(out_dir)
+            sys.exit(1)
+        try:
+            pkg_config["global_install"] = _map_tool_sources(
+                project_dir, os.path.realpath(src_root), gi_map)
+        except ValueError as e:
+            eprint(f"error: invalid 'global_install' in leash-pkg.lshc: {e}")
+            tmp_cleanup(out_dir)
+            sys.exit(1)
+        print(f"[leashed] Registered {len(pkg_config['global_install'])} global command(s)")
     with open(os.path.join(lib_out, PACKAGE_CONFIG), "w", encoding="utf-8") as f:
         json.dump(pkg_config, f, indent=2)
     with open(os.path.join(lib_out, PUBLISHER_FILE), "w", encoding="utf-8") as f:
@@ -1471,6 +1489,171 @@ def _read_installed_pkg_config(dest_root):
     return pkg
 
 
+def _global_bin_dir():
+    """Directory for globally installed command binaries (sibling of libs)."""
+    return os.path.join(os.path.dirname(LEASH_LIBS_DIR), "bin")
+
+
+def _parse_global_install_map(raw):
+    """Parse a single-line `{name: src, ...}` map (quotes tolerated).
+
+    Returns a {name: src} dict. Raises ValueError on malformed entries;
+    empty parts (e.g. trailing commas) are skipped silently.
+    """
+    s = raw.strip()
+    if not s.startswith("{"):
+        raise ValueError("must be a single-line {name: src, ...} map")
+    end = s.rfind("}")
+    if end < 1:
+        raise ValueError("must be a single-line {name: src, ...} map")
+    body = s[1:end]
+    parts, cur, in_q = [], "", False
+    for ch in body:
+        if ch == '"':
+            in_q = not in_q
+            cur += ch
+        elif ch == "," and not in_q:
+            parts.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    parts.append(cur)
+    out = {}
+    for p in parts:
+        p = p.strip()
+        if not p:
+            continue
+        ci, q2 = 0, False
+        while ci < len(p):
+            c = p[ci]
+            if c == '"':
+                q2 = not q2
+            elif c == ":" and not q2:
+                break
+            ci += 1
+        if ci >= len(p):
+            raise ValueError(f"malformed entry {p!r} (expected name: src)")
+        name = p[:ci].strip()
+        src = p[ci + 1:].strip()
+        if len(name) >= 2 and name.startswith('"') and name.endswith('"'):
+            name = name[1:-1]
+        if len(src) >= 2 and src.startswith('"') and src.endswith('"'):
+            src = src[1:-1]
+        if not name or not src:
+            raise ValueError(f"malformed entry {p!r} (expected name: src)")
+        out[name] = src
+    return out
+
+
+def _map_tool_sources(project_dir, src_root_real, tool_map):
+    """Map publisher-declared tool sources to library-relative paths.
+
+    Tool sources must live under the main source tree (only published
+    files are installable). Returns {name: lib_rel_path}. Raises
+    ValueError with a clear message on any violation.
+    """
+    mapped = {}
+    for tname, tsrc in tool_map.items():
+        if not re.match(r'^[A-Za-z_][A-Za-z0-9_-]*$', tname or ""):
+            raise ValueError(f"invalid tool name {tname!r} (letters, digits, _, -)")
+        if not isinstance(tsrc, str) or not tsrc:
+            raise ValueError(f"invalid source for tool {tname!r}")
+        abs_p = os.path.realpath(os.path.join(project_dir, tsrc))
+        if abs_p != src_root_real and not abs_p.startswith(src_root_real + os.sep):
+            raise ValueError(f"tool source '{tsrc}' must live under the main source tree")
+        if not os.path.isfile(abs_p):
+            raise ValueError(f"tool source not found: '{tsrc}'")
+        mapped[tname] = os.path.relpath(abs_p, src_root_real).replace(os.sep, "/")
+    return mapped
+
+
+def _install_global_commands(dest_root, tools):
+    """Build each {name: src} tool to the global bin dir. Returns (installed, failed)."""
+    if not isinstance(tools, dict) or not tools:
+        return [], []
+    try:
+        from leash.cli import compile_file
+    except ImportError:
+        eprint("error: cannot build global commands: the Python toolchain is unavailable")
+        return [], list(tools.keys())
+    bindir = _global_bin_dir()
+    os.makedirs(bindir, exist_ok=True)
+    suffix = ".exe" if sys.platform == "win32" else ""
+    installed, failed = [], []
+    for tname, tsrc in tools.items():
+        if not re.match(r'^[A-Za-z_][A-Za-z0-9_-]*$', tname or ""):
+            eprint(f"error: skipping global command with invalid name: {tname!r}")
+            failed.append(tname)
+            continue
+        if not isinstance(tsrc, str) or not tsrc:
+            eprint(f"error: skipping global command '{tname}': invalid source")
+            failed.append(tname)
+            continue
+        src_abs = os.path.realpath(os.path.join(dest_root, tsrc))
+        if src_abs != dest_root and not src_abs.startswith(dest_root + os.sep):
+            eprint(f"error: skipping global command '{tname}': source escapes the package")
+            failed.append(tname)
+            continue
+        if not os.path.isfile(src_abs):
+            eprint(f"error: skipping global command '{tname}': source not found")
+            failed.append(tname)
+            continue
+        out = os.path.join(bindir, tname + suffix)
+        if os.path.exists(out):
+            print(f"[leashed] warning: overwriting existing global command '{tname}'")
+        try:
+            compile_file(src_abs, out, "executable", False, None, False,
+                         False, [], "2", [dest_root])
+        except SystemExit as e:
+            # compile_file reports its own diagnostics, then exits: a
+            # broken tool must not take down the library install (nor the
+            # remaining tools), but it stays loud.
+            if e.code not in (None, 0):
+                eprint(f"error: failed to build global command '{tname}'")
+                failed.append(tname)
+                continue
+        except Exception as e:
+            eprint(f"error: failed to build global command '{tname}': {e}")
+            failed.append(tname)
+            continue
+        print(f"[leashed] Installed global command '{tname}' -> {out}")
+        installed.append(out)
+    if installed and bindir not in os.environ.get("PATH", "").split(os.pathsep):
+        if sys.platform == "win32":
+            print(f"  Run: setx PATH \"{bindir};%PATH%\" (then reopen the terminal)")
+        else:
+            print(f"  Run: export PATH=\"{bindir}:$PATH\"")
+    return installed, failed
+
+
+def _remove_global_commands(dest_root):
+    """Remove binaries this package installed globally. Returns [removed paths]."""
+    try:
+        with open(os.path.join(dest_root, PACKAGE_CONFIG), "r", encoding="utf-8") as f:
+            pkg = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return []
+    if not isinstance(pkg, dict):
+        return []
+    tools = pkg.get("global_install", {})
+    if not isinstance(tools, dict):
+        return []
+    bindir = _global_bin_dir()
+    removed = []
+    for tname in tools:
+        if not isinstance(tname, str) or not re.match(r'^[A-Za-z_][A-Za-z0-9_-]*$', tname):
+            continue
+        for cand in (os.path.join(bindir, tname),
+                     os.path.join(bindir, tname + ".exe")):
+            if os.path.exists(cand):
+                try:
+                    os.remove(cand)
+                    removed.append(cand)
+                except OSError as e:
+                    eprint(f"error: could not remove {cand}: {e}")
+    return removed
+
+
 def _write_stub(libname, version, author, desc, dest_root):
     entry_main = _read_installed_pkg_config(dest_root).get("main", "src/main.lsh")
     # The main file path in config is relative to project dir, but files are
@@ -1619,6 +1802,11 @@ def _install_from_repo(repo_url, requested_version=None, libname=None,
 
         _write_stub(libname, version, author, desc, dest_root)
         print(f"[leashed] Successfully installed '{libname}' v{version}")
+        # Global commands declared by the package (`global_install` in its
+        # manifest) compile to host binaries next to the package install.
+        tools = pkg.get("global_install", {}) if isinstance(pkg, dict) else {}
+        if isinstance(tools, dict) and tools:
+            _install_global_commands(dest_root, tools)
         return libname, version, sha
     finally:
         tmp_cleanup(repo_tmp)
@@ -1740,6 +1928,9 @@ def cmd_uninstall(args):
     if not os.path.exists(dest_root) and not os.path.exists(stub_path):
         eprint(f"error: Library '{libname}' is not installed")
         sys.exit(1)
+    # Global commands installed with the package go away with it.
+    for gone in _remove_global_commands(dest_root):
+        print(f"[leashed] Removed global command '{gone}'")
     if os.path.exists(dest_root):
         shutil.rmtree(dest_root, onerror=_del_rw)
     if os.path.exists(stub_path):
