@@ -268,7 +268,7 @@ pub def CompilerDriver : class {
         return true;
     }
 
-    pub fnc resolve_imports(prog Program, base_dir string) : void {
+    pub fnc resolve_imports(prog Program, base_dir string, check_mode bool) : void {
         imports_to_process: vec<string> = prog.imports;
         empty_imps: vec<string>;
         prog.imports = empty_imps; // clear so we don't duplicate
@@ -309,9 +309,14 @@ pub def CompilerDriver : class {
                 this.imports_fatal = true;
                 return;
             }
+            if mod_parser.parse_errs > 0 && !check_mode {
+                show("error: ", tostring(mod_parser.parse_errs), " parse error(s) in imported module '", mod_file, "' (see above)");
+                this.imports_fatal = true;
+                return;
+            }
 
             // Recursively resolve sub-imports
-            this.resolve_imports(mod_prog, Path.dirname(mod_file));
+            this.resolve_imports(mod_prog, Path.dirname(mod_file), check_mode);
             if this.imports_fatal { return; }
 
             // A module imported with an alias gets its contents namespaced
@@ -710,6 +715,17 @@ pub def CompilerDriver : class {
             this.print_parse_error(parser.fatal_msg, parser.fatal_tip, abs_main, parser.fatal_line, parser.fatal_col);
             return 1;
         }
+        if parser.parse_errs > 0 && !check_mode {
+            // Recovery errors used to be ignored: mistyped constructs
+            // were silently dropped and the build "succeeded" (e.g. an
+            // unknown `fusion` modifier vanishing into a plain global).
+            // Python raises on the first syntax error, so fail here too.
+            // `--check` stays lenient: doc fragments and editor buffers
+            // are often incomplete, and the doc-test suite checks the
+            // declarations inside such fragments.
+            show("error: ", tostring(parser.parse_errs), " parse error(s) in '", input_file, "' (see above); not emitting output");
+            return 1;
+        }
         if verbose {
             show("[verbose] parsed: ", tostring(prog.funcs.size), " funcs, ",
                  tostring(prog.structs.size), " structs, ", tostring(prog.classes.size), " classes, ",
@@ -718,7 +734,7 @@ pub def CompilerDriver : class {
 
         // Resolve imports
         if verbose { show("[verbose] resolving imports (", tostring(prog.imports.size), ")"); }
-        this.resolve_imports(prog, base_dir);
+        this.resolve_imports(prog, base_dir, check_mode);
         if this.imports_fatal {
             if verbose { show("[verbose] import resolution failed"); }
             return 1;

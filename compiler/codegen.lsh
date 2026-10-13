@@ -11,6 +11,33 @@ pub def CodeGen : class {
     pub has_entry: bool;  // an entry point exists (top-level or class
                           // static main): executables require one, libraries
                           // must not gain one
+    pub fusion_globals: hash<string, bool>;   // `fusion` globals: atomic
+                                              // loads/stores (seq_cst)
+
+    // Atomic access width for a fusion global, or 0 when plain access
+    // applies (non-integers, sub-byte widths like bool, or widths the
+    // LLVM atomic instructions cannot express). Mirrors the reference:
+    // integer type, width >= 8, byte-multiple.
+    pub fnc fusion_int_width(name string) : int {
+        if !this.fusion_globals.isin(name) { return 0; }
+        if !this.global_vars.isin(name) { return 0; }
+        lty: string = this.llvm_type(this.global_vars[name]);
+        if !this.is_int_lty(lty) { return 0; }
+        w: int = this.lty_width(lty);
+        if w < 8 { return 0; }
+        if w % 8 != 0 { return 0; }
+        return w;
+    }
+
+    pub fnc fusion_align(lty string) : int {
+        w: int = this.lty_width(lty);
+        b: int = (w + 7) / 8;
+        if b >= 16 { return 16; }
+        if b >= 8 { return 8; }
+        if b >= 4 { return 4; }
+        if b >= 2 { return 2; }
+        return 1;
+    }
     pub af_arr: string;   // tracking array alloca reg ("" when inactive)
     pub af_cnt: string;   // tracking counter alloca reg
     pub af_emitted: bool;   // cleanup already emitted for this function
@@ -781,6 +808,193 @@ pub def CodeGen : class {
         return op == "+=" || op == "-=" || op == "*=" || op == "/=" || op == "%=" ||
                op == ">>=" || op == "<<=" || op == "&=" || op == "|=" || op == "^=" ||
                op == "++" || op == "--";
+    }
+
+    // Atomic write to a `fusion` integer global (python parity): `x = x
+    // +/- k` lowers to atomicrmw so concurrent counters never lose
+    // updates; anything else is an atomic store. Caller guarantees an
+    // integer global of atomic width.
+    pub fnc gen_fusion_assign(s Stmt, name string, gv_lty string) : void {
+        ptr: string = "@g_" + name;
+        al: int = this.fusion_align(gv_lty);
+        is_uint_g: bool = false;
+        if this.global_vars.isin(name) { is_uint_g = this.is_uint_type(this.global_vars[name]); }
+        // x = x + k / x = k + x -> rmw add; x = x - k -> rmw sub
+        if s.op == "=" && s.value != null && s.value.kind == ExprKind.BINOP && (s.value.op == "+" || s.value.op == "-") {
+            l_is_t: bool = s.value.left != null && s.value.left.kind == ExprKind.IDENT && s.value.left.sval == name;
+            r_is_t: bool = s.value.right != null && s.value.right.kind == ExprKind.IDENT && s.value.right.sval == name;
+            operand_e: Expr = null;
+            rmw: string = "";
+            if l_is_t && !r_is_t {
+                operand_e = s.value.right;
+                if s.value.op == "+" { rmw = "add"; } else { rmw = "sub"; }
+            } also r_is_t && !l_is_t && s.value.op == "+" {
+                operand_e = s.value.left;
+                rmw = "add";
+            }
+            if operand_e != null {
+                oval: string = this.gen_expr(operand_e);
+                oval = this.fusion_cast_operand(operand_e, oval, gv_lty);
+                old: string = this.new_reg();
+                this.emit("  " + old + " = atomicrmw " + rmw + " " + gv_lty + "* " + ptr + ", " + gv_lty + " " + oval + " seq_cst");
+                return;
+            }
+        }
+        // Compound idioms: +=/++ -> rmw add, -=/-- -> rmw sub
+        if s.op == "+=" || s.op == "++" || s.op == "-=" || s.op == "--" {
+            oval2: string = this.gen_expr(s.value);
+            oval2 = this.fusion_cast_operand(s.value, oval2, gv_lty);
+            rmw2: string = "add";
+            if s.op == "-=" || s.op == "--" { rmw2 = "sub"; }
+            old2: string = this.new_reg();
+            this.emit("  " + old2 + " = atomicrmw " + rmw2 + " " + gv_lty + "* " + ptr + ", " + gv_lty + " " + oval2 + " seq_cst");
+            return;
+        }
+        // Other compounds compute from a plain load and store atomically
+        // (reference shape: only +/- get the RMW form).
+        if this.is_compound_op(s.op) {
+            oval3: string = this.gen_expr(s.value);
+            oval3 = this.fusion_cast_operand(s.value, oval3, gv_lty);
+            cur: string = this.new_reg();
+            this.emit("  " + cur + " = load " + gv_lty + ", " + gv_lty + "* " + ptr);
+            iop: string = "add";
+            if s.op == "*=" { iop = "mul"; }
+            also s.op == "/=" {
+                if is_uint_g { iop = "udiv"; } else { iop = "sdiv"; }
+            } also s.op == "%=" {
+                if is_uint_g { iop = "urem"; } else { iop = "srem"; }
+            } also s.op == "<<=" { iop = "shl"; }
+            also s.op == ">>=" {
+                if is_uint_g { iop = "lshr"; } else { iop = "ashr"; }
+            } also s.op == "&=" { iop = "and"; }
+            also s.op == "|=" { iop = "or"; }
+            also s.op == "^=" { iop = "xor"; }
+            res3: string = this.new_reg();
+            this.emit("  " + res3 + " = " + iop + " " + gv_lty + " " + cur + ", " + oval3);
+            this.emit("  store atomic " + gv_lty + " " + res3 + ", " + gv_lty + "* " + ptr + " seq_cst, align " + tostring(al));
+            return;
+        }
+        oval4: string = this.gen_expr(s.value);
+        oval4 = this.coerce_store_val(s.value, oval4, gv_lty);
+        this.emit("  store atomic " + gv_lty + " " + oval4 + ", " + gv_lty + "* " + ptr + " seq_cst, align " + tostring(al));
+    }
+
+    // Cast an RMW/store operand to the fusion slot width (trunc, or
+    // sext/zext by the operand's own signedness). Literals embed as-is.
+    pub fnc fusion_cast_operand(e Expr, val string, gv_lty string) : string {
+        if e == null { return val; }
+        if val.size > 0 && val[0] != '%' { return val; }
+        et: string = this.get_expr_type(e);
+        elty: string = this.llvm_type(et);
+        if elty == gv_lty { return val; }
+        if this.is_int_lty(elty) && this.is_int_lty(gv_lty) {
+            r: string = this.new_reg();
+            if this.lty_width(elty) > this.lty_width(gv_lty) {
+                this.emit("  " + r + " = trunc " + elty + " " + val + " to " + gv_lty);
+            } also this.is_uint_type(et) {
+                this.emit("  " + r + " = zext " + elty + " " + val + " to " + gv_lty);
+            } else {
+                this.emit("  " + r + " = sext " + elty + " " + val + " to " + gv_lty);
+            }
+            return r;
+        }
+        return val;
+    }
+
+    // Lower prefix/postfix inc/dec on an lvalue: read once, store back
+    // through the assign machinery, yield new (prefix) or old (postfix).
+    // IDENT cells lower directly (fusion globals stay atomic); anything
+    // else stores via a synthesized plain assignment.
+    pub fnc gen_incr_decr(t Expr, is_prefix bool, is_inc bool) : string {
+        if t.kind == ExprKind.IDENT && this.var_ptrs.isin(t.sval) {
+            cell: string = this.var_ptrs[t.sval];
+            vtyp: string = this.var_types[t.sval];
+            // Scalar refs assign through to the referenced cell.
+            while vtyp.size > 1 && vtyp[0] == '&' {
+                inner: string = this.strip_ref(vtyp);
+                if this.tc.structs.isin(inner) || this.tc.classes.isin(inner) { stop; }
+                nplty: string = this.llvm_type(vtyp);
+                nptr: string = this.new_reg();
+                this.emit("  " + nptr + " = load " + nplty + ", " + nplty + "* " + cell);
+                cell = nptr;
+                vtyp = inner;
+            }
+            clty: string = this.llvm_type(vtyp);
+            oldv: string = this.new_reg();
+            this.emit("  " + oldv + " = load " + clty + ", " + clty + "* " + cell);
+            newv: string = this.incr_value(oldv, clty, is_inc);
+            this.emit("  store " + clty + " " + newv + ", " + clty + "* " + cell);
+            if is_prefix { return newv; }
+            return oldv;
+        }
+        if t.kind == ExprKind.IDENT && !this.var_ptrs.isin(t.sval) && this.global_vars.isin(t.sval) {
+            gt: string = this.global_vars[t.sval];
+            glty: string = this.llvm_type(gt);
+            gptr: string = "@g_" + t.sval;
+            if this.fusion_int_width(t.sval) > 0 {
+                rmw: string = "add";
+                if !is_inc { rmw = "sub"; }
+                ftext_old: string = this.new_reg();
+                this.emit("  " + ftext_old + " = atomicrmw " + rmw + " " + glty + "* " + gptr + ", " + glty + " 1 seq_cst");
+                if is_prefix {
+                    fnew: string = this.new_reg();
+                    if is_inc {
+                        this.emit("  " + fnew + " = add " + glty + " " + ftext_old + ", 1");
+                    } else {
+                        this.emit("  " + fnew + " = sub " + glty + " " + ftext_old + ", 1");
+                    }
+                    return fnew;
+                }
+                return ftext_old;
+            }
+            gold: string = this.new_reg();
+            this.emit("  " + gold + " = load " + glty + ", " + glty + "* " + gptr);
+            gnew: string = this.incr_value(gold, glty, is_inc);
+            this.emit("  store " + glty + " " + gnew + ", " + glty + "* " + gptr);
+            if is_prefix { return gnew; }
+            return gold;
+        }
+        // General lvalues: read once, write back through assignment.
+        told: string = this.gen_expr(t);
+        tot: string = this.get_expr_type(t);
+        tolty: string = this.llvm_type(tot);
+        tnew: string = this.incr_value(told, tolty, is_inc);
+        if is_prefix {
+            pf_op: string = "+";
+            if !is_inc { pf_op = "-"; }
+            pf_rhs: Expr = Expr.make_int(1);
+            if this.is_float_lty(tolty) { pf_rhs = Expr.make_float(1.0); }
+            sta: Stmt = Stmt.make_assign(t, "=", Expr.make_binop(pf_op, t, pf_rhs));
+            this.gen_statement(sta);
+            return tnew;
+        }
+        // Postfix yields the old value; store new back.
+        one_e: Expr = Expr.make_int(1);
+        if this.is_float_lty(tolty) { one_e = Expr.make_float(1.0); }
+        sta2_op: string = "+";
+        if !is_inc { sta2_op = "-"; }
+        sta2: Stmt = Stmt.make_assign(t, "=", Expr.make_binop(sta2_op, t, one_e));
+        this.gen_statement(sta2);
+        return told;
+    }
+
+    // old +/- 1 at the operand width (1.0 for floats).
+    pub fnc incr_value(oldv string, lty string, is_inc bool) : string {
+        r: string = this.new_reg();
+        if this.is_float_lty(lty) {
+            if is_inc {
+                this.emit("  " + r + " = fadd " + lty + " " + oldv + ", 1.0");
+            } else {
+                this.emit("  " + r + " = fsub " + lty + " " + oldv + ", 1.0");
+            }
+            return r;
+        }
+        if is_inc {
+            this.emit("  " + r + " = add " + lty + " " + oldv + ", 1");
+        } else {
+            this.emit("  " + r + " = sub " + lty + " " + oldv + ", 1");
+        }
+        return r;
     }
 
     // Clone struct-typed values on copy boundaries; everything else passes through.
@@ -1808,6 +2022,11 @@ pub def CodeGen : class {
         if e.kind == ExprKind.UNARY {
             if e.op == "await" { return this.strip_future(this.get_expr_type(e.left)); }
             if e.op == "!" { return "bool"; }
+            // Inc/dec yields the operand's own type (prefix: new value,
+            // postfix: old value — same width either way).
+            if e.op == "++p" || e.op == "--p" || e.op == "++" || e.op == "--" {
+                return this.get_expr_type(e.left);
+            }
             if e.op == "~" && this.is_wide_int_lit(e.left) { return "int<64>"; }
             if e.op == "&" {
                 if e.left.kind == ExprKind.IDENT && !this.var_ptrs.isin(e.left.sval) && this.tc.funcs.isin(e.left.sval) {
@@ -2445,7 +2664,11 @@ pub def CodeGen : class {
                 gv_t: string = this.global_vars[e.sval];
                 gv_lty: string = this.llvm_type(gv_t);
                 r: string = this.new_reg();
-                this.emit("  " + r + " = load " + gv_lty + ", " + gv_lty + "* @g_" + e.sval);
+                if this.fusion_int_width(e.sval) > 0 {
+                    this.emit("  " + r + " = load atomic " + gv_lty + ", " + gv_lty + "* @g_" + e.sval + " seq_cst, align " + tostring(this.fusion_align(gv_lty)));
+                } else {
+                    this.emit("  " + r + " = load " + gv_lty + ", " + gv_lty + "* @g_" + e.sval);
+                }
                 return r;
             }
             // Check enum constant: Name::VARIANT
@@ -2988,8 +3211,16 @@ pub def CodeGen : class {
                 this.emit("  " + res + " = load " + lty + ", " + lty + "* " + u_val);
                 return res;
             }
+            // Prefix/postfix inc/dec: ++x/--x return the NEW value,
+            // x++/x-- return the OLD value (python parity).
+            if e.op == "++p" || e.op == "--p" || e.op == "++" || e.op == "--" {
+                is_prefix: bool = e.op == "++p" || e.op == "--p";
+                is_inc: bool = e.op == "++p" || e.op == "++";
+                return this.gen_incr_decr(e.left, is_prefix, is_inc);
+            }
             return u_val;
         }
+
 
         if e.kind == ExprKind.CALL {
             // Special built-in: exec(cmd, mode)
@@ -5077,6 +5308,14 @@ pub def CodeGen : class {
         }
 
         if s.kind == StmtKind.ASSIGN {
+            // Fusion integer globals take the atomic path (plain loads
+            // hoist out of spin-waits; atomicrmw keeps counters exact).
+            // Shadowed locals and non-integer widths use the plain path.
+            if s.target.kind == ExprKind.IDENT && !this.var_ptrs.isin(s.target.sval) && this.fusion_int_width(s.target.sval) > 0 {
+                fw_lty: string = this.llvm_type(this.global_vars[s.target.sval]);
+                this.gen_fusion_assign(s, s.target.sval, fw_lty);
+                return;
+            }
             val: string = this.gen_expr(s.value);
             if s.op == "=" && s.target.kind == ExprKind.IDENT {
                 tn: string = s.target.sval;
@@ -5102,12 +5341,13 @@ pub def CodeGen : class {
                 if !this.var_ptrs.isin(name) && this.global_vars.isin(name) {
                     gv_t: string = this.global_vars[name];
                     gv_lty: string = this.llvm_type(gv_t);
-                    if s.op == "+=" {
-                        old_r: string = this.new_reg();
-                        this.emit("  " + old_r + " = load " + gv_lty + ", " + gv_lty + "* @g_" + name);
-                        add_r: string = this.new_reg();
-                        this.emit("  " + add_r + " = add " + gv_lty + " " + old_r + ", " + val);
-                        this.emit("  store " + gv_lty + " " + add_r + ", " + gv_lty + "* @g_" + name);
+                    if s.op == "=" {
+                        this.emit("  store " + gv_lty + " " + val + ", " + gv_lty + "* @g_" + name);
+                        return;
+                    }
+                    if this.is_compound_op(s.op) {
+                        cval: string = this.coerce_store_val(s.value, val, gv_lty);
+                        this.emit_assign_compound("@g_" + name, gv_lty, s.op, cval);
                         return;
                     }
                     this.emit("  store " + gv_lty + " " + val + ", " + gv_lty + "* @g_" + name);
@@ -5234,17 +5474,10 @@ pub def CodeGen : class {
                     sf_t: string = this.tc.static_fields[sf_key];
                     sf_lty: string = this.llvm_type(sf_t);
                     sf_ptr: string = "@" + sf_global;
-                    if s.op == "+=" || s.op == "-=" || s.op == "*=" {
-                        sf_old: string = this.new_reg();
-                        this.emit("  " + sf_old + " = load " + sf_lty + ", " + sf_lty + "* " + sf_ptr);
-                        sf_op: string = this.new_reg();
-                        sf_ir: string = "add";
-                        if s.op == "-=" { sf_ir = "sub"; }
-                        if s.op == "*=" { sf_ir = "mul"; }
-                        this.emit("  " + sf_op + " = " + sf_ir + " " + sf_lty + " " + sf_old + ", " + val);
-                        this.emit("  store " + sf_lty + " " + sf_op + ", " + sf_lty + "* " + sf_ptr);
-                    } else {
+                    if s.op == "=" {
                         this.emit("  store " + sf_lty + " " + val + ", " + sf_lty + "* " + sf_ptr);
+                    } else {
+                        this.emit_assign_compound(sf_ptr, sf_lty, s.op, val);
                     }
                 }
                 if this.tc.structs.isin(obj_t) {
@@ -5258,17 +5491,10 @@ pub def CodeGen : class {
                         this.emit("  " + gep_r + " = getelementptr inbounds %struct." + obj_t + ", %struct." + obj_t + "* " + obj_val + ", i32 0, i32 " + tostring(f_idx));
                         ftyp: string = si.field_types.get(f_idx);
                         lftyp: string = this.llvm_type(ftyp);
-                        if s.op == "+=" || s.op == "-=" || s.op == "*=" {
-                            old_r: string = this.new_reg();
-                            this.emit("  " + old_r + " = load " + lftyp + ", " + lftyp + "* " + gep_r);
-                            op_r: string = this.new_reg();
-                            ir_op: string = "add";
-                            if s.op == "-=" { ir_op = "sub"; }
-                            if s.op == "*=" { ir_op = "mul"; }
-                            this.emit("  " + op_r + " = " + ir_op + " " + lftyp + " " + old_r + ", " + val);
-                            this.emit("  store " + lftyp + " " + op_r + ", " + lftyp + "* " + gep_r);
-                        } else {
+                        if s.op == "=" {
                             this.emit("  store " + lftyp + " " + val + ", " + lftyp + "* " + gep_r);
+                        } else {
+                            this.emit_assign_compound(gep_r, lftyp, s.op, val);
                         }
                     }
                 }
@@ -5283,18 +5509,82 @@ pub def CodeGen : class {
                         this.emit("  " + gep_r + " = getelementptr inbounds %class." + obj_t + ", %class." + obj_t + "* " + obj_val + ", i32 0, i32 " + tostring(f_idx + 1));
                         ftyp: string = ci.field_types.get(f_idx);
                         lftyp: string = this.llvm_type(ftyp);
-                        if s.op == "+=" || s.op == "-=" || s.op == "*=" {
-                            old_r: string = this.new_reg();
-                            this.emit("  " + old_r + " = load " + lftyp + ", " + lftyp + "* " + gep_r);
-                            op_r: string = this.new_reg();
-                            ir_op: string = "add";
-                            if s.op == "-=" { ir_op = "sub"; }
-                            if s.op == "*=" { ir_op = "mul"; }
-                            this.emit("  " + op_r + " = " + ir_op + " " + lftyp + " " + old_r + ", " + val);
-                            this.emit("  store " + lftyp + " " + op_r + ", " + lftyp + "* " + gep_r);
-                        } else {
+                        if s.op == "=" {
                             this.emit("  store " + lftyp + " " + val + ", " + lftyp + "* " + gep_r);
+                        } else {
+                            this.emit_assign_compound(gep_r, lftyp, s.op, val);
                         }
+                    }
+                }
+            }
+            also s.target.kind == ExprKind.INDEX {
+                // Index stores (absent before 1.2.2: silently dropped).
+                // String elements reject at typecheck; hashing, vector,
+                // and fixed/slice stores mirror the read paths.
+                ix_base: string = this.strip_ref(this.get_expr_type(s.target.left));
+                if this.is_hash_type(ix_base) {
+                    ix_vt: string = this.hash_val_type(ix_base);
+                    ix_obj: string = this.gen_expr(s.target.left);
+                    ix_key: string = this.gen_expr(s.target.right);
+                    ix_key = this.hash_key_arg(ix_key, this.hash_key_type(ix_base));
+                    if s.op == "=" {
+                        ix_boxed: string = this.box_to_i8ptr(val, this.get_expr_type(s.value));
+                        this.emit("  call void @leash_sh_hash_push(i8* " + ix_obj + ", i8* " + ix_key + ", i8* " + ix_boxed + ")");
+                    } else {
+                        ix_raw: string = this.new_reg();
+                        this.emit("  " + ix_raw + " = call i8* @leash_sh_hash_get(i8* " + ix_obj + ", i8* " + ix_key + ")");
+                        ix_old: string = this.unbox_from_i8ptr(ix_raw, ix_vt);
+                        ix_vlty: string = this.llvm_type(ix_vt);
+                        ix_res: string = this.new_reg();
+                        if (s.op == "+=" || s.op == "-=" || s.op == "*=") && this.is_int_lty(ix_vlty) {
+                            ix_ir: string = "add";
+                            if s.op == "-=" { ix_ir = "sub"; }
+                            if s.op == "*=" { ix_ir = "mul"; }
+                            ix_rhs: string = this.fusion_cast_operand(s.value, val, ix_vlty);
+                            this.emit("  " + ix_res + " = " + ix_ir + " " + ix_vlty + " " + ix_old + ", " + ix_rhs);
+                        } also s.op == "+=" && ix_vt == "string" {
+                            this.emit("  " + ix_res + " = call i8* @leash_str_concat(i8* " + ix_old + ", i8* " + val + ")");
+                        } else {
+                            ix_res = val;
+                        }
+                        ix_boxed2: string = this.box_to_i8ptr(ix_res, ix_vt);
+                        this.emit("  call void @leash_sh_hash_push(i8* " + ix_obj + ", i8* " + ix_key + ", i8* " + ix_boxed2 + ")");
+                    }
+                } also this.is_vec_type(ix_base) {
+                    ix_inner: string = this.vec_inner_type(ix_base);
+                    ix_elty: string = this.llvm_type(ix_inner);
+                    ix_vobj: string = this.gen_expr(s.target.left);
+                    ix_vidx: string = this.i32_to_rt_i64(s.target.right, this.gen_expr(s.target.right));
+                    ix_vsize: string = this.vec_field(ix_vobj, 1);
+                    ix_vi: string = this.vec_check_index(ix_vidx, ix_vsize, "Runtime error: Vector index out of bounds.\n");
+                    ix_vdata: string = this.vec_field(ix_vobj, 0);
+                    ix_vep: string = this.new_reg();
+                    this.emit("  " + ix_vep + " = bitcast i8* " + ix_vdata + " to " + ix_elty + "*");
+                    ix_vslot: string = this.new_reg();
+                    this.emit("  " + ix_vslot + " = getelementptr inbounds " + ix_elty + ", " + ix_elty + "* " + ix_vep + ", i64 " + ix_vi);
+                    if s.op == "=" {
+                        ix_cval: string = this.coerce_store_val(s.value, val, ix_elty);
+                        this.emit("  store " + ix_elty + " " + ix_cval + ", " + ix_elty + "* " + ix_vslot);
+                    } else {
+                        ix_cval2: string = this.coerce_store_val(s.value, val, ix_elty);
+                        this.emit_assign_compound(ix_vslot, ix_elty, s.op, ix_cval2);
+                    }
+                } also this.is_slice_like(ix_base) {
+                    ix_b: string = this.slice_base_type(ix_base);
+                    ix_el: string = this.llvm_type(ix_b);
+                    ix_aval: string = this.gen_expr(s.target.left);
+                    ix_alty: string = this.llvm_type(ix_base);
+                    ix_aptr: string = this.new_reg();
+                    this.emit("  " + ix_aptr + " = extractvalue " + ix_alty + " " + ix_aval + ", 1");
+                    ix_aidx: string = this.i32_to_rt_i64(s.target.right, this.gen_expr(s.target.right));
+                    ix_aslot: string = this.new_reg();
+                    this.emit("  " + ix_aslot + " = getelementptr inbounds " + ix_el + ", " + ix_el + "* " + ix_aptr + ", i64 " + ix_aidx);
+                    if s.op == "=" {
+                        ix_cval3: string = this.coerce_store_val(s.value, val, ix_el);
+                        this.emit("  store " + ix_el + " " + ix_cval3 + ", " + ix_el + "* " + ix_aslot);
+                    } else {
+                        ix_cval4: string = this.coerce_store_val(s.value, val, ix_el);
+                        this.emit_assign_compound(ix_aslot, ix_el, s.op, ix_cval4);
                     }
                 }
             }
@@ -6169,6 +6459,7 @@ pub def CodeGen : class {
         // Register module-level global variables first (functions reference them)
         foreach _, g in<vector> prog.globals {
             this.global_vars.push(g.name, g.typ);
+            if g.is_fusion { this.fusion_globals.push(g.name, true); }
         }
 
         // Record struct/class field default initializers (for Name {} literals)

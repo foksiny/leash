@@ -105,6 +105,9 @@ pub def TypeChecker : class {
     pub func_param_names: hash<string, vec<string>>; // name -> param names
     pub func_defaults: hash<string, Expr>;          // "name::i" -> default expr
     pub globals: hash<string, string>;          // name -> type
+    pub shared_globals: hash<string, bool>;     // `shared` globals (one writer)
+    pub shared_writers: hash<string, string>;   // shared name -> writing func
+    pub current_func_name: string;              // body being checked ("<global>")
     pub structs: hash<string, StructInfo>;      // name -> struct info
     pub classes: hash<string, ClassInfo>;      // name -> class info
     pub enums: hash<string, bool>;              // name -> true
@@ -144,7 +147,11 @@ pub def TypeChecker : class {
     pub async_funcs: hash<string, bool>;            // `async fnc` names
 
     static pub fnc make() : TypeChecker {
-        tc: TypeChecker = TypeChecker { current_func_ret: "void", works_error: "", fatal_idx: -1 };
+        tc: TypeChecker = TypeChecker { current_func_ret: "void", works_error: "", fatal_idx: -1, current_func_name: "<global>" };
+        empty_shared: hash<string, bool>;
+        tc.shared_globals = empty_shared;
+        empty_writers: hash<string, string>;
+        tc.shared_writers = empty_writers;
         tc.init_builtins();
         return tc;
     }
@@ -1629,6 +1636,21 @@ pub def TypeChecker : class {
         if e.kind == ExprKind.UNARY {
             if e.op == "await" { return this.strip_future(this.infer_expr(e.left)); }
             if e.op == "!" { return "bool"; }
+            // Inc/dec requires an assignable target (variable, field,
+            // element, or dereference); anything else is rejected here
+            // instead of silently dropping the store in codegen.
+            if e.op == "++p" || e.op == "--p" || e.op == "++" || e.op == "--" {
+                tgt_ok: bool = false;
+                if e.left != null {
+                    if e.left.kind == ExprKind.IDENT || e.left.kind == ExprKind.MEMBER || e.left.kind == ExprKind.INDEX || e.left.kind == ExprKind.POINTER_MEMBER { tgt_ok = true; }
+                    also e.left.kind == ExprKind.UNARY && e.left.op == "*" { tgt_ok = true; }
+                }
+                if !tgt_ok {
+                    this.errors.pushb("'" + e.op + "' target must be a variable, field, or element that can be assigned to.");
+                }
+                if e.left != null { return this.infer_expr(e.left); }
+                return "int";
+            }
             if e.op == "&" {
                 if e.left.kind == ExprKind.IDENT && !this.lookup_var_fresh(e.left.sval) && this.funcs.isin(e.left.sval) {
                     return this.fn_type_str(e.left.sval);
@@ -2166,6 +2188,41 @@ pub def TypeChecker : class {
         if s.kind == StmtKind.ASSIGN {
             a_tt: string = this.infer_expr(s.target);
             a_tv: string = this.infer_expr(s.value);
+            // Strings are immutable: reject element writes like s[0] = 'x'
+            // (python LEASH-E013 parity).
+            if s.target.kind == ExprKind.INDEX && s.target.left != null {
+                str_base: string = this.infer_expr(s.target.left);
+                if str_base == "string" {
+                    this.errors.pushb("Strings are immutable: individual characters cannot be assigned.");
+                }
+            }
+            // One-writer rule for `shared` globals (any write counts,
+            // including element/field writes through the root identifier).
+            // Writes through a shadowing local do not count.
+            sh_root: string = "";
+            if s.target.kind == ExprKind.IDENT {
+                sh_root = s.target.sval;
+            } else {
+                sh_root = this.root_identifier(s.target);
+            }
+            if sh_root.size > 0 && this.shared_globals.isin(sh_root) && !this.lookup_var_fresh(sh_root) {
+                prev_writer: string = "";
+                if this.shared_writers.isin(sh_root) { prev_writer = this.shared_writers[sh_root]; }
+                if prev_writer.size > 0 && prev_writer != this.current_func_name {
+                    this.errors.pushb("shared variable '" + sh_root + "' is written by both '" + prev_writer + "' and '" + this.current_func_name + "'. `shared` allows exactly ONE writer with any number of readers. Use a `fusion` variable (atomic) if several workers must write it, or give each worker its own variable.");
+                } else {
+                    this.shared_writers.push(sh_root, this.current_func_name);
+                }
+            }
+            // Inc/dec assignment ops need an assignable target too.
+            if s.op == "++" || s.op == "--" {
+                aok: bool = false;
+                if s.target.kind == ExprKind.IDENT || s.target.kind == ExprKind.MEMBER || s.target.kind == ExprKind.INDEX || s.target.kind == ExprKind.POINTER_MEMBER { aok = true; }
+                also s.target.kind == ExprKind.UNARY && s.target.op == "*" { aok = true; }
+                if !aok {
+                    this.errors.pushb("'" + s.op + "' target must be a variable, field, or element that can be assigned to.");
+                }
+            }
             if this.fatal_idx < 0 && a_tt.size > 0 && a_tv.size > 0 && !this.types_compatible(a_tv, a_tt) {
                 this.errors.pushb("Cannot assign a value of type '" + this.disp_type(a_tv) + "' to a variable of type '" + this.disp_type(a_tt) + "'.");
             }
@@ -3312,6 +3369,7 @@ pub def TypeChecker : class {
 
         foreach _, g in<vector> prog.globals {
             this.globals.push(g.name, this.resolve_type_alias(g.typ));
+            if g.is_shared { this.shared_globals.push(g.name, true); }
         }
 
         // Pass 2: Register function signatures
@@ -3343,6 +3401,9 @@ pub def TypeChecker : class {
         foreach _, f in<vector> prog.funcs {
             if this.generic_funcs.isin(f.name) { continue; }
             this.current_func_ret = this.resolve_type_alias(f.ret_type);
+            fkey2: string = f.name;
+            if f.owner.size > 0 { fkey2 = f.owner + "_" + f.name; }
+            this.current_func_name = fkey2;
             this.enter_scope();
 
             // Worker functions accumulate into an implicit `result`
@@ -3375,6 +3436,7 @@ pub def TypeChecker : class {
             if this.generic_classes.isin(c.name) { continue; }
             foreach _, m in<vector> c.methods {
                 this.current_func_ret = this.resolve_type_alias(m.ret_type);
+                this.current_func_name = c.name + "_" + m.name;
                 this.enter_scope();
                 if !m.is_static {
                     this.define_var("this", c.name);

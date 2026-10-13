@@ -5,6 +5,62 @@ All notable changes to the Leash compiler are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.2.2] - 2026-10-13
+
+Patch release: worker-shared globals actually work, index stores exist,
+and parse errors fail the build.
+
+### Fixed — `shared` / `fusion` globals in the self-hosted compiler
+- The `shared` and `fusion` modifiers were silently dropped (with a
+  non-fatal parse error): every such global compiled as a plain
+  global, so `fusion` spin-waits hung under optimization while the
+  reference returned immediately. Both modifiers now parse (with
+  optional `pub`/`priv`, accepted and ignored as for all stage1
+  globals), `fusion` integer globals emit sequentially-consistent
+  atomic loads/stores, and `x = x +/- k` (plus `+=`/`-=`/`++`/`--`)
+  lowers to `atomicrmw` exactly like the reference. Non-integer,
+  sub-byte, and non-byte-multiple widths keep plain access, also like
+  the reference.
+- The `shared` one-writer rule is enforced at typecheck time (two
+  writing functions are an error pointing at `fusion`).
+
+### Fixed — Index assignment (`v[i]`, `a[i]`, `m[k]`)
+- Element stores were silently dropped (`v[0] = 42` kept `10`,
+  `m["k"] = 42` read back `0`). New index-store paths mirror the
+  reads: hash push with key boxing, bounds-checked vector slots,
+  fixed/slice element stores with width coercion, and compound ops
+  through the general compound emitter.
+- String element writes are a typecheck error (reference E013 parity).
+- Reference fix: hash updates never landed — `_hash_append_entry`
+  blind-appended, so `get` kept returning the first entry (`m["k"] =
+  43` after `42` still read `42`, and `m["k"] += 2` was a no-op).
+  Push now updates the existing entry in place, matching the C
+  runtime the self-hosted compiler already used correctly.
+
+### Fixed — Prefix `++` / `--` and member inc/dec
+- Prefix forms were dropped with a successful build; member `c.n++`
+  stored `1`. Prefix now parses to `++p`/`--p` and lowers in codegen
+  (new value for prefix, old for postfix, python parity), including
+  atomic lowering on `fusion` globals. Statement `++`/`--` keeps its
+  assign form, and member/global compound stores that only handled
+  `+=`/`-=`/`*=` now route every compound op through the general
+  emitter. Inc/dec on non-assignable targets is a clean typecheck
+  error instead of silently dropped code.
+- Reference fix: float `++`/`--` emitted `add double, 1` (invalid IR,
+  internal crash). The one-constant now matches the operand type
+  (`1.0` with `fadd`/`fsub` for floats).
+
+### Fixed — Parse errors fail the build
+- Recovery errors were ignored, so damaged programs "compiled".
+  Any residual parse error now fails every emitting path (compile,
+  run, libraries, dumps, modules included) with a summary line; the
+  corpus has zero, so no valid program is affected. `--check` stays
+  lenient — doc fragments and editor buffers are often incomplete,
+  and the doc-test suite checks the declarations inside such
+  fragments. (Python exits 1 on `check` of broken code as well; that
+  narrow exit-code difference is accepted to keep fragment checking
+  working.)
+
 ## [1.2.1] - 2026-10-13
 
 Patch release: exact sub-64-bit integer semantics, slice stores across

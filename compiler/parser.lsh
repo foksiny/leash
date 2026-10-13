@@ -32,6 +32,7 @@ pub def Precedence : class {
         if kind == Tok.STAR || kind == Tok.SLASH || kind == Tok.PERCENT { return Precedence.MUL; }
         if kind == Tok.QUESTION { return Precedence.TERNARY; }
         if kind == Tok.LPAREN || kind == Tok.DOT || kind == Tok.ARROW || kind == Tok.LBRACKET || kind == Tok.AS { return Precedence.POSTFIX; }
+        if kind == Tok.PLUSPLUS || kind == Tok.MINUSMINUS { return Precedence.POSTFIX; }
         return Precedence.LOWEST;
     }
 }
@@ -863,6 +864,16 @@ pub def Parser : class {
             operand: Expr = this.parse_expression(Precedence.UNARY);
             return Expr.make_unary("&", operand);
         }
+        // Prefix inc/dec: ++x / --x (python parity: UnaryOp ++p/--p,
+        // lowered in codegen; returns the NEW value).
+        if this.match_tok(Tok.PLUSPLUS) {
+            pp_operand: Expr = this.parse_expression(Precedence.UNARY);
+            return Expr.make_unary("++p", pp_operand);
+        }
+        if this.match_tok(Tok.MINUSMINUS) {
+            mm_operand: Expr = this.parse_expression(Precedence.UNARY);
+            return Expr.make_unary("--p", mm_operand);
+        }
 
         // Parentheses or Cast: (expr) or (Type)expr
         if this.match_tok(Tok.LPAREN) {
@@ -1230,6 +1241,16 @@ pub def Parser : class {
             idx_expr: Expr = this.parse_expression(Precedence.LOWEST);
             this.consume(Tok.RBRACKET, "expected ']' after index");
             return Expr.make_index(left, idx_expr);
+        }
+
+        // Postfix inc/dec in expression position: x++ / x-- (python
+        // parity: UnaryOp ++/--, lowered in codegen; returns OLD value).
+        // Statement position keeps the Stmt assign form (see callers).
+        if this.match_tok(Tok.PLUSPLUS) {
+            return Expr.make_unary("++", left);
+        }
+        if this.match_tok(Tok.MINUSMINUS) {
+            return Expr.make_unary("--", left);
         }
 
         // Function call on expression: expr(...)
@@ -2854,6 +2875,26 @@ pub def Parser : class {
             // Operator/method definition: opdef Type.op(args) : ret { body }
             if this.check(Tok.IDENT) && this.current().val == "opdef" {
                 this.parse_opdef(prog);
+                continue;
+            }
+
+            // Worker-shared global: shared|fusion [pub|priv] name: Type [= expr];
+            // Visibility is accepted for python parity and ignored:
+            // stage1 globals are always module-visible.
+            if this.check(Tok.SHARED) || this.check(Tok.FUSION) {
+                is_fusion: bool = this.check(Tok.FUSION);
+                this.pos = this.pos + 1;
+                this.match_tok(Tok.PUB);
+                this.match_tok(Tok.PRIV);
+                sh_name: Token = this.consume(Tok.IDENT, "expected global name after 'shared'/'fusion'");
+                this.consume(Tok.COLON, "expected ':' after shared/fusion global name");
+                sh_type: string = this.parse_type();
+                sh_init: Expr = null;
+                if this.match_tok(Tok.ASSIGN) {
+                    sh_init = this.parse_expression(Precedence.LOWEST);
+                }
+                this.consume(Tok.SEMI, "expected ';' after shared/fusion global");
+                prog.globals.pushb(GlobalDecl.make_concurrent(sh_name.val, sh_type, sh_init, is_fusion));
                 continue;
             }
 

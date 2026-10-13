@@ -381,9 +381,15 @@ pub def GlobalDecl : class {
     pub name: string;
     pub typ: string;
     pub init_val: Expr;
+    pub is_shared: bool;   // `shared` worker global: one writer, no atomics
+    pub is_fusion: bool;   // `fusion` worker global: atomic access
 
     static pub fnc make(name string, typ string, init Expr) : GlobalDecl {
-        return GlobalDecl { name: name, typ: typ, init_val: init };
+        return GlobalDecl { name: name, typ: typ, init_val: init, is_shared: false, is_fusion: false };
+    }
+
+    static pub fnc make_concurrent(name string, typ string, init Expr, is_fusion bool) : GlobalDecl {
+        return GlobalDecl { name: name, typ: typ, init_val: init, is_shared: !is_fusion, is_fusion: is_fusion };
     }
 }
 

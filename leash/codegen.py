@@ -6994,8 +6994,12 @@ class CodeGen:
             else:
                 ptr, _ = lvalue_result
             current = self.builder.load(ptr)
-            one = ir.Constant(current.type, 1)
-            incremented = self.builder.add(current, one)
+            if isinstance(current.type, (ir.HalfType, ir.FloatType, ir.DoubleType)):
+                one = ir.Constant(current.type, 1.0)
+                incremented = self.builder.fadd(current, one)
+            else:
+                one = ir.Constant(current.type, 1)
+                incremented = self.builder.add(current, one)
             self.builder.store(incremented, ptr)
             return incremented
         elif node.op == "--p":
@@ -7005,8 +7009,12 @@ class CodeGen:
             else:
                 ptr, _ = lvalue_result
             current = self.builder.load(ptr)
-            one = ir.Constant(current.type, 1)
-            decremented = self.builder.sub(current, one)
+            if isinstance(current.type, (ir.HalfType, ir.FloatType, ir.DoubleType)):
+                one = ir.Constant(current.type, 1.0)
+                decremented = self.builder.fsub(current, one)
+            else:
+                one = ir.Constant(current.type, 1)
+                decremented = self.builder.sub(current, one)
             self.builder.store(decremented, ptr)
             return decremented
         elif node.op == "++":
@@ -7016,8 +7024,12 @@ class CodeGen:
             else:
                 ptr, _ = lvalue_result
             current = self.builder.load(ptr)
-            one = ir.Constant(current.type, 1)
-            incremented = self.builder.add(current, one)
+            if isinstance(current.type, (ir.HalfType, ir.FloatType, ir.DoubleType)):
+                one = ir.Constant(current.type, 1.0)
+                incremented = self.builder.fadd(current, one)
+            else:
+                one = ir.Constant(current.type, 1)
+                incremented = self.builder.add(current, one)
             self.builder.store(incremented, ptr)
             return current
         elif node.op == "--":
@@ -7027,8 +7039,12 @@ class CodeGen:
             else:
                 ptr, _ = lvalue_result
             current = self.builder.load(ptr)
-            one = ir.Constant(current.type, 1)
-            decremented = self.builder.sub(current, one)
+            if isinstance(current.type, (ir.HalfType, ir.FloatType, ir.DoubleType)):
+                one = ir.Constant(current.type, 1.0)
+                decremented = self.builder.fsub(current, one)
+            else:
+                one = ir.Constant(current.type, 1)
+                decremented = self.builder.sub(current, one)
             self.builder.store(decremented, ptr)
             return current
 
@@ -8691,91 +8707,111 @@ class CodeGen:
         size = self.builder.extract_value(hash_val, 0)
         cap = self.builder.extract_value(hash_val, 1)
         entries = self.builder.extract_value(hash_val, 2)
-
-        is_full = self.builder.icmp_unsigned(">=", size, cap)
-        with self.builder.if_then(is_full):
-            new_cap = self.builder.add(
-                self.builder.mul(cap, ir.Constant(ir.IntType(64), 2)),
-                ir.Constant(ir.IntType(64), 1),
-            )
-            dummy_ptr = ir.Constant(entry_ty.as_pointer(), None)
-            entry_size = self.builder.ptrtoint(
-                self.builder.gep(dummy_ptr, [ir.Constant(ir.IntType(32), 1)], inbounds=True),
-                ir.IntType(64),
-            )
-            total_bytes = self.builder.mul(new_cap, entry_size)
-            total_bytes.flags = ['nuw']
-            new_bytes = self.builder.call(self.malloc, [total_bytes])
-            self._track_alloc(new_bytes)
-            new_entries = self.builder.bitcast(new_bytes, entry_ty.as_pointer())
-
-            # Mark all new slots deleted so uninitialized regions are skipped by scans
-            default_key = self._emit_default_value(key_type_name)
-            default_value = self._emit_default_value(value_type_name)
-            init_entry = ir.Constant(entry_ty, ir.Undefined)
-            init_entry = self.builder.insert_value(init_entry, default_key, 0)
-            init_entry = self.builder.insert_value(init_entry, default_value, 1)
-            init_entry = self.builder.insert_value(
-                init_entry, ir.Constant(ir.IntType(1), 1), 2
-            )
-            # Runtime loop: mark slots [size, new_cap) as deleted
-            init_cond_bb = self.builder.append_basic_block(name="grow_init_cond")
-            init_body_bb = self.builder.append_basic_block(name="grow_init_body")
-            init_done_bb = self.builder.append_basic_block(name="grow_init_done")
-            j_ptr = self.builder.alloca(ir.IntType(64), name="grow_init_j")
-            self.builder.store(size, j_ptr)
-            self.builder.branch(init_cond_bb)
-            self.builder.position_at_end(init_cond_bb)
-            j_val = self.builder.load(j_ptr)
-            j_lt = self.builder.icmp_unsigned("<", j_val, new_cap)
-            self.builder.cbranch(j_lt, init_body_bb, init_done_bb)
-            self.builder.position_at_end(init_body_bb)
-            slot_ptr = self.builder.gep(new_entries, [j_val], inbounds=True)
-            self.builder.store(init_entry, slot_ptr)
-            j_next = self.builder.add(j_val, ir.Constant(ir.IntType(64), 1))
-            self.builder.store(j_next, j_ptr)
-            self.builder.branch(init_cond_bb)
-            self.builder.position_at_end(init_done_bb)
-
-            old_is_not_null = self.builder.icmp_unsigned(
-                "!=",
-                self.builder.ptrtoint(entries, ir.IntType(64)),
-                ir.Constant(ir.IntType(64), 0),
-            )
-            with self.builder.if_then(old_is_not_null):
-                copy_bytes = self.builder.mul(size, entry_size)
-                copy_bytes.flags = ['nuw']
-                self.builder.call(
-                    self.memmove,
-                    [
-                        new_bytes,
-                        self.builder.bitcast(entries, ir.IntType(8).as_pointer()),
-                        copy_bytes,
-                    ],
-                )
-
-            hash_val2 = self.builder.load(hash_ptr)
-            hash_val2 = self.builder.insert_value(hash_val2, new_cap, 1)
-            hash_val2 = self.builder.insert_value(
-                hash_val2, self.builder.bitcast(new_entries, ir.IntType(8).as_pointer()), 2
-            )
-            self.builder.store(hash_val2, hash_ptr)
-
-        hash_val = self.builder.load(hash_ptr)
-        size = self.builder.extract_value(hash_val, 0)
-        entry_ptr = self._hash_entry_ptr(hash_ptr, size, key_llvm, value_llvm)
-        new_entry = ir.Constant(entry_ty, ir.Undefined)
-        new_entry = self.builder.insert_value(new_entry, key_val, 0)
-        new_entry = self.builder.insert_value(new_entry, value_val, 1)
-        new_entry = self.builder.insert_value(
-            new_entry, ir.Constant(ir.IntType(1), 0), 2
+        # Update-in-place when the key already exists: hash_get returns
+        # the FIRST live entry, so a blind append would leave updates
+        # invisible (and size would count duplicates instead of keys).
+        found_ptr, idx_ptr = self._hash_find_by_key(
+            hash_ptr, key_val, key_llvm, value_llvm, key_type_name
         )
-        self.builder.store(new_entry, entry_ptr)
+        found = self.builder.load(found_ptr)
+        with self.builder.if_then(found):
+            upd_idx = self.builder.load(idx_ptr)
+            upd_hash = self.builder.load(hash_ptr)
+            upd_entries = self.builder.extract_value(upd_hash, 2)
+            upd_typed = self.builder.bitcast(upd_entries, entry_ty.as_pointer())
+            upd_slot = self.builder.gep(upd_typed, [upd_idx], inbounds=True)
+            upd_entry = self.builder.load(upd_slot)
+            upd_entry = self.builder.insert_value(upd_entry, value_val, 1)
+            self.builder.store(upd_entry, upd_slot)
+        not_found = self.builder.icmp_unsigned(
+            "==", found, ir.Constant(ir.IntType(1), 0)
+        )
+        with self.builder.if_then(not_found):
 
-        new_size = self.builder.add(size, ir.Constant(ir.IntType(64), 1))
-        new_size.flags = ['nuw']
-        hash_val = self.builder.insert_value(hash_val, new_size, 0)
-        self.builder.store(hash_val, hash_ptr)
+            is_full = self.builder.icmp_unsigned(">=", size, cap)
+            with self.builder.if_then(is_full):
+                new_cap = self.builder.add(
+                    self.builder.mul(cap, ir.Constant(ir.IntType(64), 2)),
+                    ir.Constant(ir.IntType(64), 1),
+                )
+                dummy_ptr = ir.Constant(entry_ty.as_pointer(), None)
+                entry_size = self.builder.ptrtoint(
+                    self.builder.gep(dummy_ptr, [ir.Constant(ir.IntType(32), 1)], inbounds=True),
+                    ir.IntType(64),
+                )
+                total_bytes = self.builder.mul(new_cap, entry_size)
+                total_bytes.flags = ['nuw']
+                new_bytes = self.builder.call(self.malloc, [total_bytes])
+                self._track_alloc(new_bytes)
+                new_entries = self.builder.bitcast(new_bytes, entry_ty.as_pointer())
+
+                # Mark all new slots deleted so uninitialized regions are skipped by scans
+                default_key = self._emit_default_value(key_type_name)
+                default_value = self._emit_default_value(value_type_name)
+                init_entry = ir.Constant(entry_ty, ir.Undefined)
+                init_entry = self.builder.insert_value(init_entry, default_key, 0)
+                init_entry = self.builder.insert_value(init_entry, default_value, 1)
+                init_entry = self.builder.insert_value(
+                    init_entry, ir.Constant(ir.IntType(1), 1), 2
+                )
+                # Runtime loop: mark slots [size, new_cap) as deleted
+                init_cond_bb = self.builder.append_basic_block(name="grow_init_cond")
+                init_body_bb = self.builder.append_basic_block(name="grow_init_body")
+                init_done_bb = self.builder.append_basic_block(name="grow_init_done")
+                j_ptr = self.builder.alloca(ir.IntType(64), name="grow_init_j")
+                self.builder.store(size, j_ptr)
+                self.builder.branch(init_cond_bb)
+                self.builder.position_at_end(init_cond_bb)
+                j_val = self.builder.load(j_ptr)
+                j_lt = self.builder.icmp_unsigned("<", j_val, new_cap)
+                self.builder.cbranch(j_lt, init_body_bb, init_done_bb)
+                self.builder.position_at_end(init_body_bb)
+                slot_ptr = self.builder.gep(new_entries, [j_val], inbounds=True)
+                self.builder.store(init_entry, slot_ptr)
+                j_next = self.builder.add(j_val, ir.Constant(ir.IntType(64), 1))
+                self.builder.store(j_next, j_ptr)
+                self.builder.branch(init_cond_bb)
+                self.builder.position_at_end(init_done_bb)
+
+                old_is_not_null = self.builder.icmp_unsigned(
+                    "!=",
+                    self.builder.ptrtoint(entries, ir.IntType(64)),
+                    ir.Constant(ir.IntType(64), 0),
+                )
+                with self.builder.if_then(old_is_not_null):
+                    copy_bytes = self.builder.mul(size, entry_size)
+                    copy_bytes.flags = ['nuw']
+                    self.builder.call(
+                        self.memmove,
+                        [
+                            new_bytes,
+                            self.builder.bitcast(entries, ir.IntType(8).as_pointer()),
+                            copy_bytes,
+                        ],
+                    )
+
+                hash_val2 = self.builder.load(hash_ptr)
+                hash_val2 = self.builder.insert_value(hash_val2, new_cap, 1)
+                hash_val2 = self.builder.insert_value(
+                    hash_val2, self.builder.bitcast(new_entries, ir.IntType(8).as_pointer()), 2
+                )
+                self.builder.store(hash_val2, hash_ptr)
+
+            hash_val = self.builder.load(hash_ptr)
+            size = self.builder.extract_value(hash_val, 0)
+            entry_ptr = self._hash_entry_ptr(hash_ptr, size, key_llvm, value_llvm)
+            new_entry = ir.Constant(entry_ty, ir.Undefined)
+            new_entry = self.builder.insert_value(new_entry, key_val, 0)
+            new_entry = self.builder.insert_value(new_entry, value_val, 1)
+            new_entry = self.builder.insert_value(
+                new_entry, ir.Constant(ir.IntType(1), 0), 2
+            )
+            self.builder.store(new_entry, entry_ptr)
+
+            new_size = self.builder.add(size, ir.Constant(ir.IntType(64), 1))
+            new_size.flags = ['nuw']
+            hash_val = self.builder.insert_value(hash_val, new_size, 0)
+            self.builder.store(hash_val, hash_ptr)
 
     def _hash_find_by_key(self, hash_ptr, search_key, key_llvm, value_llvm, key_type):
         """Runtime linear search for a key. Returns (found_ptr, idx_ptr)."""
