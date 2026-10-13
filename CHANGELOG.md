@@ -5,6 +5,12 @@ All notable changes to the Leash compiler are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.0.1] - 2026-10-13
+
+Patch release: self-hosted compiler parity fixes (integer semantics,
+`create`/class diagnostics, CLI surface), a win64 cross-compilation
+test, and a `let`-syntax fix in the JSON docs.
+
 ### Added — Full CLI parity with the Python toolchain
 - **Cross-compilation, natively**: all six targets
   (`linux64`, `linux32`, `linux-arm`, `win64`, `macos`, `macos-arm`) are
@@ -29,6 +35,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   self-hosted compiler: its own codegen quality, size and link flags) is
   what ships. The fixed point is verified during install and the pip
   binary emits IR identical to `bin/leashc`.
+
+### Fixed — Out-of-i32-range integer literals are 64-bit
+- An `int` literal past 2³¹−1 is a 64-bit constant in the Python
+  reference codegen, so it silently widened any int-family operation it
+  took part in. The self-hosted compiler wrapped it to i32 first, which
+  agreed for `*`/`+`/`-` (wrapping is lossless there) but diverged for
+  `/` `%` `<<` `>>` and every comparison. The whole path is widened now:
+  int-family binops with a wide literal run at i64 (stores truncate at
+  the `int` boundary), plus matching handling for unary `~`, int→float
+  conversion, and string-concatenation formatting of the full int family
+  (signed/unsigned per the Leash type, new `leash_uint_to_str` runtime
+  helper — this also fixes `string + uint`/`int<N>` which never worked).
+
+### Changed — Borrowed keywords are rejected, not tolerated
+- A statement may not begin with `let`, `var`, `const`, `print`,
+  `println`, `func`, `function`, `elif`, `elseif`, `include`, `using`,
+  `interface`, `match`, `byte`, `long`, `double` or `boolean` — the
+  self-hosted compiler now prints the reference's exact `error: Found
+  unsupported keyword 'X'` diagnostic (excerpt, caret and tip) and exits
+  1 instead of compiling. The old `let`-as-no-op-prefix tolerance is
+  gone, along with the doc snippet in `docs/stdlib.html` that used the
+  non-existent syntax.
+
+### Fixed — `create Class(...)` allocation and class diagnostics
+- `create` on a class without a same-named constructor fell through
+  codegen to `call void @Class()` and died in clang with `expected
+  value token`. Allocation now mirrors the reference exactly (exact-size
+  heap instance, vtable slot, `Class_Class(this, ...)` call with
+  argument coercion and trailing ctor-default fill; field defaults do
+  not apply and `new(...)` never runs).
+- A bare `Class(...)` call is rejected as an undefined function (it
+  never constructed in the reference); unknown/generic classes and
+  constructor arity/argument-type mismatches report the reference's
+  exact messages; `create` results are not addressable (`Invalid
+  l-value: CreateExpr` for method/member receivers and assignment
+  targets, `Expected identifier after 'del'` for `del create`);
+  `->` on a non-pointer value is rejected with the reference's error
+  plus its follow-up diagnostic; unknown-type declarations keep
+  checking the initializer.
+
+### Changed — `-o` removed, unknown options reported
+- `-o` never set the output in the Python reference (silently ignored)
+  but the self-hosted compiler honored it, so the same command built to
+  different paths. `to <path>` is now the only output setter on both;
+  all in-repo callers (self-host stages, `ir_diff.py`, tests, docs,
+  README) are migrated. Passing `-o` prints
+  `info: the '-o' option is not supported; set the output file with
+  'to <path>'` and the build continues; any other unknown option prints
+  `info: ignoring unknown option '<arg>'` instead of being swallowed.
+  Message text is byte-identical between compilers.
+
+### Added — Tests
+- `tests/test_cross_win64.py`: builds one program (ints, strings,
+  floats, class `create`+constructor, vecs) three ways
+  (self-hosted→win64, self-hosted→native, python→win64), checks the
+  win64 artifact is a real PE32+ AMD64 binary, runs it under wine, and
+  asserts byte-identical output to the reference build.
+- `tests/test_cli_opts.py`: `-o`/unknown-flag INFO on both compilers
+  plus INFO-text parity.
+- `tests/test_self_hosted.py`: `create` with and without constructor.
 
 ## [1.0.0] - 2026-10-08
 
