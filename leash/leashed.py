@@ -12,7 +12,7 @@ import urllib.request
 import urllib.error
 import urllib.parse
 
-LEASHED_VERSION = "0.4.0"
+LEASHED_VERSION = "0.5.0"
 LOCKFILE = "leash.lock"
 LOCKFILE_VERSION = 1
 

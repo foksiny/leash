@@ -7,7 +7,7 @@ use driver::*;
 // Single source of truth for the release version. Bump discipline:
 // setup.py, leash/cli.py VERSION_STRING, README, docs badges, CHANGELOG.
 fnc leash_version() : string {
-    return "1.0.1";
+    return "1.1.0";
 }
 
 // Prefix test (no stdlib dependency this early in main.lsh).

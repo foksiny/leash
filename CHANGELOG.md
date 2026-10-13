@@ -5,7 +5,10 @@ All notable changes to the Leash compiler are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [1.1.0] - 2026-10-13
+
+Minor release: global command installs, a self-updating toolchain,
+and install reliability.
 
 ### Added — Global command installs (`global_install` + `leash rm`)
 - Projects can ship command-line tools: a single-line
@@ -18,10 +21,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - New `leash rm <name>...` removes installed binaries after an
   interactive confirmation (empty answer means yes), refuses
   non-identifier names, and reports missing entries without prompting.
-- Leashed packages support the same field in `leash-pkg.lshc`: publish
-  maps tool sources to library-relative paths in `package.lshc`,
-  installs build them to `~/.leash/bin`, and uninstalling the package
-  removes its commands with it.
 
 ### Fixed — Stale native compiler after reinstall
 - `pip install -e .` silently kept the old `leash/native/leashc`: the
@@ -53,6 +52,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   "Installed", leaving a stale binary behind a success message.
 - The release version lives in one `leash_version()` helper instead of
   three hardcoded literals.
+
+## [0.5.0] - 2026-10-13
+
+### Added — Global commands for packages (`leashed`)
+- Leashed packages support `global_install` in `leash-pkg.lshc`:
+  publish maps tool sources to library-relative paths in
+  `package.lshc`, installs build them to `~/.leash/bin`, and
+  uninstalling the package removes its commands with it.
 
 ## [0.4.0] - 2026-10-13
 
