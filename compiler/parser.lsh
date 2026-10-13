@@ -49,6 +49,11 @@ pub def Parser : class {
     pub import_aliases: hash<string, string>; // aliasName -> modulePath
     pub quiet: bool;
     pub parse_errs: int;   // bumped by every failed consume (even when quiet)
+    pub fatal: bool;       // python-parity: unsupported-keyword misuse (rc=1)
+    pub fatal_kw: string;  // the offending keyword (original case)
+    pub fatal_tip: string; // python's help tip for the keyword
+    pub fatal_line: int;
+    pub fatal_col: int;
     pub mod_unsafe: bool;   // pending `unsafe` modifier for next `fnc`
     pub mod_nogc: bool;     // pending `nogc` modifier
     pub mod_inline: bool;   // pending `inline` modifier
@@ -66,7 +71,7 @@ pub def Parser : class {
         empty_hf: vec<FuncDecl>;
         empty_macros: hash<string, MacroDef>;
         empty_ml: vec<MacroDef>;
-        return Parser { tokens: tokens, pos: 0, len: tokens.size, fe_counter: 0, no_struct_init: false, type_aliases: empty_aliases, import_aliases: empty_import_aliases, quiet: false, parse_errs: 0, keep_sized: false, mod_unsafe: false, mod_nogc: false, mod_inline: false, mod_async: false, mod_worker: false, hoisted_funcs: empty_hf, hoisted_mark: 0, macros: empty_macros, lambda_counter: 0, macro_list: empty_ml };
+        return Parser { tokens: tokens, pos: 0, len: tokens.size, fe_counter: 0, no_struct_init: false, type_aliases: empty_aliases, import_aliases: empty_import_aliases, quiet: false, parse_errs: 0, fatal: false, fatal_kw: "", fatal_tip: "", fatal_line: 0, fatal_col: 0, keep_sized: false, mod_unsafe: false, mod_nogc: false, mod_inline: false, mod_async: false, mod_worker: false, hoisted_funcs: empty_hf, hoisted_mark: 0, macros: empty_macros, lambda_counter: 0, macro_list: empty_ml };
     }
 
     // Function literal: fnc(a int, b int) : int { ... }  (hoisted, used as a value)
@@ -279,7 +284,7 @@ pub def Parser : class {
             return tok;
         }
         this.parse_errs = this.parse_errs + 1;
-        if !this.quiet {
+        if !this.quiet && !this.fatal {
             show("parse error: ", err_msg, " at line ", tok.line, ":", tok.col, " (got ", Tok.name(tok.kind), " '", tok.val, "')");
         }
         return tok;
@@ -1266,6 +1271,49 @@ pub def Parser : class {
 
     // Every statement records the source position of its first token —
     // used by the debugger instrumentation (`leash dbg`).
+    // Python parity: `_check_keyword_misuse`. Words that python's lexer
+    // keeps as plain IDENTs but its parser rejects at statement start
+    // (checked case-insensitively). Words that are keyword tokens in
+    // python's lexer (def, switch, self, nil, null, ...) are deliberately
+    // absent — python never raises this error for them, and `self` in
+    // particular is a valid statement-start identifier in stage1 methods.
+    pub fnc is_misuse_kw(val string) : bool {
+        v: string = Parser.str_lower(val);
+        return v == "elif" || v == "elseif" || v == "print" || v == "println" || v == "func" || v == "function" || v == "let" || v == "var" || v == "const" || v == "include" || v == "using" || v == "interface" || v == "match" || v == "byte" || v == "long" || v == "double" || v == "boolean";
+    }
+
+    // The exact tip strings python attaches to each misuse keyword.
+    pub fnc misuse_tip(val string) : string {
+        v: string = Parser.str_lower(val);
+        if v == "elif" || v == "elseif" { return "Leash uses `also` for 'else if' conditions! (e.g., `if a \{ ... \} also b \{ ... \}`)"; }
+        if v == "print" || v == "println" { return "Leash uses `show()` for console output! Example: `show(\"Hello\");`"; }
+        if v == "func" || v == "function" { return "Leash uses the short `fnc` keyword for functions!"; }
+        if v == "let" || v == "var" { return "Leash variables are declared as `name : type = value;`. No `let` or `var` needed!"; }
+        if v == "const" { return "Leash uses `imut` for immutable variables! Example: `a: imut int = 10;`"; }
+        if v == "include" { return "Looking for `#include`? Leash manages built-ins like `show` and `strlen` automatically."; }
+        if v == "using" { return "Leash doesn't have namespaces or `using` statements yet."; }
+        if v == "interface" { return "Leash uses `union` for flexible types and `struct` for data."; }
+        if v == "match" { return "Leash uses `switch / case / default` for multi-way branching! Example: `switch val \{ case 1 \{ ... \} default \{ ... \} \}`"; }
+        if v == "byte" { return "For 8-bit integers, use `int<8>` or `uint<8>`."; }
+        if v == "long" { return "For 64-bit integers, use `int<64>` or `uint<64>`."; }
+        if v == "double" { return "Leash `float` is 64-bit by default! Use `float<32>` if you want single-precision."; }
+        if v == "boolean" { return "Leash uses the short `bool` type name."; }
+        return "";
+    }
+
+    // ASCII lowercase (python's `token.value.lower()` for the keyword check).
+    static pub fnc str_lower(s string) : string {
+        out: string = "";
+        i: int = 0;
+        while i < s.size {
+            ch: char = s[i];
+            if ch >= 'A' && ch <= 'Z' { ch = (char)(ch + 32); }
+            out = out + ch;
+            i = i + 1;
+        }
+        return out;
+    }
+
     pub fnc parse_statement() : Stmt {
         pos_tok: Token = this.current();
         inner: Stmt = this.parse_statement_inner();
@@ -1325,13 +1373,21 @@ pub def Parser : class {
             }
         }
 
-        // `let x: T = v;` — `let` is not a Leash keyword (python rejects
-        // it) but stage1 tolerates it as a no-op prefix so older snippets
-        // still compile; only skip when an identifier follows, so `let` as
-        // a variable name keeps parsing as an expression.
-        if this.check(Tok.IDENT) && this.current().val == "let" && this.peek(1).kind == Tok.IDENT {
-            this.pos = this.pos + 1;
-            return this.parse_statement_inner();
+        // `let` and friends — python parity: a statement may not START with
+        // one of these borrowed-language keywords (checked case-insensitively,
+        // even when used as a variable name). Python rejects with
+        // `error: Found unsupported keyword 'X'` (fatal, rc=1). Jumping to
+        // EOF stops every parse loop, mirroring python's immediate raise.
+        if this.check(Tok.IDENT) && this.is_misuse_kw(this.current().val) {
+            m_tok: Token = this.current();
+            this.fatal = true;
+            this.fatal_kw = m_tok.val;
+            this.fatal_tip = this.misuse_tip(m_tok.val);
+            this.fatal_line = m_tok.line;
+            this.fatal_col = m_tok.col;
+            this.pos = this.len;
+            no_op_m: vec<Stmt>;
+            return Stmt.make_block(no_op_m);
         }
 
         // `empty;` — a deliberate no-op statement (python EMPTY token)

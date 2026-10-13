@@ -302,6 +302,13 @@ pub def CompilerDriver : class {
             mod_parser: Parser = Parser.make(mod_toks);
             mod_parser.src_file = this.realpath_str(mod_file);
             mod_prog: Program = mod_parser.parse_program();
+            if mod_parser.fatal {
+                // Python parses modules with the same parser, so a misuse
+                // keyword inside an imported module is fatal there too.
+                this.print_parse_error("Found unsupported keyword '" + mod_parser.fatal_kw + "'", mod_parser.fatal_tip, mod_parser.src_file, mod_parser.fatal_line, mod_parser.fatal_col);
+                this.imports_fatal = true;
+                return;
+            }
 
             // Recursively resolve sub-imports
             this.resolve_imports(mod_prog, Path.dirname(mod_file));
@@ -403,6 +410,31 @@ pub def CompilerDriver : class {
             cpad: string = "";
             ci: int = 0;
             while ci < col { cpad = cpad + " "; ci = ci + 1; }
+            show(pad, "| ", cpad, "^");
+            show(pad, "|");
+        }
+        if tip.size > 0 {
+            show(pad, "= tip: ", tip);
+        }
+    }
+
+    // Python-parity plain error (same rustc-style layout the cli prints
+    // for LeashError, e.g. the unsupported-keyword misuse rejection).
+    // `col` is stage1's 1-based token column; python's diagnostics print
+    // its 0-based column, so the header uses col-1.
+    pub fnc print_parse_error(msg string, tip string, disp string, line_no int, col int) : void {
+        pcol: int = col - 1;
+        if pcol < 0 { pcol = 0; }
+        show("error: ", msg);
+        show("  --> ", disp, ":", line_no, ":", pcol);
+        pad: string = this.diag_pad(line_no);
+        src_line: string = this.read_source_line(disp, line_no);
+        if src_line.size > 0 {
+            show(pad, "|");
+            show(line_no, " | ", src_line);
+            cpad: string = "";
+            ci: int = 0;
+            while ci < pcol { cpad = cpad + " "; ci = ci + 1; }
             show(pad, "| ", cpad, "^");
             show(pad, "|");
         }
@@ -672,6 +704,12 @@ pub def CompilerDriver : class {
         parser: Parser = Parser.make(tokens);
         parser.src_file = abs_main;
         prog: Program = parser.parse_program();
+        if parser.fatal {
+            // Python parity: `error: Found unsupported keyword 'X'` is
+            // fatal there (cli exits 1); no codegen, no output binary.
+            this.print_parse_error("Found unsupported keyword '" + parser.fatal_kw + "'", parser.fatal_tip, abs_main, parser.fatal_line, parser.fatal_col);
+            return 1;
+        }
         if verbose {
             show("[verbose] parsed: ", tostring(prog.funcs.size), " funcs, ",
                  tostring(prog.structs.size), " structs, ", tostring(prog.classes.size), " classes, ",
