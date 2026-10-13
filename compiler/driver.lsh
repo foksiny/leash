@@ -303,9 +303,9 @@ pub def CompilerDriver : class {
             mod_parser.src_file = this.realpath_str(mod_file);
             mod_prog: Program = mod_parser.parse_program();
             if mod_parser.fatal {
-                // Python parses modules with the same parser, so a misuse
-                // keyword inside an imported module is fatal there too.
-                this.print_parse_error("Found unsupported keyword '" + mod_parser.fatal_kw + "'", mod_parser.fatal_tip, mod_parser.src_file, mod_parser.fatal_line, mod_parser.fatal_col);
+                // Python parses modules with the same parser, so a fatal
+                // error inside an imported module is fatal there too.
+                this.print_parse_error(mod_parser.fatal_msg, mod_parser.fatal_tip, mod_parser.src_file, mod_parser.fatal_line, mod_parser.fatal_col);
                 this.imports_fatal = true;
                 return;
             }
@@ -705,9 +705,9 @@ pub def CompilerDriver : class {
         parser.src_file = abs_main;
         prog: Program = parser.parse_program();
         if parser.fatal {
-            // Python parity: `error: Found unsupported keyword 'X'` is
-            // fatal there (cli exits 1); no codegen, no output binary.
-            this.print_parse_error("Found unsupported keyword '" + parser.fatal_kw + "'", parser.fatal_tip, abs_main, parser.fatal_line, parser.fatal_col);
+            // Python parity: these parser errors are fatal there (the cli
+            // exits 1); no codegen, no output binary.
+            this.print_parse_error(parser.fatal_msg, parser.fatal_tip, abs_main, parser.fatal_line, parser.fatal_col);
             return 1;
         }
         if verbose {

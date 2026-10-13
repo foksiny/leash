@@ -40,7 +40,9 @@ pub def Optimizer : class {
         if e.kind == ExprKind.CALL {
             ca: vec<Expr>;
             foreach _, a in<vector> e.args { ca.pushb(this.copy_expr(a)); }
-            return Expr.make_call(e.sval, ca);
+            cc: Expr = Expr.make_call(e.sval, ca);
+            cc.is_create = e.is_create;
+            return cc;
         }
         if e.kind == ExprKind.METHOD_CALL {
             ma: vec<Expr>;
@@ -89,7 +91,9 @@ pub def Optimizer : class {
         if e.kind == ExprKind.CALL {
             ca: vec<Expr>;
             foreach _, a in<vector> e.args { ca.pushb(this.subst_copy(a, params, args)); }
-            return Expr.make_call(e.sval, ca);
+            sc2: Expr = Expr.make_call(e.sval, ca);
+            sc2.is_create = e.is_create;
+            return sc2;
         }
         if e.kind == ExprKind.METHOD_CALL {
             ma: vec<Expr>;

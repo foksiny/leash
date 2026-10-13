@@ -33,6 +33,7 @@ pub def Expr : class {
     pub args: vec<Expr>;
     pub field_names: vec<string>;
     pub inferred_type: string;
+    pub is_create: bool;   // `create Class(...)` allocation (python CreateExpr)
 
     static pub fnc make_int(v int<64>) : Expr {
         e: Expr = Expr { kind: ExprKind.INT, ival: v, fval: 0.0, sval: "", cval: ' ', bval: false, op: "", left: null, right: null, cond: null };
@@ -81,6 +82,15 @@ pub def Expr : class {
 
     static pub fnc make_call(callee string, args vec<Expr>) : Expr {
         e: Expr = Expr { kind: ExprKind.CALL, ival: 0, fval: 0.0, sval: callee, cval: ' ', bval: false, op: "", left: null, right: null, cond: null, args: args };
+        return e;
+    }
+
+    // `create Class(...)`: same CALL shape, flagged so the typechecker
+    // and codegen apply allocation semantics (python's CreateExpr).
+    // Bare `Class(...)` stays a plain call (python rejects it as an
+    // undefined function).
+    static pub fnc make_create(callee string, args vec<Expr>) : Expr {
+        e: Expr = Expr { kind: ExprKind.CALL, ival: 0, fval: 0.0, sval: callee, cval: ' ', bval: false, op: "", left: null, right: null, cond: null, args: args, is_create: true };
         return e;
     }
 

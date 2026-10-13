@@ -49,9 +49,9 @@ pub def Parser : class {
     pub import_aliases: hash<string, string>; // aliasName -> modulePath
     pub quiet: bool;
     pub parse_errs: int;   // bumped by every failed consume (even when quiet)
-    pub fatal: bool;       // python-parity: unsupported-keyword misuse (rc=1)
-    pub fatal_kw: string;  // the offending keyword (original case)
-    pub fatal_tip: string; // python's help tip for the keyword
+    pub fatal: bool;       // python-parity: fatal parse errors (rc=1)
+    pub fatal_msg: string; // full `error: ...` message (original case kept)
+    pub fatal_tip: string; // python's help tip (may be "")
     pub fatal_line: int;
     pub fatal_col: int;
     pub mod_unsafe: bool;   // pending `unsafe` modifier for next `fnc`
@@ -71,7 +71,7 @@ pub def Parser : class {
         empty_hf: vec<FuncDecl>;
         empty_macros: hash<string, MacroDef>;
         empty_ml: vec<MacroDef>;
-        return Parser { tokens: tokens, pos: 0, len: tokens.size, fe_counter: 0, no_struct_init: false, type_aliases: empty_aliases, import_aliases: empty_import_aliases, quiet: false, parse_errs: 0, fatal: false, fatal_kw: "", fatal_tip: "", fatal_line: 0, fatal_col: 0, keep_sized: false, mod_unsafe: false, mod_nogc: false, mod_inline: false, mod_async: false, mod_worker: false, hoisted_funcs: empty_hf, hoisted_mark: 0, macros: empty_macros, lambda_counter: 0, macro_list: empty_ml };
+        return Parser { tokens: tokens, pos: 0, len: tokens.size, fe_counter: 0, no_struct_init: false, type_aliases: empty_aliases, import_aliases: empty_import_aliases, quiet: false, parse_errs: 0, fatal: false, fatal_msg: "", fatal_tip: "", fatal_line: 0, fatal_col: 0, keep_sized: false, mod_unsafe: false, mod_nogc: false, mod_inline: false, mod_async: false, mod_worker: false, hoisted_funcs: empty_hf, hoisted_mark: 0, macros: empty_macros, lambda_counter: 0, macro_list: empty_ml };
     }
 
     // Function literal: fnc(a int, b int) : int { ... }  (hoisted, used as a value)
@@ -219,7 +219,9 @@ pub def Parser : class {
                 call_args.pushb(this.subst_macro(e.args.get(ca_i), params, args));
                 ca_i = ca_i + 1;
             }
-            return Expr.make_call(e.sval, call_args);
+            sc: Expr = Expr.make_call(e.sval, call_args);
+            sc.is_create = e.is_create;
+            return sc;
         }
         if e.kind == ExprKind.STRUCT_INIT {
             si_args: vec<Expr>;
@@ -971,8 +973,21 @@ pub def Parser : class {
                         cargs.pushb(this.parse_expression(Precedence.LOWEST));
                     }
                 }
+                // Python parity: keyword arguments are rejected inside
+                // `create(...)` with a dedicated message (fatal, like its
+                // LeashError).
+                if this.check(Tok.ASSIGN) {
+                    at: Token = this.current();
+                    this.fatal = true;
+                    this.fatal_msg = "Expected ',' or ')' to separate items in create expression argument list, but found '='";
+                    this.fatal_tip = "";
+                    this.fatal_line = at.line;
+                    this.fatal_col = at.col;
+                    this.pos = this.len;
+                    return Expr.make_create(cname_tok.val, cargs);
+                }
                 this.consume(Tok.RPAREN, "expected ')' after 'create' arguments");
-                return Expr.make_call(cname_tok.val, cargs);
+                return Expr.make_create(cname_tok.val, cargs);
             }
 
             // Enum access: Name::VARIANT
@@ -1381,7 +1396,7 @@ pub def Parser : class {
         if this.check(Tok.IDENT) && this.is_misuse_kw(this.current().val) {
             m_tok: Token = this.current();
             this.fatal = true;
-            this.fatal_kw = m_tok.val;
+            this.fatal_msg = "Found unsupported keyword '" + m_tok.val + "'";
             this.fatal_tip = this.misuse_tip(m_tok.val);
             this.fatal_line = m_tok.line;
             this.fatal_col = m_tok.col;
@@ -1678,8 +1693,23 @@ pub def Parser : class {
         }
 
         // Delete statement: del expr;
-        if this.match_tok(Tok.DELETE) {
+        if this.check(Tok.DELETE) {
+            del_tok: Token = this.current();
+            this.pos = this.pos + 1;
             del_target: Expr = this.parse_expression(Precedence.LOWEST);
+            // Python parity: `del` takes an identifier (a `create`
+            // expression is rejected there with "Expected identifier
+            // after 'del'").
+            if del_target != null && del_target.kind == ExprKind.CALL && del_target.is_create {
+                this.fatal = true;
+                this.fatal_msg = "Expected identifier after 'del'";
+                this.fatal_tip = "The 'del' keyword is used to delete variables. Example: `del myVar;`";
+                this.fatal_line = del_tok.line;
+                this.fatal_col = del_tok.col;
+                this.pos = this.len;
+                del_stmt0: Stmt = Stmt.make_expr(del_target);
+                return del_stmt0;
+            }
             this.consume(Tok.SEMI, "expected ';' after 'del'");
             del_stmt: Stmt = Stmt.make_expr(del_target);
             del_stmt.name = "__del__";

@@ -1697,8 +1697,53 @@ pub def TypeChecker : class {
                 this.check_call_args(e.sval, e);
                 return this.funcs[e.sval];
             }
-            // Class constructor call (`create Item(...)` / `Person(...)`)
-            if this.classes.isin(e.sval) {
+            // `create Class(...)` — allocation expression (python
+            // CreateExpr parity). A bare `Class(...)` call is NOT
+            // construction: python rejects it as an undefined function,
+            // so it falls through to the error below.
+            if e.is_create {
+                if this.generic_classes.isin(e.sval) {
+                    this.errors.pushb("Cannot use 'create' with generic class '" + e.sval + "'. Use the static method syntax instead, e.g., '" + e.sval + "<Type1, Type2>.new()'");
+                    return e.sval;
+                }
+                if !this.classes.isin(e.sval) {
+                    this.errors.pushb("Cannot create instance of unknown class '" + e.sval + "'");
+                    return e.sval;
+                }
+                ci_c: ClassInfo = this.classes[e.sval];
+                if ci_c.has_method(e.sval) {
+                    // Same-named ctor: arity + per-argument types, exactly
+                    // like python's _check_create (defaults fill trailing
+                    // gaps at codegen).
+                    cparams: vec<string> = ci_c.get_method_params(e.sval);
+                    total_p: int = cparams.size;
+                    required_p: int = 0;
+                    if this.ctor_defaults.isin(e.sval) {
+                        cdefs_c: vec<Expr> = this.ctor_defaults[e.sval];
+                        di_c: int = 0;
+                        while di_c < cdefs_c.size && di_c < total_p {
+                            if cdefs_c.get(di_c) == null { required_p = required_p + 1; }
+                            di_c = di_c + 1;
+                        }
+                        if cdefs_c.size < total_p { required_p = required_p + (total_p - cdefs_c.size); }
+                    } else {
+                        required_p = total_p;
+                    }
+                    actual_c: int = e.args.size;
+                    if actual_c < required_p {
+                        this.errors.pushb("Constructor '" + e.sval + "' expects at least " + tostring(required_p) + " arguments, but " + tostring(actual_c) + " were given");
+                    } also actual_c > total_p {
+                        this.errors.pushb("Constructor '" + e.sval + "' expects at most " + tostring(total_p) + " arguments, but " + tostring(actual_c) + " were given");
+                    }
+                    ai_c: int = 0;
+                    while ai_c < actual_c && ai_c < total_p {
+                        at_c: string = this.infer_expr(e.args.get(ai_c));
+                        if at_c.size > 0 && !this.ref_arg_compatible(this.strip_imut(at_c), this.strip_imut(cparams.get(ai_c))) {
+                            this.errors.pushb("Argument " + tostring(ai_c + 1) + " of constructor has type '" + at_c + "', but expected '" + cparams.get(ai_c) + "'");
+                        }
+                        ai_c = ai_c + 1;
+                    }
+                }
                 return e.sval;
             }
             if e.sval == "tounion" && e.args.size > 0 && e.args.get(0).kind == ExprKind.STRING {
@@ -1729,6 +1774,13 @@ pub def TypeChecker : class {
         }
 
         if e.kind == ExprKind.METHOD_CALL {
+            // A `create` result is not addressable (python codegen
+            // rejects receivers like this as `Invalid l-value:
+            // CreateExpr`).
+            if e.left != null && e.left.kind == ExprKind.CALL && e.left.is_create {
+                this.errors.pushb("Invalid l-value: CreateExpr");
+                return "int";
+            }
             // File class: builtin methods with real signatures, checked
             // like user class methods (arity + argument types)
             file_recv: bool = false;
@@ -1869,6 +1921,13 @@ pub def TypeChecker : class {
         }
 
         if e.kind == ExprKind.MEMBER {
+            // A `create` result is not addressable (python codegen
+            // rejects receivers like this as `Invalid l-value:
+            // CreateExpr`).
+            if e.left != null && e.left.kind == ExprKind.CALL && e.left.is_create {
+                this.errors.pushb("Invalid l-value: CreateExpr");
+                return "int";
+            }
             if e.sval == "size" { return "int"; }
             mem_obj_t: string = this.strip_ref(this.infer_expr(e.left));
             if e.sval == "name" && this.enums.isin(mem_obj_t) { return "string"; }
@@ -1889,8 +1948,18 @@ pub def TypeChecker : class {
         }
 
         if e.kind == ExprKind.POINTER_MEMBER {
-            // ptr->field: resolve the field against the pointee type
-            pobj: string = this.strip_ref(this.infer_expr(e.left));
+            // ptr->field: resolve the field against the pointee type.
+            // Python parity: `->` needs a real pointer base (`*T`/`&T`);
+            // a value (class, union, ...) is rejected, and the cascade
+            // strips one char for the follow-up diagnostic, exactly like
+            // python's _check_pointer_member_access.
+            praw: string = this.infer_expr(e.left);
+            if !(praw.size > 1 && (praw[0] == '*' || praw[0] == '&')) {
+                this.errors.pushb("Cannot use '->' on non-pointer type '" + praw + "'");
+                this.errors.pushb("Type '" + this.str_slice(praw, 1, praw.size) + "' is not a struct or class");
+                return "int";
+            }
+            pobj: string = this.strip_ref(praw);
             if pobj.size > 1 && pobj[0] == '*' {
                 pobj = this.str_slice(pobj, 1, pobj.size);
             }
@@ -2024,6 +2093,15 @@ pub def TypeChecker : class {
             if var_t.size > 0 && !s.is_infer && !this.is_known_type(var_t) {
                 this.errors.pushb("Variable '" + s.name + "' declared with unknown type '" + var_t + "'");
                 this.define_var(s.name, var_t);
+                // Python keeps checking the initializer after E003 (its
+                // errors and the E004-style mismatch all surface), so walk
+                // the value too instead of bailing out silently.
+                if s.value != null {
+                    v_unk: string = this.infer_expr(s.value);
+                    if this.fatal_idx < 0 && !this.types_compatible(v_unk, var_t) {
+                        this.errors.pushb("Variable '" + s.name + "' declared as '" + this.disp_type(var_t) + "' but assigned a value of type '" + this.disp_type(v_unk) + "'.");
+                    }
+                }
                 return;
             }
             if s.is_infer || var_t.size == 0 {

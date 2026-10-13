@@ -188,7 +188,7 @@ leash install installthis/
 <pre><code><span class="kw">use</span> json::*;
 
 <span class="kw">fnc</span> <span class="fn">main</span>() {
-    <span class="kw">let</span> v: JsonValue = Json.<span class="fn">parse</span>(<span class="str">"{\"name\": \"Leash\", \"year\": 2026}"</span>);
+    v: JsonValue = Json.<span class="fn">parse</span>(<span class="str">"{\"name\": \"Leash\", \"year\": 2026}"</span>);
     <span class="kw">if</span> v.ok == <span class="kw">false</span> {
         <span class="fn">show</span>(<span class="str">"parse error: "</span> + v.err);
         <span class="kw">return</span>;

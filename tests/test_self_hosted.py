@@ -68,6 +68,21 @@ class TestSelfHostedCompiler(unittest.TestCase):
             'fnc main() : int {\n    c: C = C.make();\n    foreach i, v in<vector> c.vals { show(v); }\n    return 0;\n}\n')
         self.assertEqual(out.strip(), "")
 
+    def test_create_with_ctor(self):
+        out = self._compile_and_run(
+            'def Counter : class {\n    pub count: int;\n'
+            '    Counter(start: int) { this.count = start; }\n'
+            '    pub fnc bump() : void { this.count = this.count + 1; }\n'
+            '}\n'
+            'fnc main() : int {\n    c: Counter = create Counter(5);\n    c.bump();\n    show(c.count);\n    return 0;\n}\n')
+        self.assertIn("6", out)
+
+    def test_create_no_ctor(self):
+        out = self._compile_and_run(
+            'def Plain : class {\n    pub x: int;\n}\n'
+            'fnc main() : int {\n    p: Plain = create Plain();\n    p.x = 41;\n    show(p.x + 1);\n    return 0;\n}\n')
+        self.assertIn("42", out)
+
     def test_loops(self):
         out = self._compile_and_run(
             'fnc main() : int {\n    i: int = 0;\n    while i < 3 { show(i); i = i + 1; }\n    return 0;\n}\n')

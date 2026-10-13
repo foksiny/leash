@@ -3090,31 +3090,92 @@ pub def CodeGen : class {
                 return res;
             }
 
-            // Class constructor incantation: Person(...) -> alloc + zero-init + Person_Person(this, ...)
+            // `create Class(...)` allocation (python CreateExpr parity):
+            // zeroed heap instance + vtable slot + `Class_Class(this, ...)`
+            // when a same-named ctor exists. Declared field defaults do NOT
+            // apply (the runtime zeroes) and `new(...)` never runs — only
+            // `Class_Class` is called. Without a ctor the args are ignored
+            // entirely (never even evaluated), as in python. Bare
+            // `Class(...)` calls are rejected by the typechecker; the
+            // emitter keeps accepting them for robustness.
             if this.tc.classes.isin(e.sval) {
                 cname: string = e.sval;
-                has_ctor: bool = false;
-                cip: ClassInfo = this.tc.classes[cname];
-                foreach _, mn in<vector> cip.method_names {
-                    if mn == cname { has_ctor = true; }
+                cty: string = "%class." + cname;
+                // Exact instance size (python's gep-null + ptrtoint).
+                sz_gep: string = this.new_reg();
+                this.emit("  " + sz_gep + " = getelementptr " + cty + ", " + cty + "* null, i32 1");
+                sz_i: string = this.new_reg();
+                this.emit("  " + sz_i + " = ptrtoint " + cty + "* " + sz_gep + " to i64");
+                craw2: string = this.new_reg();
+                this.emit("  " + craw2 + " = call i8* @leash_gc_malloc(i64 " + sz_i + ")");
+                obj_ptr2: string = this.new_reg();
+                this.emit("  " + obj_ptr2 + " = bitcast i8* " + craw2 + " to " + cty + "*");
+                // Vtable pointer at slot 0 when the class has methods.
+                cip2: ClassInfo = this.tc.classes[cname];
+                if cip2.method_order.size > 0 {
+                    cvt2_ty: string = "{ ";
+                    cvt2_i: int = 0;
+                    while cvt2_i < cip2.method_order.size {
+                        if cvt2_i > 0 { cvt2_ty = cvt2_ty + ", "; }
+                        cvt2_ty = cvt2_ty + "i8*";
+                        cvt2_i = cvt2_i + 1;
+                    }
+                    cvt2_ty = cvt2_ty + " }";
+                    cvt2_sp: string = this.new_reg();
+                    this.emit("  " + cvt2_sp + " = getelementptr inbounds " + cty + ", " + cty + "* " + obj_ptr2 + ", i32 0, i32 0");
+                    this.emit("  store i8* bitcast(" + cvt2_ty + "* @" + cname + "_vtable to i8*), i8** " + cvt2_sp);
                 }
-                if has_ctor {
-                    fnames_empty: vec<string>;
-                    args_empty: vec<Expr>;
-                    init_expr: Expr = Expr.make_struct_init(cname, fnames_empty, args_empty);
-                    obj_ptr: string = this.gen_expr(init_expr);
-                    arg_strs: string = this.llvm_type(cname) + " " + obj_ptr;
+                // Constructor call: this + user args (int-width coerced
+                // like the method-call path), trailing gaps filled from
+                // the ctor's declared defaults. Arity is enforced by the
+                // typechecker, so the fill loop always terminates cleanly.
+                ctor_name: string = cname + "_" + cname;
+                if this.tc.funcs.isin(ctor_name) {
+                    arg_strs2: string = this.llvm_type(cname) + " " + obj_ptr2;
+                    cmps: vec<string> = cip2.get_method_params(cname);
+                    ai2: int = 0;
                     foreach _, arg in<vector> e.args {
                         aval: string = this.gen_expr(arg);
                         atyp: string = this.get_expr_type(arg);
                         alty: string = this.llvm_type(atyp);
-                        arg_strs = arg_strs + ", " + alty + " " + aval;
+                        if ai2 < cmps.size {
+                            ptw: string = cmps.get(ai2);
+                            if ptw.size > 0 && ptw[0] != '&' {
+                                pltyw: string = this.llvm_type(ptw);
+                                if this.is_int_lty(alty) && this.is_int_lty(pltyw) && alty != pltyw {
+                                    aval = this.coerce_store_val(arg, aval, pltyw);
+                                    alty = pltyw;
+                                }
+                            }
+                        }
+                        arg_strs2 = arg_strs2 + ", " + alty + " " + aval;
+                        ai2 = ai2 + 1;
                     }
-                    ctor_name: string = cname + "_" + cname;
-                    last_res: string = "0";
-                    this.emit("  call void @" + ctor_name + "(" + arg_strs + ")");
-                    return obj_ptr;
+                    if this.tc.ctor_defaults.isin(cname) {
+                        cdefs2: vec<Expr> = this.tc.ctor_defaults[cname];
+                        while ai2 < cdefs2.size {
+                            dd: Expr = cdefs2.get(ai2);
+                            if dd == null { stop; }
+                            dval: string = this.gen_expr(dd);
+                            dtyp: string = this.get_expr_type(dd);
+                            dlty: string = this.llvm_type(dtyp);
+                            if ai2 < cmps.size {
+                                ptw2: string = cmps.get(ai2);
+                                if ptw2.size > 0 && ptw2[0] != '&' {
+                                    pltyw2: string = this.llvm_type(ptw2);
+                                    if this.is_int_lty(dlty) && this.is_int_lty(pltyw2) && dlty != pltyw2 {
+                                        dval = this.coerce_store_val(dd, dval, pltyw2);
+                                        dlty = pltyw2;
+                                    }
+                                }
+                            }
+                            arg_strs2 = arg_strs2 + ", " + dlty + " " + dval;
+                            ai2 = ai2 + 1;
+                        }
+                    }
+                    this.emit("  call void @" + ctor_name + "(" + arg_strs2 + ")");
                 }
+                return obj_ptr2;
             }
 
             // Byte builtins: inttobytes/floattobytes -> {i64,len, i8*,ptr} slice,
