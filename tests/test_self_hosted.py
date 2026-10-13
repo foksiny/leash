@@ -1,6 +1,8 @@
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -82,6 +84,47 @@ class TestSelfHostedCompiler(unittest.TestCase):
             'def Plain : class {\n    pub x: int;\n}\n'
             'fnc main() : int {\n    p: Plain = create Plain();\n    p.x = 41;\n    show(p.x + 1);\n    return 0;\n}\n')
         self.assertIn("42", out)
+
+    def _copy_leashc_into(self, dest_bin_dir):
+        os.makedirs(dest_bin_dir, exist_ok=True)
+        dest = os.path.join(dest_bin_dir, "leashc")
+        shutil.copy(BIN_LEASHC, dest)
+        os.chmod(dest, 0o755)
+        return dest
+
+    def test_update_no_git_checkout(self):
+        # `update` with no git checkout anywhere up the tree fails
+        # cleanly instead of pulling some unrelated repo.
+        d = tempfile.mkdtemp(prefix="leashc_upd_nogit_")
+        self.addCleanup(shutil.rmtree, d, True)
+        exe = self._copy_leashc_into(os.path.join(d, "bin"))
+        r = _sh([exe, "update"], cwd=d, timeout=180)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("not installed from a git checkout",
+                      r.stdout + r.stderr)
+
+    def test_update_wrong_origin_refused(self):
+        # `update` refuses a non-Leash origin without fetching anything.
+        if shutil.which("git") is None:
+            self.skipTest("git not available")
+        d = tempfile.mkdtemp(prefix="leashc_upd_evil_")
+        self.addCleanup(shutil.rmtree, d, True)
+        exe = self._copy_leashc_into(os.path.join(d, "bin"))
+        env = dict(os.environ, GIT_CONFIG_NOSYSTEM="1",
+                   GIT_CONFIG_GLOBAL=os.devnull)
+        subprocess.run(["git", "init", "-q", d], check=True, env=env,
+                       capture_output=True)
+        subprocess.run(["git", "-C", d, "-c", "user.email=t@t",
+                        "-c", "user.name=t", "commit", "-q", "--allow-empty",
+                        "-m", "init"], check=True, env=env,
+                       capture_output=True)
+        subprocess.run(["git", "-C", d, "remote", "add", "origin",
+                        "https://evil.example.com/victim/leash.git"],
+                       check=True, env=env, capture_output=True)
+        r = _sh([exe, "update"], cwd=d, timeout=180)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("not the Leash repository", r.stdout + r.stderr)
+        self.assertFalse(os.path.exists(os.path.join(d, ".git", "FETCH_HEAD")))
 
     def test_loops(self):
         out = self._compile_and_run(

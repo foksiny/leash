@@ -5,6 +5,25 @@ All notable changes to the Leash compiler are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed — Self-hosted `update` and `self-host`
+- `leash update` (self-hosted) now finishes the job: after a successful
+  pull it rebuilds the toolchain from the fresh tree, so the binaries on
+  disk always match the sources. When the pull changes nothing it
+  reports "Already up to date." without rebuilding (HEAD compared
+  before/after — no output parsing).
+- The pull itself matches the Python toolchain's safety rules: the
+  `origin` remote must be the Leash repository (anything else is
+  refused, including a missing remote) and the pull is `--ff-only`, so
+  a hostile or divergent remote can neither inject code nor create
+  merges that trip local hooks.
+- `leash self-host` installs atomically (temp + rename): replacing the
+  running `bin/leashc` in place failed with ETXTBSY while still printing
+  "Installed", leaving a stale binary behind a success message.
+- The release version lives in one `leash_version()` helper instead of
+  three hardcoded literals.
+
 ## [0.4.0] - 2026-10-13
 
 ### Fixed — Package manager integrity (`leashed`)
