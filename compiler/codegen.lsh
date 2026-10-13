@@ -1203,6 +1203,50 @@ pub def CodeGen : class {
         return res;
     }
 
+    // String-concat operand conversion for the int family. Python
+    // formats like its tostring path: sext/zext to i64 then print
+    // signed/unsigned per the leash type; >64-bit widths go through
+    // the bigint runtime. Returns the i8* string register.
+    pub fnc concat_int_to_str(e Expr, val string, typ string) : string {
+        if this.is_sized_int_type(typ) {
+            w: int = this.sized_int_width(typ);
+            if w > 64 { return this.wide_int_to_str(val, typ); }
+            ext: string = val;
+            if w != 64 {
+                sl: string = "i" + tostring(w);
+                ext = this.new_reg();
+                if this.sized_int_is_signed(typ) {
+                    this.emit("  " + ext + " = sext " + sl + " " + val + " to i64");
+                } else {
+                    this.emit("  " + ext + " = zext " + sl + " " + val + " to i64");
+                }
+            }
+            res: string = this.new_reg();
+            if this.sized_int_is_signed(typ) {
+                this.emit("  " + res + " = call i8* @leash_int_to_str(i64 " + ext + ")");
+            } else {
+                this.emit("  " + res + " = call i8* @leash_uint_to_str(i64 " + ext + ")");
+            }
+            return res;
+        }
+        if typ == "int" {
+            res2: string = this.new_reg();
+            this.emit("  " + res2 + " = call i8* @leash_int_to_str(i64 " + this.i32_to_rt_i64(e, val) + ")");
+            return res2;
+        }
+        if typ == "uint" {
+            uz: string = val;
+            if !this.is_wide_int_lit(e) {
+                uz = this.new_reg();
+                this.emit("  " + uz + " = zext i32 " + val + " to i64");
+            }
+            res3: string = this.new_reg();
+            this.emit("  " + res3 + " = call i8* @leash_uint_to_str(i64 " + uz + ")");
+            return res3;
+        }
+        return val;
+    }
+
     pub fnc llvm_type(typ string) : string {
         if typ.size > 1 && typ[0] == '&' {
             inner: string = "";
@@ -1492,6 +1536,13 @@ pub def CodeGen : class {
             }
             if lt == "string" || rt == "string" { return "string"; }
             if lt == "float" || rt == "float" || lt == "double" || rt == "double" { return "float"; }
+            // Out-of-i32-range int literals are i64 constants in python
+            // (codegen._const_int widens), so an int-family binop with one
+            // operand runs at int<64> — stores truncate at the boundary.
+            if (this.is_wide_int_lit(e.left) && (rt == "int" || rt == "uint" || rt == "char" || rt == "int64" || rt == "int<64>")) ||
+               (this.is_wide_int_lit(e.right) && (lt == "int" || lt == "uint" || lt == "char" || lt == "int64" || lt == "int<64>")) {
+                return "int<64>";
+            }
             // Numeric ops promote like python's _check_binary_op: float
             // wins, uint+uint stays uint, char promotes to int — and the
             // wider int spelling survives so coercions match the real width.
@@ -1506,6 +1557,7 @@ pub def CodeGen : class {
         if e.kind == ExprKind.UNARY {
             if e.op == "await" { return this.strip_future(this.get_expr_type(e.left)); }
             if e.op == "!" { return "bool"; }
+            if e.op == "~" && this.is_wide_int_lit(e.left) { return "int<64>"; }
             if e.op == "&" {
                 if e.left.kind == ExprKind.IDENT && !this.var_ptrs.isin(e.left.sval) && this.tc.funcs.isin(e.left.sval) {
                     return this.tc.fn_type_str(e.left.sval);
@@ -2281,16 +2333,13 @@ pub def CodeGen : class {
                     r_val = conv_r;
                 }
 
-                // If one operand is int, convert to string
-                if lt == "int" {
-                    conv_l: string = this.new_reg();
-                    this.emit("  " + conv_l + " = call i8* @leash_int_to_str(i64 " + this.i32_to_rt_i64(e.left, l_val) + ")");
-                    l_val = conv_l;
+                // Int-family operands convert to their decimal string
+                // (python formats signed/unsigned per the leash type).
+                if lt == "int" || lt == "uint" || this.is_sized_int_type(lt) {
+                    l_val = this.concat_int_to_str(e.left, l_val, lt);
                 }
-                if rt == "int" {
-                    conv_r: string = this.new_reg();
-                    this.emit("  " + conv_r + " = call i8* @leash_int_to_str(i64 " + this.i32_to_rt_i64(e.right, r_val) + ")");
-                    r_val = conv_r;
+                if rt == "int" || rt == "uint" || this.is_sized_int_type(rt) {
+                    r_val = this.concat_int_to_str(e.right, r_val, rt);
                 }
                 // char operands are materialized as single-char strings
                 if lt == "char" {
@@ -2451,12 +2500,18 @@ pub def CodeGen : class {
             if lt == "float" || rt == "float" || lt == "double" || rt == "double" {
                 if lt == "int" || lt == "uint" {
                     conv_l: string = this.new_reg();
-                    this.emit("  " + conv_l + " = sitofp " + this.llvm_type(lt) + " " + l_val + " to double");
+                    // Wide literals are i64 constants (python widens them):
+                    // convert from i64 so the value isn't wrapped first.
+                    conv_lt: string = this.llvm_type(lt);
+                    if this.is_wide_int_lit(e.left) { conv_lt = "i64"; }
+                    this.emit("  " + conv_l + " = sitofp " + conv_lt + " " + l_val + " to double");
                     l_val = conv_l;
                 }
                 if rt == "int" || rt == "uint" {
                     conv_r: string = this.new_reg();
-                    this.emit("  " + conv_r + " = sitofp " + this.llvm_type(rt) + " " + r_val + " to double");
+                    conv_rt: string = this.llvm_type(rt);
+                    if this.is_wide_int_lit(e.right) { conv_rt = "i64"; }
+                    this.emit("  " + conv_r + " = sitofp " + conv_rt + " " + r_val + " to double");
                     r_val = conv_r;
                 }
 
@@ -2508,6 +2563,32 @@ pub def CodeGen : class {
             // decimal literals skip the conversion: they already carry the
             // full value, and `sext i32 <big> to i64` would wrap first.
             rlty: string = this.llvm_type(rt);
+            // Out-of-i32-range int literals are i64 constants in python
+            // (codegen._const_int widens), so an int32 op with one runs at
+            // i64: extend the register operand up, the literal embeds at
+            // full width (see get_expr_type's matching int<64> result).
+            if (this.is_wide_int_lit(e.left) || this.is_wide_int_lit(e.right)) && lty == "i32" && rlty == "i32" {
+                if l_val.size > 0 && l_val[0] == '%' {
+                    wl_r: string = this.new_reg();
+                    if this.is_uint_type(lt) {
+                        this.emit("  " + wl_r + " = zext i32 " + l_val + " to i64");
+                    } else {
+                        this.emit("  " + wl_r + " = sext i32 " + l_val + " to i64");
+                    }
+                    l_val = wl_r;
+                }
+                if r_val.size > 0 && r_val[0] == '%' {
+                    wl_r2: string = this.new_reg();
+                    if this.is_uint_type(rt) {
+                        this.emit("  " + wl_r2 + " = zext i32 " + r_val + " to i64");
+                    } else {
+                        this.emit("  " + wl_r2 + " = sext i32 " + r_val + " to i64");
+                    }
+                    r_val = wl_r2;
+                }
+                lty = "i64";
+                rlty = "i64";
+            }
             if this.is_int_lty(lty) && this.is_int_lty(rlty) && lty != rlty {
                 r_is_lit: bool = r_val.size > 0 && r_val[0] != '%';
                 l_is_lit: bool = l_val.size > 0 && l_val[0] != '%';
@@ -2616,6 +2697,10 @@ pub def CodeGen : class {
             }
             if e.op == "~" {
                 tnot: string = this.get_expr_type(e.left);
+                // Out-of-range literals are i64 constants (python's
+                // _const_int widens): not must run at i64 too, else the
+                // decimal wraps into i32 first.
+                if this.is_wide_int_lit(e.left) { tnot = "int<64>"; }
                 this.emit("  " + res + " = xor " + this.llvm_type(tnot) + " " + u_val + ", -1");
                 return res;
             }
@@ -6490,6 +6575,15 @@ pub def CodeGen : class {
                     "entry:\n" +
                     "  %buf = call i8* @leash_gc_malloc(i64 32)\n" +
                     "  %fmt = getelementptr inbounds [5 x i8], [5 x i8]* @.fmt_d, i64 0, i64 0\n" +
+                    "  call i32 (i8*, i64, i8*, ...) @snprintf(i8* %buf, i64 32, i8* %fmt, i64 %n)\n" +
+                    "  ret i8* %buf\n" +
+                    "}\n\n");
+
+        header_lines.pushb("; Runtime helper: leash_uint_to_str\n" +
+                    "define i8* @leash_uint_to_str(i64 %n) {\n" +
+                    "entry:\n" +
+                    "  %buf = call i8* @leash_gc_malloc(i64 32)\n" +
+                    "  %fmt = getelementptr inbounds [5 x i8], [5 x i8]* @.fmt_u, i64 0, i64 0\n" +
                     "  call i32 (i8*, i64, i8*, ...) @snprintf(i8* %buf, i64 32, i8* %fmt, i64 %n)\n" +
                     "  ret i8* %buf\n" +
                     "}\n\n");
