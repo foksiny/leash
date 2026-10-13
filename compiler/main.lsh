@@ -7,7 +7,7 @@ use driver::*;
 // Single source of truth for the release version. Bump discipline:
 // setup.py, leash/cli.py VERSION_STRING, README, docs badges, CHANGELOG.
 fnc leash_version() : string {
-    return "1.1.0";
+    return "1.2.0";
 }
 
 // Prefix test (no stdlib dependency this early in main.lsh).
@@ -252,7 +252,7 @@ fnc print_usage() : void {
     show("  leash <command> [arguments] [options]");
     show("");
     show("Commands:");
-    show("  compile <file.lsh>    Compile to an executable binary");
+    show("  compile <file.lsh>    Compile to an executable binary (to-dynamic/to-static for libraries)");
     show("  run [<file.lsh>]      Compile and immediately execute (file or project)");
     show("  dbg [<file.lsh>]      Run under the interactive source-level debugger");
     show("  dump <file.lsh>       Dump generated LLVM IR instead of linking");
@@ -276,6 +276,7 @@ fnc print_usage() : void {
     show("  --other-imports / -oi <folder>   Extra module search directory (repeatable)");
     show("  --treat-from-as-safe / -tfs      Suppress @from native-library security warnings (W_SECURITY)");
     show("  --no-garbage-collector / -ngc    Disable garbage collector (plain C malloc/free runtime)");
+    show("  --autofree / -af                Track allocations and free them at function exit (GC-free)");
     show("  --static / -static               Fully-static musl-linked binary (linux64/linux32 only)");
     show("  --emit-llvm                      Emit LLVM IR instead of linking");
     show("  --verbose / -vb                  Print pipeline phases");
@@ -284,12 +285,12 @@ fnc print_usage() : void {
     show("  --help / -h                      Show this help, or 'leash help <command>' for details");
     show("");
     show("Note: 'runp' is deprecated -- use 'leash run' without a file to run the current project.");
-    show("Note: --autofree (-af) instrumentation is provided by the Python compiler: 'leashp'.");
+    show("Note: --autofree (-af) tracks heap allocations and frees them at function exit (no GC).");
 }
 
 fnc print_command_help(topic string) : bool {
     if topic == "compile" {
-        show("compile <file.lsh> [to <out>]");
+        show("compile <file.lsh> [to <out>] [to-dynamic | to-static]");
         show("");
         show("Compile a Leash source file into an executable binary.");
         show("Output defaults to the input name without the .lsh extension.");
@@ -510,9 +511,12 @@ fnc cmd_build(args string[]) : int {
     if cfg.isin("static") && cfg["static"] == "true" {
         b_static = true;
     }
-    if cfg.isin("autofree") && cfg["autofree"] == "true" {
-        show("error: config.lshc 'autofree' requires the Python compiler; build with 'leashp build'");
-        return 1;
+    b_autofree: bool = false;
+    if cfg.isin("autofree") {
+        af_val: string = str_lower_ascii(cfg["autofree"]);
+        if af_val == "true" || af_val == "yes" || af_val == "1" {
+            b_autofree = true;
+        }
     }
 
     exec("mkdir -p out", nil);
@@ -521,7 +525,7 @@ fnc cmd_build(args string[]) : int {
     foreach _, d in<vector> extra_dirs { driver.add_import_dir(d); }
     return driver.compile_file(main_rel, "out/" + out_base, false, false, "",
                                opt_level, false, extra_libs, false, false, false,
-                               "", false, b_static);
+                               "", false, b_static, "", b_autofree);
 }
 
 // ---------------------------------------------------------------------------
@@ -650,7 +654,7 @@ fnc cmd_run(args string[]) : int {
         drv.self_path = args[0];
         drv.treat_from_safe = r_tfs;
         foreach _, d in<vector> extra_dirs { drv.add_import_dir(d); }
-        rc: int = drv.compile_file(main_rel, tmp, false, true, prog_args, p_opt, false, extra_libs, false, false, false, "", false, false);
+        rc: int = drv.compile_file(main_rel, tmp, false, true, prog_args, p_opt, false, extra_libs, false, false, false, "", false, false, "", false);
         cleanup_temp(tmp);
         return rc;
     }
@@ -659,6 +663,7 @@ fnc cmd_run(args string[]) : int {
     r_target: string = "";
     r_ngc: bool = false;
     r_static: bool = false;
+    r_autofree: bool = false;
     ri3: int = 2;
     while ri3 < sep_idx {
         ra: string = args[ri3];
@@ -669,6 +674,9 @@ fnc cmd_run(args string[]) : int {
         }
         if ra == "--no-garbage-collector" || ra == "-ngc" {
             r_ngc = true;
+        }
+        if ra == "--autofree" || ra == "-af" {
+            r_autofree = true;
         }
         if ra == "--static" || ra == "-static" {
             r_static = true;
@@ -685,7 +693,7 @@ fnc cmd_run(args string[]) : int {
     drv2.self_path = args[0];
     drv2.treat_from_safe = r_tfs;
     foreach _, d2 in<vector> extra_dirs { drv2.add_import_dir(d2); }
-    rc2: int = drv2.compile_file(operand, tmp2, false, true, prog_args, opt_level, false, empty_libs_global(), r_verbose, false, false, r_target, r_ngc, r_static);
+    rc2: int = drv2.compile_file(operand, tmp2, false, true, prog_args, opt_level, false, empty_libs_global(), r_verbose, false, false, r_target, r_ngc, r_static, "", r_autofree);
     cleanup_temp(tmp2);
     return rc2;
 }
@@ -972,6 +980,13 @@ fnc cmd_install_global(args string[]) : int {
             li = li + 1;
         }
     }
+    gi_autofree: bool = false;
+    if cfg.isin("autofree") {
+        gi_af: string = str_lower_ascii(cfg["autofree"]);
+        if gi_af == "true" || gi_af == "yes" || gi_af == "1" {
+            gi_autofree = true;
+        }
+    }
     driver: CompilerDriver = CompilerDriver.make();
     driver.self_path = args[0];
     fails: int = 0;
@@ -985,7 +1000,7 @@ fnc cmd_install_global(args string[]) : int {
         foreach _, d in<vector> extra_dirs { driver.add_import_dir(d); }
         rc: int = driver.compile_file(src, outpath, false, false, "",
                                       opt_level, false, extra_libs, false, false, false,
-                                      "", false, false);
+                                      "", false, false, "", gi_autofree);
         if rc != 0 {
             show("error: failed to install '", nm, "'");
             fails = fails + 1;
@@ -1345,7 +1360,7 @@ fnc cmd_dbg(args string[]) : int {
         if args[di3] == "--no-garbage-collector" || args[di3] == "-ngc" { d_ngc = true; }
         di3 = di3 + 1;
     }
-    rc: int = drv.compile_file(target_file, tmp, false, false, "", opt_level, false, empty_libs_global(), false, false, true, "", d_ngc, false);
+    rc: int = drv.compile_file(target_file, tmp, false, false, "", opt_level, false, empty_libs_global(), false, false, true, "", d_ngc, false, "", false);
     if rc != 0 {
         exec("rm -f " + tmp, nil);
         return rc;
@@ -1422,6 +1437,8 @@ fnc main(args string[]) : int {
         target_name: string = "";
         no_gc: bool = false;
         static_link: bool = false;
+        output_type: string = "";
+        autofree: bool = false;
 
         i: int = loop_start;
         while i < args.size {
@@ -1432,12 +1449,13 @@ fnc main(args string[]) : int {
                 continue;
             }
             if arg == "to-dynamic" || arg == "to-static" {
-                // Library outputs need the Python toolchain's object
-                // pipeline; silently ignoring the flag used to produce a
-                // plain executable under the library's name.
-                show("error: '", arg, "' library outputs are provided by the Python compiler:");
-                show("       leashp compile ", input_file, " ", arg, " <name>");
-                return 1;
+                if arg == "to-dynamic" {
+                    output_type = "dynamic";
+                } else {
+                    output_type = "static";
+                }
+                i = i + 1;
+                continue;
             }
             if arg == "--emit-llvm" {
                 emit_llvm = true;
@@ -1510,6 +1528,11 @@ fnc main(args string[]) : int {
                 i = i + 1;
                 continue;
             }
+            if arg == "--autofree" || arg == "-af" {
+                autofree = true;
+                i = i + 1;
+                continue;
+            }
             if arg == "--static" || arg == "-static" {
                 static_link = true;
                 i = i + 1;
@@ -1542,7 +1565,7 @@ fnc main(args string[]) : int {
         foreach _, d in<vector> extra_dirs { driver.add_import_dir(d); }
         return driver.compile_file(input_file, output_file, emit_llvm, false, "",
                                    opt_level, check_mode, extra_libs, verbose, warn_err, false,
-                                   target_name, no_gc, static_link);
+                                   target_name, no_gc, static_link, output_type, autofree);
     }
 
     if cmd == "run" {

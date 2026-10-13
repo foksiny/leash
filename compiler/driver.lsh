@@ -678,7 +678,7 @@ pub def CompilerDriver : class {
         return "";
     }
 
-    pub fnc compile_file(input_file string, output_file string, emit_llvm bool, run_mode bool, run_args string, opt_level string, check_mode bool, extra_libs vec<string>, verbose bool, warn_err bool, debug_instrument bool, target_name string, no_gc bool, static_link bool) : int {
+    pub fnc compile_file(input_file string, output_file string, emit_llvm bool, run_mode bool, run_args string, opt_level string, check_mode bool, extra_libs vec<string>, verbose bool, warn_err bool, debug_instrument bool, target_name string, no_gc bool, static_link bool, output_type string, autofree bool) : int {
         if verbose { show("[verbose] reading ", input_file); }
         source: string = this.read_file_string(input_file);
         if source.size == 0 {
@@ -781,12 +781,45 @@ pub def CompilerDriver : class {
             cg.main_file = input_file;
         }
         cg.debug_instrument = debug_instrument;
+        cg.autofree = autofree;
+        // Library outputs omit the @main wrapper (a consumer linking its
+        // own main would otherwise get a duplicate symbol).
+        cg.is_lib = output_type == "dynamic" || output_type == "static";
         ir_lines: vec<string> = cg.generate_module(prog);
         if verbose { show("[verbose] generated ", tostring(ir_lines.size), " IR lines"); }
 
         out_bin: string = output_file;
         if out_bin.size == 0 {
             out_bin = Path.strip_ext(input_file);
+        }
+        if output_type != "" && output_type != "dynamic" && output_type != "static" {
+            show("error: unknown output type '", output_type, "' (expected to-dynamic or to-static)");
+            return 1;
+        }
+        if output_type == "dynamic" || output_type == "static" {
+            // Target-gated extensions (host-gated naming puts .so on
+            // macOS/Windows cross outputs, which is wrong).
+            ext: string = ".so";
+            if output_type == "static" { ext = ".a"; }
+            if target_name == "win64" {
+                ext = ".dll";
+                if output_type == "static" { ext = ".lib"; }
+            }
+            also target_name == "macos" || target_name == "macos-arm" {
+                ext = ".dylib";
+                if output_type == "static" { ext = ".a"; }
+            }
+            has_ext: bool = false;
+            if out_bin.size >= ext.size {
+                tail_ok: bool = true;
+                ei: int = 0;
+                while ei < ext.size {
+                    if out_bin[out_bin.size - ext.size + ei] != ext[ei] { tail_ok = false; }
+                    ei = ei + 1;
+                }
+                has_ext = tail_ok;
+            }
+            if !has_ext { out_bin = out_bin + ext; }
         }
 
         if emit_llvm {
@@ -896,8 +929,11 @@ pub def CompilerDriver : class {
             cc_flags = "--target=aarch64-apple-darwin";
             is_macos = true;
         }
-        if no_gc {
-            // Stub runtime: plain malloc/free behind the same API
+        if no_gc || autofree {
+            // Stub runtime: plain malloc/free behind the same API.
+            // Autofree additionally frees tracked allocations at scope
+            // exit, so every allocation must be plain malloc (never GC
+            // cells, which libc free() cannot release).
             rt_extra = rt_extra + " -DNO_GC";
         }
         if static_link {
@@ -916,8 +952,9 @@ pub def CompilerDriver : class {
             }
         }
 
-        // Windows output naming: out.exe (Python parity)
-        if is_win && out_bin.size > 4 {
+        // Windows output naming: out.exe (Python parity). Libraries
+        // keep their own suffix (.dll/.lib from above, never .exe).
+        if is_win && out_bin.size > 4 && output_type != "dynamic" && output_type != "static" {
             win_sfx: bool = true;
             wi: int = out_bin.size - 4;
             if out_bin[wi] == '.' && out_bin[wi + 1] == 'e' && out_bin[wi + 2] == 'x' && out_bin[wi + 3] == 'e' { win_sfx = false; }
@@ -1072,9 +1109,15 @@ pub def CompilerDriver : class {
                 runtime_objs = runtime_objs + " " + rt_stubs;
             }
 
-            // Program object keyed by IR content + opt level + target flags
+            // Program object keyed by IR content + opt level + target flags.
+            // Library objects are PIC (executables link -no-pie, but a
+            // non-PIC .a/.so cannot link into PIE executables or .so files).
+            pic_flag: string = "";
+            if output_type == "dynamic" || output_type == "static" {
+                pic_flag = "-fPIC";
+            }
             ir_key: int = this.fnv_lines(ir_lines);
-            obj_path = cache_dir + "/o" + tostring(this.fnv_str(opt_flag + "|" + cc_flags + "|" + tostring(ir_key))) + ".o";
+            obj_path = cache_dir + "/o" + tostring(this.fnv_str(opt_flag + "|" + cc_flags + "|" + pic_flag + "|" + tostring(ir_key))) + ".o";
 
             if verbose { show("[verbose] object cache: ", this.file_exists(obj_path) ? "hit" : "miss"); }
             if !this.file_exists(obj_path) {
@@ -1094,6 +1137,7 @@ pub def CompilerDriver : class {
                 if f_obj_rsp != null {
                     f_obj_rsp.write(opt_flag + "\n");
                     f_obj_rsp.write(cc_flags + "\n");
+                    f_obj_rsp.write(pic_flag + "\n");
                     f_obj_rsp.close();
                     ec_obj: string = this.exec_code(cc_bin + " " + temp_ll + " -c -o " + obj_path + " @" + rsp_obj);
                     if ec_obj != "0" {
@@ -1101,7 +1145,7 @@ pub def CompilerDriver : class {
                         return 1;
                     }
                 } else {
-                    ec_obj2: string = this.exec_code(cc_bin + " " + temp_ll + " -c -o " + obj_path + " " + opt_flag + " " + cc_flags);
+                    ec_obj2: string = this.exec_code(cc_bin + " " + temp_ll + " -c -o " + obj_path + " " + opt_flag + " " + cc_flags + " " + pic_flag);
                     if ec_obj2 != "0" {
                         show("error: clang IR compilation failed");
                         return 1;
@@ -1121,6 +1165,45 @@ pub def CompilerDriver : class {
                 f_tmp.write("\n");
             }
             f_tmp.close();
+            if output_type == "dynamic" || output_type == "static" {
+                // Cold-path libraries: PIC object first, then shared/ar.
+                cold_pic: string = "-fPIC";
+                cold_obj: string = "/tmp/leashc_" + Path.basename(out_bin) + ".o";
+                ec_cobj: string = this.exec_code(cc_bin + " " + temp_ll + " -c -o " + cold_obj + " " + opt_flag + " " + cc_flags + " " + cold_pic);
+                if ec_cobj != "0" {
+                    show("error: clang IR compilation failed");
+                    return 1;
+                }
+                if output_type == "dynamic" {
+                    // PE DLLs cannot have undefined symbols: link the
+                    // runtime sources in on win64 (ELF leaves them for
+                    // the consumer, like the cached path above).
+                    cold_rt: string = "";
+                    if target_name == "win64" {
+                        cold_rt = gc_path;
+                        if stubs_path.size > 0 {
+                            cold_rt = cold_rt + " " + stubs_path;
+                        }
+                    }
+                    ec_cd: string = this.exec_code(cc_bin + " " + cold_obj + " " + cold_rt + " -shared -o " + out_bin + " " + opt_flag + " " + cc_flags + " " + lib_flags);
+                    if ec_cd != "0" {
+                        show("error: clang shared-library link failed");
+                        return 1;
+                    }
+                } else {
+                    cold_ar: string = "ar";
+                    if target_name == "win64" { cold_ar = "x86_64-w64-mingw32-ar"; }
+                    ec_ca: string = this.exec_code(cold_ar + " rcs " + out_bin + " " + cold_obj);
+                    if ec_ca != "0" {
+                        show("error: static archive build failed");
+                        return 1;
+                    }
+                }
+                if !run_mode {
+                    show("[leash] Compiled ", input_file, " -> ", out_bin);
+                }
+                return 0;
+            }
             rt_files_cold: string = gc_path;
             if stubs_path.size > 0 {
                 rt_files_cold = rt_files_cold + " " + stubs_path;
@@ -1176,6 +1259,38 @@ pub def CompilerDriver : class {
         // The link command must stay short: exec() commands are length-
         // capped by the language runtime. Everything bulky (object paths,
         // the Python-parity link flags) rides in a clang response file.
+        // Libraries link only the program object (+ user -l flags): no
+        // runtime objects (the consumer links gc.c/stubs itself), and
+        // archives go through ar, not clang.
+        if output_type == "dynamic" {
+            // ELF allows undefined symbols (the consumer links gc.c +
+            // stubs); PE does not, so Windows DLLs link the runtime in.
+            dyn_rt: string = "";
+            if target_name == "win64" { dyn_rt = runtime_objs; }
+            dyn_cmd: string = cc_bin + " " + obj_path + " " + dyn_rt + " -shared -o " + out_bin + " " + opt_flag + " " + cc_flags + " " + lib_flags;
+            ec_dyn: string = this.exec_code(dyn_cmd);
+            if ec_dyn != "0" {
+                show("error: clang shared-library link failed");
+                return 1;
+            }
+            if !run_mode {
+                show("[leash] Compiled ", input_file, " -> ", out_bin);
+            }
+            return 0;
+        }
+        if output_type == "static" {
+            ar_bin: string = "ar";
+            if target_name == "win64" { ar_bin = "x86_64-w64-mingw32-ar"; }
+            ec_ar: string = this.exec_code(ar_bin + " rcs " + out_bin + " " + obj_path);
+            if ec_ar != "0" {
+                show("error: static archive build failed");
+                return 1;
+            }
+            if !run_mode {
+                show("[leash] Compiled ", input_file, " -> ", out_bin);
+            }
+            return 0;
+        }
         rsp_file: string = "/tmp/leashc_" + Path.basename(out_bin) + ".rsp";
         link_cmd: string = cc_bin + " " + obj_path + " " + runtime_objs + " -o " + out_bin + " " + opt_flag + " " + cc_flags + link_flags_inline + tail_flags + lib_flags;
         f_rsp: File = File.open(rsp_file, "w");

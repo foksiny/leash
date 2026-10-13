@@ -3410,8 +3410,18 @@ void* leash_sh_file_open(const char* path, const char* mode) {
     return (void*)fopen(path, mode);
 }
 
+/* Heap-owned empty string for failure paths of functions whose results
+   the autofree sweep frees (a string literal is not freeable). Under the
+   GC this is collected like any other string; under -DNO_GC it leaks
+   like every other untracked allocation. */
+static char* leash_empty_heap_str(void) {
+    char* buf = (char*)leash_gc_malloc(1);
+    if (buf) buf[0] = '\0';
+    return buf;
+}
+
 char* leash_sh_file_read(void* fp) {
-    if (!fp) return "";
+    if (!fp) return leash_empty_heap_str();
     FILE* f = (FILE*)fp;
     fseek(f, 0, SEEK_END);
     long sz = ftell(f);
@@ -3470,9 +3480,9 @@ leash_slice_t leash_sh_file_readb(void* fp) {
 }
 
 char* leash_sh_file_readln(void* fp) {
-    if (!fp) return "";
+    if (!fp) return leash_empty_heap_str();
     char tmp[4096];
-    if (!fgets(tmp, sizeof(tmp), (FILE*)fp)) return "";
+    if (!fgets(tmp, sizeof(tmp), (FILE*)fp)) return leash_empty_heap_str();
     size_t n = strlen(tmp);
     while (n > 0 && (tmp[n - 1] == '\n' || tmp[n - 1] == '\r')) { tmp[--n] = '\0'; }
     char* buf = (char*)leash_gc_malloc(n + 1);
@@ -3581,11 +3591,11 @@ int64_t leash_sh_file_replace(void* fp, const char* oldstr, const char* newstr, 
 }
 
 char* leash_sh_exec(const char* cmd, const char* mode) {
-    if (!cmd) return "";
+    if (!cmd) return leash_empty_heap_str();
     if (mode && strcmp(mode, "silent") == 0) {
         /* capture but do not forward to stdout */
         FILE* fp = popen(cmd, "r");
-        if (!fp) return "";
+        if (!fp) return leash_empty_heap_str();
         size_t cap = 8192, len = 0;
         char* buf = (char*)leash_gc_malloc(cap);
         size_t n;
@@ -3600,7 +3610,7 @@ char* leash_sh_exec(const char* cmd, const char* mode) {
     if (mode && strcmp(mode, "wait") == 0) {
         /* run and forward stdout, also capture and return */
         FILE* fp = popen(cmd, "r");
-        if (!fp) return "";
+        if (!fp) return leash_empty_heap_str();
         size_t cap = 8192, len = 0;
         char* buf = (char*)leash_gc_malloc(cap);
         size_t n;
@@ -3652,7 +3662,7 @@ char* leash_sh_exec(const char* cmd, const char* mode) {
         return buf;
     } else {
         system(cmd);
-        return "";
+        return leash_empty_heap_str();
     }
 }
 

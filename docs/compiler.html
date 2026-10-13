@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v1.1.0 Release</div>
+        <div class="version">v1.2.0 Release</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -140,10 +140,15 @@ leash dbg                             <span class="cm"># debug the current proje
     <tr><td>Static Library</td><td><code>to-static &lt;name&gt;</code></td><td><code>lib&lt;name&gt;.a</code></td></tr>
 </table>
 
-<pre><code>leashp compile math.lsh to-dynamic math   <span class="cm"># libmath.so (Python toolchain)</span>
-leashp compile utils.lsh to-static utils  <span class="cm"># libutils.a (Python toolchain)</span></code></pre>
+<pre><code>leash compile math.lsh to-dynamic math   <span class="cm"># math.so</span>
+leash compile utils.lsh to-static utils  <span class="cm"># utils.a</span></code></pre>
 
-<p>Library outputs (<code>to-dynamic</code> / <code>to-static</code>) are provided by the Python toolchain: the self-hosted compiler prints a note pointing at the equivalent <code>leashp</code> command.</p>
+<p>Library outputs are built natively for the host platform (<code>.so</code>/<code>.a</code> on Linux, <code>.dylib</code>/<code>.a</code> on macOS, <code>.dll</code>/<code>.lib</code> on Windows) and contain only your exported functions &mdash; no <code>main</code>. C consumers link the library together with the Leash runtime (<code>gc.c</code> + platform stubs) and call <code>leash_init()</code> once before any other library function:</p>
+
+<pre><code><span class="cm">/* consumer.c */</span>
+<span class="kw">extern void</span> leash_init(<span class="kw">void</span>);
+<span class="kw">extern int</span> add(<span class="kw">int</span>, <span class="kw">int</span>);
+<span class="kw">int</span> main(<span class="kw">void</span>) { leash_init(); <span class="kw">return</span> add(1, 2); }</code></pre>
 
 <p>Native targets produce standalone binaries with full access to the system's C library, garbage collector, and OS APIs.</p>
 

@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v1.1.0 Release</div>
+        <div class="version">v1.2.0 Release</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -150,7 +150,7 @@ autofree: true</code></pre>
 
 <div class="callout callout-info"><code>--autofree</code> is stricter than <code>-ngc</code>: it not only disables the GC but also <em>frees everything for you</em>. Use it whenever you want GC-free semantics without manual memory management.</div>
 
-<div class="callout callout-warning">Since 1.0 the autofree <em>instrumentation</em> is provided by the Python compiler: <code>leash --autofree</code> delegates to <code>leashp</code> automatically (and prints a note), and a project config with <code>autofree: true</code> must be built with <code>leashp build</code>. The self-hosted compiler implements every other toolchain path natively &mdash; except the <code>to-dynamic</code>/<code>to-static</code> library outputs, which also route to the Python toolchain.</div>
+<div class="callout callout-info">Since 1.2.0 the self-hosted compiler implements <code>--autofree</code> and the <code>to-dynamic</code>/<code>to-static</code> library outputs natively — no Python fallback for either. C consumers of Leash libraries call <code>leash_init()</code> once before any other library function; in <code>--autofree</code> builds returned values are excluded from the automatic <code>free()</code>, so they stay valid for the caller.</div>
 
 <h2>Error Handling &amp; Safety</h2>
 

@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v1.1.0 Release</div>
+        <div class="version">v1.2.0 Release</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -142,7 +142,7 @@ leash compile program.lsh to my_custom_binary
 leash compile program.lsh -lm
 leash run program.lsh -lcurl</code></pre>
 
-<p>Dynamic (<code>.so</code>) and static (<code>.a</code>) library outputs are provided by the Python toolchain: <code>leashp compile program.lsh to-dynamic mylib</code> / <code>to-static mylib</code>.</p>
+<p>Dynamic (<code>.so</code>/<code>.dll</code>) and static (<code>.a</code>/<code>.lib</code>) library outputs are built natively: <code>leash compile program.lsh to-dynamic mylib</code> / <code>to-static mylib</code>. C consumers link the library together with the Leash runtime and call <code>leash_init()</code> once before any other library function (see <a href="compiler.html">the compiler page</a> for details).</p>
 
 <h3>Dumping LLVM IR</h3>
 <pre><code>leash dump program.lsh</code></pre>

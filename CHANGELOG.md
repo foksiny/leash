@@ -5,6 +5,59 @@ All notable changes to the Leash compiler are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.2.0] - 2026-10-13
+
+Minor release: the self-hosted compiler builds native libraries and
+frees memory without a collector — no Python fallback remains.
+
+### Added — Native `to-dynamic` / `to-static` library outputs
+- `leash compile program.lsh to-dynamic mylib` / `to-static mylib`
+  (bare mode flags plus `to <name>`, same CLI shape as the reference)
+  is implemented natively in the self-hosted compiler; the
+  "use `leashp`" error is gone.
+- Libraries emit position-independent objects (`-fPIC`, separate
+  object-cache key), target-gated extensions (`.so`/`.a` on Linux,
+  `.dylib`/`.a` on macOS, `.dll`/`.lib` on win64, never `.exe`), and
+  omit the `@main` wrapper so consumers link their own `main`.
+- New `leash_init()` entry point (once-guarded): runs the runtime
+  prologue — GC init, scan regions, global/static initializers —
+  without argv handling or signal handlers. C consumers call it once
+  before any other library function.
+- ELF `.so` files leave runtime symbols for the consumer to link
+  (`gc.c` + stubs); PE DLLs link the runtime in (PE forbids undefined
+  symbols). Deliberate divergences from the reference (whose
+  `to-dynamic` link is broken and whose `.a` ships non-PIC objects):
+  PIC objects, no `main` in archives, `leash_init()`.
+
+### Added — Native `--autofree` / `-af`
+- Per-function allocation tracking (1024-slot array + counter in the
+  entry block, bounds-checked record, countdown free loop needing no
+  PHI, first-exit-wins) across string, vector, hash, file, and exec
+  creation sites; `compile`, `run`, `build` (config `autofree: true`),
+  and global-install paths all thread the flag, and `-DNO_GC` stub
+  runtime is selected automatically.
+- Returned values are excluded from the sweep so the caller receives
+  live memory (the reference's `_mark_as_return_value` exists but is
+  never wired up; stage1 implements the intent).
+- Allocations owned by heap objects (struct/class field defaults and
+  explicit field stores of fresh containers) are never freed at scope
+  exit; the sweep only releases true locals and temporaries.
+- Runtime functions whose results the sweep frees (`file_read`,
+  `file_readln`, `exec`) now return heap-owned empty strings instead
+  of string literals on failure paths (`free()` on a literal aborts).
+- Known limitation, shared with the reference: a tracked value that
+  escapes inside another aggregate (tuple element, global assigned
+  mid-function) is still freed at scope exit.
+
+### Added — Tests
+- `tests/test_native_libs.py`: symbol assertions (`add`, `greet`,
+  `leash_init`, no `main`), PIC check, real C consumers linked and run
+  for `.a`/`.so`, win64 `.lib`/`.dll` under wine (skips cleanly
+  without the MinGW toolchain).
+- `tests/test_autofree.py`: autofree/plain output parity for string
+  churn with live returns, early and multi-value returns, classes with
+  container fields (plain and generic), and `exec`.
+
 ## [1.1.0] - 2026-10-13
 
 Minor release: global command installs, a self-updating toolchain,

@@ -1,6 +1,6 @@
 # Leash Programming Language
 
-**Version 1.1.0** — Leash compiles itself.
+**Version 1.2.0** — Leash compiles itself.
 
 Leash is a strongly-typed, modern compiled programming language built on LLVM. It features an intuitive syntax and native performance with a built-in garbage collector, package manager, and cross-platform support.
 
@@ -31,7 +31,7 @@ Output parity with the reference compiler is enforced by a test harness: **88/88
 ```bash
 pip install .
 leash version
-# leash 1.1.0 (self-hosted)
+# leash 1.2.0 (self-hosted)
 ```
 
 The install compiles `compiler/*.lsh` twice (Python → stage 1 → itself) and ships the resulting native compiler inside the package. No repository checkout is needed afterwards — the binary locates its runtime from any working directory.

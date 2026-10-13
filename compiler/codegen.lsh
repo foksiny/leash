@@ -4,6 +4,13 @@ use typechecker::*;
 
 pub def CodeGen : class {
     pub debug_instrument: bool;   // `leash dbg`: emit __leash_dbg_stmt hooks
+    pub is_lib: bool;   // to-dynamic/to-static: omit the @main wrapper (a
+                        // library with its own main cannot link its consumer)
+    pub autofree: bool;   // --autofree: track heap allocations per function
+                          // and free them at function exit (no GC)
+    pub af_arr: string;   // tracking array alloca reg ("" when inactive)
+    pub af_cnt: string;   // tracking counter alloca reg
+    pub af_emitted: bool;   // cleanup already emitted for this function
     pub opdef_inner: string;     // concrete inner type of the opdef container being compiled
     pub cur_tmap_names: vec<string>;   // instantiated-class params (flat name,type pairs)
     pub lines: vec<string>;
@@ -76,6 +83,107 @@ pub def CodeGen : class {
             return r;
         }
         this.emit("  " + r + " = sext " + elty + " " + val + " to i64");
+        return r;
+    }
+
+    // --- autofree: per-function allocation tracking ---------------------
+    // The array + counter live in the entry block (dominating all uses).
+    // Every tracked heap pointer is freed at function exit by a countdown
+    // loop (no PHI / predecessor label needed). Emission mirrors the
+    // reference: first exit wins, later exits keep their temporaries.
+    pub fnc af_init() : void {
+        if !this.autofree { return; }
+        arr: string = this.new_reg();
+        this.emit("  " + arr + " = alloca [1024 x i8*], align 8");
+        this.emit("  store [1024 x i8*] zeroinitializer, [1024 x i8*]* " + arr + ", align 8");
+        cnt: string = this.new_reg();
+        this.emit("  " + cnt + " = alloca i64, align 8");
+        this.emit("  store i64 0, i64* " + cnt + ", align 8");
+        this.af_arr = arr;
+        this.af_cnt = cnt;
+        this.af_emitted = false;
+    }
+
+    pub fnc af_reset() : void {
+        this.af_arr = "";
+        this.af_cnt = "";
+        this.af_emitted = false;
+    }
+
+    // Record a fresh heap pointer (registers only — constants and globals
+    // must never be freed). Beyond 1024 entries the excess is silently
+    // dropped (leaked), mirroring the reference.
+    pub fnc af_track(val string) : void {
+        if !this.autofree { return; }
+        if this.af_arr.size == 0 { return; }
+        if val.size == 0 || val[0] != '%' { return; }
+        t_do: string = this.new_label("af_track_do");
+        t_skip: string = this.new_label("af_track_skip");
+        c: string = this.new_reg();
+        this.emit("  " + c + " = load i64, i64* " + this.af_cnt + ", align 8");
+        ok: string = this.new_reg();
+        this.emit("  " + ok + " = icmp ult i64 " + c + ", 1024");
+        this.emit("  br i1 " + ok + ", label %" + t_do + ", label %" + t_skip);
+        this.emit(t_do + ":");
+        slot: string = this.new_reg();
+        this.emit("  " + slot + " = getelementptr inbounds [1024 x i8*], [1024 x i8*]* " + this.af_arr + ", i32 0, i64 " + c);
+        this.emit("  store i8* " + val + ", i8** " + slot + ", align 8");
+        nxt: string = this.new_reg();
+        this.emit("  " + nxt + " = add i64 " + c + ", 1");
+        this.emit("  store i64 " + nxt + ", i64* " + this.af_cnt + ", align 8");
+        this.emit("  br label %" + t_skip);
+        this.emit(t_skip + ":");
+    }
+
+    // Emit the scope-exit free loop (once per function). `spared` is the
+    // i8* register of the value being returned ("" when there is
+    // nothing to keep): it is excluded from freeing so the caller
+    // receives live memory — python's `_mark_as_return_value` intent.
+    pub fnc af_cleanup(spared string) : void {
+        if !this.autofree { return; }
+        if this.af_arr.size == 0 { return; }
+        if this.af_emitted { return; }
+        this.af_emitted = true;
+        l_loop: string = this.new_label("af_loop");
+        l_body: string = this.new_label("af_body");
+        l_free: string = this.new_label("af_free");
+        l_exit: string = this.new_label("af_exit");
+        this.emit("  br label %" + l_loop);
+        this.emit(l_loop + ":");
+        c: string = this.new_reg();
+        this.emit("  " + c + " = load i64, i64* " + this.af_cnt + ", align 8");
+        done: string = this.new_reg();
+        this.emit("  " + done + " = icmp eq i64 " + c + ", 0");
+        this.emit("  br i1 " + done + ", label %" + l_exit + ", label %" + l_body);
+        this.emit(l_body + ":");
+        prev: string = this.new_reg();
+        this.emit("  " + prev + " = sub i64 " + c + ", 1");
+        this.emit("  store i64 " + prev + ", i64* " + this.af_cnt + ", align 8");
+        slot: string = this.new_reg();
+        this.emit("  " + slot + " = getelementptr inbounds [1024 x i8*], [1024 x i8*]* " + this.af_arr + ", i32 0, i64 " + prev);
+        ptr: string = this.new_reg();
+        this.emit("  " + ptr + " = load i8*, i8** " + slot + ", align 8");
+        keep: string = this.new_reg();
+        if spared.size > 0 {
+            this.emit("  " + keep + " = icmp eq i8* " + ptr + ", " + spared);
+        } else {
+            this.emit("  " + keep + " = icmp eq i8* " + ptr + ", null");
+        }
+        this.emit("  br i1 " + keep + ", label %" + l_loop + ", label %" + l_free);
+        this.emit(l_free + ":");
+        this.emit("  call void @free(i8* " + ptr + ")");
+        this.emit("  br label %" + l_loop);
+        this.emit(l_exit + ":");
+    }
+
+    // i8* view of a returned pointer value for the cleanup skip test
+    // ("" for non-pointers — nothing to keep alive).
+    pub fnc af_skip_reg(val string, lret string) : string {
+        if lret.size == 0 { return ""; }
+        if lret[lret.size - 1] != '*' { return ""; }
+        if lret == "i8*" { return val; }
+        r: string = this.new_reg();
+        this.emit("  " + r + " = bitcast " + lret + " " + val + " to i8*");
         return r;
     }
 
@@ -415,7 +523,10 @@ pub def CodeGen : class {
     // type (the vec's declared inner type) — the layout authority. When the
     // slice's own element width differs (e.g. int literals feeding a
     // vec<uint<2>>), elements are copied across one by one.
-    pub fnc slice_to_vec(val string, slice_typ string, elem_t string) : string {
+    // `track` is false when the fresh header is stored into a heap
+    // object field (struct/class): the object owns it, so the
+    // function-exit sweep must not free it (else use-after-free).
+    pub fnc slice_to_vec(val string, slice_typ string, elem_t string, track bool) : string {
         lty: string = this.llvm_type(slice_typ);
         dreg: string = this.new_reg();
         this.emit("  " + dreg + " = extractvalue " + lty + " " + val + ", 1");
@@ -436,11 +547,13 @@ pub def CodeGen : class {
         if src_esz != vez {
             vconv: string = this.new_reg();
             this.emit("  " + vconv + " = call i8* @leash_sh_vec_new(i64 " + tostring(vez) + ", i64 " + tostring(vsc) + ")");
+            if track { this.af_track(vconv); }
             this.emit("  call void @leash_sh_vec_extend(i8* " + vconv + ", i8* " + dptr + ", i64 " + nreg + ", i64 " + tostring(src_esz) + ")");
             return vconv;
         }
         vreg: string = this.new_reg();
         this.emit("  " + vreg + " = call i8* @leash_sh_vec_from_parts(i8* " + dptr + ", i64 " + nreg + ", i64 " + tostring(vez) + ", i64 " + tostring(vsc) + ")");
+        if track { this.af_track(vreg); }
         return vreg;
     }
 
@@ -1200,6 +1313,7 @@ pub def CodeGen : class {
         this.emit("  " + bp + " = bitcast i" + tostring(w) + "* " + slot + " to i8*");
         res: string = this.new_reg();
         this.emit("  " + res + " = call i8* @leash_bigint_to_str(i8* " + bp + ", i64 " + tostring(w) + ", i64 " + tostring(is_s) + ")");
+        this.af_track(res);
         return res;
     }
 
@@ -1224,14 +1338,17 @@ pub def CodeGen : class {
             res: string = this.new_reg();
             if this.sized_int_is_signed(typ) {
                 this.emit("  " + res + " = call i8* @leash_int_to_str(i64 " + ext + ")");
+                this.af_track(res);
             } else {
                 this.emit("  " + res + " = call i8* @leash_uint_to_str(i64 " + ext + ")");
+                this.af_track(res);
             }
             return res;
         }
         if typ == "int" {
             res2: string = this.new_reg();
             this.emit("  " + res2 + " = call i8* @leash_int_to_str(i64 " + this.i32_to_rt_i64(e, val) + ")");
+            this.af_track(res2);
             return res2;
         }
         if typ == "uint" {
@@ -1242,6 +1359,7 @@ pub def CodeGen : class {
             }
             res3: string = this.new_reg();
             this.emit("  " + res3 + " = call i8* @leash_uint_to_str(i64 " + uz + ")");
+            this.af_track(res3);
             return res3;
         }
         return val;
@@ -2270,6 +2388,7 @@ pub def CodeGen : class {
                     if cb_inner == "float" { cb_mode = 1; }
                     cb_res: string = this.new_reg();
                     this.emit("  " + cb_res + " = call i8* @leash_sh_vec_binop(i8* " + cb_l + ", i8* " + cb_r + ", i64 " + tostring(cb_op) + ", i64 " + tostring(cb_mode) + ")");
+                    this.af_track(cb_res);
                     return cb_res;
                 }
             }
@@ -2321,6 +2440,7 @@ pub def CodeGen : class {
                     this.emit("  " + sl_ptr + " = extractvalue { i64, i8* } " + l_val + ", 1");
                     conv_l: string = this.new_reg();
                     this.emit("  " + conv_l + " = call i8* @leash_sh_slice_to_str(i64 " + sl_len + ", i8* " + sl_ptr + ")");
+                    this.af_track(conv_l);
                     l_val = conv_l;
                 }
                 if rt == "char[]" {
@@ -2330,6 +2450,7 @@ pub def CodeGen : class {
                     this.emit("  " + sl_ptr_r + " = extractvalue { i64, i8* } " + r_val + ", 1");
                     conv_r: string = this.new_reg();
                     this.emit("  " + conv_r + " = call i8* @leash_sh_slice_to_str(i64 " + sl_len_r + ", i8* " + sl_ptr_r + ")");
+                    this.af_track(conv_r);
                     r_val = conv_r;
                 }
 
@@ -2363,6 +2484,7 @@ pub def CodeGen : class {
 
                 res: string = this.new_reg();
                 this.emit("  " + res + " = call i8* @leash_str_concat(i8* " + l_val + ", i8* " + r_val + ")");
+                this.af_track(res);
                 return res;
             }
 
@@ -2474,6 +2596,7 @@ pub def CodeGen : class {
                 r_val: string = this.gen_expr(e.right);
                 res: string = this.new_reg();
                 this.emit("  " + res + " = call i8* @leash_sh_str_sub(i8* " + l_val + ", i8* " + r_val + ")");
+                this.af_track(res);
                 return res;
             }
 
@@ -2737,6 +2860,7 @@ pub def CodeGen : class {
                 }
                 res: string = this.new_reg();
                 this.emit("  " + res + " = call i8* @leash_sh_exec(i8* " + cmd_val + ", i8* " + mode_val + ")");
+                this.af_track(res);
                 return res;
             }
 
@@ -2765,6 +2889,7 @@ pub def CodeGen : class {
                 }
                 res: string = this.new_reg();
                 this.emit("  " + res + " = call i8* @leash_sh_input(i8* " + prompt_val + ")");
+                this.af_track(res);
                 return res;
             }
 
@@ -2787,6 +2912,7 @@ pub def CodeGen : class {
                 this.emit("  " + ptr_r + " = extractvalue " + sl_lty + " " + sl_val + ", 1");
                 res: string = this.new_reg();
                 this.emit("  " + res + " = call i8* @leash_sh_slice_to_str(i64 " + len_r + ", i8* " + ptr_r + ")");
+                this.af_track(res);
                 return res;
             }
 
@@ -3054,6 +3180,7 @@ pub def CodeGen : class {
                 if atyp == "int" {
                     res: string = this.new_reg();
                     this.emit("  " + res + " = call i8* @leash_int_to_str(i64 " + this.i32_to_rt_i64(e.args.get(0), aval) + ")");
+                    this.af_track(res);
                     return res;
                 }
                 if atyp == "char" {
@@ -3061,6 +3188,7 @@ pub def CodeGen : class {
                     this.emit("  " + ext + " = zext i8 " + aval + " to i64");
                     res: string = this.new_reg();
                     this.emit("  " + res + " = call i8* @leash_int_to_str(i64 " + ext + ")");
+                    this.af_track(res);
                     return res;
                 }
                 if atyp == "bool" {
@@ -3071,6 +3199,7 @@ pub def CodeGen : class {
                 if atyp == "float" {
                     res: string = this.new_reg();
                     this.emit("  " + res + " = call i8* @leash_float_to_str(double " + aval + ")");
+                    this.af_track(res);
                     return res;
                 }
                 // Wide integers format through the big-int runtime
@@ -3087,6 +3216,7 @@ pub def CodeGen : class {
                 // Fallback: treat as int
                 res: string = this.new_reg();
                 this.emit("  " + res + " = call i8* @leash_int_to_str(i64 " + aval + ")");
+                this.af_track(res);
                 return res;
             }
 
@@ -3302,7 +3432,7 @@ pub def CodeGen : class {
                     if i < fparamsS.size {
                         ptS: string = fparamsS.get(i);
                         if this.is_vec_type(ptS) && atyp.size > 1 && atyp[0] != '&' && atyp[atyp.size - 1] == ']' {
-                            aval = this.slice_to_vec(aval, atyp, this.vec_inner_type(ptS));
+                            aval = this.slice_to_vec(aval, atyp, this.vec_inner_type(ptS), true);
                             atyp = ptS;
                             alty = this.llvm_type(ptS);
                         }
@@ -3430,6 +3560,7 @@ pub def CodeGen : class {
                     to_val: string = this.gen_expr(e.args.get(1));
                     res: string = this.new_reg();
                     this.emit("  " + res + " = call i8* @leash_sh_str_replace(i8* " + obj_val + ", i8* " + from_val + ", i8* " + to_val + ")");
+                    this.af_track(res);
                     return res;
                 }
             }
@@ -3796,11 +3927,13 @@ pub def CodeGen : class {
                 if e.sval == "keys" {
                     res: string = this.new_reg();
                     this.emit("  " + res + " = call i8* @leash_sh_hash_keys(i8* " + obj_val + ")");
+                    this.af_track(res);
                     return res;
                 }
                 if e.sval == "values" {
                     res: string = this.new_reg();
                     this.emit("  " + res + " = call i8* @leash_sh_hash_values(i8* " + obj_val + ")");
+                    this.af_track(res);
                     return res;
                 }
             }
@@ -3810,6 +3943,7 @@ pub def CodeGen : class {
                 if e.sval == "read" {
                     res: string = this.new_reg();
                     this.emit("  " + res + " = call i8* @leash_sh_file_read(i8* " + obj_val + ")");
+                    this.af_track(res);
                     return res;
                 }
                 if e.sval == "write" {
@@ -3834,6 +3968,7 @@ pub def CodeGen : class {
                 if e.sval == "readln" {
                     rl: string = this.new_reg();
                     this.emit("  " + rl + " = call i8* @leash_sh_file_readln(i8* " + obj_val + ")");
+                    this.af_track(rl);
                     return rl;
                 }
                 if e.sval == "readb" {
@@ -3910,7 +4045,7 @@ pub def CodeGen : class {
                         if ai < mpsS.size {
                             ptS2: string = mpsS.get(ai);
                             if this.is_vec_type(ptS2) && atyp.size > 1 && atyp[0] != '&' && atyp[atyp.size - 1] == ']' {
-                                aval = this.slice_to_vec(aval, atyp, this.vec_inner_type(ptS2));
+                                aval = this.slice_to_vec(aval, atyp, this.vec_inner_type(ptS2), true);
                                 atyp = ptS2;
                                 alty = this.llvm_type(ptS2);
                             }
@@ -4276,7 +4411,7 @@ pub def CodeGen : class {
             }
 
             if this.is_vec_type(to_t) && from_t.size > 1 && from_t[from_t.size - 1] == ']' {
-                return this.slice_to_vec(val, from_t, this.vec_inner_type(to_t));
+                return this.slice_to_vec(val, from_t, this.vec_inner_type(to_t), true);
             }
 
             this.emit("  " + res + " = bitcast " + from_llvm + " " + val + " to " + to_llvm);
@@ -4400,7 +4535,7 @@ pub def CodeGen : class {
                     this.emit("  " + gep_r + " = getelementptr inbounds " + type_prefix + sname + ", " + type_prefix + sname + "* " + s_ptr + ", i32 0, i32 " + tostring(f_off + f_idx));
                     ftyp: string = all_field_types.get(f_idx);
                     if this.is_vec_type(ftyp) && fval_rhst.size > 1 && fval_rhst[fval_rhst.size - 1] == ']' {
-                        fval = this.slice_to_vec(fval, fval_rhst, this.vec_inner_type(ftyp));
+                        fval = this.slice_to_vec(fval, fval_rhst, this.vec_inner_type(ftyp), false);
                     }
                     fval = this.maybe_clone_value(fval, ftyp);
                     lftyp: string = this.llvm_type(ftyp);
@@ -4415,6 +4550,7 @@ pub def CodeGen : class {
             if e.field_names.size > 0 {
                 hv: string = this.new_reg();
                 this.emit("  " + hv + " = call i8* @leash_sh_hash_new()");
+                this.af_track(hv);
                 hi: int = 0;
                 while hi < e.args.size {
                     hkey: string = e.field_names.get(hi);
@@ -4529,6 +4665,7 @@ pub def CodeGen : class {
         if batyp == "float" {
             bs: string = this.new_reg();
             this.emit("  " + bs + " = call i8* @leash_float_to_str(double " + bval + ")");
+            this.af_track(bs);
             this.emit("  call void @leash_sh_showb_append(i8* " + bs + ")");
             return;
         }
@@ -4548,6 +4685,7 @@ pub def CodeGen : class {
         }
         bis: string = this.new_reg();
         this.emit("  " + bis + " = call i8* @leash_int_to_str(i64 " + bval + ")");
+        this.af_track(bis);
         this.emit("  call void @leash_sh_showb_append(i8* " + bis + ")");
     }
 
@@ -4582,7 +4720,7 @@ pub def CodeGen : class {
                     return;
                 }
                 if this.is_vec_type(vtyp) && rhs_t.size > 1 && rhs_t[rhs_t.size - 1] == ']' {
-                    val = this.slice_to_vec(val, rhs_t, this.vec_inner_type(vtyp));
+                    val = this.slice_to_vec(val, rhs_t, this.vec_inner_type(vtyp), true);
                 }
                 val = this.coerce_slice_ptr(val, rhs_t, vtyp);
                 val = this.maybe_clone_value(val, vtyp);
@@ -4599,10 +4737,12 @@ pub def CodeGen : class {
                     if this.vec_elem_scan(din_t) { din_sc = 1; }
                     def_val: string = this.new_reg();
                     this.emit("  " + def_val + " = call i8* @leash_sh_vec_new(i64 " + tostring(din_esz) + ", i64 " + tostring(din_sc) + ")");
+                    this.af_track(def_val);
                     this.emit("  store i8* " + def_val + ", i8** " + ptr);
                 } also this.is_hash_type(vtyp) {
                     def_val: string = this.new_reg();
                     this.emit("  " + def_val + " = call i8* @leash_sh_hash_new()");
+                    this.af_track(def_val);
                     this.emit("  store i8* " + def_val + ", i8** " + ptr);
                 } also vtyp == "string" {
                     empty_lbl: string = this.get_str_constant("");
@@ -4785,7 +4925,7 @@ pub def CodeGen : class {
                 if this.is_vec_type(tt) {
                     avt: string = this.get_expr_type(s.value);
                     if avt.size > 1 && avt[avt.size - 1] == ']' {
-                        val = this.slice_to_vec(val, avt, this.vec_inner_type(tt));
+                        val = this.slice_to_vec(val, avt, this.vec_inner_type(tt), true);
                     }
                 }
                 val = this.coerce_slice_ptr(val, this.get_expr_type(s.value), tt);
@@ -5056,12 +5196,13 @@ pub def CodeGen : class {
                         this.gen_statement(this.defer_stack.get(dmi));
                         dmi = dmi - 1;
                     }
+                    this.af_cleanup("");
                     this.emit("  ret " + agg);
                 } else {
                     val: string = this.gen_expr(s.value);
                     ret_rhst: string = this.get_expr_type(s.value);
                     if this.is_vec_type(this.current_func_ret) && ret_rhst.size > 1 && ret_rhst[ret_rhst.size - 1] == ']' {
-                        val = this.slice_to_vec(val, ret_rhst, this.vec_inner_type(this.current_func_ret));
+                        val = this.slice_to_vec(val, ret_rhst, this.vec_inner_type(this.current_func_ret), true);
                     }
                     val = this.maybe_clone_value(val, this.current_func_ret);
                     lret: string = this.llvm_type(this.current_func_ret);
@@ -5080,6 +5221,7 @@ pub def CodeGen : class {
                                 this.gen_statement(this.defer_stack.get(dvi2));
                                 dvi2 = dvi2 - 1;
                             }
+                            this.af_cleanup("");
                             this.emit("  ret void");
                             this.current_block_terminated = true;
                             return;
@@ -5095,6 +5237,7 @@ pub def CodeGen : class {
                         this.gen_statement(this.defer_stack.get(di));
                         di = di - 1;
                     }
+                    this.af_cleanup(this.af_skip_reg(val, lret));
                     this.emit("  ret " + lret + " " + val);
                 }
             } else {
@@ -5103,6 +5246,7 @@ pub def CodeGen : class {
                     this.gen_statement(this.defer_stack.get(dvi));
                     dvi = dvi - 1;
                 }
+                this.af_cleanup("");
                 this.emit("  ret void");
             }
             this.current_block_terminated = true;
@@ -5165,6 +5309,7 @@ pub def CodeGen : class {
             tcode: string = this.get_str_constant("[" + s.name + "] ");
             tmsg2: string = this.new_reg();
             this.emit("  " + tmsg2 + " = call i8* @leash_str_concat(i8* " + tcode + ", i8* " + tmsg + ")");
+            this.af_track(tmsg2);
             tmsg = tmsg2;
             tfile_str: string = this.get_str_constant(this.main_file);
             tflen: int = this.get_str_len(tfile_str) + 1;
@@ -5745,6 +5890,7 @@ pub def CodeGen : class {
         this.emit("define " + lret + " @" + llvm_fn_name + "(" + param_sigs + ") {");
         this.emit("entry:");
         this.current_block_terminated = false;
+        this.af_init();
 
         // `this` for functions bound to a struct/class via `-> Type`
         if has_this {
@@ -5832,6 +5978,7 @@ pub def CodeGen : class {
                 this.gen_statement(this.defer_stack.get(dti));
                 dti = dti - 1;
             }
+            this.af_cleanup("");
             if lret == "void" {
                 this.emit("  ret void");
             } also lret == "i64" || lret == "i32" || lret == "i1" || lret == "i8" {
@@ -5842,6 +5989,7 @@ pub def CodeGen : class {
         }
 
         this.emit("}\n");
+        this.af_reset();
         this.var_ptrs = old_fn_var_ptrs;
         this.var_types = old_fn_var_types;
         this.cur_func_unsafe = old_fn_unsafe;
@@ -5975,6 +6123,7 @@ pub def CodeGen : class {
                 this.emit("define " + lret + " @" + fn_name + "(" + param_sigs + ") {");
                 this.emit("entry:");
                 this.current_block_terminated = false;
+                this.af_init();
 
                 // Alloca for 'this' if instance method
                 if !m.is_static {
@@ -6028,6 +6177,7 @@ pub def CodeGen : class {
                         this.gen_statement(this.defer_stack.get(mdti));
                         mdti = mdti - 1;
                     }
+                    this.af_cleanup("");
                     if lret == "void" {
                         this.emit("  ret void");
                     } also lret == "i64" || lret == "i32" || lret == "i1" || lret == "i8" {
@@ -6037,6 +6187,7 @@ pub def CodeGen : class {
                     }
                 }
                 this.emit("}\n");
+                this.af_reset();
 
                 this.var_ptrs = old_var_ptrs;
                 this.var_types = old_var_types;
@@ -6167,7 +6318,7 @@ pub def CodeGen : class {
             }
         }
 
-        if has_main || has_class_main {
+        if (has_main || has_class_main) && !this.is_lib {
             this.emit("define i32 @main(i32 %argc, i8** %argv) {");
             this.emit("entry:");
             this.emit("  call void @leash_gc_init()");
@@ -6209,7 +6360,7 @@ pub def CodeGen : class {
                     ginit: string = this.gen_expr(g.init_val);
                     g_rhst: string = this.get_expr_type(g.init_val);
                     if this.is_vec_type(g.typ) && g_rhst.size > 1 && g_rhst[g_rhst.size - 1] == ']' {
-                        ginit = this.slice_to_vec(ginit, g_rhst, this.vec_inner_type(g.typ));
+                        ginit = this.slice_to_vec(ginit, g_rhst, this.vec_inner_type(g.typ), true);
                     }
                     g_lty: string = this.llvm_type(g.typ);
                     if this.is_vec_type(g.typ) {
@@ -6230,7 +6381,7 @@ pub def CodeGen : class {
                         init_val: string = this.gen_expr(fd.init);
                         fd_rhst: string = this.get_expr_type(fd.init);
                         if this.is_vec_type(fd.typ) && fd_rhst.size > 1 && fd_rhst[fd_rhst.size - 1] == ']' {
-                            init_val = this.slice_to_vec(init_val, fd_rhst, this.vec_inner_type(fd.typ));
+                            init_val = this.slice_to_vec(init_val, fd_rhst, this.vec_inner_type(fd.typ), true);
                         }
                         this.emit("  store " + this.llvm_type(fd.typ) + " " + init_val + ", " + this.llvm_type(fd.typ) + "* @" + c.name + "_static_" + fd.name);
                     }
@@ -6242,7 +6393,7 @@ pub def CodeGen : class {
                         init_val: string = this.gen_expr(fd.init);
                         fd_rhst: string = this.get_expr_type(fd.init);
                         if this.is_vec_type(fd.typ) && fd_rhst.size > 1 && fd_rhst[fd_rhst.size - 1] == ']' {
-                            init_val = this.slice_to_vec(init_val, fd_rhst, this.vec_inner_type(fd.typ));
+                            init_val = this.slice_to_vec(init_val, fd_rhst, this.vec_inner_type(fd.typ), true);
                         }
                         this.emit("  store " + this.llvm_type(fd.typ) + " " + init_val + ", " + this.llvm_type(fd.typ) + "* @" + s.name + "_static_" + fd.name);
                     }
@@ -6279,6 +6430,93 @@ pub def CodeGen : class {
             } else {
                 this.emit("  ret i32 0");
             }
+            this.emit("}\n");
+        }
+
+        // Library entry point: C consumers call leash_init() once before
+        // any other Leash function. It runs the @main prologue (runtime
+        // init, scan regions, global/static initializers) without argv
+        // handling, the user entry, or the exit sequence. Never auto-runs:
+        // a library must not hijack the consumer (no signal handlers).
+        if this.is_lib {
+            this.emit("@leash_init_guard = internal global i1 false");
+            this.emit("define void @leash_init() {");
+            this.emit("entry:");
+            this.emit("  %done = load i1, i1* @leash_init_guard");
+            this.emit("  br i1 %done, label %out, label %run");
+            this.emit("run:");
+            this.emit("  store i1 true, i1* @leash_init_guard");
+            this.emit("  call void @leash_gc_init()");
+            foreach _, g in<vector> prog.globals {
+                gsz: int = this.gc_scan_size(g.typ);
+                if gsz > 0 {
+                    this.emit("  call void @leash_gc_register_scan_region(i8* bitcast (" + this.llvm_type(g.typ) + "* @g_" + g.name + " to i8*), i64 " + tostring(gsz) + ")");
+                }
+            }
+            foreach _, c in<vector> prog.classes {
+                if this.tc.generic_classes.isin(c.name) { continue; }
+                foreach _, fd in<vector> c.fields {
+                    if fd.is_static {
+                        ssz: int = this.gc_scan_size(fd.typ);
+                        if ssz > 0 {
+                            this.emit("  call void @leash_gc_register_scan_region(i8* bitcast (" + this.llvm_type(fd.typ) + "* @" + c.name + "_static_" + fd.name + " to i8*), i64 " + tostring(ssz) + ")");
+                        }
+                    }
+                }
+            }
+            foreach _, s in<vector> prog.structs {
+                foreach _, fd in<vector> s.fields {
+                    if fd.is_static {
+                        ssz: int = this.gc_scan_size(fd.typ);
+                        if ssz > 0 {
+                            this.emit("  call void @leash_gc_register_scan_region(i8* bitcast (" + this.llvm_type(fd.typ) + "* @" + s.name + "_static_" + fd.name + " to i8*), i64 " + tostring(ssz) + ")");
+                        }
+                    }
+                }
+            }
+            this.emit("  call void @leash_sh_timepass_init()");
+            this.emit("  %t0 = call i64 @time(i8* null)");
+            this.emit("  %t1 = trunc i64 %t0 to i32");
+            this.emit("  call void @srand(i32 %t1)");
+            foreach _, g in<vector> prog.globals {
+                if g.init_val != null {
+                    ginit: string = this.gen_expr(g.init_val);
+                    g_rhst: string = this.get_expr_type(g.init_val);
+                    if this.is_vec_type(g.typ) && g_rhst.size > 1 && g_rhst[g_rhst.size - 1] == ']' {
+                        ginit = this.slice_to_vec(ginit, g_rhst, this.vec_inner_type(g.typ), true);
+                    }
+                    g_lty: string = this.llvm_type(g.typ);
+                    this.emit("  store " + g_lty + " " + ginit + ", " + g_lty + "* @g_" + g.name);
+                }
+            }
+            foreach _, c in<vector> prog.classes {
+                if this.tc.generic_classes.isin(c.name) { continue; }
+                foreach _, fd in<vector> c.fields {
+                    if fd.is_static && fd.init != null {
+                        init_val: string = this.gen_expr(fd.init);
+                        fd_rhst: string = this.get_expr_type(fd.init);
+                        if this.is_vec_type(fd.typ) && fd_rhst.size > 1 && fd_rhst[fd_rhst.size - 1] == ']' {
+                            init_val = this.slice_to_vec(init_val, fd_rhst, this.vec_inner_type(fd.typ), true);
+                        }
+                        this.emit("  store " + this.llvm_type(fd.typ) + " " + init_val + ", " + this.llvm_type(fd.typ) + "* @" + c.name + "_static_" + fd.name);
+                    }
+                }
+            }
+            foreach _, s in<vector> prog.structs {
+                foreach _, fd in<vector> s.fields {
+                    if fd.is_static && fd.init != null {
+                        init_val: string = this.gen_expr(fd.init);
+                        fd_rhst: string = this.get_expr_type(fd.init);
+                        if this.is_vec_type(fd.typ) && fd_rhst.size > 1 && fd_rhst[fd_rhst.size - 1] == ']' {
+                            init_val = this.slice_to_vec(init_val, fd_rhst, this.vec_inner_type(fd.typ), true);
+                        }
+                        this.emit("  store " + this.llvm_type(fd.typ) + " " + init_val + ", " + this.llvm_type(fd.typ) + "* @" + s.name + "_static_" + fd.name);
+                    }
+                }
+            }
+            this.emit("  br label %out");
+            this.emit("out:");
+            this.emit("  ret void");
             this.emit("}\n");
         }
 
