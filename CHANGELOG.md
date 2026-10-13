@@ -5,7 +5,7 @@ All notable changes to the Leash compiler are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.4.0] - 2026-10-13
 
 ### Fixed — Package manager integrity (`leashed`)
 - Version requests are verified: a requested `name@X.Y.Z` must resolve
