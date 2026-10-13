@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed — Stale native compiler after reinstall
+- `pip install -e .` silently kept the old `leash/native/leashc`: the
+  install-time bootstrap still passed `-o <out>`, which the compilers
+  no longer accept, so stage outputs landed at default paths, the link
+  step failed, the exception was swallowed, and pip reported success
+  over a stale binary (e.g. `leash -v` showing 1.0.0 after installing
+  1.0.1). All bootstrap commands use `to <out>` now, half-built stage
+  files are cleaned up on failure, and fresh builds are announced.
+- The `leash` dispatcher now checks staleness itself: when the native
+  binary predates the compiler sources it warns loudly and falls back
+  to the Python implementation (with a rebuild pointer) instead of
+  silently behaving like an older release. Wheels don't ship the
+  sources and are fresh by construction.
+
 ### Fixed — Self-hosted `update` and `self-host`
 - `leash update` (self-hosted) now finishes the job: after a successful
   pull it rebuilds the toolchain from the fresh tree, so the binaries on

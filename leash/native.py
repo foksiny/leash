@@ -34,6 +34,52 @@ def have_native():
     return os.path.exists(path) and os.access(path, os.X_OK)
 
 
+def _compiler_sources_dir():
+    """Directory holding compiler/*.lsh next to this package, if present.
+
+    Editable installs and git checkouts keep the compiler sources next to
+    the `leash` package; wheels do not ship them (fresh by construction).
+    """
+    pkg_dir = os.path.dirname(os.path.abspath(__file__))
+    cand = os.path.join(os.path.dirname(pkg_dir), "compiler")
+    if os.path.isdir(cand):
+        return cand
+    return None
+
+
+def _native_is_stale(bin_path=None, src_dir=None):
+    """True when the native binary predates any compiler/*.lsh source.
+
+    A stale binary silently behaves like an older compiler release, so the
+    dispatcher warns and falls back to Python instead of exec'ing it.
+    Returns False when the sources are absent (wheels don't ship them) or
+    on any filesystem error (fail open toward the fast path; a missing
+    binary is already handled by have_native).
+    """
+    if bin_path is None:
+        bin_path = native_binary_path()
+    if src_dir is None:
+        src_dir = _compiler_sources_dir()
+        if src_dir is None:
+            return False
+    try:
+        bin_mtime = os.path.getmtime(bin_path)
+    except OSError:
+        return False
+    try:
+        names = os.listdir(src_dir)
+    except OSError:
+        return False
+    for name in names:
+        if name.endswith(".lsh"):
+            try:
+                if os.path.getmtime(os.path.join(src_dir, name)) > bin_mtime:
+                    return True
+            except OSError:
+                continue
+    return False
+
+
 def exec_native(argv):
     """Replace this process with the native compiler.
 
@@ -79,6 +125,13 @@ def main():
         else:
             sys.stderr.write("leash: using the Python toolchain (%s)\n" % reason)
     else:
-        exec_native(argv)  # returns False only if the binary vanished
+        if _native_is_stale():
+            sys.stderr.write(
+                "leash: native compiler is older than the compiler sources; "
+                "using the Python implementation.\n"
+                "       Reinstall the package (`pip install -e .`) to rebuild it.\n"
+            )
+        elif exec_native(argv):  # returns False only if the binary vanished
+            pass
     from .cli import main as _python_main
     _python_main()

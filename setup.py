@@ -47,14 +47,14 @@ def build_native_compiler():
     os.chmod(stage1, 0o755)
 
     # Stage 1: first self-compilation
-    subprocess.run([stage1, "compile", "compiler/main.lsh", "-o", stage2],
+    subprocess.run([stage1, "compile", "compiler/main.lsh", "to", stage2],
                    cwd=ROOT, check=True)
     os.chmod(stage2, 0o755)
 
     # Stage 2: SECOND self-compilation -- this is the binary that ships,
     # produced by a compiler that was itself produced by the self-hosted
     # compiler (its own codegen quality, size and link flags)
-    subprocess.run([stage2, "compile", "compiler/main.lsh", "-o", stage3],
+    subprocess.run([stage2, "compile", "compiler/main.lsh", "to", stage3],
                    cwd=ROOT, check=True)
     os.chmod(stage3, 0o755)
 
@@ -63,9 +63,9 @@ def build_native_compiler():
     ir3 = os.path.join(NATIVE_DIR, "fp_stage3")
     try:
         subprocess.run([stage2, "compile", "compiler/main.lsh",
-                        "--emit-llvm", "-o", ir2], cwd=ROOT, check=True)
+                        "--emit-llvm", "to", ir2], cwd=ROOT, check=True)
         subprocess.run([stage3, "compile", "compiler/main.lsh",
-                        "--emit-llvm", "-o", ir3], cwd=ROOT, check=True)
+                        "--emit-llvm", "to", ir3], cwd=ROOT, check=True)
         with open(ir2 + ".ll") as f2, open(ir3 + ".ll") as f3:
             if f2.read() == f3.read():
                 print("leash: bootstrap fixed point verified "
@@ -108,11 +108,21 @@ def _maybe_build_native():
     if os.environ.get("LEASH_SKIP_NATIVE"):
         return
     if os.path.exists(NATIVE_BIN) and not _native_is_stale():
+        print("leash: native compiler is up to date, skipping build")
         return
     try:
         build_native_compiler()
         print("leash: built self-hosted compiler -> %s" % NATIVE_BIN)
     except Exception as exc:  # missing clang/llvmlite, non-Linux, ...
+        # Never leave half-built stage binaries behind: a stale
+        # leashc_stage1 from a killed build would otherwise linger and
+        # confuse the next install. The previous leashc (if any) is kept.
+        for stale in ("leashc_stage1", "leashc_stage2", "fp_stage2",
+                      "fp_stage3", "fp_stage2.ll", "fp_stage3.ll"):
+            try:
+                os.remove(os.path.join(NATIVE_DIR, stale))
+            except OSError:
+                pass
         sys.stderr.write(
             "WARNING: skipping the self-hosted compiler build: %s\n"
             "         (the Python implementation will be used instead)\n" % exc
