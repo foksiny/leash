@@ -10,6 +10,7 @@ import time
 import stat
 import urllib.request
 import urllib.error
+import urllib.parse
 
 LEASHED_VERSION = "0.3.0"
 LOCKFILE = "leash.lock"
@@ -67,6 +68,8 @@ def validate_git_url(url, allow_insecure=False, source="repository"):
     Returns the (stripped) URL or exits with an error. With
     `allow_insecure=True` (for URLs the user typed themselves), plain http is
     permitted but warned about; URLs coming from the registry must be https.
+    URLs with embedded credentials are always rejected: tokens end up
+    printed, committed and published (use a credential helper instead).
     """
     if not isinstance(url, str):
         # Malformed registry entries (e.g. "repo": 123) must fail with a
@@ -87,6 +90,19 @@ def validate_git_url(url, allow_insecure=False, source="repository"):
     low = u.lower()
     if "://" in low:
         scheme = low.split("://", 1)[0] + "://"
+        # Credentials baked into the URL (https://user:TOKEN@host/...)
+        # leak into logs, the registry PR body, index.json and the
+        # published repo. Plain `ssh://git@host/...` (no password) is the
+        # standard ssh form and stays allowed.
+        try:
+            parts = urllib.parse.urlsplit(u)
+            if parts.username and (parts.password or scheme == "https://"):
+                eprint(f"error: Unsafe {source} URL rejected: credentials must "
+                        "not be embedded in the URL (use a git credential helper).")
+                sys.exit(1)
+        except ValueError:
+            eprint(f"error: Invalid {source} URL: '{u}'")
+            sys.exit(1)
         if scheme == "http://":
             if not allow_insecure:
                 eprint(f"error: Insecure {source} URL rejected: '{u}' (registry entries must use https).")
@@ -159,6 +175,104 @@ def sorted_versions(versions):
     valid = [v for v in versions if validate_version(v)]
     invalid = [v for v in versions if not validate_version(v)]
     return sorted(valid, key=version_key, reverse=True) + sorted(invalid)
+
+
+_ANSI_RE = re.compile(r'\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b\([0-9A-Z]|\x1b\[[0-9;?]*[ -/]*[@-~]')
+
+
+def display_safe(s):
+    """Strip terminal escape sequences and control characters for display.
+
+    Registry and package metadata is rendered on the user's terminal with
+    no human review in between, so OSC hyperlinks, cursor movement and
+    other ANSI sequences must never reach the screen.
+    """
+    if s is None:
+        return ""
+    if not isinstance(s, str):
+        s = str(s)
+    s = _ANSI_RE.sub("", s)
+    return re.sub(r'[\x00-\x1f\x7f]', ' ', s)
+
+
+def validate_index_shape(index):
+    """Check a decoded package index has the expected shape.
+
+    Returns an error string, or None when the index is usable. Shared by
+    the CDN fetch path and the registry-clone path so both fail cleanly
+    on the same malformed data.
+    """
+    if not isinstance(index, dict):
+        return "expected a JSON object"
+    libs = index.get("libraries", {})
+    if not isinstance(libs, dict):
+        return 'expected {"libraries": {...}}'
+    return None
+
+
+def merge_registry_entry(fresh_entry, name, version, repo_url, description,
+                         author, publisher):
+    """Build the updated registry record for `name`, preserving history.
+
+    `fresh_entry` is the record from the freshly cloned index (or None for
+    a new registration) — never a stale cached copy, so concurrent
+    publishes are preserved instead of overwritten. Returns
+    (entry_dict, kept_versions) where kept_versions lists the previously
+    published versions that survived the merge.
+    """
+    old_versions = {}
+    if isinstance(fresh_entry, dict):
+        prev = fresh_entry.get("versions", {})
+        if isinstance(prev, dict):
+            old_versions = dict(prev)
+    kept = sorted(old_versions.keys())
+    old_versions[version] = {
+        "repo": repo_url,
+        "tag": f"v{version}",
+        "published_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    entry = {
+        "repo": repo_url,
+        "description": description,
+        "author": author,
+        "publisher": publisher,
+        "version": version,
+        "versions": old_versions,
+    }
+    return entry, kept
+
+
+def check_version_match(requested, installed):
+    """Compare a requested version against what a repo actually contains.
+
+    Returns an error string, or None when they agree. A valid-but-different
+    installed version must fail loudly: silently installing other bytes
+    than requested defeats pinning, locks and reproducibility.
+    """
+    if requested is None:
+        return None
+    if installed in (None, "", "?"):
+        return (f"could not determine the installed version "
+                f"(requested {requested})")
+    if installed != requested:
+        return (f"version mismatch: requested {requested} but the repository "
+                f"contains {installed}")
+    return None
+
+
+def registry_owner_ok(entry, config_author, gh_identity):
+    """One ownership rule for pre-flight and registry-update checks.
+
+    The gh identity matched against the stored publisher is the strong
+    check; a bare author-string match is only accepted for legacy entries
+    that recorded no publisher.
+    """
+    if not isinstance(entry, dict):
+        return False
+    stored_publisher = entry.get("publisher", "")
+    if stored_publisher:
+        return bool(gh_identity) and gh_identity == stored_publisher
+    return entry.get("author", "") == config_author
 
 
 def _del_rw(action, name, exc):
@@ -237,22 +351,29 @@ def run_gh(cmd, required=True):
         return 1, "", "not found"
 
 
+_IDENTITY_CACHE = {}
+
+
 def get_identity():
-    rc, out, _ = run_gh(["api", "user", "--jq", ".login"], required=False)
-    if rc == 0 and out:
-        return out
-    rc, out, _ = run_git(["config", "--global", "user.name"])
-    if rc == 0 and out:
-        return out
-    rc, out, _ = run_git(["config", "--global", "user.email"])
-    if rc == 0 and out:
-        return out
-    return None
+    if "identity" not in _IDENTITY_CACHE:
+        rc, out, _ = run_gh(["api", "user", "--jq", ".login"], required=False)
+        if rc == 0 and out:
+            _IDENTITY_CACHE["identity"] = out
+        else:
+            rc, out, _ = run_git(["config", "--global", "user.name"])
+            if rc == 0 and out:
+                _IDENTITY_CACHE["identity"] = out
+            else:
+                rc, out, _ = run_git(["config", "--global", "user.email"])
+                _IDENTITY_CACHE["identity"] = out if rc == 0 and out else None
+    return _IDENTITY_CACHE["identity"]
 
 
 def get_gh_user():
-    rc, out, _ = run_gh(["api", "user", "--jq", ".login"], required=False)
-    return out if rc == 0 else None
+    if "gh_user" not in _IDENTITY_CACHE:
+        rc, out, _ = run_gh(["api", "user", "--jq", ".login"], required=False)
+        _IDENTITY_CACHE["gh_user"] = out if rc == 0 else None
+    return _IDENTITY_CACHE["gh_user"]
 
 
 def fetch_index():
@@ -269,14 +390,22 @@ def fetch_index():
             index = json.loads(data.decode("utf-8"))
     except urllib.error.HTTPError as e:
         if e.code == 404:
+            # A missing index means an empty registry (brand-new registries
+            # start this way) — but say so loudly: a custom URL 404ing is
+            # more often a misconfiguration than a fresh start.
+            if "LEASHED_REGISTRY_URL" in os.environ or REGISTRY_REPO != DEFAULT_REGISTRY_REPO:
+                print(f"[leashed] warning: package index not found (HTTP 404): {REGISTRY_URL}")
+                print("  Treating the registry as empty. If this URL is wrong, fix "
+                      "LEASHED_REGISTRY_URL / LEASHED_REGISTRY_REPO.")
             return {"libraries": {}}
         eprint(f"error: Failed to fetch package index (HTTP {e.code})")
         sys.exit(1)
     except (urllib.error.URLError, json.JSONDecodeError, UnicodeDecodeError) as e:
         eprint(f"error: Failed to fetch package index: {e}")
         sys.exit(1)
-    if not isinstance(index, dict) or not isinstance(index.get("libraries", {}), dict):
-        eprint("error: Package index has an invalid format (expected {\"libraries\": {...}})")
+    shape_err = validate_index_shape(index)
+    if shape_err:
+        eprint(f"error: Package index has an invalid format ({shape_err})")
         sys.exit(1)
     return index
 
@@ -336,6 +465,7 @@ def write_pkg_config(path, config):
         # with values that survive the read round-trip.
         for key, val in config.items():
             if not key or any(c in key for c in ' "\r\n\x00-\x1f\x7f'):
+                print(f"[leashed] warning: dropping malformed config key: {key!r}")
                 continue
             if val is None:
                 continue
@@ -361,7 +491,7 @@ def run_leash_check(filepath, extra_import_dirs=None):
         if extra_import_dirs:
             for d in extra_import_dirs:
                 cmd.extend(["-oi", d])
-        rc = subprocess.run(cmd, capture_output=True, text=True)
+        rc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if rc.returncode != 0:
             eprint("error: Source code check failed. Fix errors before publishing.")
             eprint(rc.stderr)
@@ -385,7 +515,7 @@ def run_leash_compile(filepath, output_stem, extra_import_dirs=None):
         if extra_import_dirs:
             for d in extra_import_dirs:
                 cmd.extend(["-oi", d])
-        rc = subprocess.run(cmd, capture_output=True, text=True)
+        rc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
         if rc.returncode != 0:
             eprint("error: Compilation failed.")
             eprint(rc.stderr)
@@ -432,7 +562,101 @@ def cmd_init(args):
     print("then run 'leashed publish' to publish your library.")
 
 
+def _clone_registry_for_owner():
+    """Shallow-clone the registry and check out its default branch.
+
+    The branch name comes from the remote itself (symref), so registries
+    on `trunk`/`develop`/etc. work instead of gaining a stray `main`.
+    Returns (reg_tmp, push_branch). Exits cleanly on failure.
+    """
+    reg_tmp = tempfile.mkdtemp(prefix="leashed_reg_")
+    rc, _, err = run_git(["clone", "--depth", "1", REGISTRY_GIT, reg_tmp])
+    if rc != 0:
+        # Repo might be empty (no commits yet)
+        rc, _, err = run_git(["init"], cwd=reg_tmp)
+        if rc != 0:
+            eprint(f"error: Failed to init registry repo: {err}")
+            tmp_cleanup(reg_tmp)
+            sys.exit(1)
+        rc, _, err = run_git(["remote", "add", "origin", REGISTRY_GIT], cwd=reg_tmp)
+        if rc != 0:
+            eprint(f"error: Failed to add remote: {err}")
+            tmp_cleanup(reg_tmp)
+            sys.exit(1)
+        return reg_tmp, "main"
+    branch = ""
+    rc, out, _ = run_git(["ls-remote", "--symref", "origin", "HEAD"], cwd=reg_tmp)
+    if rc == 0:
+        for ln in out.splitlines():
+            ln = ln.strip()
+            if ln.startswith("ref:"):
+                ref = ln.split()[-1]
+                if ref.startswith("refs/heads/") and len(ref) > len("refs/heads/"):
+                    branch = ref[len("refs/heads/"):]
+                break
+    for candidate in ([branch] if branch else []) + ["main", "master"]:
+        rc, _, _ = run_git(["fetch", "--depth", "1", "origin", candidate], cwd=reg_tmp)
+        if rc == 0:
+            rc, _, err = run_git(["checkout", "-b", candidate, f"origin/{candidate}"], cwd=reg_tmp)
+            if rc != 0:
+                eprint(f"error: Failed to check out registry branch '{candidate}': {err}")
+                tmp_cleanup(reg_tmp)
+                sys.exit(1)
+            return reg_tmp, candidate
+    return reg_tmp, "main"
+
+
+def _read_registry_index(reg_dir):
+    """Read + validate index.json from a registry clone. Exits cleanly."""
+    index_path = os.path.join(reg_dir, "index.json")
+    if not os.path.exists(index_path):
+        return {"libraries": {}}
+    try:
+        with open(index_path, "r", encoding="utf-8") as f:
+            index = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        eprint(f"error: Registry index.json is corrupt: {e}")
+        sys.exit(1)
+    shape_err = validate_index_shape(index)
+    if shape_err:
+        eprint(f"error: Registry index.json is corrupt: {shape_err}")
+        sys.exit(1)
+    return index
+
+
+def check_registry_update(fresh_index, name, author, publisher, version,
+                          preflight_version=""):
+    """Ownership + version-conflict gate against fresh registry data.
+
+    `fresh_index` must come from a fresh clone (never a cached copy).
+    Returns an error string, or None when the publish may proceed.
+    """
+    fresh_entry = fresh_index.get("libraries", {}).get(name)
+    if fresh_entry is not None and not isinstance(fresh_entry, dict):
+        return f"Registry entry for '{name}' is corrupt; cannot publish over it."
+    if fresh_entry is None:
+        return None
+    if not registry_owner_ok(fresh_entry, author, publisher):
+        stored = fresh_entry.get("publisher") or fresh_entry.get("author", "")
+        return (f"Library '{name}' is already registered by '{stored}'. "
+                "Only the original owner can update a package. Pick another name.")
+    fresh_ver = fresh_entry.get("version", "")
+    if fresh_ver and not validate_version(fresh_ver):
+        return (f"Registry entry for '{name}' has a corrupt version "
+                f"('{fresh_ver}'); cannot publish over it.")
+    if fresh_ver and not is_newer_version(version, fresh_ver):
+        moved = ""
+        if preflight_version and preflight_version != fresh_ver:
+            moved = f" (moved from v{preflight_version} while this publish was running)"
+        return (f"Version conflict: the registry now has '{name}' v{fresh_ver}{moved}; "
+                f"refusing to overwrite with v{version}. Bump the 'version' field "
+                "past the registry version and try again.")
+    return None
+
+
 def cmd_publish(args):
+    if args:
+        print(f"[leashed] warning: ignoring extra arguments: {' '.join(args)}")
     project_dir = os.getcwd()
     config_path = os.path.join(project_dir, LEASHED_CONFIG)
     if not os.path.exists(config_path):
@@ -477,9 +701,17 @@ def cmd_publish(args):
     # Read extra import dirs from config
     imports_str = config.get("imports", "")
     extra_import_dirs = [d.strip() for d in imports_str.split(",") if d.strip()] if imports_str else None
-    # Make relative paths absolute from project_dir
+    # Make relative paths absolute from project_dir, contained like `main`:
+    # an outside dir would make the build depend on files that are never
+    # published, and error output could echo outside content.
     if extra_import_dirs:
-        extra_import_dirs = [os.path.join(project_dir, d) if not os.path.isabs(d) else d for d in extra_import_dirs]
+        abs_dirs = [os.path.join(project_dir, d) if not os.path.isabs(d) else d for d in extra_import_dirs]
+        for orig, absd in zip(extra_import_dirs, abs_dirs):
+            rd = os.path.realpath(absd)
+            if rd != _real_proj and not rd.startswith(_real_proj + os.sep):
+                eprint(f"error: 'imports' entry must stay inside the project directory (got '{orig}').")
+                sys.exit(1)
+        extra_import_dirs = abs_dirs
 
     # Pre-flight registry check: ownership + strictly increasing version.
     # Fails fast before any compiling/pushing so mistakes cost nothing.
@@ -489,13 +721,18 @@ def cmd_publish(args):
     if existing_entry is not None and not isinstance(existing_entry, dict):
         eprint(f"error: Registry entry for '{name}' is corrupt; cannot publish over it.")
         sys.exit(1)
+    preflight_version = ""
     if existing_entry:
-        reg_owner = existing_entry.get("publisher") or existing_entry.get("author", "")
-        if reg_owner not in (publisher, author):
-            eprint(f"error: Library '{name}' is already registered by '{reg_owner}'.")
+        if not registry_owner_ok(existing_entry, author, publisher):
+            stored = existing_entry.get("publisher") or existing_entry.get("author", "")
+            eprint(f"error: Library '{name}' is already registered by '{stored}'.")
             eprint("  Only the original owner can update a package. Pick another name.")
             sys.exit(1)
         old_version = existing_entry.get("version", "0.0.0")
+        if not validate_version(old_version):
+            eprint(f"error: Registry entry for '{name}' has a corrupt version ('{old_version}'); cannot publish over it.")
+            sys.exit(1)
+        preflight_version = old_version
         if not is_newer_version(version, old_version):
             eprint(f"error: Version {version} is not greater than the published version {old_version}.")
             eprint("  Bump the 'version' field in leash-pkg.lshc and try again.")
@@ -503,6 +740,21 @@ def cmd_publish(args):
 
     print(f"[leashed] Publishing '{name}' v{version} by {author}")
     print(f"[leashed] Publisher: {publisher}")
+
+    # The publish path never checked for symlinks: shutil.copy2/copytree
+    # both FOLLOW them, so a tracked `src -> /home/victim/.ssh` would be
+    # silently committed and force-pushed to the (public) repository.
+    # Validated here — before any temp dirs exist, so a refusal leaks nothing.
+    assert_no_symlinks(project_dir)
+
+    # Validate a configured repo URL up front for the same reason.
+    repo_url_cfg = config.get("repo", "")
+    if repo_url_cfg:
+        # The config value used to go straight into `git remote add` ->
+        # `git fetch` -> `git push --force`, so a tampered leash-pkg.lshc
+        # could force-push to arbitrary local / file:// / ext:: remotes.
+        # Same strict validation as the install path (H1).
+        repo_url_cfg = validate_git_url(repo_url_cfg, allow_insecure=False, source="publish repo")
 
     # Step 1: Verify source code
     print("[leashed] Verifying source code...")
@@ -521,9 +773,10 @@ def cmd_publish(args):
         tmp_cleanup(out_dir)
         sys.exit(1)
 
-    # The publish path never checked for symlinks: shutil.copy2/copytree
-    # both FOLLOW them, so a tracked `src -> /home/victim/.ssh` would be
-    # silently committed and force-pushed to the (public) repository.
+    # Re-check for symlinks right before copying: validated up front too,
+    # but compilation and network calls happen in between, so narrow the
+    # window in which a planted link could reach the published repo.
+    # (shutil.copy2/copytree FOLLOW links.)
     assert_no_symlinks(project_dir)
 
     src_root = os.path.dirname(main_path)
@@ -551,13 +804,8 @@ def cmd_publish(args):
     print("[leashed] Library compiled successfully")
 
     # Step 3: Determine or create the library repo
-    repo_url = config.get("repo", "")
+    repo_url = repo_url_cfg
     if repo_url:
-        # The config value used to go straight into `git remote add` ->
-        # `git fetch` -> `git push --force`, so a tampered leash-pkg.lshc
-        # could force-push to arbitrary local / file:// / ext:: remotes.
-        # Same strict validation as the install path (H1).
-        repo_url = validate_git_url(repo_url, allow_insecure=False, source="publish repo")
         print(f"[leashed] Using repo: {repo_url}")
     else:
         # Auto-create a public repo under the user's GitHub account
@@ -570,10 +818,29 @@ def cmd_publish(args):
             sys.exit(1)
         repo_url = f"https://github.com/{gh_user}/{name}.git"
         print(f"[leashed] Created repo: {repo_url}")
-        # Save repo URL to config for future publishes
-        config["repo"] = repo_url
-        write_pkg_config(config_path, config)
-        print(f"[leashed] Saved 'repo' to {LEASHED_CONFIG}")
+        # Save repo URL to config for future publishes — but only when it
+        # actually changed, so a failed publish doesn't gratuitously
+        # rewrite (and reformat) the user's config file.
+        if config.get("repo", "") != repo_url:
+            config["repo"] = repo_url
+            write_pkg_config(config_path, config)
+            print(f"[leashed] Saved 'repo' to {LEASHED_CONFIG}")
+
+    is_owner = (gh_user == REGISTRY_OWNER)
+    # Pre-push registry gate (owners): the registry clone is cheap
+    # (depth 1), and failing here — before the library repo is pushed —
+    # avoids a half-published state no re-run can cleanly resume.
+    if is_owner:
+        gate_tmp = _clone_registry_for_owner()
+        try:
+            gate_err = check_registry_update(
+                _read_registry_index(gate_tmp), name, author, publisher,
+                version, preflight_version)
+            if gate_err:
+                eprint(f"error: {gate_err}")
+                sys.exit(1)
+        finally:
+            tmp_cleanup(gate_tmp)
 
     # Step 4: Push source + compiled library to the library repo
     repo_tmp = tempfile.mkdtemp(prefix="leashed_repo_")
@@ -584,16 +851,93 @@ def cmd_publish(args):
         tmp_cleanup(repo_tmp)
         sys.exit(1)
 
-    # Copy everything into the temp repo
-    for item in os.listdir(project_dir):
-        if item == ".git" or item == "__pycache__" or item == "out":
+    # Publish set: only sources, manifests and docs ride into the public
+    # repo. Everything else (examples/, tests/, local tooling, build
+    # outputs, and any secret-shaped files) stays home — a stray `.env`
+    # must never be force-pushed publicly. Extra paths opt in explicitly
+    # via `publish_include` in leash-pkg.lshc.
+    _SECRET_NAME_RE = re.compile(
+        r'(^\.env(\.|$))|(\.pem$)|(\.key$)|(credentials)|(secret)|(token)|'
+        r'(^\.aws$)|(^\.ssh$)|(^\.gnupg$)'
+    , re.IGNORECASE)
+    publish_extra = [d.strip() for d in config.get("publish_include", "").split(",") if d.strip()]
+    extra_dirs = set()
+    for extra in publish_extra:
+        xp = os.path.realpath(os.path.join(project_dir, extra))
+        if xp != _real_proj and not xp.startswith(_real_proj + os.sep):
+            eprint(f"error: 'publish_include' entry must stay inside the project directory (got '{extra}').")
+            tmp_cleanup(out_dir)
+            tmp_cleanup(repo_tmp)
+            sys.exit(1)
+        extra_dirs.add(os.path.relpath(xp, _real_proj).split(os.sep)[0])
+
+    def _secret_shaped(name):
+        return bool(_SECRET_NAME_RE.search(name))
+
+    skipped_top = []
+    warned_secrets = []
+
+    def _copy_publish_tree(sp, dp):
+        # Recursive copy honoring the secret denylist (nested `.env`
+        # files and `.git` histories are never published).
+        for root, dirs, files in os.walk(sp, followlinks=False):
+            dirs[:] = [d for d in dirs if d != ".git" and not os.path.islink(os.path.join(root, d))]
+            rel = os.path.relpath(root, sp)
+            dst_root = os.path.join(dp, rel) if rel != "." else dp
+            os.makedirs(dst_root, exist_ok=True)
+            for f in files:
+                if _secret_shaped(f):
+                    warned_secrets.append(os.path.join(rel, f) if rel != "." else f)
+                    continue
+                fp = os.path.join(root, f)
+                if os.path.islink(fp):
+                    warned_secrets.append(os.path.join(rel, f) if rel != "." else f)
+                    continue
+                shutil.copy2(fp, os.path.join(dst_root, f))
+
+    for item in sorted(os.listdir(project_dir)):
+        if item in (".git", "__pycache__", "out", "library"):
             continue
         sp = os.path.join(project_dir, item)
         dp = os.path.join(repo_tmp, item)
-        if os.path.isfile(sp):
-            shutil.copy2(sp, dp)
-        elif os.path.isdir(sp):
-            shutil.copytree(sp, dp)
+        keep = False
+        if os.path.isfile(sp) and not os.path.islink(sp):
+            if (item == LEASHED_CONFIG or item in extra_dirs or
+                    item == "package.lshc" or
+                    item.startswith("README") or item.startswith("LICENSE") or
+                    item.startswith("CHANGELOG") or
+                    item in (".gitignore", ".gitattributes", ".editorconfig")):
+                if _secret_shaped(item):
+                    warned_secrets.append(item)
+                else:
+                    shutil.copy2(sp, dp)
+                    keep = True
+        elif os.path.isdir(sp) and not os.path.islink(sp):
+            if item in ("src",) or item in extra_dirs:
+                _copy_publish_tree(sp, dp)
+                keep = True
+        if not keep:
+            if _secret_shaped(item) or item.startswith("."):
+                warned_secrets.append(item)
+            else:
+                skipped_top.append(item)
+
+    # The main file rides along wherever it lives inside the project
+    # (it passed containment above).
+    main_rel = os.path.relpath(_real_main, _real_proj)
+    main_dp = os.path.join(repo_tmp, main_rel)
+    os.makedirs(os.path.dirname(main_dp) or repo_tmp, exist_ok=True)
+    shutil.copy2(_real_main, main_dp)
+
+    for s in warned_secrets:
+        print(f"[leashed] warning: not publishing suspected secret '{s}'")
+    if skipped_top:
+        shown = ", ".join(skipped_top[:5])
+        if len(skipped_top) > 5:
+            shown += f", and {len(skipped_top) - 5} more"
+        print(f"[leashed] Skipped {len(skipped_top)} file(s) not in the publish set: {shown}")
+        print(f"[leashed]   (publish src/, {LEASHED_CONFIG}, README, LICENSE, CHANGELOG; "
+              f"anything else needs 'publish_include' in {LEASHED_CONFIG})")
 
     shutil.copytree(os.path.join(out_dir, LIBRARY_DIR), os.path.join(repo_tmp, LIBRARY_DIR))
 
@@ -618,28 +962,44 @@ def cmd_publish(args):
         tmp_cleanup(repo_tmp)
         sys.exit(1)
 
-    # Try to fetch default branch to see if repo already has content
-    rc, _, _ = run_git(["fetch", "--depth", "1", "origin", "main"], cwd=repo_tmp)
-    has_main = rc == 0
-    if not has_main:
-        rc, _, _ = run_git(["fetch", "--depth", "1", "origin", "master"], cwd=repo_tmp)
-        has_master = rc == 0
-    else:
-        has_master = False
-
+    # Try to fetch default branch to see if repo already has content.
+    # The branch name comes from the remote itself (symref), so repos on
+    # `trunk`/`develop`/etc. work instead of gaining a stray `main`.
     default_branch = "main"
-    if has_main:
-        rc, _, err = run_git(["checkout", "-b", "main", "origin/main"], cwd=repo_tmp)
+    rc, out, _ = run_git(["ls-remote", "--symref", "origin", "HEAD"], cwd=repo_tmp)
+    if rc == 0:
+        for ln in out.splitlines():
+            ln = ln.strip()
+            if ln.startswith("ref:"):
+                ref = ln.split()[-1]
+                if ref.startswith("refs/heads/") and len(ref) > len("refs/heads/"):
+                    default_branch = ref[len("refs/heads/"):]
+                break
+    rc, _, _ = run_git(["fetch", "--depth", "1", "origin", default_branch], cwd=repo_tmp)
+    has_remote = rc == 0
+    if not has_remote and default_branch != "master":
+        rc, _, _ = run_git(["fetch", "--depth", "1", "origin", "master"], cwd=repo_tmp)
+        if rc == 0:
+            default_branch = "master"
+            has_remote = True
+    if has_remote:
+        rc, _, err = run_git(["checkout", "-b", default_branch, f"origin/{default_branch}"], cwd=repo_tmp)
         if rc != 0:
-            rc, _, err = run_git(["checkout", "main"], cwd=repo_tmp)
-    elif has_master:
-        default_branch = "master"
-        rc, _, err = run_git(["checkout", "-b", "master", "origin/master"], cwd=repo_tmp)
-        if rc != 0:
-            rc, _, err = run_git(["checkout", "master"], cwd=repo_tmp)
+            rc, _, err = run_git(["checkout", default_branch], cwd=repo_tmp)
+            if rc != 0:
+                eprint(f"error: Failed to check out '{default_branch}': {err}")
+                tmp_cleanup(out_dir)
+                tmp_cleanup(repo_tmp)
+                sys.exit(1)
     else:
         # New repo — use main
+        default_branch = "main"
         rc, _, err = run_git(["checkout", "-b", "main"], cwd=repo_tmp)
+        if rc != 0:
+            eprint(f"error: Failed to create branch: {err}")
+            tmp_cleanup(out_dir)
+            tmp_cleanup(repo_tmp)
+            sys.exit(1)
 
     # Re-add everything (fetch/checkout might have reset)
     shutil.copytree(os.path.join(out_dir, LIBRARY_DIR), os.path.join(repo_tmp, LIBRARY_DIR), dirs_exist_ok=True)
@@ -650,7 +1010,10 @@ def cmd_publish(args):
         tmp_cleanup(repo_tmp)
         sys.exit(1)
 
-    msg = f"Publish {name} v{version}\n\nPublisher: {publisher}\nDescription: {description}"
+    # Commit message carries no free text: multi-line author/description
+    # strings could forge commit trailers (`Fixes:`, `Co-authored-by:`).
+    safe_pub = " ".join(str(publisher).split())
+    msg = f"Publish {name} v{version}\n\nPublisher: {safe_pub}"
     rc, _, err = run_git(["-c", "user.name=leashed", "-c", "user.email=leashed@localhost", "commit", "-m", msg], cwd=repo_tmp)
     if rc != 0:
         eprint(f"error: Git commit failed: {err}")
@@ -659,7 +1022,7 @@ def cmd_publish(args):
         sys.exit(1)
 
     print(f"[leashed] Pushing to '{repo_url}'...")
-    rc, out, err = run_git(["push", "--force", "-u", "origin", default_branch], cwd=repo_tmp)
+    rc, out, err = run_git(["push", "--force-with-lease", "-u", "origin", default_branch], cwd=repo_tmp)
     if rc != 0:
         eprint(f"error: Failed to push: {err}")
         eprint("  Make sure you have write access to the repository.")
@@ -667,57 +1030,52 @@ def cmd_publish(args):
         tmp_cleanup(repo_tmp)
         sys.exit(1)
 
-    # Tag this release so `leashed install name@version` can fetch it
+    # Tag this release so `leashed install name@version` can fetch it.
+    # Published tags are immutable: moving one would silently change what
+    # every pinned install resolves to. The only exception is a retry
+    # whose remote tag already points at byte-identical content (e.g. a
+    # publish whose registry step failed) — there is nothing to move.
     tag = f"v{version}"
-    run_git(["tag", "-f", tag], cwd=repo_tmp)
-    rc, _, err = run_git(["push", "--force", "origin", tag], cwd=repo_tmp)
-    if rc != 0:
-        eprint(f"warning: Could not push version tag '{tag}': {err}")
-        eprint("  The library was published; installing by exact version may not work.")
+    rc, out, _ = run_git(["ls-remote", "--tags", "origin", tag], cwd=repo_tmp)
+    tag_exists = rc == 0 and any(ln.strip().endswith(f"refs/tags/{tag}") for ln in out.splitlines())
+    if tag_exists:
+        rc, _, _ = run_git(["fetch", "--depth", "1", "origin", "tag", tag], cwd=repo_tmp)
+        same = False
+        if rc == 0:
+            rc1, new_tree, _ = run_git(["rev-parse", "HEAD^{tree}"], cwd=repo_tmp)
+            rc2, remote_tree, _ = run_git(["rev-parse", "FETCH_HEAD^{tree}"], cwd=repo_tmp)
+            same = rc1 == 0 and rc2 == 0 and bool(new_tree) and new_tree == remote_tree
+        if not same:
+            eprint(f"error: Tag '{tag}' already exists on the remote; refusing to move a published tag.")
+            eprint("  Bump the 'version' field in leash-pkg.lshc and publish again.")
+            tmp_cleanup(out_dir)
+            tmp_cleanup(repo_tmp)
+            sys.exit(1)
+        print(f"[leashed] Tag '{tag}' already points at this content; keeping it")
+    else:
+        rc, _, err = run_git(["tag", tag], cwd=repo_tmp)
+        if rc != 0:
+            eprint(f"warning: Could not create version tag '{tag}': {err}")
+            eprint("  The library was published; installing by exact version may not work.")
+        else:
+            rc, _, err = run_git(["push", "origin", tag], cwd=repo_tmp)
+            if rc != 0:
+                eprint(f"warning: Could not push version tag '{tag}': {err}")
+                eprint("  The library was published; installing by exact version may not work.")
 
     print(f"[leashed] Successfully published '{name}' v{version}!")
     print(f"[leashed]   Repo: {repo_url}")
 
     # Step 5: Register in the central registry
-    is_owner = (gh_user == REGISTRY_OWNER)
-
     print(f"[leashed] Registering '{name}' in the package index...")
-    reg_tmp = tempfile.mkdtemp(prefix="leashed_reg_")
 
     if is_owner:
-        # Push directly to the upstream repo (no fork needed for owner)
-        rc, _, err = run_git(["clone", "--depth", "1", REGISTRY_GIT, reg_tmp])
-        if rc != 0:
-            # Repo might be empty (no commits yet)
-            rc, _, err = run_git(["init"], cwd=reg_tmp)
-            if rc != 0:
-                eprint(f"error: Failed to init registry repo: {err}")
-                tmp_cleanup(out_dir)
-                tmp_cleanup(repo_tmp)
-                tmp_cleanup(reg_tmp)
-                sys.exit(1)
-            rc, _, err = run_git(["remote", "add", "origin", REGISTRY_GIT], cwd=reg_tmp)
-            if rc != 0:
-                eprint(f"error: Failed to add remote: {err}")
-                tmp_cleanup(out_dir)
-                tmp_cleanup(repo_tmp)
-                tmp_cleanup(reg_tmp)
-                sys.exit(1)
-            push_branch = "main"
-        else:
-            rc, _, _ = run_git(["fetch", "--depth", "1", "origin", "main"], cwd=reg_tmp)
-            has_main = rc == 0
-            if has_main:
-                run_git(["checkout", "-b", "main", "origin/main"], cwd=reg_tmp)
-                push_branch = "main"
-            else:
-                rc, _, _ = run_git(["fetch", "--depth", "1", "origin", "master"], cwd=reg_tmp)
-                if rc == 0:
-                    run_git(["checkout", "-b", "master", "origin/master"], cwd=reg_tmp)
-                    push_branch = "master"
-                else:
-                    push_branch = "main"
+        # Push directly to the upstream repo (no fork needed for owner).
+        # Re-cloned here so the mutation below applies to current data
+        # (the pre-push gate already passed on an identical clone).
+        reg_tmp, push_branch = _clone_registry_for_owner()
     else:
+        reg_tmp = tempfile.mkdtemp(prefix="leashed_reg_")
         # Non-owner: fork + PR flow (a bot auto-merges the PR if it validates)
         rc, _, err = run_gh(["repo", "fork", REGISTRY_REPO, "--clone=false"])
         if rc != 0:
@@ -730,10 +1088,17 @@ def cmd_publish(args):
             sys.exit(1)
 
         # Sync the fork with upstream so the PR only contains our change
-        run_gh(["repo", "sync", f"{gh_user}/{REGISTRY_REPO.split('/')[1]}",
+        reg_parts = REGISTRY_REPO.split("/")
+        if len(reg_parts) != 2 or not reg_parts[0] or not reg_parts[1]:
+            eprint(f"error: Invalid registry '{REGISTRY_REPO}' (expected 'owner/repo').")
+            tmp_cleanup(out_dir)
+            tmp_cleanup(repo_tmp)
+            tmp_cleanup(reg_tmp)
+            sys.exit(1)
+        run_gh(["repo", "sync", f"{gh_user}/{reg_parts[1]}",
                 "--source", REGISTRY_REPO], required=False)
 
-        fork_url = f"https://github.com/{gh_user}/leash-packages.git"
+        fork_url = f"https://github.com/{gh_user}/{reg_parts[1]}.git"
         rc, _, err = run_git(["clone", "--depth", "1", fork_url, reg_tmp])
         if rc != 0:
             eprint(f"error: Failed to clone fork: {err}")
@@ -753,55 +1118,58 @@ def cmd_publish(args):
         rc, _, _ = run_git(["fetch", "--depth", "1", "upstream", "main"], cwd=reg_tmp)
         has_main = rc == 0
         if has_main:
-            run_git(["checkout", "-b", f"register-{name}", "upstream/main"], cwd=reg_tmp)
+            rc, _, err = run_git(["checkout", "-b", f"register-{name}", "upstream/main"], cwd=reg_tmp)
+            if rc != 0:
+                eprint(f"error: Failed to check out registry branch: {err}")
+                tmp_cleanup(out_dir)
+                tmp_cleanup(repo_tmp)
+                tmp_cleanup(reg_tmp)
+                sys.exit(1)
             push_branch = f"register-{name}"
         else:
             rc, _, _ = run_git(["fetch", "--depth", "1", "upstream", "master"], cwd=reg_tmp)
             if rc == 0:
-                run_git(["checkout", "-b", f"register-{name}", "upstream/master"], cwd=reg_tmp)
+                rc, _, err = run_git(["checkout", "-b", f"register-{name}", "upstream/master"], cwd=reg_tmp)
+                if rc != 0:
+                    eprint(f"error: Failed to check out registry branch: {err}")
+                    tmp_cleanup(out_dir)
+                    tmp_cleanup(repo_tmp)
+                    tmp_cleanup(reg_tmp)
+                    sys.exit(1)
                 push_branch = f"register-{name}"
             else:
-                run_git(["checkout", "-b", f"register-{name}"], cwd=reg_tmp)
+                rc, _, err = run_git(["checkout", "-b", f"register-{name}"], cwd=reg_tmp)
+                if rc != 0:
+                    eprint(f"error: Failed to create registry branch: {err}")
+                    tmp_cleanup(out_dir)
+                    tmp_cleanup(repo_tmp)
+                    tmp_cleanup(reg_tmp)
+                    sys.exit(1)
                 push_branch = f"register-{name}"
 
-    # Read current index and add/update entry
-    index_path = os.path.join(reg_tmp, "index.json")
-    if os.path.exists(index_path):
-        with open(index_path, "r", encoding="utf-8") as f:
-            index = json.load(f)
-    else:
-        index = {"libraries": {}}
+    # Read the freshly cloned index, re-gate, and merge. The versions map
+    # is rebuilt from THIS data (never the pre-flight copy), so concurrent
+    # publishes survive instead of being overwritten.
+    index = _read_registry_index(reg_tmp)
 
-    if name in index.get("libraries", {}):
-        existing_pub = index["libraries"][name].get("author", "")
-        if existing_pub != author:
-            eprint(f"error: Library '{name}' is already registered by '{existing_pub}'.")
-            eprint("  Only the original author can update the registry entry.")
-            tmp_cleanup(out_dir)
-            tmp_cleanup(repo_tmp)
-            tmp_cleanup(reg_tmp)
-            sys.exit(1)
+    gate_err = check_registry_update(index, name, author, publisher,
+                                     version, preflight_version)
+    if gate_err:
+        eprint(f"error: {gate_err}")
+        eprint("  Your library repo was pushed, but the index was not updated.")
+        eprint("  Fix the conflict above and re-run 'leashed publish' to complete registration.")
+        tmp_cleanup(out_dir)
+        tmp_cleanup(repo_tmp)
+        tmp_cleanup(reg_tmp)
+        sys.exit(1)
 
     if "libraries" not in index:
         index["libraries"] = {}
-    # Keep all previously published versions so `install name@version` works
-    old_versions = {}
-    if existing_entry:
-        old_versions = existing_entry.get("versions", {}) or {}
-    old_versions[version] = {
-        "repo": repo_url,
-        "tag": tag,
-        "published_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-    }
-    index["libraries"][name] = {
-        "repo": repo_url,
-        "description": description,
-        "author": author,
-        "publisher": publisher,
-        "version": version,
-        "versions": old_versions,
-    }
+    index["libraries"][name], _kept = merge_registry_entry(
+        index["libraries"].get(name), name, version, repo_url,
+        description, author, publisher)
 
+    index_path = os.path.join(reg_tmp, "index.json")
     with open(index_path, "w", encoding="utf-8") as f:
         json.dump(index, f, indent=2)
         f.write("\n")
@@ -828,7 +1196,7 @@ def cmd_publish(args):
         tmp_cleanup(reg_tmp)
         sys.exit(1)
 
-    rc, _, err = run_git(["push", "--force", "-u", "origin", push_branch], cwd=reg_tmp)
+    rc, _, err = run_git(["push", "--force-with-lease", "-u", "origin", push_branch], cwd=reg_tmp)
     if rc != 0:
         eprint(f"error: Failed to push registry update: {err}")
         tmp_cleanup(out_dir)
@@ -902,18 +1270,22 @@ def read_lockfile(project_dir):
 
 def write_lockfile(project_dir, packages):
     """Write leash.lock deterministically (sorted keys, fixed shape).
-    `packages` maps name -> {"version", "repo"}."""
+    `packages` maps name -> {"version", "repo"} with an optional "rev"
+    commit-SHA pin (recorded at install/lock time, verified on restore)."""
     out = {"version": LOCKFILE_VERSION, "packages": {}}
     for name in sorted(packages):
         p = packages[name] if isinstance(packages[name], dict) else {}
         version = p.get("version", "")
         if not validate_version(version):
             continue
-        out["packages"][name] = {
+        entry = {
             "version": version,
             "repo": p.get("repo", ""),
             "tag": p.get("tag") or f"v{version}",
         }
+        if p.get("rev"):
+            entry["rev"] = p["rev"]
+        out["packages"][name] = entry
     path = os.path.join(project_dir, LOCKFILE)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(out, f, indent=2)
@@ -931,18 +1303,34 @@ def _project_dir_or_none():
     return None
 
 
-def lockfile_pin(project_dir, name):
-    """Return the locked version of `name` when the project has an entry."""
+def lockfile_entry(project_dir, name):
+    """Return the lockfile entry dict for `name`, or None."""
     data = read_lockfile(project_dir)
     if not data:
         return None
     entry = data.get("packages", {}).get(name)
-    if isinstance(entry, dict) and validate_version(entry.get("version", "")):
+    return entry if isinstance(entry, dict) else None
+
+
+def lockfile_pin(project_dir, name):
+    """Return the locked version of `name` when the project has an entry."""
+    entry = lockfile_entry(project_dir, name)
+    if entry is not None and validate_version(entry.get("version", "")):
         return entry["version"]
     return None
 
 
-def lockfile_record(project_dir, name, version, repo):
+def lockfile_rev(project_dir, name):
+    """Return the locked commit SHA of `name`, or None when unpinned."""
+    entry = lockfile_entry(project_dir, name)
+    if entry is not None:
+        rev = entry.get("rev", "")
+        if isinstance(rev, str) and re.fullmatch(r'[0-9a-f]{40}', rev):
+            return rev
+    return None
+
+
+def lockfile_record(project_dir, name, version, repo, sha=None):
     """Insert or update one entry in the project lockfile."""
     if not validate_version(version):
         eprint(f"warning: not recording {name}@{version} in {LOCKFILE}: invalid version")
@@ -951,7 +1339,10 @@ def lockfile_record(project_dir, name, version, repo):
     data = read_lockfile(project_dir)
     if data:
         pkgs = dict(data.get("packages", {}))
-    pkgs[name] = {"version": version, "repo": repo}
+    entry = {"version": version, "repo": repo}
+    if sha:
+        entry["rev"] = sha
+    pkgs[name] = entry
     write_lockfile(project_dir, pkgs)
     print(f"[leashed] Wrote {LOCKFILE}: {name}@{version}")
 
@@ -968,7 +1359,7 @@ def lockfile_unpin(project_dir, name):
 
 
 def _install_registry(libname, req_version=None):
-    """Shared registry install path. Returns (name, version, repo_url)."""
+    """Shared registry install path. Returns (name, version, repo_url, sha)."""
     index = fetch_index()
     libs = index.get("libraries", {})
     if libname not in libs:
@@ -991,17 +1382,17 @@ def _install_registry(libname, req_version=None):
             eprint(f"  Available versions: {available}")
             sys.exit(1)
         repo_url = (info or {}).get("repo") or entry.get("repo", "")
-        n, v = _install_from_repo(repo_url, requested_version=req_version, libname=libname)
-        return n, v, repo_url
+        n, v, sha = _install_from_repo(repo_url, requested_version=req_version, libname=libname)
+        return n, v, repo_url, sha
     repo_url = entry.get("repo", "")
     ver = entry.get("version", "?")
-    author = entry.get("author", "?")
-    desc = entry.get("description", "")
+    author = display_safe(entry.get("author", "?"))
+    desc = display_safe(entry.get("description", ""))
     print(f"[leashed] Found {libname} v{ver} by {author}")
     if desc:
         print(f"  {desc}")
-    n, v = _install_from_repo(repo_url, libname=libname)
-    return n, v, repo_url
+    n, v, sha = _install_from_repo(repo_url, libname=libname)
+    return n, v, repo_url, sha
 
 
 def cmd_install_project_deps(project_dir, strict):
@@ -1028,8 +1419,14 @@ def cmd_install_project_deps(project_dir, strict):
             if not validate_version(version) or not repo:
                 eprint(f"error: {LOCKFILE} entry for '{name}' is missing version/repo")
                 sys.exit(1)
+            rev = entry.get("rev", "")
+            if rev and not (isinstance(rev, str) and re.fullmatch(r'[0-9a-f]{40}', rev)):
+                eprint(f"error: {LOCKFILE} entry for '{name}' has a malformed revision pin")
+                sys.exit(1)
             print(f"[leashed] Installing {name}@{version} (locked)...")
-            _install_from_repo(repo, requested_version=version, libname=validate_name(name))
+            _install_from_repo(repo, requested_version=version,
+                               libname=validate_name(name),
+                               expect_sha=rev or None)
         print(f"[leashed] Done — environment matches {LOCKFILE}")
         return
 
@@ -1056,8 +1453,8 @@ def cmd_install_project_deps(project_dir, strict):
             eprint(f"error: Invalid version '{ver}' for dependency '{name}'")
             sys.exit(1)
         print(f"[leashed] Resolving {name}...")
-        _n, v, repo = _install_registry(name, ver)
-        resolved[name] = {"version": v, "repo": repo}
+        _n, v, repo, sha = _install_registry(name, ver)
+        resolved[name] = {"version": v, "repo": repo, "rev": sha}
     write_lockfile(project_dir, resolved)
     print(f"[leashed] Installed {len(resolved)} package(s) and wrote {LOCKFILE}")
 
@@ -1109,7 +1506,8 @@ def _looks_like_git_target(target):
     return bool(re.match(r'^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$', target)) and "::" not in target
 
 
-def _install_from_repo(repo_url, requested_version=None, libname=None):
+def _install_from_repo(repo_url, requested_version=None, libname=None,
+                     expect_sha=None):
     """Clone a library repo and install it into ~/.leash/libs.
 
     Works both for registry-published repos (library/ layout) and any plain
@@ -1118,6 +1516,12 @@ def _install_from_repo(repo_url, requested_version=None, libname=None):
     Security: the URL is validated before cloning (no ext::/fd::/file://
     transports, no git option injection), and packages containing symlinks
     are refused (path traversal via copytree).
+
+    Version integrity: when a version is requested, the `v{version}` ref
+    must be a real tag (a same-named branch does not satisfy the request),
+    its commit is resolved, an `expect_sha` pin (from leash.lock) is
+    verified when given, and the installed package.lshc version must equal
+    the requested one. Returns (libname, version, sha).
     """
     if requested_version is not None and not validate_version(requested_version):
         eprint(f"error: Invalid version '{requested_version}'. Use semver: X.Y.Z")
@@ -1141,6 +1545,24 @@ def _install_from_repo(repo_url, requested_version=None, libname=None):
                 eprint(f"error: Failed to clone repository: {err}")
             sys.exit(1)
 
+        # Resolve the tag to a commit SHA inside the fresh clone. A branch
+        # named vX.Y.Z must not satisfy a version request, and a moved tag
+        # must not silently resolve to different bytes than pinned.
+        sha = ""
+        if requested_version:
+            tag_ref = f"refs/tags/v{requested_version}^{{commit}}"
+            rc, out, err = run_git(["rev-parse", "--verify", tag_ref], cwd=repo_tmp)
+            if rc != 0:
+                eprint(f"error: Version v{requested_version} is not a tag in '{repo_url}' ({err})")
+                sys.exit(1)
+            sha = out.strip()
+            if expect_sha and sha != expect_sha:
+                eprint(f"error: Version v{requested_version} of '{repo_url}' does not match the locked revision")
+                eprint(f"  Locked:   {expect_sha}")
+                eprint(f"  Resolved: {sha}")
+                eprint("  The tag may have been moved. Run 'leashed update' to re-pin, or verify the repository.")
+                sys.exit(1)
+
         src = os.path.join(repo_tmp, LIBRARY_DIR)
         fallback_root = False
         if not os.path.exists(src):
@@ -1161,34 +1583,60 @@ def _install_from_repo(repo_url, requested_version=None, libname=None):
             libname = re.sub(r'[^a-zA-Z0-9_-]', '_', base)
         libname = validate_name(libname)
 
-        version = pkg.get("version", requested_version or "?")
+        raw_version = pkg.get("version", None)
+        if isinstance(raw_version, str) and validate_version(raw_version):
+            version = raw_version
+        else:
+            version = requested_version if (isinstance(requested_version, str) and validate_version(requested_version)) else "?"
+        mismatch = check_version_match(requested_version,
+                                       version if version != "?" else None)
+        if mismatch:
+            eprint(f"error: {mismatch}")
+            sys.exit(1)
         author = pkg.get("author", "?")
         desc = pkg.get("description", "")
-        # M7: these fields come from the installed package's own metadata
-        # and are written into the generated import stub — a newline would
-        # escape the `//` comment and inject source into every consumer.
-        if not (isinstance(version, str) and validate_version(version)):
-            version = requested_version if (isinstance(requested_version, str) and validate_version(requested_version)) else "?"
-        if not isinstance(author, str):
-            author = "?"
-        author = re.sub(r'[\r\n\x00-\x1f\x7f]', ' ', author).strip() or "?"
-        if not isinstance(desc, str):
-            desc = ""
-        desc = re.sub(r'[\r\n\x00-\x1f\x7f]', ' ', desc).strip()
 
         print(f"[leashed] Installing '{libname}' v{version} from {repo_url}")
         assert_no_symlinks(src)
         os.makedirs(LEASH_LIBS_DIR, exist_ok=True)
         dest_root = os.path.join(LEASH_LIBS_DIR, libname)
+        # Atomic replacement: build the new tree next to the destination
+        # and rename over it, so a failed copy (disk-full, crash) never
+        # deletes a working install. `.git` metadata is never shipped.
+        staging_root = dest_root + ".new"
+        if os.path.exists(staging_root):
+            shutil.rmtree(staging_root, onerror=_del_rw)
+        try:
+            shutil.copytree(src, staging_root,
+                            ignore=shutil.ignore_patterns(".git"))
+        except OSError as e:
+            tmp_cleanup(staging_root)
+            eprint(f"error: Failed to install '{libname}': {e}")
+            sys.exit(1)
         if os.path.exists(dest_root):
             shutil.rmtree(dest_root, onerror=_del_rw)
-        shutil.copytree(src, dest_root)
+        os.replace(staging_root, dest_root)
 
         _write_stub(libname, version, author, desc, dest_root)
         print(f"[leashed] Successfully installed '{libname}' v{version}")
-        return libname, version
+        return libname, version, sha
     finally:
         tmp_cleanup(repo_tmp)
+
+
+def _declare_dependency(project_dir, libname, version):
+    """Append `name@version` to leash-pkg.lshc dependencies unless present."""
+    config_path = os.path.join(project_dir, LEASHED_CONFIG)
+    config = read_pkg_config(config_path)
+    deps = config.get("dependencies", "")
+    deps_list = [d.strip() for d in deps.split(",") if d.strip()]
+    existing = {d.split("@", 1)[0] for d in deps_list}
+    if libname in existing:
+        return False
+    deps_list.append(f"{libname}@{version}")
+    config["dependencies"] = ", ".join(deps_list)
+    write_pkg_config(config_path, config)
+    return True
 
 
 def cmd_install(args):
@@ -1207,6 +1655,8 @@ def cmd_install(args):
             sys.exit(1)
         cmd_install_project_deps(project_dir, strict=locked_strict)
         return
+    if len(args) > 1:
+        print(f"[leashed] warning: ignoring extra arguments: {' '.join(args[1:])}")
     target = args[0].strip()
 
     # 1) Direct git URL or user/repo shorthand — decentralized, no registry needed
@@ -1214,7 +1664,12 @@ def cmd_install(args):
         url = target
         if "://" not in url and not url.endswith(".git"):
             url = f"https://github.com/{url}.git"
-        _install_from_repo(url)
+        n, v, s = _install_from_repo(url)
+        project_dir = _project_dir_or_none()
+        if project_dir is not None:
+            lockfile_record(project_dir, n, v, url, s or None)
+            if _declare_dependency(project_dir, n, v):
+                print(f"[leashed] Added '{n}' ({v}) as a dependency")
         return
 
     # 2) Registry lookup: name or name@version
@@ -1247,10 +1702,13 @@ def cmd_install(args):
         if lock_entry is not None:
             pin = lock_entry.get("version", "")
             repo = lock_entry.get("repo", "")
+            rev = lock_entry.get("rev", "")
             if validate_version(pin) and repo:
                 print(f"[leashed] Using locked version {libname}@{pin} from {LOCKFILE}")
-                _n, v = _install_from_repo(repo, requested_version=pin, libname=libname)
-                lockfile_record(project_dir, libname, v, repo)
+                _n, v, s = _install_from_repo(repo, requested_version=pin,
+                                              libname=libname,
+                                              expect_sha=rev or None)
+                lockfile_record(project_dir, libname, v, repo, s or None)
                 return
             # malformed lockfile entry: fall through and re-resolve below
             eprint(f"warning: {LOCKFILE} entry for '{libname}' is incomplete — resolving from registry")
@@ -1260,15 +1718,22 @@ def cmd_install(args):
             sys.exit(1)
 
     print(f"[leashed] Looking up '{libname}'...")
-    _n, v, repo = _install_registry(libname, req_version)
+    if req_version is not None and project_dir is not None:
+        old_pin = lockfile_pin(project_dir, libname)
+        if old_pin is not None and old_pin != req_version:
+            print(f"[leashed] warning: explicit {libname}@{req_version} "
+                  f"overrides the locked version {libname}@{old_pin}")
+    _n, v, repo, s = _install_registry(libname, req_version)
     if project_dir is not None:
-        lockfile_record(project_dir, libname, v, repo)
+        lockfile_record(project_dir, libname, v, repo, s or None)
 
 
 def cmd_uninstall(args):
     if len(args) < 1:
         eprint("Usage: leashed uninstall <library_name>")
         sys.exit(1)
+    if len(args) > 1:
+        print(f"[leashed] warning: ignoring extra arguments: {' '.join(args[1:])}")
     libname = validate_name(args[0])
     dest_root = os.path.join(LEASH_LIBS_DIR, libname)
     stub_path = os.path.join(LEASH_LIBS_DIR, f"{libname}.lsh")
@@ -1286,6 +1751,8 @@ def cmd_uninstall(args):
 
 
 def cmd_list(args):
+    if args:
+        print(f"[leashed] warning: ignoring extra arguments: {' '.join(args)}")
     if not os.path.isdir(LEASH_LIBS_DIR):
         print("[leashed] No libraries installed (~/.leash/libs does not exist)")
         return
@@ -1303,13 +1770,15 @@ def cmd_list(args):
         return
     print(f"[leashed] Installed libraries in {LEASH_LIBS_DIR}:")
     for name, version, desc in entries:
-        print(f"  - {name} v{version}" + (f"  {desc}" if desc else ""))
+        print(f"  - {display_safe(name)} v{display_safe(version)}" + (f"  {display_safe(desc)}" if desc else ""))
 
 
 def cmd_info(args):
     if len(args) < 1:
         eprint("Usage: leashed info <library_name>")
         sys.exit(1)
+    if len(args) > 1:
+        print(f"[leashed] warning: ignoring extra arguments: {' '.join(args[1:])}")
     libname = validate_name(args[0])
     index = fetch_index()
     libs = index.get("libraries", {})
@@ -1317,14 +1786,14 @@ def cmd_info(args):
         eprint(f"error: Library '{libname}' not found in the package index")
         sys.exit(1)
     e = get_index_entry(index, libname)
-    print(f"{libname}")
-    print(f"  Latest version: {e.get('version', '?')}")
-    print(f"  Author:         {e.get('author', '?')}")
+    print(f"{display_safe(libname)}")
+    print(f"  Latest version: {display_safe(e.get('version', '?'))}")
+    print(f"  Author:         {display_safe(e.get('author', '?'))}")
     if e.get("publisher") and e["publisher"] != e.get("author"):
-        print(f"  Publisher:      {e['publisher']}")
+        print(f"  Publisher:      {display_safe(e['publisher'])}")
     if e.get("description"):
-        print(f"  Description:    {e['description']}")
-    print(f"  Repo:           {e.get('repo', '?')}")
+        print(f"  Description:    {display_safe(e['description'])}")
+    print(f"  Repo:           {display_safe(e.get('repo', '?'))}")
     versions = sorted_versions(list((e.get("versions") or {}).keys()))
     if versions:
         print(f"  Versions:       {', '.join(versions)}")
@@ -1355,18 +1824,50 @@ def cmd_update(args):
 
     new_versions = {}
     new_repos = {}
+    new_shas = {}
     for t in targets:
+        want = None
         if "@" in t:
-            t = t.split("@", 1)[0]
+            # An explicit pin is an exact install, not an update: silently
+            # installing another version than asked for breaks pinning.
+            t, _, want = t.partition("@")
+            want = want.strip()
+            if not validate_version(want):
+                eprint(f"error: Invalid version '{want}' for '{t.strip()}'")
+                sys.exit(1)
         libname = validate_name(t.strip())
-        _, version, repo = _install_registry(libname)
+        if want is not None:
+            _, version, repo, sha = _install_registry(libname, want)
+        else:
+            current = None
+            inst_pkg = _read_installed_pkg_config(os.path.join(LEASH_LIBS_DIR, libname))
+            if isinstance(inst_pkg, dict) and validate_version(inst_pkg.get("version", "")):
+                current = inst_pkg["version"]
+            if current is None:
+                pin = lockfile_pin(project_dir if in_project else os.getcwd(), libname)
+                if pin:
+                    current = pin
+            _, version, repo, sha = _install_registry(libname)
+            if current is not None and not is_newer_version(version, current):
+                print(f"[leashed] '{libname}' is already up to date ({current}); skipping")
+                continue
         new_versions[libname] = version
         new_repos[libname] = repo
+        new_shas[libname] = sha
 
     if update_deps_field:
         config = read_pkg_config(config_path)
-        config["dependencies"] = ", ".join(
-            f"{n}@{new_versions[n]}" for n in new_versions if new_versions[n] != "?")
+        kept_deps = []
+        for d in config.get("dependencies", "").split(","):
+            d = d.strip()
+            if not d:
+                continue
+            dn = d.split("@", 1)[0]
+            if dn in new_versions and new_versions[dn] != "?":
+                kept_deps.append(f"{dn}@{new_versions[dn]}")
+            else:
+                kept_deps.append(d)
+        config["dependencies"] = ", ".join(kept_deps)
         write_pkg_config(config_path, config)
         print(f"[leashed] Updated dependencies in {LEASHED_CONFIG}")
 
@@ -1379,7 +1880,8 @@ def cmd_update(args):
             dep_names = {d.split("@", 1)[0] for d in config.get("dependencies", "").split(",") if d.strip()}
         for n, v in new_versions.items():
             if v != "?" and (update_deps_field or n in dep_names):
-                lockfile_record(project_dir, n, v, new_repos.get(n, ""))
+                lockfile_record(project_dir, n, v, new_repos.get(n, ""),
+                                new_shas.get(n) or None)
 
 
 def cmd_lock(args):
@@ -1409,10 +1911,12 @@ def cmd_lock(args):
             eprint(f"error: Invalid version '{ver}' for dependency '{name}'")
             sys.exit(1)
         print(f"[leashed] Locking {name}...")
-        _n, v, repo = _install_registry(name, ver)
-        resolved[name] = {"version": v, "repo": repo}
+        _n, v, repo, sha = _install_registry(name, ver)
+        resolved[name] = {"version": v, "repo": repo, "rev": sha}
     write_lockfile(project_dir, resolved)
-    print(f"[leashed] Locked {len(resolved)} package(s) in {LOCKFILE}")
+    kept = sum(1 for r in resolved.values()
+               if validate_version(r.get("version", "")))
+    print(f"[leashed] Locked {kept} package(s) in {LOCKFILE}")
     print(f"[leashed] Commit {LOCKFILE} — fresh clones restore it with 'leashed install'")
 
 
@@ -1420,6 +1924,8 @@ def cmd_add(args):
     if len(args) < 1:
         eprint("Usage: leashed add <library_name>")
         sys.exit(1)
+    if len(args) > 1:
+        print(f"[leashed] warning: ignoring extra arguments: {' '.join(args[1:])}")
     libname = validate_name(args[0])
     project_dir = os.getcwd()
     config_path = os.path.join(project_dir, LEASHED_CONFIG)
@@ -1431,16 +1937,36 @@ def cmd_add(args):
 
     installed_version = None
     installed_repo = ""
+    installed_sha = None
     if not os.path.exists(os.path.join(LEASH_LIBS_DIR, f"{libname}.lsh")):
         print(f"[leashed] Library '{libname}' not installed globally. Installing first...")
         pin = lockfile_pin(project_dir, libname)
         if pin:
             print(f"[leashed] Using locked version {libname}@{pin} from {LOCKFILE}")
-            _n, _v, _r = _install_registry(libname, pin)
+            _n, _v, _r, _s = _install_registry(libname, pin)
         else:
-            _n, _v, _r = _install_registry(libname)
+            _n, _v, _r, _s = _install_registry(libname)
         installed_version = _v
         installed_repo = _r
+        installed_sha = _s or None
+    else:
+        # Already on disk: record what's actually installed, not what the
+        # index advertises — otherwise the lock claims bytes that are not
+        # present until the next restore.
+        inst_pkg = _read_installed_pkg_config(os.path.join(LEASH_LIBS_DIR, libname))
+        if isinstance(inst_pkg, dict) and validate_version(inst_pkg.get("version", "")):
+            installed_version = inst_pkg["version"]
+            print(f"[leashed] Library '{libname}' already installed (v{installed_version}); recording that version")
+        else:
+            print(f"[leashed] warning: could not determine the installed version of '{libname}'; installing the index version...")
+            pin = lockfile_pin(project_dir, libname)
+            if pin:
+                _n, _v, _r, _s = _install_registry(libname, pin)
+            else:
+                _n, _v, _r, _s = _install_registry(libname)
+            installed_version = _v
+            installed_repo = _r
+            installed_sha = _s or None
 
     version = "?"
     index = fetch_index()
@@ -1450,21 +1976,19 @@ def cmd_add(args):
     if installed_version:
         version = installed_version
 
-    deps = config.get("dependencies", "")
-    deps_list = [d.strip() for d in deps.split(",") if d.strip()]
-    existing = {d.split("@", 1)[0] for d in deps_list}
-    if libname in existing:
+    if not _declare_dependency(project_dir, libname, version):
         print(f"[leashed] '{libname}' is already a dependency of this project")
         return
-    entry = f"{libname}@{version}"
-    deps_list.append(entry)
-    config["dependencies"] = ", ".join(deps_list)
-    write_pkg_config(config_path, config)
 
     main_file = config.get("main", "")
     if main_file:
-        main_path = os.path.join(project_dir, main_file)
-        if os.path.exists(main_path):
+        # Contain the target inside the project: a malicious `main:`
+        # (absolute path, `..` segments, or a symlink pointing out)
+        # must not turn `add` into an arbitrary-file rewrite.
+        main_path = os.path.realpath(os.path.join(project_dir, main_file))
+        if main_path != project_dir and not main_path.startswith(project_dir + os.sep):
+            print(f"[leashed] warning: skipping 'use' insertion: '{main_file}' is outside the project")
+        elif os.path.isfile(main_path):
             with open(main_path, "r", encoding="utf-8") as f:
                 content = f.read()
             line = f"use {libname}::*; // added by leashed\n"
@@ -1475,7 +1999,8 @@ def cmd_add(args):
 
     if version != "?":
         lockfile_record(project_dir, libname, version,
-                        installed_repo or (libs[libname].get("repo", "") if libname in libs and isinstance(libs[libname], dict) else ""))
+                        installed_repo or (libs[libname].get("repo", "") if libname in libs and isinstance(libs[libname], dict) else ""),
+                        installed_sha)
 
     print(f"[leashed] Added '{libname}' ({version}) as a dependency")
 
@@ -1484,6 +2009,8 @@ def cmd_search(args):
     if len(args) < 1:
         eprint("Usage: leashed search <query>")
         sys.exit(1)
+    if len(args) > 1:
+        print(f"[leashed] warning: ignoring extra arguments: {' '.join(args[1:])}")
     query = args[0].lower()
     print(f"[leashed] Searching for '{query}'...")
 
@@ -1501,10 +2028,10 @@ def cmd_search(args):
             matching[k] = v
 
     if not matching:
-        print(f"[leashed] No libraries found matching '{query}'")
+        print(f"[leashed] No libraries found matching '{display_safe(query)}'")
         all_libs = list(libs.keys())[:15]
         if all_libs:
-            print(f"  Available: {', '.join(all_libs)}")
+            print(f"  Available: {', '.join(display_safe(n) for n in all_libs)}")
             if len(libs) > 15:
                 print(f"  ... and {len(libs) - 15} more")
         return
@@ -1514,9 +2041,9 @@ def cmd_search(args):
         ver = info.get("version", "?")
         author = info.get("author", "?")
         desc = info.get("description", "")
-        print(f"  - {lib_name} v{ver} by {author}")
+        print(f"  - {display_safe(lib_name)} v{display_safe(ver)} by {display_safe(author)}")
         if desc:
-            print(f"    {desc}")
+            print(f"    {display_safe(desc)}")
 
 
 def usage():

@@ -5,6 +5,27 @@ All notable changes to the Leash compiler are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed — Package manager integrity (`leashed`)
+- Version requests are verified: a requested `name@X.Y.Z` must resolve
+  to a real tag (a same-named branch no longer satisfies it), and the
+  installed `package.lshc` version must equal the request — mismatches
+  fail loudly instead of installing other bytes than asked for.
+- `leash.lock` records a `rev` commit-SHA pin at install/lock time and
+  verifies it on restore (fail-closed on moved tags); `update` never
+  silently downgrades and honors explicit `@version` pins.
+- Publishing re-checks ownership and version against freshly cloned
+  registry data (concurrent publishes no longer overwrite each other),
+  fails before pushing on conflict, never moves published tags
+  (same-content retries excepted), and pushes with `--force-with-lease`.
+- Publishing ships an allowlist (`src/`, manifests, README/LICENSE/
+  CHANGELOG, the main file, `publish_include`) — secret-shaped files
+  are skipped with a warning; credential-bearing repo URLs are rejected.
+- Direct installs inside a project are recorded (lock + dependencies);
+  `add` records the on-disk version; unknown CLI options print `info:`
+  instead of being swallowed; registry display data is terminal-safe.
+
 ## [1.0.1] - 2026-10-13
 
 Patch release: self-hosted compiler parity fixes (integer semantics,
