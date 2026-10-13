@@ -73,14 +73,14 @@ leash self-host
 
 <h2>Using the Self-Hosted Compiler</h2>
 
-<pre><code>leash compile examples/hello.lsh -o /tmp/hello
+<pre><code>leash compile examples/hello.lsh to /tmp/hello
 /tmp/hello
 
 # run directly (temp binary, "Executed at" banner, exit code propagation)
 leash run examples/hello.lsh
 
 # emit LLVM IR only
-leash compile file.lsh --emit-llvm -o file
+leash compile file.lsh --emit-llvm to file
 
 # rebuild itself from source
 leash self-host

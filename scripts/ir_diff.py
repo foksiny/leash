@@ -90,7 +90,7 @@ def normalize_out(s):
 
 def selfhosted_run(path):
     compiler = os.environ.get("LEASHC", "bin/leashc")
-    r = run([compiler, "compile", path, "-o", "/tmp/parity_bin"], timeout=180)
+    r = run([compiler, "compile", path, "to", "/tmp/parity_bin"], timeout=180)
     if r.returncode != 0:
         return None, (r.stdout + r.stderr)
     rr = run(["/tmp/parity_bin"], timeout=20)
@@ -116,7 +116,7 @@ def dump_ir(path):
     with open(os.path.join(ROOT, path)) as fh:
         open(staged, "w").write(fh.read())
     run([sys.executable, "-m", "leash.cli", "dump", staged], timeout=180)
-    run(["bin/leashc", "compile", path, "--emit-llvm", "-o", "/tmp/irdiff_sh"], timeout=180)
+    run(["bin/leashc", "compile", path, "--emit-llvm", "to", "/tmp/irdiff_sh"], timeout=180)
     for label, p in [("PYTHON", "/tmp/irdiff_py_input.ll"), ("SELFHOSTED", "/tmp/irdiff_sh.ll")]:
         print(f"===== {label} IR: {p} =====")
         if os.path.exists(p):

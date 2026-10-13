@@ -32,7 +32,7 @@ class TestSelfHostedCompiler(unittest.TestCase):
         with open(tmp_src, "w") as fh:
             fh.write(source)
         out_bin = "/tmp/leashc_test_bin"
-        r = _sh([BIN_LEASHC, "compile", tmp_src, "-o", out_bin], timeout=timeout)
+        r = _sh([BIN_LEASHC, "compile", tmp_src, "to", out_bin], timeout=timeout)
         if r.returncode != 0:
             self.fail(f"compile failed: {r.stderr}\n{r.stdout}")
         r2 = _sh([out_bin], timeout=30)
@@ -104,7 +104,7 @@ class TestSelfHostedCompiler(unittest.TestCase):
 
     def test_self_compile(self):
         # Stage 2 must be able to compile the compiler itself (fixed-point stage)
-        r = _sh([BIN_LEASHC, "compile", "compiler/main.lsh", "-o", "/tmp/leashc_self_compile_check"], timeout=900)
+        r = _sh([BIN_LEASHC, "compile", "compiler/main.lsh", "to", "/tmp/leashc_self_compile_check"], timeout=900)
         self.assertEqual(r.returncode, 0, msg=r.stdout + r.stderr)
 
     def test_version_and_help(self):

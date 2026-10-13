@@ -45,7 +45,7 @@ leash run hello.lsh
 ### Compile to a binary
 
 ```bash
-leash compile hello.lsh -o hello
+leash compile hello.lsh to hello
 ./hello
 ```
 

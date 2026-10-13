@@ -271,7 +271,7 @@ fnc print_usage() : void {
 
 fnc print_command_help(topic string) : bool {
     if topic == "compile" {
-        show("compile <file.lsh> [to <out>] [-o <out>]");
+        show("compile <file.lsh> [to <out>]");
         show("");
         show("Compile a Leash source file into an executable binary.");
         show("Output defaults to the input name without the .lsh extension.");
@@ -804,16 +804,16 @@ fnc cmd_self_host(args string[]) : int {
         return rc;
     }
     show("[self-host] Stage 1: bin/leashc_stage1 compiles itself -> bin/leashc_stage2");
-    rc = xcode("cd " + root + " && bin/leashc_stage1 compile compiler/main.lsh -o bin/leashc_stage2");
+    rc = xcode("cd " + root + " && bin/leashc_stage1 compile compiler/main.lsh to bin/leashc_stage2");
     if rc != 0 { show("error: stage 1 failed"); return rc; }
     show("[self-host] Stage 2: bin/leashc_stage2 compiles itself -> bin/leashc_stage3");
-    rc = xcode("cd " + root + " && bin/leashc_stage2 compile compiler/main.lsh -o bin/leashc_stage3");
+    rc = xcode("cd " + root + " && bin/leashc_stage2 compile compiler/main.lsh to bin/leashc_stage3");
     if rc != 0 { show("error: stage 2 failed"); return rc; }
 
     show("[self-host] Comparing Stage 2 IR vs Stage 3 IR for fixed point...");
-    rc = xcode("cd " + root + " && bin/leashc_stage2 compile compiler/main.lsh --emit-llvm -o /tmp/leashc_stage2");
+    rc = xcode("cd " + root + " && bin/leashc_stage2 compile compiler/main.lsh --emit-llvm to /tmp/leashc_stage2");
     if rc != 0 { show("error: stage 2 IR dump failed"); return rc; }
-    rc = xcode("cd " + root + " && bin/leashc_stage3 compile compiler/main.lsh --emit-llvm -o /tmp/leashc_stage3");
+    rc = xcode("cd " + root + " && bin/leashc_stage3 compile compiler/main.lsh --emit-llvm to /tmp/leashc_stage3");
     if rc != 0 { show("error: stage 3 IR dump failed"); return rc; }
     if xcode("diff /tmp/leashc_stage2.ll /tmp/leashc_stage3.ll") == 0 {
         show("[self-host] OK: fixed point reached (Stage 2 IR == Stage 3 IR).");
@@ -997,11 +997,6 @@ fnc main(args string[]) : int {
         i: int = loop_start;
         while i < args.size {
             arg: string = args[i];
-            if arg == "-o" && i + 1 < args.size {
-                output_file = args[i + 1];
-                i = i + 2;
-                continue;
-            }
             if arg == "to" && i + 1 < args.size {
                 output_file = args[i + 1];
                 i = i + 2;
@@ -1093,6 +1088,19 @@ fnc main(args string[]) : int {
             }
             if arg == "--optimization-verbosity" || arg == "-ov" {
                 verbose = true;
+                i = i + 1;
+                continue;
+            }
+            // Unknown options are reported, never silently swallowed
+            // (python parity): `-o` specifically never set the output —
+            // use `to <path>` for that.
+            if arg == "-o" {
+                show("info: the '-o' option is not supported; set the output file with 'to <path>'");
+                i = i + 1;
+                continue;
+            }
+            if arg.size > 0 && arg[0] == '-' {
+                show("info: ignoring unknown option '", arg, "'");
                 i = i + 1;
                 continue;
             }

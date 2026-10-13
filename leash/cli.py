@@ -2196,10 +2196,10 @@ def run_self_host():
     _run([sys.executable, "-m", "leash.cli", "compile", "compiler/main.lsh", "to", stage1])
     _clear_obj_cache(["/tmp/leashc_leashc_stage2.ll", "/tmp/leashc_leashc_stage3.ll"])
     print("[self-host] Stage 1: leashc_stage1 -> bin/leashc_stage2")
-    _run([stage1, "compile", "compiler/main.lsh", "-o", stage2])
+    _run([stage1, "compile", "compiler/main.lsh", "to", stage2])
     _clear_obj_cache(["/tmp/leashc_leashc_stage3.ll"])
     print("[self-host] Stage 2: leashc_stage2 -> bin/leashc_stage3")
-    _run([stage2, "compile", "compiler/main.lsh", "-o", stage3])
+    _run([stage2, "compile", "compiler/main.lsh", "to", stage3])
 
     ir2 = os.path.join("/tmp", "leashc_" + os.path.basename(stage2) + ".ll")
     ir3 = os.path.join("/tmp", "leashc_" + os.path.basename(stage3) + ".ll")
@@ -2569,6 +2569,11 @@ def main():
             elif sys.argv[i] == "to" and i + 1 < len(sys.argv):
                 outname = sys.argv[i + 1]
                 i += 2
+            elif sys.argv[i] == "-o":
+                # `-o` never set the output (use `to <path>`); say so
+                # instead of silently swallowing it.
+                print("info: the '-o' option is not supported; set the output file with 'to <path>'", file=sys.stderr)
+                i += 1
             elif sys.argv[i] == "to-dynamic":
                 outtype = "dynamic"
                 i += 1
@@ -2585,6 +2590,9 @@ def main():
                 autofree = True
                 i += 1
             else:
+                # Unknown options are reported, never silently swallowed.
+                if sys.argv[i].startswith("-"):
+                    print(f"info: ignoring unknown option '{sys.argv[i]}'", file=sys.stderr)
                 i += 1
         if cmd == "dump":
             dump_file(infile, outname, target, check, warnerr, elibs, opt, extra_import_dirs=extra_import_dirs, opt_verbose=OPT_VERBOSE_MODE, no_gc=no_gc, autofree=autofree)
