@@ -56,7 +56,7 @@
 <pre><code><span class="cm"># Installed alongside the Leash compiler</span>
 pip install -e .
 leashed --version
-<span class="cm"># leashed v0.1.0</span></code></pre>
+<span class="cm"># leashed v0.5.0</span></code></pre>
 
 <h2>Creating a Package</h2>
 <p>Scaffold a new library project with <code>leashed init</code>. This creates the standard library structure with a package configuration file where you specify the library's name, version, author, and entry point.</p>
@@ -129,7 +129,7 @@ guesswork.</p>
 <pre><code>{ <span class="cm"># leash.lock</span>
   <span class="str">"version"</span>: 1,
   <span class="str">"packages"</span>: {
-    <span class="str">"mylib"</span>: { <span class="str">"version"</span>: <span class="str">"1.2.3"</span>, <span class="str">"repo"</span>: <span class="str">"https://github.com/you/mylib.git"</span>, <span class="str">"tag"</span>: <span class="str">"v1.2.3"</span> }
+    <span class="str">"mylib"</span>: { <span class="str">"version"</span>: <span class="str">"1.2.3"</span>, <span class="str">"repo"</span>: <span class="str">"https://github.com/you/mylib.git"</span>, <span class="str">"tag"</span>: <span class="str">"v1.2.3"</span>, <span class="str">"rev"</span>: <span class="str">"a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4"</span> }
   }
 }</code></pre>
 
@@ -149,6 +149,9 @@ guesswork.</p>
     instead of silently resolving another version.</li>
     <li><strong>Kept in sync:</strong> <code>leashed add</code>, <code>leashed update</code>
     and <code>leashed uninstall</code> update the lockfile automatically.</li>
+    <li><strong>Revision pins:</strong> each entry also records the tag's commit
+    SHA (<code>rev</code>). Restores verify it and abort on a moved tag, so a
+    re-pointed tag can never silently change your build.</li>
 </ul>
 
 <pre><code>git clone myapp && cd myapp    <span class="cm"># fresh clone</span>
@@ -244,6 +247,8 @@ leashed update mylib         <span class="cm"># reinstall one library at its lat
     <tr><td>Publisher identity</td><td>Registry entries are bound to a verified GitHub login; only the original owner can update an entry, and nobody can publish under someone else's name</td></tr>
     <tr><td>Compilation check</td><td>Library must compile to a static library (locally on publish, plus a best-effort smoke test in CI)</td></tr>
     <tr><td>Semantic versioning</td><td>Versions must be valid semver and strictly increasing; history is immutable</td></tr>
+    <tr><td>Pinned, verified installs</td><td>Version tags resolve to commit SHAs (branch shadowing rejected); the installed manifest must equal the request, and restores abort on SHA mismatch</td></tr>
+    <tr><td>Publish integrity</td><td>Ownership and version re-checked against fresh registry data (concurrent publishes preserved); published tags immutable; pushes use <code>--force-with-lease</code>; only allowlisted paths ship, secret-shaped files skipped, credential-bearing URLs rejected</td></tr>
     <tr><td>Automated validation</td><td>A registry bot re-checks every rule on each pull request and auto-merges only clean updates</td></tr>
 </table>
 

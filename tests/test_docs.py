@@ -21,6 +21,7 @@ import tempfile
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT)
 DOCS = os.path.join(ROOT, "docs")
 
 # Leash-ness heuristic: a block is Leash code if it declares functions or
@@ -127,6 +128,42 @@ class TestDocs(unittest.TestCase):
         )
         # Sanity: the harness must actually be checking something
         self.assertGreater(checked, 0, "no doc snippets were checked")
+
+    def test_package_manager_page(self):
+        # package-manager.html documents machine-checked contracts (the
+        # leash.lock shape, the --version output), so it gets its own
+        # assertions: docs drift here used to go unnoticed.
+        from leash import leashed as leashed_mod
+
+        with open(os.path.join(DOCS, "package-manager.html"),
+                  encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+        blocks = []
+        for m in re.finditer(r"<pre><code>(.*?)</code></pre>", text, re.S):
+            blocks.append(html_mod.unescape(TAG.sub("", m.group(1))))
+
+        # 1. The leash.lock example must parse and match write_lockfile's
+        # contract: version field, per-entry version/repo/tag/rev, and a
+        # 40-hex revision pin consistent with the entry version.
+        lock_blocks = [b for b in blocks if '"packages"' in b]
+        self.assertTrue(lock_blocks, "leash.lock example missing from docs")
+        import json
+        doc = json.loads(re.sub(r"#[^\n]*", "", lock_blocks[0]))
+        self.assertEqual(doc["version"], leashed_mod.LOCKFILE_VERSION)
+        self.assertTrue(doc["packages"], "lock example has no packages")
+        for pkg_name, entry in doc["packages"].items():
+            for field in ("version", "repo", "tag", "rev"):
+                self.assertIn(field, entry,
+                              f"lock example entry {pkg_name!r} lacks {field!r}")
+            self.assertEqual(entry["tag"], "v" + entry["version"])
+            self.assertRegex(entry["rev"], r"^[0-9a-f]{40}$")
+
+        # 2. The `leashed --version` example output must match the binary.
+        ver_blocks = [b for b in blocks if "leashed --version" in b]
+        self.assertTrue(ver_blocks, "--version example missing from docs")
+        m = re.search(r"# leashed v(\d+\.\d+\.\d+)", ver_blocks[0])
+        self.assertIsNotNone(m, "--version example output missing from docs")
+        self.assertEqual(m.group(1), leashed_mod.LEASHED_VERSION)
 
 
 if __name__ == "__main__":
