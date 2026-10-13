@@ -787,6 +787,10 @@ pub def CompilerDriver : class {
         cg.is_lib = output_type == "dynamic" || output_type == "static";
         ir_lines: vec<string> = cg.generate_module(prog);
         if verbose { show("[verbose] generated ", tostring(ir_lines.size), " IR lines"); }
+        if output_type == "" && !emit_llvm && !check_mode && !cg.has_entry {
+            show("error: no entry point: '", input_file, "' defines no 'main' function (build a library with to-dynamic/to-static, or add 'fnc main')");
+            return 1;
+        }
 
         out_bin: string = output_file;
         if out_bin.size == 0 {

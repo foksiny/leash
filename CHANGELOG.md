@@ -5,6 +5,49 @@ All notable changes to the Leash compiler are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.2.1] - 2026-10-13
+
+Patch release: exact sub-64-bit integer semantics, slice stores across
+element widths, and a clean diagnostic for entry-point-less programs.
+
+### Fixed — `int<8>` / `int<16>` / `int<32>` kept their exact widths
+- The self-hosted frontend erased signed sub-64 widths (`int<8>` →
+  `int`, in the parser and in alias resolution) while `uint<8>` and
+  friends kept theirs, and codegen mapped the survivors to `i64`.
+  Narrow signed integers therefore never wrapped: `add8(100, 100)`
+  printed `200` instead of `-56`, and `int<8>[4]` array elements read
+  back untruncated. Both layers now preserve exact widths (python
+  parity): same-width arithmetic wraps, mixed-width operands promote
+  to the wider side, and `get_expr_type` reports the promoted type so
+  downstream loads match the register width.
+- `tostring()` on narrow integers now extends with the value's
+  signedness instead of passing an `i8`/`i16` register to an `i64`
+  slot (invalid IR).
+
+### Fixed — Fixed-array / slice stores convert element-wise
+- Storing a slice into a fixed array (or any slice slot) of a
+  different element width reinterpreted the backing store: `a:
+  int<64>[3] = {1, 2, 3}` read back packed pairs plus out-of-bounds
+  garbage. New `adapt_slice` conversion (widen/narrow/float/int
+  table mirroring the scalar coercions) runs at variable
+  declarations, assignments, struct/class field stores, call
+  arguments, returns, and global/static initializers. Untracked by
+  design under `--autofree` (the product may escape; leaking is
+  output-safe).
+- `examples/arrays.lsh` now matches the reference byte-for-byte.
+
+### Fixed — Clean error for programs without `main`
+- Compiling a `main`-less file (e.g. `examples/alias_tst.lsh`) as an
+  executable used to dump a raw linker error in both compilers. Both
+  now report `error: no entry point: ...` (exit 1) and point at
+  `to-dynamic`/`to-static`; `--check` and IR dumps stay exempt.
+
+### Kept as-is (documented)
+- `float<16>` / `float<32>` still compute at `double` precision in the
+  self-hosted compiler (the reference uses `half`/`float` types, but
+  no observable divergence was found: `1/3`, `0.1` accumulation, and
+  `100000.0` overflow all print identically).
+
 ## [1.2.0] - 2026-10-13
 
 Minor release: the self-hosted compiler builds native libraries and

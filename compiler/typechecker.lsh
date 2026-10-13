@@ -3188,7 +3188,7 @@ pub def TypeChecker : class {
             guard = guard + 1;
         }
         if tt == "float<64>" || tt == "float<32>" || tt == "float<16>" || tt == "float<128>" { return "float"; }
-        if tt == "int<32>" || tt == "int<16>" || tt == "int<8>" { return "int"; }
+        if tt == "int<32>" { return "int"; }
         return tt;
     }
 

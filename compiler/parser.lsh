@@ -376,7 +376,7 @@ pub def Parser : class {
             // 64-bit arithmetic now that plain `int` is 32-bit.
             if !this.keep_sized {
                 if t == "float<64>" || t == "float<32>" || t == "float<16>" || t == "float<128>" { t = "float"; }
-                if t == "int<32>" || t == "int<16>" || t == "int<8>" { t = "int"; }
+                if t == "int<32>" { t = "int"; }
             }
             // Check for generics: vec<T>, hash<K,V>
             if this.match_tok(Tok.LT) {
@@ -441,7 +441,7 @@ pub def Parser : class {
         // int<64>/uint<64> stay wide (see the early normalization above).
         if !this.keep_sized {
             if t == "float<64>" || t == "float<32>" || t == "float<16>" || t == "float<128>" { t = "float"; }
-            if t == "int<32>" || t == "int<16>" || t == "int<8>" { t = "int"; }
+            if t == "int<32>" { t = "int"; }
         }
 
         // Check for array suffix: Type[], Type[N] or Type[expr]

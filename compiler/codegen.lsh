@@ -8,6 +8,9 @@ pub def CodeGen : class {
                         // library with its own main cannot link its consumer)
     pub autofree: bool;   // --autofree: track heap allocations per function
                           // and free them at function exit (no GC)
+    pub has_entry: bool;  // an entry point exists (top-level or class
+                          // static main): executables require one, libraries
+                          // must not gain one
     pub af_arr: string;   // tracking array alloca reg ("" when inactive)
     pub af_cnt: string;   // tracking counter alloca reg
     pub af_emitted: bool;   // cleanup already emitted for this function
@@ -555,6 +558,123 @@ pub def CodeGen : class {
         this.emit("  " + vreg + " = call i8* @leash_sh_vec_from_parts(i8* " + dptr + ", i64 " + nreg + ", i64 " + tostring(vez) + ", i64 " + tostring(vsc) + ")");
         if track { this.af_track(vreg); }
         return vreg;
+    }
+
+    pub fnc is_slice_like(typ string) : bool {
+        return typ.size > 2 && typ[typ.size - 1] == ']';
+    }
+
+    // Element-wise slice conversion for fixed-array / slice stores whose
+    // element widths differ (e.g. `int<64>[3]` initialized from an `int[]`
+    // literal): without it the narrow backing store is read at the wide
+    // stride, producing packed garbage and out-of-bounds reads. Same-width
+    // stores return the value unchanged. Mirrors the scalar table in
+    // coerce_store_val (trunc/sext/zext, sitofp/uitofp, fptosi/fptoui,
+    // fpext/fptrunc); pointer elements are adopted as-is.
+    pub fnc adapt_slice(val string, from_t string, to_t string) : string {
+        if !this.is_slice_like(from_t) { return val; }
+        if !this.is_slice_like(to_t) { return val; }
+        from_base: string = this.slice_base_type(from_t);
+        to_base: string = this.slice_base_type(to_t);
+        from_lty: string = this.llvm_type(from_t);
+        to_lty: string = this.llvm_type(to_t);
+        if from_lty == to_lty { return val; }
+        from_e: string = this.llvm_type(from_base);
+        to_e: string = this.llvm_type(to_base);
+        if from_e == to_e { return val; }
+        // Pointer elements (strings, objects): adopt the buffer directly.
+        if this.is_ptr_lty(from_e) || this.is_ptr_lty(to_e) {
+            if from_e != to_e { return val; }
+            len0: string = this.new_reg();
+            this.emit("  " + len0 + " = extractvalue " + from_lty + " " + val + ", 0");
+            ptr0: string = this.new_reg();
+            this.emit("  " + ptr0 + " = extractvalue " + from_lty + " " + val + ", 1");
+            ptr0c: string = this.new_reg();
+            this.emit("  " + ptr0c + " = bitcast " + from_e + " " + ptr0 + " to " + to_e);
+            ad0: string = this.new_reg();
+            this.emit("  " + ad0 + " = insertvalue " + to_lty + " undef, i64 " + len0 + ", 0");
+            ad1: string = this.new_reg();
+            this.emit("  " + ad1 + " = insertvalue " + to_lty + " " + ad0 + ", " + to_e + " " + ptr0c + ", 1");
+            return ad1;
+        }
+        len: string = this.new_reg();
+        this.emit("  " + len + " = extractvalue " + from_lty + " " + val + ", 0");
+        src: string = this.new_reg();
+        this.emit("  " + src + " = extractvalue " + from_lty + " " + val + ", 1");
+        dst_esz: int = this.vec_elem_bytes(to_base);
+        total: string = this.new_reg();
+        this.emit("  " + total + " = mul i64 " + len + ", " + tostring(dst_esz));
+        lit_flags: int = 0;
+        if !this.vec_elem_scan(to_base) { lit_flags = 2; }
+        raw: string = this.new_reg();
+        this.emit("  " + raw + " = call i8* @leash_gc_malloc_ex(i64 " + total + ", i32 " + tostring(lit_flags) + ")");
+        dst: string = this.new_reg();
+        this.emit("  " + dst + " = bitcast i8* " + raw + " to " + to_e + "*");
+        l_cond: string = this.new_label("ad_cond");
+        l_body: string = this.new_label("ad_body");
+        l_end: string = this.new_label("ad_end");
+        idx: string = this.new_reg();
+        this.emit("  " + idx + " = alloca i64, align 8");
+        this.emit("  store i64 0, i64* " + idx + ", align 8");
+        this.emit("  br label %" + l_cond);
+        this.emit(l_cond + ":");
+        cur: string = this.new_reg();
+        this.emit("  " + cur + " = load i64, i64* " + idx + ", align 8");
+        more: string = this.new_reg();
+        this.emit("  " + more + " = icmp ult i64 " + cur + ", " + len);
+        this.emit("  br i1 " + more + ", label %" + l_body + ", label %" + l_end);
+        this.emit(l_body + ":");
+        sgep: string = this.new_reg();
+        this.emit("  " + sgep + " = getelementptr inbounds " + from_e + ", " + from_e + "* " + src + ", i64 " + cur);
+        ev: string = this.new_reg();
+        this.emit("  " + ev + " = load " + from_e + ", " + from_e + "* " + sgep);
+        cv: string = this.new_reg();
+        if this.is_int_lty(from_e) && this.is_int_lty(to_e) {
+            if this.lty_width(from_e) > this.lty_width(to_e) {
+                this.emit("  " + cv + " = trunc " + from_e + " " + ev + " to " + to_e);
+            } also this.lty_width(to_e) > this.lty_width(from_e) {
+                if this.is_uint_type(from_base) {
+                    this.emit("  " + cv + " = zext " + from_e + " " + ev + " to " + to_e);
+                } else {
+                    this.emit("  " + cv + " = sext " + from_e + " " + ev + " to " + to_e);
+                }
+            } else {
+                this.emit("  " + cv + " = bitcast " + from_e + " " + ev + " to " + to_e);
+            }
+        } also this.is_int_lty(from_e) && this.is_float_lty(to_e) {
+            if this.is_uint_type(from_base) {
+                this.emit("  " + cv + " = uitofp " + from_e + " " + ev + " to " + to_e);
+            } else {
+                this.emit("  " + cv + " = sitofp " + from_e + " " + ev + " to " + to_e);
+            }
+        } also this.is_float_lty(from_e) && this.is_int_lty(to_e) {
+            if this.is_uint_type(to_base) {
+                this.emit("  " + cv + " = fptoui " + from_e + " " + ev + " to " + to_e);
+            } else {
+                this.emit("  " + cv + " = fptosi " + from_e + " " + ev + " to " + to_e);
+            }
+        } also this.is_float_lty(from_e) && this.is_float_lty(to_e) {
+            if this.lty_bytes(from_e) > this.lty_bytes(to_e) {
+                this.emit("  " + cv + " = fptrunc " + from_e + " " + ev + " to " + to_e);
+            } else {
+                this.emit("  " + cv + " = fpext " + from_e + " " + ev + " to " + to_e);
+            }
+        } else {
+            this.emit("  " + cv + " = bitcast " + from_e + " " + ev + " to " + to_e);
+        }
+        dgep: string = this.new_reg();
+        this.emit("  " + dgep + " = getelementptr inbounds " + to_e + ", " + to_e + "* " + dst + ", i64 " + cur);
+        this.emit("  store " + to_e + " " + cv + ", " + to_e + "* " + dgep);
+        nxt: string = this.new_reg();
+        this.emit("  " + nxt + " = add i64 " + cur + ", 1");
+        this.emit("  store i64 " + nxt + ", i64* " + idx + ", align 8");
+        this.emit("  br label %" + l_cond);
+        this.emit(l_end + ":");
+        s0: string = this.new_reg();
+        this.emit("  " + s0 + " = insertvalue " + to_lty + " undef, i64 " + len + ", 0");
+        s1: string = this.new_reg();
+        this.emit("  " + s1 + " = insertvalue " + to_lty + " " + s0 + ", " + to_e + "* " + dst + ", 1");
+        return s1;
     }
 
     // Conservative byte size for GC scan-region registration (-1: scalar)
@@ -1401,7 +1521,10 @@ pub def CodeGen : class {
         }
         if typ == "float" { return "double"; }
         if typ == "float<64>" || typ == "float<32>" || typ == "float<16>" || typ == "float<128>" { return "double"; }
-        if typ == "int<64>" || typ == "int<32>" || typ == "int<16>" || typ == "int<8>" { return "i64"; }
+        // Sized ints keep their exact width (python parity): int<8> wraps
+        // at 8 bits, it is not a 64-bit value. Only int<64>/uint<64> are
+        // word-sized; wider/narrower widths use the generic iN rule below.
+        if typ == "int<64>" { return "i64"; }
         if typ == "uint<64>" { return "i64"; }
         // int<N> / uint<N> for any width (1..1024): llvm iN
         if this.is_sized_int_type(typ) {
@@ -1668,6 +1791,16 @@ pub def CodeGen : class {
             if lt == "uint" && rt == "uint" { return "uint"; }
             if lt == "int64" || lt == "int<64>" || rt == "int64" || rt == "int<64>" {
                 return "int<64>";
+            }
+            // Mixed int widths run at the wider operand (the emission
+            // widens there too): the expression type must match the
+            // register width or downstream loads/coercions misread it.
+            lt_is_int: bool = lt == "int" || lt == "uint" || this.is_sized_int_type(lt);
+            rt_is_int: bool = rt == "int" || rt == "uint" || this.is_sized_int_type(rt);
+            if lt_is_int && rt_is_int {
+                lw: int = this.lty_width(this.llvm_type(lt));
+                rw: int = this.lty_width(this.llvm_type(rt));
+                if rw > lw { return rt; }
             }
             return lt;
         }
@@ -2002,6 +2135,18 @@ pub def CodeGen : class {
             bi = bi + 1;
         }
         return base;
+    }
+
+    // True allocation size of an LLVM struct/class type (GEP-past-the-end
+    // of null): field-count*8 undercounts wide fields (i128+), inline
+    // struct values, fixed-array slots, and padding, overflowing into
+    // neighbouring heap memory. Same idiom as clone_struct_val.
+    pub fnc type_alloc_size(tname string) : string {
+        szg: string = this.new_reg();
+        this.emit("  " + szg + " = getelementptr " + tname + ", " + tname + "* null, i32 1");
+        szr: string = this.new_reg();
+        this.emit("  " + szr + " = ptrtoint " + tname + "* " + szg + " to i64");
+        return szr;
     }
 
     // Value comparison for `expr is expr` -> i1
@@ -3206,6 +3351,11 @@ pub def CodeGen : class {
                 if this.is_sized_int_type(atyp) && this.sized_int_width(atyp) > 64 {
                     return this.wide_int_to_str(aval, atyp);
                 }
+                // Sized integers (int<8>..int<64>, uint<...>) extend to
+                // the i64 runtime slot with the value's signedness.
+                if this.is_sized_int_type(atyp) {
+                    return this.concat_int_to_str(e.args.get(0), aval, atyp);
+                }
                 // Pointer-typed args pass through unchanged (python's
                 // tostring returns non-int/float args as-is; a
                 // pointer<char> already IS a C string pointer)
@@ -3435,6 +3585,13 @@ pub def CodeGen : class {
                             aval = this.slice_to_vec(aval, atyp, this.vec_inner_type(ptS), true);
                             atyp = ptS;
                             alty = this.llvm_type(ptS);
+                        } else {
+                            adapted: string = this.adapt_slice(aval, atyp, ptS);
+                            if adapted != aval {
+                                aval = adapted;
+                                atyp = ptS;
+                                alty = this.llvm_type(ptS);
+                            }
                         }
                     }
                 }
@@ -4048,6 +4205,13 @@ pub def CodeGen : class {
                                 aval = this.slice_to_vec(aval, atyp, this.vec_inner_type(ptS2), true);
                                 atyp = ptS2;
                                 alty = this.llvm_type(ptS2);
+                            } else {
+                                adapted2: string = this.adapt_slice(aval, atyp, ptS2);
+                                if adapted2 != aval {
+                                    aval = adapted2;
+                                    atyp = ptS2;
+                                    alty = this.llvm_type(ptS2);
+                                }
                             }
                         }
                     }
@@ -4453,12 +4617,10 @@ pub def CodeGen : class {
             f_count: int = all_field_names.size;
             f_off: int = 0;
             if is_class { f_off = 1; }   // slot 0 is the vtable pointer
-            alloc_bytes: int = f_count * 8;
-            if is_class { alloc_bytes = (f_count + 1) * 8; }
-            if alloc_bytes < 8 { alloc_bytes = 8; }
+            alloc_sz: string = this.type_alloc_size(type_prefix + sname);
 
             raw_mem: string = this.new_reg();
-            this.emit("  " + raw_mem + " = call i8* @leash_gc_malloc(i64 " + tostring(alloc_bytes) + ")");
+            this.emit("  " + raw_mem + " = call i8* @leash_gc_malloc(i64 " + alloc_sz + ")");
             s_ptr: string = this.new_reg();
             this.emit("  " + s_ptr + " = bitcast i8* " + raw_mem + " to " + type_prefix + sname + "*");
 
@@ -4507,6 +4669,7 @@ pub def CodeGen : class {
                 } also fi < field_inits.size && field_inits.get(fi) != null {
                     // Declared field default: name: Type = expr;
                     dflt_val: string = this.gen_expr(field_inits.get(fi));
+                    dflt_val = this.adapt_slice(dflt_val, this.get_expr_type(field_inits.get(fi)), ftyp);
                     dflt_val = this.maybe_clone_value(dflt_val, ftyp);
                     this.emit("  store " + lftyp + " " + dflt_val + ", " + lftyp + "* " + gep_r);
                 } else {
@@ -4536,6 +4699,8 @@ pub def CodeGen : class {
                     ftyp: string = all_field_types.get(f_idx);
                     if this.is_vec_type(ftyp) && fval_rhst.size > 1 && fval_rhst[fval_rhst.size - 1] == ']' {
                         fval = this.slice_to_vec(fval, fval_rhst, this.vec_inner_type(ftyp), false);
+                    } else {
+                        fval = this.adapt_slice(fval, fval_rhst, ftyp);
                     }
                     fval = this.maybe_clone_value(fval, ftyp);
                     lftyp: string = this.llvm_type(ftyp);
@@ -4722,6 +4887,7 @@ pub def CodeGen : class {
                 if this.is_vec_type(vtyp) && rhs_t.size > 1 && rhs_t[rhs_t.size - 1] == ']' {
                     val = this.slice_to_vec(val, rhs_t, this.vec_inner_type(vtyp), true);
                 }
+                val = this.adapt_slice(val, rhs_t, vtyp);
                 val = this.coerce_slice_ptr(val, rhs_t, vtyp);
                 val = this.maybe_clone_value(val, vtyp);
                 val = this.coerce_store_val(s.value, val, lty);
@@ -4754,10 +4920,9 @@ pub def CodeGen : class {
                     // (escapes into vecs), with empty containers for its
                     // vec/hash fields — python parity.
                     sdflt: StructInfo = this.tc.structs[vtyp];
-                    sd_bytes: int = sdflt.field_names.size * 8;
-                    if sd_bytes < 8 { sd_bytes = 8; }
+                    sd_sz: string = this.type_alloc_size("%struct." + vtyp);
                     sraw: string = this.new_reg();
-                    this.emit("  " + sraw + " = call i8* @leash_gc_malloc(i64 " + tostring(sd_bytes) + ")");
+                    this.emit("  " + sraw + " = call i8* @leash_gc_malloc(i64 " + sd_sz + ")");
                     sp2: string = this.new_reg();
                     this.emit("  " + sp2 + " = bitcast i8* " + sraw + " to %struct." + vtyp + "*");
                     this.emit("  store %struct." + vtyp + " zeroinitializer, %struct." + vtyp + "* " + sp2);
@@ -4787,10 +4952,9 @@ pub def CodeGen : class {
                     // with vtable + zeroed/default fields (Name{}-literal
                     // initialization, minus the explicit fields).
                     cdflt: ClassInfo = this.tc.classes[vtyp];
-                    cd_bytes: int = (cdflt.field_names.size + 1) * 8;
-                    if cd_bytes < 8 { cd_bytes = 8; }
+                    cd_sz: string = this.type_alloc_size("%class." + vtyp);
                     craw: string = this.new_reg();
-                    this.emit("  " + craw + " = call i8* @leash_gc_malloc(i64 " + tostring(cd_bytes) + ")");
+                    this.emit("  " + craw + " = call i8* @leash_gc_malloc(i64 " + cd_sz + ")");
                     cp2: string = this.new_reg();
                     this.emit("  " + cp2 + " = bitcast i8* " + craw + " to %class." + vtyp + "*");
                     this.emit("  store %class." + vtyp + " zeroinitializer, %class." + vtyp + "* " + cp2);
@@ -4927,6 +5091,8 @@ pub def CodeGen : class {
                     if avt.size > 1 && avt[avt.size - 1] == ']' {
                         val = this.slice_to_vec(val, avt, this.vec_inner_type(tt), true);
                     }
+                } else {
+                    val = this.adapt_slice(val, this.get_expr_type(s.value), tt);
                 }
                 val = this.coerce_slice_ptr(val, this.get_expr_type(s.value), tt);
                 val = this.maybe_clone_value(val, tt);
@@ -5203,6 +5369,8 @@ pub def CodeGen : class {
                     ret_rhst: string = this.get_expr_type(s.value);
                     if this.is_vec_type(this.current_func_ret) && ret_rhst.size > 1 && ret_rhst[ret_rhst.size - 1] == ']' {
                         val = this.slice_to_vec(val, ret_rhst, this.vec_inner_type(this.current_func_ret), true);
+                    } else {
+                        val = this.adapt_slice(val, ret_rhst, this.current_func_ret);
                     }
                     val = this.maybe_clone_value(val, this.current_func_ret);
                     lret: string = this.llvm_type(this.current_func_ret);
@@ -5259,21 +5427,23 @@ pub def CodeGen : class {
             // Type-checking already validated the target and arg types.
             if s.args.size > 0 {
                 spn_struct: string = "{ ";
-                spn_bytes: int = 0;
                 spn_i: int = 0;
                 while spn_i < s.args.size {
                     if spn_i > 0 { spn_struct = spn_struct + ", "; }
                     spn_at: string = this.get_expr_type(s.args.get(spn_i));
                     spn_lty: string = this.llvm_type(spn_at);
                     spn_struct = spn_struct + spn_lty;
-                    spn_b: int = this.llvm_val_bytes(spn_lty);
-                    if spn_b < 1 { spn_b = 8; }
-                    spn_bytes = spn_bytes + spn_b;
                     spn_i = spn_i + 1;
                 }
                 spn_struct = spn_struct + " }";
+                // Exact block size (padding included): a byte sum
+                // undercounts wide/padded layouts and overflows.
+                spn_szg: string = this.new_reg();
+                this.emit("  " + spn_szg + " = getelementptr " + spn_struct + ", " + spn_struct + "* null, i32 1");
+                spn_szr: string = this.new_reg();
+                this.emit("  " + spn_szr + " = ptrtoint " + spn_struct + "* " + spn_szg + " to i64");
                 spn_mem: string = this.new_reg();
-                this.emit("  " + spn_mem + " = call i8* @leash_gc_malloc(i64 " + tostring(spn_bytes) + ")");
+                this.emit("  " + spn_mem + " = call i8* @leash_gc_malloc(i64 " + spn_szr + ")");
                 spn_bc: string = this.new_reg();
                 this.emit("  " + spn_bc + " = bitcast i8* " + spn_mem + " to " + spn_struct + "*");
                 spn_j: int = 0;
@@ -6318,6 +6488,7 @@ pub def CodeGen : class {
             }
         }
 
+        this.has_entry = has_main || has_class_main;
         if (has_main || has_class_main) && !this.is_lib {
             this.emit("define i32 @main(i32 %argc, i8** %argv) {");
             this.emit("entry:");
@@ -6361,6 +6532,8 @@ pub def CodeGen : class {
                     g_rhst: string = this.get_expr_type(g.init_val);
                     if this.is_vec_type(g.typ) && g_rhst.size > 1 && g_rhst[g_rhst.size - 1] == ']' {
                         ginit = this.slice_to_vec(ginit, g_rhst, this.vec_inner_type(g.typ), true);
+                    } else {
+                        ginit = this.adapt_slice(ginit, g_rhst, g.typ);
                     }
                     g_lty: string = this.llvm_type(g.typ);
                     if this.is_vec_type(g.typ) {
@@ -6382,6 +6555,8 @@ pub def CodeGen : class {
                         fd_rhst: string = this.get_expr_type(fd.init);
                         if this.is_vec_type(fd.typ) && fd_rhst.size > 1 && fd_rhst[fd_rhst.size - 1] == ']' {
                             init_val = this.slice_to_vec(init_val, fd_rhst, this.vec_inner_type(fd.typ), true);
+                        } else {
+                            init_val = this.adapt_slice(init_val, fd_rhst, fd.typ);
                         }
                         this.emit("  store " + this.llvm_type(fd.typ) + " " + init_val + ", " + this.llvm_type(fd.typ) + "* @" + c.name + "_static_" + fd.name);
                     }
@@ -6394,6 +6569,8 @@ pub def CodeGen : class {
                         fd_rhst: string = this.get_expr_type(fd.init);
                         if this.is_vec_type(fd.typ) && fd_rhst.size > 1 && fd_rhst[fd_rhst.size - 1] == ']' {
                             init_val = this.slice_to_vec(init_val, fd_rhst, this.vec_inner_type(fd.typ), true);
+                        } else {
+                            init_val = this.adapt_slice(init_val, fd_rhst, fd.typ);
                         }
                         this.emit("  store " + this.llvm_type(fd.typ) + " " + init_val + ", " + this.llvm_type(fd.typ) + "* @" + s.name + "_static_" + fd.name);
                     }
@@ -6484,6 +6661,8 @@ pub def CodeGen : class {
                     g_rhst: string = this.get_expr_type(g.init_val);
                     if this.is_vec_type(g.typ) && g_rhst.size > 1 && g_rhst[g_rhst.size - 1] == ']' {
                         ginit = this.slice_to_vec(ginit, g_rhst, this.vec_inner_type(g.typ), true);
+                    } else {
+                        ginit = this.adapt_slice(ginit, g_rhst, g.typ);
                     }
                     g_lty: string = this.llvm_type(g.typ);
                     this.emit("  store " + g_lty + " " + ginit + ", " + g_lty + "* @g_" + g.name);
@@ -6497,6 +6676,8 @@ pub def CodeGen : class {
                         fd_rhst: string = this.get_expr_type(fd.init);
                         if this.is_vec_type(fd.typ) && fd_rhst.size > 1 && fd_rhst[fd_rhst.size - 1] == ']' {
                             init_val = this.slice_to_vec(init_val, fd_rhst, this.vec_inner_type(fd.typ), true);
+                        } else {
+                            init_val = this.adapt_slice(init_val, fd_rhst, fd.typ);
                         }
                         this.emit("  store " + this.llvm_type(fd.typ) + " " + init_val + ", " + this.llvm_type(fd.typ) + "* @" + c.name + "_static_" + fd.name);
                     }
@@ -6509,6 +6690,8 @@ pub def CodeGen : class {
                         fd_rhst: string = this.get_expr_type(fd.init);
                         if this.is_vec_type(fd.typ) && fd_rhst.size > 1 && fd_rhst[fd_rhst.size - 1] == ']' {
                             init_val = this.slice_to_vec(init_val, fd_rhst, this.vec_inner_type(fd.typ), true);
+                        } else {
+                            init_val = this.adapt_slice(init_val, fd_rhst, fd.typ);
                         }
                         this.emit("  store " + this.llvm_type(fd.typ) + " " + init_val + ", " + this.llvm_type(fd.typ) + "* @" + s.name + "_static_" + fd.name);
                     }

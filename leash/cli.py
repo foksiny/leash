@@ -1256,6 +1256,9 @@ def compile_file(input_file, output_name=None, output_type="executable", is_run_
         ast = optimize_ast(ast, opt_level=parsed_opt, opt_verbose=opt_verbose)
         llvm.initialize_native_target(); llvm.initialize_native_asmprinter()
         codegen = CodeGen(target_platform=target_config.name, no_gc=no_gc, autofree=autofree, debug_instrument=debug_instrument); codegen.generate_code(ast, input_file)
+        if output_type == "executable" and not check_mode and "main" not in codegen.func_symtab:
+            print(f"error: no entry point: '{input_file}' defines no 'main' function (build a library with to-dynamic/to-static, or add 'fnc main')", file=sys.stderr)
+            sys.exit(1)
         hoist_allocas(codegen.module)
         mod = llvm.parse_assembly(codegen.get_ir()); mod.verify()
     except LeashError as e: _print_error(e, input_file, code); sys.exit(1)
@@ -1966,7 +1969,7 @@ def update_leash():
               "inspect and fast-forward manually).")
 
 
-VERSION_STRING = "v1.2.0"
+VERSION_STRING = "v1.2.1"
 
 MAIN_HELP = f"""Leash {VERSION_STRING} - LLVM-powered compiled programming language
 
