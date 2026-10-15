@@ -740,6 +740,7 @@ pub def JvmGen : class {
     pub has_entry: bool;
     pub src_file: string;
     pub klasses: vec<JvmClass>;
+    pub array_base_override: string;
     pub klass_idx: hash<string, int>;
     pub current_class: string;
 
@@ -753,7 +754,7 @@ pub def JvmGen : class {
         empty_he: vec<string>;
         empty_kl: vec<JvmClass>;
         empty_ki: hash<string, int>;
-        return JvmGen { tc: tc, cg: CodeGen.make(tc), main_class: main_class, errors: empty_err, var_types: empty_vt, var_slots: empty_vs, label_counter: 0, defer_stack: empty_defers, fusion_names: empty_fn, loop_heads: empty_hh, loop_exits: empty_he, current_func_ret: "void", cur_cp: JvmCp.make(), cur_method: JvmMethod.make(0, 0, 0), has_entry: false, src_file: "", klasses: empty_kl, klass_idx: empty_ki, current_class: "" };
+        return JvmGen { tc: tc, cg: CodeGen.make(tc), main_class: main_class, errors: empty_err, var_types: empty_vt, var_slots: empty_vs, label_counter: 0, defer_stack: empty_defers, fusion_names: empty_fn, loop_heads: empty_hh, loop_exits: empty_he, current_func_ret: "void", cur_cp: JvmCp.make(), cur_method: JvmMethod.make(0, 0, 0), has_entry: false, src_file: "", klasses: empty_kl, klass_idx: empty_ki, current_class: "", array_base_override: "" };
     }
 
     // Keep the oracle's view of locals identical to ours.
@@ -2341,6 +2342,7 @@ pub def JvmGen : class {
         this.loop_heads = empty_hh;
         this.loop_exits = empty_he;
         this.current_func_ret = f.ret_type;
+        this.array_base_override = "";
         if is_method && !is_static {
             tslot: int = m.alloc_local(1);
             this.define_var("this", f.owner, tslot);
@@ -4315,7 +4317,12 @@ pub def JvmGen : class {
             return;
         }
         lt: string = this.expr_type(e);
-        base: string = this.array_base_of(lt);
+        base: string = "";
+        if this.array_base_override.size > 0 {
+            base = this.array_base_override;
+        } else {
+            base = this.array_base_of(lt);
+        }
         if base.size == 0 { base = "int"; }
         n: int = e.args.size;
         this.emit_new_array(base + "[0]", n);
@@ -5337,8 +5344,13 @@ pub def JvmGen : class {
             slot: int = this.cur_method.alloc_local(this.slots_of(vd));
             this.define_var(s.name, vtyp, slot);
             if s.value != null {
+                is_arrlit: bool = s.value.kind == ExprKind.ARRAY_LIT && vtyp.size >= 2 && vtyp[vtyp.size - 1] == ']';
+                if is_arrlit {
+                    this.array_base_override = this.array_base_of(vtyp);
+                }
                 it: string = this.expr_type(s.value);
                 this.gen_expr(s.value);
+                this.array_base_override = "";
                 if !this.coerce_val(it, vtyp) {
                     this.jvm_coerce(it, vtyp);
                     this.narrow_to(vtyp);
