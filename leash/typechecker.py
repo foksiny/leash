@@ -607,6 +607,17 @@ class TypeChecker:
                     False,
                     False,
                 ),
+                "writebytes": (
+                    Function(
+                        "File_writebytes",
+                        [("this", "File"), ("bytes", "vec<int>")],
+                        "int",
+                        None,
+                    ),
+                    "pub",
+                    False,
+                    False,
+                ),
                 "readln": (
                     Function("File_readln", [("this", "File")], "string", None),
                     "pub",

@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v1.2.2 Release</div>
+        <div class="version">v1.3.0 Release</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -86,7 +86,11 @@ leash compile program.lsh --target macos-arm
 leash compile program.lsh --target linux32
 
 <span class="cm"># Linux ARM64 (Raspberry Pi 4/5, ARM servers, Ampere, AWS Graviton)</span>
-leash compile program.lsh --target linux-arm</code></pre>
+leash compile program.lsh --target linux-arm
+
+<span class="cm"># JVM bytecode (runs anywhere with a Java runtime; no clang, no GC runtime)</span>
+leash compile program.lsh --target jvm
+java -cp . program</code></pre>
 
 <p>For <code>linux-arm</code> on a non-ARM host, install the cross toolchain (<code>gcc-aarch64-linux-gnu</code>) — <code>leash run --target linux-arm</code> executes the produced binary through <code>qemu-aarch64</code> (qemu-user) when the host is x86. On native ARM64 Linux (e.g. a Raspberry Pi) no extra setup is needed.</p>
 
@@ -98,7 +102,10 @@ leash compile program.lsh --target linux-arm</code></pre>
     <tr><td><code>win64</code></td><td><code>x86_64-pc-windows-msvc</code></td><td>Windows x86_64</td></tr>
     <tr><td><code>macos</code></td><td><code>x86_64-apple-darwin</code></td><td>macOS x86_64</td></tr>
     <tr><td><code>macos-arm</code></td><td><code>aarch64-apple-darwin</code></td><td>macOS ARM64 (Apple Silicon)</td></tr>
+    <tr><td><code>jvm</code></td><td>JVM bytecode (class file v49)</td><td>Any Java runtime (Java 5+)</td></tr>
 </table>
+
+<p>The <code>jvm</code> target is emitted by the self-hosted compiler only (<code>bin/leashc</code>). It writes <code>.class</code> files directly — no clang, no linking, no GC runtime — and the result runs on any JVM: <code>java -cp <dir> <name></code> (or <code>leash run --target jvm</code>). Supported: the full core language, vectors, hashes, fixed arrays, structs, classes with inheritance and virtual dispatch, enums, tuples, string/float/int conversion builtins, random/time builtins, and <code>main(string[])</code> with exit codes. Workers/<code>spawn</code>, <code>@from</code> interop, unions, matrices, file I/O, and library outputs report a clean "unsupported" error instead of miscompiling. <code>_PLATFORM</code> reports <code>"jvm"</code>.</p>
 
 <h2>Debugging</h2>
 

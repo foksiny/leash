@@ -118,3 +118,5 @@ syntax_highlighters/vscode/.vscode-test/
 
 # Test
 *.json
+# JVM target artifacts
+__temp_run_leash_exe_*

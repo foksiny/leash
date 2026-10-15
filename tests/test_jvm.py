@@ -1,0 +1,406 @@
+"""JVM bytecode backend tests (--target jvm).
+
+These verify that the self-hosted compiler emits real, runnable JVM
+class files whose observable behavior matches the native backend.
+Skipped entirely when no `java` runtime is on PATH.
+"""
+import os
+import shutil
+import subprocess
+import tempfile
+import unittest
+
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BIN_LEASHC = os.path.join(REPO_ROOT, "bin", "leashc")
+JAVA = shutil.which("java")
+
+HAVE_GIT_DIR = os.path.isdir(os.path.join(REPO_ROOT, ".git"))
+
+
+def _sh(cmd, cwd=None, timeout=300):
+    return subprocess.run(cmd, cwd=cwd or REPO_ROOT, capture_output=True,
+                          text=True, errors="replace", timeout=timeout)
+
+
+@unittest.skipUnless(JAVA, "no `java` runtime on PATH")
+@unittest.skipUnless(os.path.exists(BIN_LEASHC), "bin/leashc not built")
+class TestJvmTarget(unittest.TestCase):
+    """Compile-and-run parity for --target jvm."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.mkdtemp(prefix="leash_jvm_test_")
+        cls.n = 0
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def _next_name(self):
+        self.n += 1
+        return f"jt{self.n}"
+
+    def _compile_jvm(self, src, main_class=None, run_args=""):
+        """Compile `src` to JVM bytecode; return (class_dir, main_class)."""
+        name = main_class or self._next_name()
+        path = os.path.join(self.tmp, f"{name}.lsh")
+        with open(path, "w") as f:
+            f.write(src)
+        out = os.path.join(self.tmp, name)
+        r = _sh([BIN_LEASHC, "compile", path, "--target", "jvm", "to", out])
+        self.assertEqual(r.returncode, 0, msg=r.stdout + r.stderr)
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, f"{name}.class")),
+                        "no .class emitted")
+        return self.tmp, name
+
+    def _run_jvm(self, class_dir, main_class, args=None):
+        cmd = [JAVA, "-cp", class_dir, main_class] + (args or [])
+        return subprocess.run(cmd, capture_output=True, text=True,
+                              errors="replace", timeout=60)
+
+    def _run_native(self, src):
+        name = self._next_name() + "n"
+        path = os.path.join(self.tmp, f"{name}.lsh")
+        with open(path, "w") as f:
+            f.write(src)
+        out = os.path.join(self.tmp, name)
+        r = _sh([BIN_LEASHC, "compile", path, "to", out])
+        self.assertEqual(r.returncode, 0, msg=r.stdout + r.stderr)
+        return subprocess.run([out], capture_output=True, text=True,
+                              errors="replace", timeout=60)
+
+    def _parity(self, src):
+        """JVM output must equal native output."""
+        # Both backends compile the SAME file so anything embedded in the
+        # output (e.g. throw's "  --> file:line") matches exactly.
+        name = self._next_name()
+        path = os.path.join(self.tmp, f"{name}.lsh")
+        with open(path, "w") as f:
+            f.write(src)
+        out_j = os.path.join(self.tmp, name)
+        rj_c = _sh([BIN_LEASHC, "compile", path, "--target", "jvm", "to", out_j])
+        self.assertEqual(rj_c.returncode, 0, msg=rj_c.stdout + rj_c.stderr)
+        self.assertTrue(os.path.exists(os.path.join(self.tmp, f"{name}.class")),
+                        "no .class emitted")
+        rj = subprocess.run([JAVA, "-cp", self.tmp, name], capture_output=True,
+                            text=True, errors="replace", timeout=60)
+        out_n = os.path.join(self.tmp, name + "n")
+        rn_c = _sh([BIN_LEASHC, "compile", path, "to", out_n])
+        self.assertEqual(rn_c.returncode, 0, msg=rn_c.stdout + rn_c.stderr)
+        rn = subprocess.run([out_n], capture_output=True, text=True,
+                            errors="replace", timeout=60)
+        self.assertEqual(rj.returncode, rn.returncode,
+                         f"exit codes differ: jvm={rj.returncode} native={rn.returncode}\n"
+                         f"jvm stdout:\n{rj.stdout}\nnative stdout:\n{rn.stdout}")
+        self.assertEqual(rj.stdout, rn.stdout,
+                         f"stdout differs:\n--- jvm ---\n{rj.stdout}\n--- native ---\n{rn.stdout}")
+
+    # ---- core language -------------------------------------------------
+
+    def test_hello(self):
+        self._parity('fnc main() : void {\n    show("hi");\n}\n')
+
+    def test_arith_and_calls(self):
+        self._parity(
+            'fnc add(a int, b int) : int {\n    return a + b;\n}\n'
+            'fnc fact(n int) : int {\n    if n <= 1 { return 1; }\n'
+            '    return n * fact(n - 1);\n}\n'
+            'fnc main() : void {\n'
+            '    show(add(20, 22));\n    show(fact(10));\n'
+            '    show(7 / 2);\n    show(7 % 3);\n'
+            '    x: int = 10;\n    x += 5;\n    x++;\n    show(x);\n'
+            '    show(1 < 2);\n    show("foo" + "bar");\n'
+            '    show(2.5 * 4.0);\n    show(tostring(12345));\n'
+            '}\n')
+
+    def test_int64_and_uint(self):
+        self._parity(
+            'fnc main() : void {\n'
+            '    big: int<64> = 5000000000;\n'
+            '    show(big);\n'
+            '    u: uint = 4000000000;\n'
+            '    show(u);\n'
+            '    ul: uint<64> = 18446744073709551615;\n'
+            '    show(ul);\n'
+            '    show(big + 1);\n'
+            '}\n')
+
+    def test_float_locals(self):
+        self._parity(
+            'fnc apply(f float) : float {\n    r: float = f * 2.0;\n    return r;\n}\n'
+            'fnc main() : void {\n'
+            '    x: float = 2.5;\n    y: float = x + 1.25;\n    show(y);\n'
+            '    y += 0.5;\n    show(y);\n    y++;\n    show(y);\n'
+            '    show(apply(3.5));\n'
+            '}\n')
+
+    def test_control_flow(self):
+        self._parity(
+            'fnc main() : void {\n'
+            '    i: int = 0;\n    while i < 5 { i = i + 1; if i == 2 { skip; } if i == 4 { stop; } show(i); }\n'
+            '    for j: int = 0; j < 3; j = j + 1 { show(j); }\n'
+            '    loop { show("once"); stop; }\n'
+            '    x: int = 2;\n'
+            '    switch x {\n'
+            '        case 1 { show("one"); }\n'
+            '        case 2 { show("two"); }\n'
+            '        default { show("many"); }\n'
+            '    }\n'
+            '    show(1 < 2 ? "lt" : "ge");\n'
+            '}\n')
+
+    def test_defer(self):
+        self._parity(
+            'fnc main() : void {\n'
+            '    defer show("deferred-1");\n'
+            '    defer show("deferred-2");\n'
+            '    show("body");\n'
+            '}\n')
+
+    def test_throw_and_works(self):
+        self._parity(
+            'error E(args int) -> "boom " + tostring(args) + ".";\n'
+            'fnc risky(n int) : int {\n    if n < 2 { throw E(n); }\n    return n;\n}\n'
+            'fnc main() : void {\n'
+            '    show("before");\n'
+            '    works { show(risky(1)); } otherwise err { show("caught"); }\n'
+            '    show("after");\n'
+            '}\n')
+
+    def test_exit_code(self):
+        class_dir, main_class = self._compile_jvm(
+            'fnc main() : int {\n    show("bye");\n    return 7;\n}\n')
+        r = self._run_jvm(class_dir, main_class)
+        self.assertEqual(r.returncode, 7)
+        self.assertEqual(r.stdout, "bye\n")
+
+    # ---- containers ----------------------------------------------------
+
+    def test_vec(self):
+        self._parity(
+            'fnc main() : void {\n'
+            '    v: vec<int>;\n'
+            '    v.pushb(1);\n    v.pushb(2);\n    v.pushb(3);\n'
+            '    show(v);\n    show(v.size);\n    show(v[-1]);\n'
+            '    v.set(0, 99);\n    show(v);\n'
+            '    show(v.get(1));\n    show(v.popb());\n    show(v);\n'
+            '    v.pushf(0);\n    show(v);\n'
+            '    show(v.isin(99));\n'
+            '    vf: vec<float>;\n    vf.pushb(2.5);\n    vf.pushb(0.1);\n'
+            '    show(vf);\n'
+            '    vs: vec<string>;\n    vs.pushb("foo");\n    vs.pushb("bar");\n'
+            '    show(vs);\n'
+            '}\n')
+
+    def test_hash(self):
+        self._parity(
+            'fnc main() : void {\n'
+            '    h: hash<int, int>;\n'
+            '    h.push(1, 100);\n    h.push(2, 200);\n'
+            '    show(h[1]);\n    show(h[99]);\n    show(h.size);\n'
+            '    show(h.isin(2));\n'
+            '    h.delete(1);\n    show(h.isin(1));\n'
+            '    hs: hash<string, int>;\n    hs.push("k", 7);\n'
+            '    show(hs["k"]);\n'
+            '}\n')
+
+    def test_arrays(self):
+        self._parity(
+            'fnc main() : void {\n'
+            '    arr: int[] = {10, 20, 30};\n'
+            '    show(arr[1]);\n    show(arr.size);\n'
+            '    arr[0] = 99;\n    show(arr[0]);\n'
+            '    v: vec<int>;\n    v.extend(arr);\n    show(v);\n'
+            '    v2: vec<int> = arr;\n    show(v2);\n'
+            '}\n')
+
+    # ---- structs / classes / enums ------------------------------------
+
+    def test_struct_and_class(self):
+        self._parity(
+            'pub def Point : struct {\n    pub x: int;\n    pub y: int;\n}\n'
+            'pub def Acc : class {\n    pub total: int;\n'
+            '    pub fnc add(n int) : int {\n        this.total = this.total + n;\n        return this.total;\n    }\n'
+            '}\n'
+            'fnc dist(p Point) : int {\n    return p.x + p.y;\n}\n'
+            'fnc main() : void {\n'
+            '    q: Point = Point { x: 3, y: 4 };\n'
+            '    show(q.x);\n    show(dist(q));\n'
+            '    a: Acc = create Acc();\n'
+            '    show(a.add(5));\n    show(a.add(7));\n'
+            '}\n')
+
+    def test_inheritance_and_virtual(self):
+        self._parity(
+            'def Animal : class {\n'
+            '    static pub fnc new() : Animal { return Animal {}; }\n'
+            '    pub fnc talk() : void { show("No sounds"); }\n'
+            '}\n'
+            'def Dog : class(Animal) {\n'
+            '    pub fnc talk() : void { show("Bark Bark!"); }\n'
+            '}\n'
+            'fnc main() : void {\n'
+            '    d: Dog = Dog {};\n'
+            '    a: Animal = d;\n'
+            '    a.talk();\n'
+            '}\n')
+
+    def test_enums(self):
+        self._parity(
+            'def Color : enum {\n    RED,\n    GREEN,\n    BLUE\n};\n'
+            'fnc main() : void {\n'
+            '    c: Color = Color::RED;\n'
+            '    show(c);\n    show(c.name);\n'
+            '    if c == Color::RED { show("is red"); }\n'
+            '}\n')
+
+    def test_static_class_field(self):
+        self._parity(
+            'pub def K : class {\n    static pub A: int = 7;\n}\n'
+            'fnc main() : void {\n    show(K.A);\n    K.A = 10;\n    show(K.A);\n}\n')
+
+    # ---- tuples / multi-return ------------------------------------------
+
+    def test_multi_return(self):
+        self._parity(
+            'fnc add_sub(a int, b int) : (int, int) {\n'
+            '    return a + b, a - b;\n'
+            '}\n'
+            'fnc main() {\n'
+            '    a, b: int, int = add_sub(10, 4);\n'
+            '    show(a);\n    show(b);\n'
+            '}\n')
+
+    # ---- builtins -------------------------------------------------------
+
+    def test_conversions(self):
+        self._parity(
+            'fnc main() : void {\n'
+            '    show(toint(int, "12345"));\n'
+            '    show(toint(int, "12ab"));\n'
+            '    show(toint(int, ""));\n'
+            '    show(toint(int, 2.9));\n'
+            '    show(tofloat(float, "2.5"));\n'
+            '    show(tofloat(float, 7));\n'
+            '    show(typeof(42));\n'
+            '    x: string = "hi";\n    show(typeof(x));\n'
+            '    show(sizeof("int"));\n'
+            '    show(cstr("abc").size);\n'
+            '    show(cstr("abc")[1]);\n'
+            '}\n')
+
+    def test_string_iteration(self):
+        self._parity(
+            'fnc main() : void {\n'
+            '    s: string = "hey";\n'
+            '    foreach _, c in<string> s {\n        show(c);\n    }\n'
+            '}\n')
+
+    # ---- runtime errors --------------------------------------------------
+
+    def test_div_by_zero_runtime(self):
+        class_dir, main_class = self._compile_jvm(
+            'fnc main() : void {\n    x: int = 7;\n    y: int = 0;\n    show(x / y);\n}\n')
+        r = self._run_jvm(class_dir, main_class)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("Runtime error: Division by zero.", r.stdout)
+
+    def test_vec_out_of_bounds(self):
+        class_dir, main_class = self._compile_jvm(
+            'fnc main() : void {\n    v: vec<int>;\n    v.pushb(1);\n    show(v[5]);\n}\n')
+        r = self._run_jvm(class_dir, main_class)
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("Vector index out of bounds", r.stdout)
+
+    # ---- args -----------------------------------------------------------
+
+    def test_main_args(self):
+        src = ('fnc main(args string[]) {\n'
+               '    show(args.size);\n'
+               '    foreach i, arg in<array> args {\n'
+               '        show(i, ": ", arg);\n'
+               '    }\n'
+               '}\n')
+        class_dir, main_class = self._compile_jvm(src)
+        r = self._run_jvm(class_dir, main_class, ["a", "bb"])
+        # argv[0] is the class name on JVM vs the binary path on native;
+        # count and the user args must still line up.
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("3\n", r.stdout)
+        self.assertIn("1: a\n", r.stdout)
+        self.assertIn("2: bb\n", r.stdout)
+
+    # ---- deferred features must fail cleanly ------------------------------
+
+    def test_spawn_unsupported(self):
+        path = os.path.join(self.tmp, "spawn.lsh")
+        with open(path, "w") as f:
+            f.write('worker fnc work() : void { show("w"); }\n'
+                    'fnc main() : void {\n    spawn work();\n}\n')
+        r = _sh([BIN_LEASHC, "compile", path, "--target", "jvm",
+                 "to", os.path.join(self.tmp, "spawn")])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("unsupported", (r.stdout + r.stderr).lower())
+
+    def test_to_dynamic_unsupported(self):
+        path = os.path.join(self.tmp, "lib.lsh")
+        with open(path, "w") as f:
+            f.write('fnc helper() : int { return 1; }\n')
+        r = _sh([BIN_LEASHC, "compile", path, "--target", "jvm",
+                 "to-dynamic", "to", os.path.join(self.tmp, "lib")])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("to-dynamic", r.stdout + r.stderr)
+
+    def test_emit_llvm_unsupported(self):
+        path = os.path.join(self.tmp, "ll.lsh")
+        with open(path, "w") as f:
+            f.write('fnc main() : void { show(1); }\n')
+        r = _sh([BIN_LEASHC, "compile", path, "--target", "jvm",
+                 "--emit-llvm", "to", os.path.join(self.tmp, "ll")])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("--emit-llvm", r.stdout + r.stderr)
+
+    def test_python_cli_rejects_jvm(self):
+        # The Python reference toolchain does not emit JVM bytecode; it
+        # must steer users to the self-hosted compiler with a clean error.
+        r = _sh(["python3", "-m", "leash.cli", "compile",
+                 os.path.join(REPO_ROOT, "examples", "hello.lsh"),
+                 "--target", "jvm", "to", os.path.join(self.tmp, "pyjvm")])
+        self.assertNotEqual(r.returncode, 0)
+        combined = r.stdout + r.stderr
+        self.assertIn("jvm", combined)
+        self.assertIn("self-hosted", combined)
+
+    def test_no_main_is_error(self):
+        path = os.path.join(self.tmp, "nomain.lsh")
+        with open(path, "w") as f:
+            f.write('fnc helper() : int { return 1; }\n')
+        r = _sh([BIN_LEASHC, "compile", path, "--target", "jvm",
+                 "to", os.path.join(self.tmp, "nomain")])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("main", r.stdout + r.stderr)
+
+    # ---- class file details ----------------------------------------------
+
+    def test_class_file_magic(self):
+        class_dir, main_class = self._compile_jvm(
+            'fnc main() : void { show(1); }\n')
+        with open(os.path.join(class_dir, f"{main_class}.class"), "rb") as f:
+            magic = f.read(4)
+        self.assertEqual(magic, b"\xca\xfe\xba\xbe")
+        # major version 49 (old inferencing verifier, no StackMapTable)
+        with open(os.path.join(class_dir, f"{main_class}.class"), "rb") as f:
+            f.read(6)
+            major = int.from_bytes(f.read(2), "big")
+        self.assertEqual(major, 49)
+
+    def test_struct_emits_extra_class(self):
+        class_dir, main_class = self._compile_jvm(
+            'pub def P : struct {\n    pub x: int;\n}\n'
+            'fnc main() : void {\n    p: P = P { x: 1 };\n    show(p.x);\n}\n')
+        self.assertTrue(os.path.exists(os.path.join(class_dir, "P.class")),
+                        "struct should emit its own .class file")
+
+
+if __name__ == "__main__":
+    unittest.main()

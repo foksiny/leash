@@ -478,6 +478,19 @@ class CodeGen:
         )
         self.fwrite = ir.Function(self.module, fwrite_ty, name="fwrite")
 
+        writevec_ty = ir.FunctionType(
+            ir.IntType(64),
+            [
+                ir.IntType(8).as_pointer(),
+                ir.IntType(8).as_pointer(),
+                ir.IntType(64),
+                ir.IntType(64),
+            ],  # FILE*, data, size, esz
+        )
+        self.file_writevec = ir.Function(
+            self.module, writevec_ty, name="leash_sh_file_writevec"
+        )
+
         fgets_ty = ir.FunctionType(
             ir.IntType(8).as_pointer(),  # char*
             [
@@ -9237,6 +9250,31 @@ class CodeGen:
             return self.builder.select(
                 success, ir.Constant(ir.IntType(32), 0), ir.Constant(ir.IntType(32), -1)
             )
+
+        elif method == "writebytes":
+            # writebytes(vec<int>) -> int: exact binary output (JVM
+            # .class files); strings cannot hold NUL bytes. Python vecs
+            # are inline {ptr, len, cap} structs (no LeashVec header),
+            # so pass data/size/esz explicitly to the shared C helper.
+            vec_val = self._codegen(args[0])
+            vec_data = self.builder.extract_value(vec_val, 0)
+            vec_size = self.builder.extract_value(vec_val, 1)
+            vec_data_i8 = self.builder.bitcast(
+                vec_data, ir.IntType(8).as_pointer()
+            )
+            inner_name = self._get_leash_type_name(args[0])
+            if inner_name.startswith("vec<") and inner_name.endswith(">"):
+                inner_name = inner_name[4:-1]
+            inner_llvm = self._get_llvm_type(inner_name)
+            if isinstance(inner_llvm, ir.IntType):
+                esz = max(1, (inner_llvm.width + 7) // 8)
+            else:
+                esz = 8
+            rc = self.builder.call(
+                self.file_writevec,
+                [file_handle, vec_data_i8, vec_size, ir.Constant(ir.IntType(64), esz)],
+            )
+            return self.builder.trunc(rc, ir.IntType(32))
 
         elif method == "readb":
             # readb() -> char[]: Read bytes as char array

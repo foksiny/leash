@@ -75,7 +75,22 @@ pub def CodeGen : class {
             current_block_terminated: false,
             tc: tc,
             current_func_ret: "void",
-            cur_func_unsafe: false
+            cur_func_unsafe: false,
+            // Uninitialized fields are GARBAGE under the stage1 backend
+            // (allocations are not zeroed) — every field read before its
+            // first write must be zeroed here.
+            debug_instrument: false,
+            is_lib: false,
+            autofree: false,
+            has_entry: false,
+            af_arr: "",
+            af_cnt: "",
+            af_emitted: false,
+            opdef_inner: "",
+            main_file: "",
+            current_func_name: "",
+            current_class_name: "",
+            current_class_parent: ""
         };
         return cg;
     }
@@ -1919,6 +1934,8 @@ pub def CodeGen : class {
         if w > 0 { return (w + 7) / 8; }
         return 8;
     }
+
+    pub oracle_depth: int;
 
     pub fnc get_expr_type(e Expr) : string {
         if e == null { return "void"; }
@@ -4381,6 +4398,20 @@ pub def CodeGen : class {
                     this.emit("  " + wb_r + " = call i64 @leash_sh_file_writeb(i8* " + obj_val + ", i8* " + wb_ptr + ", i64 " + wb_len + ")");
                     wb_r = this.rt_i64_to_i32(wb_r);
                     return wb_r;
+                }
+                // writebytes(vec<int>) -> int: exact binary output for
+                // compiler backends (JVM .class files); strings cannot
+                // hold NUL bytes so byte vectors are the carrier.
+                if e.sval == "writebytes" {
+                    wv_vec: string = this.gen_expr(e.args.get(0));
+                    wv_t: string = this.get_expr_type(e.args.get(0));
+                    wv_data: string = this.vec_field(wv_vec, 0);
+                    wv_size: string = this.vec_field(wv_vec, 1);
+                    wv_esz: int = this.vec_elem_bytes(this.vec_inner_type(wv_t));
+                    wv_r: string = this.new_reg();
+                    this.emit("  " + wv_r + " = call i64 @leash_sh_file_writevec(i8* " + obj_val + ", i8* " + wv_data + ", i64 " + wv_size + ", i64 " + tostring(wv_esz) + ")");
+                    wv_r = this.rt_i64_to_i32(wv_r);
+                    return wv_r;
                 }
                 if e.sval == "replace" || e.sval == "replaceall" {
                     rp_old: string = this.gen_expr(e.args.get(0));
@@ -7116,6 +7147,7 @@ pub def CodeGen : class {
                     "declare i64 @leash_sh_file_write(i8*, i8*)\n" +
                     "declare i64 @leash_sh_file_close(i8*)\n" +
                     "declare i64 @leash_sh_file_writeb(i8*, i8*, i64)\n" +
+                    "declare i64 @leash_sh_file_writevec(i8*, i8*, i64, i64)\n" +
                     "declare { i64, i8* } @leash_sh_file_readb(i8*)\n" +
                     "declare { i64, i8* } @leash_sh_file_readlnb(i8*)\n" +
                     "declare i8* @leash_sh_file_readln(i8*)\n" +

@@ -194,6 +194,12 @@ TARGETS = {
 
 def get_target(name):
     """Get a target configuration by name."""
+    if name == "jvm":
+        raise ValueError(
+            "Target 'jvm' is emitted by the self-hosted compiler only "
+            "(bin/leashc). The Python reference toolchain does not emit "
+            "JVM bytecode — run: leashc compile <file> --target jvm"
+        )
     if name not in TARGETS:
         supported = ", ".join(TARGETS.keys())
         raise ValueError(f"Unknown target '{name}'. Supported targets: {supported}")

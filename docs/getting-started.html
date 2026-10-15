@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v1.2.2 Release</div>
+        <div class="version">v1.3.0 Release</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -89,6 +89,7 @@ winget install mingw
     <tr><td><strong>Wine</strong></td><td><code>leash run --target win64</code> on Linux</td><td>Run Windows binaries on Linux</td></tr>
     <tr><td><strong>MinGW (<code>gcc-mingw-w64</code>)</strong></td><td><code>leash run/compile --target win64</code> on Linux</td><td>Cross-compile for Windows</td></tr>
     <tr><td><strong>gcc-aarch64-linux-gnu</strong> (+ <code>qemu-user</code>)</td><td><code>leash compile/run --target linux-arm</code></td><td>Cross-compile to Linux ARM64; qemu runs the produced binary on x86 hosts</td></tr>
+    <tr><td><strong>Java runtime (JRE 5+)</strong></td><td><code>leash compile/run --target jvm</code></td><td>Emit JVM bytecode — no C toolchain at all; runs anywhere Java runs</td></tr>
 </table>
 
 <pre><code><span class="cm"># Linux</span>

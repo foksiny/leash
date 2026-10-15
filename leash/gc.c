@@ -3454,6 +3454,20 @@ int64_t leash_sh_file_writeb(void* fp, const char* buf, int64_t len) {
     return (w == (size_t)len) ? 0 : -1;
 }
 
+/* Write `size` elements of `esz` bytes as raw bytes, one low byte per
+   element (little-endian first byte). Lets Leash code emit exact binary
+   output (e.g. JVM .class files), which NUL-free strings cannot hold. */
+int64_t leash_sh_file_writevec(void* fp, const void* data, int64_t size, int64_t esz) {
+    if (!fp || !data) return -1;
+    if (size <= 0) return 0;
+    if (esz <= 0) esz = 1;
+    for (int64_t i = 0; i < size; i++) {
+        uint8_t b = ((const uint8_t*)data)[i * esz];
+        if (fputc(b, (FILE*)fp) == EOF) return -1;
+    }
+    return 0;
+}
+
 static leash_slice_t leash_file_slurp(FILE* f) {
     leash_slice_t s;
     s.len = 0;

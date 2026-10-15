@@ -5,6 +5,7 @@ use lexer::*;
 use parser::*;
 use typechecker::*;
 use codegen::*;
+use jvm::*;
 
 pub def Path : class {
     static pub fnc dirname(p string) : string {
@@ -780,6 +781,11 @@ pub def CompilerDriver : class {
             return 1;
         }
 
+        // JVM bytecode backend (no clang, no GC runtime, no linking).
+        if target_name == "jvm" {
+                return this.compile_jvm(input_file, output_file, prog, tc, run_mode, run_args, verbose, output_type, emit_llvm);
+        }
+
         // Codegen
         if verbose { show("[verbose] generating LLVM IR"); }
         cg: CodeGen = CodeGen.make(tc);
@@ -1368,5 +1374,123 @@ pub def CompilerDriver : class {
         }
 
         return 0;
+    }
+
+    // JVM bytecode target: emit .class files directly (no clang, no
+    // native runtime, no link step). Libraries are not supported yet.
+    pub fnc compile_jvm(input_file string, output_file string, prog Program, tc TypeChecker, run_mode bool, run_args string, verbose bool, output_type string, emit_llvm bool) : int {
+        if output_type == "dynamic" || output_type == "static" {
+            show("error: library outputs (to-dynamic/to-static) are not supported for --target jvm yet (executables only)");
+            return 1;
+        }
+        if emit_llvm {
+            show("error: --emit-llvm is not supported for --target jvm (JVM bytecode is not LLVM IR)");
+            return 1;
+        }
+        out_path: string = output_file;
+        if out_path.size == 0 {
+            out_path = Path.strip_ext(input_file);
+        }
+        cls_name: string = this.jvm_class_name(Path.basename(out_path));
+        if cls_name.size == 0 { cls_name = "Main"; }
+        dir: string = Path.dirname(out_path);
+        class_path: string = dir + "/" + cls_name + ".class";
+        cls: JvmClass = JvmClass.make(cls_name, "java/lang/Object");
+        jg: JvmGen = JvmGen.make(tc, cls_name);
+        jg.src_file = input_file;
+        jg.gen_program(prog, cls);
+        if jg.errors.size > 0 {
+            foreach _, e in<vector> jg.errors {
+                show("error: ", e);
+            }
+            return 1;
+        }
+        if output_type == "" && !jg.has_entry {
+            show("error: no entry point: '", input_file, "' defines no 'main' function (build a library with to-dynamic/to-static, or add 'fnc main')");
+            return 1;
+        }
+        bytes: vec<int>;
+        bytes = cls.write_to();
+        exec("mkdir -p " + dir, nil);
+        f: File = File.open(class_path, "w");
+        if f == null {
+            show("error: cannot write to '", class_path, "'");
+            return 1;
+        }
+        f.writebytes(bytes);
+        f.close();
+        // One class file per struct/class (same directory).
+        foreach _, kc in<vector> jg.klasses {
+            kb: vec<int> = kc.write_to();
+            kp: string = dir + "/" + kc.name + ".class";
+            kf: File = File.open(kp, "w");
+            if kf == null {
+                show("error: cannot write to '", kp, "'");
+                return 1;
+            }
+            kf.writebytes(kb);
+            kf.close();
+        }
+        if !run_mode {
+            show("[leash] Compiled ", input_file, " -> ", class_path);
+        }
+        if run_mode {
+            if this.exec_out("command -v java").size == 0 {
+                show("error: 'java' not found on PATH (needed to run --target jvm programs)");
+                return 1;
+            }
+            absdir: string = this.realpath_str(dir);
+            if absdir.size == 0 { absdir = dir; }
+            run_cmd: string = "java -cp " + absdir + " " + cls_name;
+            if run_args.size > 0 {
+                run_cmd = run_cmd + " " + run_args;
+            }
+            show("--- Executed at ", this.exec_out("date '+%Y-%m-%d %H:%M:%S'"), " ---");
+            rc_out: string = exec(run_cmd, "run");
+            rv: int = 0;
+            ri2: int = 0;
+            rneg: bool = false;
+            if rc_out.size > 0 && rc_out[0] == '-' {
+                rneg = true;
+                ri2 = 1;
+            }
+            while ri2 < rc_out.size && rc_out[ri2] >= '0' && rc_out[ri2] <= '9' {
+                rv = rv * 10 + (rc_out[ri2] - '0');
+                ri2 = ri2 + 1;
+            }
+            if rneg { rv = 0 - rv; }
+            return rv;
+        }
+        return 0;
+    }
+
+    // Sanitize an output basename into a valid Java class name.
+    pub fnc jvm_class_name(base string) : string {
+        if base.size > 6 && base[base.size - 6] == '.' && base[base.size - 5] == 'c' && base[base.size - 4] == 'l' && base[base.size - 3] == 'a' && base[base.size - 2] == 's' && base[base.size - 1] == 's' {
+            trimmed: string = "";
+            ti: int = 0;
+            while ti < base.size - 6 {
+                trimmed = trimmed + base[ti];
+                ti = ti + 1;
+            }
+            base = trimmed;
+        }
+        out: string = "";
+        i: int = 0;
+        while i < base.size {
+            c: char = base[i];
+            ok: bool = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c == '$';
+            if i > 0 && c >= '0' && c <= '9' { ok = true; }
+            if ok {
+                out = out + c;
+            } else {
+                out = out + "_";
+            }
+            i = i + 1;
+        }
+        if out.size > 0 && out[0] >= '0' && out[0] <= '9' {
+            out = "_" + out;
+        }
+        return out;
     }
 }

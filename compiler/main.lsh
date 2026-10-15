@@ -7,7 +7,7 @@ use driver::*;
 // Single source of truth for the release version. Bump discipline:
 // setup.py, leash/cli.py VERSION_STRING, README, docs badges, CHANGELOG.
 fnc leash_version() : string {
-    return "1.2.2";
+    return "1.3.0";
 }
 
 // Prefix test (no stdlib dependency this early in main.lsh).
@@ -268,7 +268,7 @@ fnc print_usage() : void {
     show("  help [command]        Show help, optionally for one command");
     show("");
     show("Global Options:");
-    show("  --target <target>                Cross-compile target: linux64, linux32, linux-arm, win64, macos, macos-arm");
+    show("  --target <target>                Cross-compile target: linux64, linux32, linux-arm, win64, macos, macos-arm, jvm");
     show("  --check                          Type-check only, do not produce output");
     show("  --warnings-as-errors / -oe       Treat warnings as errors");
     show("  --opt <level> / -O<level>        Optimization level: 0, 1, 2, 3, 4, s (size), z (aggressive size)");
@@ -1515,8 +1515,9 @@ fnc main(args string[]) : int {
             if arg == "--target" && i + 1 < args.size {
                 if args[i + 1] != "linux64" && args[i + 1] != "linux32" &&
                    args[i + 1] != "linux-arm" && args[i + 1] != "win64" &&
-                   args[i + 1] != "macos" && args[i + 1] != "macos-arm" {
-                    show("error: unknown target '", args[i + 1], "' (supported: linux64, linux32, linux-arm, win64, macos, macos-arm)");
+                   args[i + 1] != "macos" && args[i + 1] != "macos-arm" &&
+                   args[i + 1] != "jvm" {
+                    show("error: unknown target '", args[i + 1], "' (supported: linux64, linux32, linux-arm, win64, macos, macos-arm, jvm)");
                     return 1;
                 }
                 target_name = args[i + 1];

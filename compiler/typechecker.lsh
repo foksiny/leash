@@ -948,6 +948,7 @@ pub def TypeChecker : class {
         if m == "delete" { return 1; }
         if m == "write" { return 1; }
         if m == "writeb" { return 1; }
+        if m == "writebytes" { return 1; }
         if m == "replace" { return 2; }
         if m == "replaceall" { return 2; }
         return 0;
@@ -962,6 +963,7 @@ pub def TypeChecker : class {
         if m == "delete" { return "string"; }
         if m == "write" { return "string"; }
         if m == "writeb" { return "char[]"; }
+        if m == "writebytes" { return "vec<int>"; }
         if m == "replace" { return "string"; }
         if m == "replaceall" { return "string"; }
         return "";
@@ -1495,6 +1497,7 @@ pub def TypeChecker : class {
         if m == "write" { return "int"; }
         if m == "close" { return "int"; }
         if m == "writeb" { return "int"; }
+        if m == "writebytes" { return "int"; }
         if m == "readb" { return "char[]"; }
         if m == "readln" { return "string"; }
         if m == "readlnb" { return "char[]"; }
@@ -1614,10 +1617,17 @@ pub def TypeChecker : class {
             }
             // For +, -, *, /, % the result follows the numeric promotion:
             // float wins, uint+uint stays uint, char promotes to int
-            // (python _check_binary_op result rule). Only numeric operand
-            // pairs promote — string/struct concatenation keeps the left.
+            // Bitwise/modulo operators are integer-only (python parity:
+            // the reference rejects them on float operands — stage1 used
+            // to accept and then emit broken IR for float %).
             lt: string = lt_full;
             rt_b: string = rt_full;
+            if (e.op == "%" || e.op == "&" || e.op == "|" || e.op == "^" || e.op == "<<" || e.op == ">>")
+               && (this.is_float_family(lt) || this.is_float_family(rt_b)) {
+                this.errors.pushb("Operator '" + e.op + "' is only supported for integer types (operands '" + lt + "' and '" + rt_b + "').");
+                this.fatal_idx = this.errors.size - 1;
+                return "int";
+            }
             if this.is_numeric_base(lt) && this.is_numeric_base(rt_b) {
                 if lt == "float" || rt_b == "float" || lt == "double" || rt_b == "double" { return "float"; }
                 if lt == "uint" && rt_b == "uint" { return "uint"; }
@@ -1629,6 +1639,18 @@ pub def TypeChecker : class {
                     return "int<64>";
                 }
             }
+            // Static division by zero (python parity: a literal zero
+            // divisor always crashes, so reject it instead of emitting
+            // silently-wrong code). Float division by zero is IEEE-well-
+            // defined (inf), so only integer divisors are rejected.
+            // Opdef rewrites change the kind, so custom-type division
+            // never trips this.
+            if e.kind == ExprKind.BINOP && (e.op == "/" || e.op == "%") && e.right != null {
+                if e.right.kind == ExprKind.INT && e.right.ival == 0 {
+                    this.errors.pushb("Division by zero detected statically (constant-propagated divisor).");
+                }
+            }
+
             if lt.size > 0 { return lt; }
             return "int";
         }
