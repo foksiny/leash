@@ -179,6 +179,7 @@ pub def JArray : class {
     static pub T_BOOLEAN: int = 4;
     static pub T_CHAR: int = 5;
     static pub T_BYTE: int = 8;
+    static pub T_OBJECT: int = 5;
     static pub T_SHORT: int = 9;
     static pub T_INT: int = 10;
     static pub T_LONG: int = 11;
@@ -2785,7 +2786,11 @@ pub def JvmGen : class {
             this.gen_builtin(e);
             return;
         }
-        if fname == "exec" || fname == "tounion" || fname == "normescape" || fname == "lstr" || fname == "inttobytes" || fname == "floattobytes" || fname == "bytestoint" || fname == "bytestofloat" {
+        if fname == "exec" {
+            this.gen_exec(e);
+            return;
+        }
+        if fname == "tounion" || fname == "normescape" || fname == "lstr" || fname == "inttobytes" || fname == "floattobytes" || fname == "bytestoint" || fname == "bytestofloat" {
             this.jvm_unsupported("builtin '" + fname + "' (not supported on jvm)");
             return;
         }
@@ -2865,6 +2870,122 @@ pub def JvmGen : class {
     }
 
     // Builtin calls: conversions, types, random, stdin, time.
+
+    // exec(cmd, mode) via java ProcessBuilder (stdout captured, modeled).
+    pub fnc gen_exec(e Expr) : void {
+        // cmd
+        ct: string = this.expr_type(e.args.get(0));
+        this.gen_expr(e.args.get(0));
+        this.jvm_coerce(ct, "string");
+        cmd_slot: int = this.cur_method.alloc_local(1);
+        this.cur_method.store_local("Ljava/lang/String;", cmd_slot);
+        // mode (optional)
+        mode_slot: int = this.cur_method.alloc_local(1);
+        this.cur_method.op(JOp.ACONST_NULL, 1);
+        this.cur_method.store_local("Ljava/lang/String;", mode_slot);
+        if e.args.size >= 2 {
+            mt: string = this.expr_type(e.args.get(1));
+            this.gen_expr(e.args.get(1));
+            this.jvm_coerce(mt, "string");
+            this.cur_method.store_local("Ljava/lang/String;", mode_slot);
+        }
+        // args = {"/bin/sh","-c",cmd}
+        this.iconst(3);
+        this.cur_method.emit_u8(JOp.ANEWARRAY);
+        ci: int = this.cur_cp.class_entry("java/lang/String");
+        this.cur_method.emit_u8((ci >> 8) & 255);
+        this.cur_method.emit_u8(ci & 255);
+        this.cur_method.adjust(0);
+        arr_slot: int = this.cur_method.alloc_local(1);
+        this.cur_method.store_local("X", arr_slot);
+        this.cur_method.load_local("X", arr_slot);
+        this.iconst(0);
+        this.ldc_string("/bin/sh");
+        this.cur_method.op(JOp.AASTORE, -3);
+        this.cur_method.load_local("X", arr_slot);
+        this.iconst(1);
+        this.ldc_string("-c");
+        this.cur_method.op(JOp.AASTORE, -3);
+        this.cur_method.load_local("X", arr_slot);
+        this.iconst(2);
+        this.cur_method.load_local("Ljava/lang/String;", cmd_slot);
+        this.cur_method.op(JOp.AASTORE, -3);
+        // ProcessBuilder pb = new ProcessBuilder(args); then merge stderr
+        this.cur_method.op(JOp.NEW, 1);
+        pi: int = this.cur_cp.class_entry("java/lang/ProcessBuilder");
+        this.cur_method.emit_u8((pi >> 8) & 255);
+        this.cur_method.emit_u8(pi & 255);
+        this.cur_method.op(JOp.DUP, 1);
+        this.cur_method.load_local("X", arr_slot);
+        this.emit_invoke(JOp.INVOKESPECIAL, "java/lang/ProcessBuilder", "<init>", "([Ljava/lang/String;)V");
+        pb_slot: int = this.cur_method.alloc_local(1);
+        this.cur_method.store_local("X", pb_slot);
+        this.cur_method.load_local("X", pb_slot);
+        this.iconst(1);
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/lang/ProcessBuilder", "redirectErrorStream", "(Z)Ljava/lang/ProcessBuilder;");
+        this.cur_method.op(JOp.POP, -1);
+        // redirect output to temp file
+        this.ldc_string("leash_exec_");
+        this.ldc_string(".out");
+        this.emit_invoke(JOp.INVOKESTATIC, "java/io/File", "createTempFile", "(Ljava/lang/String;Ljava/lang/String;)Ljava/io/File;");
+        tmpf_slot: int = this.cur_method.alloc_local(1);
+        this.cur_method.store_local("X", tmpf_slot);
+        this.cur_method.load_local("X", tmpf_slot);
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/io/File", "getAbsolutePath", "()Ljava/lang/String;");
+        tmp_path_slot: int = this.cur_method.alloc_local(1);
+        this.cur_method.store_local("Ljava/lang/String;", tmp_path_slot);
+        this.cur_method.load_local("X", pb_slot);
+        this.cur_method.load_local("X", tmpf_slot);
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/lang/ProcessBuilder", "redirectOutput", "(Ljava/io/File;)Ljava/lang/ProcessBuilder;");
+        this.cur_method.op(JOp.POP, -1);
+        // Process p = pb.start(); capture exit via waitFor()
+        this.cur_method.load_local("X", pb_slot);
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/lang/ProcessBuilder", "start", "()Ljava/lang/Process;");
+        proc_slot: int = this.cur_method.alloc_local(1);
+        this.cur_method.store_local("X", proc_slot);
+        this.cur_method.load_local("X", proc_slot);
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/lang/Process", "waitFor", "()I");
+        exit_slot: int = this.cur_method.alloc_local(1);
+        this.cur_method.store_local("I", exit_slot);
+        // delete temp file (best-effort, popped)
+        this.cur_method.load_local("X", tmpf_slot);
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/io/File", "delete", "()Z");
+        this.cur_method.op(JOp.POP, -1);
+        // read stdout from temp file via Files.readAllBytes
+        this.cur_method.op(JOp.NEW, 1);
+        si: int = this.cur_cp.class_entry("java/lang/String");
+        this.cur_method.emit_u8((si >> 8) & 255);
+        this.cur_method.emit_u8(si & 255);
+        this.cur_method.op(JOp.DUP, 1);
+        this.cur_method.load_local("Ljava/lang/String;", tmp_path_slot);
+        this.emit_invoke(JOp.INVOKESTATIC, "java/nio/file/Paths", "get", "(Ljava/lang/String;)Ljava/nio/file/Path;");
+        this.emit_invoke(JOp.INVOKESTATIC, "java/nio/file/Files", "readAllBytes", "(Ljava/nio/file/Path;)[B");
+        this.ldc_string("ISO-8859-1");
+        this.emit_invoke(JOp.INVOKESPECIAL, "java/lang/String", "<init>", "([BLjava/lang/String;)V");
+        out_slot: int = this.cur_method.alloc_local(1);
+        this.cur_method.store_local("Ljava/lang/String;", out_slot);
+        // decide return
+        mode_exit_lbl: string = this.new_label("ex_modeout");
+        return_end: string = this.new_label("ex_retok");
+        this.cur_method.load_local("Ljava/lang/String;", mode_slot);
+        this.cur_method.branch(JOp.IFNULL, mode_exit_lbl, 1);
+        this.cur_method.load_local("Ljava/lang/String;", mode_slot);
+        this.ldc_string("code");
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/lang/String", "equals", "(Ljava/lang/Object;)Z");
+        this.cur_method.branch(JOp.IFNE, mode_exit_lbl, 1);
+        this.cur_method.load_local("Ljava/lang/String;", mode_slot);
+        this.ldc_string("run");
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/lang/String", "equals", "(Ljava/lang/Object;)Z");
+        this.cur_method.branch(JOp.IFEQ, return_end, 1);
+        this.cur_method.mark(mode_exit_lbl);
+        this.cur_method.load_local("I", exit_slot);
+        this.emit_invoke(JOp.INVOKESTATIC, "java/lang/Integer", "toString", "(I)Ljava/lang/String;");
+        this.cur_method.branch(JOp.GOTO, return_end, 0);
+        // nil mode (spawn-style): just continue, return stdout (ignored)
+        this.cur_method.mark(return_end);
+        this.cur_method.load_local("Ljava/lang/String;", out_slot);
+    }
+
     pub fnc gen_builtin(e Expr) : void {
         f: string = e.sval;
         if f == "typeof" {
