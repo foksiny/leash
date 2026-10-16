@@ -1,0 +1,102 @@
+use httpserver::httpserver::*;
+use http::http::*;
+
+fnc handle(method string, path string, query string, headers string, body string) : int {
+    if HttpServer.path_matches(path, "/hello") {
+        return HttpServer.reply(200, "text/plain", "hello-h2, " + path);
+    }
+    if HttpServer.path_matches(path, "/echo") {
+        HttpServer.set_content_type("text/plain");
+        HttpServer.add_header("X-Echo-Method", method);
+        HttpServer.set_body(body);
+        return 200;
+    }
+    if HttpServer.path_matches(path, "/json") {
+        return HttpServer.reply_json(200, "{\"ok\":true}");
+    }
+    if HttpServer.path_matches(path, "/auth") {
+        // echo back the caller's Authorization header value
+        h: HttpResponse = HttpResponse { status: 0, ok: false, headers: headers, body: "", err: "", proto: "" };
+        return HttpServer.reply_text(200, h.header("authorization"));
+    }
+    if HttpServer.path_matches(path, "/query") {
+        q: HttpQuery = HttpServer.parse_query(query);
+        return HttpServer.reply_text(200, q.get("name") + ":" + q.get("lang"));
+    }
+    return HttpServer.reply(404, "text/plain", "not found: " + path);
+}
+
+worker fnc probe(port int) {
+    base: string = "http://127.0.0.1:" + tostring(port);
+
+    // --- HTTP/2 cleartext (h2c prior knowledge) ---
+    r: HttpResponse = Http.get_h2(base + "/hello/world");
+    retrying: bool = !r.ok;
+    tries: int = 0;
+    while retrying {
+        if tries > 50 {
+            retrying = false;
+        } else {
+            tries = tries + 1;
+            r = Http.get_h2(base + "/hello/world");
+            retrying = !r.ok;
+        }
+    }
+    show(r.status);
+    show(r.proto);
+    show(r.is_h2());
+    show(r.body);
+    show(r.header("Server"));
+    show(r.content_type());
+
+    r2: HttpResponse = Http.request_h2("POST", base + "/echo", "leash-h2", "Content-Type: text/plain");
+    show(r2.status);
+    show(r2.proto);
+    show(r2.header("X-Echo-Method"));
+    show(r2.body);
+
+    // query strings ride the :path pseudo-header
+    r3: HttpResponse = Http.get_h2(base + "/query?name=ada&lang=leash");
+    show(r3.status);
+    show(r3.body);
+
+    // json shortcut + missing route
+    r4: HttpResponse = Http.get_h2(base + "/json");
+    show(r4.status);
+    show(r4.content_type());
+    show(r4.body);
+    r5: HttpResponse = Http.get_h2(base + "/missing");
+    show(r5.status);
+
+    // auth helper round-trips through headers
+    r6: HttpResponse = Http.request_h2("GET", base + "/auth", "", Http.basic_auth("aladdin", "opensesame"));
+    show(r6.body);
+    r7: HttpResponse = Http.request_h2("GET", base + "/auth", "", Http.bearer("tok123"));
+    show(r7.body);
+
+    // malformed URL + dead port fail fast, never hang
+    bad: HttpResponse = Http.get_h2("notaurl");
+    show(bad.ok == false);
+    show(bad.proto == "");
+    dead: HttpResponse = Http.get_h2("http://127.0.0.1:1/nope");
+    show(dead.ok == false);
+
+    HttpServer.shutdown();
+}
+
+fnc main() : void {
+    // pure helpers (no I/O): base64 vectors + header shapes
+    show(Http.base64_encode("hello") == "aGVsbG8=");
+    show(Http.base64_encode("hel") == "aGVs");
+    show(Http.base64_encode("h") == "aA==");
+    show(Http.base64_encode("") == "");
+    show(Http.basic_auth("aladdin", "opensesame") == "Authorization: Basic YWxhZGRpbjpvcGVuc2VzYW1l");
+    show(Http.bearer("tok123") == "Authorization: Bearer tok123");
+    show(Http.version() == "leash-http/1.1");
+
+    port: int = 18742;
+    spawn probe(port);
+
+    served: int = HttpServer.serve_ex(port, 20, &handle);
+    show(served);
+}

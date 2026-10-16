@@ -2,7 +2,7 @@ use http::http::*;
 
 fnc main() {
     // library identity
-    show(Http.version() == "leash-http/1.0");
+    show(Http.version() == "leash-http/1.1");
 
     // error descriptions are stable strings (no platform detail)
     show(Http.strerror(-1));

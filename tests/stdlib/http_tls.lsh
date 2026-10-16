@@ -1,0 +1,75 @@
+use httpserver::httpserver::*;
+use http::http::*;
+
+fnc handle(method string, path string, query string, headers string, body string) : int {
+    if HttpServer.path_matches(path, "/hello") {
+        return HttpServer.reply(200, "text/plain", "hello-tls, " + method);
+    }
+    if HttpServer.path_matches(path, "/echo") {
+        return HttpServer.reply_text(200, body);
+    }
+    if HttpServer.path_matches(path, "/page") {
+        return HttpServer.reply_html(200, "<h1>hi</h1>");
+    }
+    return HttpServer.reply(404, "text/plain", "not found");
+}
+
+worker fnc probe(port int) {
+    base: string = "https://127.0.0.1:" + tostring(port);
+
+    // h2 over TLS (ALPN); the fixture cert is self-signed so skip verify
+    // The TLS listener parses its certificate before bind(), so the
+    // first accepts can lag thread startup: retry patiently (fast tries
+    // against a refused port cost ~1ms; the 2s cap bounds black holes).
+    r: HttpResponse = Http.request_h2_ex("GET", base + "/hello", "", "", 2000, 5, false);
+    retrying: bool = !r.ok;
+    tries: int = 0;
+    while retrying {
+        if tries > 1000 {
+            retrying = false;
+        } else {
+            tries = tries + 1;
+            r = Http.request_h2_ex("GET", base + "/hello", "", "", 2000, 5, false);
+            retrying = !r.ok;
+        }
+    }
+    // steady-state requests keep the full timeout
+    r = Http.request_h2_ex("GET", base + "/hello", "", "", 10000, 5, false);
+    show(r.status);
+    show(r.proto);
+    show(r.is_h2());
+    show(r.body);
+
+    // POST body over the TLS+h2 framing
+    r2: HttpResponse = Http.request_h2_ex("POST", base + "/echo", "tls-ping", "Content-Type: text/plain", 10000, 5, false);
+    show(r2.status);
+    show(r2.proto);
+    show(r2.body);
+
+    // plain 1.1 client against the TLS listener (ALPN http/1.1)
+    r3: HttpResponse = Http.request_ex("GET", base + "/hello", "", "", 10000, 5, false);
+    show(r3.status);
+    show(r3.proto);
+    show(r3.body);
+
+    // html shortcut content type
+    r4: HttpResponse = Http.request_h2_ex("GET", base + "/page", "", "", 10000, 5, false);
+    show(r4.content_type());
+    show(r4.body);
+
+    // missing route over TLS
+    r5: HttpResponse = Http.request_h2_ex("GET", base + "/nope", "", "", 10000, 5, false);
+    show(r5.status);
+
+    HttpServer.shutdown();
+}
+
+fnc main() : void {
+    show(HttpServer.version() == "leash-httpd/1.2");
+
+    port: int = 18743;
+    spawn probe(port);
+
+    served: int = HttpServer.serve_tls_ex(port, 20, "tests/stdlib/fixtures/localhost.crt", "tests/stdlib/fixtures/localhost.key", &handle);
+    show(served);
+}

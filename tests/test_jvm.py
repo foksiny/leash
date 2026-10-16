@@ -371,6 +371,37 @@ class TestJvmTarget(unittest.TestCase):
             '    show(a << toint(int128, 2));\n'
             '}\n')
 
+    def test_wide_int_parity(self):
+        self._parity(
+            'use types::*;\n'
+            'fnc main() : void {\n'
+            '    p: uint<256> = 57896044618658097711785492504343953926634992332820282019728792003956564819967;\n'
+            '    show(p + 1);\n'
+            '    m: uint<512> = 13407807929942597099574024998205846127479365820592393377723561443721764030073546976801874298166903427690031858186486050853753882811946569946433649006084095;\n'
+            '    show(m + 1);\n'
+            '    show(m * 2);\n'
+            '    t: uint<7> = 127;\n'
+            '    show(t);\n'
+            '    x: uint<7> = t + 1;\n'
+            '    show(x);\n'
+            '    o: int<33> = -4294967296;\n'
+            '    show(o);\n'
+            '    show(toint(int<256>, "123456789012345678901234567890123456789012345678901234567890"));\n'
+            '}\n')
+
+    def test_showb_parity(self):
+        self._parity(
+            'fnc main() : void {\n'
+            '    show("one");\n'
+            '    showb("two");\n'
+            '    show("three");\n'
+            '    v: vec<int>;\n'
+            '    v.pushb(1);\n'
+            '    v.pushb(2);\n'
+            '    showb(v);\n'
+            '    showb("\n");\n'
+            '}\n')
+
     def test_async_parity(self):
         self._parity(
             'async fnc slow_add(a int, b int) : int {\n'
@@ -439,6 +470,141 @@ class TestJvmTarget(unittest.TestCase):
                  "to-dynamic", "to", os.path.join(self.tmp, "lib")])
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("to-dynamic", r.stdout + r.stderr)
+
+    def test_printf_parity(self):
+        self._parity(
+            'fnc main() : void {\n'
+            '    printf("int=%d neg=%d hex=%x float=%f str=%s pct=%% end\\n", 42, 0 - 7, 255, 3.5, "hi");\n'
+            '    n: int = printf("abc");\n'
+            '    show(n);\n'
+            '}\n')
+
+    def test_raw_heap_unsupported(self):
+        # Raw C-heap functions have no JVM addresses; they must fail
+        # loudly at compile time, never as broken bytecode.
+        path = os.path.join(self.tmp, "heap.lsh")
+        with open(path, "w") as f:
+            f.write('unsafe nogc fnc main : int {\n'
+                    '    p: *char = (*char)malloc(16);\n'
+                    '    free(p);\n'
+                    '    return 0;\n'
+                    '}\n')
+        r = _sh([BIN_LEASHC, "compile", path, "--target", "jvm",
+                 "to", os.path.join(self.tmp, "heap")])
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("raw C heap", r.stdout + r.stderr)
+
+    def test_structrec_parity(self):
+        self._parity(
+            'def Node : struct {\n'
+            '    value: int;\n'
+            '    next: *Node;\n'
+            '};\n'
+            'unsafe fnc sum(n : *Node) : int {\n'
+            '    if n == null { return 0; }\n'
+            '    return n->value + sum(n->next);\n'
+            '}\n'
+            'fnc main() : void {\n'
+            '    c: Node = Node { value: 30, next: null };\n'
+            '    b: Node = Node { value: 20, next: &c };\n'
+            '    a: Node = Node { value: 10, next: &b };\n'
+            '    show(sum(&a));\n'
+            '    copy: Node = b;\n'
+            '    copy.value = 1234;\n'
+            '    show(copy.value, " ", b.value);\n'
+            '}\n')
+
+    def test_autoinit_parity(self):
+        self._parity(
+            'def Person : class {\n'
+            '    name: string;\n'
+            '    age:  int;\n'
+            '    pub Person(name string = "No Name", age int = 10) {\n'
+            '        this.name = name;\n'
+            '        this.age  = age;\n'
+            '    }\n'
+            '}\n'
+            'fnc main {\n'
+            '    p1: Person;\n'
+            '    show(p1.name, " ", p1.age);\n'
+            '}\n')
+
+    def test_gc_collect_noop_parity(self):
+        # Explicit collections are no-ops on JVM (GC is automatic).
+        self._parity(
+            'fnc build(count int) : int {\n'
+            '    total: int = 0;\n'
+            '    for i: int = 0; i < count; i = i + 1 {\n'
+            '        v: vec<int> = {i, i + 1};\n'
+            '        total = total + v.size;\n'
+            '    }\n'
+            '    return total;\n'
+            '}\n'
+            'fnc main() : void {\n'
+            '    show(build(50));\n'
+            '    gc_collect();\n'
+            '    show(build(50));\n'
+            '    show("roots ok");\n'
+            '}\n')
+
+    def test_http_helpers_parity(self):
+        # Pure-Leash HTTP helpers (no sockets): base64, auth headers,
+        # response header parsing, query parsing. Compiles against the
+        # working-tree stdlib; native @from calls become loud runtime
+        # errors on JVM while pure code runs with parity.
+        src = (
+            'use http::http::*;\n'
+            'use httpserver::httpserver::*;\n'
+            'fnc main() : void {\n'
+            '    show(Http.base64_encode("hello") == "aGVsbG8=");\n'
+            '    show(Http.base64_encode("h") == "aA==");\n'
+            '    show(Http.base64_encode("") == "");\n'
+            '    show(Http.basic_auth("aladdin", "opensesame"));\n'
+            '    show(Http.bearer("tok123"));\n'
+            '    r: HttpResponse = HttpResponse { status: 200, ok: true, headers: "Content-Type: text/plain\\nX-A: b\\n", body: "hi", err: "", proto: "h2" };\n'
+            '    show(r.header("content-type"));\n'
+            '    show(r.content_type());\n'
+            '    show(r.is_h2());\n'
+            '    show(r.success());\n'
+            '    q: HttpQuery = HttpServer.parse_query("a=1&b=2&flag");\n'
+            '    show(q.count());\n'
+            '    show(q.get("b"));\n'
+            '    show(q.get("flag") == "");\n'
+            '    show(q.has("a"));\n'
+            '    show(HttpServer.path_matches("/hello/x", "/hello"));\n'
+            '}\n')
+        name = self._next_name()
+        path = os.path.join(self.tmp, f"{name}.lsh")
+        with open(path, "w") as f:
+            f.write(src)
+        stdlib = os.path.join(REPO_ROOT, "installthis")
+        out_j = os.path.join(self.tmp, name)
+        rj_c = _sh([BIN_LEASHC, "compile", path, "--target", "jvm",
+                    "--other-imports", stdlib, "to", out_j])
+        self.assertEqual(rj_c.returncode, 0, msg=rj_c.stdout + rj_c.stderr)
+        rj = self._run_jvm(self.tmp, name)
+        out_n = os.path.join(self.tmp, name + "n")
+        rn_c = _sh([BIN_LEASHC, "compile", path, "--other-imports", stdlib,
+                    "to", out_n])
+        self.assertEqual(rn_c.returncode, 0, msg=rn_c.stdout + rn_c.stderr)
+        rn = subprocess.run([out_n], capture_output=True, text=True,
+                            errors="replace", timeout=60)
+        self.assertEqual(rj.stdout, rn.stdout,
+                         f"stdout differs:\n--- jvm ---\n{rj.stdout}\n--- native ---\n{rn.stdout}")
+
+    def test_native_call_fails_loud(self):
+        # Calling a native @from function on JVM compiles (mixed modules
+        # stay importable) but aborts with a clear message when executed.
+        src = ('use http::http::*;\n'
+               'fnc main() : void {\n'
+               '    r: HttpResponse = Http.get("http://127.0.0.1:1/x");\n'
+               '    show(r.status);\n'
+               '}\n')
+        class_dir, main_class = self._compile_jvm(src)
+        r = self._run_jvm(class_dir, main_class)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("not supported on the jvm target",
+                      r.stdout + r.stderr)
 
     def test_emit_llvm_unsupported(self):
         path = os.path.join(self.tmp, "ll.lsh")

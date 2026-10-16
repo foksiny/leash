@@ -1,12 +1,13 @@
-# httpserver — native HTTP/1.1 server for Leash
+# httpserver — native HTTP server for Leash (HTTP/1.1 + HTTP/2)
 
-A native HTTP/1.1 server shim (`lshhttpd`) bound through Leash's `@from` FFI
+A native HTTP server shim (`lshhttpd`) bound through Leash's `@from` FFI
 directive. It completes the web stack started by the `http` client package:
-both sides of the wire are now native Leash, with no external dependencies.
+both sides of the wire are now native Leash. HTTP/1.1 keep-alive plus
+HTTP/2 (h2c, and h2 over TLS via `serve_tls` on POSIX).
 
 | Platform   | Backend |
 |------------|---------|
-| Linux      | BSD sockets (`linux/liblshhttpd.a`, prebuilt) |
+| Linux      | BSD sockets + OpenSSL, statically bundled (`linux/liblshhttpd.a`, prebuilt) |
 | Linux ARM64| BSD sockets (`arm64/liblshhttpd.a` — rebuild, see below) |
 | Windows    | Winsock2 (`win/liblshhttpd.a`, prebuilt) |
 | macOS      | BSD sockets (`macos/liblshhttpd.a` — rebuild) |
@@ -75,6 +76,8 @@ handler's return value: `return HttpServer.reply(200, "text/plain", "hi");`
 | `add_header(name, value)` / `add_header_line(line)` | Append response headers (`Content-Length`/`Connection` are managed by the server) |
 | `set_content_type(ct)` | Shortcut for `add_header("Content-Type", ct)` |
 | `reply(status, ct, body)` / `reply_raw(status, body)` | One-liner responses usable as handler return values |
+| `reply_json(status, body)` / `reply_html(status, body)` / `reply_text(status, body)` | One-liners with the Content-Type preset |
+| `serve_tls(port, cert, key, handler)` / `serve_tls_ex(port, max, cert, key, handler)` | HTTPS listener (POSIX): PEM cert+key; ALPN negotiates h2 or HTTP/1.1 per connection |
 | `parse_query(q)` → `HttpQuery` | Split `a=1&b=2` into a query object (`q.get("a")`, `q.has("b")`, `q.count()`) |
 | `path_matches(path, prefix)` | Prefix matcher for simple routing |
 | `version()` / `strerror(code)` | Diagnostics |
@@ -88,14 +91,21 @@ handler's return value: `return HttpServer.reply(200, "text/plain", "hi");`
   honored. Pipelined requests on one socket are answered in order. The
   handler still runs on the thread that called `serve()` (GC-visible
   stack, same as v1.0), and a slow client no longer blocks the others.
+- **HTTP/2:** cleartext h2c is detected per connection via the client
+  preface (`PRI * HTTP/2.0…`) on the same port — no separate listener,
+  same handler contract. Up to 16 concurrent streams per connection,
+  HPACK with dynamic table, flow-control top-ups, PING/SETTINGS/WINDOW_UPDATE
+  handling and GOAWAY on shutdown. `serve_tls()` additionally negotiates
+  h2 over TLS via ALPN (fallback: HTTP/1.1 over the same TLS connection).
+  SIGPIPE is ignored while serving so vanishing peers cannot kill the host.
 - **Connection hygiene:** up to 128 concurrent connections; an idle
   keep-alive connection closes after 60 s of silence, a request whose
   bytes stall mid-flight after the 30 s I/O budget; the per-connection
   buffer is capped at 64 KiB of head + 16 MiB of body.
 - **Binds all interfaces** (`0.0.0.0`): `localhost` shortcuts work, but so do
   network callers. For anything beyond toy/demo servers, put it behind a
-  reverse proxy (nginx, Caddy) that handles TLS; `lshhttpd` itself is
-  plain HTTP/1.1.
+  reverse proxy (nginx, Caddy) for hardening; `serve_tls()` terminates
+  TLS itself (POSIX only — needs OpenSSL at build time).
 - `HEAD` requests run the handler but suppress the body (with a correct
   `Content-Length`).
 - Malformed request lines are answered with `400 Bad Request` without
@@ -139,8 +149,9 @@ modifying `src/lshhttpd.c`:
 
 ```bash
 cd src && sh build.sh                                    # Linux -> ../linux/
+                                                       # (bundles OpenSSL statically for serve_tls)
 cd src && build.bat                                      # Windows -> ..\win\
-cd src && sh build.sh                                    # macOS  -> ../macos/
+cd src && OPENSSL_ROOT=$(brew --prefix openssl) sh build.sh  # macOS -> ../macos/
 cd src && TARGET_DIR=arm64 CC=aarch64-linux-gnu-gcc sh build.sh
                                                          # Linux ARM64 cross
 ```

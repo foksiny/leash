@@ -88,6 +88,31 @@ void leash_showb_unlock(void) {
 }
 #endif
 
+/* Refcounted SIGPIPE immunity shared by the native shims (http, httpserver):
+ * OpenSSL writes can raise SIGPIPE when the peer already went away, and the
+ * disposition is process-global while requests serve on threads. SIG_IGN
+ * stays until every holder (any shim, any thread) drops it. */
+#ifndef _WIN32
+#include <signal.h>
+static pthread_mutex_t leash_spipe_mu = PTHREAD_MUTEX_INITIALIZER;
+static int leash_spipe_n = 0;
+void leash_spipe_hold(void) {
+    pthread_mutex_lock(&leash_spipe_mu);
+    if (leash_spipe_n == 0) signal(SIGPIPE, SIG_IGN);
+    leash_spipe_n++;
+    pthread_mutex_unlock(&leash_spipe_mu);
+}
+void leash_spipe_drop(void) {
+    pthread_mutex_lock(&leash_spipe_mu);
+    leash_spipe_n--;
+    if (leash_spipe_n == 0) signal(SIGPIPE, SIG_DFL);
+    pthread_mutex_unlock(&leash_spipe_mu);
+}
+#else
+void leash_spipe_hold(void) {}
+void leash_spipe_drop(void) {}
+#endif
+
 #ifdef NO_GC
 /* ===== Stub mode: plain malloc/free, no GC tracking ===== */
 

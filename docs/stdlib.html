@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v1.3.3 Release</div>
+        <div class="version">v1.4.0 Release</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -830,7 +830,7 @@ fnc main() {
 
 <h2>HTTP Client (<code>http::http</code>)</h2>
 
-<p>A native HTTP/1.1 client with HTTPS (TLS) support, built on a small C shim bound via the <code>@from</code> FFI directive. Linux bundles OpenSSL statically into <code>linux/liblshhttp.a</code> (no extra packages needed); Windows uses the built-in WinHTTP API; macOS users can rebuild the shim with Homebrew OpenSSL in one command (see <code>installthis/http/README.md</code>). Responses follow redirects automatically, decode chunked transfer encoding, and honor per-request timeouts.</p>
+<p>A native HTTP client speaking <strong>HTTP/1.1 and HTTP/2</strong>, built on a small C shim bound via the <code>@from</code> FFI directive. Cleartext <code>http://</code> requests speak <strong>h2c</strong> (prior knowledge) through the <code>*_h2</code> API; <code>https://</code> offers ALPN and speaks h2 when the server selects it, falling back to HTTP/1.1 otherwise. Linux bundles OpenSSL statically into <code>linux/liblshhttp.a</code> (no extra packages needed); Windows uses the built-in WinHTTP API (which negotiates h2 itself on TLS); macOS users can rebuild the shim with Homebrew OpenSSL in one command (see <code>installthis/http/README.md</code>). Responses follow redirects automatically, decode chunked transfer encoding, and honor per-request timeouts.</p>
 
 <pre><code><span class="kw">use</span> http::http::*;
 
@@ -850,6 +850,11 @@ fnc main() {
     <tr><th>Method</th><th>Description</th></tr>
     <tr><td><code>get(url)</code> / <code>delete(url)</code> / <code>head(url)</code></td><td>Bodyless requests</td></tr>
     <tr><td><code>post(url, body)</code> / <code>put(url, body)</code> / <code>patch(url, body)</code></td><td>Requests with a body</td></tr>
+    <tr><td><code>options(url)</code></td><td>OPTIONS request (CORS preflights, capability discovery)</td></tr>
+    <tr><td><code>get_h2(url)</code> / <code>post_h2(url, body)</code> / <code>put_h2</code> / <code>patch_h2</code> / <code>delete_h2</code> / <code>head_h2</code> / <code>options_h2</code></td><td>Same verbs over the h2-preferring engine</td></tr>
+    <tr><td><code>request_h2(method, url, body, headers)</code> / <code>request_h2_ex(...)</code></td><td>Full control over HTTP/2; same shapes as <code>request</code></td></tr>
+    <tr><td><code>download_h2(url, path)</code> / <code>download_h2_ex(...)</code></td><td>Binary-safe downloads over the h2-preferring engine</td></tr>
+    <tr><td><code>basic_auth(user, pass)</code> / <code>bearer(token)</code></td><td><code>Authorization</code> header lines (pure Leash, no I/O)</td></tr>
     <tr><td><code>request(method, url, body, headers)</code></td><td>Full control; extra <code>headers</code> are LF-separated lines</td></tr>
     <tr><td><code>request_ex(..., timeout_ms, max_redirects, verify_tls)</code></td><td>Tunable variant of <code>request</code></td></tr>
     <tr><td><code>download(url, path)</code> / <code>download_ex(...)</code></td><td>Stream any payload straight to a file &mdash; binary-safe (images, zips)</td></tr>
@@ -867,6 +872,9 @@ fnc main() {
     <tr><td><code>ok: bool</code></td><td>True when a response arrived at all; <code>success()</code> narrows it to 2xx</td></tr>
     <tr><td><code>body: string</code></td><td>Response text (use <code>Http.download</code> for binary data)</td></tr>
     <tr><td><code>header(name): string</code></td><td>Case-insensitive header lookup; "" when absent</td></tr>
+    <tr><td><code>content_type(): string</code></td><td>Shortcut for <code>header("content-type")</code></td></tr>
+    <tr><td><code>proto: string</code></td><td>Negotiated protocol of the final hop: <code>"http/1.1"</code> or <code>"h2"</code> ("" when no server was reached)</td></tr>
+    <tr><td><code>is_h2(): bool</code></td><td>True when the final hop negotiated HTTP/2</td></tr>
     <tr><td><code>headers: string</code></td><td>Full response head, one header per line</td></tr>
     <tr><td><code>err: string</code></td><td>Human-readable failure reason; "" on success</td></tr>
 </table>
@@ -885,7 +893,7 @@ fnc main() {
 
 <h2>HTTP Server (<code>httpserver::httpserver</code>)</h2>
 
-<p>A native HTTP/1.1 server, built on a small C shim (<code>lshhttpd</code>) bound through <code>@from</code> — completing the web stack started by the <code>http</code> client. No external dependencies on any platform (BSD sockets on POSIX, Winsock2 on Windows).</p>
+<p>A native HTTP server speaking <strong>HTTP/1.1 and HTTP/2</strong>, built on a small C shim (<code>lshhttpd</code>) bound through <code>@from</code> — completing the web stack started by the <code>http</code> client. h2c arrives via client-preface detection on the same port (same handler contract); <code>serve_tls</code> adds a TLS listener where ALPN negotiates h2 or HTTP/1.1 per connection. Linux <code>liblshhttpd.a</code> bundles OpenSSL statically like the client archive; Windows serves h2c over Winsock2 (TLS serving is POSIX-only).</p>
 
 <pre><code><span class="kw">use</span> httpserver::httpserver::*;
 
@@ -915,6 +923,8 @@ fnc main() {
     <tr><td><code>shutdown()</code></td><td>Stop a running server; from a handler: after the current response; from another thread: unblocks <code>accept()</code> immediately</td></tr>
     <tr><td><code>set_body(body)</code> / <code>add_header(name, value)</code> / <code>set_content_type(ct)</code></td><td>Fill the current response (call from the handler)</td></tr>
     <tr><td><code>reply(status, content_type, body)</code> / <code>reply_raw(status, body)</code></td><td>One-liner response — returns <code>status</code>, so it's the handler's return value</td></tr>
+    <tr><td><code>serve_tls(port, cert, key, handler)</code> / <code>serve_tls_ex(port, max, cert, key, handler)</code></td><td>HTTPS listener (POSIX): <code>cert</code>/<code>key</code> are PEM paths; ALPN picks h2 or HTTP/1.1 per connection</td></tr>
+    <tr><td><code>reply_json(status, body)</code> / <code>reply_html(status, body)</code> / <code>reply_text(status, body)</code></td><td>One-liners with the matching Content-Type preset</td></tr>
     <tr><td><code>parse_query(q)</code></td><td>Split <code>"a=1&amp;b=2"</code> into a <code>HttpQuery</code> (<code>get</code>/<code>has</code>/<code>count</code>)</td></tr>
     <tr><td><code>path_matches(path, prefix)</code></td><td>Prefix routing helper</td></tr>
     <tr><td><code>version()</code> / <code>strerror(code)</code></td><td>Diagnostics</td></tr>

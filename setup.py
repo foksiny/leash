@@ -141,7 +141,7 @@ if os.path.exists(NATIVE_BIN):
 
 setup(
     name="leash",
-    version="1.2.2",
+    version="1.4.0",
     description="Leash programming language — self-hosted compiler, toolchain and package manager",
     packages=find_packages(),
     package_data=_package_data,

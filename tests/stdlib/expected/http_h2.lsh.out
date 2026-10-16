@@ -1,0 +1,44 @@
+true
+true
+true
+true
+true
+true
+true
+200
+h2
+true
+hello-h2, /hello/world
+leash-httpd/1.2
+text/plain
+200
+h2
+POST
+leash-h2
+200
+ada:leash
+200
+application/json
+{"ok":true}
+404
+Basic YWxhZGRpbjpvcGVuc2VzYW1l
+Bearer tok123
+true
+true
+true
+7
+--- Executed at 2026-10-16 17:36:21 ---
+warning: Security: imported module 'main.lsh' links native library 'liblshhttpd.a' into this build via @from — native libraries from dependencies run with your program's full privileges
+  --> /home/foksiny/projects/leash/installthis/httpserver/linux/main.lsh:1:0 [W_SECURITY]
+  |
+1 | @from("liblshhttpd.a") {
+  | ^
+  |
+  = tip: Confirm the dependency is expected to ship a native library, or review/build it from source.
+warning: Security: imported module 'main.lsh' links native library 'liblshhttp.a' into this build via @from — native libraries from dependencies run with your program's full privileges
+  --> /home/foksiny/projects/leash/installthis/http/linux/main.lsh:1:0 [W_SECURITY]
+  |
+1 | @from("liblshhttp.a") {
+  | ^
+  |
+  = tip: Confirm the dependency is expected to ship a native library, or review/build it from source.

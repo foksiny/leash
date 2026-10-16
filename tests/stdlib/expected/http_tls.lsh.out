@@ -1,0 +1,44 @@
+true
+200
+h2
+true
+hello-tls, GET
+200
+h2
+tls-ping
+200
+http/1.1
+hello-tls, GET
+text/html; charset=utf-8
+<h1>hi</h1>
+404
+6
+--- Executed at 2026-10-16 17:36:20 ---
+warning: Unused parameter 'headers' in function 'handle'
+  --> tests/stdlib/http_tls.lsh:4:0
+  |
+4 | fnc handle(method string, path string, query string, headers string, body string) : int {
+  | ^
+  |
+  = tip: If the function logic doesn't require this parameter, consider removing it or renaming it to `_headers`.
+warning: Unused parameter 'query' in function 'handle'
+  --> tests/stdlib/http_tls.lsh:4:0
+  |
+4 | fnc handle(method string, path string, query string, headers string, body string) : int {
+  | ^
+  |
+  = tip: If the function logic doesn't require this parameter, consider removing it or renaming it to `_query`.
+warning: Security: imported module 'main.lsh' links native library 'liblshhttpd.a' into this build via @from — native libraries from dependencies run with your program's full privileges
+  --> /home/foksiny/projects/leash/installthis/httpserver/linux/main.lsh:1:0 [W_SECURITY]
+  |
+1 | @from("liblshhttpd.a") {
+  | ^
+  |
+  = tip: Confirm the dependency is expected to ship a native library, or review/build it from source.
+warning: Security: imported module 'main.lsh' links native library 'liblshhttp.a' into this build via @from — native libraries from dependencies run with your program's full privileges
+  --> /home/foksiny/projects/leash/installthis/http/linux/main.lsh:1:0 [W_SECURITY]
+  |
+1 | @from("liblshhttp.a") {
+  | ^
+  |
+  = tip: Confirm the dependency is expected to ship a native library, or review/build it from source.

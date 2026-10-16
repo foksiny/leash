@@ -38,6 +38,18 @@
     // Append a raw header line ("Name: value") for the current request.
     fnc lshhttpd_set_header(line string) : void;
 
+    // Serve with TLS (POSIX only): `cert`/`key` are PEM file paths.
+    // ALPN negotiates h2 when the client offers it, else HTTP/1.1 over
+    // the same TLS connection. Same request contract and return codes
+    // as lshhttpd_serve.
+    fnc lshhttpd_serve_tls(
+        port int,
+        max_requests int<64>,
+        cert string,
+        key string,
+        handler fnc(string, string, string, string, string) : int
+    ) : int;
+
     // Library version identifier.
     fnc lshhttpd_version() : string;
 
@@ -100,6 +112,21 @@ pub def HttpServer : class {
         return lshhttpd_serve(port, max_requests, handler);
     }
 
+    //====================================================
+    // TLS serving (POSIX only; needs cert + key PEM files)
+    //====================================================
+
+    // Serves HTTPS on `port`: clients offering ALPN "h2" get HTTP/2,
+    // others get HTTP/1.1 over TLS. Blocks like serve().
+    static pub fnc serve_tls(port int, cert string, key string, handler HttpHandler) : int {
+        return lshhttpd_serve_tls(port, 0 - 1, cert, key, handler);
+    }
+
+    // Like serve_tls(), but exits cleanly after `max_requests` requests.
+    static pub fnc serve_tls_ex(port int, max_requests int<64>, cert string, key string, handler HttpHandler) : int {
+        return lshhttpd_serve_tls(port, max_requests, cert, key, handler);
+    }
+
     // Asks a running server to stop. Safe to call from a handler
     // (stops after the current response) or from another thread.
     static pub fnc shutdown() : void {
@@ -143,6 +170,21 @@ pub def HttpServer : class {
     static pub fnc reply_raw(status int, body string) : int {
         lshhttpd_set_body(body);
         return status;
+    }
+
+    // One-liner: reply with "application/json" + body.
+    static pub fnc reply_json(status int, body string) : int {
+        return HttpServer.reply(status, "application/json", body);
+    }
+
+    // One-liner: reply with "text/html; charset=utf-8" + body.
+    static pub fnc reply_html(status int, body string) : int {
+        return HttpServer.reply(status, "text/html; charset=utf-8", body);
+    }
+
+    // One-liner: reply with "text/plain; charset=utf-8" + body.
+    static pub fnc reply_text(status int, body string) : int {
+        return HttpServer.reply(status, "text/plain; charset=utf-8", body);
     }
 
     //====================================================

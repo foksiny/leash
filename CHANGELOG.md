@@ -5,6 +5,61 @@ All notable changes to the Leash compiler are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.4.0] - 2026-10-16
+
+Minor release: HTTP/2 for the standard library — the `http` client and
+`httpserver` both speak h2c (cleartext prior knowledge) and h2 over TLS
+(ALPN negotiation with HTTP/1.1 fallback), plus a modernized HTTP toolbox
+(protocol reporting, auth helpers, reply shortcuts). Native `@from`
+functions on the JVM backend now fail loudly at call time instead of at
+import, so mixed native/pure modules stay importable. The stdlib suite
+grows to 101 tests.
+
+### Added — HTTP/2 (RFC 9113 + HPACK RFC 7541)
+- Shared HPACK codec (`installthis/*/src/lshhpack.h`, tables validated
+  against the RFC 7541 Appendix C vectors): static table, full decode
+  (indexed, incremental/no-index literals, Huffman, dynamic table with
+  eviction) and compact encode (indexed + literal-no-index, Huffman when
+  shorter).
+- Client (`http`): `request_h2`/`request_h2_ex`, all verb shortcuts
+  (`get_h2`/`post_h2`/`put_h2`/`patch_h2`/`delete_h2`/`head_h2`/
+  `options_h2`), `download_h2`/`download_h2_ex`. Cleartext `http://`
+  speaks h2c; `https://` offers ALPN and speaks h2 when selected, else
+  finishes over HTTP/1.1. POSIX implements framing over TCP/TLS;
+  Windows maps to WinHTTP with protocol reporting.
+- Server (`httpserver`): h2c via client-preface detection on the same
+  port (same handler contract, same keep-alive engine), and
+  `serve_tls`/`serve_tls_ex(port, cert, key, handler)` — one TLS listener
+  serving h2 (ALPN) and HTTP/1.1 concurrently. SIGPIPE is scoped-ignored
+  while serving (a process-global refcount shared through the runtime, so
+  client and server threads stay covered together) so vanishing peers
+  cannot kill the host.
+- `HttpResponse.proto` (`"http/1.1"`/`"h2"`), `is_h2()`,
+  `content_type()`; `Http.options`, `basic_auth`/`bearer` header
+  helpers, private Base64; `HttpServer.reply_json`/`reply_html`/
+  `reply_text`.
+- Raw C-heap (`malloc`/`free`/`strcpy`/...) and C stdio buffers
+  (`scanf`/`sprintf`/...) are clean JVM compile errors; `printf(fmt…)`
+  runs on the JVM via `String.format` (Locale.ROOT); `gc_collect()` is a
+  JVM no-op.
+
+### Changed
+- `Http.version()` is `leash-http/1.1`, `HttpServer.version()` is
+  `leash-httpd/1.2`; existing version asserts updated.
+- Windows archives rebuilt (`win/liblshhttp.a`, `win/liblshhttpd.a`);
+  Linux `liblshhttpd.a` now bundles OpenSSL like the client archive.
+  macOS/ARM users rebuild via `src/build.sh` (documented in READMEs).
+- `HttpResponse` gains the `proto` field (set it in exhaustive
+  literals).
+- Syntax highlighters (vim, emacs, vscode TextMate + language server):
+  `async`/`await`/`nogc` keywords, `gc_collect`/`gc_stats`/`getenv`
+  builtins, `print`/`println`/`panic`/`assert`, `vector`/`matrix` types.
+
+### Fixed
+- H2 buffer NUL termination (garbage bytes on POST bodies), `serve_ex`
+  exit ordering vs handler shutdown, and the TLS listener startup race in
+  tests (patient retries instead of instant ones).
+
 ## [1.3.3] - 2026-10-16
 
 Minor release: ChaCha20 CSPRNG for all randomness, and the JVM backend

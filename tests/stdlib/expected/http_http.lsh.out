@@ -11,4 +11,11 @@ true
 true
 true
 true
---- Executed at 2026-08-25 00:35:24 ---
+--- Executed at 2026-10-16 17:36:32 ---
+warning: Security: imported module 'main.lsh' links native library 'liblshhttp.a' into this build via @from — native libraries from dependencies run with your program's full privileges
+  --> /home/foksiny/projects/leash/installthis/http/linux/main.lsh:1:0 [W_SECURITY]
+  |
+1 | @from("liblshhttp.a") {
+  | ^
+  |
+  = tip: Confirm the dependency is expected to ship a native library, or review/build it from source.

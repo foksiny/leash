@@ -1,8 +1,10 @@
-# http — native HTTP/HTTPS client for Leash
+# http — native HTTP/HTTPS client for Leash (with HTTP/2)
 
-Native HTTP/1.1 client with HTTPS (TLS) support, implemented as a small C
-shim bound through Leash's `@from` FFI directive. Both HTTP and HTTPS are
-supported on every platform:
+Native HTTP client with HTTPS (TLS) support, implemented as a small C
+shim bound through Leash's `@from` FFI directive. HTTP/1.1 is spoken
+everywhere; the `*_h2` API additionally speaks **h2c** (cleartext,
+prior knowledge) and **h2 over TLS** (ALPN, with HTTP/1.1 fallback).
+Both HTTP and HTTPS are supported on every platform:
 
 | Platform | Backend |
 |----------|---------|
@@ -40,8 +42,12 @@ leash run main.lsh --other-imports installthis
 
 | Function | Description |
 |----------|-------------|
-| `get(url)` / `delete(url)` / `head(url)` | Simple requests without a body |
+| `get(url)` / `delete(url)` / `head(url)` / `options(url)` | Simple requests without a body |
 | `post(url, body)` / `put(url, body)` / `patch(url, body)` | Requests with a body |
+| `get_h2(url)` / `post_h2(url, body)` / `put_h2` / `patch_h2` / `delete_h2` / `head_h2` / `options_h2` | Same verbs over the h2-preferring engine |
+| `request_h2(method, url, body, headers)` / `request_h2_ex(...)` | Full control over HTTP/2 (same shapes as `request`) |
+| `download_h2(url, path)` / `download_h2_ex(...)` | Binary-safe downloads over the h2-preferring engine |
+| `basic_auth(user, pass)` / `bearer(token)` | `Authorization` header lines (pure Leash) |
 | `request(method, url, body, headers)` | Full control; `headers` is LF-separated extra headers |
 | `request_ex(method, url, body, headers, timeout_ms, max_redirects, verify_tls)` | Full control + tuning |
 | `download(url, path)` | Streams any response straight to a file (binary-safe) |
@@ -61,6 +67,8 @@ verification on.
 | `success(): bool` | True for 2xx statuses |
 | `status: int` | HTTP status code (e.g. 200), or a negative error code |
 | `body: string` | Response body (text; use `Http.download` for binary data) |
+| `proto: string` | Negotiated protocol: `"http/1.1"` or `"h2"` ("" when no server was reached); `is_h2()` tests it |
+| `content_type(): string` | Shortcut for `header("content-type")` |
 | `header(name): string` | Case-insensitive header lookup, "" when absent |
 | `headers: string` | Raw response head, one header per line |
 | `err: string` | Human-readable failure reason ("") on success |

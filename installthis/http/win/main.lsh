@@ -33,6 +33,38 @@
 
     // Library version identifier.
     fnc lsh_http_version() : string;
+
+    //====================================================
+    // HTTP/2 (h2c prior knowledge + h2 over TLS via ALPN)
+    //====================================================
+
+    // Same contract as lsh_http_request, but prefers HTTP/2: cleartext
+    // http:// URLs speak h2c (prior knowledge); https:// URLs offer ALPN
+    // and speak h2 when the server selects it, else fall back to
+    // HTTP/1.1 for the remaining hops. out_proto reports the protocol
+    // of the final hop (1 = http/1.1, 2 = h2).
+    fnc lsh_http_request_h2(
+        method string,
+        url string,
+        headers string,
+        body string,
+        timeout_ms int<64>,
+        max_redirects int,
+        verify_tls int,
+        out_headers pointer<pointer<char>>,
+        out_body pointer<pointer<char>>,
+        out_proto pointer<int>
+    ) : int;
+
+    // Same contract as lsh_http_download, over the h2-preferring engine.
+    fnc lsh_http_download_h2(
+        url string,
+        dest_path string,
+        timeout_ms int<64>,
+        max_redirects int,
+        verify_tls int,
+        out_proto pointer<int>
+    ) : int;
 };
 
 pub def HttpResponse : class {
@@ -41,6 +73,9 @@ pub def HttpResponse : class {
     pub headers: string;
     pub body: string;
     pub err: string;
+    // Negotiated protocol of the final hop: "http/1.1" or "h2"
+    // ("" when the request never reached a server).
+    pub proto: string;
 
     pub fnc VAL_HttpResponse() : string {
         if !this.ok {
@@ -91,6 +126,16 @@ pub def HttpResponse : class {
             p = eol + 1;
         }
         return "";
+    }
+
+    // Shortcut for header("content-type").
+    pub fnc content_type() : string {
+        return this.header("content-type");
+    }
+
+    // True when the final hop negotiated HTTP/2.
+    pub fnc is_h2() : bool {
+        return this.proto == "h2";
     }
 
     static pub fnc find_ch(s string, start int, c char) : int {
@@ -150,6 +195,69 @@ pub def Http : class {
         return Http.request("HEAD", url, "", "");
     }
 
+    static pub fnc options(url string) : HttpResponse {
+        return Http.request("OPTIONS", url, "", "");
+    }
+
+    //====================================================
+    // HTTP/2 verbs (h2c + h2-over-TLS, same shapes as above)
+    //====================================================
+
+    static pub fnc get_h2(url string) : HttpResponse {
+        return Http.request_h2("GET", url, "", "");
+    }
+
+    static pub fnc post_h2(url string, body string) : HttpResponse {
+        return Http.request_h2("POST", url, body, "");
+    }
+
+    static pub fnc put_h2(url string, body string) : HttpResponse {
+        return Http.request_h2("PUT", url, body, "");
+    }
+
+    static pub fnc patch_h2(url string, body string) : HttpResponse {
+        return Http.request_h2("PATCH", url, body, "");
+    }
+
+    static pub fnc delete_h2(url string) : HttpResponse {
+        return Http.request_h2("DELETE", url, "", "");
+    }
+
+    static pub fnc head_h2(url string) : HttpResponse {
+        return Http.request_h2("HEAD", url, "", "");
+    }
+
+    static pub fnc options_h2(url string) : HttpResponse {
+        return Http.request_h2("OPTIONS", url, "", "");
+    }
+
+    // Sends `method` request to `url` preferring HTTP/2, with optional
+    // `body` and extra `headers` (same format as request()).
+    static pub fnc request_h2(method string, url string, body string, headers string) : HttpResponse {
+        return Http.request_h2_ex(method, url, body, headers, Http.DEFAULT_TIMEOUT_MS, Http.DEFAULT_MAX_REDIRECTS, true);
+    }
+
+    static pub fnc request_h2_ex(method string, url string, body string, headers string, timeout_ms int<64>, max_redirects int, verify_tls bool) : HttpResponse {
+        vh: string;
+        vb: string;
+        vproto: int = 0;
+        vflag: int = 0;
+        if verify_tls {
+            vflag = 1;
+        }
+        st: int = lsh_http_request_h2(method, url, headers, body, timeout_ms, max_redirects, vflag, &vh, &vb, &vproto);
+        proto: string = "";
+        if vproto == 2 {
+            proto = "h2";
+        } also vproto == 1 {
+            proto = "http/1.1";
+        }
+        if st >= 100 {
+            return HttpResponse { status: st, ok: true, headers: vh, body: vb, err: "", proto: proto };
+        }
+        return HttpResponse { status: st, ok: false, headers: "", body: "", err: lsh_http_strerror(st), proto: proto };
+    }
+
     //====================================================
     // Full control
     //====================================================
@@ -169,9 +277,9 @@ pub def Http : class {
         }
         st: int = lsh_http_request(method, url, headers, body, timeout_ms, max_redirects, vflag, &vh, &vb);
         if st >= 100 {
-            return HttpResponse { status: st, ok: true, headers: vh, body: vb, err: "" };
+            return HttpResponse { status: st, ok: true, headers: vh, body: vb, err: "", proto: "http/1.1" };
         }
-        return HttpResponse { status: st, ok: false, headers: "", body: "", err: lsh_http_strerror(st) };
+        return HttpResponse { status: st, ok: false, headers: "", body: "", err: lsh_http_strerror(st), proto: "" };
     }
 
     //====================================================
@@ -190,9 +298,34 @@ pub def Http : class {
         }
         st: int = lsh_http_download(url, dest_path, timeout_ms, max_redirects, vflag);
         if st >= 100 {
-            return HttpResponse { status: st, ok: true, headers: "", body: "", err: "" };
+            return HttpResponse { status: st, ok: true, headers: "", body: "", err: "", proto: "http/1.1" };
         }
-        return HttpResponse { status: st, ok: false, headers: "", body: "", err: lsh_http_strerror(st) };
+        return HttpResponse { status: st, ok: false, headers: "", body: "", err: lsh_http_strerror(st), proto: "" };
+    }
+
+    // Streams the URL body straight into `dest_path` over the
+    // h2-preferring engine (binary-safe).
+    static pub fnc download_h2(url string, dest_path string) : HttpResponse {
+        return Http.download_h2_ex(url, dest_path, Http.DEFAULT_TIMEOUT_MS, Http.DEFAULT_MAX_REDIRECTS, true);
+    }
+
+    static pub fnc download_h2_ex(url string, dest_path string, timeout_ms int<64>, max_redirects int, verify_tls bool) : HttpResponse {
+        vflag: int = 0;
+        if verify_tls {
+            vflag = 1;
+        }
+        vproto: int = 0;
+        st: int = lsh_http_download_h2(url, dest_path, timeout_ms, max_redirects, vflag, &vproto);
+        proto: string = "";
+        if vproto == 2 {
+            proto = "h2";
+        } also vproto == 1 {
+            proto = "http/1.1";
+        }
+        if st >= 100 {
+            return HttpResponse { status: st, ok: true, headers: "", body: "", err: "", proto: proto };
+        }
+        return HttpResponse { status: st, ok: false, headers: "", body: "", err: lsh_http_strerror(st), proto: proto };
     }
 
     //====================================================
@@ -210,6 +343,78 @@ pub def Http : class {
     // Builds a JSON content header, handy with post()/put().
     static pub fnc json_header() : string {
         return "Content-Type: application/json";
+    }
+
+    //====================================================
+    // Authorization helpers (pure Leash, no I/O)
+    //====================================================
+
+    // "Authorization: Basic <base64(user:pass)>" header line for a
+    // request's extra-headers argument.
+    static pub fnc basic_auth(user string, pass string) : string {
+        return "Authorization: Basic " + Http.base64_encode(user + ":" + pass);
+    }
+
+    // "Authorization: Bearer <token>" header line.
+    static pub fnc bearer(token string) : string {
+        return "Authorization: Bearer " + token;
+    }
+
+    // Standard base64 (RFC 4648) of the string's bytes.
+    static pub fnc base64_encode(s string) : string {
+        out: string;
+        n: int = s.size;
+        i: int = 0;
+        while i < n {
+            b0: int = toint(int, s[i]);
+            b1: int = 0;
+            b2: int = 0;
+            if i + 1 < n {
+                b1 = toint(int, s[i + 1]);
+            }
+            if i + 2 < n {
+                b2 = toint(int, s[i + 2]);
+            }
+            if b0 < 0 {
+                b0 = b0 + 256;
+            }
+            if b1 < 0 {
+                b1 = b1 + 256;
+            }
+            if b2 < 0 {
+                b2 = b2 + 256;
+            }
+            out = out + Http.b64char(b0 / 4);
+            out = out + Http.b64char((b0 - (b0 / 4) * 4) * 16 + b1 / 16);
+            if i + 1 < n {
+                out = out + Http.b64char((b1 - (b1 / 16) * 16) * 4 + b2 / 64);
+            } else {
+                out = out + '=';
+            }
+            if i + 2 < n {
+                out = out + Http.b64char(b2 - (b2 / 64) * 64);
+            } else {
+                out = out + '=';
+            }
+            i = i + 3;
+        }
+        return out;
+    }
+
+    static priv fnc b64char(d int) : char {
+        if d < 26 {
+            return (char)('A' + d);
+        }
+        if d < 52 {
+            return (char)('a' + d - 26);
+        }
+        if d < 62 {
+            return (char)('0' + d - 52);
+        }
+        if d == 62 {
+            return '+';
+        }
+        return '/';
     }
 
     // Encodes a map of key/value pairs as an application/x-www-form-urlencoded

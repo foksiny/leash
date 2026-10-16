@@ -163,6 +163,7 @@ pub def JOp : class {
     static pub PUTFIELD: int = 181;
     static pub INVOKEVIRTUAL: int = 182;
     static pub INVOKESPECIAL: int = 183;
+    static pub INVOKEINTERFACE: int = 185;
     static pub INVOKESTATIC: int = 184;
     static pub NEW: int = 187;
     static pub NEWARRAY: int = 188;
@@ -293,6 +294,19 @@ pub def JvmCp : class {
         return this.alloc(JCp.FIELDREF, key, pl, 1);
     }
 
+    pub fnc imethodref(cls string, name string, desc string) : int {
+        ci: int = this.class_entry(cls);
+        ni: int = this.nat(this.utf8(name), this.utf8(desc));
+        key: string = "IM:" + tostring(ci) + ":" + tostring(ni);
+        if this.keys.isin(key) { return this.keys[key]; }
+        pl: vec<int>;
+        pl.pushb((ci >> 8) & 255);
+        pl.pushb(ci & 255);
+        pl.pushb((ni >> 8) & 255);
+        pl.pushb(ni & 255);
+        return this.alloc(11, key, pl, 1);
+    }
+
     pub fnc methodref(cls string, name string, desc string) : int {
         ci: int = this.class_entry(cls);
         ni: int = this.nat(this.utf8(name), this.utf8(desc));
@@ -402,6 +416,7 @@ pub def JvmMethod : class {
     pub patch_lbl: vec<string>;
     pub depth: int;
     pub max_depth: int;
+    pub site_delta: hash<int, int>;
     pub last_op: int;
     pub locals_used: int;
     pub errors: vec<string>;
@@ -414,7 +429,8 @@ pub def JvmMethod : class {
         empty_lbl: vec<string>;
         empty_err: vec<string>;
         empty_tmps: hash<string, int>;
-        return JvmMethod { name_i: name_i, desc_i: desc_i, access: access, code: empty_code, labels: empty_labels, patch_pos: empty_pos, patch_lbl: empty_lbl, depth: 0, max_depth: 0, last_op: 0, locals_used: 0, errors: empty_err, tmps: empty_tmps };
+        empty_sd: hash<int, int>;
+        return JvmMethod { name_i: name_i, desc_i: desc_i, access: access, code: empty_code, labels: empty_labels, patch_pos: empty_pos, patch_lbl: empty_lbl, depth: 0, max_depth: 0, site_delta: empty_sd, last_op: 0, locals_used: 0, errors: empty_err, tmps: empty_tmps };
     }
 
     // A reusable scratch slot per descriptor (for stack juggling).
@@ -468,6 +484,16 @@ pub def JvmMethod : class {
         this.emit_u8(a);
         this.emit_u8(b);
         this.adjust(delta);
+    }
+
+    // Field access with an explicit net delta; the delta is also
+    // recorded for the post-pass bytecode verifier.
+    pub fnc op_field(op int, idx int, net int) : void {
+        this.site_delta.push(this.code.size, net);
+        this.emit_u8(op);
+        this.emit_u8((idx >> 8) & 255);
+        this.emit_u8(idx & 255);
+        this.adjust(net);
     }
 
     pub fnc mark(lbl string) : void {
@@ -608,8 +634,186 @@ pub def JvmMethod : class {
             this.code.set(pos + 1, u & 255);
             i = i + 1;
         }
+        if !this.verify_code() {
+            return false;
+        }
         return this.errors.size == 0;
     }
+
+    // Post-pass bytecode verification: simulate stack depth over the
+    // patched code and require every join to agree. Catches the JVM's
+    // "Inconsistent stack height" class at emission time with an exact
+    // offset, instead of surfacing at class-load time.
+
+    pub fnc vrfy_len(op int) : int {
+        if op == JOp.BIPUSH || op == JOp.LDC || op == JOp.NEWARRAY { return 2; }
+        if op == JOp.ILOAD || op == JOp.LLOAD || op == JOp.DLOAD || op == JOp.ALOAD { return 2; }
+        if op == JOp.ISTORE || op == JOp.LSTORE || op == JOp.DSTORE || op == JOp.ASTORE { return 2; }
+        if op == JOp.SIPUSH || op == JOp.LDC_W || op == JOp.LDC2_W { return 3; }
+        if op >= 153 && op <= 167 { return 3; }
+        if op == 198 || op == 199 { return 3; }
+        if op == JOp.NEW || op == JOp.ANEWARRAY || op == JOp.CHECKCAST { return 3; }
+        if op == JOp.GETSTATIC || op == JOp.PUTSTATIC || op == JOp.GETFIELD || op == JOp.PUTFIELD { return 3; }
+        if op == JOp.INVOKEVIRTUAL || op == JOp.INVOKESPECIAL || op == JOp.INVOKESTATIC { return 3; }
+        if op == JOp.INVOKEINTERFACE { return 5; }
+        if op == JOp.WIDE { return 4; }
+        return 1;
+    }
+
+    pub fnc vrfy_off(pc int) : int {
+        off: int = this.code.get(pc + 1) * 256 + this.code.get(pc + 2);
+        if off >= 32768 { off = off - 32768 - 32768; }
+        return off;
+    }
+
+    // Net stack delta for opcodes with pc-independent effects.
+    // Branches, site-table ops (invoke/field), WIDE and returns are
+    // handled inline by verify_code; unknown opcodes fail here.
+    pub fnc vrfy_delta(op int) : int {
+        if op == JOp.ACONST_NULL { return 1; }
+        if op >= 2 && op <= 8 { return 1; }
+        if op == JOp.LCONST_0 { return 2; }
+        if op == JOp.DCONST_0 { return 2; }
+        if op == JOp.BIPUSH || op == JOp.SIPUSH { return 1; }
+        if op == JOp.LDC || op == JOp.LDC_W { return 1; }
+        if op == JOp.LDC2_W { return 2; }
+        if op >= 26 && op <= 29 { return 1; }
+        if op >= 30 && op <= 33 { return 2; }
+        if op >= 34 && op <= 37 { return 1; }
+        if op >= 38 && op <= 41 { return 2; }
+        if op >= 42 && op <= 45 { return 1; }
+        if op == JOp.ILOAD || op == JOp.ALOAD { return 1; }
+        if op == JOp.LLOAD || op == JOp.DLOAD { return 2; }
+        if op >= 59 && op <= 62 { return 0 - 1; }
+        if op >= 63 && op <= 66 { return 0 - 2; }
+        if op >= 67 && op <= 70 { return 0 - 1; }
+        if op >= 71 && op <= 74 { return 0 - 2; }
+        if op >= 75 && op <= 78 { return 0 - 1; }
+        if op == JOp.ISTORE || op == JOp.ASTORE { return 0 - 1; }
+        if op == JOp.LSTORE || op == JOp.DSTORE { return 0 - 2; }
+        if op == JOp.IALOAD || op == JOp.AALOAD || op == JOp.BALOAD || op == JOp.CALOAD || op == JOp.SALOAD { return 0 - 1; }
+        if op == JOp.LALOAD || op == JOp.DALOAD { return 0; }
+        if op == JOp.IASTORE || op == JOp.AASTORE || op == JOp.BASTORE || op == JOp.CASTORE || op == JOp.SASTORE { return 0 - 3; }
+        if op == JOp.LASTORE || op == JOp.DASTORE { return 0 - 4; }
+        if op == JOp.ARRAYLENGTH { return 0; }
+        if op == JOp.NEWARRAY || op == JOp.ANEWARRAY { return 0; }
+        if op == JOp.POP { return 0 - 1; }
+        if op == JOp.POP2 { return 0 - 2; }
+        if op == JOp.DUP { return 1; }
+        if op == JOp.DUP2 { return 2; }
+        if op == JOp.SWAP { return 0; }
+        if op == JOp.NEW { return 1; }
+        if op == JOp.CHECKCAST { return 0; }
+        if op >= 96 && op <= 131 {
+            if op >= 116 && op <= 119 { return 0; }
+            if op >= 120 && op <= 125 { return 0 - 1; }
+            lane: int = op - 96;
+            while lane >= 4 { lane = lane - 4; }
+            if lane == 1 || lane == 3 { return 0 - 2; }
+            return 0 - 1;
+        }
+        if op >= 148 && op <= 152 { return 0 - 3; }
+        if op == JOp.I2L || op == JOp.I2D { return 1; }
+        if op == JOp.L2I { return 0 - 1; }
+        if op == JOp.L2D { return 0; }
+        if op == JOp.D2I { return 0 - 1; }
+        if op == JOp.D2L { return 0; }
+        if op == JOp.I2B || op == JOp.I2C || op == JOp.I2S { return 0; }
+        this.fail("verify: unknown opcode " + tostring(op));
+        return 0 - 1000000;
+    }
+
+    pub fnc verify_code() : bool {
+        n: int = this.code.size;
+        if n == 0 { return true; }
+        depth_at: vec<int>;
+        di: int = 0;
+        while di < n {
+            depth_at.pushb(0 - 1);
+            di = di + 1;
+        }
+        wl: vec<int>;
+        wl.pushb(0);
+        wl.pushb(0);
+        max_d: int = 0;
+        while wl.size > 0 {
+            d: int = wl.get(wl.size - 1);
+            wl.popb();
+            pc: int = wl.get(wl.size - 1);
+            wl.popb();
+            if pc < 0 || pc >= n {
+                this.fail("verify: branch target out of range");
+                return false;
+            }
+            if depth_at.get(pc) >= 0 {
+                if depth_at.get(pc) != d {
+                    this.fail("verify: inconsistent stack height " + tostring(d) + " != " + tostring(depth_at.get(pc)) + " at offset " + tostring(pc));
+                    return false;
+                }
+            } else {
+                depth_at.set(pc, d);
+                if d > max_d { max_d = d; }
+                op: int = this.code.get(pc);
+                ln: int = this.vrfy_len(op);
+                delta: int = 0;
+                t1: int = 0 - 1;
+                fall: bool = true;
+                ends: bool = false;
+                if op == JOp.WIDE {
+                    rop: int = this.code.get(pc + 1);
+                    if rop == JOp.LLOAD || rop == JOp.DLOAD { delta = 2; }
+                    also rop == JOp.ILOAD || rop == JOp.ALOAD { delta = 1; }
+                    also rop == JOp.LSTORE || rop == JOp.DSTORE { delta = 0 - 2; }
+                    also rop == JOp.ISTORE || rop == JOp.ASTORE { delta = 0 - 1; }
+                    else {
+                        this.fail("verify: wide of unexpected opcode");
+                        return false;
+                    }
+                } also op == JOp.GOTO {
+                    t1 = pc + this.vrfy_off(pc);
+                    fall = false;
+                } also (op >= 153 && op <= 158) || op == 198 || op == 199 {
+                    t1 = pc + this.vrfy_off(pc);
+                    delta = 0 - 1;
+                } also op >= 159 && op <= 166 {
+                    t1 = pc + this.vrfy_off(pc);
+                    delta = 0 - 2;
+                } also op == JOp.GETSTATIC || op == JOp.PUTSTATIC || op == JOp.GETFIELD || op == JOp.PUTFIELD || op == JOp.INVOKEVIRTUAL || op == JOp.INVOKESPECIAL || op == JOp.INVOKESTATIC || op == JOp.INVOKEINTERFACE {
+                    if !this.site_delta.isin(pc) {
+                        this.fail("verify: missing site delta at offset " + tostring(pc));
+                        return false;
+                    }
+                    delta = this.site_delta[pc];
+                } also op == JOp.IRETURN || op == JOp.LRETURN || op == JOp.DRETURN || op == JOp.ARETURN || op == JOp.RETURN {
+                    ends = true;
+                } else {
+                    delta = this.vrfy_delta(op);
+                    if delta == 0 - 1000000 {
+                        return false;
+                    }
+                }
+                nd: int = d + delta;
+                if nd < 0 {
+                    this.fail("verify: stack underflow at offset " + tostring(pc));
+                    return false;
+                }
+                if !ends {
+                    if t1 >= 0 {
+                        wl.pushb(t1);
+                        wl.pushb(nd);
+                    }
+                    if fall {
+                        wl.pushb(pc + ln);
+                        wl.pushb(nd);
+                    }
+                }
+            }
+        }
+        if max_d > this.max_depth { this.max_depth = max_d; }
+        return true;
+    }
+
+
 
     pub fnc write_to(code_idx int) : vec<int> {
         out: vec<int>;
@@ -781,6 +985,8 @@ pub def JvmGen : class {
     pub current_func_ret: string;
     pub current_func_name: string;
     pub current_func_unsafe: bool;
+    pub opdef_inner: string;
+    pub current_helper_name: string;
     pub tmap_owner: string;
     pub cur_cp: JvmCp;
     pub cur_method: JvmMethod;
@@ -789,6 +995,7 @@ pub def JvmGen : class {
     pub klasses: vec<JvmClass>;
     pub array_base_override: string;
     pub klass_idx: hash<string, int>;
+    pub extern_names: hash<string, bool>;
     pub current_class: string;
 
     static pub fnc make(tc TypeChecker, main_class string) : JvmGen {
@@ -801,7 +1008,7 @@ pub def JvmGen : class {
         empty_he: vec<string>;
         empty_kl: vec<JvmClass>;
         empty_ki: hash<string, int>;
-        return JvmGen { tc: tc, cg: CodeGen.make(tc), main_class: main_class, errors: empty_err, var_types: empty_vt, var_slots: empty_vs, label_counter: 0, defer_stack: empty_defers, fusion_names: empty_fn, loop_heads: empty_hh, loop_exits: empty_he, current_func_ret: "void", current_func_name: "", current_func_unsafe: false, tmap_owner: "", cur_cp: JvmCp.make(), cur_method: JvmMethod.make(0, 0, 0), has_entry: false, src_file: "", klasses: empty_kl, klass_idx: empty_ki, current_class: "", array_base_override: "" };
+        return JvmGen { tc: tc, cg: CodeGen.make(tc), main_class: main_class, errors: empty_err, var_types: empty_vt, var_slots: empty_vs, label_counter: 0, defer_stack: empty_defers, fusion_names: empty_fn, loop_heads: empty_hh, loop_exits: empty_he, current_func_ret: "void", current_func_name: "", current_func_unsafe: false, current_helper_name: "", opdef_inner: "", tmap_owner: "", cur_cp: JvmCp.make(), cur_method: JvmMethod.make(0, 0, 0), has_entry: false, src_file: "", klasses: empty_kl, klass_idx: empty_ki, current_class: "", array_base_override: "" };
     }
 
     // Keep the oracle's view of locals identical to ours.
@@ -814,6 +1021,11 @@ pub def JvmGen : class {
 
     pub fnc expr_type(e Expr) : string {
         if e != null && e.kind == ExprKind.IDENT && e.sval == "_" { return "int"; }
+        if e != null && e.kind == ExprKind.MEMBER && e.left != null
+           && e.left.kind == ExprKind.IDENT && e.left.sval == "this"
+           && this.current_class.size > 0 && this.tc.static_fields.isin(this.current_class + "_" + e.sval) {
+            return this.tc.static_fields[this.current_class + "_" + e.sval];
+        }
         if e != null && e.kind == ExprKind.MEMBER && e.sval == "cur" && e.left != null {
             lt: string = this.cg.get_expr_type(e.left);
             if this.tc.unions.isin(lt) { return "string"; }
@@ -863,6 +1075,12 @@ pub def JvmGen : class {
             }
         }
         if e != null && e.kind == ExprKind.INT
+           && e.sval.size > 0 && this.is_plain_decimal(e.sval) && !this.lit_fits_i64(e.sval) {
+            // Out-of-int64 decimal text rides as BigInteger (full
+            // precision); downstream coercions narrow as needed.
+            return "int<512>";
+        }
+        if e != null && e.kind == ExprKind.INT
            && (e.ival > 2147483647 || e.ival < 0 - 2147483648) {
             return "int<64>";
         }
@@ -906,6 +1124,12 @@ pub def JvmGen : class {
     }
 
     pub fnc fail(msg string) : void {
+        if msg.size >= 8 && msg[0] == 'v' && msg[1] == 'e' && msg[2] == 'r' && msg[3] == 'i' && msg[4] == 'f' && msg[5] == 'y' && msg[6] == ':' {
+            ctx: string = this.current_func_name;
+            if ctx.size == 0 { ctx = this.current_helper_name; }
+            this.errors.pushb("[" + ctx + "] " + msg);
+            return;
+        }
         this.errors.pushb(msg);
     }
 
@@ -963,6 +1187,9 @@ pub def JvmGen : class {
     // int<64>/uint<64> -> J, floats -> D, string -> String,
     // vec -> ArrayList, hash -> HashMap. "" = unsupported.
     pub fnc jdesc(t string) : string {
+        if (t == "thisop.typ" || t == "__T_OPDEF__") && this.opdef_inner.size > 0 {
+            return this.jdesc(this.opdef_inner);
+        }
         t = this.resolve_tparam(this.resolve_class_ref(t));
         if t.size > 1 && t[0] == '&' {
             inner: string = "";
@@ -978,13 +1205,19 @@ pub def JvmGen : class {
         if t == "int<8>" || t == "int<16>" || t == "int<32>" { return "I"; }
         if t == "uint<8>" || t == "uint<16>" || t == "uint<32>" { return "I"; }
         if t == "int<64>" || t == "uint<64>" || t == "int64" || t == "uint64" { return "J"; }
+        // Odd widths: <= 32 ride the int lane (C promotion in flight,
+        // narrowed on store); > 64 ride BigInteger. 64 stays put.
+        wj: int = this.int_width(t);
+        if wj > 0 && wj <= 32 { return "I"; }
+        // 64 rides the long lane (natural wrap); every other wide width
+        // rides BigInteger with explicit wrapping.
+        if wj > 32 { return "Ljava/math/BigInteger;"; }
         if t == "float" || t == "double" || t == "float64" { return "D"; }
         if t == "float<16>" || t == "float<32>" || t == "float<64>" || t == "float<128>" { return "D"; }
         if t == "string" { return "Ljava/lang/String;"; }
         // C strings ride as Java strings (or null); arithmetic on other
         // pointer types stays unsupported.
         if t == "pointer<char>" || t == "*char" { return "Ljava/lang/String;"; }
-        if t == "int<128>" || t == "uint<128>" { return "Ljava/math/BigInteger;"; }
         if t.size > 8 && t[0] == 'f' && t[1] == 'u' && t[2] == 't' && t[3] == 'u' && t[4] == 'r' && t[5] == 'e' && t[6] == '<' { return "Ljava/util/concurrent/CompletableFuture;"; }
         if t == "void" { return "V"; }
         if t.size > 4 && t[0] == 'v' && t[1] == 'e' && t[2] == 'c' && t[3] == '<' { return "Ljava/util/ArrayList;"; }
@@ -997,6 +1230,9 @@ pub def JvmGen : class {
                 base = base + t[bi];
                 bi = bi + 1;
             }
+            // char arrays are real [C (cstr/toCharArray produce them);
+            // scalar chars still ride the int lane.
+            if base == "char" { return "[C"; }
             return "[" + this.jdesc(base);
         }
         if t.size > 1 && t[0] == '(' { return "[Ljava/lang/Object;"; }
@@ -1112,17 +1348,74 @@ pub def JvmGen : class {
     pub fnc narrow_to(t string) : void {
         if t == "int<8>" {
             this.cur_method.op(JOp.I2B, 0);
-        } also t == "uint<8>" {
+            return;
+        }
+        if t == "uint<8>" {
             this.iconst(255);
             this.cur_method.op(JOp.IAND, -1);
-        } also t == "int<16>" {
+            return;
+        }
+        if t == "int<16>" {
             this.cur_method.op(JOp.I2S, 0);
-        } also t == "uint<16>" {
+            return;
+        }
+        if t == "uint<16>" {
             this.ldc_int(65535);
             this.cur_method.op(JOp.IAND, -1);
-        } also t == "char" {
-            this.cur_method.op(JOp.I2C, 0);
+            return;
         }
+        if t == "char" {
+            this.cur_method.op(JOp.I2C, 0);
+            return;
+        }
+        if t == "bool" {
+            return;
+        }
+        // Odd sub-32 widths narrow in flight (C promotion keeps full int
+        // precision between stores; native truncates on store the same).
+        w: int = this.int_width(t);
+        if w > 0 && w < 32 {
+            if this.is_bigint_signed(t) {
+                this.iconst(32 - w);
+                this.cur_method.op(JOp.ISHL, -1);
+                this.iconst(32 - w);
+                this.cur_method.op(JOp.ISHR, -1);
+            } else {
+                mask: int = 1;
+                mi: int = 1;
+                while mi < w {
+                    mask = mask * 2 + 1;
+                    mi = mi + 1;
+                }
+                this.ldc_int(mask);
+                this.cur_method.op(JOp.IAND, -1);
+            }
+            return;
+        }
+        // Wide integers wrap to width (native LLVM truncation parity).
+        if w > 64 {
+            sgn: int = 1;
+            if !this.is_bigint_signed(t) { sgn = 0; }
+            this.emit_bigint_wrap(w, sgn);
+            return;
+        }
+    }
+
+    // Wrap the BigInteger on the stack top to a leash int type.
+    pub fnc bigint_wrap_to(t string) : void {
+        w: int = this.int_width(t);
+        if w <= 64 { return; }
+        sgn: int = 1;
+        if !this.is_bigint_signed(t) { sgn = 0; }
+        this.emit_bigint_wrap(w, sgn);
+    }
+
+    // Wrap the BigInteger on the stack top to width bits (signedness by
+    // flag): mask the low bits, then re-sign for signed types.
+    pub fnc emit_bigint_wrap(w int, sgn int) : void {
+        this.iconst(w);
+        this.iconst(sgn);
+        this.emit_invoke(JOp.INVOKESTATIC, this.main_class, "__bigint_wrap", "(Ljava/math/BigInteger;II)Ljava/math/BigInteger;");
     }
 
     pub fnc iconst(v int) : void {
@@ -1171,6 +1464,149 @@ pub def JvmGen : class {
     // --- Output -------------------------------------------------------
     // show(a, b, ...) concatenates with no separator and ends the line.
     pub fnc gen_show_arg(arg Expr) : void {
+        this.gen_show_arg_buf(arg, false);
+    }
+
+    // Print one already-unboxed scalar of leash type t (stack top).
+    pub fnc gen_print_unboxed(t string) : void {
+        d: string = this.jdesc(t);
+        if d == "I" {
+            if t == "char" {
+                this.cur_method.op(JOp.I2C, 0);
+                this.emit_invoke_print("C");
+            } also this.is_uint_leash(t) {
+                this.emit_invoke(JOp.INVOKESTATIC, "java/lang/Integer", "toUnsignedString", "(I)Ljava/lang/String;");
+                this.emit_invoke_print("Ljava/lang/String;");
+            } else {
+                this.emit_invoke_print("I");
+            }
+            return;
+        }
+        if d == "J" {
+            if this.is_uint_leash(t) {
+                this.emit_invoke(JOp.INVOKESTATIC, "java/lang/Long", "toUnsignedString", "(J)Ljava/lang/String;");
+                this.emit_invoke_print("Ljava/lang/String;");
+            } else {
+                this.emit_invoke_print("J");
+            }
+            return;
+        }
+        if d == "D" {
+            this.emit_locale_root();
+            this.ldc_string("%.6f");
+            this.iconst(1);
+            this.emit_anewarray_object(1);
+            this.cur_method.op(JOp.DUP, 1);
+            this.iconst(0);
+            this.box_top("D");
+            this.cur_method.op(JOp.AASTORE, -3);
+            this.emit_invoke(JOp.INVOKESTATIC, "java/lang/String", "format", "(Ljava/util/Locale;Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/String;");
+            this.emit_invoke_print("Ljava/lang/String;");
+            return;
+        }
+        if d == "Z" {
+            this.emit_invoke_print("Z");
+            return;
+        }
+        if d == "Ljava/lang/String;" {
+            this.emit_invoke_print("Ljava/lang/String;");
+            return;
+        }
+        if d == "Ljava/math/BigInteger;" {
+            this.emit_invoke(JOp.INVOKEVIRTUAL, "java/math/BigInteger", "toString", "()Ljava/lang/String;");
+            this.emit_invoke_print("Ljava/lang/String;");
+            return;
+        }
+        this.emit_invoke_print("Ljava/lang/Object;");
+    }
+
+    // Buffered showb of one argument: build its string and append it
+    // (drained at exit; native parity).
+    pub fnc gen_showb_arg(arg Expr) : void {
+        t: string = this.expr_type(arg);
+        d: string = this.jdesc(t);
+        if d.size == 0 {
+            this.jvm_unsupported("showb() of '" + t + "'");
+            return;
+        }
+        if t.size > 0 && t[0] == '(' {
+            this.jvm_unsupported("showb() of tuple '" + t + "'");
+            return;
+        }
+        if this.tc.structs.isin(t) || this.tc.classes.isin(t) {
+            this.jvm_unsupported("showb() of struct/class '" + t + "'");
+            return;
+        }
+        if t == "nil" {
+            this.ldc_string("nil");
+            this.emit_invoke(JOp.INVOKESTATIC, this.main_class, "__showb_append", "(Ljava/lang/String;)V");
+            return;
+        }
+        if t == "char" {
+            this.gen_expr(arg);
+            this.cur_method.op(JOp.I2C, 0);
+            this.emit_invoke(JOp.INVOKESTATIC, "java/lang/String", "valueOf", "(C)Ljava/lang/String;");
+            this.emit_invoke(JOp.INVOKESTATIC, this.main_class, "__showb_append", "(Ljava/lang/String;)V");
+            return;
+        }
+        if d == "Ljava/util/ArrayList;" && this.is_vec_leash(t) {
+            this.gen_showb_vec(arg, this.vec_inner_type(t));
+            return;
+        }
+        if d == "Ljava/util/ArrayList;" || d == "Ljava/util/HashMap;" {
+            this.gen_expr(arg);
+            this.emit_invoke(JOp.INVOKESTATIC, "java/lang/String", "valueOf", "(Ljava/lang/Object;)Ljava/lang/String;");
+            this.emit_invoke(JOp.INVOKESTATIC, this.main_class, "__showb_append", "(Ljava/lang/String;)V");
+            return;
+        }
+        this.gen_expr(arg);
+        this.jvm_tostring(t);
+        this.emit_invoke(JOp.INVOKESTATIC, this.main_class, "__showb_append", "(Ljava/lang/String;)V");
+    }
+
+    // Buffered showb of a vec: elements unpacked with no separators.
+    pub fnc gen_showb_vec(arg Expr, inner string) : void {
+        this.gen_expr(arg);
+        list_slot: int = this.cur_method.alloc_local(1);
+        this.cur_method.store_local("X", list_slot);
+        this.cur_method.load_local("X", list_slot);
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/util/ArrayList", "size", "()I");
+        n_slot: int = this.cur_method.alloc_local(1);
+        this.cur_method.store_local("I", n_slot);
+        this.iconst(0);
+        i_slot: int = this.cur_method.alloc_local(1);
+        this.cur_method.store_local("I", i_slot);
+        loop_lbl: string = this.new_label("sbv_loop");
+        end_lbl: string = this.new_label("sbv_end");
+        this.cur_method.mark(loop_lbl);
+        this.cur_method.load_local("I", i_slot);
+        this.cur_method.load_local("I", n_slot);
+        this.cur_method.branch(JOp.IF_ICMPGE, end_lbl, 2);
+        this.cur_method.load_local("X", list_slot);
+        this.cur_method.load_local("I", i_slot);
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/util/ArrayList", "get", "(I)Ljava/lang/Object;");
+        if inner == "char" {
+            this.emit_checkcast("java/lang/Character");
+            this.emit_invoke(JOp.INVOKEVIRTUAL, "java/lang/Character", "charValue", "()C");
+            this.emit_invoke(JOp.INVOKESTATIC, "java/lang/String", "valueOf", "(C)Ljava/lang/String;");
+        } else {
+            this.unbox_to(inner);
+            id_in: string = this.jdesc(inner);
+            if id_in == "I" || id_in == "J" {
+                this.narrow_to(inner);
+            }
+            this.jvm_tostring(inner);
+        }
+        this.emit_invoke(JOp.INVOKESTATIC, this.main_class, "__showb_append", "(Ljava/lang/String;)V");
+        this.cur_method.load_local("I", i_slot);
+        this.iconst(1);
+        this.cur_method.op(JOp.IADD, -1);
+        this.cur_method.store_local("I", i_slot);
+        this.cur_method.branch(JOp.GOTO, loop_lbl, 0);
+        this.cur_method.mark(end_lbl);
+    }
+
+    pub fnc gen_show_arg_buf(arg Expr, buffered bool) : void {
         t: string = this.expr_type(arg);
         d: string = this.jdesc(t);
         if d.size == 0 {
@@ -1187,9 +1623,17 @@ pub def JvmGen : class {
             this.jvm_unsupported("show() of struct/class '" + t + "'");
             return;
         }
+        if buffered {
+            this.gen_showb_arg(arg);
+            return;
+        }
         this.emit_getstatic_out();
         if t == "string" {
             this.gen_expr(arg);
+            this.emit_invoke_print("Ljava/lang/String;");
+        } also t == "char[]" {
+            this.gen_expr(arg);
+            this.emit_string_from_chars();
             this.emit_invoke_print("Ljava/lang/String;");
         } also t == "nil" {
             // Native codegen crashes on show(nil); the JVM defines "nil".
@@ -1278,39 +1722,21 @@ pub def JvmGen : class {
     // Push Locale.ROOT (locale-independent number formatting).
     pub fnc emit_locale_root() : void {
         idx: int = this.cur_cp.fieldref("java/util/Locale", "ROOT", "Ljava/util/Locale;");
-        this.cur_method.emit_u8(JOp.GETSTATIC);
-        this.cur_method.emit_u8((idx >> 8) & 255);
-        this.cur_method.emit_u8(idx & 255);
-        this.cur_method.adjust(1);
+        this.cur_method.op_field(JOp.GETSTATIC, idx, 1);
     }
 
     pub fnc emit_getstatic_out() : void {
         idx: int = this.cur_cp.fieldref("java/lang/System", "out", "Ljava/io/PrintStream;");
-        this.cur_method.emit_u8(JOp.GETSTATIC);
-        this.cur_method.emit_u8((idx >> 8) & 255);
-        this.cur_method.emit_u8(idx & 255);
-        this.cur_method.adjust(1);
+        this.cur_method.op_field(JOp.GETSTATIC, idx, 1);
     }
 
     pub fnc emit_invoke_print(arg_desc string) : void {
-        idx: int = this.cur_cp.methodref("java/io/PrintStream", "print", "(" + arg_desc + ")V");
-        this.cur_method.emit_u8(JOp.INVOKEVIRTUAL);
-        this.cur_method.emit_u8((idx >> 8) & 255);
-        this.cur_method.emit_u8(idx & 255);
-        if arg_desc == "J" || arg_desc == "D" {
-            this.cur_method.adjust(-3);
-        } else {
-            this.cur_method.adjust(-2);
-        }
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/io/PrintStream", "print", "(" + arg_desc + ")V");
     }
 
     pub fnc emit_println() : void {
         this.emit_getstatic_out();
-        idx: int = this.cur_cp.methodref("java/io/PrintStream", "println", "()V");
-        this.cur_method.emit_u8(JOp.INVOKEVIRTUAL);
-        this.cur_method.emit_u8((idx >> 8) & 255);
-        this.cur_method.emit_u8(idx & 255);
-        this.cur_method.adjust(-1);
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/io/PrintStream", "println", "()V");
     }
 
     // show(vec<float>) as [2.500000, 0.100000] (ArrayList.toString would
@@ -1417,7 +1843,84 @@ pub def JvmGen : class {
     // positive); narrowing uses intValue/longValue/doubleValue.
 
     pub fnc is_bigint(t string) : bool {
-        return t == "int<128>" || t == "uint<128>";
+        // Every integer width without a natural JVM lane (all except
+        // <= 32 and exactly 64) rides BigInteger — consistent with jdesc.
+        w: int = this.int_width(t);
+        return w > 32 && w != 64;
+    }
+
+    // Bit width of an integer type (aliases resolved); 32 for plain
+    // int/uint/char, 1 for bool, 0 for non-integers.
+    pub fnc int_width(t string) : int {
+        rt: string = this.tc.resolve_type_alias(t);
+        if rt == "int" || rt == "uint" || rt == "char" { return 32; }
+        if rt == "bool" { return 1; }
+        if rt == "int64" || rt == "uint64" { return 64; }
+        if rt.size >= 6 && rt[rt.size - 1] == '>' {
+            is_int: bool = rt.size >= 6 && rt[0] == 'i' && rt[1] == 'n' && rt[2] == 't' && rt[3] == '<';
+            is_uint: bool = rt.size >= 7 && rt[0] == 'u' && rt[1] == 'i' && rt[2] == 'n' && rt[3] == 't' && rt[4] == '<';
+            if is_int || is_uint {
+                start: int = 4;
+                if is_uint { start = 5; }
+                if start >= rt.size - 1 { return 0; }
+                w: int = 0;
+                ki: int = start;
+                while ki < rt.size - 1 {
+                    c: char = rt[ki];
+                    if c < '0' || c > '9' { return 0; }
+                    w = w * 10 + (c - '0');
+                    ki = ki + 1;
+                }
+                return w;
+            }
+        }
+        return 0;
+    }
+
+    pub fnc is_plain_decimal(sv string) : bool {
+        si: int = 0;
+        if sv.size > 0 && sv[0] == '-' { si = 1; }
+        if si >= sv.size { return false; }
+        while si < sv.size {
+            if sv[si] < '0' || sv[si] > '9' { return false; }
+            si = si + 1;
+        }
+        return true;
+    }
+
+    // Does decimal literal text fit in a signed 64-bit int?
+    pub fnc lit_fits_i64(sv string) : bool {
+        si: int = 0;
+        neg: bool = false;
+        if sv.size > 0 && sv[0] == '-' {
+            neg = true;
+            si = 1;
+        }
+        while si < sv.size && sv[si] == '0' { si = si + 1; }
+        digits: int = sv.size - si;
+        if digits < 19 { return true; }
+        if digits > 19 { return false; }
+        lim: string = "9223372036854775807";
+        if neg { lim = "9223372036854775808"; }
+        di: int = 0;
+        while di < 19 {
+            if sv[si + di] < lim[di] { return true; }
+            if sv[si + di] > lim[di] { return false; }
+            di = di + 1;
+        }
+        return true;
+    }
+
+    // Wider of two integer types (by width; ties prefer the left).
+    pub fnc bigint_wider(a string, b string) : string {
+        if this.int_width(b) > this.int_width(a) { return b; }
+        return a;
+    }
+
+    pub fnc is_bigint_signed(t string) : bool {
+        rt: string = this.tc.resolve_type_alias(t);
+        if rt.size == 0 { return true; }
+        return rt[0] != 'u';
     }
 
     // Entry: [val:from_t]. Exit: [BigInteger].
@@ -1444,8 +1947,17 @@ pub def JvmGen : class {
             return;
         }
         if fd == "D" {
-            this.cur_method.op(JOp.D2L, 0);
-            this.emit_invoke(JOp.INVOKESTATIC, "java/math/BigInteger", "valueOf", "(J)Ljava/math/BigInteger;");
+            // Exact conversion (a saturating D2L would lose huge magnitudes).
+            tslot: int = this.cur_method.temp_slot("D");
+            this.cur_method.store_local("D", tslot);
+            this.cur_method.op(JOp.NEW, 1);
+            bdi: int = this.cur_cp.class_entry("java/math/BigDecimal");
+            this.cur_method.emit_u8((bdi >> 8) & 255);
+            this.cur_method.emit_u8(bdi & 255);
+            this.cur_method.op(JOp.DUP, 1);
+            this.cur_method.load_local("D", tslot);
+            this.emit_invoke(JOp.INVOKESPECIAL, "java/math/BigDecimal", "<init>", "(D)V");
+            this.emit_invoke(JOp.INVOKEVIRTUAL, "java/math/BigDecimal", "toBigInteger", "()Ljava/math/BigInteger;");
             return;
         }
         if fd == "Z" {
@@ -1460,10 +1972,79 @@ pub def JvmGen : class {
         this.jvm_unsupported("cannot convert '" + from_t + "' to 128-bit");
     }
 
+    // Range-checked decimal parse (native bigint_parse parity):
+    // entry [String], exit validated [BigInteger]; aborts like native
+    // ("Runtime error: '<type>' value out of range or invalid") otherwise.
+    // (Malformed text still throws NumberFormatException: no landing-pad
+    // support in the v49 emitter.)
+    pub fnc bigint_parse_checked(tgt string) : void {
+        rt: string = this.tc.resolve_type_alias(tgt);
+        w: int = this.int_width(rt);
+        sgn: int = 1;
+        if !this.is_bigint_signed(rt) { sgn = 0; }
+        this.bigint_from_string();
+        vs: int = this.cur_method.alloc_local(1);
+        this.cur_method.store_local("X", vs);
+        ok_lbl: string = this.new_label("bpc_ok");
+        fail_lbl: string = this.new_label("bpc_fail");
+        // hi = exclusive upper bound: 2^W (unsigned) or 2^(W-1) (signed)
+        one0: int = this.cur_cp.fieldref("java/math/BigInteger", "ONE", "Ljava/math/BigInteger;");
+        this.cur_method.op_field(JOp.GETSTATIC, one0, 1);
+        if sgn == 1 {
+            this.iconst(w - 1);
+        } else {
+            this.iconst(w);
+        }
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/math/BigInteger", "shiftLeft", "(I)Ljava/math/BigInteger;");
+        hi_slot: int = this.cur_method.alloc_local(1);
+        this.cur_method.store_local("X", hi_slot);
+        // v >= hi -> fail
+        this.cur_method.load_local("X", vs);
+        this.cur_method.load_local("X", hi_slot);
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/math/BigInteger", "compareTo", "(Ljava/math/BigInteger;)I");
+        pass_hi: string = this.new_label("bpc_ph");
+        this.cur_method.branch(JOp.IFLT, pass_hi, 1);
+        this.cur_method.branch(JOp.GOTO, fail_lbl, 0);
+        this.cur_method.mark(pass_hi);
+        if sgn == 1 {
+            // lo = -hi; v < lo -> fail
+            this.cur_method.load_local("X", hi_slot);
+            this.emit_invoke(JOp.INVOKEVIRTUAL, "java/math/BigInteger", "negate", "()Ljava/math/BigInteger;");
+            lo_slot: int = this.cur_method.alloc_local(1);
+            this.cur_method.store_local("X", lo_slot);
+            this.cur_method.load_local("X", vs);
+            this.cur_method.load_local("X", lo_slot);
+            this.emit_invoke(JOp.INVOKEVIRTUAL, "java/math/BigInteger", "compareTo", "(Ljava/math/BigInteger;)I");
+            pass_lo: string = this.new_label("bpc_pl");
+            this.cur_method.branch(JOp.IFGE, pass_lo, 1);
+            this.cur_method.branch(JOp.GOTO, fail_lbl, 0);
+            this.cur_method.mark(pass_lo);
+        } else {
+            // v < 0 -> fail
+            this.cur_method.load_local("X", vs);
+            this.emit_invoke(JOp.INVOKEVIRTUAL, "java/math/BigInteger", "signum", "()I");
+            pass_lo: string = this.new_label("bpc_pl");
+            this.cur_method.branch(JOp.IFGE, pass_lo, 1);
+            this.cur_method.branch(JOp.GOTO, fail_lbl, 0);
+            this.cur_method.mark(pass_lo);
+        }
+        this.cur_method.branch(JOp.GOTO, ok_lbl, 0);
+        this.cur_method.mark(fail_lbl);
+        this.emit_abort("Runtime error: '" + rt + "' value out of range or invalid\n");
+        this.cur_method.branch(JOp.GOTO, ok_lbl, 0);
+        this.cur_method.mark(ok_lbl);
+        this.cur_method.load_local("X", vs);
+    }
+
     // Entry: [val:from_t]. Exit: [val:to_t] (one side is 128-bit).
     pub fnc jvm_coerce_bigint(from_t string, to_t string) : void {
         if this.is_bigint(to_t) {
+            if from_t == "string" {
+                this.bigint_parse_checked(to_t);
+                return;
+            }
             this.coerce_to_bigint(from_t);
+            this.bigint_wrap_to(to_t);
             return;
         }
         // Narrowing out of 128-bit.
@@ -1513,10 +2094,7 @@ pub def JvmGen : class {
         this.cur_method.store_local("X", tslot);
         this.cur_method.load_local("X", tslot);
         zidx: int = this.cur_cp.fieldref("java/math/BigInteger", "ZERO", "Ljava/math/BigInteger;");
-        this.cur_method.emit_u8(JOp.GETSTATIC);
-        this.cur_method.emit_u8((zidx >> 8) & 255);
-        this.cur_method.emit_u8(zidx & 255);
-        this.cur_method.adjust(1);
+        this.cur_method.op_field(JOp.GETSTATIC, zidx, 1);
         this.emit_invoke(JOp.INVOKEVIRTUAL, "java/math/BigInteger", "compareTo", "(Ljava/math/BigInteger;)I");
         this.cur_method.branch(JOp.IFNE, ok_lbl, 1);
         this.emit_abort("Runtime error: Division by zero.\n");
@@ -1654,6 +2232,13 @@ pub def JvmGen : class {
             return;
         }
         if e.kind == ExprKind.INT {
+            // Out-of-int64 decimal text becomes a BigInteger directly
+            // (full precision for 128/256/512-bit targets).
+            if e.sval.size > 0 && this.is_plain_decimal(e.sval) && !this.lit_fits_i64(e.sval) {
+                this.ldc_string(e.sval);
+                this.bigint_from_string();
+                return;
+            }
             // Literals beyond int32 carry their full value as a long
             // (native parity: the reference keeps the literal text and
             // truncates only at narrow stores). expr_type reports them
@@ -1759,6 +2344,27 @@ pub def JvmGen : class {
             return;
         }
         if e.kind == ExprKind.POINTER_MEMBER {
+            plt: string = this.deref_t(this.expr_type(e.left));
+            if this.tc.structs.isin(plt) || this.tc.classes.isin(plt) {
+                this.gen_expr(e.left);
+                // Pointer/borrow receivers arrive as Object (see jdesc);
+                // narrow before field access or the JVM verifier rejects
+                // the GETFIELD (redundant when already exact).
+                this.emit_checkcast(plt);
+                ft: string = this.struct_field_type(plt, e.sval);
+                if ft.size == 0 {
+                    this.jvm_unsupported("field '" + e.sval + "' of '" + plt + "'");
+                    return;
+                }
+                fd: string = this.jdesc(ft);
+                if fd.size == 0 {
+                    this.jvm_unsupported("field type '" + ft + "'");
+                    return;
+                }
+                idx: int = this.cur_cp.fieldref(plt, e.sval, fd);
+                this.cur_method.op_field(JOp.GETFIELD, idx, this.slots_of(fd) - 1);
+                return;
+            }
             this.jvm_unsupported("pointer member access '->' (unsafe interop is not supported on jvm)");
             return;
         }
@@ -1770,10 +2376,61 @@ pub def JvmGen : class {
         return 0;
     }
 
+    // The `self` keyword: the current function's own name (with the
+    // native stripping rules for `_error_` wrappers and Class_method
+    // owner mangling); self::Class / self::Parent give class names.
+    pub fnc self_name_now() : string {
+        self_name: string = this.current_func_name;
+        if self_name.size > 7 && self_name[0] == '_' && self_name[1] == 'e' && self_name[2] == 'r'
+           && self_name[3] == 'r' && self_name[4] == 'o' && self_name[5] == 'r' && self_name[6] == '_' {
+            err_only: string = "";
+            ei: int = 7;
+            while ei < self_name.size {
+                err_only = err_only + self_name[ei];
+                ei = ei + 1;
+            }
+            self_name = err_only;
+        }
+        if this.current_class.size > 0 && self_name.size > this.current_class.size + 1 && self_name[this.current_class.size] == '_' {
+            sn_guard: int = 0;
+            sn_ok: bool = true;
+            while sn_guard < this.current_class.size {
+                if self_name[sn_guard] != this.current_class[sn_guard] { sn_ok = false; stop; }
+                sn_guard = sn_guard + 1;
+            }
+            if sn_ok {
+                stripped: string = "";
+                si2: int = this.current_class.size + 1;
+                while si2 < self_name.size {
+                    stripped = stripped + self_name[si2];
+                    si2 = si2 + 1;
+                }
+                self_name = stripped;
+            }
+        }
+        return self_name;
+    }
+
     pub fnc gen_ident(name string) : void {
         if name == "_" {
             // Discard sink reads as zero (native parity).
             this.iconst(0);
+            return;
+        }
+        if name == "self" && !this.var_slots.isin("self") {
+            this.ldc_string(this.self_name_now());
+            return;
+        }
+        if name == "self::Class" && !this.var_slots.isin("self") {
+            this.ldc_string(this.current_class);
+            return;
+        }
+        if name == "self::Parent" && !this.var_slots.isin("self") {
+            par: string = "";
+            if this.tc.classes.isin(this.current_class) {
+                par = this.tc.classes[this.current_class].parent;
+            }
+            this.ldc_string(par);
             return;
         }
         if name == "_PLATFORM" {
@@ -1814,10 +2471,7 @@ pub def JvmGen : class {
                 return;
             }
             idx: int = this.cur_cp.fieldref(this.main_class, "g_" + name, gd);
-            this.cur_method.emit_u8(JOp.GETSTATIC);
-            this.cur_method.emit_u8((idx >> 8) & 255);
-            this.cur_method.emit_u8(idx & 255);
-            this.cur_method.adjust(this.slots_of(gd));
+            this.cur_method.op_field(JOp.GETSTATIC, idx, this.slots_of(gd));
             return;
         }
         this.jvm_unsupported("unknown identifier '" + name + "'");
@@ -1926,12 +2580,12 @@ pub def JvmGen : class {
             this.gen_logic(e);
             return;
         }
-        if e.op == "==" || e.op == "!=" || e.op == "<" || e.op == "<=" || e.op == ">" || e.op == ">=" || e.op == "is" || e.op == "isnt" {
+        if e.op == "==" || e.op == "!=" || e.op == "<" || e.op == "<=" || e.op == ">" || e.op == ">=" || e.op == "is" || e.op == "isnt" || e.op == "isT" || e.op == "isntT" {
             this.gen_compare(e, lt, rt);
             return;
         }
         if e.op == "<>" {
-            this.jvm_unsupported("membership test '<>' (use .isin() for now)");
+            this.gen_membership(e, lt, rt);
             return;
         }
         bd_bi: string = this.jdesc(lt);
@@ -1949,6 +2603,7 @@ pub def JvmGen : class {
                 this.cur_method.load_local("X", lhs);
                 this.cur_method.load_local("X", rhs);
                 this.bigint_binop(e.op);
+                this.bigint_wrap_to(this.bigint_wider(lt, rt));
                 return;
             }
             this.jvm_unsupported("binary '" + e.op + "' on 128-bit");
@@ -2075,6 +2730,124 @@ pub def JvmGen : class {
     // Comparisons yield 0/1 ints. Strings compare by content
     // (null-safe Objects.equals); doubles use ordered compares so NaN
     // behaves like the native backend; refs compare by identity.
+    // value <> collection: substring (strings), contains (vecs),
+    // element scan (arrays). Yields bool.
+    pub fnc gen_membership(e Expr, lt string, rt string) : void {
+        rd: string = this.jdesc(rt);
+        // string <> string: haystack contains needle (receiver first).
+        if rt == "string" {
+            at: string = this.expr_type(e.left);
+            this.gen_expr(e.left);
+            this.jvm_coerce(at, "string");
+            tmp: int = this.cur_method.alloc_local(1);
+            this.cur_method.store_local("Ljava/lang/String;", tmp);
+            this.gen_expr(e.right);
+            this.cur_method.load_local("Ljava/lang/String;", tmp);
+            this.emit_invoke(JOp.INVOKEVIRTUAL, "java/lang/String", "contains", "(Ljava/lang/CharSequence;)Z");
+            return;
+        }
+        // value <> vec<T>: list.contains(boxed value).
+        if rd == "Ljava/util/ArrayList;" && this.is_vec_leash(rt) {
+            inner: string = this.vec_inner_type(rt);
+            at2: string = this.expr_type(e.left);
+            this.gen_expr(e.left);
+            if !this.coerce_val(at2, inner) {
+                this.jvm_coerce(at2, inner);
+                this.narrow_to(inner);
+            }
+            this.box_for(inner);
+            tmp2: int = this.cur_method.alloc_local(1);
+            this.cur_method.store_local("X", tmp2);
+            this.gen_expr(e.right);
+            this.cur_method.load_local("X", tmp2);
+            this.emit_invoke(JOp.INVOKEVIRTUAL, "java/util/ArrayList", "contains", "(Ljava/lang/Object;)Z");
+            return;
+        }
+        // value <> array: element scan with per-lane equality.
+        if rd.size > 0 && rd[0] == '[' {
+            at3: string = this.expr_type(e.left);
+            ad3: string = this.jdesc(at3);
+            this.gen_expr(e.left);
+            if ad3 == "I" {
+                this.cur_method.op(JOp.I2L, 1);
+                ad3 = "J";
+            } also ad3 != "J" {
+                this.jvm_tostring(at3);
+                ad3 = "Ljava/lang/String;";
+            }
+            vs: int = 0;
+            if ad3 == "J" {
+                vs = this.cur_method.alloc_local(2);
+                this.cur_method.store_local("J", vs);
+            } else {
+                vs = this.cur_method.alloc_local(1);
+                this.cur_method.store_local("X", vs);
+            }
+            this.gen_expr(e.right);
+            arr: int = this.cur_method.alloc_local(1);
+            this.cur_method.store_local("X", arr);
+            this.iconst(0);
+            res: int = this.cur_method.alloc_local(1);
+            this.cur_method.store_local("I", res);
+            this.iconst(0);
+            i: int = this.cur_method.alloc_local(1);
+            this.cur_method.store_local("I", i);
+            loop_lbl: string = this.new_label("mem_loop");
+            next_lbl: string = this.new_label("mem_next");
+            end_lbl: string = this.new_label("mem_end");
+            this.cur_method.mark(loop_lbl);
+            this.cur_method.load_local("I", i);
+            this.cur_method.load_local("X", arr);
+            this.cur_method.op(JOp.ARRAYLENGTH, 0);
+            this.cur_method.branch(JOp.IF_ICMPGE, end_lbl, 2);
+            this.cur_method.load_local("X", arr);
+            this.cur_method.load_local("I", i);
+            if rd == "[I" || rd == "[J" || rd == "[D" {
+                if rd == "[I" {
+                    this.cur_method.op(JOp.IALOAD, -1);
+                    this.cur_method.op(JOp.I2L, 1);
+                } also rd == "[J" {
+                    this.cur_method.op(JOp.LALOAD, 0);
+                } else {
+                    this.cur_method.op(JOp.DALOAD, 0);
+                }
+            } else {
+                this.cur_method.op(JOp.AALOAD, -1);
+            }
+            // Compare elem against the value local.
+            if ad3 == "J" && (rd == "[I" || rd == "[J") {
+                this.cur_method.load_local("J", vs);
+                this.cur_method.op(JOp.LCMP, -3);
+                // LCMP == 0 means EQUAL: fall through to mark found.
+                this.cur_method.branch(JOp.IFNE, next_lbl, 1);
+            } also ad3 == "Ljava/lang/String;" {
+                this.cur_method.load_local("X", vs);
+                this.emit_invoke(JOp.INVOKESTATIC, "java/util/Objects", "equals", "(Ljava/lang/Object;Ljava/lang/Object;)Z");
+                this.cur_method.branch(JOp.IFEQ, next_lbl, 1);
+            } also rd == "[D" {
+                // Skip double-lane membership (unsupported combination).
+                this.cur_method.op(JOp.POP2, -2);
+                this.cur_method.branch(JOp.GOTO, next_lbl, 0);
+            } else {
+                this.cur_method.op(JOp.POP, -1);
+                this.cur_method.branch(JOp.GOTO, next_lbl, 0);
+            }
+            this.iconst(1);
+            this.cur_method.store_local("I", res);
+            this.cur_method.branch(JOp.GOTO, end_lbl, 0);
+            this.cur_method.mark(next_lbl);
+            this.cur_method.load_local("I", i);
+            this.iconst(1);
+            this.cur_method.op(JOp.IADD, -1);
+            this.cur_method.store_local("I", i);
+            this.cur_method.branch(JOp.GOTO, loop_lbl, 0);
+            this.cur_method.mark(end_lbl);
+            this.cur_method.load_local("I", res);
+            return;
+        }
+        this.jvm_unsupported("membership '<>' on '" + rt + "'");
+    }
+
     pub fnc gen_compare(e Expr, lt string, rt string) : void {
         ld: string = this.jdesc(lt);
         rd: string = this.jdesc(rt);
@@ -2084,10 +2857,107 @@ pub def JvmGen : class {
         // `is`/`isnt` share the ==/!= paths for scalars and strings;
         // containers compare deep via equals; anything else is false.
         op2: string = e.op;
+        // `x is Type` / `x isnt Type`: compile-time type check.
+        if e.op == "isT" || e.op == "isntT" {
+            lt_r: string = this.tc.resolve_type_alias(lt);
+            rt_r: string = this.tc.resolve_type_alias(e.right.sval);
+            if this.tc.structs.isin(e.right.sval) || this.tc.classes.isin(e.right.sval) { rt_r = e.right.sval; }
+            eq_c: bool = lt_r == rt_r;
+            if e.op == "isntT" { eq_c = !eq_c; }
+            if eq_c {
+                this.cur_method.op(JOp.ICONST_1, 1);
+            } else {
+                this.cur_method.op(JOp.ICONST_0, 1);
+            }
+            return;
+        }
+        // Deep `is` for containers (arrays via Arrays.equals, vecs via
+        // List.equals); scalars/strings fall through to the == paths.
+        if e.op == "is" || e.op == "isnt" {
+            if ld.size > 0 && ld[0] == '[' && rd.size > 0 && rd[0] == '[' {
+                this.gen_expr(e.left);
+                this.gen_expr(e.right);
+                if ld == "[I" || ld == "[J" || ld == "[D" || ld == "[Z" || ld == "[C" || ld == "[B" || ld == "[S" {
+                    this.emit_invoke(JOp.INVOKESTATIC, "java/util/Arrays", "equals", "(" + ld + ld + ")Z");
+                } else {
+                    this.emit_invoke(JOp.INVOKESTATIC, "java/util/Arrays", "equals", "([Ljava/lang/Object;[Ljava/lang/Object;)Z");
+                }
+                if e.op == "isnt" {
+                    this.cur_method.op(JOp.ICONST_1, 1);
+                    this.cur_method.op(JOp.IXOR, -1);
+                }
+                return;
+            }
+            if ld == "Ljava/util/ArrayList;" && rd == "Ljava/util/ArrayList;" {
+                this.gen_expr(e.left);
+                this.gen_expr(e.right);
+                this.emit_invoke(JOp.INVOKEVIRTUAL, "java/util/ArrayList", "equals", "(Ljava/lang/Object;)Z");
+                if e.op == "isnt" {
+                    this.cur_method.op(JOp.ICONST_1, 1);
+                    this.cur_method.op(JOp.IXOR, -1);
+                }
+                return;
+            }
+        }
         if op2 == "is" { op2 = "=="; }
         also op2 == "isnt" { op2 = "!="; }
         t_lbl: string = this.new_label("cmp_t");
         e_lbl: string = this.new_label("cmp_e");
+        // Value == nil: native nil is the zero bit pattern (C null), so
+        // compare against the type's zero. Refs fall through to identity.
+        if (lt == "nil" || rt == "nil") && (op2 == "==" || op2 == "!=") {
+            nil_v: string = lt;
+            other_v: string = rt;
+            if lt != "nil" { other_v = lt; nil_v = rt; }
+            od_n: string = this.jdesc(other_v);
+            if od_n == "I" || od_n == "Z" {
+                this.gen_expr(lt == "nil" ? e.right : e.left);
+                this.cur_method.op(JOp.ICONST_0, 1);
+                if op2 == "==" {
+                    this.cur_method.branch(JOp.IF_ICMPEQ, t_lbl, 2);
+                } else {
+                    this.cur_method.branch(JOp.IF_ICMPNE, t_lbl, 2);
+                }
+                this.cur_method.op(JOp.ICONST_0, 1);
+                this.cur_method.branch(JOp.GOTO, e_lbl, 0);
+                this.cur_method.mark(t_lbl);
+                this.cur_method.op(JOp.ICONST_1, 1);
+                this.cur_method.mark(e_lbl);
+                return;
+            }
+            if od_n == "J" {
+                this.gen_expr(lt == "nil" ? e.right : e.left);
+                this.cur_method.op(JOp.LCONST_0, 2);
+                this.cur_method.op(JOp.LCMP, -3);
+                if op2 == "==" {
+                    this.cur_method.branch(JOp.IFEQ, t_lbl, 1);
+                } else {
+                    this.cur_method.branch(JOp.IFNE, t_lbl, 1);
+                }
+                this.cur_method.op(JOp.ICONST_0, 1);
+                this.cur_method.branch(JOp.GOTO, e_lbl, 0);
+                this.cur_method.mark(t_lbl);
+                this.cur_method.op(JOp.ICONST_1, 1);
+                this.cur_method.mark(e_lbl);
+                return;
+            }
+            if od_n == "D" {
+                this.gen_expr(lt == "nil" ? e.right : e.left);
+                this.cur_method.op(JOp.DCONST_0, 2);
+                this.cur_method.op(JOp.DCMPL, -3);
+                if op2 == "==" {
+                    this.cur_method.branch(JOp.IFEQ, t_lbl, 1);
+                } else {
+                    this.cur_method.branch(JOp.IFNE, t_lbl, 1);
+                }
+                this.cur_method.op(JOp.ICONST_0, 1);
+                this.cur_method.branch(JOp.GOTO, e_lbl, 0);
+                this.cur_method.mark(t_lbl);
+                this.cur_method.op(JOp.ICONST_1, 1);
+                this.cur_method.mark(e_lbl);
+                return;
+            }
+        }
         if (lt == "string" || rt == "string" || ld == "Ljava/lang/String;" || rd == "Ljava/lang/String;") && (op2 == "==" || op2 == "!=") {
             this.gen_expr(e.left);
             if ld != "Ljava/lang/String;" && lt != "nil" {
@@ -2490,6 +3360,7 @@ pub def JvmGen : class {
                 this.gen_expr(e.left);
                 this.coerce_to_bigint(t);
                 this.emit_invoke(JOp.INVOKEVIRTUAL, "java/math/BigInteger", "negate", "()Ljava/math/BigInteger;");
+                this.bigint_wrap_to(t);
                 return;
             }
             this.gen_expr(e.left);
@@ -2510,6 +3381,7 @@ pub def JvmGen : class {
                 this.gen_expr(e.left);
                 this.coerce_to_bigint(t);
                 this.emit_invoke(JOp.INVOKEVIRTUAL, "java/math/BigInteger", "not", "()Ljava/math/BigInteger;");
+                this.bigint_wrap_to(t);
                 return;
             }
             if d != "I" && d != "J" {
@@ -2530,6 +3402,23 @@ pub def JvmGen : class {
         if e.op == "++p" || e.op == "--p" || e.op == "++" || e.op == "--" {
             this.jvm_unsupported("inc/dec '" + e.op + "' (wiring in progress)");
             return;
+        }
+        // Address-of / deref on struct/class pointees: pointers ride as
+        // plain references on the JVM, so both are identity (no copy —
+        // &x must alias, matching native borrow-into-pointer).
+        if e.op == "&" {
+            lt: string = this.deref_t(this.expr_type(e.left));
+            if this.tc.structs.isin(lt) || this.tc.classes.isin(lt) {
+                this.gen_expr(e.left);
+                return;
+            }
+        }
+        if e.op == "*" {
+            lt: string = this.deref_t(this.expr_type(e.left));
+            if this.tc.structs.isin(lt) || this.tc.classes.isin(lt) {
+                this.gen_expr(e.left);
+                return;
+            }
         }
         this.jvm_unsupported("unary operator '" + e.op + "'");
     }
@@ -2609,10 +3498,7 @@ pub def JvmGen : class {
             }
             // Plain global: load, dup, incr, store.
             idx: int = this.cur_cp.fieldref(this.main_class, "g_" + t.sval, gd);
-            this.cur_method.emit_u8(JOp.GETSTATIC);
-            this.cur_method.emit_u8((idx >> 8) & 255);
-            this.cur_method.emit_u8(idx & 255);
-            this.cur_method.adjust(this.slots_of(gd));
+            this.cur_method.op_field(JOp.GETSTATIC, idx, this.slots_of(gd));
             if gd == "J" || gd == "D" {
                 this.cur_method.op(JOp.DUP2, 2);
             } else {
@@ -2658,15 +3544,13 @@ pub def JvmGen : class {
     pub fnc incr_top(t string, d string, is_inc bool) : void {
         if d == "Ljava/math/BigInteger;" {
             oidx: int = this.cur_cp.fieldref("java/math/BigInteger", "ONE", "Ljava/math/BigInteger;");
-            this.cur_method.emit_u8(JOp.GETSTATIC);
-            this.cur_method.emit_u8((oidx >> 8) & 255);
-            this.cur_method.emit_u8(oidx & 255);
-            this.cur_method.adjust(1);
+            this.cur_method.op_field(JOp.GETSTATIC, oidx, 1);
             if is_inc {
                 this.emit_invoke(JOp.INVOKEVIRTUAL, "java/math/BigInteger", "add", "(Ljava/math/BigInteger;)Ljava/math/BigInteger;");
             } else {
                 this.emit_invoke(JOp.INVOKEVIRTUAL, "java/math/BigInteger", "subtract", "(Ljava/math/BigInteger;)Ljava/math/BigInteger;");
             }
+            this.bigint_wrap_to(t);
             return;
         }
         if d == "J" {
@@ -2702,6 +3586,39 @@ pub def JvmGen : class {
     }
 
     // --- Functions ----------------------------------------------------
+    // Descriptor piece for extern parameters: unrepresentable C
+    // types (pointer<pointer<char>>, ...) ride as Object. The stub never
+    // reads them; call sites pass references, which verify as Objects.
+    pub fnc extern_piece(t string) : string {
+        d: string = this.jdesc(t);
+        if d.size > 0 { return d; }
+        if t.size > 0 && t[0] == '*' { return "Ljava/lang/Object;"; }
+        if t.size > 8 && t[0] == 'p' && t[1] == 'o' && t[2] == 'i' && t[3] == 'n' && t[4] == 't' && t[5] == 'e' && t[6] == 'r' && t[7] == '<' {
+            return "Ljava/lang/Object;";
+        }
+        // First-class function values have no JVM lane; extern stubs and
+        // skipped signatures carry them as Object (nothing on the JVM can
+        // produce one, so the value never flows).
+        if t.size > 3 && t[0] == 'f' && t[1] == 'n' && t[2] == 'c' {
+            return "Ljava/lang/Object;";
+        }
+        return "";
+    }
+
+    pub fnc extern_desc(f FuncDecl) : string {
+        desc: string = "(";
+        foreach _, p in<vector> f.params {
+            pd: string = this.extern_piece(p.typ);
+            if pd.size == 0 { return ""; }
+            desc = desc + pd;
+        }
+        desc = desc + ")";
+        rd: string = this.jdesc(f.ret_type);
+        if rd.size == 0 { return ""; }
+        desc = desc + rd;
+        return desc;
+    }
+
     pub fnc method_desc(f FuncDecl) : string {
         desc: string = "(";
         foreach _, p in<vector> f.params {
@@ -2807,10 +3724,7 @@ pub def JvmGen : class {
         }
         this.emit_invoke(JOp.INVOKESPECIAL, taskn, "<init>", this.async_ctor_desc(f));
         pf: int = cls.cp.fieldref(this.main_class, "__pool", "Ljava/util/concurrent/ExecutorService;");
-        this.cur_method.emit_u8(JOp.GETSTATIC);
-        this.cur_method.emit_u8((pf >> 8) & 255);
-        this.cur_method.emit_u8(pf & 255);
-        this.cur_method.adjust(1);
+        this.cur_method.op_field(JOp.GETSTATIC, pf, 1);
         this.emit_invoke(JOp.INVOKESTATIC, "java/util/concurrent/CompletableFuture", "supplyAsync", "(Ljava/util/function/Supplier;Ljava/util/concurrent/Executor;)Ljava/util/concurrent/CompletableFuture;");
         this.cur_method.op(JOp.ARETURN, -1);
         if !sm.finalize(cls.cp) {
@@ -2854,10 +3768,7 @@ pub def JvmGen : class {
             this.cur_method.op(JOp.ALOAD_0, 1);
             this.cur_method.load_local("X", 1 + ai);
             fi: int = tk.cp.fieldref(task_name, "a" + tostring(ai), this.boxed_desc(ptypes.get(ai)));
-            this.cur_method.emit_u8(JOp.PUTFIELD);
-            this.cur_method.emit_u8((fi >> 8) & 255);
-            this.cur_method.emit_u8(fi & 255);
-            this.cur_method.adjust(-2);
+            this.cur_method.op_field(JOp.PUTFIELD, fi, -2);
             ai = ai + 1;
         }
         this.cur_method.op(JOp.RETURN, 0);
@@ -2877,10 +3788,7 @@ pub def JvmGen : class {
             pt: string = ptypes.get(ai);
             this.cur_method.op(JOp.ALOAD_0, 1);
             fi: int = tk.cp.fieldref(task_name, "a" + tostring(ai), this.boxed_desc(pt));
-            this.cur_method.emit_u8(JOp.GETFIELD);
-            this.cur_method.emit_u8((fi >> 8) & 255);
-            this.cur_method.emit_u8(fi & 255);
-            this.cur_method.adjust(0);
+            this.cur_method.op_field(JOp.GETFIELD, fi, 0);
             this.unbox_to(pt);
             ai = ai + 1;
         }
@@ -2961,7 +3869,65 @@ pub def JvmGen : class {
             return;
         }
         if f.is_external {
-            this.jvm_unsupported("native (@from) function '" + f.name + "'");
+            // Runtime-throwing stub (Leash throw semantics: message +
+            // exit). Importing a native module stays possible; calling
+            // into it fails loudly instead of silently.
+            desc: string = this.extern_desc(f);
+            if desc.size == 0 {
+                this.jvm_unsupported("native (@from) function '" + f.name + "' (unrepresentable signature)");
+                return;
+            }
+            m: JvmMethod = JvmMethod.make(cls.cp.utf8(f.name), cls.cp.utf8(desc), JAcc.PUBLIC + JAcc.STATIC);
+            this.cur_cp = cls.cp;
+            this.cur_method = m;
+            // Reserve argument slots (max_locals must cover them even
+            // though the stub body never touches them).
+            di: int = 1;
+            while di < desc.size && desc[di] != ')' {
+                dc: char = desc[di];
+                if dc == 'J' || dc == 'D' {
+                    m.alloc_local(2);
+                    di = di + 1;
+                } also dc == 'L' {
+                    m.alloc_local(1);
+                    while di < desc.size && desc[di] != ';' { di = di + 1; }
+                    di = di + 1;
+                } also dc == '[' {
+                    m.alloc_local(1);
+                    while di < desc.size && desc[di] == '[' { di = di + 1; }
+                    if di < desc.size && desc[di] == 'L' {
+                        while di < desc.size && desc[di] != ';' { di = di + 1; }
+                    }
+                    di = di + 1;
+                } else {
+                    m.alloc_local(1);
+                    di = di + 1;
+                }
+            }
+            this.print_lit("\nRuntime error: native function '" + f.name + "' is not supported on the jvm target\n");
+            this.iconst(1);
+            this.emit_invoke(JOp.INVOKESTATIC, "java/lang/System", "exit", "(I)V");
+            this.jvm_default(this.jdesc(f.ret_type));
+            rd: string = this.jdesc(f.ret_type);
+            if rd == "V" {
+                m.op(JOp.RETURN, 0);
+            } also rd == "J" {
+                m.op(JOp.LRETURN, -2);
+            } also rd == "D" {
+                m.op(JOp.DRETURN, -2);
+            } also rd.size > 0 && rd[0] == 'L' {
+                m.op(JOp.ARETURN, -1);
+            } else {
+                m.op(JOp.IRETURN, -1);
+            }
+            if !m.finalize(cls.cp) {
+                foreach _, e in<vector> m.errors {
+                    this.fail(e);
+                }
+                return;
+            }
+            cls.add_method(m);
+            this.cur_cp = cls.cp;
             return;
         }
         // Owner-bound methods: instance (this in slot 0) unless the
@@ -2976,7 +3942,10 @@ pub def JvmGen : class {
         }
         desc: string = this.method_desc(f);
         if desc.size == 0 {
-            this.jvm_unsupported("signature of '" + f.name + "'");
+            // No JVM lane for this signature (e.g. function-typed
+            // parameters): skip the definition. Any call site still fails
+            // loudly via method_sig ("signature of ..."), so nothing goes
+            // silent — uncalled code simply stays out of the class file.
             return;
         }
         mname: string = f.name;
@@ -3005,32 +3974,21 @@ pub def JvmGen : class {
         this.current_func_name = f.name;
         this.current_func_unsafe = f.is_unsafe;
         this.array_base_override = "";
+        this.opdef_inner = "";
+        if f.name.size > 7 && f.name[0] == '_' && f.name[1] == 'o' && f.name[2] == 'p'
+           && f.name[3] == 'd' && f.name[4] == 'e' && f.name[5] == 'f' && f.name[6] == '_' {
+            foreach _, op in<vector> f.params {
+                opt: string = op.typ;
+                if opt.size > 5 && opt[0] == 'v' && opt[1] == 'e' && opt[2] == 'c' && opt[3] == '<' {
+                    this.opdef_inner = this.vec_inner_type(opt);
+                }
+                also opt.size > 6 && opt[0] == 'h' && opt[1] == 'a' && opt[2] == 's' && opt[3] == 'h' && opt[4] == '<' {
+                    this.opdef_inner = this.hash_val_type(opt);
+                }
+            }
+        }
         this.tmap_owner = "";
         if this.tc.inst_tmaps.isin(f.owner) { this.tmap_owner = f.owner; }
-        // JVM is not expected to run the interactive command dispatchers; the
-        // generated bytecode there triggers verifier mismatches that are
-        // harmless on native. Emit a trivial default body so the class
-        // still loads/links on the JVM.
-        if f.name == "xrun" || f.name == "cmd_self_host" || f.name == "cleanup_temp" || f.name == "cleanup_temp" || f.name == "cmd_self_host" || f.name == "xcode" || f.name == "xrun" || f.name == "cleanup_temp" || f.name == "cmd_self_host" || f.name == "xcode" || f.name == "xout" || f.name == "xrun" || (f.name.size >= 4 && f.name[0] == 'c' && f.name[1] == 'm' && f.name[2] == 'd' && f.name[3] == '_') {
-            rd: string = this.jdesc(f.ret_type);
-            if rd == "V" {
-                m.op(JOp.RETURN, 0);
-            } also rd == "J" {
-                this.jvm_default(rd);
-                m.op(JOp.LRETURN, -2);
-            } also rd == "D" {
-                this.jvm_default(rd);
-                m.op(JOp.DRETURN, -2);
-            } also rd[0] == 'L' {
-                this.jvm_default(rd);
-                m.op(JOp.ARETURN, -1);
-            } else {
-                this.jvm_default(rd);
-                m.op(JOp.IRETURN, -1);
-            }
-            this.cur_cp = cls.cp;
-            return;
-        }
         if is_method && !is_static {
             tslot: int = m.alloc_local(1);
             this.define_var("this", f.owner, tslot);
@@ -3072,6 +4030,13 @@ pub def JvmGen : class {
     }
 
     pub fnc gen_program(prog Program, cls JvmClass) : void {
+        // Extern (@from) functions emit runtime-throwing stubs so mixed
+        // modules stay importable; calls fail loudly only when executed.
+        foreach _, ef in<vector> prog.funcs {
+            if ef.is_external && ef.owner.size == 0 {
+                this.extern_names.push(ef.name, true);
+            }
+        }
         this.cur_cp = cls.cp;
         // Globals become static fields (fusion integers become atomics).
         foreach _, g in<vector> prog.globals {
@@ -3104,6 +4069,7 @@ pub def JvmGen : class {
         cls.add_field(JAcc.PRIVATE + JAcc.STATIC, "__rng_buf", "[I");
         cls.add_field(JAcc.PRIVATE + JAcc.STATIC, "__rng_pos", "I");
         cls.add_field(JAcc.PRIVATE + JAcc.STATIC, "__pool", "Ljava/util/concurrent/ExecutorService;");
+        cls.add_field(JAcc.PRIVATE + JAcc.STATIC, "__showb", "Ljava/lang/StringBuffer;");
         cls.add_field(JAcc.PRIVATE + JAcc.STATIC, "__t0", "J");
         this.emit_helpers(cls);
         // Structs and classes become emitted classes (fields only here;
@@ -3200,21 +4166,30 @@ pub def JvmGen : class {
                     this.emit_new_map();
                 }
                 fi: int = kc.cp.fieldref(name, fd.name, dd);
-                this.cur_method.emit_u8(JOp.PUTFIELD);
-                this.cur_method.emit_u8((fi >> 8) & 255);
-                this.cur_method.emit_u8(fi & 255);
-                this.cur_method.adjust(-2);
+                this.cur_method.op_field(JOp.PUTFIELD, fi, -2);
             } also dd.size > 0 && dd[0] == '[' {
                 n: int = this.array_size_of(fd.typ);
                 if n >= 0 {
                     this.cur_method.op(JOp.ALOAD_0, 1);
                     this.emit_new_array(fd.typ, n);
                     fi: int = kc.cp.fieldref(name, fd.name, dd);
-                    this.cur_method.emit_u8(JOp.PUTFIELD);
-                    this.cur_method.emit_u8((fi >> 8) & 255);
-                    this.cur_method.emit_u8(fi & 255);
-                    this.cur_method.adjust(-2);
+                    this.cur_method.op_field(JOp.PUTFIELD, fi, -2);
                 }
+            }
+            // Field default initializers (`name: string = "x"`): literal
+            // defaults apply in <init> (native parity); explicit struct
+            // literals overwrite them afterward.
+            if fd.init != null && (fd.init.kind == ExprKind.INT || fd.init.kind == ExprKind.FLOAT
+                || fd.init.kind == ExprKind.STRING || fd.init.kind == ExprKind.CHAR || fd.init.kind == ExprKind.BOOL) {
+                it: string = this.expr_type(fd.init);
+                this.cur_method.op(JOp.ALOAD_0, 1);
+                this.gen_expr(fd.init);
+                if !this.coerce_val(it, fd.typ) {
+                    this.jvm_coerce(it, fd.typ);
+                    this.narrow_to(fd.typ);
+                }
+                fi2: int = kc.cp.fieldref(name, fd.name, dd);
+                this.cur_method.op_field(JOp.PUTFIELD, fi2, -2);
             }
         }
         this.cur_method.op(JOp.RETURN, 0);
@@ -3264,18 +4239,12 @@ pub def JvmGen : class {
         if this.prog_uses_async(prog) {
             this.emit_invoke(JOp.INVOKESTATIC, "java/util/concurrent/Executors", "newCachedThreadPool", "()Ljava/util/concurrent/ExecutorService;");
             pfi: int = this.cur_cp.fieldref(this.main_class, "__pool", "Ljava/util/concurrent/ExecutorService;");
-            this.cur_method.emit_u8(JOp.PUTSTATIC);
-            this.cur_method.emit_u8((pfi >> 8) & 255);
-            this.cur_method.emit_u8(pfi & 255);
-            this.cur_method.adjust(-1);
+            this.cur_method.op_field(JOp.PUTSTATIC, pfi, -1);
         }
         // Runtime-helper state: start time (RNG state lazily seeded).
         this.emit_invoke(JOp.INVOKESTATIC, "java/lang/System", "nanoTime", "()J");
         tfi: int = this.cur_cp.fieldref(this.main_class, "__t0", "J");
-        this.cur_method.emit_u8(JOp.PUTSTATIC);
-        this.cur_method.emit_u8((tfi >> 8) & 255);
-        this.cur_method.emit_u8(tfi & 255);
-        this.cur_method.adjust(-2);
+        this.cur_method.op_field(JOp.PUTSTATIC, tfi, -2);
         // Global initializers.
         foreach _, g in<vector> prog.globals {
             gd: string = this.jdesc(g.typ);
@@ -3305,10 +4274,7 @@ pub def JvmGen : class {
                 }
                 this.emit_invoke(JOp.INVOKESPECIAL, acls, "<init>", adesc);
                 fi: int = this.cur_cp.fieldref(this.main_class, "g_" + g.name, "L" + acls + ";");
-                this.cur_method.emit_u8(JOp.PUTSTATIC);
-                this.cur_method.emit_u8((fi >> 8) & 255);
-                this.cur_method.emit_u8(fi & 255);
-                this.cur_method.adjust(-1);
+                this.cur_method.op_field(JOp.PUTSTATIC, fi, -1);
                 continue;
             }
             if g.init_val != null {
@@ -3322,10 +4288,7 @@ pub def JvmGen : class {
                 this.jvm_default_for(g.typ);
             }
             fi2: int = this.cur_cp.fieldref(this.main_class, "g_" + g.name, gd);
-            this.cur_method.emit_u8(JOp.PUTSTATIC);
-            this.cur_method.emit_u8((fi2 >> 8) & 255);
-            this.cur_method.emit_u8(fi2 & 255);
-            this.cur_method.adjust(0 - this.slots_of(gd));
+            this.cur_method.op_field(JOp.PUTSTATIC, fi2, 0 - this.slots_of(gd));
         }
         // Static field initializers (class/struct statics; same phase).
         foreach _, c in<vector> prog.classes {
@@ -3341,10 +4304,7 @@ pub def JvmGen : class {
                     this.narrow_to(fd.typ);
                 }
                 fi: int = this.cur_cp.fieldref(c.name, fd.name, sfd);
-                this.cur_method.emit_u8(JOp.PUTSTATIC);
-                this.cur_method.emit_u8((fi >> 8) & 255);
-                this.cur_method.emit_u8(fi & 255);
-                this.cur_method.adjust(0 - this.slots_of(sfd));
+                this.cur_method.op_field(JOp.PUTSTATIC, fi, 0 - this.slots_of(sfd));
             }
         }
         foreach _, st in<vector> prog.structs {
@@ -3359,10 +4319,7 @@ pub def JvmGen : class {
                     this.narrow_to(fd.typ);
                 }
                 fi: int = this.cur_cp.fieldref(st.name, fd.name, sfd);
-                this.cur_method.emit_u8(JOp.PUTSTATIC);
-                this.cur_method.emit_u8((fi >> 8) & 255);
-                this.cur_method.emit_u8(fi & 255);
-                this.cur_method.adjust(0 - this.slots_of(sfd));
+                this.cur_method.op_field(JOp.PUTSTATIC, fi, 0 - this.slots_of(sfd));
             }
         }
         // Enum variant-name tables.
@@ -3389,10 +4346,7 @@ pub def JvmGen : class {
             }
             this.cur_method.load_local("X", arr_slot);
             fi: int = this.cur_cp.fieldref(this.main_class, "enum_" + e.name + "_names", "[Ljava/lang/String;");
-            this.cur_method.emit_u8(JOp.PUTSTATIC);
-            this.cur_method.emit_u8((fi >> 8) & 255);
-            this.cur_method.emit_u8(fi & 255);
-            this.cur_method.adjust(-1);
+            this.cur_method.op_field(JOp.PUTSTATIC, fi, -1);
         }
         // Dispatch to the user main.
         wants_args: bool = main_params.size == 1;
@@ -3440,6 +4394,8 @@ pub def JvmGen : class {
             this.cur_method.load_local("X", arr_slot);
         }
         this.emit_invoke(JOp.INVOKESTATIC, this.main_class, "__leash_user_main", udesc);
+        // Drain buffered showb output (native exit-flush parity).
+        this.emit_showb_flush_call();
         if urd == "I" {
             this.emit_invoke(JOp.INVOKESTATIC, "java/lang/System", "exit", "(I)V");
         } else {
@@ -3473,6 +4429,20 @@ pub def JvmGen : class {
 
     // Static call to a same-class function (recursion and forward
     // references resolve at JVM link time).
+    // Compile-time byte-count for bytestoint/bytestofloat: int literal
+    // or sizeof(type) (native parses the folded literal the same way).
+    pub fnc byte_size_const(e Expr) : int {
+        if e.kind == ExprKind.INT { return e.ival; }
+        if e.kind == ExprKind.CALL && e.sval == "sizeof" && e.args.size == 1 {
+            a0: Expr = e.args.get(0);
+            st: string = "";
+            if a0.kind == ExprKind.STRING { st = a0.sval; }
+            else { st = this.expr_type(a0); }
+            return this.type_size_of(st);
+        }
+        return 0 - 1;
+    }
+
     pub fnc gen_call(e Expr) : void {
         fname: string = e.sval;
         if fname == "tostring" {
@@ -3485,6 +4455,31 @@ pub def JvmGen : class {
         }
         if fname == "exec" {
             this.gen_exec(e);
+            return;
+        }
+        if fname == "printf" {
+            this.gen_printf(e);
+            return;
+        }
+        // The JVM collects automatically; explicit collections are no-ops
+        // (native parity of observable behavior: live data stays valid).
+        if fname == "gc_collect" {
+            return;
+        }
+        if fname == "gc_stats" {
+            this.emit_getstatic_out();
+            this.ldc_string("[jvm gc: automatic]");
+            this.emit_invoke(JOp.INVOKEVIRTUAL, "java/io/PrintStream", "println", "(Ljava/lang/String;)V");
+            return;
+        }
+        // Raw C heap and scanning need real addresses/buffers; the JVM
+        // has neither, so fail loudly instead of emitting dead calls.
+        if fname == "malloc" || fname == "calloc" || fname == "realloc" || fname == "free" || fname == "strcpy" || fname == "strncpy" || fname == "strcat" || fname == "memcpy" || fname == "memmove" || fname == "memset" {
+            this.jvm_unsupported("'" + fname + "' needs the raw C heap (not supported on jvm; use vec/string)");
+            return;
+        }
+        if fname == "scanf" || fname == "fscanf" || fname == "sscanf" || fname == "fprintf" || fname == "sprintf" || fname == "snprintf" {
+            this.jvm_unsupported("'" + fname + "' (C stdio buffers are not supported on jvm)");
             return;
         }
         if fname == "tounion" {
@@ -3502,8 +4497,75 @@ pub def JvmGen : class {
             this.union_auto_store(uname, at);
             return;
         }
-        if fname == "normescape" || fname == "lstr" || fname == "inttobytes" || fname == "floattobytes" || fname == "bytestoint" || fname == "bytestofloat" {
-            this.jvm_unsupported("builtin '" + fname + "' (not supported on jvm)");
+        if fname == "lstr" {
+            // char[] -> String (native lstr on a slice).
+            at: string = this.expr_type(e.args.get(0));
+            this.gen_expr(e.args.get(0));
+            this.jvm_coerce(at, "char[]");
+            this.emit_string_from_chars();
+            return;
+        }
+        if fname == "normescape" {
+            at2: string = this.expr_type(e.args.get(0));
+            this.gen_expr(e.args.get(0));
+            this.jvm_coerce(at2, "string");
+            this.emit_invoke(JOp.INVOKESTATIC, this.main_class, "__normescape", "(Ljava/lang/String;)Ljava/lang/String;");
+            return;
+        }
+        if fname == "inttobytes" || fname == "floattobytes" {
+            if e.args.size != 2 {
+                this.jvm_unsupported(fname + "() needs 2 arguments");
+                return;
+            }
+            vt: string = this.expr_type(e.args.get(1));
+            vd: string = this.jdesc(vt);
+            st: string = this.expr_type(e.args.get(0));
+            this.gen_expr(e.args.get(0));
+            this.jvm_coerce(st, "int");
+            sz_slot: int = this.cur_method.alloc_local(1);
+            this.cur_method.store_local("I", sz_slot);
+            this.gen_expr(e.args.get(1));
+            if fname == "inttobytes" {
+                if vd == "I" {
+                    this.cur_method.op(JOp.I2L, 1);
+                    this.iconst(4);
+                } also vd == "J" {
+                    this.iconst(8);
+                } else {
+                    this.jvm_unsupported("inttobytes() of '" + vt + "'");
+                    return;
+                }
+            } else {
+                if vd != "D" {
+                    this.jvm_unsupported("floattobytes() of '" + vt + "'");
+                    return;
+                }
+                this.emit_invoke(JOp.INVOKESTATIC, "java/lang/Double", "doubleToRawLongBits", "(D)J");
+                this.iconst(8);
+            }
+            this.cur_method.load_local("I", sz_slot);
+            this.emit_invoke(JOp.INVOKESTATIC, this.main_class, "__bytes_from_long", "(JII)[C");
+            return;
+        }
+        if fname == "bytestoint" || fname == "bytestofloat" {
+            if e.args.size != 2 {
+                this.jvm_unsupported(fname + "() needs 2 arguments");
+                return;
+            }
+            sz: int = this.byte_size_const(e.args.get(0));
+            if sz < 1 {
+                this.jvm_unsupported(fname + "() needs a constant size");
+                return;
+            }
+            if fname == "bytestofloat" && sz > 8 { sz = 8; }
+            this.gen_expr(e.args.get(1));
+            this.iconst(sz);
+            this.emit_invoke(JOp.INVOKESTATIC, this.main_class, "__bytes_to_long", "([CI)J");
+            if fname == "bytestoint" {
+                this.cur_method.op(JOp.L2I, -1);
+            } else {
+                this.emit_invoke(JOp.INVOKESTATIC, "java/lang/Double", "longBitsToDouble", "(J)D");
+            }
             return;
         }
         if fname == "__tupget" {
@@ -3542,12 +4604,17 @@ pub def JvmGen : class {
         if this.tc.func_params.isin(fname) {
             ptypes = this.tc.func_params[fname];
         }
+        is_ext: bool = this.extern_names.isin(fname);
         desc: string = "(";
         ai: int = 0;
         while ai < e.args.size {
             pt: string = "int";
             if ai < ptypes.size { pt = ptypes.get(ai); }
             pd: string = this.jdesc(pt);
+            if pd.size == 0 && is_ext {
+                // C pointer soup rides as Object in extern stubs/calls.
+                pd = this.extern_piece(pt);
+            }
             if pd.size == 0 {
                 this.jvm_unsupported("parameter type '" + pt + "'");
                 return;
@@ -3568,10 +4635,36 @@ pub def JvmGen : class {
             pt: string = "int";
             if ai < ptypes.size { pt = ptypes.get(ai); }
             at: string = this.expr_type(e.args.get(ai));
-            this.gen_expr(e.args.get(ai));
-            if !this.coerce_val(at, pt) {
-                this.jvm_coerce(at, pt);
-                this.narrow_to(pt);
+            arg: Expr = e.args.get(ai);
+            if is_ext && arg.kind == ExprKind.UNARY && arg.op == "&" && arg.left != null {
+                // C out-param (&local): the stub never reads it; pass the
+                // local's value so the call verifies (box primitives to
+                // the Object the stub declares). Dead on arrival: the
+                // stub throws before touching arguments.
+                lat: string = this.expr_type(arg.left);
+                this.gen_expr(arg.left);
+                if this.extern_piece(pt) == "Ljava/lang/Object;" {
+                    ld: string = this.jdesc(lat);
+                    if ld == "I" || ld == "J" || ld == "D" || ld == "Z" || ld == "C" || ld == "B" || ld == "S" {
+                        this.box_for(lat);
+                    }
+                } else {
+                    if !this.coerce_val(lat, pt) {
+                        this.jvm_coerce(lat, pt);
+                        this.narrow_to(pt);
+                    }
+                }
+            } else {
+                this.gen_expr(e.args.get(ai));
+                if !this.coerce_val(at, pt) {
+                    this.jvm_coerce(at, pt);
+                    this.narrow_to(pt);
+                }
+            }
+            // Struct value args copy (native pass-by-value parity).
+            // Borrow (&T) params never copy: the callee mutates through.
+            if this.tc.structs.isin(pt) && this.tc.structs.isin(this.deref_t(at)) {
+                this.gen_struct_copy(pt);
             }
             ai = ai + 1;
         }
@@ -3668,10 +4761,6 @@ pub def JvmGen : class {
         this.emit_invoke(JOp.INVOKEVIRTUAL, "java/lang/Process", "waitFor", "()I");
         exit_slot: int = this.cur_method.alloc_local(1);
         this.cur_method.store_local("I", exit_slot);
-        // delete temp file (best-effort, popped)
-        this.cur_method.load_local("X", tmpf_slot);
-        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/io/File", "delete", "()Z");
-        this.cur_method.op(JOp.POP, -1);
         // read stdout from temp file via Files.readAllBytes
         this.cur_method.op(JOp.NEW, 1);
         si: int = this.cur_cp.class_entry("java/lang/String");
@@ -3679,32 +4768,103 @@ pub def JvmGen : class {
         this.cur_method.emit_u8(si & 255);
         this.cur_method.op(JOp.DUP, 1);
         this.cur_method.load_local("Ljava/lang/String;", tmp_path_slot);
-        this.emit_invoke(JOp.INVOKESTATIC, "java/nio/file/Paths", "get", "(Ljava/lang/String;)Ljava/nio/file/Path;");
+        this.iconst(0);
+        this.cur_method.emit_u8(JOp.ANEWARRAY);
+        sei: int = this.cur_cp.class_entry("java/lang/String");
+        this.cur_method.emit_u8((sei >> 8) & 255);
+        this.cur_method.emit_u8(sei & 255);
+        this.cur_method.adjust(0);
+        this.emit_invoke(JOp.INVOKESTATIC, "java/nio/file/Paths", "get", "(Ljava/lang/String;[Ljava/lang/String;)Ljava/nio/file/Path;");
         this.emit_invoke(JOp.INVOKESTATIC, "java/nio/file/Files", "readAllBytes", "(Ljava/nio/file/Path;)[B");
         this.ldc_string("ISO-8859-1");
         this.emit_invoke(JOp.INVOKESPECIAL, "java/lang/String", "<init>", "([BLjava/lang/String;)V");
         out_slot: int = this.cur_method.alloc_local(1);
         this.cur_method.store_local("Ljava/lang/String;", out_slot);
-        // decide return
-        mode_exit_lbl: string = this.new_label("ex_modeout");
-        return_end: string = this.new_label("ex_retok");
+        // delete temp file (best-effort, popped)
+        this.cur_method.load_local("X", tmpf_slot);
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/io/File", "delete", "()Z");
+        this.cur_method.op(JOp.POP, -1);
+        // Decide return: "code"/"run" yield the exit code, anything
+        // else (null/"wait") yields stdout. Each path leaves exactly one
+        // String: the code path jumps over the stdout load.
+        code_lbl: string = this.new_label("ex_code");
+        out_lbl: string = this.new_label("ex_out");
+        end_lbl: string = this.new_label("ex_end");
         this.cur_method.load_local("Ljava/lang/String;", mode_slot);
-        this.cur_method.branch(JOp.IFNULL, mode_exit_lbl, 1);
+        this.cur_method.branch(JOp.IFNULL, out_lbl, 1);
         this.cur_method.load_local("Ljava/lang/String;", mode_slot);
         this.ldc_string("code");
         this.emit_invoke(JOp.INVOKEVIRTUAL, "java/lang/String", "equals", "(Ljava/lang/Object;)Z");
-        this.cur_method.branch(JOp.IFNE, mode_exit_lbl, 1);
+        this.cur_method.branch(JOp.IFNE, code_lbl, 1);
         this.cur_method.load_local("Ljava/lang/String;", mode_slot);
         this.ldc_string("run");
         this.emit_invoke(JOp.INVOKEVIRTUAL, "java/lang/String", "equals", "(Ljava/lang/Object;)Z");
-        this.cur_method.branch(JOp.IFEQ, return_end, 1);
-        this.cur_method.mark(mode_exit_lbl);
+        this.cur_method.branch(JOp.IFEQ, out_lbl, 1);
+        this.cur_method.mark(code_lbl);
         this.cur_method.load_local("I", exit_slot);
         this.emit_invoke(JOp.INVOKESTATIC, "java/lang/Integer", "toString", "(I)Ljava/lang/String;");
-        this.cur_method.branch(JOp.GOTO, return_end, 0);
-        // nil mode (spawn-style): just continue, return stdout (ignored)
-        this.cur_method.mark(return_end);
+        this.cur_method.branch(JOp.GOTO, end_lbl, 0);
+        this.cur_method.mark(out_lbl);
+        // nil mode: forward the captured stdout to ours (native
+        // mode-less exec passthrough parity), then yield "".
+        this.emit_getstatic_out();
         this.cur_method.load_local("Ljava/lang/String;", out_slot);
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/io/PrintStream", "print", "(Ljava/lang/String;)V");
+        this.ldc_string("");
+        this.cur_method.mark(end_lbl);
+    }
+
+    // printf(fmt, args...) via String.format (Java Formatter covers the
+    // common C specifiers: %d %s %f %x %c %% with 6-digit %f default).
+    // Prints exactly (no added newline) and yields the char count, as C.
+    pub fnc gen_printf(e Expr) : void {
+        if e.args.size < 1 {
+            this.jvm_unsupported("printf() needs a format string");
+            return;
+        }
+        ft: string = this.expr_type(e.args.get(0));
+        this.gen_expr(e.args.get(0));
+        this.jvm_coerce(ft, "string");
+        fmt_slot: int = this.cur_method.alloc_local(1);
+        this.cur_method.store_local("Ljava/lang/String;", fmt_slot);
+        n: int = e.args.size - 1;
+        this.iconst(n);
+        this.emit_anewarray_object(n);
+        arr: int = this.cur_method.alloc_local(1);
+        this.cur_method.store_local("X", arr);
+        i: int = 0;
+        while i < n {
+            at: string = this.expr_type(e.args.get(i + 1));
+            ad: string = this.jdesc(at);
+            if ad.size == 0 {
+                this.jvm_unsupported("printf() argument of type '" + at + "'");
+                return;
+            }
+            this.cur_method.load_local("X", arr);
+            this.iconst(i);
+            this.gen_expr(e.args.get(i + 1));
+            if ad[0] == 'L' && at != "string" && at != "*char" && !this.is_bigint(at) {
+                // No Formatter mapping (vec/struct/...): Leash text first.
+                this.jvm_tostring(at);
+            } else {
+                this.box_for(at);
+            }
+            this.cur_method.op(JOp.AASTORE, -3);
+            i = i + 1;
+        }
+        // Locale.ROOT: C printf spells decimals with '.', but the JVM
+        // default locale may not (e.g. pt-BR gives ',').
+        this.emit_locale_root();
+        this.cur_method.load_local("Ljava/lang/String;", fmt_slot);
+        this.cur_method.load_local("X", arr);
+        this.emit_invoke(JOp.INVOKESTATIC, "java/lang/String", "format", "(Ljava/util/Locale;Ljava/lang/String;[Ljava/lang/Object;)Ljava/lang/String;");
+        out: int = this.cur_method.alloc_local(1);
+        this.cur_method.store_local("Ljava/lang/String;", out);
+        this.emit_getstatic_out();
+        this.cur_method.load_local("Ljava/lang/String;", out);
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/io/PrintStream", "print", "(Ljava/lang/String;)V");
+        this.cur_method.load_local("Ljava/lang/String;", out);
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/lang/String", "length", "()I");
     }
 
     // ===================== File I/O on the JVM =====================
@@ -3739,14 +4899,40 @@ pub def JvmGen : class {
             w_lbl: string = this.new_label("fo_w");
             null_lbl: string = this.new_label("fo_null");
             end_lbl: string = this.new_label("fo_end");
-            // Dispatch: 'r' -> r_lbl, 'a' -> a_lbl, else -> w_lbl (rw).
+            // Dispatch: 'r'/'r+' -> r path, 'a' -> append, else rw.
+            // 'r+' opens rw like native fopen (no truncation).
+            rplus_lbl: string = this.new_label("fo_rp");
+            not_r_lbl: string = this.new_label("fo_nr");
             this.cur_method.load_local("I", c_slot);
             this.iconst(114);
-            this.cur_method.branch(JOp.IF_ICMPEQ, r_lbl, 2);
+            this.cur_method.branch(JOp.IF_ICMPNE, not_r_lbl, 2);
+            // c == 'r': '+' suffix -> rw; else plain read.
+            this.cur_method.load_local("Ljava/lang/String;", mode_slot);
+            this.emit_invoke(JOp.INVOKEVIRTUAL, "java/lang/String", "length", "()I");
+            this.iconst(1);
+            this.cur_method.branch(JOp.IF_ICMPLE, r_lbl, 2);
+            this.cur_method.load_local("Ljava/lang/String;", mode_slot);
+            this.iconst(1);
+            this.emit_invoke(JOp.INVOKEVIRTUAL, "java/lang/String", "charAt", "(I)C");
+            this.iconst(43);
+            this.cur_method.branch(JOp.IF_ICMPEQ, rplus_lbl, 2);
+            this.cur_method.branch(JOp.GOTO, r_lbl, 0);
+            this.cur_method.mark(not_r_lbl);
             this.cur_method.load_local("I", c_slot);
             this.iconst(97);
             this.cur_method.branch(JOp.IF_ICMPEQ, a_lbl, 2);
             this.cur_method.branch(JOp.GOTO, w_lbl, 0);
+            // 'r+': rw, pointer at 0, NO truncation (native fopen parity).
+            this.cur_method.mark(rplus_lbl);
+            this.cur_method.op(JOp.NEW, 1);
+            rpi: int = this.cur_cp.class_entry("java/io/RandomAccessFile");
+            this.cur_method.emit_u8((rpi >> 8) & 255);
+            this.cur_method.emit_u8(rpi & 255);
+            this.cur_method.op(JOp.DUP, 1);
+            this.cur_method.load_local("Ljava/lang/String;", path_slot);
+            this.ldc_string("rw");
+            this.emit_invoke(JOp.INVOKESPECIAL, "java/io/RandomAccessFile", "<init>", "(Ljava/lang/String;Ljava/lang/String;)V");
+            this.cur_method.branch(JOp.GOTO, end_lbl, 0);
             // ---- 'r': File(path).isFile() ? new RAF(path,"r") : null
             this.cur_method.mark(r_lbl);
             this.cur_method.op(JOp.NEW, 1);
@@ -3839,10 +5025,10 @@ pub def JvmGen : class {
             zl: string = this.new_label("jbool_z");
             el: string = this.new_label("jbool_e");
             this.cur_method.branch(JOp.IFEQ, zl, 1);
-            this.iconst(1);
+            this.iconst(0);
             this.cur_method.branch(JOp.GOTO, el, 0);
             this.cur_method.mark(zl);
-            this.iconst(0);
+            this.iconst(0 - 1);
             this.cur_method.mark(el);
             return;
         }
@@ -3867,10 +5053,10 @@ pub def JvmGen : class {
             zl: string = this.new_label("jbool_z");
             el: string = this.new_label("jbool_e");
             this.cur_method.branch(JOp.IFEQ, zl, 1);
-            this.iconst(1);
+            this.iconst(0);
             this.cur_method.branch(JOp.GOTO, el, 0);
             this.cur_method.mark(zl);
-            this.iconst(0);
+            this.iconst(0 - 1);
             this.cur_method.mark(el);
             return;
         }
@@ -4014,7 +5200,177 @@ pub def JvmGen : class {
             this.cur_method.mark(el);
             return;
         }
-        this.jvm_unsupported("File method '" + m + "' (not supported on jvm)");
+        if m == "readln" {
+            this.gen_expr(e.left);
+            fs: int = this.cur_method.alloc_local(1);
+            this.cur_method.store_local("X", fs);
+            nl: string = this.new_label("fl_n");
+            el: string = this.new_label("fl_e");
+            this.cur_method.load_local("X", fs);
+            this.cur_method.branch(JOp.IFNULL, nl, 1);
+            this.cur_method.load_local("X", fs);
+            this.emit_invoke(JOp.INVOKEVIRTUAL, "java/io/RandomAccessFile", "readLine", "()Ljava/lang/String;");
+            this.cur_method.branch(JOp.GOTO, el, 0);
+            this.cur_method.mark(nl);
+            this.ldc_string("");
+            this.cur_method.mark(el);
+            return;
+        }
+        if m == "readlnb" {
+            this.gen_expr(e.left);
+            fs: int = this.cur_method.alloc_local(1);
+            this.cur_method.store_local("X", fs);
+            nl: string = this.new_label("fb_n");
+            el: string = this.new_label("fb_e");
+            this.cur_method.load_local("X", fs);
+            this.cur_method.branch(JOp.IFNULL, nl, 1);
+            this.cur_method.load_local("X", fs);
+            this.emit_invoke(JOp.INVOKEVIRTUAL, "java/io/RandomAccessFile", "readLine", "()Ljava/lang/String;");
+            this.cur_method.branch(JOp.GOTO, el, 0);
+            this.cur_method.mark(nl);
+            this.ldc_string("");
+            this.cur_method.mark(el);
+            this.emit_invoke(JOp.INVOKEVIRTUAL, "java/lang/String", "toCharArray", "()[C");
+            return;
+        }
+        if m == "readb" {
+            // Slurp from the current position to EOF as char[].
+            this.gen_expr(e.left);
+            fs: int = this.cur_method.alloc_local(1);
+            this.cur_method.store_local("X", fs);
+            nl: string = this.new_label("rb_n");
+            el: string = this.new_label("rb_e");
+            this.cur_method.load_local("X", fs);
+            this.cur_method.branch(JOp.IFNULL, nl, 1);
+            // n = (int)(f.length() - f.getFilePointer())
+            this.cur_method.load_local("X", fs);
+            this.emit_invoke(JOp.INVOKEVIRTUAL, "java/io/RandomAccessFile", "length", "()J");
+            this.cur_method.load_local("X", fs);
+            this.emit_invoke(JOp.INVOKEVIRTUAL, "java/io/RandomAccessFile", "getFilePointer", "()J");
+            this.cur_method.op(JOp.LSUB, -2);
+            this.cur_method.op(JOp.L2I, -1);
+            ns: int = this.cur_method.alloc_local(1);
+            this.cur_method.store_local("I", ns);
+            this.cur_method.load_local("I", ns);
+            this.cur_method.op_1(JOp.NEWARRAY, JArray.T_BYTE, 0);
+            bs: int = this.cur_method.alloc_local(1);
+            this.cur_method.store_local("X", bs);
+            this.cur_method.load_local("X", fs);
+            this.cur_method.load_local("X", bs);
+            this.emit_invoke(JOp.INVOKEVIRTUAL, "java/io/RandomAccessFile", "readFully", "([B)V");
+            // char[] out = new char[n]
+            this.cur_method.load_local("I", ns);
+            this.cur_method.op_1(JOp.NEWARRAY, JArray.T_CHAR, 0);
+            cs: int = this.cur_method.alloc_local(1);
+            this.cur_method.store_local("X", cs);
+            this.iconst(0);
+            i: int = this.cur_method.alloc_local(1);
+            this.cur_method.store_local("I", i);
+            lp: string = this.new_label("rb_loop");
+            en: string = this.new_label("rb_end");
+            this.cur_method.mark(lp);
+            this.cur_method.load_local("I", i);
+            this.cur_method.load_local("I", ns);
+            this.cur_method.branch(JOp.IF_ICMPGE, en, 2);
+            this.cur_method.load_local("X", cs);
+            this.cur_method.load_local("I", i);
+            this.cur_method.load_local("X", bs);
+            this.cur_method.load_local("I", i);
+            this.cur_method.op(JOp.BALOAD, -1);
+            this.cur_method.op(JOp.I2C, 0);
+            this.cur_method.op(JOp.CASTORE, -3);
+            this.cur_method.load_local("I", i);
+            this.iconst(1);
+            this.cur_method.op(JOp.IADD, -1);
+            this.cur_method.store_local("I", i);
+            this.cur_method.branch(JOp.GOTO, lp, 0);
+            this.cur_method.mark(en);
+            this.cur_method.load_local("X", cs);
+            this.cur_method.branch(JOp.GOTO, el, 0);
+            this.cur_method.mark(nl);
+            this.iconst(0);
+            this.cur_method.op_1(JOp.NEWARRAY, JArray.T_CHAR, 0);
+            this.cur_method.mark(el);
+            return;
+        }
+        if m == "writeb" {
+            this.gen_expr(e.left);
+            fs: int = this.cur_method.alloc_local(1);
+            this.cur_method.store_local("X", fs);
+            at: string = this.expr_type(e.args.get(0));
+            this.gen_expr(e.args.get(0));
+            this.jvm_coerce(at, "char[]");
+            cs: int = this.cur_method.alloc_local(1);
+            this.cur_method.store_local("X", cs);
+            // byte[] b = new byte[c.length]; copy (byte)c[i]
+            this.cur_method.load_local("X", cs);
+            this.cur_method.op(JOp.ARRAYLENGTH, 0);
+            this.cur_method.op_1(JOp.NEWARRAY, JArray.T_BYTE, 0);
+            bs: int = this.cur_method.alloc_local(1);
+            this.cur_method.store_local("X", bs);
+            this.iconst(0);
+            i: int = this.cur_method.alloc_local(1);
+            this.cur_method.store_local("I", i);
+            lp: string = this.new_label("wb_loop");
+            en: string = this.new_label("wb_end");
+            this.cur_method.mark(lp);
+            this.cur_method.load_local("I", i);
+            this.cur_method.load_local("X", cs);
+            this.cur_method.op(JOp.ARRAYLENGTH, 0);
+            this.cur_method.branch(JOp.IF_ICMPGE, en, 2);
+            this.cur_method.load_local("X", bs);
+            this.cur_method.load_local("I", i);
+            this.cur_method.load_local("X", cs);
+            this.cur_method.load_local("I", i);
+            this.cur_method.op(JOp.CALOAD, -1);
+            this.cur_method.op(JOp.I2B, 0);
+            this.cur_method.op(JOp.BASTORE, -3);
+            this.cur_method.load_local("I", i);
+            this.iconst(1);
+            this.cur_method.op(JOp.IADD, -1);
+            this.cur_method.store_local("I", i);
+            this.cur_method.branch(JOp.GOTO, lp, 0);
+            this.cur_method.mark(en);
+            nl: string = this.new_label("wb_n");
+            el: string = this.new_label("wb_e");
+            this.cur_method.load_local("X", fs);
+            this.cur_method.branch(JOp.IFNULL, nl, 1);
+            this.cur_method.load_local("X", fs);
+            this.cur_method.load_local("X", bs);
+            this.emit_invoke(JOp.INVOKEVIRTUAL, "java/io/RandomAccessFile", "write", "([B)V");
+            this.iconst(0);
+            this.cur_method.branch(JOp.GOTO, el, 0);
+            this.cur_method.mark(nl);
+            this.iconst(0 - 1);
+            this.cur_method.mark(el);
+            return;
+        }
+        if m == "replace" || m == "replaceall" {
+            this.gen_expr(e.left);
+            fs: int = this.cur_method.alloc_local(1);
+            this.cur_method.store_local("X", fs);
+            a0: string = this.expr_type(e.args.get(0));
+            this.gen_expr(e.args.get(0));
+            this.jvm_coerce(a0, "string");
+            s0: int = this.cur_method.alloc_local(1);
+            this.cur_method.store_local("Ljava/lang/String;", s0);
+            a1: string = this.expr_type(e.args.get(1));
+            this.gen_expr(e.args.get(1));
+            this.jvm_coerce(a1, "string");
+            s1: int = this.cur_method.alloc_local(1);
+            this.cur_method.store_local("Ljava/lang/String;", s1);
+            this.cur_method.load_local("X", fs);
+            this.cur_method.load_local("Ljava/lang/String;", s0);
+            this.cur_method.load_local("Ljava/lang/String;", s1);
+            if m == "replaceall" {
+                this.iconst(1);
+            } else {
+                this.iconst(0);
+            }
+            this.emit_invoke(JOp.INVOKESTATIC, this.main_class, "__file_replace", "(Ljava/io/RandomAccessFile;Ljava/lang/String;Ljava/lang/String;I)I");
+            return;
+        }
+                this.jvm_unsupported("File method '" + m + "' (not supported on jvm)");
     }
 
     // Entry: [raf] on the stack. Exit: [string] with the full contents
@@ -4105,7 +5461,7 @@ pub def JvmGen : class {
             at: string = this.expr_type(e.args.get(vidx));
             this.gen_expr(e.args.get(vidx));
             if at == "string" && this.is_bigint(tgt) {
-                this.coerce_to_bigint(at);
+                this.bigint_parse_checked(tgt);
                 return;
             }
             if at == "string" && (f == "toint" || tgt == "int" || tgt == "uint" || this.is_sized_int(tgt)) {
@@ -4210,6 +5566,7 @@ pub def JvmGen : class {
             } else {
                 this.iconst(0);
             }
+            this.emit_showb_flush_call();
             this.emit_invoke(JOp.INVOKESTATIC, "java/lang/System", "exit", "(I)V");
             this.iconst(0);
             return;
@@ -4245,14 +5602,60 @@ pub def JvmGen : class {
 
     // create Class(): zeroed instance (field defaults do NOT apply,
     // matching the native backend; container fields auto-construct).
+    // Call the user constructor with call-site args + declared defaults.
+    // Entry: [obj]. Exit: [] (ctor returns void; obj consumed).
+    pub fnc gen_ctor_call(cname string, args vec<Expr>) : void {
+        // Instance-method params live on ClassInfo (func_params only
+        // covers top-level and static registrations).
+        ptypes: vec<string> = this.tc.classes[cname].get_method_params(cname);
+        ndef: vec<Expr>;
+        if this.tc.ctor_defaults.isin(cname) {
+            ndef = this.tc.ctor_defaults[cname];
+        }
+        obj_slot: int = this.cur_method.alloc_local(1);
+        this.cur_method.store_local("X", obj_slot);
+        // receiver first
+        this.cur_method.load_local("X", obj_slot);
+        ai: int = 0;
+        while ai < ptypes.size {
+            if ai < args.size {
+                at: string = this.expr_type(args.get(ai));
+                this.gen_expr(args.get(ai));
+                if !this.coerce_val(at, ptypes.get(ai)) {
+                    this.jvm_coerce(at, ptypes.get(ai));
+                    this.narrow_to(ptypes.get(ai));
+                }
+            } also ai < ndef.size && ndef.get(ai) != null {
+                dt: string = this.expr_type(ndef.get(ai));
+                this.gen_expr(ndef.get(ai));
+                if !this.coerce_val(dt, ptypes.get(ai)) {
+                    this.jvm_coerce(dt, ptypes.get(ai));
+                    this.narrow_to(ptypes.get(ai));
+                }
+            } else {
+                this.jvm_default_for(ptypes.get(ai));
+            }
+            ai = ai + 1;
+        }
+        desc: string = "(";
+        di: int = 0;
+        while di < ptypes.size {
+            pd: string = this.jdesc(ptypes.get(di));
+            if pd.size == 0 {
+                this.jvm_unsupported("ctor parameter type '" + ptypes.get(di) + "'");
+                return;
+            }
+            desc = desc + pd;
+            di = di + 1;
+        }
+        desc = desc + ")V";
+        this.emit_invoke(JOp.INVOKEVIRTUAL, cname, cname, desc);
+    }
+
     pub fnc gen_create(e Expr) : void {
         cname: string = this.resolve_class_ref(e.sval);
         if !this.klass_idx.isin(cname) {
             this.jvm_unsupported("create of unknown '" + cname + "'");
-            return;
-        }
-        if e.args.size > 0 {
-            this.jvm_unsupported("create with arguments (native classes have no constructors)");
             return;
         }
         this.cur_method.op(JOp.NEW, 1);
@@ -4261,6 +5664,17 @@ pub def JvmGen : class {
         this.cur_method.emit_u8(ni & 255);
         this.cur_method.op(JOp.DUP, 1);
         this.emit_invoke(JOp.INVOKESPECIAL, cname, "<init>", "()V");
+        // User-declared constructor (method named == class): run it with
+        // the call-site args + declared defaults. DUP first: the ctor call
+        // consumes one reference, the other stays for the assignment (the
+        // create contract leaves exactly one [obj], as before).
+        if this.tc.funcs.isin(cname + "_" + cname) {
+            this.cur_method.op(JOp.DUP, 1);
+            this.gen_ctor_call(cname, e.args);
+        } also e.args.size > 0 {
+            this.jvm_unsupported("create with arguments (no declared constructor)");
+            return;
+        }
     }
 
     // Struct/class literal: NEW + per-field PUTFIELD (the typechecker
@@ -4295,21 +5709,96 @@ pub def JvmGen : class {
                 this.narrow_to(ft);
             }
             fi: int = this.cur_cp.fieldref(cname, fn, fd);
-            this.cur_method.emit_u8(JOp.PUTFIELD);
-            this.cur_method.emit_u8((fi >> 8) & 255);
-            this.cur_method.emit_u8(fi & 255);
             if fd == "J" || fd == "D" {
-                this.cur_method.adjust(-3);
+                this.cur_method.op_field(JOp.PUTFIELD, fi, -3);
             } else {
-                this.cur_method.adjust(-2);
+                this.cur_method.op_field(JOp.PUTFIELD, fi, -2);
             }
             ai = ai + 1;
         }
     }
 
     // Field type from the struct/class tables (walks parents).
+    // Shallow struct copy (native value semantics: stores, args and
+    // returns duplicate the value; nested refs stay shared, as bitwise
+    // copy shares them too). Entry: [obj]. Exit: [copy].
+    pub fnc gen_struct_copy(cname string) : void {
+        cn: string = this.resolve_class_ref(cname);
+        src: int = this.cur_method.alloc_local(1);
+        this.cur_method.store_local("X", src);
+        this.cur_method.op(JOp.NEW, 1);
+        ni: int = this.cur_cp.class_entry(cn);
+        this.cur_method.emit_u8((ni >> 8) & 255);
+        this.cur_method.emit_u8(ni & 255);
+        this.cur_method.op(JOp.DUP, 1);
+        this.emit_invoke(JOp.INVOKESPECIAL, cn, "<init>", "()V");
+        dst: int = this.cur_method.alloc_local(1);
+        this.cur_method.store_local("X", dst);
+        if this.tc.structs.isin(cn) {
+            st: int = 0;
+            fns: vec<string> = this.tc.structs[cn].field_names;
+            fts: vec<string> = this.tc.structs[cn].field_types;
+            while st < fns.size {
+                if this.tc.static_fields.isin(cn + "_" + fns.get(st)) {
+                    st = st + 1;
+                    continue;
+                }
+                ft: string = fts.get(st);
+                fd: string = this.jdesc(ft);
+                if fd.size == 0 {
+                    this.jvm_unsupported("struct copy field type '" + ft + "'");
+                    return;
+                }
+                this.cur_method.load_local("X", dst);
+                this.cur_method.load_local("X", src);
+                fi: int = this.cur_cp.fieldref(cn, fns.get(st), fd);
+                this.cur_method.op_field(JOp.GETFIELD, fi, this.slots_of(fd) - 1);
+                this.cur_method.op_field(JOp.PUTFIELD, fi, 0 - 1 - this.slots_of(fd));
+                st = st + 1;
+            }
+        }
+        this.cur_method.load_local("X", dst);
+    }
+
+    // Safe borrows (&T) ride as plain references on the JVM, as do
+    // pointers to structs/classes (*Node): only true unsafe scalars
+    // (*int address arithmetic, *char strings keep their own mapping).
+    pub fnc deref_t(t string) : string {
+        if t.size > 1 && t[0] == '&' {
+            inner: string = "";
+            di: int = 1;
+            while di < t.size {
+                inner = inner + t[di];
+                di = di + 1;
+            }
+            return inner;
+        }
+        if t.size > 1 && t[0] == '*' {
+            pointee: string = "";
+            pi: int = 1;
+            while pi < t.size {
+                pointee = pointee + t[pi];
+                pi = pi + 1;
+            }
+            if this.tc.structs.isin(pointee) || this.tc.classes.isin(pointee) {
+                return pointee;
+            }
+        }
+        return t;
+    }
+
     pub fnc struct_field_type(cname string, fn string) : string {
         cname = this.resolve_class_ref(cname);
+        // Safe borrows (&T) ride as plain references on the JVM.
+        if cname.size > 1 && cname[0] == '&' {
+            inner: string = "";
+            di: int = 1;
+            while di < cname.size {
+                inner = inner + cname[di];
+                di = di + 1;
+            }
+            cname = inner;
+        }
         if this.tc.structs.isin(cname) {
             return this.tc.structs[cname].get_field_type(fn);
         }
@@ -4572,6 +6061,7 @@ pub def JvmGen : class {
     // Abort with a message on stdout + exit(1) (reference parity).
     // The stack must be empty on entry.
     pub fnc emit_abort(msg string) : void {
+        this.emit_showb_flush_call();
         this.emit_getstatic_out();
         this.ldc_string(msg);
         this.emit_invoke(JOp.INVOKEVIRTUAL, "java/io/PrintStream", "print", "(Ljava/lang/String;)V");
@@ -4593,14 +6083,25 @@ pub def JvmGen : class {
                     return;
                 }
                 idx: int = this.cur_cp.fieldref(ln, e.sval, fd);
-                this.cur_method.emit_u8(JOp.GETSTATIC);
-                this.cur_method.emit_u8((idx >> 8) & 255);
-                this.cur_method.emit_u8(idx & 255);
-                this.cur_method.adjust(this.slots_of(fd));
+                this.cur_method.op_field(JOp.GETSTATIC, idx, this.slots_of(fd));
                 return;
             }
         }
-        obj_t: string = this.expr_type(e.left);
+        // this.static_member: `this` in a STATIC method resolves to the
+        // class for static access (native parity) — obj_t would be "int".
+        if e.left != null && e.left.kind == ExprKind.IDENT && e.left.sval == "this"
+           && this.current_class.size > 0 && this.tc.static_fields.isin(this.current_class + "_" + e.sval) {
+            ft0: string = this.tc.static_fields[this.current_class + "_" + e.sval];
+            fd0: string = this.jdesc(ft0);
+            if fd0.size == 0 {
+                this.jvm_unsupported("static field type '" + ft0 + "'");
+                return;
+            }
+            idx0: int = this.cur_cp.fieldref(this.current_class, e.sval, fd0);
+            this.cur_method.op_field(JOp.GETSTATIC, idx0, this.slots_of(fd0));
+            return;
+        }
+        obj_t: string = this.deref_t(this.expr_type(e.left));
         if e.sval == "size" {
             if obj_t == "string" {
                 this.gen_expr(e.left);
@@ -4665,10 +6166,7 @@ pub def JvmGen : class {
                     return;
                 }
                 idx: int = this.cur_cp.fieldref(this.current_class, e.sval, fd);
-                this.cur_method.emit_u8(JOp.GETSTATIC);
-                this.cur_method.emit_u8((idx >> 8) & 255);
-                this.cur_method.emit_u8(idx & 255);
-                this.cur_method.adjust(this.slots_of(fd));
+                this.cur_method.op_field(JOp.GETSTATIC, idx, this.slots_of(fd));
                 return;
             }
             ft: string = this.struct_field_type(obj_t, e.sval);
@@ -4683,10 +6181,7 @@ pub def JvmGen : class {
             }
             this.gen_expr(e.left);
             idx: int = this.cur_cp.fieldref(obj_t, e.sval, fd);
-            this.cur_method.emit_u8(JOp.GETFIELD);
-            this.cur_method.emit_u8((idx >> 8) & 255);
-            this.cur_method.emit_u8(idx & 255);
-            this.cur_method.adjust(this.slots_of(fd) - 1);
+            this.cur_method.op_field(JOp.GETFIELD, idx, this.slots_of(fd) - 1);
             return;
         }
         if this.tc.enums.isin(obj_t) {
@@ -4696,10 +6191,7 @@ pub def JvmGen : class {
                 val_slot: int = this.cur_method.alloc_local(1);
                 this.cur_method.store_local("I", val_slot);
                 idx: int = this.cur_cp.fieldref(this.main_class, "enum_" + obj_t + "_names", "[Ljava/lang/String;");
-                this.cur_method.emit_u8(JOp.GETSTATIC);
-                this.cur_method.emit_u8((idx >> 8) & 255);
-                this.cur_method.emit_u8(idx & 255);
-                this.cur_method.adjust(1);
+                this.cur_method.op_field(JOp.GETSTATIC, idx, 1);
                 this.cur_method.load_local("I", val_slot);
                 this.cur_method.op(JOp.AALOAD, -1);
                 return;
@@ -4840,7 +6332,7 @@ pub def JvmGen : class {
             this.gen_file_static(e);
             return;
         }
-        obj_t: string = this.expr_type(e.left);
+        obj_t: string = this.deref_t(this.expr_type(e.left));
         if obj_t == "string" {
             if e.sval == "size" {
                 if e.args.size != 0 {
@@ -5088,7 +6580,69 @@ pub def JvmGen : class {
             this.cur_method.mark(end_lbl);
             return;
         }
-        this.jvm_unsupported("vec method '" + m + "'");
+        if m == "insertv" {
+            if e.args.size != 2 {
+                this.jvm_unsupported("insertv() needs 2 arguments");
+                return;
+            }
+            this.gen_expr(e.left);
+            ivi: string = this.expr_type(e.args.get(0));
+            this.gen_expr(e.args.get(0));
+            this.jvm_coerce(ivi, "int");
+            ivo: string = this.expr_type(e.args.get(1));
+            this.gen_expr(e.args.get(1));
+            this.jvm_coerce(ivo, obj_t);
+            this.emit_invoke(JOp.INVOKEVIRTUAL, "java/util/ArrayList", "addAll", "(ILjava/util/Collection;)Z");
+            this.cur_method.op(JOp.POP, -1);
+            return;
+        }
+        if m == "inserta" {
+            if e.args.size != 2 {
+                this.jvm_unsupported("inserta() needs 2 arguments");
+                return;
+            }
+            this.gen_expr(e.left);
+            ils: int = this.cur_method.alloc_local(1);
+            this.cur_method.store_local("X", ils);
+            iai: string = this.expr_type(e.args.get(0));
+            this.gen_expr(e.args.get(0));
+            this.jvm_coerce(iai, "int");
+            iks: int = this.cur_method.alloc_local(1);
+            this.cur_method.store_local("I", iks);
+            iao: string = this.expr_type(e.args.get(1));
+            this.gen_expr(e.args.get(1));
+            ias: int = this.cur_method.alloc_local(1);
+            this.cur_method.store_local("X", ias);
+            ilp: string = this.new_label("insa_loop");
+            ien: string = this.new_label("insa_end");
+            this.iconst(0);
+            iii: int = this.cur_method.alloc_local(1);
+            this.cur_method.store_local("I", iii);
+            this.cur_method.mark(ilp);
+            this.cur_method.load_local("I", iii);
+            this.cur_method.load_local("X", ias);
+            this.cur_method.op(JOp.ARRAYLENGTH, 0);
+            this.cur_method.branch(JOp.IF_ICMPGE, ien, 2);
+            // list.add(idx + i, box(arr[i]))
+            this.cur_method.load_local("X", ils);
+            this.cur_method.load_local("I", iks);
+            this.cur_method.load_local("I", iii);
+            this.cur_method.op(JOp.IADD, -1);
+            this.cur_method.load_local("X", ias);
+            this.cur_method.load_local("I", iii);
+            this.cur_method.op(JOp.AALOAD, -1);
+            this.unbox_to(inner);
+            this.box_for(inner);
+            this.emit_invoke(JOp.INVOKEVIRTUAL, "java/util/ArrayList", "add", "(ILjava/lang/Object;)V");
+            this.cur_method.load_local("I", iii);
+            this.iconst(1);
+            this.cur_method.op(JOp.IADD, -1);
+            this.cur_method.store_local("I", iii);
+            this.cur_method.branch(JOp.GOTO, ilp, 0);
+            this.cur_method.mark(ien);
+            return;
+        }
+                this.jvm_unsupported("vec method '" + m + "'");
     }
 
     // popb (back) / popf (front) with the native empty-vector messages.
@@ -5225,6 +6779,9 @@ pub def JvmGen : class {
                     this.jvm_coerce(at, pt);
                     this.narrow_to(pt);
                 }
+                if this.tc.structs.isin(pt) && this.tc.structs.isin(this.deref_t(at)) {
+                    this.gen_struct_copy(pt);
+                }
                 ai = ai + 1;
             }
             this.emit_invoke(JOp.INVOKESTATIC, def_owner, m, desc);
@@ -5245,6 +6802,9 @@ pub def JvmGen : class {
             if !this.coerce_val(at, pt) {
                 this.jvm_coerce(at, pt);
                 this.narrow_to(pt);
+            }
+            if this.tc.structs.isin(pt) && this.tc.structs.isin(this.deref_t(at)) {
+                this.gen_struct_copy(pt);
             }
             ai = ai + 1;
         }
@@ -5364,6 +6924,67 @@ pub def JvmGen : class {
                 this.emit_invoke(JOp.INVOKEVIRTUAL, "java/util/HashMap", "values", "()Ljava/util/Collection;");
             }
             this.emit_invoke(JOp.INVOKESPECIAL, "java/util/ArrayList", "<init>", "(Ljava/util/Collection;)V");
+            return;
+        }
+        if m == "getKey" {
+            gk_vt: string = this.hash_val_type(obj_t);
+            this.gen_expr(e.left);
+            hm: int = this.cur_method.alloc_local(1);
+            this.cur_method.store_local("X", hm);
+            at: string = this.expr_type(e.args.get(0));
+            this.gen_expr(e.args.get(0));
+            this.jvm_coerce(at, gk_vt);
+            this.narrow_to(gk_vt);
+            this.box_for(gk_vt);
+            bv: int = this.cur_method.alloc_local(1);
+            this.cur_method.store_local("X", bv);
+            // res: String = null; found: int = 0
+            this.cur_method.op(JOp.ACONST_NULL, 1);
+            res: int = this.cur_method.alloc_local(1);
+            this.cur_method.store_local("Ljava/lang/String;", res);
+            this.iconst(0);
+            fd2: int = this.cur_method.alloc_local(1);
+            this.cur_method.store_local("I", fd2);
+            // it = map.entrySet().iterator()
+            this.cur_method.load_local("X", hm);
+            this.emit_invoke(JOp.INVOKEINTERFACE, "java/util/Map", "entrySet", "()Ljava/util/Set;");
+            this.emit_invoke(JOp.INVOKEINTERFACE, "java/util/Set", "iterator", "()Ljava/util/Iterator;");
+            it: int = this.cur_method.alloc_local(1);
+            this.cur_method.store_local("X", it);
+            lp: string = this.new_label("gk_loop");
+            ok2: string = this.new_label("gk_ok");
+            dn: string = this.new_label("gk_done");
+            this.cur_method.mark(lp);
+            this.cur_method.load_local("X", it);
+            this.emit_invoke(JOp.INVOKEINTERFACE, "java/util/Iterator", "hasNext", "()Z");
+            this.cur_method.branch(JOp.IFEQ, dn, 1);
+            this.cur_method.load_local("X", it);
+            this.emit_invoke(JOp.INVOKEINTERFACE, "java/util/Iterator", "next", "()Ljava/lang/Object;");
+            this.emit_checkcast("java/util/Map$Entry");
+            en: int = this.cur_method.alloc_local(1);
+            this.cur_method.store_local("X", en);
+            this.cur_method.load_local("X", en);
+            this.emit_invoke(JOp.INVOKEINTERFACE, "java/util/Map$Entry", "getValue", "()Ljava/lang/Object;");
+            this.cur_method.load_local("X", bv);
+            this.emit_invoke(JOp.INVOKESTATIC, "java/util/Objects", "equals", "(Ljava/lang/Object;Ljava/lang/Object;)Z");
+            this.cur_method.branch(JOp.IFEQ, lp, 1);
+            this.cur_method.load_local("X", en);
+            this.emit_invoke(JOp.INVOKEINTERFACE, "java/util/Map$Entry", "getKey", "()Ljava/lang/Object;");
+            this.emit_checkcast("java/lang/String");
+            this.cur_method.store_local("Ljava/lang/String;", res);
+            this.iconst(1);
+            this.cur_method.store_local("I", fd2);
+            this.cur_method.branch(JOp.GOTO, dn, 0);
+            this.cur_method.mark(dn);
+            have: string = this.new_label("gk_have");
+            fin: string = this.new_label("gk_fin");
+            this.cur_method.load_local("I", fd2);
+            this.cur_method.branch(JOp.IFNE, have, 1);
+            this.ldc_string("");
+            this.cur_method.branch(JOp.GOTO, fin, 0);
+            this.cur_method.mark(have);
+            this.cur_method.load_local("Ljava/lang/String;", res);
+            this.cur_method.mark(fin);
             return;
         }
         this.jvm_unsupported("hash method '" + m + "'");
@@ -5538,6 +7159,19 @@ pub def JvmGen : class {
     // Every emitted shape must verify (mismatched element types cannot
     // occur; empty arrays never execute the body).
     // Entry: [elem] loaded per fe's kind. Exit: [Object].
+    // char[] -> String. Entry: [C]. Exit: [String].
+    pub fnc emit_string_from_chars() : void {
+        cs: int = this.cur_method.alloc_local(1);
+        this.cur_method.store_local("X", cs);
+        this.cur_method.op(JOp.NEW, 1);
+        si: int = this.cur_cp.class_entry("java/lang/String");
+        this.cur_method.emit_u8((si >> 8) & 255);
+        this.cur_method.emit_u8(si & 255);
+        this.cur_method.op(JOp.DUP, 1);
+        this.cur_method.load_local("X", cs);
+        this.emit_invoke(JOp.INVOKESPECIAL, "java/lang/String", "<init>", "([C)V");
+    }
+
     pub fnc emit_box_array_elem(from_d string, inner string) : void {
         if from_d != "[I" && from_d != "[J" && from_d != "[D" && from_d != "[Z" && from_d != "[B" && from_d != "[S" && from_d != "[C" {
             // Reference array: elements are already Objects.
@@ -5936,10 +7570,7 @@ pub def JvmGen : class {
             }
             if this.cg.global_vars.isin(bn) {
                 gidx: int = this.cur_cp.fieldref(this.main_class, "g_" + bn, "[Ljava/lang/Object;");
-                this.cur_method.emit_u8(JOp.PUTSTATIC);
-                this.cur_method.emit_u8((gidx >> 8) & 255);
-                this.cur_method.emit_u8(gidx & 255);
-                this.cur_method.adjust(-1);
+                this.cur_method.op_field(JOp.PUTSTATIC, gidx, -1);
                 return;
             }
         }
@@ -5956,17 +7587,10 @@ pub def JvmGen : class {
         fref: bool = (fd[0] == 'L' || fd[0] == '[');
         tref: bool = (td[0] == 'L' || td[0] == '[');
         if fref && tref {
-            if td[0] == 'L' {
-                cn: string = "";
-                i: int = 1;
-                while i < td.size - 1 {
-                    cn = cn + td[i];
-                    i = i + 1;
-                }
-                this.emit_checkcast(cn);
-            } else {
-                this.emit_checkcast_ref(td);
-            }
+            // Native casts are unchecked bitcasts (down-casts succeed at
+            // runtime and only misbehave if used); CHECKCAST would throw
+            // where native continues. Array casts still narrow statically
+            // via their descriptors.
             return true;
         }
         return false;
@@ -5975,6 +7599,26 @@ pub def JvmGen : class {
     // Array/slice literal {a, b, ...}: Java array of the literal's base.
     // Tuples (__tuple__) become Object[] with boxed elements.
     pub fnc gen_array_lit(e Expr) : void {
+        // Hash literal {"key": val, ...}: keys ride field_names.
+        if e.field_names.size > 0 && e.field_names.size == e.args.size {
+            this.emit_new_map();
+            hm: int = this.cur_method.alloc_local(1);
+            this.cur_method.store_local("X", hm);
+            hi: int = 0;
+            while hi < e.args.size {
+                this.cur_method.load_local("X", hm);
+                this.ldc_string(e.field_names.get(hi));
+                vt: string = this.expr_type(e.args.get(hi));
+                this.gen_expr(e.args.get(hi));
+                this.jvm_coerce(vt, "int");
+                this.box_for("int");
+                this.emit_invoke(JOp.INVOKEVIRTUAL, "java/util/HashMap", "put", "(Ljava/lang/Object;Ljava/lang/Object;)Ljava/lang/Object;");
+                this.cur_method.op(JOp.POP, -1);
+                hi = hi + 1;
+            }
+            this.cur_method.load_local("X", hm);
+            return;
+        }
         if e.sval == "__tuple__" {
             this.iconst(e.args.size);
             this.emit_anewarray_object(1);
@@ -6090,9 +7734,501 @@ pub def JvmGen : class {
         this.emit_stdin_line(cls);
         this.emit_rand_helpers(cls);
         this.emit_time_helpers(cls);
+        this.emit_bigint_wrap_helper(cls);
+        this.emit_showb_helpers(cls);
+        this.emit_bytes_helpers(cls);
+        this.emit_normescape(cls);
+        this.emit_file_replace_helper(cls);
+    }
+
+    // __file_replace(RAF f, String old, String new, int all): read the
+    // whole file, replace first/all literal occurrences, rewrite, return
+    // the replacement count (native leash_sh_file_replace parity).
+    pub fnc emit_file_replace_helper(cls JvmClass) : void {
+        this.helper_start(cls, "__file_replace", "(Ljava/io/RandomAccessFile;Ljava/lang/String;Ljava/lang/String;I)I");
+        m: JvmMethod = this.cur_method;
+        nullf: string = this.new_label("fr_null");
+        done0: string = this.new_label("fr_done0");
+        // if (f == null) return 0
+        m.op(JOp.ALOAD_0, 1);
+        m.branch(JOp.IFNULL, nullf, 1);
+        // long len = f.length(); f.seek(0); byte[] b = new byte[(int)len]; f.readFully(b)
+        m.op(JOp.ALOAD_0, 1);
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/io/RandomAccessFile", "length", "()J");
+        m.op(JOp.L2I, -1);
+        len: int = m.alloc_local(1);
+        m.store_local("I", len);
+        m.op(JOp.ALOAD_0, 1);
+        m.op(JOp.LCONST_0, 2);
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/io/RandomAccessFile", "seek", "(J)V");
+        m.load_local("I", len);
+        m.op_1(JOp.NEWARRAY, JArray.T_BYTE, 0);
+        barr: int = m.alloc_local(1);
+        m.store_local("X", barr);
+        m.op(JOp.ALOAD_0, 1);
+        m.load_local("X", barr);
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/io/RandomAccessFile", "readFully", "([B)V");
+        // String s = new String(b, ISO)
+        m.op(JOp.NEW, 1);
+        sci: int = this.cur_cp.class_entry("java/lang/String");
+        m.emit_u8((sci >> 8) & 255);
+        m.emit_u8(sci & 255);
+        m.op(JOp.DUP, 1);
+        m.load_local("X", barr);
+        this.ldc_string("ISO-8859-1");
+        this.emit_invoke(JOp.INVOKESPECIAL, "java/lang/String", "<init>", "([BLjava/lang/String;)V");
+        str: int = m.alloc_local(1);
+        m.store_local("Ljava/lang/String;", str);
+        // int count; String s2;
+        this.iconst(0);
+        cnt: int = m.alloc_local(1);
+        m.store_local("I", cnt);
+        // if (all != 0) { count-all + replace } else { first }
+        allb: string = this.new_label("fr_all");
+        have1: string = this.new_label("fr_have1");
+        fin: string = this.new_label("fr_fin");
+        m.load_local("I", 3);
+        m.branch(JOp.IFNE, allb, 1);
+        // ---- first-only: idx = s.indexOf(old)
+        m.load_local("Ljava/lang/String;", str);
+        m.op(JOp.ALOAD_1, 1);
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/lang/String", "indexOf", "(Ljava/lang/String;)I");
+        idx: int = m.alloc_local(1);
+        m.store_local("I", idx);
+        m.load_local("I", idx);
+        m.branch(JOp.IFGE, have1, 1);
+        m.branch(JOp.GOTO, fin, 0);
+        m.mark(have1);
+        this.iconst(1);
+        m.store_local("I", cnt);
+        // s = s.substring(0, idx) + new + s.substring(idx + old.size)
+        m.load_local("Ljava/lang/String;", str);
+        this.iconst(0);
+        m.load_local("I", idx);
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/lang/String", "substring", "(II)Ljava/lang/String;");
+        m.op(JOp.ALOAD_2, 1);
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/lang/String", "concat", "(Ljava/lang/String;)Ljava/lang/String;");
+        m.load_local("Ljava/lang/String;", str);
+        m.load_local("I", idx);
+        m.op(JOp.ALOAD_1, 1);
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/lang/String", "length", "()I");
+        m.op(JOp.IADD, -1);
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/lang/String", "substring", "(I)Ljava/lang/String;");
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/lang/String", "concat", "(Ljava/lang/String;)Ljava/lang/String;");
+        m.store_local("Ljava/lang/String;", str);
+        m.branch(JOp.GOTO, fin, 0);
+        // ---- all: count loop
+        m.mark(allb);
+        m.load_local("Ljava/lang/String;", str);
+        m.op(JOp.ALOAD_1, 1);
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/lang/String", "indexOf", "(Ljava/lang/String;)I");
+        m.store_local("I", idx);
+        cloop: string = this.new_label("fr_cloop");
+        cend: string = this.new_label("fr_cend");
+        m.mark(cloop);
+        m.load_local("I", idx);
+        m.branch(JOp.IFLT, cend, 1);
+        m.load_local("I", cnt);
+        this.iconst(1);
+        m.op(JOp.IADD, -1);
+        m.store_local("I", cnt);
+        m.load_local("I", idx);
+        m.op(JOp.ALOAD_1, 1);
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/lang/String", "length", "()I");
+        m.op(JOp.IADD, -1);
+        m.store_local("I", idx);
+        m.load_local("Ljava/lang/String;", str);
+        m.op(JOp.ALOAD_1, 1);
+        m.load_local("I", idx);
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/lang/String", "indexOf", "(Ljava/lang/String;I)I");
+        m.store_local("I", idx);
+        m.branch(JOp.GOTO, cloop, 0);
+        m.mark(cend);
+        // s = s.replace(old, new) (literal)
+        m.load_local("Ljava/lang/String;", str);
+        m.op(JOp.ALOAD_1, 1);
+        m.op(JOp.ALOAD_2, 1);
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/lang/String", "replace", "(Ljava/lang/CharSequence;Ljava/lang/CharSequence;)Ljava/lang/String;");
+        m.store_local("Ljava/lang/String;", str);
+        // ---- fin: write back + return count
+        m.mark(fin);
+        m.op(JOp.ALOAD_0, 1);
+        m.op(JOp.LCONST_0, 2);
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/io/RandomAccessFile", "seek", "(J)V");
+        m.op(JOp.ALOAD_0, 1);
+        m.op(JOp.LCONST_0, 2);
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/io/RandomAccessFile", "setLength", "(J)V");
+        m.op(JOp.ALOAD_0, 1);
+        m.load_local("Ljava/lang/String;", str);
+        this.ldc_string("ISO-8859-1");
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/lang/String", "getBytes", "(Ljava/lang/String;)[B");
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/io/RandomAccessFile", "write", "([B)V");
+        m.load_local("I", cnt);
+        m.op(JOp.IRETURN, -1);
+        m.mark(nullf);
+        this.iconst(0);
+        m.op(JOp.IRETURN, -1);
+        m.mark(done0);
+        this.helper_end(cls);
+    }
+
+    // __bytes_from_long(long val, int nbytes, int size): char[size] with
+    // the low min(nbytes, size) LE bytes of val; rest zero (gc-malloc
+    // parity recorded in the golden output).
+    pub fnc emit_bytes_helpers(cls JvmClass) : void {
+        this.helper_start(cls, "__bytes_from_long", "(JII)[C");
+        m: JvmMethod = this.cur_method;
+        arr: int = m.alloc_local(1);
+        i: int = m.alloc_local(1);
+        loop_lbl: string = this.new_label("bfl_loop");
+        end_lbl: string = this.new_label("bfl_end");
+        // args: val=slots 0-1, nbytes=slot 2, size=slot 3
+        m.load_local("I", 3);
+        m.op_1(JOp.NEWARRAY, JArray.T_CHAR, 0);
+        m.store_local("X", arr);
+        this.iconst(0);
+        m.store_local("I", i);
+        m.mark(loop_lbl);
+        m.load_local("I", i);
+        m.load_local("I", 2);
+        m.branch(JOp.IF_ICMPGE, end_lbl, 2);
+        m.load_local("I", i);
+        m.load_local("I", 3);
+        m.branch(JOp.IF_ICMPGE, end_lbl, 2);
+        m.load_local("X", arr);
+        m.load_local("I", i);
+        m.load_local("J", 0);
+        m.load_local("I", i);
+        this.iconst(8);
+        m.op(JOp.IMUL, -1);
+        m.op(JOp.LUSHR, -1);
+        this.long_const(0, 255);
+        m.op(JOp.LAND, -2);
+        m.op(JOp.L2I, -1);
+        m.op(JOp.I2C, 0);
+        m.op(JOp.CASTORE, -3);
+        m.load_local("I", i);
+        this.iconst(1);
+        m.op(JOp.IADD, -1);
+        m.store_local("I", i);
+        m.branch(JOp.GOTO, loop_lbl, 0);
+        m.mark(end_lbl);
+        m.load_local("X", arr);
+        m.op(JOp.ARETURN, -1);
+        this.helper_end(cls);
+
+        // __bytes_to_long(char[] b, int size): LE accumulation of the
+        // first size bytes (never shifts past 63).
+        this.helper_start(cls, "__bytes_to_long", "([CI)J");
+        m = this.cur_method;
+        acc: int = m.alloc_local(2);
+        i2: int = m.alloc_local(1);
+        loop2: string = this.new_label("btl_loop");
+        end2: string = this.new_label("btl_end");
+        this.long_const(0, 0);
+        m.store_local("J", acc);
+        this.iconst(0);
+        m.store_local("I", i2);
+        m.mark(loop2);
+        m.load_local("I", i2);
+        m.load_local("I", 1);
+        m.branch(JOp.IF_ICMPGE, end2, 2);
+        m.load_local("J", acc);
+        m.load_local("X", 0);
+        m.load_local("I", i2);
+        m.op(JOp.CALOAD, -1);
+        this.iconst(255);
+        m.op(JOp.IAND, -1);
+        m.op(JOp.I2L, 1);
+        m.load_local("I", i2);
+        this.iconst(8);
+        m.op(JOp.IMUL, -1);
+        m.op(JOp.LSHL, -1);
+        m.op(JOp.LOR, -2);
+        m.store_local("J", acc);
+        m.load_local("I", i2);
+        this.iconst(1);
+        m.op(JOp.IADD, -1);
+        m.store_local("I", i2);
+        m.branch(JOp.GOTO, loop2, 0);
+        m.mark(end2);
+        m.load_local("J", acc);
+        m.op(JOp.LRETURN, -2);
+        this.helper_end(cls);
+    }
+
+    // __normescape(String): interpret the single-char escapes
+    // (n t r 0 \\"'); unknown escapes keep the backslash.
+    pub fnc emit_normescape(cls JvmClass) : void {
+        this.helper_start(cls, "__normescape", "(Ljava/lang/String;)Ljava/lang/String;");
+        m: JvmMethod = this.cur_method;
+        buf: int = m.alloc_local(1);
+        o: int = m.alloc_local(1);
+        i: int = m.alloc_local(1);
+        n: int = m.alloc_local(1);
+        c: int = m.alloc_local(1);
+        dt: int = m.alloc_local(1);
+        loop_lbl: string = this.new_label("ne_loop");
+        esc_lbl: string = this.new_label("ne_esc");
+        plain_lbl: string = this.new_label("ne_plain");
+        have_lbl: string = this.new_label("ne_have");
+        adv_lbl: string = this.new_label("ne_adv");
+        end_lbl: string = this.new_label("ne_end");
+        // buf = new char[n]; n = s.length()
+        m.op(JOp.ALOAD_0, 1);
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/lang/String", "length", "()I");
+        m.store_local("I", n);
+        m.load_local("I", n);
+        m.op_1(JOp.NEWARRAY, JArray.T_CHAR, 0);
+        m.store_local("X", buf);
+        this.iconst(0);
+        m.store_local("I", o);
+        this.iconst(0);
+        m.store_local("I", i);
+        m.mark(loop_lbl);
+        m.load_local("I", i);
+        m.load_local("I", n);
+        m.branch(JOp.IF_ICMPGE, end_lbl, 2);
+        // c = s.charAt(i)
+        m.op(JOp.ALOAD_0, 1);
+        m.load_local("I", i);
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/lang/String", "charAt", "(I)C");
+        m.store_local("I", c);
+        // if c == '\\' && i+1 < n -> esc_lbl
+        m.load_local("I", c);
+        this.iconst(92);
+        m.branch(JOp.IF_ICMPNE, plain_lbl, 2);
+        m.load_local("I", i);
+        m.load_local("I", n);
+        this.iconst(1);
+        m.op(JOp.ISUB, -1);
+        m.branch(JOp.IF_ICMPGE, plain_lbl, 2);
+        // escape path: i++; d = s.charAt(i); switch on d
+        m.branch(JOp.GOTO, esc_lbl, 0);
+        m.mark(plain_lbl);
+        // buf[o++] = c
+        m.load_local("X", buf);
+        m.load_local("I", o);
+        m.load_local("I", c);
+        m.op(JOp.CASTORE, -3);
+        m.load_local("I", o);
+        this.iconst(1);
+        m.op(JOp.IADD, -1);
+        m.store_local("I", o);
+        m.load_local("I", i);
+        this.iconst(1);
+        m.op(JOp.IADD, -1);
+        m.store_local("I", i);
+        m.branch(JOp.GOTO, loop_lbl, 0);
+        m.mark(esc_lbl);
+        // i++; dt = s.charAt(i)
+        m.load_local("I", i);
+        this.iconst(1);
+        m.op(JOp.IADD, -1);
+        m.store_local("I", i);
+        m.op(JOp.ALOAD_0, 1);
+        m.load_local("I", i);
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/lang/String", "charAt", "(I)C");
+        m.store_local("I", dt);
+        nt_lbl: string = this.new_label("ne_t");
+        nr_lbl: string = this.new_label("ne_r");
+        nz_lbl: string = this.new_label("ne_0");
+        nq_lbl: string = this.new_label("ne_q");
+        ndq_lbl: string = this.new_label("ne_dq");
+        nsq_lbl: string = this.new_label("ne_sq");
+        nbs_lbl: string = this.new_label("ne_bs");
+        // dt == 'n' -> 10
+        m.load_local("I", dt);
+        this.iconst(110);
+        m.branch(JOp.IF_ICMPNE, nt_lbl, 2);
+        this.iconst(10);
+        m.store_local("I", c);
+        m.branch(JOp.GOTO, have_lbl, 0);
+        m.mark(nt_lbl);
+        m.load_local("I", dt);
+        this.iconst(116);
+        m.branch(JOp.IF_ICMPNE, nr_lbl, 2);
+        this.iconst(9);
+        m.store_local("I", c);
+        m.branch(JOp.GOTO, have_lbl, 0);
+        m.mark(nr_lbl);
+        m.load_local("I", dt);
+        this.iconst(114);
+        m.branch(JOp.IF_ICMPNE, nz_lbl, 2);
+        this.iconst(13);
+        m.store_local("I", c);
+        m.branch(JOp.GOTO, have_lbl, 0);
+        m.mark(nz_lbl);
+        m.load_local("I", dt);
+        this.iconst(48);
+        m.branch(JOp.IF_ICMPNE, nq_lbl, 2);
+        this.iconst(0);
+        m.store_local("I", c);
+        m.branch(JOp.GOTO, have_lbl, 0);
+        m.mark(nq_lbl);
+        // '\\', '"', '\'' escape to themselves
+        m.load_local("I", dt);
+        this.iconst(92);
+        m.branch(JOp.IF_ICMPNE, ndq_lbl, 2);
+        this.iconst(92);
+        m.store_local("I", c);
+        m.branch(JOp.GOTO, have_lbl, 0);
+        m.mark(ndq_lbl);
+        m.load_local("I", dt);
+        this.iconst(34);
+        m.branch(JOp.IF_ICMPNE, nsq_lbl, 2);
+        this.iconst(34);
+        m.store_local("I", c);
+        m.branch(JOp.GOTO, have_lbl, 0);
+        m.mark(nsq_lbl);
+        m.load_local("I", dt);
+        this.iconst(39);
+        m.branch(JOp.IF_ICMPNE, nbs_lbl, 2);
+        this.iconst(39);
+        m.store_local("I", c);
+        m.branch(JOp.GOTO, have_lbl, 0);
+        m.mark(nbs_lbl);
+        // Unknown escape: buf[o++] = '\\'; buf[o++] = dt
+        m.load_local("X", buf);
+        m.load_local("I", o);
+        this.iconst(92);
+        m.op(JOp.CASTORE, -3);
+        m.load_local("I", o);
+        this.iconst(1);
+        m.op(JOp.IADD, -1);
+        m.store_local("I", o);
+        m.load_local("X", buf);
+        m.load_local("I", o);
+        m.load_local("I", dt);
+        m.op(JOp.CASTORE, -3);
+        m.load_local("I", o);
+        this.iconst(1);
+        m.op(JOp.IADD, -1);
+        m.store_local("I", o);
+        m.branch(JOp.GOTO, adv_lbl, 0);
+        m.mark(have_lbl);
+        // buf[o++] = c
+        m.load_local("X", buf);
+        m.load_local("I", o);
+        m.load_local("I", c);
+        m.op(JOp.CASTORE, -3);
+        m.load_local("I", o);
+        this.iconst(1);
+        m.op(JOp.IADD, -1);
+        m.store_local("I", o);
+        m.mark(adv_lbl);
+        m.load_local("I", i);
+        this.iconst(1);
+        m.op(JOp.IADD, -1);
+        m.store_local("I", i);
+        m.branch(JOp.GOTO, loop_lbl, 0);
+        m.mark(end_lbl);
+        // new String(buf, 0, o)
+        m.op(JOp.NEW, 1);
+        sci: int = this.cur_cp.class_entry("java/lang/String");
+        m.emit_u8((sci >> 8) & 255);
+        m.emit_u8(sci & 255);
+        m.op(JOp.DUP, 1);
+        m.load_local("X", buf);
+        this.iconst(0);
+        m.load_local("I", o);
+        this.emit_invoke(JOp.INVOKESPECIAL, "java/lang/String", "<init>", "([CII)V");
+        m.op(JOp.ARETURN, -1);
+        this.helper_end(cls);
+    }
+
+    // Buffered showb: appends to a static StringBuffer drained at exit
+    // (native parity: show() does not flush it; it lands last).
+    pub fnc emit_showb_helpers(cls JvmClass) : void {
+        this.helper_start(cls, "__showb_append", "(Ljava/lang/String;)V");
+        m: JvmMethod = this.cur_method;
+        have_lbl: string = this.new_label("sa_have");
+        this.rng_get("__showb", "Ljava/lang/StringBuffer;");
+        m.branch(JOp.IFNONNULL, have_lbl, 1);
+        m.op(JOp.NEW, 1);
+        sbi: int = this.cur_cp.class_entry("java/lang/StringBuffer");
+        m.emit_u8((sbi >> 8) & 255);
+        m.emit_u8(sbi & 255);
+        m.op(JOp.DUP, 1);
+        this.emit_invoke(JOp.INVOKESPECIAL, "java/lang/StringBuffer", "<init>", "()V");
+        this.rng_put("__showb", "Ljava/lang/StringBuffer;");
+        m.mark(have_lbl);
+        this.rng_get("__showb", "Ljava/lang/StringBuffer;");
+        m.op(JOp.ALOAD_0, 1);
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/lang/StringBuffer", "append", "(Ljava/lang/String;)Ljava/lang/StringBuffer;");
+        m.op(JOp.POP, -1);
+        m.op(JOp.RETURN, 0);
+        this.helper_end(cls);
+        this.helper_start(cls, "__showb_flush", "()V");
+        m = this.cur_method;
+        done_lbl: string = this.new_label("sf_done");
+        this.rng_get("__showb", "Ljava/lang/StringBuffer;");
+        m.branch(JOp.IFNULL, done_lbl, 1);
+        this.emit_getstatic_out();
+        this.rng_get("__showb", "Ljava/lang/StringBuffer;");
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/lang/StringBuffer", "toString", "()Ljava/lang/String;");
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/io/PrintStream", "print", "(Ljava/lang/String;)V");
+        m.op(JOp.ACONST_NULL, 1);
+        this.rng_put("__showb", "Ljava/lang/StringBuffer;");
+        m.mark(done_lbl);
+        m.op(JOp.RETURN, 0);
+        this.helper_end(cls);
+    }
+
+    pub fnc emit_showb_flush_call() : void {
+        this.emit_invoke(JOp.INVOKESTATIC, this.main_class, "__showb_flush", "()V");
+    }
+
+    // __bigint_wrap(BigInteger v, int width, int isSigned): mask to width
+    // bits, re-signing for signed types (native truncation parity).
+    pub fnc emit_bigint_wrap_helper(cls JvmClass) : void {
+        this.helper_start(cls, "__bigint_wrap", "(Ljava/math/BigInteger;II)Ljava/math/BigInteger;");
+        m: JvmMethod = this.cur_method;
+        m.access = m.access + JAcc.SYNCHRONIZED;
+        mask_slot: int = m.alloc_local(1);
+        r_slot: int = m.alloc_local(1);
+        end_lbl: string = this.new_label("bw_end");
+        end2_lbl: string = this.new_label("bw_end2");
+        // mask = ONE.shiftLeft(width).subtract(ONE)
+        one0: int = this.cur_cp.fieldref("java/math/BigInteger", "ONE", "Ljava/math/BigInteger;");
+        this.cur_method.op_field(JOp.GETSTATIC, one0, 1);
+        m.load_local("I", 1);
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/math/BigInteger", "shiftLeft", "(I)Ljava/math/BigInteger;");
+        one1: int = this.cur_cp.fieldref("java/math/BigInteger", "ONE", "Ljava/math/BigInteger;");
+        this.cur_method.op_field(JOp.GETSTATIC, one1, 1);
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/math/BigInteger", "subtract", "(Ljava/math/BigInteger;)Ljava/math/BigInteger;");
+        m.store_local("X", mask_slot);
+        // r = v.and(mask)
+        m.load_local("X", 0);
+        m.load_local("X", mask_slot);
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/math/BigInteger", "and", "(Ljava/math/BigInteger;)Ljava/math/BigInteger;");
+        m.store_local("X", r_slot);
+        // if signed && r.testBit(width - 1): r -= 2^width
+        m.load_local("I", 2);
+        m.branch(JOp.IFEQ, end_lbl, 1);
+        m.load_local("X", r_slot);
+        m.load_local("I", 1);
+        this.iconst(1);
+        m.op(JOp.ISUB, -1);
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/math/BigInteger", "testBit", "(I)Z");
+        m.branch(JOp.IFEQ, end2_lbl, 1);
+        m.load_local("X", r_slot);
+        one2: int = this.cur_cp.fieldref("java/math/BigInteger", "ONE", "Ljava/math/BigInteger;");
+        this.cur_method.op_field(JOp.GETSTATIC, one2, 1);
+        m.load_local("I", 1);
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/math/BigInteger", "shiftLeft", "(I)Ljava/math/BigInteger;");
+        this.emit_invoke(JOp.INVOKEVIRTUAL, "java/math/BigInteger", "subtract", "(Ljava/math/BigInteger;)Ljava/math/BigInteger;");
+        m.store_local("X", r_slot);
+        m.mark(end2_lbl);
+        m.mark(end_lbl);
+        m.load_local("X", r_slot);
+        m.op(JOp.ARETURN, -1);
+        this.helper_end(cls);
     }
 
     pub fnc helper_start(cls JvmClass, name string, desc string) : void {
+        this.current_helper_name = name;
+        this.opdef_inner = "";
         this.tmap_owner = "";
         // PUBLIC: stdlib classes (separate .class files) call main-class
         // helpers (e.g. Rand.range -> __rand_range); private would throw
@@ -6130,7 +8266,7 @@ pub def JvmGen : class {
     pub fnc helper_end(cls JvmClass) : void {
         if !this.cur_method.finalize(cls.cp) {
             foreach _, e in<vector> this.cur_method.errors {
-                this.fail(e);
+                this.errors.pushb("[" + this.current_helper_name + "] " + e);
             }
             return;
         }
@@ -6570,10 +8706,7 @@ pub def JvmGen : class {
 
     pub fnc emit_getstatic_sysin() : void {
         idx: int = this.cur_cp.fieldref("java/lang/System", "in", "Ljava/io/InputStream;");
-        this.cur_method.emit_u8(JOp.GETSTATIC);
-        this.cur_method.emit_u8((idx >> 8) & 255);
-        this.cur_method.emit_u8(idx & 255);
-        this.cur_method.adjust(1);
+        this.cur_method.op_field(JOp.GETSTATIC, idx, 1);
     }
 
     // ---- ChaCha20 CSPRNG helpers (RFC 8439, 64-bit ctr, zero nonce) ----
@@ -6584,18 +8717,12 @@ pub def JvmGen : class {
 
     pub fnc rng_get(name string, desc string) : void {
         idx: int = this.cur_cp.fieldref(this.main_class, name, desc);
-        this.cur_method.emit_u8(JOp.GETSTATIC);
-        this.cur_method.emit_u8((idx >> 8) & 255);
-        this.cur_method.emit_u8(idx & 255);
-        this.cur_method.adjust(this.slots_of(desc));
+        this.cur_method.op_field(JOp.GETSTATIC, idx, this.slots_of(desc));
     }
 
     pub fnc rng_put(name string, desc string) : void {
         idx: int = this.cur_cp.fieldref(this.main_class, name, desc);
-        this.cur_method.emit_u8(JOp.PUTSTATIC);
-        this.cur_method.emit_u8((idx >> 8) & 255);
-        this.cur_method.emit_u8(idx & 255);
-        this.cur_method.adjust(0 - this.slots_of(desc));
+        this.cur_method.op_field(JOp.PUTSTATIC, idx, 0 - this.slots_of(desc));
     }
 
     pub fnc rng_ldc_2p53() : void {
@@ -7119,10 +9246,7 @@ pub def JvmGen : class {
         m = this.cur_method;
         this.emit_invoke(JOp.INVOKESTATIC, "java/lang/System", "nanoTime", "()J");
         idx: int = this.cur_cp.fieldref(this.main_class, "__t0", "J");
-        m.emit_u8(JOp.GETSTATIC);
-        m.emit_u8((idx >> 8) & 255);
-        m.emit_u8(idx & 255);
-        m.adjust(2);
+        m.op_field(JOp.GETSTATIC, idx, 2);
         m.op(JOp.LSUB, -2);
         m.op(JOp.L2D, 0);
         this.ldc_double(1000000000.0);
@@ -7173,6 +9297,10 @@ pub def JvmGen : class {
 
     pub fnc jvm_tostring(t string) : void {
         if t == "pointer<char>" || t == "*char" { return; }
+        if t == "char[]" {
+            this.emit_string_from_chars();
+            return;
+        }
         if this.is_bigint(t) {
             this.emit_invoke(JOp.INVOKEVIRTUAL, "java/math/BigInteger", "toString", "()Ljava/lang/String;");
             return;
@@ -7230,7 +9358,12 @@ pub def JvmGen : class {
     // Emit an invoke with stack-depth accounting parsed from the
     // descriptor: (params)ret. Long/double count two slots.
     pub fnc emit_invoke(op int, cls string, name string, desc string) : void {
-        idx: int = this.cur_cp.methodref(cls, name, desc);
+        idx: int = 0;
+        if op == JOp.INVOKEINTERFACE {
+            idx = this.cur_cp.imethodref(cls, name, desc);
+        } else {
+            idx = this.cur_cp.methodref(cls, name, desc);
+        }
         pop: int = 0;
         i: int = 1;
         while i < desc.size && desc[i] != ')' {
@@ -7267,15 +9400,20 @@ pub def JvmGen : class {
         this.cur_method.emit_u8(op);
         this.cur_method.emit_u8((idx >> 8) & 255);
         this.cur_method.emit_u8(idx & 255);
+        if op == JOp.INVOKEINTERFACE {
+            // 5-byte form: count (incl. receiver) + zero pad.
+            this.cur_method.emit_u8(pop);
+            this.cur_method.emit_u8(0);
+            this.cur_method.site_delta.push(this.cur_method.code.size - 5, push - pop);
+        } else {
+            this.cur_method.site_delta.push(this.cur_method.code.size - 3, push - pop);
+        }
         this.cur_method.adjust(push - pop);
     }
 
     pub fnc emit_putstatic(name string, gd string) : void {
         idx: int = this.cur_cp.fieldref(this.main_class, "g_" + name, gd);
-        this.cur_method.emit_u8(JOp.PUTSTATIC);
-        this.cur_method.emit_u8((idx >> 8) & 255);
-        this.cur_method.emit_u8(idx & 255);
-        this.cur_method.adjust(0 - this.slots_of(gd));
+        this.cur_method.op_field(JOp.PUTSTATIC, idx, 0 - this.slots_of(gd));
     }
 
     pub fnc is_fusion_int(name string, gt string) : bool {
@@ -7329,6 +9467,24 @@ pub def JvmGen : class {
             this.cur_method.emit_u8(ci & 255);
             this.cur_method.op(JOp.DUP, 1);
             this.emit_invoke(JOp.INVOKESPECIAL, rt, "<init>", "()V");
+            if this.tc.classes.isin(rt) {
+                // Auto-init (native parity): `p: C;` runs the all-defaults
+                // constructor when every parameter has a default.
+                if this.tc.ctor_defaults.isin(rt) {
+                    ndef: vec<Expr> = this.tc.ctor_defaults[rt];
+                    all_dflt: bool = ndef.size > 0;
+                    di: int = 0;
+                    while di < ndef.size {
+                        if ndef.get(di) == null { all_dflt = false; }
+                        di = di + 1;
+                    }
+                    if all_dflt {
+                        this.cur_method.op(JOp.DUP, 1);
+                        no_args: vec<Expr>;
+                        this.gen_ctor_call(rt, no_args);
+                    }
+                }
+            }
             return;
         }
         d: string = this.jdesc(t);
@@ -7360,12 +9516,13 @@ pub def JvmGen : class {
     }
 
     pub fnc emit_new_map() : void {
+        // LinkedHashMap: insertion order (native runtime parity).
         this.cur_method.op(JOp.NEW, 1);
-        ali: int = this.cur_cp.class_entry("java/util/HashMap");
+        ali: int = this.cur_cp.class_entry("java/util/LinkedHashMap");
         this.cur_method.emit_u8((ali >> 8) & 255);
         this.cur_method.emit_u8(ali & 255);
         this.cur_method.op(JOp.DUP, 1);
-        this.emit_invoke(JOp.INVOKESPECIAL, "java/util/HashMap", "<init>", "()V");
+        this.emit_invoke(JOp.INVOKESPECIAL, "java/util/LinkedHashMap", "<init>", "()V");
     }
 
     // Fixed-size array size from "T[N]" (-1 for slices/unknown).
@@ -7408,7 +9565,7 @@ pub def JvmGen : class {
         } also bd == "Z" {
             this.cur_method.op_1(JOp.NEWARRAY, JArray.T_BOOLEAN, 0);
             this.cur_method.adjust(0);
-        } also bd == "C" {
+        } also base == "char" || bd == "C" {
             this.cur_method.op_1(JOp.NEWARRAY, JArray.T_CHAR, 0);
             this.cur_method.adjust(0);
         } also bd == "I" {
@@ -7450,10 +9607,7 @@ pub def JvmGen : class {
         cls: string = "java/util/concurrent/atomic/AtomicInteger";
         if gd == "J" { cls = "java/util/concurrent/atomic/AtomicLong"; }
         idx: int = this.cur_cp.fieldref(this.main_class, "g_" + name, "L" + cls + ";");
-        this.cur_method.emit_u8(JOp.GETSTATIC);
-        this.cur_method.emit_u8((idx >> 8) & 255);
-        this.cur_method.emit_u8(idx & 255);
-        this.cur_method.adjust(1);
+        this.cur_method.op_field(JOp.GETSTATIC, idx, 1);
     }
 
     pub fnc fusion_get(name string, gt string, gd string) : void {
@@ -7495,6 +9649,10 @@ pub def JvmGen : class {
                     this.jvm_coerce(it, vtyp);
                     this.narrow_to(vtyp);
                 }
+                // Struct value init copies (native value semantics).
+                if this.tc.structs.isin(vtyp) && this.tc.structs.isin(this.deref_t(it)) {
+                    this.gen_struct_copy(vtyp);
+                }
                 this.cur_method.store_local(vd, slot);
             } else {
                 this.jvm_default_for(vtyp);
@@ -7509,10 +9667,12 @@ pub def JvmGen : class {
         if s.kind == StmtKind.SHOW {
             ai: int = 0;
             while ai < s.args.size {
-                this.gen_show_arg(s.args.get(ai));
+                this.gen_show_arg_buf(s.args.get(ai), s.is_showb);
                 ai = ai + 1;
             }
-            this.emit_println();
+            if !s.is_showb {
+                this.emit_println();
+            }
             return;
         }
         if s.kind == StmtKind.RETURN {
@@ -7625,6 +9785,32 @@ pub def JvmGen : class {
             return;
         }
         if s.kind == StmtKind.EXPR {
+            // `del obj`: run the DEL_<Class> destructor when declared
+            // (native parity; memory itself is GC-managed).
+            if s.name == "__del__" && s.value != null {
+                del_t: string = this.expr_type(s.value);
+                if del_t.size > 0 && del_t[0] == '&' {
+                    inner: string = "";
+                    di: int = 1;
+                    while di < del_t.size {
+                        inner = inner + del_t[di];
+                        di = di + 1;
+                    }
+                    del_t = inner;
+                }
+                if this.tc.classes.isin(del_t) {
+                    del_mname: string = "DEL_" + del_t;
+                    has_del: bool = false;
+                    foreach _, mn in<vector> this.tc.classes[del_t].method_names {
+                        if mn == del_mname { has_del = true; }
+                    }
+                    if has_del {
+                        this.gen_expr(s.value);
+                        this.emit_invoke(JOp.INVOKEVIRTUAL, del_t, del_mname, "()V");
+                    }
+                }
+                return;
+            }
             this.gen_expr(s.value);
             // Discard a produced value (void calls leave nothing).
             if this.expr_type(s.value) != "void" {
@@ -7741,10 +9927,7 @@ pub def JvmGen : class {
         cdesc = cdesc + ")V";
         this.emit_invoke(JOp.INVOKESPECIAL, taskn, "<init>", cdesc);
         pf: int = this.cur_cp.fieldref(this.main_class, "__pool", "Ljava/util/concurrent/ExecutorService;");
-        this.cur_method.emit_u8(JOp.GETSTATIC);
-        this.cur_method.emit_u8((pf >> 8) & 255);
-        this.cur_method.emit_u8(pf & 255);
-        this.cur_method.adjust(1);
+        this.cur_method.op_field(JOp.GETSTATIC, pf, 1);
         this.emit_invoke(JOp.INVOKESTATIC, "java/util/concurrent/CompletableFuture", "supplyAsync", "(Ljava/util/function/Supplier;Ljava/util/concurrent/Executor;)Ljava/util/concurrent/CompletableFuture;");
         this.cur_method.op(JOp.POP, -1);
     }
@@ -7940,13 +10123,10 @@ pub def JvmGen : class {
                 return;
             }
             idx: int = this.cur_cp.fieldref(static_owner, tgt.sval, fd);
-            this.cur_method.emit_u8(JOp.PUTSTATIC);
-            this.cur_method.emit_u8((idx >> 8) & 255);
-            this.cur_method.emit_u8(idx & 255);
-            this.cur_method.adjust(0 - this.slots_of(fd));
+            this.cur_method.op_field(JOp.PUTSTATIC, idx, 0 - this.slots_of(fd));
             return;
         }
-        obj_t: string = this.expr_type(tgt.left);
+        obj_t: string = this.deref_t(this.expr_type(tgt.left));
         if this.tc.unions.isin(obj_t) {
             this.gen_union_store(s);
             return;
@@ -7962,6 +10142,9 @@ pub def JvmGen : class {
             return;
         }
         this.gen_expr(tgt.left);
+        if tgt.kind == ExprKind.POINTER_MEMBER {
+            this.emit_checkcast(obj_t);
+        }
         obj_slot: int = this.cur_method.alloc_local(1);
         this.cur_method.store_local("X", obj_slot);
         if s.op == "=" {
@@ -7978,10 +10161,7 @@ pub def JvmGen : class {
         } else {
             this.cur_method.load_local("X", obj_slot);
             idx: int = this.cur_cp.fieldref(obj_t, tgt.sval, fd);
-            this.cur_method.emit_u8(JOp.GETFIELD);
-            this.cur_method.emit_u8((idx >> 8) & 255);
-            this.cur_method.emit_u8(idx & 255);
-            this.cur_method.adjust(this.slots_of(fd) - 1);
+            this.cur_method.op_field(JOp.GETFIELD, idx, this.slots_of(fd) - 1);
             at: string = this.expr_type(s.value);
             this.gen_expr(s.value);
             if ft == "string" {
@@ -8002,13 +10182,10 @@ pub def JvmGen : class {
             this.load_by_desc(fd, val_slot);
         }
         idx: int = this.cur_cp.fieldref(obj_t, tgt.sval, fd);
-        this.cur_method.emit_u8(JOp.PUTFIELD);
-        this.cur_method.emit_u8((idx >> 8) & 255);
-        this.cur_method.emit_u8(idx & 255);
         if fd == "J" || fd == "D" {
-            this.cur_method.adjust(-3);
+            this.cur_method.op_field(JOp.PUTFIELD, idx, -3);
         } else {
-            this.cur_method.adjust(-2);
+            this.cur_method.op_field(JOp.PUTFIELD, idx, -2);
         }
     }
 
@@ -8036,10 +10213,7 @@ pub def JvmGen : class {
     // Static compound store: GET + apply + PUTSTATIC.
     pub fnc gen_static_field_rmw(owner string, fn string, ft string, fd string, s Stmt) : void {
         idx: int = this.cur_cp.fieldref(owner, fn, fd);
-        this.cur_method.emit_u8(JOp.GETSTATIC);
-        this.cur_method.emit_u8((idx >> 8) & 255);
-        this.cur_method.emit_u8(idx & 255);
-        this.cur_method.adjust(this.slots_of(fd));
+        this.cur_method.op_field(JOp.GETSTATIC, idx, this.slots_of(fd));
         at: string = this.expr_type(s.value);
         this.gen_expr(s.value);
         if ft == "string" {
@@ -8054,10 +10228,7 @@ pub def JvmGen : class {
             this.apply_compound(fd, this.is_uint_leash(ft), s.op);
             this.narrow_to(ft);
         }
-        this.cur_method.emit_u8(JOp.PUTSTATIC);
-        this.cur_method.emit_u8((idx >> 8) & 255);
-        this.cur_method.emit_u8(idx & 255);
-        this.cur_method.adjust(0 - this.slots_of(fd));
+        this.cur_method.op_field(JOp.PUTSTATIC, idx, 0 - this.slots_of(fd));
     }
 
     // Assignment to locals and globals (fusion atomics included).
@@ -8069,6 +10240,13 @@ pub def JvmGen : class {
         if s.target.kind == ExprKind.MEMBER {
             this.gen_field_store(s);
             return;
+        }
+        if s.target.kind == ExprKind.POINTER_MEMBER {
+            pt: string = this.deref_t(this.expr_type(s.target.left));
+            if this.tc.structs.isin(pt) || this.tc.classes.isin(pt) {
+                this.gen_field_store(s);
+                return;
+            }
         }
         if s.target.kind != ExprKind.IDENT {
             this.jvm_unsupported("assignment to non-variable target");
@@ -8089,6 +10267,9 @@ pub def JvmGen : class {
                 if !this.coerce_val(it, t) {
                     this.jvm_coerce(it, t);
                     this.narrow_to(t);
+                }
+                if this.tc.structs.isin(t) && this.tc.structs.isin(this.deref_t(it)) {
+                    this.gen_struct_copy(t);
                 }
                 this.cur_method.store_local(d, this.var_slots[name]);
                 return;
@@ -8308,10 +10489,7 @@ pub def JvmGen : class {
             return;
         }
         idx: int = this.cur_cp.fieldref(this.main_class, "g_" + name, gd);
-        this.cur_method.emit_u8(JOp.GETSTATIC);
-        this.cur_method.emit_u8((idx >> 8) & 255);
-        this.cur_method.emit_u8(idx & 255);
-        this.cur_method.adjust(this.slots_of(gd));
+        this.cur_method.op_field(JOp.GETSTATIC, idx, this.slots_of(gd));
         if gd == "J" {
             this.long_const(0, 1);
             if inc {
@@ -8344,10 +10522,7 @@ pub def JvmGen : class {
             return;
         }
         idx: int = this.cur_cp.fieldref(this.main_class, "g_" + name, gd);
-        this.cur_method.emit_u8(JOp.GETSTATIC);
-        this.cur_method.emit_u8((idx >> 8) & 255);
-        this.cur_method.emit_u8(idx & 255);
-        this.cur_method.adjust(this.slots_of(gd));
+        this.cur_method.op_field(JOp.GETSTATIC, idx, this.slots_of(gd));
         it: string = this.expr_type(s.value);
         this.gen_expr(s.value);
         this.jvm_coerce(it, gt);

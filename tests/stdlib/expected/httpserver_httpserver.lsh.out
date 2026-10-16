@@ -1,7 +1,7 @@
-leash-httpd/1.1
+leash-httpd/1.2
 200
 hello, /hello/world
-leash-httpd/1.1
+leash-httpd/1.2
 200
 POST
 leash
@@ -19,4 +19,18 @@ true
 HttpQuery{3 params}
 true
 false
---- Executed at 2026-09-24 14:54:48 ---
+--- Executed at 2026-10-16 17:36:32 ---
+warning: Security: imported module 'main.lsh' links native library 'liblshhttpd.a' into this build via @from — native libraries from dependencies run with your program's full privileges
+  --> /home/foksiny/projects/leash/installthis/httpserver/linux/main.lsh:1:0 [W_SECURITY]
+  |
+1 | @from("liblshhttpd.a") {
+  | ^
+  |
+  = tip: Confirm the dependency is expected to ship a native library, or review/build it from source.
+warning: Security: imported module 'main.lsh' links native library 'liblshhttp.a' into this build via @from — native libraries from dependencies run with your program's full privileges
+  --> /home/foksiny/projects/leash/installthis/http/linux/main.lsh:1:0 [W_SECURITY]
+  |
+1 | @from("liblshhttp.a") {
+  | ^
+  |
+  = tip: Confirm the dependency is expected to ship a native library, or review/build it from source.

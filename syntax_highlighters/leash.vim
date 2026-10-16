@@ -10,10 +10,11 @@ endif
 
 " Keywords -------------------------------------------------------------------
 syn keyword leashKeyword	fnc def struct union enum class type template macro opdef
-syn keyword leashKeyword	return if also else unless alsou while with for do loop in
+syn keyword leashKeyword	return if also else unless alsou while with for do foreach loop in
 syn keyword leashKeyword	imut pub priv static stop continue empty ignore use alias works otherwise
 syn keyword leashKeyword	switch case default unsafe nogc as inline defer throw error create del
-syn keyword leashKeyword	worker spawn shared fusion thisworker extern sizeof typeof
+syn keyword leashKeyword	worker spawn shared fusion thisworker async await extern sizeof typeof
+syn keyword leashKeyword	this is isnt pubif
 syn keyword leashKeyword	cstr lstr normescape toint tofloat tostring tounion scast
 syn keyword leashKeyword	inttobytes bytestoint floattobytes bytestofloat getKey keys values delete push
 
@@ -22,7 +23,7 @@ syn keyword leashStorage	pub priv static imut inline unsafe nogc worker shared f
 syn keyword leashStorage	template macro type
 
 " Built-in Types -------------------------------------------------------------
-syn keyword leashType		int uint float bool string char void array vec hash pointer matrix
+syn keyword leashType		int uint float bool string char void array vec vector hash pointer matrix
 
 " Built-in Constants ---------------------------------------------------------
 syn keyword leashConstant	true false null nil
@@ -38,7 +39,8 @@ syn match	leashSelfOpType	/\<thisop\.typ\>/
 syn keyword leashBuiltin	show showb get keyget set toint tofloat tounion tostring cstr lstr scast
 syn keyword leashBuiltin	normescape sizeof typeof size cur name pushb popb pushf popf insert
 syn keyword leashBuiltin	insertv inserta clear remove extend extendv isin rand randf seed choose
-syn keyword leashBuiltin	wait timepass exit exec inttobytes bytestoint floattobytes bytestofloat
+syn keyword leashBuiltin	wait timepass exit exec gc_collect gc_stats getenv inttobytes bytestoint floattobytes bytestofloat
+syn keyword leashBuiltin	print println panic assert
 syn keyword leashBuiltin	getKey keys values delete push
 " C Standard Library Stubs
 syn keyword leashBuiltin	malloc calloc realloc free atoi atol atoll strtol strtoul strtof strtod

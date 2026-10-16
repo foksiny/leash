@@ -45,6 +45,19 @@ extern void *leash_gc_alloc_string(long long len);
 # include <openssl/x509v3.h>
 #endif
 
+/* HPACK/H2 framing lives in the POSIX backend; WinHTTP handles the
+ * Windows side (no raw frames needed there). */
+#ifndef _WIN32
+#include "lshhpack.h"
+#endif
+
+/* SIGPIPE immunity lives in the Leash runtime (leash_spipe_hold/drop in
+ * gc.c) so all shims share one process-global refcount. */
+void leash_spipe_hold(void);
+void leash_spipe_drop(void);
+#define lsh_spipe_hold leash_spipe_hold
+#define lsh_spipe_drop leash_spipe_drop
+
 #if defined(_MSC_VER)
 # define LSH_THREADLOCAL __declspec(thread)
 #elif defined(__GNUC__)
@@ -53,7 +66,7 @@ extern void *leash_gc_alloc_string(long long len);
 # define LSH_THREADLOCAL
 #endif
 
-#define LSH_HTTP_VERSION_STR "leash-http/1.0"
+#define LSH_HTTP_VERSION_STR "leash-http/1.1"
 #define LSH_MAX_HEADER_BYTES (1024L * 1024L)          /* 1 MiB header block   */
 #define LSH_MAX_BODY_BYTES  (512LL * 1024L * 1024L)   /* 512 MiB body cap     */
 #define LSH_DETAIL_LEN 512
@@ -560,6 +573,15 @@ static int tcp_connect(const lsh_url *u, long long deadline,
     return err;
 }
 
+static int tls_connect_alpn(const lsh_url *u, int verify, long long deadline,
+                       struct lsh_conn *c, int offer_h2,
+                       const unsigned char **alpn_sel, unsigned *alpn_len);
+
+static int tls_connect(const lsh_url *u, int verify, long long deadline,
+                       struct lsh_conn *c) {
+    return tls_connect_alpn(u, verify, deadline, c, 0, NULL, NULL);
+}
+
 /* Returns 1 on progress, 0 on want-read/write handled, -1 on fatal. */
 static int tls_wait(SSL *ssl, int fd, int ret, long long deadline) {
     int err = SSL_get_error(ssl, ret);
@@ -568,14 +590,22 @@ static int tls_wait(SSL *ssl, int fd, int ret, long long deadline) {
     return -1;
 }
 
-static int tls_connect(const lsh_url *u, int verify, long long deadline,
-                       struct lsh_conn *c) {
+static int tls_connect_alpn(const lsh_url *u, int verify, long long deadline,
+                       struct lsh_conn *c, int offer_h2,
+                       const unsigned char **alpn_sel, unsigned *alpn_len) {
     c->ctx = SSL_CTX_new(TLS_client_method());
     if (!c->ctx) {
         lsh_set_detail("TLS context allocation failed (%s)", ERR_reason_error_string(ERR_get_error()), NULL);
         return LSH_E_TLS;
     }
     SSL_CTX_set_min_proto_version(c->ctx, TLS1_VERSION);
+    if (offer_h2) {
+        /* Advertise h2 with HTTP/1.1 fallback (RFC 9113 section 3.4). */
+        static const unsigned char protos[] = {
+            2, 'h', '2', 8, 'h', 't', 't', 'p', '/', '1', '.', '1'
+        };
+        SSL_CTX_set_alpn_protos(c->ctx, protos, sizeof(protos));
+    }
     if (verify) {
         SSL_CTX_set_verify(c->ctx, SSL_VERIFY_PEER, NULL);
         if (!SSL_CTX_set_default_verify_paths(c->ctx)) {
@@ -607,7 +637,12 @@ static int tls_connect(const lsh_url *u, int verify, long long deadline,
 
     for (;;) {
         int r = SSL_connect(c->ssl);
-        if (r == 1) return 0;
+        if (r == 1) {
+            if (alpn_sel && alpn_len) {
+                SSL_get0_alpn_selected(c->ssl, alpn_sel, alpn_len);
+            }
+            return 0;
+        }
         int w = tls_wait(c->ssl, c->fd, r, deadline);
         if (w < 0) {
             unsigned long e = ERR_get_error();
@@ -1022,6 +1057,10 @@ const char *lsh_http_strerror(int code) {
 static int win_perform(const char *method, const char *url, const char *headers,
                        const char *body, long long timeout_ms, int max_redirects,
                        int verify_tls, body_sink *sink, char **out_headers);
+static int win_perform_h2(const char *method, const char *url, const char *headers,
+                       const char *body, long long timeout_ms, int max_redirects,
+                       int verify_tls, body_sink *sink, char **out_headers,
+                       int *out_proto);
 #else
 static int posix_perform(const char *method, const char *url, const char *headers,
                          const char *body, long long timeout_ms, int max_redirects,
@@ -1217,6 +1256,832 @@ static int posix_perform(const char *method0, const char *url0, const char *head
     }
 }
 
+/* ------------------------------------------------------------------ */
+/* HTTP/2 client: h2c prior knowledge + h2 over TLS (ALPN). POSIX only. */
+/*                                                                     */
+/* One request per connection (no pooling in 1.4.0); sequential        */
+/* streams. Request bodies stream with connection-level flow control;  */
+/* responses accumulate through the same body_sink as HTTP/1.1.        */
+/* ------------------------------------------------------------------ */
+
+#define H2_FTYPE_DATA 0
+#define H2_FTYPE_HEADERS 1
+#define H2_FTYPE_PRIORITY 2
+#define H2_FTYPE_RST 3
+#define H2_FTYPE_SETTINGS 4
+#define H2_FTYPE_PUSH 5
+#define H2_FTYPE_PING 6
+#define H2_FTYPE_GOAWAY 7
+#define H2_FTYPE_WINDOW 8
+#define H2_FTYPE_CONT 9
+
+#define H2_FLAG_END_STREAM 0x1
+#define H2_FLAG_END_HEADERS 0x4
+#define H2_FLAG_ACK 0x1
+#define H2_FLAG_PADDED 0x8
+#define H2_FLAG_PRIORITY 0x20
+
+#define H2_SID_MAX 0x7fffffff
+#define H2_MAX_FRAME (16 * 1024 * 1024)
+#define H2_PREFACE_MAGIC "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n"
+
+typedef struct {
+    int got_settings;          /* peer SETTINGS seen */
+    unsigned int peer_max_frame;   /* default 16384 */
+    int peer_window;           /* connection send window */
+    int stream_window;         /* current stream send window */
+    unsigned int hdr_table_max;    /* decode cap from peer SETTINGS */
+    hpk_dyn dyn;
+    hpk_hnode ht[600];
+} h2c_conn;
+
+static void h2c_init(h2c_conn *h) {
+    h->got_settings = 0;
+    h->peer_max_frame = 16384;
+    h->peer_window = 65535;
+    h->stream_window = 65535;
+    h->hdr_table_max = 4096;
+    hpk_dyn_init(&h->dyn, 4096);
+    hpk_huff_build(h->ht);
+}
+
+static void h2c_free(h2c_conn *h) {
+    hpk_dyn_free(&h->dyn);
+}
+
+/* Exact read (frames must arrive whole). Returns 0 or negative LSH_E_*. */
+static int h2_read_n(struct lsh_conn *c, unsigned char *dst, size_t n,
+                     long long deadline) {
+    size_t off = 0;
+    while (off < n) {
+        int r = conn_read_some(c, (char *)dst + off, n - off, deadline);
+        if (r < 0) return r;
+        if (r == 0) {
+            lsh_set_detail("h2 connection closed mid-frame", NULL, NULL);
+            return LSH_E_RECV;
+        }
+        off += (size_t)r;
+    }
+    return 0;
+}
+
+typedef struct {
+    unsigned char type;
+    unsigned char flags;
+    unsigned int sid;
+    unsigned char *payload; /* malloc'd, free after use */
+    unsigned int len;
+} h2_frame;
+
+static void h2_frame_free(h2_frame *f) {
+    free(f->payload);
+    f->payload = NULL;
+    f->len = 0;
+}
+
+static int h2_read_frame(struct lsh_conn *c, long long deadline, h2_frame *f) {
+    unsigned char hdr[9];
+    int rc = h2_read_n(c, hdr, 9, deadline);
+    if (rc != 0) return rc;
+    unsigned int len = ((unsigned int)hdr[0] << 16) |
+                       ((unsigned int)hdr[1] << 8) | (unsigned int)hdr[2];
+    if (len > H2_MAX_FRAME) {
+        lsh_set_detail("h2 frame too large", NULL, NULL);
+        return LSH_E_PROTO;
+    }
+    f->type = hdr[3];
+    f->flags = hdr[4];
+    f->sid = ((unsigned int)hdr[5] << 24) | ((unsigned int)hdr[6] << 16) |
+             ((unsigned int)hdr[7] << 8) | (unsigned int)hdr[8];
+    f->sid &= H2_SID_MAX;
+    f->len = len;
+    f->payload = NULL;
+    if (len > 0) {
+        f->payload = (unsigned char *)malloc(len ? len : 1);
+        if (!f->payload) return LSH_E_MEMORY;
+        rc = h2_read_n(c, f->payload, len, deadline);
+        if (rc != 0) {
+            h2_frame_free(f);
+            return rc;
+        }
+    }
+    return 0;
+}
+
+/* Raw frame write (no splitting; callers chunk HEADERS/DATA). */
+static int h2_write_frame(struct lsh_conn *c, unsigned char type,
+                          unsigned char flags, unsigned int sid,
+                          const unsigned char *payload, unsigned int len,
+                          long long deadline) {
+    unsigned char hdr[9];
+    hdr[0] = (unsigned char)((len >> 16) & 0xff);
+    hdr[1] = (unsigned char)((len >> 8) & 0xff);
+    hdr[2] = (unsigned char)(len & 0xff);
+    hdr[3] = type;
+    hdr[4] = flags;
+    hdr[5] = (unsigned char)((sid >> 24) & 0x7f);
+    hdr[6] = (unsigned char)((sid >> 16) & 0xff);
+    hdr[7] = (unsigned char)((sid >> 8) & 0xff);
+    hdr[8] = (unsigned char)(sid & 0xff);
+    int rc = conn_write_all(c, (const char *)hdr, 9, deadline);
+    if (rc != 0) return rc;
+    if (len > 0) return conn_write_all(c, (const char *)payload, len, deadline);
+    return 0;
+}
+
+static int h2_send_settings_ack(struct lsh_conn *c, long long deadline) {
+    return h2_write_frame(c, H2_FTYPE_SETTINGS, H2_FLAG_ACK, 0, NULL, 0,
+                          deadline);
+}
+
+static int h2_send_ping_ack(struct lsh_conn *c, const unsigned char *opaque,
+                            long long deadline) {
+    return h2_write_frame(c, H2_FTYPE_PING, H2_FLAG_ACK, 0, opaque, 8,
+                          deadline);
+}
+
+static int h2_send_window(struct lsh_conn *c, unsigned int sid,
+                          unsigned int incr, long long deadline) {
+    unsigned char p[4];
+    p[0] = (unsigned char)((incr >> 24) & 0x7f);
+    p[1] = (unsigned char)((incr >> 16) & 0xff);
+    p[2] = (unsigned char)((incr >> 8) & 0xff);
+    p[3] = (unsigned char)(incr & 0xff);
+    return h2_write_frame(c, H2_FTYPE_WINDOW, 0, sid, p, 4, deadline);
+}
+
+static int h2_send_goaway(struct lsh_conn *c, unsigned int last_sid,
+                          long long deadline) {
+    unsigned char p[8];
+    p[0] = (unsigned char)((last_sid >> 24) & 0x7f);
+    p[1] = (unsigned char)((last_sid >> 16) & 0xff);
+    p[2] = (unsigned char)((last_sid >> 8) & 0xff);
+    p[3] = (unsigned char)(last_sid & 0xff);
+    p[4] = p[5] = p[6] = p[7] = 0; /* NO_ERROR */
+    return h2_write_frame(c, H2_FTYPE_GOAWAY, 0, 0, p, 8, deadline);
+}
+
+/* Lowercase ASCII in place (h2 field names MUST be lowercase). */
+static void h2_lower(char *s) {
+    for (; *s; s++) {
+        if (*s >= 'A' && *s <= 'Z') *s += (char)('a' - 'A');
+    }
+}
+
+/* Build the request HEADERS block. Returns 0 on OOM. */
+static int h2_build_headers(h2c_conn *h, const char *method, const lsh_url *u,
+                            const char *headers, const char *body,
+                            hpk_buf *blk) {
+    (void)h;
+    /* :method */
+    if (strcmp(method, "GET") == 0) {
+        unsigned char c = 0x82;
+        if (!hpk_bput(blk, &c, 1)) return 0;
+    } else if (strcmp(method, "POST") == 0) {
+        unsigned char c = 0x83;
+        if (!hpk_bput(blk, &c, 1)) return 0;
+    } else {
+        if (!hpk_put_int(blk, 2, 0x00, 4)) return 0;
+        if (!hpk_put_str(blk, method, strlen(method))) return 0;
+    }
+    /* :scheme */
+    {
+        unsigned char c = (strcmp(u->scheme, "https") == 0) ? 0x87 : 0x86;
+        if (!hpk_bput(blk, &c, 1)) return 0;
+    }
+    /* :path */
+    if (strcmp(u->path, "/") == 0) {
+        unsigned char c = 0x84;
+        if (!hpk_bput(blk, &c, 1)) return 0;
+    } else if (strcmp(u->path, "/index.html") == 0) {
+        unsigned char c = 0x85;
+        if (!hpk_bput(blk, &c, 1)) return 0;
+    } else {
+        if (!hpk_put_int(blk, 4, 0x00, 4)) return 0;
+        if (!hpk_put_str(blk, u->path, strlen(u->path))) return 0;
+    }
+    /* :authority */
+    {
+        char auth[320];
+        int defport = (strcmp(u->scheme, "https") == 0 && u->port_num == 443) ||
+                      (strcmp(u->scheme, "http") == 0 && u->port_num == 80);
+        if (defport) {
+            snprintf(auth, sizeof(auth), "%s", u->host);
+        } else {
+            snprintf(auth, sizeof(auth), "%s:%s", u->host, u->port);
+        }
+        if (!hpk_put_int(blk, 1, 0x00, 4)) return 0;
+        if (!hpk_put_str(blk, auth, strlen(auth))) return 0;
+    }
+    /* user-agent + accept, mirroring the 1.1 client */
+    if (!hpk_enc_field(blk, 58, NULL, LSH_HTTP_VERSION_STR)) return 0;
+    if (!hpk_enc_field(blk, 19, NULL, "*/*")) return 0;
+    /* caller headers, LF separated */
+    if (headers && headers[0]) {
+        const char *p = headers;
+        while (p && *p) {
+            const char *eol = strchr(p, '\n');
+            size_t ll = eol ? (size_t)(eol - p) : strlen(p);
+            while (ll > 0 && p[ll - 1] == '\r') ll--;
+            if (ll > 0 && ll < 4000) {
+                char line[4096];
+                memcpy(line, p, ll);
+                line[ll] = '\0';
+                char *colon = strchr(line, ':');
+                if (colon && colon != line) {
+                    *colon = '\0';
+                    char *val = colon + 1;
+                    while (*val == ' ' || *val == '\t') val++;
+                    /* trim trailing space */
+                    size_t vl = strlen(val);
+                    while (vl > 0 && (val[vl-1] == ' ' || val[vl-1] == '\t')) {
+                        val[--vl] = '\0';
+                    }
+                    h2_lower(line);
+                    /* Framing-owned or connection-specific: skip. */
+                    if (strcmp(line, "connection") != 0 &&
+                        strcmp(line, "keep-alive") != 0 &&
+                        strcmp(line, "upgrade") != 0 &&
+                        strcmp(line, "transfer-encoding") != 0 &&
+                        strcmp(line, "content-length") != 0 &&
+                        strcmp(line, "host") != 0 &&
+                        strcmp(line, "te") != 0) {
+                        int exact = 0;
+                        unsigned int si = hpk_static_find(line, val, &exact);
+                        if (exact) {
+                            if (!hpk_put_int(blk, si, 0x80, 7)) return 0;
+                        } else {
+                            if (!hpk_enc_field(blk, si, si ? NULL : line, val))
+                                return 0;
+                        }
+                    }
+                }
+            }
+            p = eol ? eol + 1 : NULL;
+        }
+    }
+    /* content-length for a body */
+    if (body && body[0]) {
+        char cl[32];
+        snprintf(cl, sizeof(cl), "%zu", strlen(body));
+        if (!hpk_enc_field(blk, 28, NULL, cl)) return 0;
+    }
+    return 1;
+}
+
+/* Send HEADERS (+CONTINUATION splits at peer_max_frame) then optional DATA.
+ * Returns 0 or negative LSH_E_*. */
+static int h2_send_request(struct lsh_conn *c, h2c_conn *h, unsigned int sid,
+                           hpk_buf *blk, const char *body, long long deadline) {
+    size_t off = 0;
+    int first = 1;
+    int end_stream = (!body || !body[0]);
+    while (off < blk->len || first) {
+        size_t chunk = blk->len - off;
+        if (chunk > h->peer_max_frame) chunk = h->peer_max_frame;
+        unsigned char flags = 0;
+        if (off + chunk >= blk->len) flags |= H2_FLAG_END_HEADERS;
+        if (first && end_stream && (flags & H2_FLAG_END_HEADERS))
+            flags |= H2_FLAG_END_STREAM;
+        int rc;
+        if (first) {
+            rc = h2_write_frame(c, H2_FTYPE_HEADERS, flags, sid,
+                                blk->p + off, (unsigned int)chunk, deadline);
+        } else {
+            rc = h2_write_frame(c, H2_FTYPE_CONT, flags, sid,
+                                blk->p + off, (unsigned int)chunk, deadline);
+        }
+        if (rc != 0) return rc;
+        off += chunk;
+        first = 0;
+        if (blk->len == 0) break;
+    }
+    if (end_stream) return 0;
+    /* DATA frames with connection + stream flow control. */
+    size_t blen = strlen(body);
+    size_t sent = 0;
+    while (sent < blen) {
+        while (h->peer_window <= 0 || h->stream_window <= 0) {
+            /* Wait for WINDOW_UPDATE (bounded by the deadline). */
+            h2_frame f;
+            int rc = h2_read_frame(c, deadline, &f);
+            if (rc != 0) return rc;
+            if (f.type == H2_FTYPE_WINDOW && f.len == 4) {
+                unsigned int incr = ((unsigned int)f.payload[0] << 24) |
+                                    ((unsigned int)f.payload[1] << 16) |
+                                    ((unsigned int)f.payload[2] << 8) |
+                                    (unsigned int)f.payload[3];
+                incr &= 0x7fffffff;
+                if (f.sid == 0) h->peer_window += (int)incr;
+                else if (f.sid == sid) h->stream_window += (int)incr;
+            } else if (f.type == H2_FTYPE_SETTINGS && !(f.flags & H2_FLAG_ACK)) {
+                h2_send_settings_ack(c, deadline);
+            } else if (f.type == H2_FTYPE_PING && !(f.flags & H2_FLAG_ACK) && f.len == 8) {
+                h2_send_ping_ack(c, f.payload, deadline);
+            }
+            h2_frame_free(&f);
+            if (lsh_now_ms() >= deadline) {
+                lsh_set_detail("h2 upload stalled on flow control", NULL, NULL);
+                return LSH_E_TIMEOUT;
+            }
+        }
+        size_t chunk = blen - sent;
+        if (chunk > h->peer_max_frame) chunk = h->peer_max_frame;
+        if ((int)chunk > h->peer_window) chunk = (size_t)h->peer_window;
+        if ((int)chunk > h->stream_window) chunk = (size_t)h->stream_window;
+        unsigned char flags = (sent + chunk >= blen) ? H2_FLAG_END_STREAM : 0;
+        int rc = h2_write_frame(c, H2_FTYPE_DATA, flags, sid,
+                                (const unsigned char *)body + sent,
+                                (unsigned int)chunk, deadline);
+        if (rc != 0) return rc;
+        sent += chunk;
+        h->peer_window -= (int)chunk;
+        h->stream_window -= (int)chunk;
+    }
+    return 0;
+}
+
+/* Read one request/response exchange. Fills sink + normalized headers.
+ * Returns status or negative LSH_E_*. Handles SETTINGS/PING/WINDOW_UPDATE
+ * inline; CONTINUATION reassembly; GOAWAY/RST errors. */
+static int h2_read_response(struct lsh_conn *c, h2c_conn *h, unsigned int sid,
+                            long long deadline, body_sink *sink,
+                            char **out_headers) {
+    hpk_buf hblk;
+    hblk.p = NULL;
+    hblk.len = 0;
+    hblk.cap = 0;
+    int headers_done = 0;
+    int body_done = 0;
+    int status = -1;
+    lsh_buf raw_hdrs;
+    buf_init(&raw_hdrs);
+    long long total = 0;
+    int in_headers = 0; /* inside a HEADERS/CONTINUATION run */
+
+    for (;;) {
+        h2_frame f;
+        int rc = h2_read_frame(c, deadline, &f);
+        if (rc != 0) {
+            free(hblk.p);
+            buf_free(&raw_hdrs);
+            return rc;
+        }
+        if (f.type == H2_FTYPE_SETTINGS) {
+            if (!(f.flags & H2_FLAG_ACK)) {
+                /* Apply peer settings relevant to our sends. */
+                if (f.len % 6 == 0) {
+                    for (unsigned int i = 0; i < f.len; i += 6) {
+                        unsigned int id = ((unsigned int)f.payload[i] << 8) |
+                                          (unsigned int)f.payload[i + 1];
+                        unsigned int val = ((unsigned int)f.payload[i + 2] << 24) |
+                                           ((unsigned int)f.payload[i + 3] << 16) |
+                                           ((unsigned int)f.payload[i + 4] << 8) |
+                                           (unsigned int)f.payload[i + 5];
+                        if (id == 1 && val < h->hdr_table_max) {
+                            h->dyn.max = val;
+                        } else if (id == 3) {
+                            h->stream_window = (int)val;
+                        } else if (id == 5 && val >= 16384 &&
+                                   val <= 16777215) {
+                            h->peer_max_frame = val;
+                        }
+                    }
+                }
+                h->got_settings = 1;
+                h2_send_settings_ack(c, deadline);
+            }
+            h2_frame_free(&f);
+            continue;
+        }
+        if (f.type == H2_FTYPE_PING) {
+            if (!(f.flags & H2_FLAG_ACK) && f.len == 8)
+                h2_send_ping_ack(c, f.payload, deadline);
+            h2_frame_free(&f);
+            continue;
+        }
+        if (f.type == H2_FTYPE_WINDOW && f.len == 4) {
+            unsigned int incr = ((unsigned int)f.payload[0] << 24) |
+                                ((unsigned int)f.payload[1] << 16) |
+                                ((unsigned int)f.payload[2] << 8) |
+                                (unsigned int)f.payload[3];
+            incr &= 0x7fffffff;
+            if (f.sid == 0) h->peer_window += (int)incr;
+            h2_frame_free(&f);
+            continue;
+        }
+        if (f.type == H2_FTYPE_GOAWAY) {
+            h2_frame_free(&f);
+            free(hblk.p);
+            if (!headers_done || !body_done) {
+                lsh_set_detail("h2 server went away mid-response", NULL, NULL);
+                buf_free(&raw_hdrs);
+                return LSH_E_RECV;
+            }
+            break;
+        }
+        if (f.type == H2_FTYPE_RST && f.sid == sid) {
+            h2_frame_free(&f);
+            free(hblk.p);
+            lsh_set_detail("h2 stream reset by server", NULL, NULL);
+            buf_free(&raw_hdrs);
+            return LSH_E_PROTO;
+        }
+        if ((f.type == H2_FTYPE_HEADERS || f.type == H2_FTYPE_CONT) &&
+            f.sid == sid) {
+            if (f.type == H2_FTYPE_HEADERS) {
+                size_t skip = 0;
+                if (f.flags & H2_FLAG_PADDED) {
+                    if (f.len < 1) {
+                        h2_frame_free(&f);
+                        free(hblk.p);
+                        buf_free(&raw_hdrs);
+                        return LSH_E_PROTO;
+                    }
+                    size_t pad = f.payload[0];
+                    if (pad + 1 > f.len) {
+                        h2_frame_free(&f);
+                        free(hblk.p);
+                        buf_free(&raw_hdrs);
+                        return LSH_E_PROTO;
+                    }
+                    skip = 1;
+                    f.len = (unsigned int)(f.len - 1 - pad);
+                }
+                if (f.flags & H2_FLAG_PRIORITY) {
+                    if (f.len < 5) {
+                        h2_frame_free(&f);
+                        free(hblk.p);
+                        buf_free(&raw_hdrs);
+                        return LSH_E_PROTO;
+                    }
+                    skip += 5;
+                    f.len -= 5;
+                }
+                if (!hpk_bput(&hblk, f.payload + skip, f.len)) {
+                    h2_frame_free(&f);
+                    free(hblk.p);
+                    buf_free(&raw_hdrs);
+                    return LSH_E_MEMORY;
+                }
+                in_headers = 1;
+            } else {
+                /* CONTINUATION appends verbatim. */
+                if (!in_headers) {
+                    h2_frame_free(&f);
+                    free(hblk.p);
+                    buf_free(&raw_hdrs);
+                    return LSH_E_PROTO;
+                }
+                if (!hpk_bput(&hblk, f.payload, f.len)) {
+                    h2_frame_free(&f);
+                    free(hblk.p);
+                    buf_free(&raw_hdrs);
+                    return LSH_E_MEMORY;
+                }
+            }
+            int end_h = (f.flags & H2_FLAG_END_HEADERS) != 0;
+            int end_s = (f.flags & H2_FLAG_END_STREAM) != 0;
+            h2_frame_free(&f);
+            if (end_h) {
+                in_headers = 0;
+                hpk_hdrs hdrs;
+                hpk_hdrs_init(&hdrs);
+                if (!hpk_decode_block(hblk.p, hblk.len, &h->dyn, h->ht,
+                                      &hdrs)) {
+                    hpk_hdrs_free(&hdrs);
+                    free(hblk.p);
+                    buf_free(&raw_hdrs);
+                    return LSH_E_PROTO;
+                }
+                hblk.len = 0;
+                for (int i = 0; i < hdrs.n; i++) {
+                    if (hdrs.v[i].name[0] == ':') {
+                        if (strcmp(hdrs.v[i].name, ":status") == 0)
+                            status = atoi(hdrs.v[i].value);
+                        continue;
+                    }
+                    buf_append(&raw_hdrs, hdrs.v[i].name,
+                               strlen(hdrs.v[i].name));
+                    buf_append(&raw_hdrs, ": ", 2);
+                    buf_append(&raw_hdrs, hdrs.v[i].value,
+                               strlen(hdrs.v[i].value));
+                    buf_append(&raw_hdrs, "\n", 1);
+                }
+                hpk_hdrs_free(&hdrs);
+                headers_done = 1;
+                if (status < 100 || status > 599) {
+                    free(hblk.p);
+                    buf_free(&raw_hdrs);
+                    return LSH_E_PROTO;
+                }
+                if (end_s) {
+                    body_done = 1;
+                    break;
+                }
+            } else if (end_s && !end_h) {
+                /* END_STREAM without END_HEADERS is a connection error,
+                 * but stay lenient: trailers never arrive; keep waiting. */
+            }
+            continue;
+        }
+        if (f.type == H2_FTYPE_DATA && f.sid == sid) {
+            if (!headers_done) {
+                h2_frame_free(&f);
+                free(hblk.p);
+                buf_free(&raw_hdrs);
+                return LSH_E_PROTO;
+            }
+            if (f.len > 0) {
+                total += (long long)f.len;
+                if (!sink_write(sink, (const char *)f.payload, f.len,
+                                total)) {
+                    h2_frame_free(&f);
+                    free(hblk.p);
+                    buf_free(&raw_hdrs);
+                    return LSH_E_MEMORY;
+                }
+                /* Top up flow-control windows. */
+                h2_send_window(c, 0, f.len, deadline);
+                h2_send_window(c, sid, f.len, deadline);
+            }
+            int end_s = (f.flags & H2_FLAG_END_STREAM) != 0;
+            h2_frame_free(&f);
+            if (end_s) {
+                body_done = 1;
+                break;
+            }
+            continue;
+        }
+        /* PRIORITY, PUSH_PROMISE, unknown: ignore. */
+        h2_frame_free(&f);
+    }
+
+    free(hblk.p);
+    if (!headers_done || !body_done || status < 0) {
+        buf_free(&raw_hdrs);
+        return LSH_E_PROTO;
+    }
+    if (out_headers) {
+        *out_headers = lsh_normalize_headers(raw_hdrs.p ? raw_hdrs.p : "",
+                                             raw_hdrs.len);
+        if (!*out_headers) {
+            buf_free(&raw_hdrs);
+            return LSH_E_MEMORY;
+        }
+    }
+    buf_free(&raw_hdrs);
+    return status;
+}
+
+/* One h2 exchange on an already-connected conn. */
+static int h2_exchange(struct lsh_conn *c, const char *method,
+                       const lsh_url *u, const char *headers, const char *body,
+                       long long deadline, body_sink *sink,
+                       char **out_headers, int is_h2c) {
+    h2c_conn h;
+    h2c_init(&h);
+    int rc;
+
+    if (is_h2c) {
+        /* Client connection preface: magic + empty SETTINGS. */
+        rc = conn_write_all(c, H2_PREFACE_MAGIC, 24, deadline);
+        if (rc == 0)
+            rc = h2_write_frame(c, H2_FTYPE_SETTINGS, 0, 0, NULL, 0,
+                                deadline);
+        if (rc != 0) {
+            h2c_free(&h);
+            return rc;
+        }
+    }
+    /* For h2-over-TLS the preface magic is still required. */
+    if (!is_h2c) {
+        rc = conn_write_all(c, H2_PREFACE_MAGIC, 24, deadline);
+        if (rc == 0)
+            rc = h2_write_frame(c, H2_FTYPE_SETTINGS, 0, 0, NULL, 0,
+                                deadline);
+        if (rc != 0) {
+            h2c_free(&h);
+            return rc;
+        }
+    }
+
+    hpk_buf blk;
+    blk.p = NULL;
+    blk.len = 0;
+    blk.cap = 0;
+    if (!h2_build_headers(&h, method, u, headers, body, &blk)) {
+        free(blk.p);
+        h2c_free(&h);
+        return LSH_E_MEMORY;
+    }
+    rc = h2_send_request(c, &h, 1, &blk, body, deadline);
+    free(blk.p);
+    if (rc != 0) {
+        h2c_free(&h);
+        return rc;
+    }
+    int status = h2_read_response(c, &h, 1, deadline, sink, out_headers);
+    h2_send_goaway(c, 1, deadline);
+    h2c_free(&h);
+    return status;
+}
+
+
+/* h2 redirect loop: http:// hops speak h2c (prior knowledge);
+ * https:// hops offer ALPN and speak h2 when negotiated, otherwise the
+ * remainder of the request is delegated to the HTTP/1.1 engine. */
+static int h2_perform(const char *method0, const char *url0,
+                      const char *headers, const char *body,
+                      long long timeout_ms, int max_redirects, int verify_tls,
+                      body_sink *sink, char **out_headers, int *out_proto) {
+    char method[16];
+    char url[2800];
+    snprintf(method, sizeof(method), "%s", method0);
+    snprintf(url, sizeof(url), "%s", url0);
+
+    if (timeout_ms <= 0) timeout_ms = 30000;
+    if (max_redirects < 0) max_redirects = 10;
+
+    for (int hop = 0;; hop++) {
+        lsh_url u;
+        if (!lsh_parse_url(url, &u)) {
+            lsh_set_detail("unsupported or malformed URL: %.96s", url, NULL);
+            return LSH_E_URL;
+        }
+        if (strcmp(u.scheme, "https") != 0 && strcmp(u.scheme, "http") != 0) {
+            lsh_set_detail("unsupported scheme '%s'", u.scheme, NULL);
+            return LSH_E_URL;
+        }
+
+        long long deadline = lsh_now_ms() + timeout_ms;
+        struct lsh_conn conn;
+        conn.fd = -1;
+        conn.ssl = NULL;
+        conn.ctx = NULL;
+
+        int rc = tcp_connect(&u, deadline, &conn);
+        if (rc != 0) return rc;
+
+        int is_https = (strcmp(u.scheme, "https") == 0);
+        int use_h2 = !is_https;
+        if (is_https) {
+            const unsigned char *sel = NULL;
+            unsigned sellen = 0;
+            rc = tls_connect_alpn(&u, verify_tls, deadline, &conn, 1,
+                                  &sel, &sellen);
+            if (rc != 0) {
+                conn_close(&conn);
+                return rc;
+            }
+            if (sellen == 2 && memcmp(sel, "h2", 2) == 0) {
+                use_h2 = 1;
+            } else {
+                /* Server has no h2: finish over HTTP/1.1. */
+                conn_close(&conn);
+                long long left = lsh_deadline_left(deadline);
+                int sub = lsh_perform(method, url, headers, body,
+                                      left > 0 ? left : 1,
+                                      max_redirects - hop, verify_tls, sink,
+                                      out_headers);
+                if (out_proto) *out_proto = 1;
+                return sub;
+            }
+        }
+        lsh_socket_timeout(conn.fd, lsh_deadline_left(deadline));
+
+        char *hop_headers = NULL;
+        body_sink tmp_sink;
+        buf_init(&tmp_sink.mem);
+        tmp_sink.file = NULL;
+        int status = h2_exchange(&conn, method, &u, headers, body, deadline,
+                                 &tmp_sink, &hop_headers, !is_https);
+        conn_close(&conn);
+        if (status < 0) {
+            buf_free(&tmp_sink.mem);
+            return status;
+        }
+        if (out_proto) *out_proto = 2;
+
+        if (status == 301 || status == 302 || status == 303 || status == 307 ||
+            status == 308) {
+            char loc[2600];
+            if (hop >= max_redirects) {
+                lsh_set_detail("more than %d redirects", "", NULL);
+                buf_free(&tmp_sink.mem);
+                return LSH_E_REDIRECT;
+            }
+            if (!hop_headers ||
+                !lsh_header_find(hop_headers, "Location", loc, sizeof(loc)) ||
+                loc[0] == '\0') {
+                lsh_set_detail("%d redirect without Location header", "", NULL);
+                buf_free(&tmp_sink.mem);
+                return LSH_E_PROTO;
+            }
+            lsh_url next;
+            if (!lsh_resolve_location(&u, loc, &next)) {
+                lsh_set_detail("bad redirect Location: %.96s", loc, NULL);
+                buf_free(&tmp_sink.mem);
+                return LSH_E_URL;
+            }
+            int next_default_port =
+                (next.port_num == 443 && strcmp(next.scheme, "https") == 0) ||
+                (next.port_num == 80 && strcmp(next.scheme, "http") == 0);
+            snprintf(url, sizeof(url), "%s://%s%s%s%s", next.scheme, next.host,
+                     next_default_port ? "" : ":",
+                     next_default_port ? "" : next.port, next.path);
+            if (status == 303 ||
+                ((status == 301 || status == 302) && strcmp(method, "POST") == 0)) {
+                strcpy(method, "GET");
+                body = "";
+            }
+            buf_free(&tmp_sink.mem);
+            continue;
+        }
+
+        /* Final response: forward the buffered body to the caller sink. */
+        if (tmp_sink.mem.len > 0 &&
+            !sink_write(sink, tmp_sink.mem.p, tmp_sink.mem.len,
+                        (long long)tmp_sink.mem.len)) {
+            buf_free(&tmp_sink.mem);
+            return LSH_E_MEMORY;
+        }
+        buf_free(&tmp_sink.mem);
+        if (out_headers) {
+            *out_headers = hop_headers;
+            if (!*out_headers) return LSH_E_MEMORY;
+        }
+        (void)use_h2;
+        return status;
+    }
+}
+
+static int lsh_http_request_h2_impl(const char *method, const char *url,
+                        const char *headers, const char *body,
+                        long long timeout_ms, int max_redirects,
+                        int verify_tls, char **out_headers, char **out_body,
+                        int *out_proto) {
+    lsh_clear_detail();
+    if (out_headers) *out_headers = NULL;
+    if (out_body) *out_body = NULL;
+    if (out_proto) *out_proto = 0;
+
+    body_sink sink;
+    sink.file = NULL;
+    buf_init(&sink.mem);
+
+    int proto = 0;
+    int status = h2_perform(method, url, headers, body, timeout_ms,
+                            max_redirects, verify_tls, &sink, out_headers,
+                            &proto);
+    if (out_proto) *out_proto = proto;
+    if (status < 0) {
+        buf_free(&sink.mem);
+        if (out_headers) *out_headers = NULL;
+        return status;
+    }
+
+    if (out_body) {
+        *out_body = lsh_gc_string(sink.mem.p ? sink.mem.p : "", sink.mem.len);
+        if (!*out_body) {
+            buf_free(&sink.mem);
+            if (out_headers) *out_headers = NULL;
+            return LSH_E_MEMORY;
+        }
+    }
+    buf_free(&sink.mem);
+    return status;
+}
+
+static int lsh_http_download_h2_impl(const char *url, const char *dest_path,
+                         long long timeout_ms, int max_redirects,
+                         int verify_tls, int *out_proto) {
+    lsh_clear_detail();
+    if (out_proto) *out_proto = 0;
+    FILE *f = fopen(dest_path, "wb");
+    if (!f) {
+        lsh_set_detail("cannot open '%s' for writing", dest_path, NULL);
+        return LSH_E_FILE;
+    }
+    body_sink sink;
+    sink.file = f;
+    buf_init(&sink.mem);
+
+    int proto = 0;
+    int status = h2_perform("GET", url, "", "", timeout_ms, max_redirects,
+                            verify_tls, &sink, NULL, &proto);
+    if (out_proto) *out_proto = proto;
+    int io_ok = (fflush(f) == 0);
+    fclose(f);
+    buf_free(&sink.mem);
+    if (status < 0) return status;
+    if (!io_ok) {
+        lsh_set_detail("write error while saving to '%s'", dest_path, NULL);
+        return LSH_E_FILE;
+    }
+    return status;
+}
+
 #else /* _WIN32 */
 
 static wchar_t *utf8_to_wide(const char *s) {
@@ -1237,9 +2102,10 @@ static char *wide_to_utf8(const wchar_t *w) {
     return s;
 }
 
-static int win_perform(const char *method0, const char *url0, const char *headers,
+static int win_perform_h2(const char *method0, const char *url0, const char *headers,
                        const char *body, long long timeout_ms, int max_redirects,
-                       int verify_tls, body_sink *sink, char **out_headers) {
+                       int verify_tls, body_sink *sink, char **out_headers,
+                       int *out_proto) {
     char method[16];
     char url[2800];
     snprintf(method, sizeof(method), "%s", method0);
@@ -1316,6 +2182,17 @@ static int win_perform(const char *method0, const char *url0, const char *header
         WinHttpSetOption(req, WINHTTP_OPTION_DISABLE_FEATURE, &redir_feature,
                          sizeof(redir_feature));
 
+        if (out_proto) {
+            /* Opt into HTTP/2 where the OS supports it (Windows 10+);
+             * WinHTTP negotiates via ALPN on TLS and reports back below. */
+            DWORD h2mask = WINHTTP_PROTOCOL_FLAG_HTTP2;
+            WinHttpSetOption(req, WINHTTP_OPTION_ENABLE_HTTP_PROTOCOL,
+                             &h2mask, sizeof(h2mask));
+            *out_proto = 1;
+        }
+        WinHttpSetOption(req, WINHTTP_OPTION_DISABLE_FEATURE, &redir_feature,
+                         sizeof(redir_feature));
+
         if (secure && !verify_tls) {
             DWORD secflags = SECURITY_FLAG_IGNORE_UNKNOWN_CA |
                              SECURITY_FLAG_IGNORE_CERT_CN_INVALID |
@@ -1359,6 +2236,16 @@ static int win_perform(const char *method0, const char *url0, const char *header
             WinHttpCloseHandle(req);
             WinHttpCloseHandle(conn);
             return LSH_E_RECV;
+        }
+
+        if (out_proto) {
+            DWORD used = 0;
+            DWORD ulen = sizeof(used);
+            if (WinHttpQueryOption(req, WINHTTP_OPTION_HTTP_PROTOCOL_USED,
+                                   &used, &ulen) &&
+                (used & WINHTTP_PROTOCOL_FLAG_HTTP2)) {
+                *out_proto = 2;
+            }
         }
 
         DWORD status = 0, sz = sizeof(status);
@@ -1474,9 +2361,81 @@ static int win_perform(const char *method0, const char *url0, const char *header
     }
 }
 
+static int win_perform(const char *method, const char *url, const char *headers,
+                       const char *body, long long timeout_ms, int max_redirects,
+                       int verify_tls, body_sink *sink, char **out_headers) {
+    return win_perform_h2(method, url, headers, body, timeout_ms,
+                          max_redirects, verify_tls, sink, out_headers, NULL);
+}
+
+int lsh_http_request_h2(const char *method, const char *url, const char *headers,
+                     const char *body, long long timeout_ms, int max_redirects,
+                     int verify_tls, char **out_headers, char **out_body,
+                     int *out_proto) {
+    lsh_clear_detail();
+    if (out_headers) *out_headers = NULL;
+    if (out_body) *out_body = NULL;
+    if (out_proto) *out_proto = 0;
+
+    body_sink sink;
+    sink.file = NULL;
+    buf_init(&sink.mem);
+
+    int proto = 0;
+    int status = win_perform_h2(method, url, headers, body, timeout_ms,
+                                max_redirects, verify_tls, &sink, out_headers,
+                                &proto);
+    if (out_proto) *out_proto = proto;
+    if (status < 0) {
+        buf_free(&sink.mem);
+        if (out_headers) *out_headers = NULL;
+        return status;
+    }
+
+    if (out_body) {
+        *out_body = lsh_gc_string(sink.mem.p ? sink.mem.p : "", sink.mem.len);
+        if (!*out_body) {
+            buf_free(&sink.mem);
+            if (out_headers) *out_headers = NULL;
+            return LSH_E_MEMORY;
+        }
+    }
+    buf_free(&sink.mem);
+    return status;
+}
+
+int lsh_http_download_h2(const char *url, const char *dest_path,
+                         long long timeout_ms, int max_redirects,
+                         int verify_tls, int *out_proto) {
+    lsh_clear_detail();
+    if (out_proto) *out_proto = 0;
+    FILE *f = fopen(dest_path, "wb");
+    if (!f) {
+        lsh_set_detail("cannot open '%s' for writing", dest_path, NULL);
+        return LSH_E_FILE;
+    }
+    body_sink sink;
+    sink.file = f;
+    buf_init(&sink.mem);
+
+    int proto = 0;
+    int status = win_perform_h2("GET", url, "", "", timeout_ms, max_redirects,
+                                verify_tls, &sink, NULL, &proto);
+    if (out_proto) *out_proto = proto;
+    int io_ok = (fflush(f) == 0);
+    fclose(f);
+    buf_free(&sink.mem);
+    if (status < 0) return status;
+    if (!io_ok) {
+        lsh_set_detail("write error while saving to '%s'", dest_path, NULL);
+        return LSH_E_FILE;
+    }
+    return status;
+}
+
 #endif /* _WIN32 */
 
-int lsh_http_request(const char *method, const char *url, const char *headers,
+static int lsh_http_request_impl(const char *method, const char *url, const char *headers,
                      const char *body, long long timeout_ms, int max_redirects,
                      int verify_tls, char **out_headers, char **out_body) {
     lsh_clear_detail();
@@ -1507,7 +2466,7 @@ int lsh_http_request(const char *method, const char *url, const char *headers,
     return status;
 }
 
-int lsh_http_download(const char *url, const char *dest_path, long long timeout_ms,
+static int lsh_http_download_impl(const char *url, const char *dest_path, long long timeout_ms,
                       int max_redirects, int verify_tls) {
     lsh_clear_detail();
     FILE *f = fopen(dest_path, "wb");
@@ -1530,4 +2489,76 @@ int lsh_http_download(const char *url, const char *dest_path, long long timeout_
         return LSH_E_FILE;
     }
     return status;
+}
+
+/* Public wrappers: scope SIGPIPE immunity to the request lifetime.
+ * (On Windows the h2 entry points keep their WinHTTP-native definitions
+ * above; only the shared 1.1 entries are wrapped there.) */
+#ifndef _WIN32
+int lsh_http_request_h2(const char *method, const char *url,
+                     const char *headers, const char *body,
+                     long long timeout_ms, int max_redirects,
+                     int verify_tls, char **out_headers, char **out_body,
+                     int *out_proto) {
+#ifndef _WIN32
+    lsh_spipe_hold();
+    int rc = lsh_http_request_h2_impl(method, url, headers, body, timeout_ms,
+                                      max_redirects, verify_tls, out_headers,
+                                      out_body, out_proto);
+    lsh_spipe_drop();
+    return rc;
+#else
+    return lsh_http_request_h2_impl(method, url, headers, body, timeout_ms,
+                                    max_redirects, verify_tls, out_headers,
+                                    out_body, out_proto);
+#endif
+}
+
+int lsh_http_download_h2(const char *url, const char *dest_path,
+                      long long timeout_ms, int max_redirects,
+                      int verify_tls, int *out_proto) {
+#ifndef _WIN32
+    lsh_spipe_hold();
+    int rc = lsh_http_download_h2_impl(url, dest_path, timeout_ms,
+                                       max_redirects, verify_tls, out_proto);
+    lsh_spipe_drop();
+    return rc;
+#else
+    return lsh_http_download_h2_impl(url, dest_path, timeout_ms,
+                                     max_redirects, verify_tls, out_proto);
+#endif
+}
+#else
+/* Windows keeps its native h2 definitions; wrap only the shared entries. */
+#endif
+
+int lsh_http_request(const char *method, const char *url, const char *headers,
+                     const char *body, long long timeout_ms, int max_redirects,
+                     int verify_tls, char **out_headers, char **out_body) {
+#ifndef _WIN32
+    lsh_spipe_hold();
+    int rc = lsh_http_request_impl(method, url, headers, body, timeout_ms,
+                                   max_redirects, verify_tls, out_headers,
+                                   out_body);
+    lsh_spipe_drop();
+    return rc;
+#else
+    return lsh_http_request_impl(method, url, headers, body, timeout_ms,
+                                 max_redirects, verify_tls, out_headers,
+                                 out_body);
+#endif
+}
+
+int lsh_http_download(const char *url, const char *dest_path,
+                      long long timeout_ms, int max_redirects, int verify_tls) {
+#ifndef _WIN32
+    lsh_spipe_hold();
+    int rc = lsh_http_download_impl(url, dest_path, timeout_ms, max_redirects,
+                                    verify_tls);
+    lsh_spipe_drop();
+    return rc;
+#else
+    return lsh_http_download_impl(url, dest_path, timeout_ms, max_redirects,
+                                  verify_tls);
+#endif
 }
