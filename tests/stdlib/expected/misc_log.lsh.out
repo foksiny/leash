@@ -6,6 +6,6 @@ WARN : warn message
 
 ERROR: error message
 
-file has content:false
-warn in file:false | debug filtered:true
---- Executed at 2026-08-24 04:46:20 ---
+file has content:true
+warn in file:true | debug filtered:true
+--- Executed at 2026-10-15 22:16:21 ---

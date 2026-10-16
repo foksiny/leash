@@ -5,6 +5,89 @@ All notable changes to the Leash compiler are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.3.3] - 2026-10-16
+
+Minor release: ChaCha20 CSPRNG for all randomness, and the JVM backend
+reaches 96/99 stdlib parity — unions, generic classes, `async`/`await`,
+workers/`spawn`, and 128-bit integers now run on the JVM with native
+output parity. The 3 remaining stdlib files need real native code
+(sockets/TLS/SQLite via `@from`) and stay clean unsupported errors.
+
+### Added — JVM backend
+- Unions: `Object[]{tag, payload}` representation with native-exact
+  semantics — auto variant selection, tag-checked reads (same abort
+  message, skipped under `unsafe`), `.cur` smart reads, `show`/`typeof`
+  support, and bit-exact `int64`<->`double` reinterpretation.
+- Generic classes via monomorphized clones (template-name and type
+  parameter resolution mirrors the native backend).
+- `async fnc` / `await` / `future<T>` over `CompletableFuture` and a
+  shared cached pool (per-function `Supplier` tasks); `spawn` /
+  `worker fnc` reuse the same pool.
+- `int<128>` / `uint<128>` via `BigInteger`: full arithmetic,
+  comparisons, shifts, bitwise ops, compound assignment, `++`/`--`,
+  `show`, conversions (unsigned sources keep magnitude).
+- `getenv()` (`System.getenv`), `exit()` (`System.exit`), string
+  subtraction (`a - b`, all-occurrences removal), `pointer<char>` as
+  nullable string, `__toint_conv` conversion nodes.
+- Cross-class runtime helpers are public (stdlib classes call
+  main-class helpers without `IllegalAccessError`).
+- Uninitialized strings default to `""` (native parity: `!= null`,
+  concatenates empty); uninitialized struct/class locals are default
+  constructed instead of null.
+
+### Changed
+- `rand` / `randf` / `choose` / `seed` now run on a ChaCha20-based
+  CSPRNG (RFC 8439, 64-bit counter, zero nonce) on both the native C
+  runtime and the JVM backend: integer ranges use unbiased rejection
+  sampling, `randf` uses full 53-bit draws, unseeded draws pull OS
+  entropy, and `seed(n)` selects a bit-identical stream on every
+  backend. Seeded golden output updated (`tests/expected/rand.lsh.out`).
+- `docs/compiler.html`: JVM capability table updated (async needs
+  Java 8+; `@from` native libraries stay native-only).
+
+### Fixed
+- JVM `&&` with non-constant operands computed NOR (literals
+  constant-folded, hiding the bug); short-circuit lowering rewritten.
+- JVM `choose()` never ran (call site built `Object[]` against a
+  `String[]` helper signature); helper now takes `Object[]` with a
+  checked cast on retrieval.
+- JVM string/`char` concatenation produced code points (`"a" + 'b'`
+  gave `"a98"`); chars now materialize as single characters.
+- JVM `s == null` failed (`tostring()` of nil); nil sides pass through
+  to `Objects.equals`.
+- JVM `LALOAD`/`DALOAD` stack accounting (2-slot results tracked as 1).
+- JVM class-cast on `(vec<T>){...}` element copies (verifier-safe
+  per-lane conversion; empty literals emit empty lists directly).
+- Native `toint` with `int128`/`uint128` aliases now resolves to the
+  wide type (plus full-precision decimal parse for >64-bit targets).
+- `tests/stdlib/text_tmpl.lsh` escaped its `{{...}}` literals (it was
+  failing on every toolchain; baseline re-recorded).
+- `tests/stdlib/misc_log.lsh` closes the log file before reading it
+  back (native buffering made the old assertion backend-dependent).
+
+## [1.3.2] - 2026-10-15
+
+Patch release: JVM backend complete (`--target jvm`), File I/O implemented
+on JVM, `exec` builtin ported, WIDE local-index support, command
+dispatch tightened. All stdlib + native gates still green.
+
+### Added
+- JVM File I/O: `File.open` (r/w/a modes), `read`, `write`, `writebytes`,
+  `close`, `size`, `rename`, `delete`, with byte-faithful read/write
+  (ISO-8859-1).
+- JVM `exec` builtin: stdout capture and `code`/`run`/`wait` mode parity.
+- WIDE-prefixed local slot load/store/index handling (more than 255 locals).
+- docs: JVM target tables, `_PLATFORM == "jvm"`, changelog sync to 1.3.2.
+
+### Changed
+- `embedded` python CLI help/version and self-hosted banner report v1.3.2.
+- Docs version badges now report v1.3.2.
+
+### Fixed
+- `int[]` array-literal and `int<64>` literals had regression under JVM.
+- Self-hosted compiler no longer crashes on JvmGen fields after
+  compilation: `CodeGen.make` fully initializes state.
+
 ## [1.2.2] - 2026-10-13
 
 Patch release: worker-shared globals actually work, index stores exist,

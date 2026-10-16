@@ -3088,24 +3088,196 @@ void leash_sh_wait(double seconds) {
     usleep((useconds_t)(seconds * 1e6));
 }
 
+/* ---- ChaCha20-based CSPRNG (RFC 8439, 64-bit counter, zero nonce) ----
+   seed(s) selects a fully deterministic stream (identical to the JVM
+   backend's stream for the same seed); unseeded draws pull the key and
+   initial counter from OS entropy (getrandom//dev/urandom, bcrypt on
+   Windows, time/pid/address mix as a last resort). */
+static uint32_t chacha_key[8];
+static uint64_t chacha_ctr = 0;
+static uint32_t chacha_buf[16];
+static int chacha_pos = 16;
+static int chacha_seeded = 0;
+#ifdef _WIN32
+static CRITICAL_SECTION chacha_cs;
+static LONG chacha_cs_ready = 0;
+#else
+static pthread_mutex_t chacha_mutex = PTHREAD_MUTEX_INITIALIZER;
+#endif
+
+static void chacha_lock(void) {
+#ifdef _WIN32
+    /* 0 -> 1 claims init, 2 means ready (workers may race first use). */
+    if (InterlockedCompareExchange(&chacha_cs_ready, 1, 0) == 0) {
+        InitializeCriticalSection(&chacha_cs);
+        InterlockedExchange(&chacha_cs_ready, 2);
+    } else {
+        while (chacha_cs_ready != 2) Sleep(0);
+    }
+    EnterCriticalSection(&chacha_cs);
+#else
+    pthread_mutex_lock(&chacha_mutex);
+#endif
+}
+
+static void chacha_unlock(void) {
+#ifdef _WIN32
+    LeaveCriticalSection(&chacha_cs);
+#else
+    pthread_mutex_unlock(&chacha_mutex);
+#endif
+}
+
+static uint64_t chacha_splitmix(uint64_t *x) {
+    uint64_t z = (*x += 0x9E3779B97F4A7C15ull);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    return z ^ (z >> 31);
+}
+
+/* Fill key/ctr from OS entropy. Caller holds the lock. */
+static void chacha_seed_from_os(void) {
+    unsigned char buf[40];
+    int ok = 0;
+#if defined(_WIN32)
+    HMODULE h = LoadLibraryA("bcrypt.dll");
+    if (h) {
+        NTSTATUS (WINAPI *pGen)(PUCHAR, ULONG, ULONG) =
+            (void*)(uintptr_t)GetProcAddress(h, "BCryptGenRandom");
+        if (pGen && pGen(buf, (ULONG)sizeof buf, 0x00000002u) >= 0) ok = 1;
+        FreeLibrary(h);
+    }
+#else
+    FILE *f = fopen("/dev/urandom", "rb");
+    if (f) {
+        size_t n = fread(buf, 1, sizeof buf, f);
+        fclose(f);
+        if (n == sizeof buf) ok = 1;
+    }
+#endif
+    if (!ok) {
+        uint64_t x = (uint64_t)time(NULL) ^ ((uint64_t)clock() << 1);
+#ifdef _WIN32
+        x ^= (uint64_t)GetCurrentProcessId() * 0x9E3779B97F4A7C15ull;
+#else
+        x ^= (uint64_t)getpid() * 0x9E3779B97F4A7C15ull;
+#endif
+        x ^= (uint64_t)(uintptr_t)&buf;
+        for (int i = 0; i < 40; i += 8) {
+            uint64_t v = chacha_splitmix(&x);
+            for (int b = 0; b < 8 && i + b < 40; b++)
+                buf[i + b] = (unsigned char)(v >> (8 * b));
+        }
+    }
+    for (int i = 0; i < 8; i++) {
+        chacha_key[i] = (uint32_t)buf[4 * i]
+            | ((uint32_t)buf[4 * i + 1] << 8)
+            | ((uint32_t)buf[4 * i + 2] << 16)
+            | ((uint32_t)buf[4 * i + 3] << 24);
+    }
+    uint64_t c = 0;
+    for (int b = 0; b < 8; b++) c |= (uint64_t)buf[32 + b] << (8 * b);
+    chacha_ctr = c;
+}
+
+#define CHACHA_QR(x, a, b, c, d) do { \
+    (x)[a] += (x)[b]; (x)[d] ^= (x)[a]; (x)[d] = ((x)[d] << 16) | ((x)[d] >> 16); \
+    (x)[c] += (x)[d]; (x)[b] ^= (x)[c]; (x)[b] = ((x)[b] << 12) | ((x)[b] >> 20); \
+    (x)[a] += (x)[b]; (x)[d] ^= (x)[a]; (x)[d] = ((x)[d] << 8) | ((x)[d] >> 24); \
+    (x)[c] += (x)[d]; (x)[b] ^= (x)[c]; (x)[b] = ((x)[b] << 7) | ((x)[b] >> 25); \
+} while (0)
+
+/* Run one block into chacha_buf (caller holds the lock). */
+static void chacha_block_locked(void) {
+    uint32_t st[16];
+    st[0] = 1634760805u; st[1] = 857760878u;
+    st[2] = 2036477234u; st[3] = 1797285236u;
+    for (int i = 0; i < 8; i++) st[4 + i] = chacha_key[i];
+    st[12] = (uint32_t)(chacha_ctr & 0xFFFFFFFFu);
+    st[13] = (uint32_t)((chacha_ctr >> 32) & 0xFFFFFFFFu);
+    st[14] = 0; st[15] = 0;
+    uint32_t w[16];
+    for (int i = 0; i < 16; i++) w[i] = st[i];
+    for (int r = 0; r < 10; r++) {
+        CHACHA_QR(w, 0, 4, 8, 12); CHACHA_QR(w, 1, 5, 9, 13);
+        CHACHA_QR(w, 2, 6, 10, 14); CHACHA_QR(w, 3, 7, 11, 15);
+        CHACHA_QR(w, 0, 5, 10, 15); CHACHA_QR(w, 1, 6, 11, 12);
+        CHACHA_QR(w, 2, 7, 8, 13); CHACHA_QR(w, 3, 4, 9, 14);
+    }
+    for (int i = 0; i < 16; i++) chacha_buf[i] = w[i] + st[i];
+    chacha_ctr++;
+    chacha_pos = 0;
+}
+
+/* One uniform 64-bit draw (caller holds the lock). */
+static uint64_t chacha_next_locked(void) {
+    if (!chacha_seeded) {
+        chacha_seed_from_os();
+        chacha_seeded = 1;
+        chacha_pos = 16;
+    }
+    if (chacha_pos >= 16) chacha_block_locked();
+    uint32_t lo = chacha_buf[chacha_pos++];
+    uint32_t hi = chacha_buf[chacha_pos++];
+    return ((uint64_t)hi << 32) | lo;
+}
+
+/* Uniform range draw (caller holds the lock). Mirrors the JVM backend. */
+static int64_t chacha_range_locked(int64_t min, int64_t max) {
+    if (max < min) return min;
+    /* Modular span so gigantic ranges wrap instead of invoking UB. */
+    uint64_t urange = (uint64_t)max - (uint64_t)min + 1;
+    uint64_t r;
+    if ((int64_t)urange <= 0) {
+        /* Wrapped span: 63-bit draw modulo 2^63-1 stays in range. */
+        r = (uint64_t)(chacha_next_locked() & 0x7FFFFFFFFFFFFFFFull)
+            % (uint64_t)0x7FFFFFFFFFFFFFFFull;
+    } else if (urange > (1ull << 62)) {
+        r = (uint64_t)(chacha_next_locked() & 0x7FFFFFFFFFFFFFFFull) % urange;
+    } else {
+        uint64_t space = 1ull << 62;
+        uint64_t limit = space - (space % urange);
+        do {
+            r = (uint64_t)chacha_next_locked() & (space - 1);
+        } while (r >= limit);
+        r = r % urange;
+    }
+    return min + (int64_t)r;
+}
+
 void leash_sh_seed(int64_t s) {
-    srand((unsigned int)s);
+    chacha_lock();
+    /* Deterministic stream: derive the key from a zero-key block at
+       counter s (same derivation as the JVM backend). */
+    for (int i = 0; i < 8; i++) chacha_key[i] = 0;
+    chacha_ctr = (uint64_t)s;
+    chacha_block_locked();
+    for (int i = 0; i < 8; i++) chacha_key[i] = chacha_buf[i];
+    chacha_ctr = 1;
+    chacha_pos = 16;
+    chacha_seeded = 1;
+    chacha_unlock();
 }
 
 int64_t leash_sh_rand(int64_t min, int64_t max) {
-    if (max < min) return min;
-    int64_t range = max - min + 1;
-    return ((int64_t)rand()) % range + min;
+    chacha_lock();
+    int64_t out = chacha_range_locked(min, max);
+    chacha_unlock();
+    return out;
 }
 
 double leash_sh_randf(double min, double max) {
-    double fraction = (double)rand() / 2147483647.0;
+    chacha_lock();
+    uint64_t u = chacha_next_locked();
+    chacha_unlock();
+    double fraction = (double)(u >> 11) * (1.0 / 9007199254740992.0);
     return fraction * (max - min) + min;
 }
 
 char* leash_sh_choose(int64_t n, ...) {
     if (n <= 0) return NULL;
-    int idx = rand() % (int)n;
+    chacha_lock();
+    int64_t idx = chacha_range_locked(0, n - 1);
     va_list ap;
     va_start(ap, n);
     char* result = NULL;
@@ -3114,6 +3286,7 @@ char* leash_sh_choose(int64_t n, ...) {
         if (i == idx) result = s;
     }
     va_end(ap);
+    chacha_unlock();
     return result;
 }
 

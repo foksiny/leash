@@ -332,15 +332,104 @@ class TestJvmTarget(unittest.TestCase):
 
     # ---- deferred features must fail cleanly ------------------------------
 
-    def test_spawn_unsupported(self):
-        path = os.path.join(self.tmp, "spawn.lsh")
-        with open(path, "w") as f:
-            f.write('worker fnc work() : void { show("w"); }\n'
-                    'fnc main() : void {\n    spawn work();\n}\n')
-        r = _sh([BIN_LEASHC, "compile", path, "--target", "jvm",
-                 "to", os.path.join(self.tmp, "spawn")])
-        self.assertNotEqual(r.returncode, 0)
-        self.assertIn("unsupported", (r.stdout + r.stderr).lower())
+    def test_seeded_rng_parity(self):
+        self._parity(
+            'fnc main() : void {\n'
+            '    seed(10);\n'
+            '    show(rand(-10, 10));\n    show(rand(-10, 10));\n'
+            '    show(randf(0, 2));\n'
+            '    show(choose("a", "b", "c"));\n'
+            '    show(rand(1, 6));\n'
+            '}\n')
+
+    def test_union_parity(self):
+        self._parity(
+            'def Value : union {\n    i: int;\n    f: float;\n    s: string\n};\n'
+            'fnc main() : void {\n'
+            '    v := tounion(Value, 45);\n'
+            '    show("v: ", v, ", typeof(v): ", typeof(v));\n'
+            '    f: Value = 10;\n'
+            '    show("f = ", f.cur);\n'
+            '    f = 1.5;\n'
+            '    show("f = ", f.cur);\n'
+            '    f = "hello";\n'
+            '    show("f = ", f.cur);\n'
+            '    f.i = 10;\n'
+            '    show("f = ", f);\n'
+            '    show("fi = ", f.i);\n'
+            '}\n')
+
+    def test_int128_parity(self):
+        self._parity(
+            'use types::*;\n'
+            'fnc main() : void {\n'
+            '    a: int128 = toint(int128, 100);\n'
+            '    b: int128 = toint(int128, 7);\n'
+            '    show(a + b);\n    show(a - b);\n'
+            '    show(a * b);\n    show(a / b);\n    show(a % b);\n'
+            '    show(-b);\n    show(a > b);\n    show(a & b);\n'
+            '    show(a << toint(int128, 2));\n'
+            '}\n')
+
+    def test_async_parity(self):
+        self._parity(
+            'async fnc slow_add(a int, b int) : int {\n'
+            '    return a + b;\n}\n'
+            'async fnc greet(name string) : string {\n'
+            '    return "hello, " + name;\n}\n'
+            'fnc main() : void {\n'
+            '    f1: future<int> = slow_add(19, 23);\n'
+            '    show(await f1);\n'
+            '    show(await greet("leash"));\n'
+            '    show(await slow_add(1, 2));\n'
+            '}\n')
+
+    def test_spawn_workers_parity(self):
+        self._parity(
+            'fusion out: int = 0;\n'
+            'worker fnc wadd(a int, b int) : void {\n    out = a + b;\n}\n'
+            'fnc main() : void {\n'
+            '    spawn wadd(40, 2);\n'
+            '    while out == 0 {\n    }\n'
+            '    show(out);\n'
+            '}\n')
+
+    def test_string_sub_and_char_concat(self):
+        self._parity(
+            'fnc main() : void {\n'
+            '    show("aXbXc" - "X");\n'
+            '    show("abc" - "");\n'
+            '    word: string = "";\n'
+            '    word = word + \'a\' + \'b\';\n'
+            '    show(word);\n'
+            '}\n')
+
+    def test_logic_and_file_parity(self):
+        self._parity(
+            'fnc main() : void {\n'
+            '    x: int = 3;\n'
+            '    show(x > 1 && x < 5);\n'
+            '    show(x > 10 && x < 5);\n'
+            '    show(x > 10 || x < 5);\n'
+            '    f: File = File.open("/etc/hostname", "r");\n'
+            '    if f == null {\n        show("no file");\n        return;\n    }\n'
+            '    c: string = f.read();\n'
+            '    f.close();\n'
+            '    show(c.size > 0);\n'
+            '}\n')
+
+    def test_generic_class_parity(self):
+        self._parity(
+            'pub def Box : class<T> {\n'
+            '    priv v: T;\n'
+            '    static pub fnc of(x T) : Box {\n'
+            '        return Box { v: x };\n    }\n'
+            '    pub fnc get() : T {\n        return this.v;\n    }\n'
+            '};\n'
+            'fnc main() : void {\n'
+            '    b: Box<int> = Box.of(41);\n'
+            '    show(b.get() + 1);\n'
+            '}\n')
 
     def test_to_dynamic_unsupported(self):
         path = os.path.join(self.tmp, "lib.lsh")

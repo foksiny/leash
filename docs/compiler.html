@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v1.3.1 Release</div>
+        <div class="version">v1.3.3 Release</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -102,10 +102,10 @@ java -cp . program</code></pre>
     <tr><td><code>win64</code></td><td><code>x86_64-pc-windows-msvc</code></td><td>Windows x86_64</td></tr>
     <tr><td><code>macos</code></td><td><code>x86_64-apple-darwin</code></td><td>macOS x86_64</td></tr>
     <tr><td><code>macos-arm</code></td><td><code>aarch64-apple-darwin</code></td><td>macOS ARM64 (Apple Silicon)</td></tr>
-    <tr><td><code>jvm</code></td><td>JVM bytecode (class file v49)</td><td>Any Java runtime (Java 5+)</td></tr>
+    <tr><td><code>jvm</code></td><td>JVM bytecode (class file v49)</td><td>Any Java runtime (Java 5+; Java 8+ for <code>async</code>/<code>spawn</code>)</td></tr>
 </table>
 
-<p>The <code>jvm</code> target is emitted by the self-hosted compiler only (<code>bin/leashc</code>). It writes <code>.class</code> files directly — no clang, no linking, no GC runtime — and the result runs on any JVM: <code>java -cp <dir> <name></code> (or <code>leash run --target jvm</code>). Supported: the full core language, vectors, hashes, fixed arrays, structs, classes with inheritance and virtual dispatch, enums, tuples, string/float/int conversion builtins, random/time builtins, and <code>main(string[])</code> with exit codes. Workers/<code>spawn</code>, <code>@from</code> interop, unions, matrices, file I/O, and library outputs report a clean "unsupported" error instead of miscompiling. <code>_PLATFORM</code> reports <code>"jvm"</code>.</p>
+<p>The <code>jvm</code> target is emitted by the self-hosted compiler only (<code>bin/leashc</code>). It writes <code>.class</code> files directly — no clang, no linking, no GC runtime — and the result runs on any JVM: <code>java -cp <dir> <name></code> (or <code>leash run --target jvm</code>). Supported: the full core language, vectors, hashes, fixed arrays, structs, classes with inheritance and virtual dispatch, generic classes, enums, tuples, unions (including <code>int64</code>&lt;-&gt;<code>double</code> reinterpretation), <code>int128</code>/<code>uint128</code>, string/float/int conversion builtins, file I/O, <code>exec</code>, <code>getenv</code>/<code>exit</code>, the ChaCha20 random builtins (<code>seed</code>/<code>rand</code>/<code>randf</code>/<code>choose</code>, bit-identical streams to native), <code>async</code>/<code>await</code> and workers/<code>spawn</code> over a shared thread pool, and <code>main(string[])</code> with exit codes. Only <code>@from</code> native interop (HTTP/SQLite native libraries), matrices, and native library outputs report a clean "unsupported" error instead of miscompiling. Programs using <code>async</code>/<code>spawn</code> need a Java 8+ runtime (<code>CompletableFuture</code>); everything else verifies on Java 5+. <code>_PLATFORM</code> reports <code>"jvm"</code>.</p>
 
 <h2>Debugging</h2>
 
@@ -377,7 +377,7 @@ leash compile program.lsh --opt 3 --pgo-use</code></pre>
     <tr><th>Variable</th><th>Description</th></tr>
     <tr><td><code>_FILEPATH</code></td><td>Full path to the current source file</td></tr>
     <tr><td><code>_FILENAME</code></td><td>Name of the current source file</td></tr>
-    <tr><td><code>_PLATFORM</code></td><td>Target platform (<code>"linux64"</code>, <code>"win64"</code>, <code>"macos"</code>, <code>"macos-arm"</code>)</td></tr>
+    <tr><td><code>_PLATFORM</code></td><td>Target platform (<code>"linux64"</code>, <code>"win64"</code>, <code>"macos"</code>, <code>"macos-arm"</code>, <code>"jvm"</code>)</td></tr>
 </table>
 
 </main>

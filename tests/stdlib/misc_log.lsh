@@ -16,6 +16,7 @@ fnc main() {
     lf := Logger.to_file(toint(int, LogLevel::WARN), lp);
     lf.debug("filtered out");
     lf.warn("only warnings and up");
+    lf.close();
     log_text: string = FileUtil.read_text(lp);
     show("file has content:", log_text.size > 0);
     has_warn: bool = false;

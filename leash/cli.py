@@ -1969,7 +1969,7 @@ def update_leash():
               "inspect and fast-forward manually).")
 
 
-VERSION_STRING = "v1.3.1"
+VERSION_STRING = "v1.3.3"
 
 MAIN_HELP = f"""Leash {VERSION_STRING} - LLVM-powered compiled programming language
 

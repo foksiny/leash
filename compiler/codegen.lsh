@@ -3446,9 +3446,35 @@ pub def CodeGen : class {
                     return res;
                 }
                 if cast2_from == "string" {
+                    if this.lty_width(cast2_lty) > 64 {
+                        // Full-precision decimal parse for wide targets.
+                        wsgn: int = 0;
+                        if !this.is_uint_type(cast2_tgt) { wsgn = 1; }
+                        wslot: string = this.new_reg();
+                        this.emit("  " + wslot + " = alloca " + cast2_lty);
+                        wbp: string = this.new_reg();
+                        this.emit("  " + wbp + " = bitcast " + cast2_lty + "* " + wslot + " to i8*");
+                        wok: string = this.new_reg();
+                        this.emit("  " + wok + " = call i64 @leash_bigint_parse(i8* " + cast2_val + ", i64 " + tostring(this.lty_width(cast2_lty)) + ", i64 " + tostring(wsgn) + ", i8* " + wbp + ")");
+                        wbad: string = this.new_label("b_tc2_bad");
+                        wok_l: string = this.new_label("b_tc2_ok");
+                        wokb: string = this.new_reg();
+                        this.emit("  " + wokb + " = icmp eq i64 " + wok + ", 0");
+                        this.emit("  br i1 " + wokb + ", label %" + wbad + ", label %" + wok_l);
+                        this.emit(wbad + ":");
+                        wmsg: string = "Runtime error: '" + cast2_tgt + "' value out of range or invalid\n";
+                        wep: string = this.const_str_of(wmsg);
+                        this.emit("  call i32 (i8*, ...) @printf(i8* " + wep + ")");
+                        this.emit("  call void @exit(i64 1)");
+                        this.emit("  unreachable");
+                        this.emit(wok_l + ":");
+                        this.current_block_terminated = false;
+                        wres: string = this.new_reg();
+                        this.emit("  " + wres + " = load " + cast2_lty + ", " + cast2_lty + "* " + wslot);
+                        return wres;
+                    }
                     a64: string = this.new_reg();
                     this.emit("  " + a64 + " = call i64 @atoll(i8* " + cast2_val + ")");
-                    if this.lty_width(cast2_lty) > 64 { return a64; }
                     if this.lty_width(cast2_lty) > 32 {
                         this.emit("  " + res + " = trunc i64 " + a64 + " to " + cast2_lty);
                         return res;
@@ -3498,7 +3524,8 @@ pub def CodeGen : class {
 
             // __toint_conv(TargetType, value): arbitrary-width conversion
             if e.sval == "__toint_conv" {
-                tc_target: string = e.args.get(0).sval;
+                tc_target: string = this.tc.resolve_type_alias(e.args.get(0).sval);
+
                 tc_val: string = this.gen_expr(e.args.get(1));
                 // Integer / float values convert directly (width coercion /
                 // fptosi); only STRING values go through the parse paths.

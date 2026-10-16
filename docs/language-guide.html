@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v1.3.1 Release</div>
+        <div class="version">v1.3.3 Release</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -1124,6 +1124,7 @@ key: <span class="kw">char</span> = <span class="fn">keyget</span>();     <span 
 n: <span class="kw">int</span> = <span class="fn">rand</span>(-10, 10);            <span class="cm">// random integer (inclusive)</span>
 f: <span class="kw">float</span> = <span class="fn">randf</span>(0, 2);          <span class="cm">// random float</span>
 name: <span class="kw">string</span> = <span class="fn">choose</span>(<span class="str">"Alice"</span>, <span class="str">"Bob"</span>, <span class="str">"Charlie"</span>);</code></pre>
+<p>All randomness comes from a ChaCha20-based CSPRNG (RFC 8439, 64-bit counter, zero nonce): <code>seed(n)</code> selects a fully deterministic stream that is bit-identical on every backend (native and JVM), while unseeded draws are keyed from OS entropy (<code>/dev/urandom</code>, Windows system RNG, <code>SecureRandom</code> on the JVM). Integer ranges use unbiased rejection sampling; <code>randf</code> draws full 53-bit mantissa precision. The generator is thread-safe.</p>
 
 <h2>Time and Delays</h2>
 <pre><code><span class="fn">wait</span>(1.5);                      <span class="cm">// pause 1.5 seconds</span>
