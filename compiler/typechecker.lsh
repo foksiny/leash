@@ -1610,6 +1610,14 @@ pub def TypeChecker : class {
                 }
                 return "bool";
             }
+            if e.op == "&&" || e.op == "||" {
+                if this.base_of(this.strip_ref(lt_full)) != "bool" && !this.is_type_param(this.base_of(this.strip_ref(lt_full))) {
+                    this.errors.pushb("Operator '" + e.op + "' requires 'bool' operands, but got '" + this.disp_type(lt_full) + "'.");
+                }
+                if this.base_of(this.strip_ref(rt_full)) != "bool" && !this.is_type_param(this.base_of(this.strip_ref(rt_full))) {
+                    this.errors.pushb("Operator '" + e.op + "' requires 'bool' operands, but got '" + this.disp_type(rt_full) + "'.");
+                }
+            }
             if e.op == "==" || e.op == "!=" || e.op == "<" || e.op == "<=" ||
                e.op == ">" || e.op == ">=" || e.op == "&&" || e.op == "||" ||
                e.op == "is" || e.op == "isnt" || e.op == "isT" || e.op == "isntT" {
@@ -2330,7 +2338,11 @@ pub def TypeChecker : class {
         }
 
         if s.kind == StmtKind.IF {
-            this.infer_expr(s.cond);
+            cond_t: string = this.infer_expr(s.cond);
+            cond_b: string = this.base_of(this.strip_ref(cond_t));
+            if cond_b != "bool" && !this.is_type_param(cond_b) {
+                this.errors.pushb("'if' condition must be 'bool', but got '" + this.disp_type(cond_t) + "'.");
+            }
             this.enter_scope();
             foreach _, st in<vector> s.then_block { this.check_statement(st); }
             this.exit_scope();
@@ -2342,7 +2354,11 @@ pub def TypeChecker : class {
         }
 
         if s.kind == StmtKind.WHILE {
-            this.infer_expr(s.cond);
+            cond_t: string = this.infer_expr(s.cond);
+            cond_b: string = this.base_of(this.strip_ref(cond_t));
+            if cond_b != "bool" && !this.is_type_param(cond_b) {
+                this.errors.pushb("'while' condition must be 'bool', but got '" + this.disp_type(cond_t) + "'.");
+            }
             this.enter_scope();
             foreach _, st in<vector> s.body { this.check_statement(st); }
             this.exit_scope();
@@ -2352,7 +2368,13 @@ pub def TypeChecker : class {
         if s.kind == StmtKind.FOR {
             this.enter_scope();
             if s.for_init != null { this.check_statement(s.for_init); }
-            if s.cond != null { this.infer_expr(s.cond); }
+            if s.cond != null {
+                fcond_t: string = this.infer_expr(s.cond);
+                fcond_b: string = this.base_of(this.strip_ref(fcond_t));
+                if fcond_b != "bool" && !this.is_type_param(fcond_b) {
+                    this.errors.pushb("'for' condition must be 'bool', but got '" + this.disp_type(fcond_t) + "'.");
+                }
+            }
             if s.for_step != null { this.check_statement(s.for_step); }
             foreach _, st in<vector> s.body { this.check_statement(st); }
             this.exit_scope();
@@ -2969,6 +2991,35 @@ pub def TypeChecker : class {
             bi = bi + 1;
         }
         return tt;
+    }
+
+    // Check if a type name is a template type parameter (T, T1, _T, ...).
+    // Mirrors Python _is_type_param. Concrete declared types are never
+    // type params.
+    pub fnc is_type_param(t string) : bool {
+        if t.size == 0 { return false; }
+        if this.structs.isin(t) { return false; }
+        if this.classes.isin(t) { return false; }
+        if this.unions.isin(t) { return false; }
+        if this.enums.isin(t) { return false; }
+        if this.prog_aliases.isin(t) { return false; }
+        if t[0] == '_' { return true; }
+        // single uppercase letter (or letter + digit)
+        if t.size == 1 && t[0] >= 'A' && t[0] <= 'Z' { return true; }
+        if t.size == 2 && t[0] >= 'A' && t[0] <= 'Z' && t[1] >= '0' && t[1] <= '9' { return true; }
+        if t.size >= 2 && t[0] == 'T' {
+            rest: string = this.str_slice(t, 1, t.size);
+            if rest.size <= 2 {
+                all_digit: bool = true;
+                ri: int = 0;
+                while ri < rest.size {
+                    if rest[ri] < '0' || rest[ri] > '9' { all_digit = false; }
+                    ri = ri + 1;
+                }
+                if all_digit { return true; }
+            }
+        }
+        return false;
     }
 
     // Word form of an operator, safe for mangled function names.
