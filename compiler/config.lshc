@@ -1,0 +1,3 @@
+# Lower-level (config.lshc) global-command manifest for `leash install`.
+# Builds the self-hosted compiler into ~/.leash/bin/leashc.
+global_install: "{leashc: main.lsh}"

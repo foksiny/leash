@@ -8,8 +8,23 @@ cd "$(dirname "$0")/.."
 
 mkdir -p bin
 
-echo "[bootstrap] Stage 0: python compiler -> bin/leashc_stage1"
-python3 -m leash.cli compile compiler/main.lsh to bin/leashc_stage1
+# Stage 0 produces the first self-hosted compiler binary. Prefer an
+# already-built self-hosted seed (bin/leashc) so the bootstrap can run
+# with NO Python dependency; fall back to the (deprecated) Python
+# compiler only when no seed is available.
+if [ -x bin/leashc ]; then
+    echo "[bootstrap] Stage 0: seeding from existing bin/leashc (Python-free)"
+    cp bin/leashc bin/leashc_stage1
+    chmod +x bin/leashc_stage1
+elif command -v python3 >/dev/null 2>&1 && python3 -c "import leash.cli" 2>/dev/null; then
+    echo "[bootstrap] Stage 0: python compiler -> bin/leashc_stage1 (deprecated; install a seed binary to go Python-free)"
+    python3 -m leash.cli compile compiler/main.lsh to bin/leashc_stage1
+else
+    echo "[bootstrap] ERROR: no seed compiler found." >&2
+    echo "  Provide bin/leashc (a self-hosted seed) or install the Python" >&2
+    echo "  reference package (leashp) for the legacy Stage 0." >&2
+    exit 1
+fi
 
 echo "[bootstrap] Stage 1: bin/leashc_stage1 compiles compiler/main.lsh -> bin/leashc_stage2"
 bin/leashc_stage1 compile compiler/main.lsh -o bin/leashc_stage2
