@@ -145,9 +145,10 @@ pub def TypeChecker : class {
     pub fatal_idx: int;                            // raise-class error index (Python abort parity)
     pub worker_funcs: hash<string, bool>;          // `worker fnc` names
     pub async_funcs: hash<string, bool>;            // `async fnc` names
+    pub in_unsafe_func: bool;                      // inside an `unsafe fnc` (pointer math gate)
 
     static pub fnc make() : TypeChecker {
-        tc: TypeChecker = TypeChecker { current_func_ret: "void", works_error: "", fatal_idx: -1, current_func_name: "<global>" };
+        tc: TypeChecker = TypeChecker { current_func_ret: "void", works_error: "", fatal_idx: -1, current_func_name: "<global>", in_unsafe_func: false };
         empty_shared: hash<string, bool>;
         tc.shared_globals = empty_shared;
         empty_writers: hash<string, string>;
@@ -1607,6 +1608,20 @@ pub def TypeChecker : class {
                 rh_ok2: bool = rh_t2 == "string" || this.is_vec_type2(rh_t2) || (rh_t2.size > 2 && rh_t2[rh_t2.size - 1] == ']');
                 if !rh_ok2 {
                     this.errors.pushb("Operator '<>' is only supported for array types, got '" + rh_t2 + "'");
+                } else {
+                    // Arrays also require the left operand to match the
+                    // element type (python parity).
+                    if rh_t2.size > 2 && rh_t2[rh_t2.size - 1] == ']' && !this.is_vec_type2(rh_t2) {
+                        arr_inner: string = "";
+                        ai2: int = 0;
+                        while ai2 < rh_t2.size && rh_t2[ai2] != '[' {
+                            arr_inner = arr_inner + rh_t2[ai2];
+                            ai2 = ai2 + 1;
+                        }
+                        if arr_inner.size > 0 && !this.types_compatible(lt_full, arr_inner) {
+                            this.errors.pushb("Operator '<>' expects left operand of type '" + arr_inner + "' but got '" + lt_full + "'");
+                        }
+                    }
                 }
                 return "bool";
             }
@@ -1618,8 +1633,8 @@ pub def TypeChecker : class {
                     this.errors.pushb("Operator '" + e.op + "' requires 'bool' operands, but got '" + this.disp_type(rt_full) + "'.");
                 }
             }
-            if e.op == "==" || e.op == "!=" || e.op == "<" || e.op == "<=" ||
-               e.op == ">" || e.op == ">=" || e.op == "&&" || e.op == "||" ||
+            if e.op == "<" || e.op == "<=" || e.op == ">" || e.op == ">=" ||
+               e.op == "&&" || e.op == "||" ||
                e.op == "is" || e.op == "isnt" || e.op == "isT" || e.op == "isntT" {
                 return "bool";
             }
@@ -1651,6 +1666,11 @@ pub def TypeChecker : class {
                 return "int";
             }
             if this.is_numeric_base(lt) && this.is_numeric_base(rt_b) {
+                // Numeric comparisons are always bool (python parity):
+                // promotion must not turn `1.5 == 2` into float.
+                if e.op == "==" || e.op == "!=" {
+                    return "bool";
+                }
                 if lt == "float" || rt_b == "float" || lt == "double" || rt_b == "double" { return "float"; }
                 if lt == "uint" && rt_b == "uint" { return "uint"; }
                 if lt == "char" || rt_b == "char" { return "int"; }
@@ -1679,35 +1699,152 @@ pub def TypeChecker : class {
 
             // Static shift range check (python parity): a constant shift
             // amount outside [0, bits-1] is undefined behavior.
-            if e.kind == ExprKind.BINOP && (e.op == "<<" || e.op == ">>") && e.right != null && e.right.kind == ExprKind.INT {
-                shift_amt: int = e.right.ival;
-                bits: int = 0;
-                // Width detection must run on the FULL type spelling —
-                // base_of strips `uint<128>` to `uint`, which would cap
-                // every sized int at the bare 32-bit default.
-                lt_full_s: string = this.strip_imut(this.strip_ref(this.resolve_type_alias(lt_full)));
-                if lt_full_s.size > 5 && lt_full_s[0] == 'i' && lt_full_s[1] == 'n' && lt_full_s[2] == 't' && lt_full_s[3] == '<' && lt_full_s[lt_full_s.size - 1] == '>' {
-                    bits = this.parse_small_int(this.str_slice(lt_full_s, 4, lt_full_s.size - 1));
+            if e.kind == ExprKind.BINOP && (e.op == "<<" || e.op == ">>") && e.right != null {
+                shift_amt: int = 0;
+                has_amt: bool = false;
+                if e.right.kind == ExprKind.INT {
+                    shift_amt = e.right.ival;
+                    has_amt = true;
+                } else {
+                    if e.right.kind == ExprKind.UNARY && e.right.op == "-"
+                       && e.right.left != null && e.right.left.kind == ExprKind.INT {
+                        shift_amt = 0 - e.right.left.ival;
+                        has_amt = true;
+                    }
                 }
-                if lt_full_s.size > 6 && lt_full_s[0] == 'u' && lt_full_s[1] == 'i' && lt_full_s[2] == 'n' && lt_full_s[3] == 't' && lt_full_s[4] == '<' && lt_full_s[lt_full_s.size - 1] == '>' {
-                    bits = this.parse_small_int(this.str_slice(lt_full_s, 5, lt_full_s.size - 1));
-                }
-                if bits == 0 {
-                    if lt_full_s == "int" || lt_full_s == "uint" { bits = 32; }
-                    if lt_full_s == "char" { bits = 8; }
-                    if lt_full_s == "bool" { bits = 1; }
-                }
-                if bits > 0 {
-                    if shift_amt < 0 {
-                        this.errors.pushb("Shift amount " + tostring(shift_amt) + " is negative.");
-                    } else {
-                        if shift_amt >= bits {
-                            this.errors.pushb("Shift amount " + tostring(shift_amt) + " is greater than or equal to bit-width " + tostring(bits) + " of '" + lt + "'.");
+                if has_amt {
+                    bits: int = 0;
+                    // Width detection must run on the FULL type spelling —
+                    // base_of strips `uint<128>` to `uint`, which would cap
+                    // every sized int at the bare 32-bit default.
+                    lt_full_s: string = this.strip_imut(this.strip_ref(this.resolve_type_alias(lt_full)));
+                    if lt_full_s.size > 5 && lt_full_s[0] == 'i' && lt_full_s[1] == 'n' && lt_full_s[2] == 't' && lt_full_s[3] == '<' && lt_full_s[lt_full_s.size - 1] == '>' {
+                        bits = this.parse_small_int(this.str_slice(lt_full_s, 4, lt_full_s.size - 1));
+                    }
+                    if lt_full_s.size > 6 && lt_full_s[0] == 'u' && lt_full_s[1] == 'i' && lt_full_s[2] == 'n' && lt_full_s[3] == 't' && lt_full_s[4] == '<' && lt_full_s[lt_full_s.size - 1] == '>' {
+                        bits = this.parse_small_int(this.str_slice(lt_full_s, 5, lt_full_s.size - 1));
+                    }
+                    if bits == 0 {
+                        if lt_full_s == "int" || lt_full_s == "uint" { bits = 32; }
+                        if lt_full_s == "char" { bits = 8; }
+                        if lt_full_s == "bool" { bits = 1; }
+                    }
+                    if bits > 0 {
+                        if shift_amt < 0 {
+                            this.errors.pushb("Shift amount " + tostring(shift_amt) + " is negative.");
+                        } else {
+                            if shift_amt >= bits {
+                                this.errors.pushb("Shift amount " + tostring(shift_amt) + " is greater than or equal to bit-width " + tostring(bits) + " of '" + lt + "'.");
+                            }
                         }
                     }
                 }
             }
 
+            // == / != on non-numeric operands (python parity): nil against
+            // a pointer/reference/class instance is a null test; otherwise
+            // the operands must be type-compatible.
+            if e.op == "==" || e.op == "!=" {
+                if (lt_full == "nil") != (rt_full == "nil") {
+                    other_t: string = lt_full;
+                    if lt_full == "nil" { other_t = rt_full; }
+                    other_base: string = this.base_of(this.strip_ref(other_t));
+                    // `File` is a builtin class in the reference (registered
+                    // in class_types) — the self-hosted keeps it special, so
+                    // allow it explicitly for null tests.
+                    if (other_base.size > 1 && other_base[0] == '*')
+                       || other_t == "File" || this.classes.isin(other_t) {
+                        return "bool";
+                    }
+                }
+                if this.types_compatible(lt_full, rt_full) { return "bool"; }
+                this.errors.pushb("Cannot use operator '" + e.op + "' between '" + lt_full + "' and '" + rt_full + "'.");
+                return "bool";
+            }
+            // Element-wise matrix arithmetic (python parity).
+            lt_is_mat: bool = lt_full.size > 7 && lt_full[0] == 'm' && lt_full[1] == 'a' && lt_full[2] == 't' && lt_full[3] == 'r' && lt_full[4] == 'i' && lt_full[5] == 'x' && lt_full[6] == '<';
+            rt_is_mat: bool = rt_full.size > 7 && rt_full[0] == 'm' && rt_full[1] == 'a' && rt_full[2] == 't' && rt_full[3] == 'r' && rt_full[4] == 'i' && rt_full[5] == 'x' && rt_full[6] == '<';
+            if lt_is_mat && rt_is_mat {
+                if e.op == "+" || e.op == "-" || e.op == "*" || e.op == "/" {
+                    if !this.types_compatible(lt_full, rt_full) {
+                        this.errors.pushb("Cannot apply operator '" + e.op + "' to matrices of different types: '" + lt_full + "' and '" + rt_full + "'");
+                    }
+                    return lt_full;
+                }
+                this.errors.pushb("Operator '" + e.op + "' is not supported for matrix types");
+                return lt_full;
+            }
+            // Vector arithmetic (python parity): element-wise, with
+            // scalar broadcasting on either side.
+            lt_v: bool = this.is_vec_type2(this.strip_ref(lt_full));
+            rt_v: bool = this.is_vec_type2(this.strip_ref(rt_full));
+            lt_sc: bool = lt_full == "int" || lt_full == "uint" || lt_full == "float";
+            rt_sc: bool = rt_full == "int" || rt_full == "uint" || rt_full == "float";
+            if (lt_v && rt_v) || (lt_v && rt_sc) || (rt_v && lt_sc) {
+                if e.op == "+" || e.op == "-" || e.op == "*" || e.op == "/" {
+                    if lt_v && rt_v {
+                        if !this.types_compatible(lt_full, rt_full) {
+                            this.errors.pushb("Cannot apply operator '" + e.op + "' to vectors of different types: '" + lt_full + "' and '" + rt_full + "'");
+                        }
+                        return lt_full;
+                    }
+                    if lt_v {
+                        v_inner: string = this.vec_inner_type2(this.strip_ref(lt_full));
+                        if !this.types_compatible(rt_full, v_inner) {
+                            this.errors.pushb("Cannot apply operator '" + e.op + "' to vector '" + lt_full + "' with incompatible scalar type '" + rt_full + "'");
+                        }
+                        return lt_full;
+                    }
+                    v_inner2: string = this.vec_inner_type2(this.strip_ref(rt_full));
+                    if !this.types_compatible(lt_full, v_inner2) {
+                        this.errors.pushb("Cannot apply operator '" + e.op + "' to scalar type '" + lt_full + "' with vector '" + rt_full + "'");
+                    }
+                    return rt_full;
+                }
+                if e.op == "==" || e.op == "!=" {
+                    if lt_v && rt_v && !this.types_compatible(lt_full, rt_full) {
+                        this.errors.pushb("Cannot compare vectors of different types: '" + lt_full + "' and '" + rt_full + "'");
+                    }
+                    return "bool";
+                }
+                this.errors.pushb("Operator '" + e.op + "' is not supported for vector types");
+                return lt_full;
+            }
+            // String operations (python parity): + and - build/remove;
+            // anything else on two strings is rejected.
+            if lt_full == "string" && rt_full == "string" {
+                if e.op == "+" || e.op == "-" { return "string"; }
+                this.errors.pushb("Operator '" + e.op + "' is not supported for strings");
+                return "string";
+            }
+            // Raw-pointer arithmetic (python parity): pointer/reference
+            // +- int keeps the pointer side; raw `*` math additionally
+            // requires an `unsafe fnc` (safe `&` references are exempt).
+            ltb3: string = this.base_of(lt_full);
+            rtb3: string = this.base_of(rt_full);
+            if ltb3.size > 1 && (ltb3[0] == '*' || ltb3[0] == '&') && rtb3 == "int" {
+                if ltb3[0] == '*' && !this.in_unsafe_func {
+                    this.errors.pushb("Pointer arithmetic on '" + lt_full + "' requires an `unsafe fnc`.");
+                }
+                return lt_full;
+            }
+            if ltb3 == "int" && rtb3.size > 1 && (rtb3[0] == '*' || rtb3[0] == '&') {
+                if rtb3[0] == '*' && !this.in_unsafe_func {
+                    this.errors.pushb("Pointer arithmetic on '" + rt_full + "' requires an `unsafe fnc`.");
+                }
+                return rt_full;
+            }
+            // Fallback (python parity): mismatched operands used to fall
+            // through as the left type, letting e.g. struct + int reach
+            // codegen and die with internal LLVM errors — reject instead.
+            // Both-numeric pairs keep the left type (the promotion block
+            // above only returns for the widening combos).
+            if lt_full.size > 0 && rt_full.size > 0
+               && !this.is_type_param(ltb3) && !this.is_type_param(rtb3)
+               && !this.mentions_discard(e, 0)
+               && !(this.is_numeric_base(lt_full) && this.is_numeric_base(rt_full)) {
+                this.errors.pushb("Cannot use operator '" + e.op + "' between '" + lt_full + "' and '" + rt_full + "'.");
+            }
             if lt.size > 0 { return lt; }
             return "int";
         }
@@ -2193,13 +2330,51 @@ pub def TypeChecker : class {
                     }
                     this.errors.pushb(msg + ".");
                 }
+                // Every provided field value must match the declared field
+                // type (python _check_struct_init parity).
+                sfi: int = 0;
+                while sfi < e.field_names.size {
+                    skey: string = e.field_names.get(sfi);
+                    sfti: int = 0;
+                    while sfti < sinfo.field_names.size {
+                        if sinfo.field_names.get(sfti) == skey { stop; }
+                        sfti = sfti + 1;
+                    }
+                    if sfti < sinfo.field_names.size {
+                        s_expected: string = this.resolve_type_alias(sinfo.field_types.get(sfti));
+                        s_actual: string = this.infer_expr(e.args.get(sfi));
+                        this.check_int_literal_fits(e.args.get(sfi), s_expected);
+                        if s_actual.size > 0 && !this.types_compatible(s_actual, s_expected) {
+                            this.errors.pushb("Struct '" + e.sval + "' field '" + skey + "' expects '" + this.disp_type(s_expected) + "' but got '" + this.disp_type(s_actual) + "'.");
+                        }
+                    }
+                    sfi = sfi + 1;
+                }
             }
             return e.sval;
         }
 
         if e.kind == ExprKind.ARRAY_LIT {
             if e.args.size > 0 {
-                return this.infer_expr(e.args.get(0)) + "[]";
+                first_et: string = this.infer_expr(e.args.get(0));
+                // Hash literals ({k: v, ...}) carry field_names and
+                // multi-return tuples (sval == "__tuple__") are both
+                // legitimately heterogeneous — only plain array literals
+                // reject mixed element types (python _check_array_init).
+                if e.field_names.size == 0 && e.sval != "__tuple__" {
+                    // Mixed-type array literals are rejected (python
+                    // _check_array_init parity).
+                    ei3: int = 1;
+                    while ei3 < e.args.size {
+                        elem_t: string = this.infer_expr(e.args.get(ei3));
+                        if first_et.size > 0 && elem_t.size > 0
+                           && !this.types_compatible(elem_t, first_et) {
+                            this.errors.pushb("Array contains mixed types: '" + first_et + "' and '" + elem_t + "'.");
+                        }
+                        ei3 = ei3 + 1;
+                    }
+                }
+                return first_et + "[]";
             }
             return "int[]";
         }
@@ -3082,6 +3257,20 @@ pub def TypeChecker : class {
         return false;
     }
 
+    // True if the expression tree mentions the discard identifier `_`
+    // (python parity: the stdlib idiom `_ = _ + 1 - 1;` marks a foreach
+    // binding as used and must never trip operator checks).
+    pub fnc mentions_discard(e Expr, depth int) : bool {
+        if e == null || depth > 32 { return false; }
+        if e.kind == ExprKind.IDENT && e.sval == "_" { return true; }
+        if e.kind == ExprKind.UNARY { return this.mentions_discard(e.left, depth + 1); }
+        if e.kind == ExprKind.BINOP {
+            if this.mentions_discard(e.left, depth + 1) { return true; }
+            return this.mentions_discard(e.right, depth + 1);
+        }
+        return false;
+    }
+
     // Word form of an operator, safe for mangled function names.
     pub fnc op_word(op string) : string {
         if op == "+" { return "add"; }
@@ -3559,6 +3748,7 @@ pub def TypeChecker : class {
         foreach _, f in<vector> prog.funcs {
             if this.generic_funcs.isin(f.name) { continue; }
             this.current_func_ret = this.resolve_type_alias(f.ret_type);
+            this.in_unsafe_func = f.is_unsafe;
             fkey2: string = f.name;
             if f.owner.size > 0 { fkey2 = f.owner + "_" + f.name; }
             this.current_func_name = fkey2;
@@ -3577,6 +3767,18 @@ pub def TypeChecker : class {
             this.readonly_borrows = rb_clear;
             foreach _, p in<vector> f.params {
                 this.define_var(p.name, this.resolve_type_alias(p.typ));
+                // M3: default parameter values must type-check against
+                // the declared parameter type (python parity — a bad
+                // default used to fall through to codegen as garbage).
+                if p.default_val != null {
+                    pd_bare: string = this.strip_imut(this.resolve_type_alias(p.typ));
+                    if !this.is_type_param(pd_bare) && !this.is_multi_type(p.typ) {
+                        pd_t: string = this.infer_expr(p.default_val);
+                        if pd_t.size > 0 && pd_t != "nil" && !this.types_compatible(pd_t, pd_bare) {
+                            this.errors.pushb("Default value for parameter '" + p.name + "' has type '" + this.disp_type(pd_t) + "', but the parameter is declared '" + p.typ + "'.");
+                        }
+                    }
+                }
                 pbt: string = this.strip_imut(p.typ);
                 if p.typ.size > 0 && p.typ[0] != '&' && this.is_array_type(pbt)
                    && !(pbt.size > 4 && pbt[0] == 'v' && pbt[1] == 'e' && pbt[2] == 'c' && pbt[3] == '<') {
@@ -3597,6 +3799,7 @@ pub def TypeChecker : class {
             if this.generic_classes.isin(c.name) { continue; }
             foreach _, m in<vector> c.methods {
                 this.current_func_ret = this.resolve_type_alias(m.ret_type);
+                this.in_unsafe_func = m.is_unsafe;
                 this.current_func_name = c.name + "_" + m.name;
                 this.enter_scope();
                 // Always add 'this', even for static methods — python
@@ -3605,6 +3808,17 @@ pub def TypeChecker : class {
                 this.define_var("this", c.name);
                 foreach _, p in<vector> m.params {
                     this.define_var(p.name, this.resolve_type_alias(p.typ));
+                    // M3 (python parity): default values must match the
+                    // declared parameter type — class methods too.
+                    if p.default_val != null {
+                        md_bare: string = this.strip_imut(this.resolve_type_alias(p.typ));
+                        if !this.is_type_param(md_bare) && !this.is_multi_type(p.typ) {
+                            md_t: string = this.infer_expr(p.default_val);
+                            if md_t.size > 0 && md_t != "nil" && !this.types_compatible(md_t, md_bare) {
+                                this.errors.pushb("Default value for parameter '" + p.name + "' has type '" + this.disp_type(md_t) + "', but the parameter is declared '" + p.typ + "'.");
+                            }
+                        }
+                    }
                 }
                 foreach _, stmt in<vector> m.body {
                     this.check_statement(stmt);

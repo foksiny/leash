@@ -32,6 +32,13 @@ def Hash : class<T1, T2> {
         return this.values.get(io);
     }
 
+    pub fnc has(name T1) : bool {
+        foreach _, n in<vector> this.names {
+            if n == name { return true; }
+        }
+        return false;
+    }
+
     pub fnc remove(name T1) : T2 {
         io: int = -1;
         foreach i, n in<vector> this.names {
@@ -61,7 +68,7 @@ fnc main() : void {
 
     persons.remove("Jane Doe");
 
-    if persons.get("Jane Doe") == nil {
+    if !persons.has("Jane Doe") {
         show("Jane Doe doesn't exists anymore!");
     } else {
         show("Jane Doe still exists: ", persons.get("Jane Doe"));

@@ -746,7 +746,11 @@ p: *<span class="kw">int</span> = &amp;a;
 <pre><code><span class="kw">fnc</span> <span class="fn">increment</span>(v &amp;<span class="kw">int</span>) : <span class="kw">void</span> {
     v = v + 1;  <span class="cm">// modifies original</span>
 }
-increment(a);  <span class="cm">// passes address automatically</span></code></pre>
+<span class="kw">fnc</span> <span class="fn">main</span>() {
+    a: <span class="kw">int</span> = 10;
+    <span class="fn">increment</span>(a);  <span class="cm">// passes address automatically</span>
+    <span class="fn">show</span>(a);       <span class="cm">// 11</span>
+}</code></pre>
 
 <h3>Pointer Arithmetic</h3>
 <p>Pointer arithmetic is supported on <code>*char</code> pointers for working with raw character data.</p>
