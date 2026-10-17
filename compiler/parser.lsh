@@ -55,6 +55,8 @@ pub def Parser : class {
     pub fatal_tip: string; // python's help tip (may be "")
     pub fatal_line: int;
     pub fatal_col: int;
+    pub deferred_errors: vec<string>; // diagnostics surfaced as typecheck errors (M5 runtime array sizes)
+    pub arr_rt_size: string;          // runtime array size text captured by parse_type
     pub mod_unsafe: bool;   // pending `unsafe` modifier for next `fnc`
     pub mod_nogc: bool;     // pending `nogc` modifier
     pub mod_inline: bool;   // pending `inline` modifier
@@ -72,7 +74,8 @@ pub def Parser : class {
         empty_hf: vec<FuncDecl>;
         empty_macros: hash<string, MacroDef>;
         empty_ml: vec<MacroDef>;
-        return Parser { tokens: tokens, pos: 0, len: tokens.size, fe_counter: 0, no_struct_init: false, type_aliases: empty_aliases, import_aliases: empty_import_aliases, quiet: false, parse_errs: 0, fatal: false, fatal_msg: "", fatal_tip: "", fatal_line: 0, fatal_col: 0, keep_sized: false, mod_unsafe: false, mod_nogc: false, mod_inline: false, mod_async: false, mod_worker: false, hoisted_funcs: empty_hf, hoisted_mark: 0, macros: empty_macros, lambda_counter: 0, macro_list: empty_ml };
+        empty_de: vec<string>;
+        return Parser { tokens: tokens, pos: 0, len: tokens.size, fe_counter: 0, no_struct_init: false, type_aliases: empty_aliases, import_aliases: empty_import_aliases, quiet: false, parse_errs: 0, fatal: false, fatal_msg: "", fatal_tip: "", fatal_line: 0, fatal_col: 0, deferred_errors: empty_de, arr_rt_size: "", keep_sized: false, mod_unsafe: false, mod_nogc: false, mod_inline: false, mod_async: false, mod_worker: false, hoisted_funcs: empty_hf, hoisted_mark: 0, macros: empty_macros, lambda_counter: 0, macro_list: empty_ml };
     }
 
     // Function literal: fnc(a int, b int) : int { ... }  (hoisted, used as a value)
@@ -296,6 +299,7 @@ pub def Parser : class {
     // --- Type Parsing ---
     pub fnc parse_type() : string {
         t: string = "";
+        this.arr_rt_size = "";
         // Multi-type syntax: [T1, T2, ...] — only valid at the start of a
         // type (an array suffix `T[]` is parsed after a base type).
         if this.check(Tok.LBRACKET) {
@@ -452,8 +456,18 @@ pub def Parser : class {
                 t = t + "[" + size_tok.val + "]";
             } else {
                 if !this.check(Tok.RBRACKET) {
-                    // runtime-size expression: consume it, treat as unsized slice
+                    // runtime-size expression: consume it, treat as unsized
+                    // slice — but remember the source text for the M5
+                    // non-constant-size diagnostic.
+                    rt_start: int = this.pos;
                     this.parse_expression(Precedence.LOWEST);
+                    rt_txt: string = "";
+                    rt_i: int = rt_start;
+                    while rt_i < this.pos {
+                        rt_txt = rt_txt + this.tokens.get(rt_i).val;
+                        rt_i = rt_i + 1;
+                    }
+                    this.arr_rt_size = rt_txt;
                 }
                 t = t + "[]";
             }
@@ -1513,9 +1527,17 @@ pub def Parser : class {
                 this.pos = this.pos + 1;
             }
             var_type: string = this.parse_type();
+            // Runtime-sized arrays (`T[n]`) normalize to slices in the type
+            // string; the M5 non-constant-size diagnostic rides along as a
+            // deferred error when the declaration has no initializer.
+            rt_size: string = this.arr_rt_size;
+            this.arr_rt_size = "";
             init_val: Expr = null;
             if this.match_tok(Tok.ASSIGN) {
                 init_val = this.parse_expression(Precedence.LOWEST);
+            }
+            if rt_size.size > 0 && init_val == null {
+                this.deferred_errors.pushb("Array '" + name_tok.val + "' has a non-constant size '" + rt_size + "' but no initializer.");
             }
             this.consume(Tok.SEMI, "expected ';' after variable declaration");
             return Stmt.make_var_decl(name_tok.val, var_type, false, is_imut, init_val);
@@ -2307,7 +2329,9 @@ pub def Parser : class {
             oret = this.opdef_subst_type(oret, otarget, otparams);
         }
 
-        prog.funcs.pushb(FuncDecl.make("_opdef_" + otarget + "_" + oop_word, oparams, oret, obody, false, true));
+        ofd: FuncDecl = FuncDecl.make("_opdef_" + otarget + "_" + oop_word, oparams, oret, obody, false, true);
+        ofd.opdef_type = otarget;
+        prog.funcs.pushb(ofd);
     }
 
     pub fnc parse_function(is_static bool, is_pub bool) : FuncDecl {

@@ -299,9 +299,10 @@ pub def FuncDecl : class {
     pub is_worker: bool;
     pub is_external: bool;   // @from declaration: declare, never define
     pub is_imut: bool;        // `imut fnc` class method: cannot be overridden
+    pub opdef_type: string;  // opdef target type: `this` inside the body
 
     static pub fnc make(name string, params vec<FuncParam>, ret string, body vec<Stmt>, is_stat bool, is_p bool) : FuncDecl {
-        return FuncDecl { name: name, owner: "", params: params, ret_type: ret, body: body, is_static: is_stat, is_pub: is_p, is_unsafe: false, is_nogc: false, is_inline: false, is_async: false, is_worker: false, is_external: false, is_imut: false };
+        return FuncDecl { name: name, owner: "", params: params, ret_type: ret, body: body, is_static: is_stat, is_pub: is_p, is_unsafe: false, is_nogc: false, is_inline: false, is_async: false, is_worker: false, is_external: false, is_imut: false, opdef_type: "" };
     }
 }
 

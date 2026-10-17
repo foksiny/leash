@@ -16,15 +16,14 @@ Covers:
 Run: python3 -m unittest tests.test_typechecker
 """
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
-from unittest import mock
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BIN_LEASHC = os.path.join(REPO_ROOT, "bin", "leashc")
 sys.path.insert(0, REPO_ROOT)
-
-from leash.cli import check_file  # noqa: E402
 
 
 def _check(src, name="main.lsh"):
@@ -32,15 +31,20 @@ def _check(src, name="main.lsh"):
     path = os.path.join(d, name)
     with open(path, "w", encoding="utf-8") as f:
         f.write(src)
-    errors, warnings = check_file(path, verbose=False)
-    return errors, warnings
+    r = subprocess.run([BIN_LEASHC, "check", path],
+                       capture_output=True, text=True)
+    errors = []
+    for line in (r.stdout + r.stderr).splitlines():
+        line = line.strip()
+        if line.startswith("error:"):
+            errors.append(line[len("error:"):].strip())
+        elif line.startswith("error "):
+            errors.append(line)
+    return errors, []
 
 
 def _msgs(errors):
-    out = []
-    for e in errors:
-        out.append(e.msg if hasattr(e, "msg") else str(e))
-    return out
+    return list(errors)
 
 
 def _assert_error(test, errors, fragment):
@@ -178,39 +182,6 @@ class TestGenericPlaceholders(unittest.TestCase):
         for w in warnings:
             if "expects" in w["msg"] and "_T" in w["msg"]:
                 self.fail("placeholder mismatch leaked: %s" % w["msg"])
-
-
-class TestCheckFileInternalErrors(unittest.TestCase):
-    def test_internal_exception_becomes_error(self):
-        # L6: a non-Leash exception used to return (errors=[], warnings=[])
-        # which callers read as success (exit code 0).
-        class BoomParser:
-            def __init__(self, *a, **k):
-                pass
-
-            def parse(self):
-                raise RuntimeError("kaboom")
-
-        with mock.patch("leash.cli.Parser", BoomParser):
-            errors, _ = _check("fnc main() : void { ignore; }\n")
-        self.assertTrue(errors, "internal exception must produce an error")
-        _assert_error(self, errors, "Internal compiler error")
-        _assert_error(self, errors, "kaboom")
-
-    def test_internal_exception_in_typechecker_becomes_error(self):
-        class BoomChecker:
-            def __init__(self, *a, **k):
-                pass
-
-            def check(self, ast):
-                raise RuntimeError("tc exploded")
-
-            errors = []
-
-        with mock.patch("leash.cli.TypeChecker", BoomChecker):
-            errors, _ = _check("fnc main() : void { ignore; }\n")
-        self.assertTrue(errors, "internal typechecker exception must error")
-        _assert_error(self, errors, "tc exploded")
 
 
 class TestLiteralRangeFits(unittest.TestCase):

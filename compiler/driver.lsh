@@ -69,6 +69,7 @@ pub def CompilerDriver : class {
     pub self_path: string;   // argv[0]: how this compiler was invoked
     pub treat_from_safe: bool;   // -tfs: suppress @from native-lib security warnings
     pub imports_fatal: bool;     // a use-import failed to resolve (python raises)
+    pub deferred_parse_errors: vec<string>;  // parser diagnostics surfaced as typecheck errors (M5)
 
     static pub fnc make() : CompilerDriver {
         return CompilerDriver {};
@@ -303,6 +304,9 @@ pub def CompilerDriver : class {
             mod_parser: Parser = Parser.make(mod_toks);
             mod_parser.src_file = this.realpath_str(mod_file);
             mod_prog: Program = mod_parser.parse_program();
+            foreach _, mde in<vector> mod_parser.deferred_errors {
+                this.deferred_parse_errors.pushb(mde);
+            }
             if mod_parser.fatal {
                 // Python parses modules with the same parser, so a fatal
                 // error inside an imported module is fatal there too.
@@ -758,6 +762,14 @@ pub def CompilerDriver : class {
         if verbose { show("[verbose] type-checking"); }
         tc: TypeChecker = TypeChecker.make();
         tc.check_program(prog);
+        // Surface parser-deferred diagnostics (M5 runtime array sizes) as
+        // regular typecheck errors — both the main file and imports.
+        foreach _, de in<vector> parser.deferred_errors {
+            tc.errors.pushb(de);
+        }
+        foreach _, de2 in<vector> this.deferred_parse_errors {
+            tc.errors.pushb(de2);
+        }
         if verbose {
             show("[verbose] type-check finished: ", tostring(tc.errors.size), " errors");
         }
