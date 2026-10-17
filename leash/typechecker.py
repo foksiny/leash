@@ -3724,13 +3724,13 @@ class TypeChecker:
             if left_b == "string" and right_b == "string":
                 if expr.op in ("+", "-"):
                     return "string"
-                elif expr.op in ("==", "!="):
+                elif expr.op in ("==", "!=", "<", "<=", ">", ">="):
                     return "bool"
                 else:
                     raise LeashError(
                         f"Operator '{expr.op}' is not supported for strings",
                         node=expr,
-                        tip="Strings support: + (concatenation), - (removal), == and != (comparison).",
+                        tip="Strings support: + (concatenation), - (removal), ==, !=, <, <=, > and >= (lexicographic comparison).",
                     )
 
             # Is-in operator: value <> array

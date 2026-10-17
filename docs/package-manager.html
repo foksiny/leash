@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v1.4.0 Release</div>
+        <div class="version">v1.5.0 Release</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -46,21 +46,24 @@
     <a href="index.html">Home</a> <span class="sep">/</span> <span class="current">Package Manager</span>
 </div>
 
-<h1>Leashed Package Manager</h1>
+<h1>Package Manager (<code>leash pkg</code>)</h1>
 
-<p><code>leashed</code> is the official package manager for Leash. It lets you create, publish, share, and install Leash libraries through a central registry at <code>github.com/foksiny/leash-packages</code>. Every library lives in its own GitHub repository; the registry is an <code>index.json</code> that maps library names to repo URLs.</p>
+<p><code>leash pkg</code> is the official package manager for Leash, built into the self-hosted compiler. It lets you create, publish, share, and install Leash libraries through a central registry at <code>github.com/foksiny/leash-packages</code>. Every library lives in its own GitHub repository; the registry is an <code>index.json</code> that maps library names to repo URLs. The Python reference toolchain ships the same implementation as the standalone <code>leashed</code> entry point.</p>
 
 <p>Publishing is <strong>fully self-service</strong>: a validation bot reviews and merges registry updates automatically &mdash; no maintainer approval, no waiting on humans. The registry is also optional: you can install any library directly from its Git URL.</p>
 
 <h2>Installation</h2>
-<pre><code><span class="cm"># Installed alongside the Leash compiler</span>
-pip install -e .
+<pre><code><span class="cm"># Built into the self-hosted compiler - no extra install step</span>
+leash pkg --version
+<span class="cm"># leash pkg v0.5.0</span>
+
+<span class="cm"># Python reference implementation (same protocol, used for bootstrap)</span>
 leashed --version
 <span class="cm"># leashed v0.5.0</span></code></pre>
 
 <h2>Creating a Package</h2>
-<p>Scaffold a new library project with <code>leashed init</code>. This creates the standard library structure with a package configuration file where you specify the library's name, version, author, and entry point.</p>
-<pre><code>leashed init mylib
+<p>Scaffold a new library project with <code>leash pkg init</code>. This creates the standard library structure with a package configuration file where you specify the library's name, version, author, and entry point.</p>
+<pre><code>leash pkg init mylib
 <span class="kw">cd</span> mylib</code></pre>
 
 <p>Creates:</p>
@@ -85,7 +88,7 @@ main: <span class="str">"src/main.lsh"</span></code></pre>
 
 <h2>Publishing a Package</h2>
 <p>From inside your project directory, publish your library to the central registry. The publish command handles everything from verification to registration, making it easy to share your libraries with the community.</p>
-<pre><code>leashed publish</code></pre>
+<pre><code>leash pkg publish</code></pre>
 
 <p>This does the following automatically:</p>
 <ol>
@@ -120,7 +123,7 @@ main: <span class="str">"src/main.lsh"</span></code></pre>
 
 <h2>Lockfile: reproducible builds (<code>leash.lock</code>)</h2>
 
-<p><code>leashed</code> maintains a per-project <code>leash.lock</code> file recording the
+<p><code>leash pkg</code> maintains a per-project <code>leash.lock</code> file recording the
 <strong>exact resolved versions</strong> of the project's dependencies. Even though the
 object-file cache already skips recompiles for unchanged sources, the lockfile is what
 makes a project build identically on a fresh machine (or in CI) without any waiting or
@@ -136,45 +139,45 @@ guesswork.</p>
 <p>Rules of the lockfile:</p>
 
 <ul>
-    <li><strong>Write it once, commit it:</strong> <code>leashed lock</code> resolves
+    <li><strong>Write it once, commit it:</strong> <code>leash pkg lock</code> resolves
     <code>leash-pkg.lshc</code>'s <code>dependencies</code> field, installs each package,
     and writes the lock. The file is meant to go into version control.</li>
     <li><strong>Fresh environments restore exactly:</strong> inside a project,
-    bare <code>leashed install</code> (no target) restores the pinned versions from
+    bare <code>leash pkg install</code> (no target) restores the pinned versions from
     <code>leash.lock</code> &mdash; no re-resolution, no surprises.</li>
-    <li><strong>Lockfile pins win:</strong> inside a project, <code>leashed install</code>
+    <li><strong>Lockfile pins win:</strong> inside a project, <code>leash pkg install</code>
     (with a target) prefers the locked version when it exists.</li>
-    <li><strong>Strict CI mode:</strong> <code>leashed install --locked</code> fails when a
+    <li><strong>Strict CI mode:</strong> <code>leash pkg install --locked</code> fails when a
     package isn't pinned in <code>leash.lock</code> (or when no lockfile is present),
     instead of silently resolving another version.</li>
-    <li><strong>Kept in sync:</strong> <code>leashed add</code>, <code>leashed update</code>
-    and <code>leashed uninstall</code> update the lockfile automatically.</li>
+    <li><strong>Kept in sync:</strong> <code>leash pkg add</code>, <code>leash pkg update</code>
+    and <code>leash pkg uninstall</code> update the lockfile automatically.</li>
     <li><strong>Revision pins:</strong> each entry also records the tag's commit
     SHA (<code>rev</code>). Restores verify it and abort on a moved tag, so a
     re-pointed tag can never silently change your build.</li>
 </ul>
 
 <pre><code>git clone myapp && cd myapp    <span class="cm"># fresh clone</span>
-leashed install                <span class="cm"># installs exactly leash.lock's versions</span>
+leash pkg install              <span class="cm"># installs exactly leash.lock's versions</span>
 
-leashed lock                   <span class="cm"># (re)write the lockfile from dependencies</span>
-leashed install --locked       <span class="cm"># CI: fail on un-pinned dependencies</span></code></pre>
+leash pkg lock                 <span class="cm"># (re)write the lockfile from dependencies</span>
+leash pkg install --locked     <span class="cm"># CI: fail on un-pinned dependencies</span></code></pre>
 
 <h2>Installing Libraries</h2>
 <p>Install a library globally so any Leash program can use it. The installer fetches the registry, finds the library's repository, clones it, and places the files in the global libraries directory &mdash; no manual configuration needed.
 Inside a project directory (one containing a <code>leash-pkg.lshc</code> or a lockfile), installs are additionally recorded into <code>leash.lock</code> &mdash; see above.</p>
-<pre><code>leashed install mylib
+<pre><code>leash pkg install mylib
 
 <span class="cm"># Install a specific published version</span>
-leashed install mylib@1.2.3</code></pre>
+leash pkg install mylib@1.2.3</code></pre>
 
 <h3>Installing Without the Registry</h3>
 <p>The registry is only for discovery &mdash; any Git repository works as a package source. This is useful for private libraries, testing unpublished work, or when you don't want to wait for (or use) the central index:</p>
 <pre><code><span class="cm"># Full git URL</span>
-leashed install https://github.com/someone/somelib.git
+leash pkg install https://github.com/someone/somelib.git
 
 <span class="cm"># GitHub shorthand (equivalent to the URL above)</span>
-leashed install someone/somelib</code></pre>
+leash pkg install someone/somelib</code></pre>
 <p>The repo needs either a published <code>library/</code> layout or a <code>package.lshc</code>/<code>.lsh</code> sources at its root.</p>
 
 <p>This process:</p>
@@ -194,7 +197,7 @@ leashed install someone/somelib</code></pre>
 
 <h2>Adding Dependencies to a Project</h2>
 <p>Add a library as a dependency of the current project. This is the standard way to declare and manage project dependencies &mdash; it installs the library, records the dependency in your package config, and sets up the import automatically.</p>
-<pre><code>leashed add mylib</code></pre>
+<pre><code>leash pkg add mylib</code></pre>
 
 <p>This process:</p>
 <ol>
@@ -204,18 +207,18 @@ leashed install someone/somelib</code></pre>
 </ol>
 
 <h2>Managing Libraries</h2>
-<pre><code>leashed list                 <span class="cm"># show installed libraries and versions</span>
-leashed info mylib           <span class="cm"># registry metadata, all published versions</span>
-leashed install mylib        <span class="cm"># install globally (pinned version inside a project)</span>
-leashed install              <span class="cm"># inside a project: restore from leash.lock</span>
-leashed lock                 <span class="cm"># resolve dependencies and write leash.lock</span>
-leashed uninstall mylib      <span class="cm"># remove an installed library (and unpin it)</span>
-leashed update               <span class="cm"># update every dependency of the current project</span>
-leashed update mylib         <span class="cm"># reinstall one library at its latest version</span></code></pre>
+<pre><code>leash pkg list               <span class="cm"># show installed libraries and versions</span>
+leash pkg info mylib         <span class="cm"># registry metadata, all published versions</span>
+leash pkg install mylib      <span class="cm"># install globally (pinned version inside a project)</span>
+leash pkg install            <span class="cm"># inside a project: restore from leash.lock</span>
+leash pkg lock               <span class="cm"># resolve dependencies and write leash.lock</span>
+leash pkg uninstall mylib    <span class="cm"># remove an installed library (and unpin it)</span>
+leash pkg update             <span class="cm"># update every dependency of the current project</span>
+leash pkg update mylib       <span class="cm"># reinstall one library at its latest version</span></code></pre>
 
 <h2>Searching for Libraries</h2>
 <p>Search the registry for libraries by name or description. The search is efficient because it only fetches the lightweight <code>index.json</code> file &mdash; no cloning of individual library repositories is needed until you decide to install one.</p>
-<pre><code>leashed search math</code></pre>
+<pre><code>leash pkg search math</code></pre>
 
 <h2>How Publishing Works Under the Hood</h2>
 

@@ -2958,7 +2958,9 @@ pub def JvmGen : class {
                 return;
             }
         }
-        if (lt == "string" || rt == "string" || ld == "Ljava/lang/String;" || rd == "Ljava/lang/String;") && (op2 == "==" || op2 == "!=") {
+        // compareTo is null-hostile (unlike Objects.equals), so nil
+        // operands keep the old path.
+        if (lt == "string" || rt == "string" || ld == "Ljava/lang/String;" || rd == "Ljava/lang/String;") && lt != "nil" && rt != "nil" && (op2 == "==" || op2 == "!=" || op2 == "<" || op2 == "<=" || op2 == ">" || op2 == ">=") {
             this.gen_expr(e.left);
             if ld != "Ljava/lang/String;" && lt != "nil" {
                 this.jvm_tostring(lt);
@@ -2967,11 +2969,32 @@ pub def JvmGen : class {
             if rd != "Ljava/lang/String;" && rt != "nil" {
                 this.jvm_tostring(rt);
             }
-            this.emit_invoke(JOp.INVOKESTATIC, "java/util/Objects", "equals", "(Ljava/lang/Object;Ljava/lang/Object;)Z");
-            if op2 == "!=" {
-                this.cur_method.op(JOp.ICONST_1, 1);
-                this.cur_method.op(JOp.IXOR, -1);
+            if op2 == "==" || op2 == "!=" {
+                this.emit_invoke(JOp.INVOKESTATIC, "java/util/Objects", "equals", "(Ljava/lang/Object;Ljava/lang/Object;)Z");
+                if op2 == "!=" {
+                    this.cur_method.op(JOp.ICONST_1, 1);
+                    this.cur_method.op(JOp.IXOR, -1);
+                }
+                return;
             }
+            // Lexicographic ordering via String.compareTo (never reference
+            // order). Both sides are Strings here (tostring'd above when
+            // the static type was not already a string).
+            this.emit_invoke(JOp.INVOKEVIRTUAL, "java/lang/String", "compareTo", "(Ljava/lang/String;)I");
+            if op2 == "<" {
+                this.cur_method.branch(JOp.IFLT, t_lbl, 1);
+            } also op2 == "<=" {
+                this.cur_method.branch(JOp.IFLE, t_lbl, 1);
+            } also op2 == ">" {
+                this.cur_method.branch(JOp.IFGT, t_lbl, 1);
+            } else {
+                this.cur_method.branch(JOp.IFGE, t_lbl, 1);
+            }
+            this.cur_method.op(JOp.ICONST_0, 1);
+            this.cur_method.branch(JOp.GOTO, e_lbl, 0);
+            this.cur_method.mark(t_lbl);
+            this.cur_method.op(JOp.ICONST_1, 1);
+            this.cur_method.mark(e_lbl);
             return;
         }
         if (ld == "Ljava/math/BigInteger;" || rd == "Ljava/math/BigInteger;") && (op2 == "==" || op2 == "!=" || op2 == "<" || op2 == "<=" || op2 == ">" || op2 == ">=") {

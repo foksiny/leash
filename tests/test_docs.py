@@ -158,11 +158,15 @@ class TestDocs(unittest.TestCase):
             self.assertEqual(entry["tag"], "v" + entry["version"])
             self.assertRegex(entry["rev"], r"^[0-9a-f]{40}$")
 
-        # 2. The `leashed --version` example output must match the binary.
-        ver_blocks = [b for b in blocks if "leashed --version" in b]
+        # 2. The `leash pkg --version` / `leashed --version` examples must
+        # match the protocol version both implementations carry.
+        ver_blocks = [b for b in blocks if "leash pkg --version" in b]
         self.assertTrue(ver_blocks, "--version example missing from docs")
-        m = re.search(r"# leashed v(\d+\.\d+\.\d+)", ver_blocks[0])
+        m = re.search(r"# leash pkg v(\d+\.\d+\.\d+)", ver_blocks[0])
         self.assertIsNotNone(m, "--version example output missing from docs")
+        self.assertEqual(m.group(1), leashed_mod.LEASHED_VERSION)
+        m = re.search(r"# leashed v(\d+\.\d+\.\d+)", ver_blocks[0])
+        self.assertIsNotNone(m, "leashed --version example output missing")
         self.assertEqual(m.group(1), leashed_mod.LEASHED_VERSION)
 
 

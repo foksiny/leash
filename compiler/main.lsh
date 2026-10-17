@@ -1,4 +1,5 @@
 use driver::*;
+use leashed::*;
 
 // ---------------------------------------------------------------------------
 // Small shell/file helpers (exec is length-capped: keep commands short).
@@ -7,7 +8,7 @@ use driver::*;
 // Single source of truth for the release version. Bump discipline:
 // setup.py, leash/cli.py VERSION_STRING, README, docs badges, CHANGELOG.
 fnc leash_version() : string {
-    return "1.4.0";
+    return "1.5.0";
 }
 
 // Prefix test (no stdlib dependency this early in main.lsh).
@@ -260,6 +261,7 @@ fnc print_usage() : void {
     show("  init [dir]            Scaffold a new Leash project (default: .)");
     show("  build                 Compile the project described by config.lshc");
     show("  install [<path>...]      Install libraries into ~/.leash/libs/ (no args: install global_install binaries)");
+    show("  pkg <subcommand>      Package manager: init/publish/install/uninstall/list/info/update/add/lock/search");
     show("  rm <name>...            Remove globally installed binaries (asks first; empty answer means yes)");
     show("  update                Check for updates and pull the latest source");
     show("  self-host             3-stage bootstrap + fixed-point check");
@@ -1592,6 +1594,10 @@ fnc main(args string[]) : int {
 
     if cmd == "rm" {
         return cmd_rm(args);
+    }
+
+    if cmd == "pkg" {
+        return pkg_dispatch(args);
     }
 
     if cmd == "update" {

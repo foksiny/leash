@@ -435,6 +435,30 @@ class TestPhase3bRegressions(_CompileRunBase):
         )
         self.assertIn("true\nfalse\ntrue\nfalse", out.replace("\r", ""))
 
+    def test_string_ordering_lexicographic(self):
+        # String <,<=,>,>= compare lexicographically (strcmp), never by
+        # address. Pointer comparison used to make "z" > "a" false.
+        out = self._compile_and_run(
+            "fnc lt(a string, b string) : bool { return a < b; }\n"
+            "fnc gt(a string, b string) : bool { return a > b; }\n"
+            "fnc main() : void {\n"
+            '    show(lt("a", "z"));\n'
+            '    show(lt("z", "a"));\n'
+            '    show(lt("a", "a"));\n'
+            '    show(gt("z", "a"));\n'
+            '    show(gt("a", "z"));\n'
+            '    show("abc" <= "abd");\n'
+            '    show("abc" >= "abd");\n'
+            '    show("abc" <= "abc");\n'
+            '    show("b" > "abc");\n'
+            '    show("" < "a");\n'
+            "}\n"
+        )
+        self.assertIn(
+            "true\nfalse\nfalse\ntrue\nfalse\ntrue\nfalse\n"
+            "true\ntrue\ntrue",
+            out.replace("\r", ""))
+
     def test_vec_insert_remove_negative_index(self):
         # L8: insert/remove used to zext the index (no negative normalize).
         out = self._compile_and_run(

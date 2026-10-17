@@ -6807,6 +6807,11 @@ class CodeGen:
                     return self.builder.icmp_unsigned("!=", left, right)
                 cmp_val = self.builder.call(self.strcmp, [left, right])
                 return self.builder.icmp_signed("!=", cmp_val, ir.Constant(ir.IntType(32), 0))
+            elif node.op in ("<", "<=", ">", ">="):
+                # Lexicographic ordering via strcmp (never pointer order).
+                cmp_val = self.builder.call(self.strcmp, [left, right])
+                return self.builder.icmp_signed(
+                    node.op, cmp_val, ir.Constant(ir.IntType(32), 0))
             else:
                 raise Exception(f"Unknown string binary op {node.op}")
 

@@ -2866,6 +2866,31 @@ pub def CodeGen : class {
                     this.emit("  store i8 0, i8* " + gep_r);
                     r_val = conv_r;
                 }
+                // Float operands format with %f via leash_float_to_str
+                // (the same helper the show path uses).
+                if lt == "float" {
+                    conv_fl: string = this.new_reg();
+                    this.emit("  " + conv_fl + " = call i8* @leash_float_to_str(double " + l_val + ")");
+                    this.af_track(conv_fl);
+                    l_val = conv_fl;
+                }
+                if rt == "float" {
+                    conv_fr: string = this.new_reg();
+                    this.emit("  " + conv_fr + " = call i8* @leash_float_to_str(double " + r_val + ")");
+                    this.af_track(conv_fr);
+                    r_val = conv_fr;
+                }
+                // Bools render as "true"/"false" (python parity).
+                if lt == "bool" {
+                    conv_bl: string = this.new_reg();
+                    this.emit("  " + conv_bl + " = select i1 " + l_val + ", i8* " + this.const_str_of("true") + ", i8* " + this.const_str_of("false"));
+                    l_val = conv_bl;
+                }
+                if rt == "bool" {
+                    conv_br: string = this.new_reg();
+                    this.emit("  " + conv_br + " = select i1 " + r_val + ", i8* " + this.const_str_of("true") + ", i8* " + this.const_str_of("false"));
+                    r_val = conv_br;
+                }
 
                 res: string = this.new_reg();
                 this.emit("  " + res + " = call i8* @leash_str_concat(i8* " + l_val + ", i8* " + r_val + ")");
@@ -2985,8 +3010,8 @@ pub def CodeGen : class {
                 return res;
             }
 
-            // String equality
-            if lt == "string" && rt == "string" && (e.op == "==" || e.op == "!=") {
+            // String equality + lexicographic ordering (strcmp)
+            if lt == "string" && rt == "string" && (e.op == "==" || e.op == "!=" || e.op == "<" || e.op == "<=" || e.op == ">" || e.op == ">=") {
                 l_val: string = this.gen_expr(e.left);
                 r_val: string = this.gen_expr(e.right);
                 cmp_res: string = this.new_reg();
@@ -2994,8 +3019,16 @@ pub def CodeGen : class {
                 res: string = this.new_reg();
                 if e.op == "==" {
                     this.emit("  " + res + " = icmp eq i32 " + cmp_res + ", 0");
-                } else {
+                } also e.op == "!=" {
                     this.emit("  " + res + " = icmp ne i32 " + cmp_res + ", 0");
+                } also e.op == "<" {
+                    this.emit("  " + res + " = icmp slt i32 " + cmp_res + ", 0");
+                } also e.op == "<=" {
+                    this.emit("  " + res + " = icmp sle i32 " + cmp_res + ", 0");
+                } also e.op == ">" {
+                    this.emit("  " + res + " = icmp sgt i32 " + cmp_res + ", 0");
+                } else {
+                    this.emit("  " + res + " = icmp sge i32 " + cmp_res + ", 0");
                 }
                 return res;
             }

@@ -592,6 +592,37 @@ class TestJvmTarget(unittest.TestCase):
         self.assertEqual(rj.stdout, rn.stdout,
                          f"stdout differs:\n--- jvm ---\n{rj.stdout}\n--- native ---\n{rn.stdout}")
 
+    def test_string_ordering_parity(self):
+        # Lexicographic ordering matches native on all six operators.
+        self._parity(
+            'fnc lt(a string, b string) : bool { return a < b; }\n'
+            'fnc gt(a string, b string) : bool { return a > b; }\n'
+            'fnc main() : void {\n'
+            '    show(lt("a", "z"));\n'
+            '    show(lt("z", "a"));\n'
+            '    show(gt("z", "a"));\n'
+            '    show("abc" <= "abd");\n'
+            '    show("abc" >= "abd");\n'
+            '    show("b" > "abc");\n'
+            '    show("" < "a");\n'
+            '}\n')
+
+    def test_mixed_string_concat_parity(self):
+        # Scalar + string concatenations type as string in both orders and
+        # render identically (char + string used to infer char, so chains
+        # collapsed to int while float/bool operands passed through raw).
+        self._parity(
+            'fnc main() : void {\n'
+            '    s: string = "n=" + 7 + ", c=" + \'A\' + "!";\n'
+            '    show(s);\n'
+            '    t: string = \'B\' + "x" + 42;\n'
+            '    show(t);\n'
+            '    u: string = true + ":" + 1.5;\n'
+            '    show(u);\n'
+            '    v: string = 1.5 + "=" + false;\n'
+            '    show(v);\n'
+            '}\n')
+
     def test_native_call_fails_loud(self):
         # Calling a native @from function on JVM compiles (mixed modules
         # stay importable) but aborts with a clear message when executed.

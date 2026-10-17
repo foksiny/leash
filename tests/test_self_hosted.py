@@ -56,6 +56,38 @@ class TestSelfHostedCompiler(unittest.TestCase):
             'fnc main() : int {\n    s: string = "foo" + "bar";\n    show(s);\n    return 0;\n}\n')
         self.assertIn("foobar", out)
 
+    def test_mixed_string_concat(self):
+        # Scalar + string builds a string in either order, at full chains
+        # (char + string used to be typed char, so chains computed as int).
+        out = self._compile_and_run(
+            'fnc main() : int {\n'
+            '    s: string = "n=" + 7 + ", c=" + \'A\' + "!";\n'
+            '    show(s);\n'
+            '    t: string = \'B\' + "x" + 42;\n'
+            '    show(t);\n'
+            '    u: string = true + ":" + 1.5;\n'
+            '    show(u);\n'
+            '    v: string = 1.5 + "=" + false;\n'
+            '    show(v);\n'
+            '    return 0;\n'
+            '}\n')
+        self.assertIn("n=7, c=A!\nBx42\ntrue:1.500000\n1.500000=false", out)
+
+    def test_string_concat_not_char(self):
+        # A concatenation with a string operand is a string: assigning it
+        # to char must fail instead of silently truncating a pointer.
+        tmp_src = os.path.join("/tmp", "leashc_test_concat.lsh")
+        with open(tmp_src, "w") as fh:
+            fh.write('fnc main() : int {\n'
+                     '    x: char = \'a\' + "b";\n'
+                     '    show(x);\n'
+                     '    return 0;\n'
+                     '}\n')
+        r = _sh([BIN_LEASHC, "compile", tmp_src, "to",
+                 "/tmp/leashc_test_concat_bin"], timeout=180)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("string", r.stdout + r.stderr)
+
     def test_structs(self):
         out = self._compile_and_run(
             'def Point : struct {\n    x: int;\n    y: int;\n}\n'

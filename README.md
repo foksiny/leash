@@ -1,6 +1,10 @@
+<p align="center">
+  <img src="icons/svg/leash-logo.svg" alt="Leash" width="460">
+</p>
+
 # Leash Programming Language
 
-**Version 1.4.0** — Leash compiles itself.
+**Version 1.5.0** — Leash compiles itself.
 
 Leash is a strongly-typed, modern compiled programming language built on LLVM. It features an intuitive syntax and native performance with a built-in garbage collector, package manager, and cross-platform support.
 
@@ -10,7 +14,7 @@ Leash is a strongly-typed, modern compiled programming language built on LLVM. I
 
 The compiler shipped as `leash` is **written in Leash**. Installing the package bootstraps it: the Python reference compiler builds the first self-hosted binary, that binary then compiles itself, and the result is what gets installed — verified as a **bootstrap fixed point** (stage N emits IR byte-identical to stage N+1).
 
-- `leash` — the **self-hosted compiler**, the whole toolchain natively: `compile`, `run` (file or project), `check`, `dump`, `init`, `build`, `install`, `update`, `self-host` (3-stage bootstrap + fixed-point check), and `dbg` (the interactive source-level debugger).
+- `leash` — the **self-hosted compiler**, the whole toolchain natively: `compile`, `run` (file or project), `check`, `dump`, `init`, `build`, `install`, `update`, `pkg` (the package manager), `self-host` (3-stage bootstrap + fixed-point check), and `dbg` (the interactive source-level debugger).
 - `leashp` — the pure Python compiler/toolchain, kept as the reference implementation and for cross-compilation targets other than `linux64`.
 - `leashc` — an alias of `leash`.
 
@@ -31,7 +35,7 @@ Output parity with the reference compiler is enforced by a test harness: **88/88
 ```bash
 pip install .
 leash version
-# leash 1.4.0 (self-hosted)
+# leash 1.5.0 (self-hosted)
 ```
 
 The install compiles `compiler/*.lsh` twice (Python → stage 1 → itself) and ships the resulting native compiler inside the package. No repository checkout is needed afterwards — the binary locates its runtime from any working directory.
@@ -72,7 +76,7 @@ leash self-host   # 3-stage bootstrap + fixed-point check, installs bin/leashc
 - **Strongly typed** with full type inference, generics (`class<T>`, multi-type `[int, float, ...]` parameters), operator overloading (`opdef`) and explicit bit-width integers/floats (`int<128>`, `uint<512>`, …)
 - **LLVM-powered** compilation with optimization levels O0-O4, Os, Oz (O4 = O3 pipeline + aggressive inlining)
 - **Precise garbage collection** — pointer-free vector buffers are never scanned (no false pins from integer payloads); unboxed inline element storage with reference semantics
-- **Package manager** (`leashed`) with fully self-service publishing — registry updates are validated and merged by a bot, no human review; install from the index or any git URL; **reproducible project builds** with `leash.lock`
+- **Package manager** (`leash pkg`) with fully self-service publishing — registry updates are validated and merged by a bot, no human review; install from the index or any git URL; **reproducible project builds** with `leash.lock`
 - **Concurrency model** with workers, `shared` and `fusion` variables — plus native **`async fnc`/`await`** returning `future<T>`
 - **Cross-platform** compilation for Linux (x86-64, x86, ARM64), Windows, and macOS — all targets built by the native compiler (`--target win64`, `--target linux-arm`, …), with `wine`/`qemu` execution for cross binaries
 - **100+ standard-library packages** — vectors, matrices, hash tables, file I/O, string/text tools, math, crypto, SQL, HTTP, games, AI, testing helpers…

@@ -5,6 +5,56 @@ All notable changes to the Leash compiler are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.5.0] - 2026-10-16
+
+Minor release: the package manager is now built into the self-hosted
+compiler as `leash pkg` — a full port of the Python reference tool
+(`leashed` 0.5.0), so create/publish/install/lock workflows run natively
+with no Python in the loop. String ordering (`<`, `<=`, `>`, `>=`) is
+lexicographic in all three backends (native, JVM, Python reference),
+fixing a pointer-order comparison bug. The README gets the new logo and
+the VS Code extension ships light/dark file icons for `.lsh` files.
+
+### Added — `leash pkg` (port of leashed 0.5.0)
+- Full command set: `init`, `publish`, `install`, `uninstall`, `list`,
+  `info`, `update`, `add`, `lock`, `search`, plus `--help`/`--version`
+  (`leash pkg --version` → `leash pkg v0.5.0`).
+- Same protocols and safety checks as the reference: `leash-pkg.lshc`
+  config round-trip, `leash.lock` (v1: version/repo/tag/40-hex rev pins;
+  restores abort on moved tags), semver ordering with prereleases,
+  registry `index.json` validation, publish gates (publisher identity,
+  ownership, strictly increasing versions), fork + PR registration with
+  bot auto-merge, `--locked` strict CI restores, and the same env
+  overrides (`LEASHED_REGISTRY_REPO`/`LEASHED_REGISTRY_URL`/
+  `LEASHED_REGISTRY_GIT`).
+- Pure logic lives in `compiler/leashed.lsh` as local functions,
+  differential-tested against `leash/leashed.py` in `tests/test_pkg.py`;
+  global-command installs reuse `CompilerDriver.compile_file` in-process.
+
+### Fixed
+- String `<`, `<=`, `>`, `>=` compared pointers natively and on the JVM
+  instead of lexicographic order; all three backends now use
+  `strcmp`/`String.compareTo`, and the typechecker accepts ordering
+  operators on strings (regressions:
+  `test_string_ordering_lexicographic`, `test_string_ordering_parity`).
+- Mixed string concatenation (`scalar + string` / `string + scalar`, with
+  char/int/uint/float/bool/char[] operands) now infers `string` in the
+  self-hosted typechecker, matching the reference. Previously
+  `char + string` was typed `char`, so chained concatenations collapsed
+  to `int` and unsound assignments could pass silently. The native
+  backend also formats float (`%f`) and bool ("true"/"false") concat
+  operands instead of emitting invalid IR (regressions:
+  `test_mixed_string_concat`, `test_string_concat_not_char`,
+  `test_mixed_string_concat_parity`).
+
+### Changed
+- README shows the language logo; the VS Code extension wires
+  `icons/leash-file-icon-{light,dark}.svg` through
+  `contributes.languages[].icon`.
+- Docs: package-manager page and getting-started/index now present
+  `leash pkg` (the Python `leashed` entry point remains as the
+  standalone reference build). Version bumped to 1.5.0 everywhere.
+
 ## [1.4.0] - 2026-10-16
 
 Minor release: HTTP/2 for the standard library — the `http` client and

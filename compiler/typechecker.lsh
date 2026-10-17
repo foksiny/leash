@@ -1615,6 +1615,20 @@ pub def TypeChecker : class {
                e.op == "is" || e.op == "isnt" || e.op == "isT" || e.op == "isntT" {
                 return "bool";
             }
+            // Mixed string concatenation (python parity): string + scalar
+            // (char/int/uint/float/bool) or char[] builds a string, in
+            // either order. Without this rule scalar + string was typed as
+            // the scalar and chained concatenations collapsed to int, while
+            // codegen emitted real concatenations (silently wrong IR).
+            if e.op == "+" {
+                lb2: string = this.base_of(this.strip_ref(lt_full));
+                rb2: string = this.base_of(this.strip_ref(rt_full));
+                l_str: bool = lb2 == "string" &&
+                    (this.is_numeric_base(rb2) || (rt_full.size >= 5 && this.str_slice(rt_full, 0, 5) == "char["));
+                r_str: bool = rb2 == "string" &&
+                    (this.is_numeric_base(lb2) || (lt_full.size >= 5 && this.str_slice(lt_full, 0, 5) == "char["));
+                if l_str || r_str { return "string"; }
+            }
             // For +, -, *, /, % the result follows the numeric promotion:
             // float wins, uint+uint stays uint, char promotes to int
             // Bitwise/modulo operators are integer-only (python parity:

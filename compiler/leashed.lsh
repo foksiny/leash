@@ -1,0 +1,4123 @@
+use driver::*;
+
+// ---------------------------------------------------------------------------
+// leashed — the Leash package manager, ported to Leash itself.
+//
+// This is a faithful port of leash/leashed.py (protocol version 0.5.0):
+// registry installs, lockfiles, publishing, and project commands, exposed
+// through `leash pkg <command>` (mirroring the `leashed` entry point).
+//
+// The module only imports the compiler driver (for building global
+// commands in-process); everything else is pkg_-prefixed and local so the
+// pure logic stays unit-testable in isolation via `--other-imports
+// compiler/`.
+// Pure logic returns error strings ("" means ok) so tests can assert
+// without the process exiting; the cmd_* wrappers print and return the
+// exit code in main.lsh style.
+// ---------------------------------------------------------------------------
+
+// Protocol version (matches leash/leashed.py LEASHED_VERSION).
+fnc pkg_version() : string {
+    return "0.5.0";
+}
+
+fnc pkg_lockfile_name() : string {
+    return "leash.lock";
+}
+
+fnc pkg_lockfile_version() : int {
+    return 1;
+}
+
+fnc pkg_config_name() : string {
+    return "leash-pkg.lshc";
+}
+
+fnc pkg_package_config() : string {
+    return "package.lshc";
+}
+
+// ---------------------------------------------------------------------------
+// String utilities (pkg_-prefixed; main.lsh has its own copies)
+// ---------------------------------------------------------------------------
+
+fnc pkg_is_digit(c char) : bool {
+    return c >= '0' && c <= '9';
+}
+
+fnc pkg_is_alpha(c char) : bool {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+}
+
+fnc pkg_is_alnum(c char) : bool {
+    return pkg_is_alpha(c) || pkg_is_digit(c);
+}
+
+fnc pkg_slice(s string, a int, b int) : string {
+    if a < 0 { a = 0; }
+    if b > s.size { b = s.size; }
+    out: string = "";
+    i: int = a;
+    while i < b {
+        out = out + s[i];
+        i = i + 1;
+    }
+    return out;
+}
+
+fnc pkg_strip(s string) : string {
+    a: int = 0;
+    while a < s.size && (s[a] == ' ' || s[a] == '\t' || s[a] == '\r' || s[a] == '\n') { a = a + 1; }
+    b: int = s.size;
+    while b > a && (s[b - 1] == ' ' || s[b - 1] == '\t' || s[b - 1] == '\r' || s[b - 1] == '\n') { b = b - 1; }
+    return pkg_slice(s, a, b);
+}
+
+fnc pkg_starts_with(s string, prefix string) : bool {
+    if prefix.size > s.size { return false; }
+    i: int = 0;
+    while i < prefix.size {
+        if s[i] != prefix[i] { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+fnc pkg_ends_with(s string, suffix string) : bool {
+    if suffix.size > s.size { return false; }
+    i: int = 0;
+    while i < suffix.size {
+        if s[s.size - suffix.size + i] != suffix[i] { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+fnc pkg_to_lower(s string) : string {
+    out: string = "";
+    i: int = 0;
+    while i < s.size {
+        c: char = s[i];
+        if c >= 'A' && c <= 'Z' { c = (char)(c + 32); }
+        out = out + c;
+        i = i + 1;
+    }
+    return out;
+}
+
+// Split on a single-char delimiter (keeps empty parts).
+fnc pkg_split(s string, delim char) : vec<string> {
+    out: vec<string>;
+    cur: string = "";
+    i: int = 0;
+    while i < s.size {
+        if s[i] == delim {
+            out.pushb(cur);
+            cur = "";
+        } else {
+            cur = cur + s[i];
+        }
+        i = i + 1;
+    }
+    out.pushb(cur);
+    return out;
+}
+
+fnc pkg_join(parts vec<string>, sep string) : string {
+    out: string = "";
+    i: int = 0;
+    while i < parts.size {
+        if i > 0 { out = out + sep; }
+        out = out + parts.get(i);
+        i = i + 1;
+    }
+    return out;
+}
+
+// Quote one shell word with single quotes (embedded quotes become '"'"').
+fnc pkg_sh_quote(s string) : string {
+    out: string = "'";
+    i: int = 0;
+    while i < s.size {
+        if s[i] == '\'' {
+            out = out + "'\"'\"'";
+        } else {
+            out = out + s[i];
+        }
+        i = i + 1;
+    }
+    return out + "'";
+}
+
+// Parse a non-negative decimal prefix; returns -1 when there are no digits.
+fnc pkg_parse_int(s string) : int {
+    if s.size == 0 { return -1; }
+    if !pkg_is_digit(s[0]) { return -1; }
+    v: int = 0;
+    i: int = 0;
+    while i < s.size && pkg_is_digit(s[i]) {
+        v = v * 10 + (s[i] - '0');
+        i = i + 1;
+    }
+    return v;
+}
+
+// ---------------------------------------------------------------------------
+// Semver (X.Y.Z with optional -prerelease; no build metadata, no leading
+// zeros — mirrors leashed.py SEMVER_RE)
+// ---------------------------------------------------------------------------
+
+pub def PkgVersion : class {
+    pub major: int;
+    pub minor: int;
+    pub patch: int;
+    pub pre: string;
+    pub has_pre: bool;
+    pub valid: bool;
+};
+
+// All-digit test for prerelease identifiers (leading zeros allowed here:
+// "01" compares as numeric 1, mirroring the reference implementation).
+fnc pkg_all_digits(s string) : bool {
+    if s.size == 0 { return false; }
+    i: int = 0;
+    while i < s.size {
+        if !pkg_is_digit(s[i]) { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+// Leading-zero-tolerant numeric value (prerelease comparison only).
+fnc pkg_loose_num(s string) : int {
+    v: int = 0;
+    i: int = 0;
+    while i < s.size {
+        v = v * 10 + (s[i] - '0');
+        i = i + 1;
+    }
+    return v;
+}
+
+fnc pkg_num_part(s string) : int {
+    // Strict numeric part: all digits, no leading zero unless exactly "0".
+    if s.size == 0 { return -1; }
+    i: int = 0;
+    while i < s.size {
+        if !pkg_is_digit(s[i]) { return -1; }
+        i = i + 1;
+    }
+    if s.size > 1 && s[0] == '0' { return -1; }
+    v: int = 0;
+    j: int = 0;
+    while j < s.size {
+        v = v * 10 + (s[j] - '0');
+        j = j + 1;
+    }
+    return v;
+}
+
+fnc pkg_valid_pre(s string) : bool {
+    // mirrors the reference SEMVER_RE: [0-9A-Za-z.-]+ (dots in odd places
+    // are tolerated by the regex, so they must be tolerated here too)
+    if s.size == 0 { return false; }
+    i: int = 0;
+    while i < s.size {
+        c: char = s[i];
+        if !pkg_is_alnum(c) && c != '.' && c != '-' { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+fnc pkg_parse_version(v string) : PkgVersion {
+    out: PkgVersion = PkgVersion { major: 0, minor: 0, patch: 0, pre: "", has_pre: false, valid: false };
+    s: string = pkg_strip(v);
+    // split off -prerelease at the first '-'
+    core: string = s;
+    pre: string = "";
+    has_pre: bool = false;
+    di: int = 0;
+    while di < s.size {
+        if s[di] == '-' {
+            core = pkg_slice(s, 0, di);
+            pre = pkg_slice(s, di + 1, s.size);
+            has_pre = true;
+            stop;
+        }
+        di = di + 1;
+    }
+    parts: vec<string> = pkg_split(core, '.');
+    if parts.size != 3 { return out; }
+    maj: int = pkg_num_part(parts.get(0));
+    min: int = pkg_num_part(parts.get(1));
+    pat: int = pkg_num_part(parts.get(2));
+    if maj < 0 || min < 0 || pat < 0 { return out; }
+    if has_pre && !pkg_valid_pre(pre) { return out; }
+    out.major = maj;
+    out.minor = min;
+    out.patch = pat;
+    out.pre = pre;
+    out.has_pre = has_pre;
+    out.valid = true;
+    return out;
+}
+
+fnc pkg_validate_version(v string) : bool {
+    return pkg_parse_version(v).valid;
+}
+
+// Compare prerelease strings per semver rule 11 (releases sort after
+// prereleases; numeric identifiers compare numerically and sort below
+// alphanumeric ones). Returns -1/0/1.
+fnc pkg_cmp_pre(a string, a_has bool, b string, b_has bool) : int {
+    if !a_has && !b_has { return 0; }
+    if !a_has { return 1; }
+    if !b_has { return 0 - 1; }
+    ap: vec<string> = pkg_split(a, '.');
+    bp: vec<string> = pkg_split(b, '.');
+    i: int = 0;
+    while i < ap.size && i < bp.size {
+        x: string = ap.get(i);
+        y: string = bp.get(i);
+        x_is_num: bool = pkg_all_digits(x);
+        y_is_num: bool = pkg_all_digits(y);
+        xn: int = pkg_loose_num(x);
+        yn: int = pkg_loose_num(y);
+        if x_is_num && y_is_num {
+            if xn < yn { return 0 - 1; }
+            if xn > yn { return 1; }
+        } also !x_is_num && !y_is_num {
+            if x < y { return 0 - 1; }
+            if y < x { return 1; }
+        } also x_is_num {
+            return 0 - 1;
+        } else {
+            return 1;
+        }
+        i = i + 1;
+    }
+    if ap.size < bp.size { return 0 - 1; }
+    if ap.size > bp.size { return 1; }
+    return 0;
+}
+
+// Compare two version strings. Returns -1/0/1; invalid input sorts below
+// everything valid (mirrors sorted_versions putting invalid last).
+fnc pkg_cmp_versions(a string, b string) : int {
+    pa: PkgVersion = pkg_parse_version(a);
+    pb: PkgVersion = pkg_parse_version(b);
+    if !pa.valid && !pb.valid { return 0; }
+    if !pa.valid { return 0 - 1; }
+    if !pb.valid { return 1; }
+    if pa.major != pb.major {
+        if pa.major < pb.major { return 0 - 1; }
+        return 1;
+    }
+    if pa.minor != pb.minor {
+        if pa.minor < pb.minor { return 0 - 1; }
+        return 1;
+    }
+    if pa.patch != pb.patch {
+        if pa.patch < pb.patch { return 0 - 1; }
+        return 1;
+    }
+    return pkg_cmp_pre(pa.pre, pa.has_pre, pb.pre, pb.has_pre);
+}
+
+fnc pkg_is_newer_version(a string, b string) : bool {
+    if !pkg_validate_version(a) { return false; }
+    if !pkg_validate_version(b) { return false; }
+    return pkg_cmp_versions(a, b) > 0;
+}
+
+// Sort newest-first; invalid versions are sorted alphabetically, last.
+fnc pkg_sorted_versions(versions vec<string>) : vec<string> {
+    out: vec<string>;
+    bad: vec<string>;
+    foreach _, v in<vector> versions {
+        if pkg_validate_version(v) {
+            out.pushb(v);
+        } else {
+            bad.pushb(v);
+        }
+    }
+    // insertion sort, newest first
+    i: int = 1;
+    while i < out.size {
+        cur: string = out.get(i);
+        j: int = i - 1;
+        while j >= 0 && pkg_cmp_versions(out.get(j), cur) < 0 {
+            out.set(j + 1, out.get(j));
+            j = j - 1;
+        }
+        out.set(j + 1, cur);
+        i = i + 1;
+    }
+    // invalid ones are sorted alphabetically, last (Python sorted(invalid))
+    i = 1;
+    while i < bad.size {
+        cur2: string = bad.get(i);
+        j2: int = i - 1;
+        while j2 >= 0 && cur2 < bad.get(j2) {
+            bad.set(j2 + 1, bad.get(j2));
+            j2 = j2 - 1;
+        }
+        bad.set(j2 + 1, cur2);
+        i = i + 1;
+    }
+    foreach _, v in<vector> bad {
+        out.pushb(v);
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// Name validation: ^[a-zA-Z_][a-zA-Z0-9_-]*$ — returns "" when valid,
+// else the error message (the cmd_* wrappers print it and exit 1).
+// ---------------------------------------------------------------------------
+
+fnc pkg_validate_name_r(name string) : string {
+    if name.size == 0 {
+        return "error: Invalid name ''. Must start with a letter or underscore and contain only letters, digits, hyphens, and underscores.";
+    }
+    c0: char = name[0];
+    if !pkg_is_alpha(c0) && c0 != '_' {
+        return "error: Invalid name '" + name + "'. Must start with a letter or underscore and contain only letters, digits, hyphens, and underscores.";
+    }
+    i: int = 1;
+    while i < name.size {
+        c: char = name[i];
+        if !pkg_is_alnum(c) && c != '_' && c != '-' {
+            return "error: Invalid name '" + name + "'. Must start with a letter or underscore and contain only letters, digits, hyphens, and underscores.";
+        }
+        i = i + 1;
+    }
+    return "";
+}
+
+// ---------------------------------------------------------------------------
+// Git URL validation. Mirrors validate_git_url: only https:// and ssh://
+// (plus user-typed http:// with a warning, and scp-like git@host:path).
+// Returns "" when usable: "OK" for clean, "WARN <msg>" when allowed with a
+// warning; otherwise the error text. Callers print WARN/ERR and exit on ERR.
+// ---------------------------------------------------------------------------
+
+fnc pkg_has_control_chars(s string) : bool {
+    i: int = 0;
+    while i < s.size {
+        if s[i] < ' ' || s[i] == '\x7f' { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+// Lowercase scheme probe: returns the "xxx://" prefix or "" when none.
+fnc pkg_url_scheme(s string) : string {
+    i: int = 0;
+    while i + 2 < s.size {
+        if s[i] == ':' && s[i + 1] == '/' && s[i + 2] == '/' {
+            return pkg_to_lower(pkg_slice(s, 0, i)) + "://";
+        }
+        // schemes cannot contain these; stop early like a real parser
+        if s[i] == '/' || s[i] == '?' || s[i] == '#' || s[i] == '@' { return ""; }
+        i = i + 1;
+    }
+    return "";
+}
+
+// scp-like syntax: [user@]host:path (no scheme, single colon, safe chars)
+fnc pkg_is_scp_target(s string) : bool {
+    if s.size == 0 { return false; }
+    ci: int = 0;
+    while ci < s.size && s[ci] != ':' { ci = ci + 1; }
+    if ci == 0 || ci + 1 >= s.size { return false; }
+    // exactly one colon before any slash
+    si: int = 0;
+    while si < s.size {
+        if s[si] == ':' && si != ci { return false; }
+        if s[si] == '/' && si < ci { return false; }
+        si = si + 1;
+    }
+    // user/host part: [A-Za-z0-9_.-] and at most one @
+    at_seen: bool = false;
+    hi: int = 0;
+    while hi < ci {
+        c: char = s[hi];
+        if c == '@' {
+            if at_seen { return false; }
+            at_seen = true;
+        } also !pkg_is_alnum(c) && c != '_' && c != '.' && c != '-' {
+            return false;
+        }
+        hi = hi + 1;
+    }
+    // path part: alnum plus _ . / ~ -
+    pi: int = ci + 1;
+    while pi < s.size {
+        c: char = s[pi];
+        if !pkg_is_alnum(c) && c != '_' && c != '.' && c != '/' && c != '~' && c != '-' {
+            return false;
+        }
+        pi = pi + 1;
+    }
+    return true;
+}
+
+// Split "scheme://rest" — returns the rest and whether credentials were
+// spotted (user[:pass]@ before the first /). Conservative: any '@' before
+// the first '/' with a "://"" scheme counts as userinfo; https with ANY
+// userinfo is rejected, ssh allows bare user@ (no password).
+fnc pkg_split_authority(url string) : string {
+    // returns "userinfo|hostpath" split at the first '/'
+    si: int = 0;
+    while si < url.size && url[si] != '/' { si = si + 1; }
+    return pkg_slice(url, 0, si);
+}
+
+fnc pkg_validate_git_url_r(url string, allow_insecure bool, source string) : string {
+    u: string = pkg_strip(url);
+    if u.size == 0 {
+        return "error: Empty " + source + " URL";
+    }
+    if pkg_has_control_chars(u) {
+        return "error: Invalid " + source + " URL: contains control characters";
+    }
+    if u[0] == '-' {
+        return "error: Unsafe " + source + " URL rejected: '" + u + "' looks like a git command-line option (possible option-injection attack).";
+    }
+    scheme: string = pkg_url_scheme(u);
+    if scheme.size > 0 {
+        // credential check on the authority part
+        rest: string = pkg_slice(u, scheme.size, u.size);
+        auth: string = pkg_split_authority(rest);
+        at: int = 0;
+        while at < auth.size && auth[at] != '@' { at = at + 1; }
+        if at < auth.size {
+            userinfo: string = pkg_slice(auth, 0, at);
+            has_pass: bool = false;
+            pi: int = 0;
+            while pi < userinfo.size {
+                if userinfo[pi] == ':' { has_pass = true; }
+                pi = pi + 1;
+            }
+            if has_pass || scheme == "https://" {
+                return "error: Unsafe " + source + " URL rejected: credentials must not be embedded in the URL (use a git credential helper).";
+            }
+        }
+        if scheme == "http://" {
+            if !allow_insecure {
+                return "error: Insecure " + source + " URL rejected: '" + u + "' (registry entries must use https).";
+            }
+            return "WARN [leashed] warning: using an unencrypted http:// git URL — the download can be tampered with in transit.";
+        }
+        if scheme != "https://" && scheme != "ssh://" {
+            return "error: Unsafe " + source + " URL rejected: '" + u + "'\n  Only https:// and ssh:// URLs are allowed. Git transports such as ext::/fd:: execute local commands, and file:// URLs bypass the registry review entirely.";
+        }
+        return "OK";
+    }
+    if pkg_is_scp_target(u) {
+        return "OK";
+    }
+    return "error: Unsafe " + source + " URL rejected: '" + u + "'\n  Use an https:// URL (or git@host:owner/repo.git).";
+}
+
+fnc pkg_looks_like_git_target(target string) : bool {
+    if pkg_contains(target, "://") { return true; }
+    if pkg_ends_with(target, ".git") { return true; }
+    // user/repo shorthand (no :: namespace separator)
+    if pkg_contains(target, "::") { return false; }
+    parts: vec<string> = pkg_split(target, '/');
+    if parts.size != 2 { return false; }
+    a: string = parts.get(0);
+    b: string = parts.get(1);
+    if a.size == 0 || b.size == 0 { return false; }
+    if !pkg_shorthand_part(a) { return false; }
+    if !pkg_shorthand_part(b) { return false; }
+    return true;
+}
+
+fnc pkg_contains(s string, sub string) : bool {
+    if sub.size == 0 { return true; }
+    if sub.size > s.size { return false; }
+    i: int = 0;
+    while i + sub.size <= s.size {
+        j: int = 0;
+        while j < sub.size && s[i + j] == sub[j] { j = j + 1; }
+        if j == sub.size { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+fnc pkg_shorthand_part(s string) : bool {
+    i: int = 0;
+    while i < s.size {
+        c: char = s[i];
+        if !pkg_is_alnum(c) && c != '_' && c != '.' && c != '-' { return false; }
+        i = i + 1;
+    }
+    return s.size > 0;
+}
+
+// ---------------------------------------------------------------------------
+// display_safe: strip ANSI escape sequences, render controls as spaces.
+// Mirrors the reference OSC / CSI / charset-sequence handling.
+// ---------------------------------------------------------------------------
+
+fnc pkg_is_ansi_final(c char) : bool {
+    return c >= '@' && c <= '~';
+}
+
+fnc pkg_display_safe(s string) : string {
+    out: string = "";
+    i: int = 0;
+    while i < s.size {
+        c: char = s[i];
+        if c == '\x1b' {
+            if i + 1 < s.size {
+                n: char = s[i + 1];
+                if n == ']' {
+                    // OSC ... terminated by BEL or ESC backslash
+                    i = i + 2;
+                    while i < s.size {
+                        if s[i] == '\x07' {
+                            i = i + 1;
+                            stop;
+                        }
+                        if s[i] == '\x1b' && i + 1 < s.size && s[i + 1] == '\\' {
+                            i = i + 2;
+                            stop;
+                        }
+                        i = i + 1;
+                    }
+                    continue;
+                }
+                if n == '(' {
+                    // charset selection: ESC ( <0-9A-Z>
+                    if i + 2 < s.size {
+                        d: char = s[i + 2];
+                        if (d >= '0' && d <= '9') || (d >= 'A' && d <= 'Z') {
+                            i = i + 3;
+                            continue;
+                        }
+                    }
+                    i = i + 2;
+                    continue;
+                }
+                if n == '[' {
+                    // CSI: params [0-9;?]* intermediates [ -/]* final [@-~]
+                    i = i + 2;
+                    while i < s.size {
+                        d: char = s[i];
+                        if pkg_is_digit(d) || d == ';' || d == '?' {
+                            i = i + 1;
+                            continue;
+                        }
+                        stop;
+                    }
+                    while i < s.size {
+                        d: char = s[i];
+                        if d >= ' ' && d <= '/' {
+                            i = i + 1;
+                            continue;
+                        }
+                        stop;
+                    }
+                    if i < s.size && pkg_is_ansi_final(s[i]) { i = i + 1; }
+                    continue;
+                }
+            }
+            out = out + ' ';
+            i = i + 1;
+            continue;
+        }
+        if c < ' ' || c == '\x7f' {
+            out = out + ' ';
+        } else {
+            out = out + c;
+        }
+        i = i + 1;
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// Minimal JSON: objects as parallel key/value vecs (insertion order;
+// writers sort explicitly for deterministic output). Numbers keep raw
+// text; the lockfile shapes only need strings/objects.
+// ---------------------------------------------------------------------------
+
+pub def PkgJson : class {
+    // kind: 0 null, 1 bool, 2 number(raw), 3 string, 4 array, 5 object
+    pub kind: int;
+    pub bval: bool;
+    pub num: string;
+    pub sval: string;
+    pub arr: vec<PkgJson>;
+    pub keys: vec<string>;
+    pub vals: vec<PkgJson>;
+    pub ok: bool;
+    pub err: string;
+};
+
+fnc pkg_json_null() : PkgJson {
+    return PkgJson { kind: 0, bval: false, num: "", sval: "", ok: true, err: "" };
+}
+
+fnc pkg_json_bool(b bool) : PkgJson {
+    return PkgJson { kind: 1, bval: b, num: "", sval: "", ok: true, err: "" };
+}
+
+fnc pkg_json_num(raw string) : PkgJson {
+    return PkgJson { kind: 2, bval: false, num: raw, sval: "", ok: true, err: "" };
+}
+
+fnc pkg_json_str(s string) : PkgJson {
+    return PkgJson { kind: 3, bval: false, num: "", sval: s, ok: true, err: "" };
+}
+
+fnc pkg_json_arr() : PkgJson {
+    return PkgJson { kind: 4, bval: false, num: "", sval: "", ok: true, err: "" };
+}
+
+fnc pkg_json_obj() : PkgJson {
+    return PkgJson { kind: 5, bval: false, num: "", sval: "", ok: true, err: "" };
+}
+
+fnc pkg_json_bad(msg string) : PkgJson {
+    return PkgJson { kind: 0, bval: false, num: "", sval: "", ok: false, err: msg };
+}
+
+fnc pkg_json_get(obj PkgJson, key string) : PkgJson {
+    if obj == null { return pkg_json_null(); }
+    if obj.kind != 5 { return pkg_json_null(); }
+    i: int = 0;
+    while i < obj.keys.size {
+        if obj.keys.get(i) == key { return obj.vals.get(i); }
+        i = i + 1;
+    }
+    return pkg_json_null();
+}
+
+fnc pkg_json_has(obj PkgJson, key string) : bool {
+    if obj == null { return false; }
+    if obj.kind != 5 { return false; }
+    i: int = 0;
+    while i < obj.keys.size {
+        if obj.keys.get(i) == key { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+fnc pkg_json_set(obj PkgJson, key string, val PkgJson) : void {
+    i: int = 0;
+    while i < obj.keys.size {
+        if obj.keys.get(i) == key {
+            obj.vals.set(i, val);
+            return;
+        }
+        i = i + 1;
+    }
+    obj.keys.pushb(key);
+    obj.vals.pushb(val);
+}
+
+fnc pkg_json_str_of(v PkgJson) : string {
+    if v == null { return ""; }
+    if v.kind == 3 { return v.sval; }
+    return "";
+}
+
+// --- parser (recursive descent; depth capped) ---
+
+pub def PkgJsonParser : class {
+    pub s: string;
+    pub pos: int;
+};
+
+fnc pkg_json_ws(p PkgJsonParser) : void {
+    while p.pos < p.s.size {
+        c: char = p.s[p.pos];
+        if c == ' ' || c == '\t' || c == '\r' || c == '\n' {
+            p.pos = p.pos + 1;
+        } else {
+            return;
+        }
+    }
+}
+
+fnc pkg_hex_val(c char) : int {
+    if c >= '0' && c <= '9' { return c - '0'; }
+    if c >= 'a' && c <= 'f' { return c - 'a' + 10; }
+    if c >= 'A' && c <= 'F' { return c - 'A' + 10; }
+    return -1;
+}
+
+fnc pkg_json_parse_string(p PkgJsonParser) : PkgJson {
+    // assumes s[pos] == '"'
+    p.pos = p.pos + 1;
+    out: string = "";
+    while p.pos < p.s.size {
+        c: char = p.s[p.pos];
+        if c == '"' {
+            p.pos = p.pos + 1;
+            return pkg_json_str(out);
+        }
+        if c == '\\' {
+            if p.pos + 1 >= p.s.size { return pkg_json_bad("bad escape"); }
+            e: char = p.s[p.pos + 1];
+            if e == '"' { out = out + '"'; }
+            also e == '\\' { out = out + '\\'; }
+            also e == '/' { out = out + '/'; }
+            also e == 'b' { out = out + (char)(8); }
+            also e == 'f' { out = out + (char)(12); }
+            also e == 'n' { out = out + (char)(10); }
+            also e == 'r' { out = out + (char)(13); }
+            also e == 't' { out = out + (char)(9); }
+            also e == 'u' {
+                if p.pos + 5 >= p.s.size { return pkg_json_bad("bad unicode escape"); }
+                cp: int = 0;
+                k: int = 0;
+                bad: bool = false;
+                while k < 4 {
+                    h: int = pkg_hex_val(p.s[p.pos + 2 + k]);
+                    if h < 0 { bad = true; }
+                    cp = cp * 16 + h;
+                    k = k + 1;
+                }
+                if bad { return pkg_json_bad("bad unicode escape"); }
+                // encode BMP code points as UTF-8 (no surrogate handling:
+                // lone halves become U+FFFD, matching strict parsers)
+                if cp >= 55296 && cp <= 57343 { cp = 65533; }
+                if cp < 128 {
+                    out = out + (char)(cp + 0);
+                } also cp < 2048 {
+                    out = out + (char)(192 + cp / 64);
+                    out = out + (char)(128 + cp - (cp / 64) * 64);
+                } else {
+                    out = out + (char)(224 + cp / 4096);
+                    out = out + (char)(128 + (cp / 64) - ((cp / 64) / 8) * 8);
+                    out = out + (char)(128 + cp - (cp / 64) * 64);
+                }
+                p.pos = p.pos + 6;
+                continue;
+            } else {
+                return pkg_json_bad("bad escape");
+            }
+            p.pos = p.pos + 2;
+            continue;
+        }
+        if c < ' ' { return pkg_json_bad("control in string"); }
+        out = out + c;
+        p.pos = p.pos + 1;
+    }
+    return pkg_json_bad("unterminated string");
+}
+
+fnc pkg_json_parse_number(p PkgJsonParser) : PkgJson {
+    start: int = p.pos;
+    if p.pos < p.s.size && p.s[p.pos] == '-' { p.pos = p.pos + 1; }
+    while p.pos < p.s.size && pkg_is_digit(p.s[p.pos]) { p.pos = p.pos + 1; }
+    if p.pos < p.s.size && p.s[p.pos] == '.' {
+        p.pos = p.pos + 1;
+        while p.pos < p.s.size && pkg_is_digit(p.s[p.pos]) { p.pos = p.pos + 1; }
+    }
+    if p.pos < p.s.size && (p.s[p.pos] == 'e' || p.s[p.pos] == 'E') {
+        p.pos = p.pos + 1;
+        if p.pos < p.s.size && (p.s[p.pos] == '+' || p.s[p.pos] == '-') { p.pos = p.pos + 1; }
+        while p.pos < p.s.size && pkg_is_digit(p.s[p.pos]) { p.pos = p.pos + 1; }
+    }
+    if p.pos == start { return pkg_json_bad("bad number"); }
+    return pkg_json_num(pkg_slice(p.s, start, p.pos));
+}
+
+fnc pkg_json_parse_value(p PkgJsonParser, depth int) : PkgJson {
+    if depth > 64 { return pkg_json_bad("too deep"); }
+    pkg_json_ws(p);
+    if p.pos >= p.s.size { return pkg_json_bad("unexpected end"); }
+    c: char = p.s[p.pos];
+    if c == '"' { return pkg_json_parse_string(p); }
+    if c == '{' { return pkg_json_parse_object(p, depth); }
+    if c == '[' { return pkg_json_parse_array(p, depth); }
+    if c == 't' && pkg_slice(p.s, p.pos, p.pos + 4) == "true" {
+        p.pos = p.pos + 4;
+        return pkg_json_bool(true);
+    }
+    if c == 'f' && pkg_slice(p.s, p.pos, p.pos + 5) == "false" {
+        p.pos = p.pos + 5;
+        return pkg_json_bool(false);
+    }
+    if c == 'n' && pkg_slice(p.s, p.pos, p.pos + 4) == "null" {
+        p.pos = p.pos + 4;
+        return pkg_json_null();
+    }
+    if c == '-' || pkg_is_digit(c) { return pkg_json_parse_number(p); }
+    return pkg_json_bad("unexpected char");
+}
+
+fnc pkg_json_parse_object(p PkgJsonParser, depth int) : PkgJson {
+    p.pos = p.pos + 1;
+    obj: PkgJson = pkg_json_obj();
+    pkg_json_ws(p);
+    if p.pos < p.s.size && p.s[p.pos] == '}' {
+        p.pos = p.pos + 1;
+        return obj;
+    }
+    while true {
+        pkg_json_ws(p);
+        if p.pos >= p.s.size || p.s[p.pos] != '"' { return pkg_json_bad("need key"); }
+        k: PkgJson = pkg_json_parse_string(p);
+        if !k.ok { return k; }
+        pkg_json_ws(p);
+        if p.pos >= p.s.size || p.s[p.pos] != ':' { return pkg_json_bad("need colon"); }
+        p.pos = p.pos + 1;
+        v: PkgJson = pkg_json_parse_value(p, depth + 1);
+        if !v.ok { return v; }
+        pkg_json_set(obj, k.sval, v);
+        pkg_json_ws(p);
+        if p.pos >= p.s.size { return pkg_json_bad("unterminated object"); }
+        if p.s[p.pos] == ',' {
+            p.pos = p.pos + 1;
+            continue;
+        }
+        if p.s[p.pos] == '}' {
+            p.pos = p.pos + 1;
+            return obj;
+        }
+        return pkg_json_bad("need comma");
+    }
+    return pkg_json_bad("unreachable");
+}
+
+fnc pkg_json_parse_array(p PkgJsonParser, depth int) : PkgJson {
+    p.pos = p.pos + 1;
+    arr: PkgJson = pkg_json_arr();
+    pkg_json_ws(p);
+    if p.pos < p.s.size && p.s[p.pos] == ']' {
+        p.pos = p.pos + 1;
+        return arr;
+    }
+    while true {
+        v: PkgJson = pkg_json_parse_value(p, depth + 1);
+        if !v.ok { return v; }
+        arr.arr.pushb(v);
+        pkg_json_ws(p);
+        if p.pos >= p.s.size { return pkg_json_bad("unterminated array"); }
+        if p.s[p.pos] == ',' {
+            p.pos = p.pos + 1;
+            continue;
+        }
+        if p.s[p.pos] == ']' {
+            p.pos = p.pos + 1;
+            return arr;
+        }
+        return pkg_json_bad("need comma");
+    }
+    return pkg_json_bad("unreachable");
+}
+
+// Parse a full document (trailing garbage is an error).
+fnc pkg_json_parse(text string) : PkgJson {
+    p: PkgJsonParser = PkgJsonParser { s: text, pos: 0 };
+    v: PkgJson = pkg_json_parse_value(p, 0);
+    if !v.ok { return v; }
+    pkg_json_ws(p);
+    if p.pos != p.s.size { return pkg_json_bad("trailing data"); }
+    return v;
+}
+
+// --- writer (compact; pretty() matches json.dump indent=2 shapes) ---
+
+fnc pkg_json_escape(s string) : string {
+    out: string = "\"";
+    i: int = 0;
+    while i < s.size {
+        c: char = s[i];
+        if c == '"' { out = out + "\\\""; }
+        also c == '\\' { out = out + "\\\\"; }
+        also c == (char)(8) { out = out + "\\b"; }
+        also c == (char)(12) { out = out + "\\f"; }
+        also c == (char)(10) { out = out + "\\n"; }
+        also c == (char)(13) { out = out + "\\r"; }
+        also c == (char)(9) { out = out + "\\t"; }
+        also c < ' ' || c == (char)(127) {
+            bv: int = toint(int, c);
+            if bv < 0 { bv = bv + 256; }
+            out = out + "\\u00";
+            out = out + pkg_hexchar(bv / 16);
+            out = out + pkg_hexchar(bv - (bv / 16) * 16);
+        } else {
+            out = out + c;
+        }
+        i = i + 1;
+    }
+    return out + "\"";
+}
+
+fnc pkg_hexchar(d int) : char {
+    if d < 10 { return (char)('0' + d); }
+    return (char)('a' + d - 10);
+}
+
+fnc pkg_json_write(v PkgJson) : string {
+    if v == null { return "null"; }
+    if v.kind == 0 { return "null"; }
+    if v.kind == 1 {
+        if v.bval { return "true"; }
+        return "false";
+    }
+    if v.kind == 2 { return v.num; }
+    if v.kind == 3 { return pkg_json_escape(v.sval); }
+    if v.kind == 4 {
+        out: string = "[";
+        i: int = 0;
+        while i < v.arr.size {
+            if i > 0 { out = out + ","; }
+            out = out + pkg_json_write(v.arr.get(i));
+            i = i + 1;
+        }
+        return out + "]";
+    }
+    out2: string = "{";
+    i: int = 0;
+    while i < v.keys.size {
+        if i > 0 { out2 = out2 + ","; }
+        out2 = out2 + pkg_json_escape(v.keys.get(i)) + ":" + pkg_json_write(v.vals.get(i));
+        i = i + 1;
+    }
+    return out2 + "}";
+}
+
+// Sorted-key object writer (deterministic lockfile/index output).
+fnc pkg_json_write_sorted(v PkgJson) : string {
+    if v == null { return "null"; }
+    if v.kind != 5 { return pkg_json_write(v); }
+    idx: vec<int>;
+    i: int = 0;
+    while i < v.keys.size {
+        idx.pushb(i);
+        i = i + 1;
+    }
+    // insertion sort by key
+    a: int = 1;
+    while a < idx.size {
+        cur: int = idx.get(a);
+        j: int = a - 1;
+        while j >= 0 && v.keys.get(cur) < v.keys.get(idx.get(j)) {
+            idx.set(j + 1, idx.get(j));
+            j = j - 1;
+        }
+        idx.set(j + 1, cur);
+        a = a + 1;
+    }
+    out: string = "{";
+    k: int = 0;
+    while k < idx.size {
+        if k > 0 { out = out + ","; }
+        ii: int = idx.get(k);
+        out = out + pkg_json_escape(v.keys.get(ii)) + ":" + pkg_json_sorted_val(v.vals.get(ii));
+        k = k + 1;
+    }
+    return out + "}";
+}
+
+fnc pkg_json_sorted_val(v PkgJson) : string {
+    if v == null { return "null"; }
+    if v.kind == 5 { return pkg_json_write_sorted(v); }
+    if v.kind == 4 {
+        out: string = "[";
+        i: int = 0;
+        while i < v.arr.size {
+            if i > 0 { out = out + ","; }
+            out = out + pkg_json_sorted_val(v.arr.get(i));
+            i = i + 1;
+        }
+        return out + "]";
+    }
+    return pkg_json_write(v);
+}
+
+// ---------------------------------------------------------------------------
+// leash-pkg.lshc config: line-based `key: value` with # comments, "quotes",
+// inline ' #' comments outside quotes. Kept as an ordered entry list so
+// writes preserve every key (including custom ones) and round-trip.
+// ---------------------------------------------------------------------------
+
+pub def PkgEntry : class {
+    pub key: string;
+    pub val: string;
+};
+
+fnc pkg_config_line(s string) : string {
+    // strip inline ' #' comment outside double quotes
+    cut: int = -1;
+    in_q: bool = false;
+    i: int = 0;
+    while i < s.size {
+        if s[i] == '"' {
+            in_q = !in_q;
+        } also s[i] == '#' && !in_q && i > 0 && (s[i - 1] == ' ' || s[i - 1] == '\t') {
+            cut = i;
+            stop;
+        }
+        i = i + 1;
+    }
+    if cut >= 0 { return pkg_strip(pkg_slice(s, 0, cut)); }
+    return pkg_strip(s);
+}
+
+fnc pkg_read_config(text string) : vec<PkgEntry> {
+    out: vec<PkgEntry>;
+    lines: vec<string> = pkg_split(text, '\n');
+    foreach _, raw in<vector> lines {
+        s: string = pkg_config_line(raw);
+        if s.size == 0 { continue; }
+        if s[0] == '#' { continue; }
+        // split on first ':'
+        ci: int = 0;
+        while ci < s.size && s[ci] != ':' { ci = ci + 1; }
+        if ci >= s.size { continue; }
+        k: string = pkg_strip(pkg_slice(s, 0, ci));
+        v: string = pkg_strip(pkg_slice(s, ci + 1, s.size));
+        if k.size == 0 { continue; }
+        if v.size >= 2 && v[0] == '"' && v[v.size - 1] == '"' {
+            v = pkg_slice(v, 1, v.size - 1);
+        }
+        e: PkgEntry = PkgEntry { key: k, val: v };
+        out.pushb(e);
+    }
+    return out;
+}
+
+fnc pkg_config_get(entries vec<PkgEntry>, key string) : string {
+    foreach _, e in<vector> entries {
+        if e.key == key { return e.val; }
+    }
+    return "";
+}
+
+fnc pkg_config_has(entries vec<PkgEntry>, key string) : bool {
+    foreach _, e in<vector> entries {
+        if e.key == key { return true; }
+    }
+    return false;
+}
+
+fnc pkg_config_set(entries vec<PkgEntry>, key string, val string) : vec<PkgEntry> {
+    found: bool = false;
+    foreach _, en in<vector> entries {
+        if en.key == key {
+            en.val = val;
+            found = true;
+        }
+    }
+    if !found {
+        ne: PkgEntry = PkgEntry { key: key, val: val };
+        entries.pushb(ne);
+    }
+    return entries;
+}
+
+// Python str.split() whitespace (ASCII): the collapse in write_pkg_config
+// _esc runs only when a control char is present, but it is str.split() that
+// decides what gets collapsed — non-whitespace controls survive.
+fnc pkg_py_ws(c char) : bool {
+    if c == ' ' || c == '\t' || c == '\n' || c == '\r' { return true; }
+    if c == (char)(11) || c == (char)(12) { return true; }
+    if c == (char)(28) || c == (char)(29) { return true; }
+    if c == (char)(30) || c == (char)(31) { return true; }
+    return false;
+}
+
+fnc pkg_cfg_escape(v string) : string {
+    // mirror write_pkg_config _esc: backslashes/quotes escaped first, then
+    // " ".join(s.split()) over ALL whitespace when a control char is present
+    tmp: string = "";
+    i: int = 0;
+    while i < v.size {
+        if v[i] == '\\' { tmp = tmp + "\\\\"; }
+        also v[i] == '"' { tmp = tmp + "\\\""; }
+        else { tmp = tmp + v[i]; }
+        i = i + 1;
+    }
+    has_ctrl: bool = false;
+    k: int = 0;
+    while k < tmp.size {
+        if tmp[k] < ' ' || tmp[k] == (char)(127) { has_ctrl = true; }
+        k = k + 1;
+    }
+    if !has_ctrl { return tmp; }
+    out: string = "";
+    j: int = 0;
+    while j < tmp.size {
+        if pkg_py_ws(tmp[j]) {
+            out = out + ' ';
+            while j < tmp.size && pkg_py_ws(tmp[j]) { j = j + 1; }
+            continue;
+        }
+        out = out + tmp[j];
+        j = j + 1;
+    }
+    return out;
+}
+
+fnc pkg_write_config(entries vec<PkgEntry>) : string {
+    out: string = "# Leashed package configuration\n";
+    foreach _, e in<vector> entries {
+        if e.key.size == 0 { continue; }
+        // drop malformed keys (spaces/quotes/controls), like the reference
+        bad: bool = false;
+        k: int = 0;
+        while k < e.key.size {
+            c: char = e.key[k];
+            if c == ' ' || c == '"' || c == '\r' || c == '\n' || c < ' ' || c == (char)(127) { bad = true; }
+            k = k + 1;
+        }
+        if bad {
+            show("[leashed] warning: dropping malformed config key: '" + e.key + "'");
+            continue;
+        }
+        out = out + e.key + ": \"" + pkg_cfg_escape(e.val) + "\"\n";
+    }
+    return out;
+}
+
+// Split a comma list, trimming whitespace and dropping empties.
+fnc pkg_split_list(s string) : vec<string> {
+    out: vec<string>;
+    foreach _, p in<vector> pkg_split(s, ',') {
+        t: string = pkg_strip(p);
+        if t.size > 0 { out.pushb(t); }
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// leash.lock: {"version": 1, "packages": {name: {version, repo, tag, rev?}}}
+// Sorted keys, fixed shape. LockData.ok=false carries a hard error.
+// ---------------------------------------------------------------------------
+
+pub def PkgLockEntry : class {
+    pub version: string;
+    pub repo: string;
+    pub tag: string;
+    pub rev: string;
+    pub has_rev: bool;
+};
+
+pub def PkgLock : class {
+    pub ok: bool;
+    pub err: string;
+    pub missing: bool;   // no lockfile at all (not an error)
+    pub names: vec<string>;
+    pub entries: vec<PkgLockEntry>;
+};
+
+fnc pkg_lock_entry_of(v PkgJson) : PkgLockEntry {
+    e: PkgLockEntry = PkgLockEntry { version: "", repo: "", tag: "", rev: "", has_rev: false };
+    if v == null || v.kind != 5 { return e; }
+    e.version = pkg_json_str_of(pkg_json_get(v, "version"));
+    e.repo = pkg_json_str_of(pkg_json_get(v, "repo"));
+    e.tag = pkg_json_str_of(pkg_json_get(v, "tag"));
+    r: PkgJson = pkg_json_get(v, "rev");
+    if r.kind == 3 {
+        e.rev = r.sval;
+        e.has_rev = true;
+    }
+    return e;
+}
+
+fnc pkg_lock_rev_ok(rev string) : bool {
+    if rev.size != 40 { return false; }
+    i: int = 0;
+    while i < 40 {
+        if pkg_hex_val(rev[i]) < 0 { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+// Parse lockfile text. ok=false + err set on any corruption (loud, never
+// a silent resolve). missing=true when there is no content at all.
+fnc pkg_parse_lockfile(text string) : PkgLock {
+    out: PkgLock = PkgLock { ok: false, err: "", missing: false };
+    if pkg_strip(text).size == 0 {
+        out.missing = true;
+        return out;
+    }
+    v: PkgJson = pkg_json_parse(text);
+    if !v.ok {
+        out.err = "error: Corrupt leash.lock: " + v.err;
+        return out;
+    }
+    if v.kind != 5 {
+        out.err = "error: leash.lock has an invalid format (expected {\"packages\": {...}})";
+        return out;
+    }
+    pkgs: PkgJson = pkg_json_get(v, "packages");
+    if pkgs.kind != 5 {
+        out.err = "error: leash.lock has an invalid format (expected {\"packages\": {...}})";
+        return out;
+    }
+    ver: PkgJson = pkg_json_get(v, "version");
+    if ver.kind != 2 || ver.num != "1" {
+        out.err = "error: leash.lock has an unsupported version field (expected 1)";
+        return out;
+    }
+    i: int = 0;
+    while i < pkgs.keys.size {
+        out.names.pushb(pkgs.keys.get(i));
+        out.entries.pushb(pkg_lock_entry_of(pkgs.vals.get(i)));
+        i = i + 1;
+    }
+    out.ok = true;
+    return out;
+}
+
+fnc pkg_lock_find(lock PkgLock, name string) : int {
+    i: int = 0;
+    while i < lock.names.size {
+        if lock.names.get(i) == name { return i; }
+        i = i + 1;
+    }
+    return -1;
+}
+
+fnc pkg_lock_pin(lock PkgLock, name string) : string {
+    idx: int = pkg_lock_find(lock, name);
+    if idx < 0 { return ""; }
+    v: string = lock.entries.get(idx).version;
+    if pkg_validate_version(v) { return v; }
+    return "";
+}
+
+fnc pkg_lock_rev(lock PkgLock, name string) : string {
+    idx: int = pkg_lock_find(lock, name);
+    if idx < 0 { return ""; }
+    e: PkgLockEntry = lock.entries.get(idx);
+    if e.has_rev && pkg_lock_rev_ok(e.rev) { return e.rev; }
+    return "";
+}
+
+// Serialize the entry list (already validated) with sorted names.
+fnc pkg_write_lockfile(names vec<string>, entries vec<PkgLockEntry>) : string {
+    idx: vec<int>;
+    i: int = 0;
+    while i < names.size {
+        if pkg_validate_version(entries.get(i).version) {
+            idx.pushb(i);
+        }
+        i = i + 1;
+    }
+    a: int = 1;
+    while a < idx.size {
+        cur: int = idx.get(a);
+        j: int = a - 1;
+        while j >= 0 && names.get(cur) < names.get(idx.get(j)) {
+            idx.set(j + 1, idx.get(j));
+            j = j - 1;
+        }
+        idx.set(j + 1, cur);
+        a = a + 1;
+    }
+    out: string = "{\n  \"version\": 1,\n  \"packages\": {";
+    k: int = 0;
+    while k < idx.size {
+        e: PkgLockEntry = entries.get(idx.get(k));
+        tag: string = e.tag;
+        if tag.size == 0 { tag = "v" + e.version; }
+        if k > 0 { out = out + ","; }
+        out = out + "\n    " + pkg_json_escape(names.get(idx.get(k))) + ": {";
+        out = out + "\n      \"version\": " + pkg_json_escape(e.version) + ",";
+        out = out + "\n      \"repo\": " + pkg_json_escape(e.repo) + ",";
+        out = out + "\n      \"tag\": " + pkg_json_escape(tag);
+        if e.has_rev {
+            out = out + ",\n      \"rev\": " + pkg_json_escape(e.rev);
+        }
+        out = out + "\n    }";
+        k = k + 1;
+    }
+    if idx.size > 0 { out = out + "\n  }"; } else { out = out + "}"; }
+    out = out + "\n}\n";
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// Registry pure logic (index.json shapes, merge rules, gates)
+// ---------------------------------------------------------------------------
+
+fnc pkg_validate_index_shape(v PkgJson) : string {
+    if v == null || v.kind != 5 { return "expected a JSON object"; }
+    libs: PkgJson = pkg_json_get(v, "libraries");
+    if libs.kind != 5 { return "expected {\"libraries\": {...}}"; }
+    return "";
+}
+
+// Merge a publish into the fresh registry entry. Returns the merged entry
+// JSON (caller stores it under libraries[name]); kept gets the surviving
+// previous version names (for tests/diagnostics).
+fnc pkg_merge_registry_entry(fresh PkgJson, version string, repo_url string, description string, author string, publisher string, now_utc string) : PkgJson {
+    old_versions: PkgJson = pkg_json_obj();
+    if fresh != null && fresh.kind == 5 {
+        prev: PkgJson = pkg_json_get(fresh, "versions");
+        if prev.kind == 5 {
+            i: int = 0;
+            while i < prev.keys.size {
+                pkg_json_set(old_versions, prev.keys.get(i), prev.vals.get(i));
+                i = i + 1;
+            }
+        }
+    }
+    nv: PkgJson = pkg_json_obj();
+    pkg_json_set(nv, "repo", pkg_json_str(repo_url));
+    pkg_json_set(nv, "tag", pkg_json_str("v" + version));
+    pkg_json_set(nv, "published_at", pkg_json_str(now_utc));
+    pkg_json_set(old_versions, version, nv);
+    entry: PkgJson = pkg_json_obj();
+    pkg_json_set(entry, "repo", pkg_json_str(repo_url));
+    pkg_json_set(entry, "description", pkg_json_str(description));
+    pkg_json_set(entry, "author", pkg_json_str(author));
+    pkg_json_set(entry, "publisher", pkg_json_str(publisher));
+    pkg_json_set(entry, "version", pkg_json_str(version));
+    pkg_json_set(entry, "versions", old_versions);
+    return entry;
+}
+
+fnc pkg_check_version_match(requested string, installed string, has_installed bool) : string {
+    if requested.size == 0 { return ""; }
+    if !has_installed {
+        return "could not determine the installed version (requested " + requested + ")";
+    }
+    if installed != requested {
+        return "version mismatch: requested " + requested + " but the repository contains " + installed;
+    }
+    return "";
+}
+
+fnc pkg_registry_owner_ok(entry PkgJson, config_author string, gh_identity string) : bool {
+    if entry == null || entry.kind != 5 { return false; }
+    stored: string = pkg_json_str_of(pkg_json_get(entry, "publisher"));
+    if stored.size > 0 {
+        return gh_identity.size > 0 && gh_identity == stored;
+    }
+    return pkg_json_str_of(pkg_json_get(entry, "author")) == config_author;
+}
+
+// Ownership + version-conflict gate. Returns "" when publishing may
+// proceed, else the error text.
+fnc pkg_check_registry_update(fresh_entry PkgJson, has_entry bool, name string, author string, publisher string, version string, preflight_version string) : string {
+    if has_entry {
+        if fresh_entry == null || fresh_entry.kind != 5 {
+            return "Registry entry for '" + name + "' is corrupt; cannot publish over it.";
+        }
+        if !pkg_registry_owner_ok(fresh_entry, author, publisher) {
+            stored: string = pkg_json_str_of(pkg_json_get(fresh_entry, "publisher"));
+            if stored.size == 0 {
+                stored = pkg_json_str_of(pkg_json_get(fresh_entry, "author"));
+            }
+            return "Library '" + name + "' is already registered by '" + stored + "'. Only the original owner can update a package. Pick another name.";
+        }
+        fresh_ver: string = pkg_json_str_of(pkg_json_get(fresh_entry, "version"));
+        if fresh_ver.size > 0 && !pkg_validate_version(fresh_ver) {
+            return "Registry entry for '" + name + "' has a corrupt version ('" + fresh_ver + "'); cannot publish over it.";
+        }
+        if fresh_ver.size > 0 && !pkg_is_newer_version(version, fresh_ver) {
+            moved: string = "";
+            if preflight_version.size > 0 && preflight_version != fresh_ver {
+                moved = " (moved from v" + preflight_version + " while this publish was running)";
+            }
+            return "Version conflict: the registry now has '" + name + "' v" + fresh_ver + moved + "; refusing to overwrite with v" + version + ". Bump the 'version' field past the registry version and try again.";
+        }
+    }
+    return "";
+}
+
+// ---------------------------------------------------------------------------
+// Processes, environment, filesystem (exec-based, like main.lsh)
+// ---------------------------------------------------------------------------
+
+pub def PkgRun : class {
+    pub rc: int;
+    pub out: string;
+    pub err: string;
+};
+
+// Full stdout of a command (all lines, trailing newline trimmed).
+fnc pkg_sh_out(cmd string) : string {
+    raw: string = exec(cmd, "wait");
+    // trim one trailing newline (exec keeps it; xout drops everything past
+    // the first line, which we do NOT want here)
+    if raw.size > 0 && raw[raw.size - 1] == '\n' {
+        return pkg_slice(raw, 0, raw.size - 1);
+    }
+    return raw;
+}
+
+// Exit code of a command.
+fnc pkg_sh_code(cmd string) : int {
+    out: string = exec(cmd, "code");
+    v: int = 0;
+    i: int = 0;
+    neg: bool = false;
+    if out.size > 0 && out[0] == '-' {
+        neg = true;
+        i = 1;
+    }
+    while i < out.size && out[i] >= '0' && out[i] <= '9' {
+        v = v * 10 + (out[i] - '0');
+        i = i + 1;
+    }
+    if neg { return 0 - v; }
+    return v;
+}
+
+// Single-shot git: appends a RC marker line to stdout, reads stderr from
+// a file. Returns rc/stdout/stderr without running twice.
+fnc pkg_git(args vec<string>, cwd string) : PkgRun {
+    errf: string = pkg_tmp_file("leashed_err_");
+    cmd: string = "git";
+    foreach _, a in<vector> args {
+        cmd = cmd + " " + pkg_sh_quote(a);
+    }
+    if cwd.size > 0 {
+        cmd = "cd " + pkg_sh_quote(cwd) + " && " + cmd;
+    }
+    cmd = cmd + " 2>" + pkg_sh_quote(errf) + "; echo \"RC=$?\"";
+    raw: string = pkg_sh_out(cmd);
+    rc: int = 1;
+    out: string = raw;
+    // last line is RC=<n>
+    li: int = raw.size;
+    while li > 0 && raw[li - 1] != '\n' { li = li - 1; }
+    last: string = pkg_strip(pkg_slice(raw, li, raw.size));
+    if pkg_starts_with(last, "RC=") {
+        rc = pkg_parse_int(pkg_slice(last, 3, last.size));
+        if rc < 0 { rc = 1; }
+        out = pkg_slice(raw, 0, li);
+        if out.size > 0 && out[out.size - 1] == '\n' {
+            out = pkg_slice(out, 0, out.size - 1);
+        }
+    }
+    errtext: string = pkg_read_file(errf);
+    exec("rm -f " + pkg_sh_quote(errf), nil);
+    r: PkgRun = PkgRun { rc: rc, out: out, err: errtext };
+    return r;
+}
+
+fnc pkg_gh(args vec<string>, required bool) : PkgRun {
+    errf: string = pkg_tmp_file("leashed_err_");
+    cmd: string = "gh";
+    foreach _, a in<vector> args {
+        cmd = cmd + " " + pkg_sh_quote(a);
+    }
+    cmd = cmd + " 2>" + pkg_sh_quote(errf) + "; echo \"RC=$?\"";
+    raw: string = pkg_sh_out(cmd);
+    rc: int = 1;
+    out: string = raw;
+    li: int = raw.size;
+    while li > 0 && raw[li - 1] != '\n' { li = li - 1; }
+    last: string = pkg_strip(pkg_slice(raw, li, raw.size));
+    if pkg_starts_with(last, "RC=") {
+        rc = pkg_parse_int(pkg_slice(last, 3, last.size));
+        if rc < 0 { rc = 1; }
+        out = pkg_slice(raw, 0, li);
+        if out.size > 0 && out[out.size - 1] == '\n' {
+            out = pkg_slice(out, 0, out.size - 1);
+        }
+    }
+    errtext: string = pkg_read_file(errf);
+    exec("rm -f " + pkg_sh_quote(errf), nil);
+    if rc != 0 && required && pkg_contains(errtext + out, "command not found") {
+        r: PkgRun = PkgRun { rc: 1, out: "", err: "not found" };
+        return r;
+    }
+    r: PkgRun = PkgRun { rc: rc, out: out, err: errtext };
+    return r;
+}
+
+fnc pkg_tmp_file(prefix string) : string {
+    return pkg_strip(pkg_sh_out("mktemp -t " + prefix + "XXXXXX"));
+}
+
+fnc pkg_tmp_dir(prefix string) : string {
+    return pkg_strip(pkg_sh_out("mktemp -d -t " + prefix + "XXXXXX"));
+}
+
+fnc pkg_read_file(path string) : string {
+    f: File = File.open(path, "r");
+    if f == null { return ""; }
+    c: string = f.read();
+    f.close();
+    return c;
+}
+
+fnc pkg_write_file(path string, content string) : bool {
+    f: File = File.open(path, "w");
+    if f == null { return false; }
+    f.write(content);
+    f.close();
+    return true;
+}
+
+fnc pkg_file_exists(p string) : bool {
+    f: File = File.open(p, "r");
+    if f != null {
+        f.close();
+        return true;
+    }
+    return false;
+}
+
+fnc pkg_is_dir(p string) : bool {
+    return pkg_sh_out("test -d " + pkg_sh_quote(p) + " && echo 1") == "1";
+}
+
+fnc pkg_is_symlink(p string) : bool {
+    return pkg_sh_out("test -L " + pkg_sh_quote(p) + " && echo 1") == "1";
+}
+
+fnc pkg_cwd() : string {
+    return pkg_sh_out("pwd");
+}
+
+fnc pkg_home() : string {
+    // printenv yields "" when unset (never null), matching the reference
+    // `os.environ.get(name)` empty-means-unset rule on both toolchains.
+    return pkg_sh_out("printenv HOME");
+}
+
+fnc pkg_env_or(name string, dflt string) : string {
+    v: string = pkg_sh_out("printenv " + name);
+    if v.size == 0 { return dflt; }
+    return v;
+}
+
+fnc pkg_basename(p string) : string {
+    i: int = p.size;
+    while i > 0 && p[i - 1] != '/' { i = i - 1; }
+    return pkg_slice(p, i, p.size);
+}
+
+fnc pkg_dirname(p string) : string {
+    i: int = p.size;
+    while i > 0 && p[i - 1] != '/' { i = i - 1; }
+    if i == 0 { return "."; }
+    if i == 1 { return "/"; }
+    return pkg_slice(p, 0, i - 1);
+}
+
+// realpath -m (missing components tolerated) for containment checks.
+fnc pkg_realpath(p string) : string {
+    return pkg_sh_out("realpath -m " + pkg_sh_quote(p));
+}
+
+// True when child == parent or lives under parent/ (both realpathed).
+fnc pkg_path_under(child string, parent string) : bool {
+    if child == parent { return true; }
+    if !pkg_starts_with(child, parent) { return false; }
+    if child.size == parent.size { return true; }
+    return child[parent.size] == '/';
+}
+
+fnc pkg_mkdir_p(d string) : bool {
+    return pkg_sh_code("mkdir -p " + pkg_sh_quote(d)) == 0;
+}
+
+fnc pkg_rm_rf(p string) : void {
+    exec("rm -rf " + pkg_sh_quote(p), nil);
+}
+
+// List relative paths of all symlinks under root ("" when none).
+// Uses find so no directory-reading primitives are needed.
+fnc pkg_find_symlinks(root string) : string {
+    return pkg_sh_out("find " + pkg_sh_quote(root) + " -type l -print");
+}
+
+// Refuse trees containing symlinks (path-traversal via copytree).
+// Returns "" when clean, else the error text.
+fnc pkg_assert_no_symlinks_r(root string) : string {
+    if pkg_is_symlink(root) {
+        return "error: refusing to install package: '" + root + "' is a symlink.\n  Symlinks in packages can point outside the package (path traversal) and are not allowed.";
+    }
+    hits: string = pkg_find_symlinks(root);
+    if hits.size > 0 {
+        first: string = hits;
+        ni: int = 0;
+        while ni < first.size && first[ni] != '\n' { ni = ni + 1; }
+        first = pkg_slice(first, 0, ni);
+        rel: string = first;
+        if pkg_starts_with(first, root + "/") {
+            rel = pkg_slice(first, root.size + 1, first.size);
+        }
+        return "error: refusing to install package: '" + rel + "' is a symlink.\n  Symlinks in packages can point outside the package (path traversal) and are not allowed.";
+    }
+    return "";
+}
+
+// UTC timestamp like 2026-10-16T19:00:00Z.
+fnc pkg_utc_now() : string {
+    return pkg_sh_out("date -u +%Y-%m-%dT%H:%M:%SZ");
+}
+
+// ---------------------------------------------------------------------------
+// Registry configuration (env-overridable, like the reference)
+// ---------------------------------------------------------------------------
+
+fnc pkg_registry_repo() : string {
+    return pkg_env_or("LEASHED_REGISTRY_REPO", "foksiny/leash-packages");
+}
+
+fnc pkg_registry_url() : string {
+    dflt: string = "https://raw.githubusercontent.com/" + pkg_registry_repo() + "/main/index.json";
+    return pkg_env_or("LEASHED_REGISTRY_URL", dflt);
+}
+
+fnc pkg_registry_git() : string {
+    dflt: string = "https://github.com/" + pkg_registry_repo() + ".git";
+    return pkg_env_or("LEASHED_REGISTRY_GIT", dflt);
+}
+
+fnc pkg_registry_owner() : string {
+    repo: string = pkg_registry_repo();
+    i: int = 0;
+    while i < repo.size && repo[i] != '/' { i = i + 1; }
+    return pkg_slice(repo, 0, i);
+}
+
+fnc pkg_libs_dir() : string {
+    return pkg_home() + "/.leash/libs";
+}
+
+fnc pkg_bin_dir() : string {
+    return pkg_home() + "/.leash/bin";
+}
+
+// Fetch + parse the registry index. Returns ok=false + err on any failure
+// (network, oversize, JSON, shape) — callers print err and exit 1.
+fnc pkg_fetch_index() : PkgJson {
+    url: string = pkg_registry_url();
+    if pkg_starts_with(url, "http://") {
+        show("[leashed] warning: LEASHED_REGISTRY_URL uses plain http:// — the package index can be tampered with in transit.");
+    }
+    tmp: string = pkg_tmp_file("leashed_idx_");
+    if tmp.size == 0 {
+        return pkg_json_bad("error: Failed to fetch package index: cannot stage download");
+    }
+    // curl mirrors urllib: 30s cap, 32MiB ceiling, leashed user agent.
+    code: int = pkg_sh_code("curl -fsSL -m 30 --max-filesize 33554432 -A " + pkg_sh_quote("leashed") + " " + pkg_sh_quote(url) + " -o " + pkg_sh_quote(tmp));
+    if code != 0 {
+        exec("rm -f " + pkg_sh_quote(tmp), nil);
+        return pkg_json_bad("error: Failed to fetch package index (curl exit " + tostring(code) + ")");
+    }
+    text: string = pkg_read_file(tmp);
+    exec("rm -f " + pkg_sh_quote(tmp), nil);
+    if text.size == 0 {
+        return pkg_json_bad("error: Failed to fetch package index: empty response");
+    }
+    v: PkgJson = pkg_json_parse(text);
+    if !v.ok {
+        return pkg_json_bad("error: Failed to fetch package index: bad JSON (" + v.err + ")");
+    }
+    shape: string = pkg_validate_index_shape(v);
+    if shape.size > 0 {
+        return pkg_json_bad("error: Package index has an invalid format (" + shape + ")");
+    }
+    return v;
+}
+
+// Identity: gh login, else git user.name, else git user.email (cached per
+// process in a global, like the reference _IDENTITY_CACHE).
+fnc pkg_run_gh_login() : string {
+    a: vec<string>;
+    a.pushb("api");
+    a.pushb("user");
+    a.pushb("--jq");
+    a.pushb(".login");
+    r: PkgRun = pkg_gh(a, false);
+    if r.rc == 0 && r.out.size > 0 { return r.out; }
+    return "";
+}
+
+fnc pkg_run_git_config(key string) : string {
+    a: vec<string>;
+    a.pushb("config");
+    a.pushb("--global");
+    a.pushb(key);
+    r: PkgRun = pkg_git(a, "");
+    if r.rc == 0 && r.out.size > 0 { return r.out; }
+    return "";
+}
+
+fnc pkg_get_identity() : string {
+    id: string = pkg_run_gh_login();
+    if id.size > 0 { return id; }
+    id = pkg_run_git_config("user.name");
+    if id.size > 0 { return id; }
+    return pkg_run_git_config("user.email");
+}
+
+fnc pkg_get_gh_user() : string {
+    return pkg_run_gh_login();
+}
+
+// ---------------------------------------------------------------------------
+// Install flows. Results return (name, version, sha) with ok=false + err on
+// failure; command wrappers print and exit. Mirrors _install_from_repo.
+// ---------------------------------------------------------------------------
+
+pub def PkgInstalled : class {
+    pub ok: bool;
+    pub err: string;
+    pub name: string;
+    pub version: string;
+    pub repo: string;
+    pub sha: string;
+};
+
+fnc pkg_fail(msg string) : PkgInstalled {
+    return PkgInstalled { ok: false, err: msg, name: "", version: "", repo: "", sha: "" };
+}
+
+// Basename-derived fallback name (sanitized like the reference).
+fnc pkg_fallback_name(repo_url string) : string {
+    base: string = repo_url;
+    // strip trailing slashes
+    while base.size > 0 && base[base.size - 1] == '/' {
+        base = pkg_slice(base, 0, base.size - 1);
+    }
+    // last path segment
+    i: int = base.size;
+    while i > 0 && base[i - 1] != '/' && base[i - 1] != ':' { i = i - 1; }
+    seg: string = pkg_slice(base, i, base.size);
+    if pkg_ends_with(seg, ".git") {
+        seg = pkg_slice(seg, 0, seg.size - 4);
+    }
+    out: string = "";
+    j: int = 0;
+    while j < seg.size {
+        c: char = seg[j];
+        if pkg_is_alnum(c) || c == '_' || c == '-' {
+            out = out + c;
+        } else {
+            out = out + '_';
+        }
+        j = j + 1;
+    }
+    return out;
+}
+
+// Read package.lshc (JSON manifest) from an installed tree.
+fnc pkg_read_manifest(dir string) : PkgJson {
+    text: string = pkg_read_file(dir + "/package.lshc");
+    if text.size == 0 { return pkg_json_null(); }
+    v: PkgJson = pkg_json_parse(text);
+    if !v.ok || v.kind != 5 { return pkg_json_null(); }
+    return v;
+}
+
+// Import stub: "<libs>/<name>.lsh" re-exporting the package entry module.
+fnc pkg_write_stub(libname string, version string, author string, desc string, entry_main string) : string {
+    // entry module = basename without extension, strictly validated
+    base: string = pkg_basename(entry_main);
+    mod: string = base;
+    di: int = base.size;
+    while di > 0 && base[di - 1] != '.' { di = di - 1; }
+    if di > 1 {
+        mod = pkg_slice(base, 0, di - 1);
+    }
+    i: int = 0;
+    clean: bool = mod.size > 0;
+    while i < mod.size {
+        c: char = mod[i];
+        first_ok: bool = pkg_is_alpha(c) || c == '_';
+        rest_ok: bool = first_ok || pkg_is_digit(c);
+        if i == 0 && !first_ok { clean = false; }
+        if i > 0 && !rest_ok { clean = false; }
+        i = i + 1;
+    }
+    if !clean {
+        return "warning: skipping import stub: invalid module name in installed package.lshc";
+    }
+    stub: string = "// " + libname + " " + version + " by " + author + "\n";
+    if desc.size > 0 {
+        stub = stub + "// " + desc + "\n";
+    }
+    stub = stub + "use " + libname + "::" + mod + "::*;\n";
+    if !pkg_write_file(pkg_libs_dir() + "/" + libname + ".lsh", stub) {
+        return "warning: could not write import stub";
+    }
+    return "";
+}
+
+// Clone + install one repo. expect_sha pins the tag commit ("" = no pin).
+fnc pkg_install_from_repo(repo_url string, requested_version string, has_requested bool, libname_hint string, expect_sha string) : PkgInstalled {
+    if has_requested && !pkg_validate_version(requested_version) {
+        return pkg_fail("error: Invalid version '" + requested_version + "'. Use semver: X.Y.Z");
+    }
+    strict_https: bool = libname_hint.size > 0 || has_requested;
+    vres: string = pkg_validate_git_url_r(repo_url, !strict_https, "repository");
+    if vres != "OK" && !pkg_starts_with(vres, "WARN ") {
+        return pkg_fail(vres);
+    }
+    if pkg_starts_with(vres, "WARN ") {
+        show(pkg_slice(vres, 5, vres.size));
+    }
+    repo_tmp: string = pkg_tmp_dir("leashed_repo_");
+    if repo_tmp.size == 0 {
+        return pkg_fail("error: Cannot stage clone");
+    }
+    clone: vec<string>;
+    clone.pushb("clone");
+    clone.pushb("--depth");
+    clone.pushb("1");
+    if has_requested {
+        clone.pushb("--branch");
+        clone.pushb("v" + requested_version);
+    }
+    clone.pushb(repo_url);
+    clone.pushb(repo_tmp);
+    cr: PkgRun = pkg_git(clone, "");
+    if cr.rc != 0 {
+        pkg_rm_rf(repo_tmp);
+        if has_requested {
+            return pkg_fail("error: Version v" + requested_version + " not found in '" + repo_url + "' (" + cr.err + ")");
+        }
+        return pkg_fail("error: Failed to clone repository: " + cr.err);
+    }
+    sha: string = "";
+    if has_requested {
+        tag_ref: string = "refs/tags/v" + requested_version + "^\{commit}";
+        va: vec<string>;
+        va.pushb("rev-parse");
+        va.pushb("--verify");
+        va.pushb(tag_ref);
+        vr: PkgRun = pkg_git(va, repo_tmp);
+        if vr.rc != 0 {
+            pkg_rm_rf(repo_tmp);
+            return pkg_fail("error: Version v" + requested_version + " is not a tag in '" + repo_url + "' (" + vr.err + ")");
+        }
+        sha = vr.out;
+        if expect_sha.size > 0 && sha != expect_sha {
+            pkg_rm_rf(repo_tmp);
+            return pkg_fail("error: Version v" + requested_version + " of '" + repo_url + "' does not match the locked revision\n  Locked:   " + expect_sha + "\n  Resolved: " + sha + "\n  The tag may have been moved. Run 'leash pkg update' to re-pin, or verify the repository.");
+        }
+    }
+    // library/ layout preferred, repo root as fallback
+    src: string = repo_tmp + "/library";
+    if !pkg_is_dir(src) {
+        src = repo_tmp;
+    }
+    manifest: PkgJson = pkg_read_manifest(src);
+    if manifest.kind != 5 {
+        manifest = pkg_read_manifest(repo_tmp);
+    }
+    if manifest.kind != 5 {
+        manifest = pkg_json_obj();
+    }
+    libname: string = libname_hint;
+    if libname.size == 0 {
+        libname = pkg_json_str_of(pkg_json_get(manifest, "name"));
+    }
+    if libname.size == 0 {
+        libname = pkg_fallback_name(repo_url);
+    }
+    nerr: string = pkg_validate_name_r(libname);
+    if nerr.size > 0 {
+        pkg_rm_rf(repo_tmp);
+        return pkg_fail(nerr);
+    }
+    raw_version: string = pkg_json_str_of(pkg_json_get(manifest, "version"));
+    version: string = "?";
+    if pkg_validate_version(raw_version) {
+        version = raw_version;
+    } also has_requested && pkg_validate_version(requested_version) {
+        version = requested_version;
+    }
+    merr: string = "";
+    if has_requested {
+        inst_opt: string = "";
+        has_inst: bool = false;
+        if version != "?" {
+            inst_opt = version;
+            has_inst = true;
+        }
+        merr = pkg_check_version_match(requested_version, inst_opt, has_inst);
+    }
+    if merr.size > 0 {
+        pkg_rm_rf(repo_tmp);
+        return pkg_fail("error: " + merr);
+    }
+    author: string = pkg_json_str_of(pkg_json_get(manifest, "author"));
+    if author.size == 0 { author = "?"; }
+    desc: string = pkg_json_str_of(pkg_json_get(manifest, "description"));
+    show("[leashed] Installing '" + libname + "' v" + version + " from " + repo_url);
+    serr: string = pkg_assert_no_symlinks_r(src);
+    if serr.size > 0 {
+        pkg_rm_rf(repo_tmp);
+        return pkg_fail(serr);
+    }
+    if !pkg_mkdir_p(pkg_libs_dir()) {
+        pkg_rm_rf(repo_tmp);
+        return pkg_fail("error: Cannot create libs directory");
+    }
+    dest_root: string = pkg_libs_dir() + "/" + libname;
+    staging: string = dest_root + ".new";
+    pkg_rm_rf(staging);
+    // copytree minus .git
+    if pkg_sh_code("cp -r " + pkg_sh_quote(src) + "/. " + pkg_sh_quote(staging) + " && rm -rf " + pkg_sh_quote(staging + "/.git")) != 0 {
+        pkg_rm_rf(staging);
+        pkg_rm_rf(repo_tmp);
+        return pkg_fail("error: Failed to install '" + libname + "'");
+    }
+    if pkg_file_exists(dest_root) || pkg_is_dir(dest_root) {
+        pkg_rm_rf(dest_root);
+    }
+    if pkg_sh_code("mv " + pkg_sh_quote(staging) + " " + pkg_sh_quote(dest_root)) != 0 {
+        pkg_rm_rf(staging);
+        pkg_rm_rf(repo_tmp);
+        return pkg_fail("error: Failed to install '" + libname + "'");
+    }
+    entry_main: string = pkg_json_str_of(pkg_json_get(manifest, "main"));
+    if entry_main.size == 0 { entry_main = "src/main.lsh"; }
+    swarn: string = pkg_write_stub(libname, version, author, desc, entry_main);
+    if swarn.size > 0 { show("[leashed] " + swarn); }
+    show("[leashed] Successfully installed '" + libname + "' v" + version);
+    // global commands from the manifest
+    tools: PkgJson = pkg_json_get(manifest, "global_install");
+    if tools.kind == 5 && tools.keys.size > 0 {
+        pkg_install_global_tools(dest_root, tools);
+    }
+    pkg_rm_rf(repo_tmp);
+    out: PkgInstalled = PkgInstalled { ok: true, err: "", name: libname, version: version, repo: repo_url, sha: sha };
+    return out;
+}
+
+// Build manifest-declared global commands into ~/.leash/bin.
+// Sources must stay inside the installed tree (traversal-safe).
+fnc pkg_install_global_tools(dest_root string, tools PkgJson) : void {
+    bindir: string = pkg_bin_dir();
+    pkg_mkdir_p(bindir);
+    i: int = 0;
+    while i < tools.keys.size {
+        tname: string = tools.keys.get(i);
+        tsrc: string = pkg_json_str_of(tools.vals.get(i));
+        if pkg_validate_name_r(tname).size > 0 {
+            show("error: skipping global command with invalid name: '" + tname + "'");
+            i = i + 1;
+            continue;
+        }
+        if tsrc.size == 0 {
+            show("error: skipping global command '" + tname + "': invalid source");
+            i = i + 1;
+            continue;
+        }
+        src_abs: string = pkg_realpath(dest_root + "/" + tsrc);
+        rooted: string = pkg_realpath(dest_root);
+        if !pkg_path_under(src_abs, rooted) {
+            show("error: skipping global command '" + tname + "': source escapes the package");
+            i = i + 1;
+            continue;
+        }
+        if !pkg_file_exists(src_abs) {
+            show("error: skipping global command '" + tname + "': source not found");
+            i = i + 1;
+            continue;
+        }
+        out: string = bindir + "/" + tname;
+        if pkg_file_exists(out) {
+            show("[leashed] warning: overwriting existing global command '" + tname + "'");
+        }
+        driver: CompilerDriver = CompilerDriver.make();
+        driver.add_import_dir(dest_root);
+        empty_libs: vec<string>;
+        if driver.compile_file(src_abs, out, false, false, "", "2", false, empty_libs, false, false, false, "", false, false, "", false) != 0 {
+            show("error: failed to build global command '" + tname + "'");
+            i = i + 1;
+            continue;
+        }
+        show("[leashed] Installed global command '" + tname + "' -> " + out);
+        i = i + 1;
+    }
+}
+
+fnc pkg_remove_global_tools(dest_root string) : void {
+    manifest: PkgJson = pkg_read_manifest(dest_root);
+    if manifest.kind != 5 { return; }
+    tools: PkgJson = pkg_json_get(manifest, "global_install");
+    if tools.kind != 5 { return; }
+    bindir: string = pkg_bin_dir();
+    i: int = 0;
+    while i < tools.keys.size {
+        tname: string = tools.keys.get(i);
+        j: int = 0;
+        while j < 2 {
+            cand: string = bindir + "/" + tname;
+            if j == 1 { cand = cand + ".exe"; }
+            if pkg_file_exists(cand) {
+                exec("rm -f " + pkg_sh_quote(cand), nil);
+                show("[leashed] Removed global command '" + cand + "'");
+            }
+            j = j + 1;
+        }
+        i = i + 1;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Commands (argv after `pkg`; mirrors the leashed entry point)
+// ---------------------------------------------------------------------------
+
+fnc pkg_cmd_init(args vec<string>) : int {
+    if args.size < 1 {
+        show("error: Usage: leash pkg init <path>");
+        return 1;
+    }
+    project_dir: string = pkg_realpath(args.get(0));
+    if pkg_is_dir(project_dir) {
+        // non-empty check via first entry probe
+        first: string = pkg_sh_out("find " + pkg_sh_quote(project_dir) + " -mindepth 1 -maxdepth 1 -print -quit");
+        if first.size > 0 {
+            show("error: Directory '" + project_dir + "' is not empty");
+            return 1;
+        }
+    }
+    if !pkg_mkdir_p(project_dir + "/src") {
+        show("error: Cannot create '" + project_dir + "/src'");
+        return 1;
+    }
+    default_name: string = pkg_basename(project_dir);
+    if pkg_validate_name_r(default_name).size > 0 {
+        show("error: Invalid name '" + default_name + "'. Must start with a letter or underscore and contain only letters, digits, hyphens, and underscores.");
+        return 1;
+    }
+    main_src: string = "pub fnc greet(name: string) : string {\n    return \"Hello, \" + name + \"!\";\n}\n";
+    if !pkg_write_file(project_dir + "/src/main.lsh", main_src) {
+        show("error: Cannot write sources");
+        return 1;
+    }
+    ident: string = pkg_get_identity();
+    if ident.size == 0 { ident = "anonymous"; }
+    cfg: string = "# Leashed package configuration\n";
+    cfg = cfg + "name: \"" + default_name + "\"\n";
+    cfg = cfg + "version: \"0.1.0\"\n";
+    cfg = cfg + "author: \"" + ident + "\"\n";
+    cfg = cfg + "description: \"The " + default_name + " library\"\n";
+    cfg = cfg + "main: \"src/main.lsh\"\n";
+    if !pkg_write_file(project_dir + "/" + pkg_config_name(), cfg) {
+        show("error: Cannot write config");
+        return 1;
+    }
+    pkg_write_file(project_dir + "/.gitignore", "__pycache__/\n*.exe\nout/\n");
+    show("Initialized leash package in '" + project_dir + "'");
+    show("  " + project_dir + "/src/main.lsh");
+    show("  " + project_dir + "/" + pkg_config_name());
+    show("  " + project_dir + "/src/");
+    show("");
+    show("Edit leash-pkg.lshc to add a 'repo' field with your GitHub repo URL,");
+    show("then run 'leash pkg publish' to publish your library.");
+    return 0;
+}
+
+// The lockfile lives in leashed projects (dir with leash-pkg.lshc) and in
+// dirs that already have one.
+fnc pkg_project_dir() : string {
+    cwd: string = pkg_cwd();
+    if pkg_file_exists(cwd + "/" + pkg_config_name()) { return cwd; }
+    if pkg_file_exists(cwd + "/" + pkg_lockfile_name()) { return cwd; }
+    return "";
+}
+
+fnc pkg_cmd_list(args vec<string>) : int {
+    if args.size > 0 {
+        show("[leashed] warning: ignoring extra arguments: " + pkg_join(args, " "));
+    }
+    libs: string = pkg_libs_dir();
+    if !pkg_is_dir(libs) {
+        show("[leashed] No libraries installed (~/.leash/libs does not exist)");
+        return 0;
+    }
+    // entries via find (no readdir primitive): "<dir>\n..." one per line
+    raw: string = pkg_sh_out("find " + pkg_sh_quote(libs) + " -mindepth 1 -maxdepth 1 -type d -printf '%f\\n' | sort");
+    names: vec<string> = pkg_split(raw, '\n');
+    shown: int = 0;
+    lines: vec<string>;
+    foreach _, nm in<vector> names {
+        n: string = pkg_strip(nm);
+        if n.size == 0 { continue; }
+        manifest: PkgJson = pkg_read_manifest(libs + "/" + n);
+        version: string = pkg_json_str_of(pkg_json_get(manifest, "version"));
+        if version.size == 0 { version = "?"; }
+        desc: string = pkg_json_str_of(pkg_json_get(manifest, "description"));
+        line: string = "  - " + pkg_display_safe(n) + " v" + pkg_display_safe(version);
+        if desc.size > 0 {
+            line = line + "  " + pkg_display_safe(desc);
+        }
+        lines.pushb(line);
+        shown = shown + 1;
+    }
+    if shown == 0 {
+        show("[leashed] No libraries installed");
+        return 0;
+    }
+    // header first, like the reference
+    show("[leashed] Installed libraries in " + libs + ":");
+    foreach _, line2 in<vector> lines {
+        show(line2);
+    }
+    return 0;
+}
+
+fnc pkg_cmd_search(args vec<string>) : int {
+    if args.size < 1 {
+        show("error: Usage: leash pkg search <query>");
+        return 1;
+    }
+    if args.size > 1 {
+        show("[leashed] warning: ignoring extra arguments: " + pkg_join(pkg_slice_vec(args, 1, args.size), " "));
+    }
+    query: string = pkg_to_lower(args.get(0));
+    show("[leashed] Searching for '" + query + "'...");
+    index: PkgJson = pkg_fetch_index();
+    if !index.ok {
+        show(index.err);
+        return 1;
+    }
+    libs: PkgJson = pkg_json_get(index, "libraries");
+    matched: vec<string>;
+    i: int = 0;
+    while i < libs.keys.size {
+        k: string = libs.keys.get(i);
+        e: PkgJson = libs.vals.get(i);
+        if e.kind == 5 {
+            d: string = pkg_json_str_of(pkg_json_get(e, "description"));
+            if pkg_contains(pkg_to_lower(k), query) || (d.size > 0 && pkg_contains(pkg_to_lower(d), query)) {
+                matched.pushb(k);
+            }
+        }
+        i = i + 1;
+    }
+    if matched.size == 0 {
+        show("[leashed] No libraries found matching '" + pkg_display_safe(query) + "'");
+        // list up to 15 available names
+        avail: vec<string>;
+        j: int = 0;
+        while j < libs.keys.size && avail.size < 15 {
+            avail.pushb(libs.keys.get(j));
+            j = j + 1;
+        }
+        if avail.size > 0 {
+            show("  Available: " + pkg_join(avail, ", "));
+            if libs.keys.size > 15 {
+                show("  ... and " + tostring(libs.keys.size - 15) + " more");
+            }
+        }
+        return 0;
+    }
+    // sort matches for stable output
+    a: int = 1;
+    while a < matched.size {
+        cur: string = matched.get(a);
+        j: int = a - 1;
+        while j >= 0 && cur < matched.get(j) {
+            matched.set(j + 1, matched.get(j));
+            j = j - 1;
+        }
+        matched.set(j + 1, cur);
+        a = a + 1;
+    }
+    show("[leashed] Found " + tostring(matched.size) + " library(ies):");
+    foreach _, lib_name in<vector> matched {
+        info: PkgJson = pkg_json_get(libs, lib_name);
+        ver: string = pkg_json_str_of(pkg_json_get(info, "version"));
+        if ver.size == 0 { ver = "?"; }
+        author: string = pkg_json_str_of(pkg_json_get(info, "author"));
+        if author.size == 0 { author = "?"; }
+        desc: string = pkg_json_str_of(pkg_json_get(info, "description"));
+        show("  - " + pkg_display_safe(lib_name) + " v" + pkg_display_safe(ver) + " by " + pkg_display_safe(author));
+        if desc.size > 0 {
+            show("    " + pkg_display_safe(desc));
+        }
+    }
+    return 0;
+}
+
+fnc pkg_cmd_info(args vec<string>) : int {
+    if args.size < 1 {
+        show("error: Usage: leash pkg info <library_name>");
+        return 1;
+    }
+    if args.size > 1 {
+        show("[leashed] warning: ignoring extra arguments: " + pkg_join(pkg_slice_vec(args, 1, args.size), " "));
+    }
+    libname: string = args.get(0);
+    if pkg_validate_name_r(libname).size > 0 {
+        show("error: Invalid name '" + libname + "'. Must start with a letter or underscore and contain only letters, digits, hyphens, and underscores.");
+        return 1;
+    }
+    index: PkgJson = pkg_fetch_index();
+    if !index.ok {
+        show(index.err);
+        return 1;
+    }
+    libs: PkgJson = pkg_json_get(index, "libraries");
+    e: PkgJson = pkg_json_get(libs, libname);
+    if e.kind != 5 {
+        show("error: Library '" + libname + "' not found in the package index");
+        return 1;
+    }
+    show(pkg_display_safe(libname));
+    ver: string = pkg_json_str_of(pkg_json_get(e, "version"));
+    if ver.size == 0 { ver = "?"; }
+    show("  Latest version: " + pkg_display_safe(ver));
+    author: string = pkg_json_str_of(pkg_json_get(e, "author"));
+    if author.size == 0 { author = "?"; }
+    show("  Author:         " + pkg_display_safe(author));
+    publisher: string = pkg_json_str_of(pkg_json_get(e, "publisher"));
+    if publisher.size > 0 && publisher != author {
+        show("  Publisher:      " + pkg_display_safe(publisher));
+    }
+    desc: string = pkg_json_str_of(pkg_json_get(e, "description"));
+    if desc.size > 0 {
+        show("  Description:    " + pkg_display_safe(desc));
+    }
+    show("  Repo:           " + pkg_display_safe(pkg_json_str_of(pkg_json_get(e, "repo"))));
+    versions: PkgJson = pkg_json_get(e, "versions");
+    if versions.kind == 5 && versions.keys.size > 0 {
+        show("  Versions:       " + pkg_join(pkg_sorted_versions(pkg_json_key_list(versions)), ", "));
+    } else {
+        show("  Versions:       " + ver + " (index predates version history)");
+    }
+    return 0;
+}
+
+// Sub-slice of a vec<string>.
+fnc pkg_slice_vec(v vec<string>, a int, b int) : vec<string> {
+    out: vec<string>;
+    i: int = a;
+    while i < b && i < v.size {
+        out.pushb(v.get(i));
+        i = i + 1;
+    }
+    return out;
+}
+
+fnc pkg_json_key_list(obj PkgJson) : vec<string> {
+    out: vec<string>;
+    if obj == null || obj.kind != 5 { return out; }
+    i: int = 0;
+    while i < obj.keys.size {
+        out.pushb(obj.keys.get(i));
+        i = i + 1;
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// Lockfile file ops
+// ---------------------------------------------------------------------------
+
+fnc pkg_read_lockfile_file(project_dir string) : PkgLock {
+    text: string = pkg_read_file(project_dir + "/" + pkg_lockfile_name());
+    if text.size == 0 {
+        out: PkgLock = PkgLock { ok: false, err: "", missing: true };
+        return out;
+    }
+    return pkg_parse_lockfile(text);
+}
+
+fnc pkg_write_lockfile_file(project_dir string, names vec<string>, entries vec<PkgLockEntry>) : bool {
+    return pkg_write_file(project_dir + "/" + pkg_lockfile_name(), pkg_write_lockfile(names, entries));
+}
+
+// Insert or update one entry (validates, preserves the rest, stays sorted
+// on write). Mirrors lockfile_record.
+fnc pkg_lockfile_record(project_dir string, name string, version string, repo string, sha string) : void {
+    if !pkg_validate_version(version) {
+        show("warning: not recording " + name + "@" + version + " in " + pkg_lockfile_name() + ": invalid version");
+        return;
+    }
+    lock: PkgLock = pkg_read_lockfile_file(project_dir);
+    names: vec<string>;
+    entries: vec<PkgLockEntry>;
+    if lock.ok {
+        i: int = 0;
+        while i < lock.names.size {
+            names.pushb(lock.names.get(i));
+            entries.pushb(lock.entries.get(i));
+            i = i + 1;
+        }
+    }
+    e: PkgLockEntry = PkgLockEntry { version: version, repo: repo, tag: "v" + version, rev: sha, has_rev: sha.size > 0 };
+    idx: int = -1;
+    j: int = 0;
+    while j < names.size {
+        if names.get(j) == name { idx = j; }
+        j = j + 1;
+    }
+    if idx >= 0 {
+        entries.set(idx, e);
+    } else {
+        names.pushb(name);
+        entries.pushb(e);
+    }
+    pkg_write_lockfile_file(project_dir, names, entries);
+    show("[leashed] Wrote " + pkg_lockfile_name() + ": " + name + "@" + version);
+}
+
+fnc pkg_lockfile_unpin(project_dir string, name string) : void {
+    lock: PkgLock = pkg_read_lockfile_file(project_dir);
+    if !lock.ok { return; }
+    names: vec<string>;
+    entries: vec<PkgLockEntry>;
+    i: int = 0;
+    while i < lock.names.size {
+        if lock.names.get(i) != name {
+            names.pushb(lock.names.get(i));
+            entries.pushb(lock.entries.get(i));
+        }
+        i = i + 1;
+    }
+    if names.size != lock.names.size {
+        pkg_write_lockfile_file(project_dir, names, entries);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Install / uninstall / add / lock / update
+// ---------------------------------------------------------------------------
+
+fnc pkg_split_name_version(target string) : string {
+    // returns "name|version" ("version" empty when unpinned)
+    i: int = 0;
+    while i < target.size && target[i] != '@' { i = i + 1; }
+    if i >= target.size { return target + "|"; }
+    return pkg_slice(target, 0, i) + "|" + pkg_slice(target, i + 1, target.size);
+}
+
+// The pkg_use `use` insertion for cmd_add (contained main file only).
+fnc pkg_add_use_line(project_dir string, main_file string, libname string) : void {
+    if main_file.size == 0 { return; }
+    main_abs: string = pkg_realpath(project_dir + "/" + main_file);
+    proot: string = pkg_realpath(project_dir);
+    if !pkg_path_under(main_abs, proot) {
+        show("[leashed] warning: skipping 'use' insertion: '" + main_file + "' is outside the project");
+        return;
+    }
+    if !pkg_file_exists(main_abs) { return; }
+    content: string = pkg_read_file(main_abs);
+    line: string = "use " + libname + "::*; // added by leashed\n";
+    if pkg_contains(content, line) { return; }
+    if pkg_contains(content, "use " + libname + "::") { return; }
+    pkg_write_file(main_abs, line + content);
+    show("[leashed] Added 'use " + libname + "::*;' to " + main_file);
+}
+
+fnc pkg_declare_dependency(project_dir string, libname string, version string) : bool {
+    cfg_path: string = project_dir + "/" + pkg_config_name();
+    entries: vec<PkgEntry> = pkg_read_config(pkg_read_file(cfg_path));
+    deps: string = pkg_config_get(entries, "dependencies");
+    parts: vec<string> = pkg_split_list(deps);
+    foreach _, d in<vector> parts {
+        dn: string = d;
+        ai: int = 0;
+        while ai < dn.size && dn[ai] != '@' { ai = ai + 1; }
+        if pkg_slice(dn, 0, ai) == libname { return false; }
+    }
+    parts.pushb(libname + "@" + version);
+    entries = pkg_config_set(entries, "dependencies", pkg_join(parts, ", "));
+    pkg_write_file(cfg_path, pkg_write_config(entries));
+    return true;
+}
+
+fnc pkg_cmd_uninstall(args vec<string>) : int {
+    if args.size < 1 {
+        show("error: Usage: leash pkg uninstall <library_name>");
+        return 1;
+    }
+    if args.size > 1 {
+        show("[leashed] warning: ignoring extra arguments: " + pkg_join(pkg_slice_vec(args, 1, args.size), " "));
+    }
+    libname: string = args.get(0);
+    if pkg_validate_name_r(libname).size > 0 {
+        show("error: Invalid name '" + libname + "'. Must start with a letter or underscore and contain only letters, digits, hyphens, and underscores.");
+        return 1;
+    }
+    dest_root: string = pkg_libs_dir() + "/" + libname;
+    stub_path: string = pkg_libs_dir() + "/" + libname + ".lsh";
+    if !pkg_is_dir(dest_root) && !pkg_file_exists(stub_path) {
+        show("error: Library '" + libname + "' is not installed");
+        return 1;
+    }
+    pkg_remove_global_tools(dest_root);
+    if pkg_is_dir(dest_root) {
+        pkg_rm_rf(dest_root);
+    }
+    if pkg_file_exists(stub_path) {
+        exec("rm -f " + pkg_sh_quote(stub_path), nil);
+    }
+    pd: string = pkg_project_dir();
+    if pd.size > 0 {
+        pkg_lockfile_unpin(pd, libname);
+    }
+    show("[leashed] Uninstalled '" + libname + "'");
+    return 0;
+}
+
+fnc pkg_cmd_add(args vec<string>) : int {
+    if args.size < 1 {
+        show("error: Usage: leash pkg add <library_name>");
+        return 1;
+    }
+    if args.size > 1 {
+        show("[leashed] warning: ignoring extra arguments: " + pkg_join(pkg_slice_vec(args, 1, args.size), " "));
+    }
+    libname: string = args.get(0);
+    if pkg_validate_name_r(libname).size > 0 {
+        show("error: Invalid name '" + libname + "'. Must start with a letter or underscore and contain only letters, digits, hyphens, and underscores.");
+        return 1;
+    }
+    cwd: string = pkg_cwd();
+    cfg_path: string = cwd + "/" + pkg_config_name();
+    if !pkg_file_exists(cfg_path) {
+        show("error: No '" + pkg_config_name() + "' found in current directory");
+        show("  Run 'leash pkg init' first or change to a leash package directory");
+        return 1;
+    }
+    entries: vec<PkgEntry> = pkg_read_config(pkg_read_file(cfg_path));
+    installed_version: string = "";
+    installed_repo: string = "";
+    installed_sha: string = "";
+    if !pkg_file_exists(pkg_libs_dir() + "/" + libname + ".lsh") {
+        show("[leashed] Library '" + libname + "' not installed globally. Installing first...");
+        lock: PkgLock = pkg_read_lockfile_file(cwd);
+        pin: string = "";
+        if lock.ok { pin = pkg_lock_pin(lock, libname); }
+        got: PkgInstalled = pkg_install_registry(libname, pin, pin.size > 0);
+        if !got.ok {
+            show(got.err);
+            return 1;
+        }
+        installed_version = got.version;
+        installed_repo = got.repo;
+        installed_sha = got.sha;
+    } else {
+        manifest: PkgJson = pkg_read_manifest(pkg_libs_dir() + "/" + libname);
+        mv: string = pkg_json_str_of(pkg_json_get(manifest, "version"));
+        if pkg_validate_version(mv) {
+            installed_version = mv;
+            show("[leashed] Library '" + libname + "' already installed (v" + installed_version + "); recording that version");
+        } else {
+            show("[leashed] warning: could not determine the installed version of '" + libname + "'; installing the index version...");
+            got: PkgInstalled = pkg_install_registry(libname, "", false);
+            if !got.ok {
+                show(got.err);
+                return 1;
+            }
+            installed_version = got.version;
+            installed_sha = got.sha;
+        }
+    }
+    version: string = "?";
+    index: PkgJson = pkg_fetch_index();
+    if index.ok {
+        e: PkgJson = pkg_json_get(pkg_json_get(index, "libraries"), libname);
+        if e.kind == 5 {
+            version = pkg_json_str_of(pkg_json_get(e, "version"));
+            if version.size == 0 { version = "?"; }
+        }
+    }
+    if installed_version.size > 0 {
+        version = installed_version;
+    }
+    if !pkg_declare_dependency(cwd, libname, version) {
+        show("[leashed] '" + libname + "' is already a dependency of this project");
+        return 0;
+    }
+    pkg_add_use_line(cwd, pkg_config_get(entries, "main"), libname);
+    if version != "?" {
+        repo_for_lock: string = installed_repo;
+        if repo_for_lock.size == 0 && index.ok {
+            e: PkgJson = pkg_json_get(pkg_json_get(index, "libraries"), libname);
+            if e.kind == 5 {
+                repo_for_lock = pkg_json_str_of(pkg_json_get(e, "repo"));
+            }
+        }
+        pkg_lockfile_record(cwd, libname, version, repo_for_lock, installed_sha);
+    }
+    show("[leashed] Added '" + libname + "' (" + version + ") as a dependency");
+    return 0;
+}
+
+// Registry install shared by add/lock/update/install. req_version "" =
+// latest. Returns ok=false + err on failure.
+fnc pkg_install_registry(libname string, req_version string, has_req bool) : PkgInstalled {
+    index: PkgJson = pkg_fetch_index();
+    if !index.ok {
+        return pkg_fail(index.err);
+    }
+    libs: PkgJson = pkg_json_get(index, "libraries");
+    entry: PkgJson = pkg_json_get(libs, libname);
+    if entry.kind != 5 {
+        return pkg_fail("error: Library '" + libname + "' not found in the package index");
+    }
+    if has_req {
+        versions: PkgJson = pkg_json_get(entry, "versions");
+        if versions.kind != 5 {
+            return pkg_fail("error: Registry version list for '" + libname + "' is corrupt");
+        }
+        info: PkgJson = pkg_json_get(versions, req_version);
+        if info.kind != 5 && req_version != pkg_json_str_of(pkg_json_get(entry, "version")) {
+            avail: vec<string> = pkg_sorted_versions(pkg_json_key_list(versions));
+            shown: vec<string> = pkg_slice_vec(avail, 0, 10);
+            av: string = pkg_join(shown, ", ");
+            if av.size == 0 { av = "none"; }
+            return pkg_fail("error: '" + libname + "' has no published version " + req_version + "\n  Available versions: " + av);
+        }
+        repo_url: string = "";
+        if info.kind == 5 {
+            repo_url = pkg_json_str_of(pkg_json_get(info, "repo"));
+        }
+        if repo_url.size == 0 {
+            repo_url = pkg_json_str_of(pkg_json_get(entry, "repo"));
+        }
+        return pkg_install_from_repo(repo_url, req_version, true, libname, "");
+    }
+    repo_url: string = pkg_json_str_of(pkg_json_get(entry, "repo"));
+    ver: string = pkg_json_str_of(pkg_json_get(entry, "version"));
+    if ver.size == 0 { ver = "?"; }
+    author: string = pkg_display_safe(pkg_json_str_of(pkg_json_get(entry, "author")));
+    if author.size == 0 { author = "?"; }
+    desc: string = pkg_display_safe(pkg_json_str_of(pkg_json_get(entry, "description")));
+    show("[leashed] Found " + libname + " v" + ver + " by " + author);
+    if desc.size > 0 {
+        show("  " + desc);
+    }
+    return pkg_install_from_repo(repo_url, "", false, libname, "");
+}
+
+// ---------------------------------------------------------------------------
+// install (registry name[@version], git URL, user/repo, or project restore)
+// ---------------------------------------------------------------------------
+
+fnc pkg_install_project_deps(project_dir string, strict bool) : int {
+    lock: PkgLock = pkg_read_lockfile_file(project_dir);
+    if !lock.ok && !lock.missing {
+        show(lock.err);
+        return 1;
+    }
+    if lock.ok && strict && lock.names.size == 0 {
+        show("error: " + pkg_lockfile_name() + " contains no packages (--locked)");
+        return 1;
+    }
+    if strict && lock.missing {
+        show("error: --locked requires a " + pkg_lockfile_name() + " in the project (run 'leash pkg lock')");
+        return 1;
+    }
+    if lock.ok && lock.names.size > 0 {
+        show("[leashed] Restoring " + tostring(lock.names.size) + " locked package(s) from " + pkg_lockfile_name() + "...");
+        i: int = 0;
+        while i < lock.names.size {
+            nm: string = lock.names.get(i);
+            e: PkgLockEntry = lock.entries.get(i);
+            if !pkg_validate_version(e.version) || e.repo.size == 0 {
+                show("error: " + pkg_lockfile_name() + " entry for '" + nm + "' is missing version/repo");
+                return 1;
+            }
+            if e.has_rev && !pkg_lock_rev_ok(e.rev) {
+                show("error: " + pkg_lockfile_name() + " entry for '" + nm + "' has a malformed revision pin");
+                return 1;
+            }
+            rev: string = "";
+            if e.has_rev { rev = e.rev; }
+            show("[leashed] Installing " + nm + "@" + e.version + " (locked)...");
+            got: PkgInstalled = pkg_install_from_repo(e.repo, e.version, true, nm, rev);
+            if !got.ok {
+                show(got.err);
+                return 1;
+            }
+            i = i + 1;
+        }
+        show("[leashed] Done — environment matches " + pkg_lockfile_name());
+        return 0;
+    }
+    cfg_path: string = project_dir + "/" + pkg_config_name();
+    if !pkg_file_exists(cfg_path) {
+        show("error: No " + pkg_config_name() + " or " + pkg_lockfile_name() + " in '" + project_dir + "'");
+        show("  Usage: leash pkg install <name|name@version|git-url|user/repo>");
+        return 1;
+    }
+    entries: vec<PkgEntry> = pkg_read_config(pkg_read_file(cfg_path));
+    deps: vec<string> = pkg_split_list(pkg_config_get(entries, "dependencies"));
+    if deps.size == 0 {
+        show("[leashed] Project has no dependencies");
+        return 0;
+    }
+    rnames: vec<string>;
+    rentries: vec<PkgLockEntry>;
+    foreach _, dep in<vector> deps {
+        nv: string = pkg_split_name_version(dep);
+        bar: int = 0;
+        while bar < nv.size && nv[bar] != '|' { bar = bar + 1; }
+        nm: string = pkg_slice(nv, 0, bar);
+        ver: string = "";
+        has_ver: bool = false;
+        if bar < nv.size {
+            ver = pkg_slice(nv, bar + 1, nv.size);
+            has_ver = ver.size > 0;
+        }
+        if pkg_validate_name_r(nm).size > 0 {
+            show("error: Invalid name '" + nm + "'. Must start with a letter or underscore and contain only letters, digits, hyphens, and underscores.");
+            return 1;
+        }
+        if has_ver && !pkg_validate_version(ver) {
+            show("error: Invalid version '" + ver + "' for dependency '" + nm + "'");
+            return 1;
+        }
+        show("[leashed] Resolving " + nm + "...");
+        got: PkgInstalled = pkg_install_registry(nm, ver, has_ver);
+        if !got.ok {
+            show(got.err);
+            return 1;
+        }
+        rnames.pushb(nm);
+        rentries.pushb(PkgLockEntry { version: got.version, repo: got.repo, tag: "v" + got.version, rev: got.sha, has_rev: got.sha.size > 0 });
+    }
+    pkg_write_lockfile_file(project_dir, rnames, rentries);
+    show("[leashed] Installed " + tostring(rnames.size) + " package(s) and wrote " + pkg_lockfile_name());
+    return 0;
+}
+
+fnc pkg_cmd_install(args vec<string>) : int {
+    locked_strict: bool = false;
+    targets: vec<string>;
+    foreach _, a in<vector> args {
+        if a == "--locked" {
+            locked_strict = true;
+        } else {
+            targets.pushb(a);
+        }
+    }
+    if targets.size == 0 {
+        pd: string = pkg_project_dir();
+        if pd.size == 0 {
+            show("error: Usage: leash pkg install <library_name>[@<version> | <git-url> | <user>/<repo>]");
+            return 1;
+        }
+        return pkg_install_project_deps(pd, locked_strict);
+    }
+    if targets.size > 1 {
+        show("[leashed] warning: ignoring extra arguments: " + pkg_join(pkg_slice_vec(targets, 1, targets.size), " "));
+    }
+    target: string = pkg_strip(targets.get(0));
+    // 1) direct git URL or user/repo shorthand
+    if pkg_looks_like_git_target(target) {
+        url: string = target;
+        if !pkg_contains(url, "://") && !pkg_ends_with(url, ".git") {
+            url = "https://github.com/" + url + ".git";
+        }
+        got: PkgInstalled = pkg_install_from_repo(url, "", false, "", "");
+        if !got.ok {
+            show(got.err);
+            return 1;
+        }
+        pd: string = pkg_project_dir();
+        if pd.size > 0 {
+            pkg_lockfile_record(pd, got.name, got.version, url, got.sha);
+            if pkg_declare_dependency(pd, got.name, got.version) {
+                show("[leashed] Added '" + got.name + "' (" + got.version + ") as a dependency");
+            }
+        }
+        return 0;
+    }
+    // 2) registry name[@version]
+    nv: string = pkg_split_name_version(target);
+    bar: int = 0;
+    while bar < nv.size && nv[bar] != '|' { bar = bar + 1; }
+    libname: string = pkg_slice(nv, 0, bar);
+    req_version: string = "";
+    has_req: bool = false;
+    if bar < nv.size && pkg_slice(nv, bar + 1, nv.size).size > 0 {
+        req_version = pkg_slice(nv, bar + 1, nv.size);
+        has_req = true;
+        if !pkg_validate_version(req_version) {
+            show("error: Invalid version '" + req_version + "'. Use semver: X.Y.Z");
+            return 1;
+        }
+    }
+    if pkg_validate_name_r(libname).size > 0 {
+        show("error: Invalid name '" + libname + "'. Must start with a letter or underscore and contain only letters, digits, hyphens, and underscores.");
+        return 1;
+    }
+    pd: string = pkg_project_dir();
+    if locked_strict && pd.size == 0 {
+        show("error: --locked requires a project directory (" + pkg_config_name() + " or " + pkg_lockfile_name() + ")");
+        return 1;
+    }
+    if !has_req && pd.size > 0 {
+        lock: PkgLock = pkg_read_lockfile_file(pd);
+        if lock.ok {
+            idx: int = pkg_lock_find(lock, libname);
+            if idx >= 0 {
+                le: PkgLockEntry = lock.entries.get(idx);
+                if pkg_validate_version(le.version) && le.repo.size > 0 {
+                    show("[leashed] Using locked version " + libname + "@" + le.version + " from " + pkg_lockfile_name());
+                    got: PkgInstalled = pkg_install_from_repo(le.repo, le.version, true, libname, le.rev);
+                    if !got.ok {
+                        show(got.err);
+                        return 1;
+                    }
+                    pkg_lockfile_record(pd, libname, got.version, le.repo, got.sha);
+                    return 0;
+                }
+                show("warning: " + pkg_lockfile_name() + " entry for '" + libname + "' is incomplete — resolving from registry");
+            } also locked_strict {
+                show("error: '" + libname + "' is not in " + pkg_lockfile_name() + " (--locked)");
+                show("  Run 'leash pkg add " + libname + "' or 'leash pkg lock' first.");
+                return 1;
+            }
+        }
+    }
+    show("[leashed] Looking up '" + libname + "'...");
+    if has_req && pd.size > 0 {
+        lock: PkgLock = pkg_read_lockfile_file(pd);
+        if lock.ok {
+            old_pin: string = pkg_lock_pin(lock, libname);
+            if old_pin.size > 0 && old_pin != req_version {
+                show("[leashed] warning: explicit " + libname + "@" + req_version + " overrides the locked version " + libname + "@" + old_pin);
+            }
+        }
+    }
+    got: PkgInstalled = pkg_install_registry(libname, req_version, has_req);
+    if !got.ok {
+        show(got.err);
+        return 1;
+    }
+    if pd.size > 0 {
+        pkg_lockfile_record(pd, libname, got.version, got.repo, got.sha);
+    }
+    return 0;
+}
+
+fnc pkg_cmd_lock(args vec<string>) : int {
+    if args.size > 0 {
+        show("[leashed] warning: ignoring extra arguments: " + pkg_join(args, " "));
+    }
+    cwd: string = pkg_cwd();
+    cfg_path: string = cwd + "/" + pkg_config_name();
+    if !pkg_file_exists(cfg_path) {
+        show("error: No '" + pkg_config_name() + "' found in '" + cwd + "'");
+        show("  Run 'leash pkg init' first or change to a leash package directory");
+        return 1;
+    }
+    entries: vec<PkgEntry> = pkg_read_config(pkg_read_file(cfg_path));
+    deps: vec<string> = pkg_split_list(pkg_config_get(entries, "dependencies"));
+    if deps.size == 0 {
+        show("error: No dependencies to lock.");
+        show("  Add libraries first: leash pkg add <name>");
+        return 1;
+    }
+    rnames: vec<string>;
+    rentries: vec<PkgLockEntry>;
+    foreach _, dep in<vector> deps {
+        nv: string = pkg_split_name_version(dep);
+        bar: int = 0;
+        while bar < nv.size && nv[bar] != '|' { bar = bar + 1; }
+        nm: string = pkg_slice(nv, 0, bar);
+        ver: string = "";
+        has_ver: bool = false;
+        if bar < nv.size && pkg_slice(nv, bar + 1, nv.size).size > 0 {
+            ver = pkg_slice(nv, bar + 1, nv.size);
+            has_ver = true;
+        }
+        if pkg_validate_name_r(nm).size > 0 {
+            show("error: Invalid name '" + nm + "'. Must start with a letter or underscore and contain only letters, digits, hyphens, and underscores.");
+            return 1;
+        }
+        if has_ver && !pkg_validate_version(ver) {
+            show("error: Invalid version '" + ver + "' for dependency '" + nm + "'");
+            return 1;
+        }
+        show("[leashed] Locking " + nm + "...");
+        got: PkgInstalled = pkg_install_registry(nm, ver, has_ver);
+        if !got.ok {
+            show(got.err);
+            return 1;
+        }
+        rnames.pushb(nm);
+        rentries.pushb(PkgLockEntry { version: got.version, repo: got.repo, tag: "v" + got.version, rev: got.sha, has_rev: got.sha.size > 0 });
+    }
+    pkg_write_lockfile_file(cwd, rnames, rentries);
+    kept: int = 0;
+    i: int = 0;
+    while i < rnames.size {
+        if pkg_validate_version(rentries.get(i).version) { kept = kept + 1; }
+        i = i + 1;
+    }
+    show("[leashed] Locked " + tostring(kept) + " package(s) in " + pkg_lockfile_name());
+    show("[leashed] Commit " + pkg_lockfile_name() + " — fresh clones restore it with 'leash pkg install'");
+    return 0;
+}
+
+fnc pkg_cmd_update(args vec<string>) : int {
+    cwd: string = pkg_cwd();
+    cfg_path: string = cwd + "/" + pkg_config_name();
+    in_project: bool = pkg_file_exists(cfg_path);
+    targets: vec<string>;
+    foreach _, a in<vector> args {
+        targets.pushb(a);
+    }
+    update_deps_field: bool = false;
+    if targets.size == 0 {
+        if !in_project {
+            show("error: Usage: leash pkg update [<name> ...]");
+            show("  (run inside a project to update all of its dependencies)");
+            return 1;
+        }
+        entries: vec<PkgEntry> = pkg_read_config(pkg_read_file(cfg_path));
+        deps: vec<string> = pkg_split_list(pkg_config_get(entries, "dependencies"));
+        foreach _, d in<vector> deps {
+            dn: string = d;
+            ai: int = 0;
+            while ai < dn.size && dn[ai] != '@' { ai = ai + 1; }
+            targets.pushb(pkg_slice(dn, 0, ai));
+        }
+        update_deps_field = targets.size > 0;
+        if targets.size == 0 {
+            show("[leashed] Project has no dependencies to update");
+            return 0;
+        }
+        show("[leashed] Updating all project dependencies: " + pkg_join(targets, ", "));
+    }
+    new_versions: vec<string>;
+    new_repos: vec<string>;
+    new_shas: vec<string>;
+    new_names: vec<string>;
+    foreach _, t in<vector> targets {
+        want: string = "";
+        has_want: bool = false;
+        tn: string = t;
+        ai: int = 0;
+        while ai < tn.size && tn[ai] != '@' { ai = ai + 1; }
+        if ai < tn.size {
+            tn = pkg_slice(t, 0, ai);
+            want = pkg_slice(t, ai + 1, t.size);
+            has_want = true;
+            if !pkg_validate_version(want) {
+                show("error: Invalid version '" + want + "' for '" + pkg_strip(tn) + "'");
+                return 1;
+            }
+        }
+        libname: string = pkg_strip(tn);
+        if pkg_validate_name_r(libname).size > 0 {
+            show("error: Invalid name '" + libname + "'. Must start with a letter or underscore and contain only letters, digits, hyphens, and underscores.");
+            return 1;
+        }
+        got: PkgInstalled = pkg_install_registry(libname, want, has_want);
+        if !got.ok {
+            show(got.err);
+            return 1;
+        }
+        // skip message when nothing is newer (latest path only)
+        if !has_want {
+            manifest: PkgJson = pkg_read_manifest(pkg_libs_dir() + "/" + libname);
+            cur: string = pkg_json_str_of(pkg_json_get(manifest, "version"));
+            if !pkg_validate_version(cur) {
+                lock: PkgLock = pkg_read_lockfile_file(cwd);
+                if lock.ok {
+                    cur = pkg_lock_pin(lock, libname);
+                }
+            }
+            if pkg_validate_version(cur) && !pkg_is_newer_version(got.version, cur) {
+                show("[leashed] '" + libname + "' is already up to date (" + cur + "); skipping");
+                continue;
+            }
+        }
+        new_names.pushb(libname);
+        new_versions.pushb(got.version);
+        new_repos.pushb(got.repo);
+        new_shas.pushb(got.sha);
+    }
+    if update_deps_field {
+        entries: vec<PkgEntry> = pkg_read_config(pkg_read_file(cfg_path));
+        deps: vec<string> = pkg_split_list(pkg_config_get(entries, "dependencies"));
+        kept: vec<string>;
+        foreach _, d in<vector> deps {
+            dn: string = d;
+            ai: int = 0;
+            while ai < dn.size && dn[ai] != '@' { ai = ai + 1; }
+            base: string = pkg_slice(dn, 0, ai);
+            ni: int = 0;
+            found: bool = false;
+            while ni < new_names.size {
+                if new_names.get(ni) == base && new_versions.get(ni) != "?" {
+                    kept.pushb(base + "@" + new_versions.get(ni));
+                    found = true;
+                }
+                ni = ni + 1;
+            }
+            if !found {
+                kept.pushb(d);
+            }
+        }
+        entries = pkg_config_set(entries, "dependencies", pkg_join(kept, ", "));
+        pkg_write_file(cfg_path, pkg_write_config(entries));
+        show("[leashed] Updated dependencies in " + pkg_config_name());
+    }
+    // lockfile sync for project dependencies only
+    dep_names: vec<string>;
+    if in_project {
+        entries: vec<PkgEntry> = pkg_read_config(pkg_read_file(cfg_path));
+        foreach _, d in<vector> pkg_split_list(pkg_config_get(entries, "dependencies")) {
+            dn: string = d;
+            ai: int = 0;
+            while ai < dn.size && dn[ai] != '@' { ai = ai + 1; }
+            dep_names.pushb(pkg_slice(dn, 0, ai));
+        }
+    }
+    ni: int = 0;
+    while ni < new_names.size {
+        if new_versions.get(ni) != "?" && (update_deps_field || pkg_vec_has(dep_names, new_names.get(ni))) {
+            pkg_lockfile_record(cwd, new_names.get(ni), new_versions.get(ni), new_repos.get(ni), new_shas.get(ni));
+        }
+        ni = ni + 1;
+    }
+    return 0;
+}
+
+fnc pkg_vec_has(v vec<string>, s string) : bool {
+    foreach _, x in<vector> v {
+        if x == s { return true; }
+    }
+    return false;
+}
+
+// ---------------------------------------------------------------------------
+// publish
+// ---------------------------------------------------------------------------
+
+// Secret-shaped names stay home (mirrors the reference denylist).
+fnc pkg_secret_shaped(name string) : bool {
+    n: string = pkg_to_lower(name);
+    if pkg_starts_with(n, ".env") { return true; }
+    if pkg_ends_with(n, ".pem") { return true; }
+    if pkg_ends_with(n, ".key") { return true; }
+    if pkg_contains(n, "credentials") { return true; }
+    if pkg_contains(n, "secret") { return true; }
+    if pkg_contains(n, "token") { return true; }
+    if n == ".aws" || pkg_starts_with(n, ".aws/") { return true; }
+    if n == ".ssh" || pkg_starts_with(n, ".ssh/") { return true; }
+    if n == ".gnupg" || pkg_starts_with(n, ".gnupg/") { return true; }
+    return false;
+}
+
+// Type-check one file in-process (no binary output).
+fnc pkg_leash_check(path string, import_dirs vec<string>) : int {
+    driver: CompilerDriver = CompilerDriver.make();
+    foreach _, d in<vector> import_dirs { driver.add_import_dir(d); }
+    empty_libs: vec<string>;
+    return driver.compile_file(path, "", false, false, "", "0", true, empty_libs, false, false, false, "", false, false, "", false);
+}
+
+// Compile one file to a static library in-process.
+fnc pkg_leash_compile_static(path string, output_stem string, import_dirs vec<string>) : int {
+    driver: CompilerDriver = CompilerDriver.make();
+    foreach _, d in<vector> import_dirs { driver.add_import_dir(d); }
+    empty_libs: vec<string>;
+    return driver.compile_file(path, output_stem, false, false, "", "2", false, empty_libs, false, false, false, "", false, false, "static", false);
+}
+
+// Pretty JSON object writer (indent 2, sorted keys) for manifests.
+fnc pkg_json_pretty(v PkgJson, depth int) : string {
+    if v == null { return "null"; }
+    if v.kind != 5 { return pkg_json_sorted_val(v); }
+    idx: vec<int>;
+    i: int = 0;
+    while i < v.keys.size {
+        idx.pushb(i);
+        i = i + 1;
+    }
+    a: int = 1;
+    while a < idx.size {
+        cur: int = idx.get(a);
+        j: int = a - 1;
+        while j >= 0 && v.keys.get(cur) < v.keys.get(idx.get(j)) {
+            idx.set(j + 1, idx.get(j));
+            j = j - 1;
+        }
+        idx.set(j + 1, cur);
+        a = a + 1;
+    }
+    pad: string = "";
+    d: int = 0;
+    while d < depth {
+        pad = pad + "  ";
+        d = d + 1;
+    }
+    pad2: string = pad + "  ";
+    out: string = "{\n";
+    k: int = 0;
+    while k < idx.size {
+        ii: int = idx.get(k);
+        out = out + pad2 + pkg_json_escape(v.keys.get(ii)) + ": ";
+        cv: PkgJson = v.vals.get(ii);
+        if cv.kind == 5 {
+            out = out + pkg_json_pretty(cv, depth + 1);
+        } else {
+            out = out + pkg_json_sorted_val(cv);
+        }
+        if k + 1 < idx.size { out = out + ","; }
+        out = out + "\n";
+        k = k + 1;
+    }
+    return out + pad + "}";
+}
+
+fnc pkg_cmd_publish(args vec<string>) : int {
+    if args.size > 0 {
+        show("[leashed] warning: ignoring extra arguments: " + pkg_join(args, " "));
+    }
+    project_dir: string = pkg_cwd();
+    config_path: string = project_dir + "/" + pkg_config_name();
+    if !pkg_file_exists(config_path) {
+        show("error: No '" + pkg_config_name() + "' found in '" + project_dir + "'");
+        show("  Run 'leash pkg init' first or change to a leash package directory");
+        return 1;
+    }
+    entries: vec<PkgEntry> = pkg_read_config(pkg_read_file(config_path));
+    if pkg_config_get(entries, "name").size == 0 || pkg_config_get(entries, "version").size == 0 || pkg_config_get(entries, "author").size == 0 {
+        show("error: 'name'/'version'/'author' must be set in " + pkg_config_name());
+        return 1;
+    }
+    name: string = pkg_config_get(entries, "name");
+    if pkg_validate_name_r(name).size > 0 {
+        show("error: Invalid name '" + name + "'. Must start with a letter or underscore and contain only letters, digits, hyphens, and underscores.");
+        return 1;
+    }
+    version: string = pkg_strip(pkg_config_get(entries, "version"));
+    if !pkg_validate_version(version) {
+        show("error: Invalid version '" + version + "'. Use semantic versioning: X.Y.Z (optionally -prerelease)");
+        return 1;
+    }
+    author: string = pkg_config_get(entries, "author");
+    description: string = pkg_config_get(entries, "description");
+    main_file: string = pkg_config_get(entries, "main");
+    if main_file.size == 0 {
+        show("error: 'main' not set in " + pkg_config_name());
+        return 1;
+    }
+    main_path: string = project_dir + "/" + main_file;
+    real_main: string = pkg_realpath(main_path);
+    real_proj: string = pkg_realpath(project_dir);
+    if !pkg_path_under(real_main, real_proj) {
+        show("error: 'main' must stay inside the project directory (got '" + main_file + "').");
+        return 1;
+    }
+    if !pkg_file_exists(real_main) {
+        show("error: Main file '" + main_path + "' not found");
+        return 1;
+    }
+    publisher: string = pkg_get_identity();
+    if publisher.size == 0 {
+        show("error: Could not determine your identity. Install 'gh' (GitHub CLI) and authenticate, or set git user.name/user.email");
+        return 1;
+    }
+    ga: vec<string>;
+    ga.pushb("api");
+    ga.pushb("user");
+    ga.pushb("--jq");
+    ga.pushb(".login");
+    gh_user: string = "";
+    gr: PkgRun = pkg_gh(ga, false);
+    if gr.rc == 0 {
+        gh_user = gr.out;
+    }
+    if gh_user.size == 0 {
+        show("error: GitHub CLI (gh) is required for publishing. Authenticate with 'gh auth login'");
+        return 1;
+    }
+    // extra import dirs, contained like `main`
+    import_dirs: vec<string>;
+    imports_str: string = pkg_config_get(entries, "imports");
+    if imports_str.size > 0 {
+        foreach _, d in<vector> pkg_split_list(imports_str) {
+            absd: string = d;
+            if d.size == 0 || d[0] != '/' {
+                absd = project_dir + "/" + d;
+            }
+            rd: string = pkg_realpath(absd);
+            if !pkg_path_under(rd, real_proj) {
+                show("error: 'imports' entry must stay inside the project directory (got '" + d + "').");
+                return 1;
+            }
+            import_dirs.pushb(absd);
+        }
+    }
+    // pre-flight registry check (ownership + strictly increasing version)
+    show("[leashed] Checking registry...");
+    index: PkgJson = pkg_fetch_index();
+    if !index.ok {
+        show(index.err);
+        return 1;
+    }
+    libs: PkgJson = pkg_json_get(index, "libraries");
+    existing: PkgJson = pkg_json_get(libs, name);
+    has_existing: bool = existing.kind == 5;
+    if has_existing && existing.kind != 5 {
+        show("error: Registry entry for '" + name + "' is corrupt; cannot publish over it.");
+        return 1;
+    }
+    preflight_version: string = "";
+    if has_existing {
+        gate: string = pkg_check_registry_update(existing, true, name, author, publisher, version, "");
+        if gate.size > 0 {
+            show("error: " + gate);
+            return 1;
+        }
+        preflight_version = pkg_json_str_of(pkg_json_get(existing, "version"));
+    }
+    show("[leashed] Publishing '" + name + "' v" + version + " by " + author);
+    show("[leashed] Publisher: " + publisher);
+    serr: string = pkg_assert_no_symlinks_r(project_dir);
+    if serr.size > 0 {
+        show(serr);
+        return 1;
+    }
+    repo_url_cfg: string = pkg_config_get(entries, "repo");
+    if repo_url_cfg.size > 0 {
+        vr: string = pkg_validate_git_url_r(repo_url_cfg, false, "publish repo");
+        if vr != "OK" && !pkg_starts_with(vr, "WARN ") {
+            show(vr);
+            return 1;
+        }
+        repo_url_cfg = pkg_strip(repo_url_cfg);
+    }
+    // step 1: verify sources
+    show("[leashed] Verifying source code...");
+    if pkg_leash_check(real_main, import_dirs) != 0 {
+        show("error: Source code check failed. Fix errors before publishing.");
+        return 1;
+    }
+    // step 2: compile to a static library
+    show("[leashed] Compiling library...");
+    out_dir: string = pkg_tmp_dir("leashed_bld_");
+    if out_dir.size == 0 {
+        show("error: Cannot stage build");
+        return 1;
+    }
+    lib_out: string = out_dir + "/library";
+    pkg_mkdir_p(lib_out);
+    if pkg_leash_compile_static(real_main, lib_out + "/" + name, import_dirs) != 0 {
+        show("error: Compilation failed.");
+        pkg_rm_rf(out_dir);
+        return 1;
+    }
+    serr = pkg_assert_no_symlinks_r(project_dir);
+    if serr.size > 0 {
+        show(serr);
+        pkg_rm_rf(out_dir);
+        return 1;
+    }
+    // global_install manifest mapping (library-relative tool paths)
+    src_root: string = pkg_realpath(pkg_dirname(real_main));
+    gi_raw: string = pkg_config_get(entries, "global_install");
+    gi_map: PkgJson = pkg_json_obj();
+    if pkg_strip(gi_raw).size > 0 {
+        tm: PkgToolMap = pkg_parse_tool_map(gi_raw, project_dir, src_root);
+        if !tm.ok {
+            show("error: invalid 'global_install' in leash-pkg.lshc: " + tm.err);
+            pkg_rm_rf(out_dir);
+            return 1;
+        }
+        gi_map = tm.map;
+        show("[leashed] Registered " + tostring(gi_map.keys.size) + " global command(s)");
+    }
+    manifest: PkgJson = pkg_json_obj();
+    pkg_json_set(manifest, "name", pkg_json_str(name));
+    pkg_json_set(manifest, "version", pkg_json_str(version));
+    pkg_json_set(manifest, "author", pkg_json_str(author));
+    pkg_json_set(manifest, "publisher", pkg_json_str(publisher));
+    pkg_json_set(manifest, "description", pkg_json_str(description));
+    pkg_json_set(manifest, "main", pkg_json_str(main_file));
+    pkg_json_set(manifest, "published_at", pkg_json_str(pkg_utc_now()));
+    if gi_map.keys.size > 0 {
+        pkg_json_set(manifest, "global_install", gi_map);
+    }
+    if !pkg_write_file(lib_out + "/package.lshc", pkg_json_pretty(manifest, 0) + "\n") {
+        show("error: Cannot write manifest");
+        pkg_rm_rf(out_dir);
+        return 1;
+    }
+    pkg_write_file(lib_out + "/publisher", publisher + "\n");
+    show("[leashed] Library compiled successfully");
+    // step 3: library repo
+    repo_url: string = repo_url_cfg;
+    if repo_url.size == 0 {
+        show("[leashed] No 'repo' set in config — creating GitHub repo '" + name + "'...");
+        ca: vec<string>;
+        ca.pushb("repo");
+        ca.pushb("create");
+        ca.pushb(name);
+        ca.pushb("--public");
+        ca.pushb("--description");
+        if description.size > 0 {
+            ca.pushb(description);
+        } else {
+            ca.pushb("The " + name + " library");
+        }
+        cr: PkgRun = pkg_gh(ca, true);
+        if cr.rc != 0 {
+            show("error: Failed to create repo: " + cr.err);
+            show("  Create a repo manually, add it to leash-pkg.lshc as 'repo: <url>', and try again.");
+            pkg_rm_rf(out_dir);
+            return 1;
+        }
+        repo_url = "https://github.com/" + gh_user + "/" + name + ".git";
+        show("[leashed] Created repo: " + repo_url);
+        if pkg_config_get(entries, "repo") != repo_url {
+            entries = pkg_config_set(entries, "repo", repo_url);
+            pkg_write_file(config_path, pkg_write_config(entries));
+            show("[leashed] Saved 'repo' to " + pkg_config_name());
+        }
+    } else {
+        show("[leashed] Using repo: " + repo_url);
+    }
+    if gh_user == pkg_registry_owner() {
+        gate_tmp: string = pkg_clone_registry_for_owner();
+        if gate_tmp.size == 0 {
+            pkg_rm_rf(out_dir);
+            return 1;
+        }
+        gate_index: PkgJson = pkg_read_registry_index(gate_tmp);
+        gate_err: string = pkg_check_registry_update(pkg_json_get(gate_index, name), pkg_json_has(gate_index, name), name, author, publisher, version, preflight_version);
+        if gate_err.size > 0 {
+            show("error: " + gate_err);
+            pkg_rm_rf(out_dir);
+            pkg_rm_rf(gate_tmp);
+            return 1;
+        }
+        pkg_rm_rf(gate_tmp);
+    }
+    repo_tmp: string = pkg_tmp_dir("leashed_repo_");
+    if repo_tmp.size == 0 {
+        show("error: Cannot stage repo");
+        pkg_rm_rf(out_dir);
+        return 1;
+    }
+    ia: vec<string>;
+    ia.pushb("init");
+    if pkg_git(ia, repo_tmp).rc != 0 {
+        show("error: Git init failed");
+        pkg_rm_rf(out_dir);
+        pkg_rm_rf(repo_tmp);
+        return 1;
+    }
+    // copy EVERYTHING from lib_out (compiled library/ + manifest), then the
+    // project publish set was already selected above into lib_out? No:
+    // lib_out holds build output; the publish tree goes straight to repo_tmp
+    publish_extra: vec<string> = pkg_split_list(pkg_config_get(entries, "publish_include"));
+    extra_tops: vec<string>;
+    foreach _, extra in<vector> publish_extra {
+        xp: string = pkg_realpath(project_dir + "/" + extra);
+        if !pkg_path_under(xp, real_proj) {
+            show("error: 'publish_include' entry must stay inside the project directory (got '" + extra + "').");
+            pkg_rm_rf(out_dir);
+            pkg_rm_rf(repo_tmp);
+            return 1;
+        }
+        rel: string = pkg_slice(xp, real_proj.size + 1, xp.size);
+        top: string = rel;
+        si: int = 0;
+        while si < rel.size && rel[si] != '/' { si = si + 1; }
+        top = pkg_slice(rel, 0, si);
+        if !pkg_vec_has(extra_tops, top) {
+            extra_tops.pushb(top);
+        }
+    }
+    if pkg_publish_stage(repo_tmp, project_dir, real_proj, real_main, lib_out, extra_tops) != 0 {
+        pkg_rm_rf(out_dir);
+        pkg_rm_rf(repo_tmp);
+        return 1;
+    }
+    show("[leashed] Successfully published '" + name + "' v" + version + "!");
+    show("[leashed]   Repo: " + repo_url);
+    // step 4: push + tag (shared helper keeps this readable)
+    if pkg_publish_push(repo_tmp, lib_out, repo_url, version, name) != 0 {
+        pkg_rm_rf(out_dir);
+        pkg_rm_rf(repo_tmp);
+        return 1;
+    }
+    // step 5: registry
+    rc5: int = pkg_publish_register(name, version, repo_url, description, author, publisher, gh_user, preflight_version);
+    pkg_rm_rf(out_dir);
+    pkg_rm_rf(repo_tmp);
+    return rc5;
+}
+
+// ---------------------------------------------------------------------------
+// publish helpers: tool map, staging, push, registry
+// ---------------------------------------------------------------------------
+
+pub def PkgToolMap : class {
+    pub ok: bool;
+    pub err: string;
+    pub map: PkgJson;
+};
+
+// Parse `{name: src, ...}` and confine sources under the source tree.
+// Returns library-relative paths, like the reference _map_tool_sources.
+fnc pkg_parse_tool_map(raw string, project_dir string, src_root string) : PkgToolMap {
+    out: PkgToolMap = PkgToolMap { ok: false, err: "", map: pkg_json_obj() };
+    s: string = pkg_strip(raw);
+    if s.size < 2 || s[0] != '{' {
+        out.err = "must be a single-line {name: src, ...} map";
+        return out;
+    }
+    end: int = s.size - 1;
+    while end > 0 && s[end] != '}' { end = end - 1; }
+    if end <= 1 {
+        out.err = "must be a single-line {name: src, ...} map";
+        return out;
+    }
+    body: string = pkg_slice(s, 1, end);
+    parts: vec<string>;
+    part: string = "";
+    in_q: bool = false;
+    i: int = 0;
+    while i < body.size {
+        if body[i] == '"' {
+            in_q = !in_q;
+            part = part + body[i];
+        } also body[i] == ',' && !in_q {
+            parts.pushb(part);
+            part = "";
+        } else {
+            part = part + body[i];
+        }
+        i = i + 1;
+    }
+    parts.pushb(part);
+    foreach _, p in<vector> parts {
+        pp: string = pkg_strip(p);
+        if pp.size == 0 { continue; }
+        ci: int = 0;
+        q2: bool = false;
+        while ci < pp.size {
+            if pp[ci] == '"' {
+                q2 = !q2;
+            } also pp[ci] == ':' && !q2 {
+                stop;
+            }
+            ci = ci + 1;
+        }
+        if ci >= pp.size {
+            out.err = "malformed entry '" + pp + "' (expected name: src)";
+            return out;
+        }
+        nm: string = pkg_unquote(pkg_strip(pkg_slice(pp, 0, ci)));
+        src: string = pkg_unquote(pkg_strip(pkg_slice(pp, ci + 1, pp.size)));
+        if nm.size == 0 || src.size == 0 {
+            out.err = "malformed entry '" + pp + "' (expected name: src)";
+            return out;
+        }
+        if pkg_validate_name_r(nm).size > 0 {
+            out.err = "invalid tool name '" + nm + "' (letters, digits, _, -)";
+            return out;
+        }
+        abs_p: string = pkg_realpath(project_dir + "/" + src);
+        if !pkg_path_under(abs_p, src_root) {
+            out.err = "tool source '" + src + "' must live under the main source tree";
+            return out;
+        }
+        if !pkg_file_exists(abs_p) {
+            out.err = "tool source not found: '" + src + "'";
+            return out;
+        }
+        rel: string = pkg_slice(abs_p, src_root.size + 1, abs_p.size);
+        pkg_json_set(out.map, nm, pkg_json_str(rel));
+    }
+    out.ok = true;
+    return out;
+}
+
+fnc pkg_unquote(s string) : string {
+    if s.size >= 2 && s[0] == '"' && s[s.size - 1] == '"' {
+        return pkg_slice(s, 1, s.size - 1);
+    }
+    return s;
+}
+
+// Recursive publish copy honoring the secret denylist (never .git).
+fnc pkg_publish_tree(sp string, dp string) : void {
+    pkg_mkdir_p(dp);
+    items: string = pkg_sh_out("find " + pkg_sh_quote(sp) + " -mindepth 1 -printf '%y %P\\n'");
+    foreach _, line in<vector> pkg_split(items, '\n') {
+        if line.size < 3 { continue; }
+        kind: char = line[0];
+        rel: string = pkg_slice(line, 2, line.size);
+        if rel == ".git" || pkg_starts_with(rel, ".git/") { continue; }
+        if kind == 'l' { continue; }
+        base: string = pkg_basename(rel);
+        if kind == 'd' {
+            pkg_mkdir_p(dp + "/" + rel);
+            continue;
+        }
+        if pkg_secret_shaped(base) {
+            show("[leashed] warning: not publishing suspected secret '" + rel + "'");
+            continue;
+        }
+        pkg_mkdir_p(pkg_dirname(dp + "/" + rel));
+        exec("cp " + pkg_sh_quote(sp + "/" + rel) + " " + pkg_sh_quote(dp + "/" + rel), nil);
+    }
+}
+
+// Stage the publish tree into repo_tmp: selected project files + library/
+// build output + the main file wherever it lives. Returns 0 or 1.
+fnc pkg_publish_stage(repo_tmp string, project_dir string, real_proj string, real_main string, lib_out string, extra_tops vec<string>) : int {
+    tops: string = pkg_sh_out("find " + pkg_sh_quote(project_dir) + " -mindepth 1 -maxdepth 1 -printf '%f\\n'");
+    skipped: vec<string>;
+    foreach _, item in<vector> pkg_split(tops, '\n') {
+        if item.size == 0 { continue; }
+        if item == ".git" || item == "__pycache__" || item == "out" || item == "library" { continue; }
+        sp: string = project_dir + "/" + item;
+        if pkg_is_symlink(sp) { continue; }
+        keep: bool = false;
+        if pkg_file_exists(sp) {
+            if item == pkg_config_name() || pkg_vec_has(extra_tops, item) || item == "package.lshc" || pkg_starts_with(item, "README") || pkg_starts_with(item, "LICENSE") || pkg_starts_with(item, "CHANGELOG") || item == ".gitignore" || item == ".gitattributes" || item == ".editorconfig" {
+                if pkg_secret_shaped(item) {
+                    show("[leashed] warning: not publishing suspected secret '" + item + "'");
+                } else {
+                    exec("cp " + pkg_sh_quote(sp) + " " + pkg_sh_quote(repo_tmp + "/" + item), nil);
+                    keep = true;
+                }
+            }
+        } also pkg_is_dir(sp) {
+            if item == "src" || pkg_vec_has(extra_tops, item) {
+                pkg_publish_tree(sp, repo_tmp + "/" + item);
+                keep = true;
+            }
+        }
+        if !keep {
+            if pkg_secret_shaped(item) || (item.size > 0 && item[0] == '.') {
+                show("[leashed] warning: not publishing suspected secret '" + item + "'");
+            } else {
+                skipped.pushb(item);
+            }
+        }
+    }
+    main_rel: string = pkg_slice(real_main, real_proj.size + 1, real_main.size);
+    pkg_mkdir_p(pkg_dirname(repo_tmp + "/" + main_rel));
+    exec("cp " + pkg_sh_quote(real_main) + " " + pkg_sh_quote(repo_tmp + "/" + main_rel), nil);
+    if skipped.size > 0 {
+        shown: string = pkg_join(pkg_slice_vec(skipped, 0, 5), ", ");
+        if skipped.size > 5 {
+            shown = shown + ", and " + tostring(skipped.size - 5) + " more";
+        }
+        show("[leashed] Skipped " + tostring(skipped.size) + " file(s) not in the publish set: " + shown);
+        show("[leashed]   (publish src/, " + pkg_config_name() + ", README, LICENSE, CHANGELOG; anything else needs 'publish_include' in " + pkg_config_name() + ")");
+    }
+    if pkg_sh_code("cp -r " + pkg_sh_quote(lib_out) + " " + pkg_sh_quote(repo_tmp + "/library")) != 0 {
+        show("error: Cannot stage build output");
+        return 1;
+    }
+    return 0;
+}
+
+// git add/commit/push/tag. Returns 0 or 1.
+fnc pkg_publish_push(repo_tmp string, lib_out string, repo_url string, version string, name string) : int {
+    aa: vec<string>;
+    aa.pushb("add");
+    aa.pushb("-A");
+    if pkg_git(aa, repo_tmp).rc != 0 {
+        show("error: Git add failed");
+        return 1;
+    }
+    ds: vec<string>;
+    ds.pushb("diff");
+    ds.pushb("--cached");
+    ds.pushb("--stat");
+    if pkg_git(ds, repo_tmp).out.size == 0 {
+        show("[leashed] No changes to publish");
+        return 0;
+    }
+    ra: vec<string>;
+    ra.pushb("remote");
+    ra.pushb("add");
+    ra.pushb("origin");
+    ra.pushb(repo_url);
+    if pkg_git(ra, repo_tmp).rc != 0 {
+        show("error: Failed to add remote");
+        return 1;
+    }
+    // default branch from the remote symref (trunk/develop-safe)
+    default_branch: string = "main";
+    la: vec<string>;
+    la.pushb("ls-remote");
+    la.pushb("--symref");
+    la.pushb("origin");
+    la.pushb("HEAD");
+    lr: PkgRun = pkg_git(la, repo_tmp);
+    if lr.rc == 0 {
+        foreach _, ln in<vector> pkg_split(lr.out, '\n') {
+            t: string = pkg_strip(ln);
+            if pkg_starts_with(t, "ref:") {
+                ref: string = pkg_strip(pkg_slice(t, 4, t.size));
+                // last whitespace-separated field
+                fi: int = ref.size;
+                while fi > 0 && ref[fi - 1] != ' ' && ref[fi - 1] != '\t' { fi = fi - 1; }
+                ref = pkg_slice(ref, fi, ref.size);
+                if pkg_starts_with(ref, "refs/heads/") && ref.size > 11 {
+                    default_branch = pkg_slice(ref, 11, ref.size);
+                }
+                stop;
+            }
+        }
+    }
+    fa: vec<string>;
+    fa.pushb("fetch");
+    fa.pushb("--depth");
+    fa.pushb("1");
+    fa.pushb("origin");
+    fa.pushb(default_branch);
+    has_remote: bool = pkg_git(fa, repo_tmp).rc == 0;
+    if !has_remote && default_branch != "master" {
+        fa2: vec<string>;
+        fa2.pushb("fetch");
+        fa2.pushb("--depth");
+        fa2.pushb("1");
+        fa2.pushb("origin");
+        fa2.pushb("master");
+        if pkg_git(fa2, repo_tmp).rc == 0 {
+            default_branch = "master";
+            has_remote = true;
+        }
+    }
+    if has_remote {
+        co: vec<string>;
+        co.pushb("checkout");
+        co.pushb("-b");
+        co.pushb(default_branch);
+        co.pushb("origin/" + default_branch);
+        if pkg_git(co, repo_tmp).rc != 0 {
+            co2: vec<string>;
+            co2.pushb("checkout");
+            co2.pushb(default_branch);
+            if pkg_git(co2, repo_tmp).rc != 0 {
+                show("error: Failed to check out '" + default_branch + "'");
+                return 1;
+            }
+        }
+    } else {
+        co: vec<string>;
+        co.pushb("checkout");
+        co.pushb("-b");
+        co.pushb("main");
+        if pkg_git(co, repo_tmp).rc != 0 {
+            show("error: Failed to create branch");
+            return 1;
+        }
+        default_branch = "main";
+    }
+    // re-copy the build output (checkout may have reset the tree),
+    // then stage everything
+    exec("cp -r " + pkg_sh_quote(lib_out) + " " + pkg_sh_quote(repo_tmp + "/library"), nil);
+    aa2: vec<string>;
+    aa2.pushb("add");
+    aa2.pushb("-A");
+    if pkg_git(aa2, repo_tmp).rc != 0 {
+        show("error: Git add failed");
+        return 1;
+    }
+    // commit (message carries no free text: trailer-forging safety)
+    msg: string = "Publish " + name + " v" + version;
+    ca: vec<string>;
+    ca.pushb("-c");
+    ca.pushb("user.name=leashed");
+    ca.pushb("-c");
+    ca.pushb("user.email=leashed@localhost");
+    ca.pushb("commit");
+    ca.pushb("-m");
+    ca.pushb(msg);
+    crrr: PkgRun = pkg_git(ca, repo_tmp);
+    // publisher line goes in a second paragraph via amend? No: keep the
+    // two-line shape by committing with both lines at once.
+    if crrr.rc != 0 {
+        show("error: Git commit failed: " + crrr.err);
+        return 1;
+    }
+    show("[leashed] Pushing to '" + repo_url + "'...");
+    pa: vec<string>;
+    pa.pushb("push");
+    pa.pushb("--force-with-lease");
+    pa.pushb("-u");
+    pa.pushb("origin");
+    pa.pushb(default_branch);
+    pr: PkgRun = pkg_git(pa, repo_tmp);
+    if pr.rc != 0 {
+        show("error: Failed to push: " + pr.err);
+        show("  Make sure you have write access to the repository.");
+        return 1;
+    }
+    // immutable tags for version installs (byte-identical retry tolerated)
+    tag: string = "v" + version;
+    ta: vec<string>;
+    ta.pushb("ls-remote");
+    ta.pushb("--tags");
+    ta.pushb("origin");
+    ta.pushb(tag);
+    tr: PkgRun = pkg_git(ta, repo_tmp);
+    tag_exists: bool = false;
+    if tr.rc == 0 {
+        foreach _, ln in<vector> pkg_split(tr.out, '\n') {
+            if pkg_ends_with(pkg_strip(ln), "refs/tags/" + tag) {
+                tag_exists = true;
+            }
+        }
+    }
+    if tag_exists {
+        ft: vec<string>;
+        ft.pushb("fetch");
+        ft.pushb("--depth");
+        ft.pushb("1");
+        ft.pushb("origin");
+        ft.pushb("tag");
+        ft.pushb(tag);
+        same: bool = false;
+        if pkg_git(ft, repo_tmp).rc == 0 {
+            r1: vec<string>;
+            r1.pushb("rev-parse");
+            r1.pushb("HEAD^\{tree}");
+            // NOTE: brace expansion is off in non-interactive sh, but quote anyway
+            rr1: PkgRun = pkg_git(r1, repo_tmp);
+            r2: vec<string>;
+            r2.pushb("rev-parse");
+            r2.pushb("FETCH_HEAD^\{tree}");
+            rr2: PkgRun = pkg_git(r2, repo_tmp);
+            if rr1.rc == 0 && rr2.rc == 0 && rr1.out.size > 0 && rr1.out == rr2.out {
+                same = true;
+            }
+        }
+        if !same {
+            show("error: Tag '" + tag + "' already exists on the remote; refusing to move a published tag.");
+            show("  Bump the 'version' field in leash-pkg.lshc and publish again.");
+            return 1;
+        }
+        show("[leashed] Tag '" + tag + "' already points at this content; keeping it");
+    } else {
+        ta2: vec<string>;
+        ta2.pushb("tag");
+        ta2.pushb(tag);
+        if pkg_git(ta2, repo_tmp).rc != 0 {
+            show("warning: Could not create version tag '" + tag + "'");
+            show("  The library was published; installing by exact version may not work.");
+        } else {
+            tp: vec<string>;
+            tp.pushb("push");
+            tp.pushb("origin");
+            tp.pushb(tag);
+            if pkg_git(tp, repo_tmp).rc != 0 {
+                show("warning: Could not push version tag '" + tag + "'");
+                show("  The library was published; installing by exact version may not work.");
+            }
+        }
+    }
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// registry update (owner push or fork + PR), then dispatch
+// ---------------------------------------------------------------------------
+
+fnc pkg_clone_registry_for_owner() : string {
+    reg_tmp: string = pkg_tmp_dir("leashed_reg_");
+    if reg_tmp.size == 0 {
+        show("error: Cannot stage registry clone");
+        return "";
+    }
+    ca: vec<string>;
+    ca.pushb("clone");
+    ca.pushb("--depth");
+    ca.pushb("1");
+    ca.pushb(pkg_registry_git());
+    ca.pushb(reg_tmp);
+    cr: PkgRun = pkg_git(ca, "");
+    if cr.rc != 0 {
+        // empty registry repo: init + remote instead
+        ia: vec<string>;
+        ia.pushb("init");
+        if pkg_git(ia, reg_tmp).rc != 0 {
+            show("error: Failed to init registry repo");
+            pkg_rm_rf(reg_tmp);
+            return "";
+        }
+        ra: vec<string>;
+        ra.pushb("remote");
+        ra.pushb("add");
+        ra.pushb("origin");
+        ra.pushb(pkg_registry_git());
+        if pkg_git(ra, reg_tmp).rc != 0 {
+            show("error: Failed to add remote");
+            pkg_rm_rf(reg_tmp);
+            return "";
+        }
+        return reg_tmp;
+    }
+    // branch from the remote symref (trunk/develop-safe)
+    la: vec<string>;
+    la.pushb("ls-remote");
+    la.pushb("--symref");
+    la.pushb("origin");
+    la.pushb("HEAD");
+    lr: PkgRun = pkg_git(la, reg_tmp);
+    branch: string = "";
+    if lr.rc == 0 {
+        foreach _, ln in<vector> pkg_split(lr.out, '\n') {
+            t: string = pkg_strip(ln);
+            if pkg_starts_with(t, "ref:") {
+                ref: string = pkg_strip(pkg_slice(t, 4, t.size));
+                fi: int = ref.size;
+                while fi > 0 && ref[fi - 1] != ' ' && ref[fi - 1] != '\t' { fi = fi - 1; }
+                ref = pkg_slice(ref, fi, ref.size);
+                if pkg_starts_with(ref, "refs/heads/") && ref.size > 11 {
+                    branch = pkg_slice(ref, 11, ref.size);
+                }
+                stop;
+            }
+        }
+    }
+    cands: vec<string>;
+    if branch.size > 0 {
+        cands.pushb(branch);
+    }
+    cands.pushb("main");
+    cands.pushb("master");
+    foreach _, cand in<vector> cands {
+        fa: vec<string>;
+        fa.pushb("fetch");
+        fa.pushb("--depth");
+        fa.pushb("1");
+        fa.pushb("origin");
+        fa.pushb(cand);
+        if pkg_git(fa, reg_tmp).rc != 0 { continue; }
+        co: vec<string>;
+        co.pushb("checkout");
+        co.pushb("-b");
+        co.pushb(cand);
+        co.pushb("origin/" + cand);
+        if pkg_git(co, reg_tmp).rc != 0 {
+            show("error: Failed to check out registry branch '" + cand + "'");
+            pkg_rm_rf(reg_tmp);
+            return "";
+        }
+        stop;
+    }
+    return reg_tmp;
+}
+
+fnc pkg_read_registry_index(reg_dir string) : PkgJson {
+    text: string = pkg_read_file(reg_dir + "/index.json");
+    if text.size == 0 {
+        return pkg_json_obj();
+    }
+    v: PkgJson = pkg_json_parse(text);
+    if !v.ok {
+        return pkg_json_bad("error: Registry index.json is corrupt");
+    }
+    if pkg_validate_index_shape(v).size > 0 {
+        return pkg_json_bad("error: Registry index.json is corrupt");
+    }
+    return v;
+}
+
+// Register the publish in the package index. Returns 0 or 1.
+fnc pkg_publish_register(name string, version string, repo_url string, description string, author string, publisher string, gh_user string, preflight_version string) : int {
+    show("[leashed] Registering '" + name + "' in the package index...");
+    is_owner: bool = gh_user == pkg_registry_owner();
+    reg_tmp: string = "";
+    push_branch: string = "main";
+    if is_owner {
+        reg_tmp = pkg_clone_registry_for_owner();
+        if reg_tmp.size == 0 { return 1; }
+    } else {
+        reg_tmp = pkg_tmp_dir("leashed_reg_");
+        if reg_tmp.size == 0 {
+            show("error: Cannot stage registry clone");
+            return 1;
+        }
+        fa: vec<string>;
+        fa.pushb("repo");
+        fa.pushb("fork");
+        fa.pushb(pkg_registry_repo());
+        fa.pushb("--clone=false");
+        fr: PkgRun = pkg_gh(fa, true);
+        if fr.rc != 0 {
+            show("error: Failed to fork registry: " + fr.err);
+            show("  Your library was published, but not registered in the index.");
+            show("  Submit a PR to " + pkg_registry_repo() + " adding to index.json manually.");
+            pkg_rm_rf(reg_tmp);
+            return 1;
+        }
+        parts: vec<string> = pkg_split(pkg_registry_repo(), '/');
+        if parts.size != 2 || parts.get(0).size == 0 || parts.get(1).size == 0 {
+            show("error: Invalid registry (expected 'owner/repo').");
+            pkg_rm_rf(reg_tmp);
+            return 1;
+        }
+        sa: vec<string>;
+        sa.pushb("repo");
+        sa.pushb("sync");
+        sa.pushb(gh_user + "/" + parts.get(1));
+        sa.pushb("--source");
+        sa.pushb(pkg_registry_repo());
+        pkg_gh(sa, false);
+        fork_url: string = "https://github.com/" + gh_user + "/" + parts.get(1) + ".git";
+        ca: vec<string>;
+        ca.pushb("clone");
+        ca.pushb("--depth");
+        ca.pushb("1");
+        ca.pushb(fork_url);
+        ca.pushb(reg_tmp);
+        if pkg_git(ca, "").rc != 0 {
+            show("error: Failed to clone fork");
+            pkg_rm_rf(reg_tmp);
+            return 1;
+        }
+        ra: vec<string>;
+        ra.pushb("remote");
+        ra.pushb("add");
+        ra.pushb("upstream");
+        ra.pushb(pkg_registry_git());
+        if pkg_git(ra, reg_tmp).rc != 0 {
+            show("error: Failed to add upstream remote");
+            pkg_rm_rf(reg_tmp);
+            return 1;
+        }
+        // checkout -b register-<name> from upstream main (else master, else new)
+        got_base: bool = false;
+        fb: vec<string>;
+        fb.pushb("fetch");
+        fb.pushb("--depth");
+        fb.pushb("1");
+        fb.pushb("upstream");
+        fb.pushb("main");
+        if pkg_git(fb, reg_tmp).rc == 0 {
+            cb: vec<string>;
+            cb.pushb("checkout");
+            cb.pushb("-b");
+            cb.pushb("register-" + name);
+            cb.pushb("upstream/main");
+            if pkg_git(cb, reg_tmp).rc != 0 {
+                show("error: Failed to check out registry branch");
+                pkg_rm_rf(reg_tmp);
+                return 1;
+            }
+            got_base = true;
+        } else {
+            fb2: vec<string>;
+            fb2.pushb("fetch");
+            fb2.pushb("--depth");
+            fb2.pushb("1");
+            fb2.pushb("upstream");
+            fb2.pushb("master");
+            if pkg_git(fb2, reg_tmp).rc == 0 {
+                cb: vec<string>;
+                cb.pushb("checkout");
+                cb.pushb("-b");
+                cb.pushb("register-" + name);
+                cb.pushb("upstream/master");
+                if pkg_git(cb, reg_tmp).rc != 0 {
+                    show("error: Failed to check out registry branch");
+                    pkg_rm_rf(reg_tmp);
+                    return 1;
+                }
+                got_base = true;
+            } else {
+                cb: vec<string>;
+                cb.pushb("checkout");
+                cb.pushb("-b");
+                cb.pushb("register-" + name);
+                if pkg_git(cb, reg_tmp).rc != 0 {
+                    show("error: Failed to create registry branch");
+                    pkg_rm_rf(reg_tmp);
+                    return 1;
+                }
+                got_base = true;
+            }
+        }
+        push_branch = "register-" + name;
+    }
+    // merge against THIS data (never the pre-flight copy)
+    index: PkgJson = pkg_read_registry_index(reg_tmp);
+    if !index.ok {
+        show(index.err);
+        pkg_rm_rf(reg_tmp);
+        return 1;
+    }
+    gate_err: string = pkg_check_registry_update(pkg_json_get(pkg_json_get(index, "libraries"), name), pkg_json_has(pkg_json_get(index, "libraries"), name), name, author, publisher, version, preflight_version);
+    if gate_err.size > 0 {
+        show("error: " + gate_err);
+        show("  Your library repo was pushed, but the index was not updated.");
+        show("  Fix the conflict above and re-run 'leash pkg publish' to complete registration.");
+        pkg_rm_rf(reg_tmp);
+        return 1;
+    }
+    libs: PkgJson = pkg_json_get(index, "libraries");
+    if libs.kind != 5 {
+        libs = pkg_json_obj();
+        pkg_json_set(index, "libraries", libs);
+    }
+    merged: PkgJson = pkg_merge_registry_entry(pkg_json_get(libs, name), version, repo_url, description, author, publisher, pkg_utc_now());
+    pkg_json_set(libs, name, merged);
+    if !pkg_write_file(reg_tmp + "/index.json", pkg_json_pretty(index, 0) + "\n") {
+        show("error: Cannot write index");
+        pkg_rm_rf(reg_tmp);
+        return 1;
+    }
+    aa: vec<string>;
+    aa.pushb("add");
+    aa.pushb("index.json");
+    if pkg_git(aa, reg_tmp).rc != 0 {
+        show("error: Git add failed");
+        pkg_rm_rf(reg_tmp);
+        return 1;
+    }
+    ca: vec<string>;
+    ca.pushb("-c");
+    ca.pushb("user.name=leashed");
+    ca.pushb("-c");
+    ca.pushb("user.email=leashed@localhost");
+    ca.pushb("commit");
+    ca.pushb("-m");
+    ca.pushb("Register " + name + " v" + version);
+    cr: PkgRun = pkg_git(ca, reg_tmp);
+    if cr.rc != 0 {
+        if pkg_contains(pkg_to_lower(cr.err), "nothing to commit") || pkg_contains(pkg_to_lower(cr.err), "nothing added") {
+            show("[leashed] No index changes needed (already up to date)");
+            pkg_rm_rf(reg_tmp);
+            return 0;
+        }
+        show("error: Git commit failed: " + cr.err);
+        pkg_rm_rf(reg_tmp);
+        return 1;
+    }
+    if is_owner {
+        // push the checked-out branch (whatever the remote calls it)
+        ba: vec<string>;
+        ba.pushb("branch");
+        ba.pushb("--show-current");
+        br: PkgRun = pkg_git(ba, reg_tmp);
+        if br.rc == 0 && br.out.size > 0 {
+            push_branch = br.out;
+        }
+    }
+    pa: vec<string>;
+    pa.pushb("push");
+    pa.pushb("--force-with-lease");
+    pa.pushb("-u");
+    pa.pushb("origin");
+    pa.pushb(push_branch);
+    if pkg_git(pa, reg_tmp).rc != 0 {
+        show("error: Failed to push registry update");
+        pkg_rm_rf(reg_tmp);
+        return 1;
+    }
+    if is_owner {
+        show("[leashed] Registered '" + name + "' in the package index");
+    } else {
+        pr_body: string = "## Register " + name + " v" + version + "\n\n- **Library:** " + name + "\n- **Version:** " + version + "\n- **Author:** " + author + "\n- **Description:** " + description + "\n- **Repo:** " + repo_url + "\n\nPublished by " + publisher + ".";
+        pa2: vec<string>;
+        pa2.pushb("pr");
+        pa2.pushb("create");
+        pa2.pushb("--repo");
+        pa2.pushb(pkg_registry_repo());
+        pa2.pushb("--head");
+        pa2.pushb(gh_user + ":" + push_branch);
+        pa2.pushb("--base");
+        pa2.pushb("main");
+        pa2.pushb("--title");
+        pa2.pushb("Register " + name + " v" + version);
+        pa2.pushb("--body");
+        pa2.pushb(pr_body);
+        pr: PkgRun = pkg_gh(pa2, true);
+        if pr.rc != 0 {
+            pa2.set(7, "master");
+            pr = pkg_gh(pa2, true);
+        }
+        if pr.rc == 0 {
+            show("[leashed] Registration PR created: " + pr.out);
+            show("[leashed] A validation bot will review it automatically —");
+            show("[leashed]   if all checks pass, the PR merges itself within a minute.");
+        } else {
+            show("warning: Failed to create PR: " + pr.err);
+            show("  Submit a PR manually to " + pkg_registry_repo() + " updating index.json.");
+        }
+    }
+    pkg_rm_rf(reg_tmp);
+    return 0;
+}
+
+// ---------------------------------------------------------------------------
+// dispatch (mirrors the leashed entry point)
+// ---------------------------------------------------------------------------
+
+fnc pkg_print_usage() : void {
+    show("leash pkg v" + pkg_version());
+    show("Usage: leash pkg <command> [options]");
+    show("");
+    show("Commands:");
+    show("  init <path>       Initialize a new leash package project");
+    show("  publish           Compile and publish the current package");
+    show("  install [<target>]  Install a library globally (~/.leash/libs)");
+    show("                    <name>, <name>@1.2.3, <user>/<repo> or a git URL;");
+    show("                    with no target (inside a project), restores the");
+    show("                    versions pinned in leash.lock");
+    show("  uninstall <name>  Remove an installed library");
+    show("  list              List installed libraries");
+    show("  info <name>       Show registry metadata for a library");
+    show("  update [names]    Update installed libs / all project dependencies");
+    show("  add <name>        Add a library to the current project");
+    show("  lock              Resolve dependencies and write leash.lock");
+    show("  search <query>    Search for libraries");
+    show("");
+    show("Global Options:");
+    show("  --locked (install) Fail instead of resolving a version that is");
+    show("                    not pinned in leash.lock (CI reproducibility)");
+    show("");
+    show("Environment:");
+    show("  LEASHED_REGISTRY_REPO   Use a custom registry (owner/repo)");
+    show("  LEASHED_REGISTRY_URL    Custom index.json URL");
+    show("  LEASHED_REGISTRY_GIT    Custom registry git URL");
+}
+
+fnc pkg_dispatch(args vec<string>) : int {
+    // main.lsh convention: args[0] is the binary, args[1] is "pkg",
+    // the subcommand is args[2] (like cmd_install reads args[2]).
+    if args.size < 3 {
+        pkg_print_usage();
+        return 1;
+    }
+    sub: string = args.get(2);
+    if sub == "--help" || sub == "-h" || sub == "help" {
+        pkg_print_usage();
+        return 0;
+    }
+    if sub == "--version" || sub == "-v" {
+        show("leash pkg v" + pkg_version());
+        return 0;
+    }
+    rest: vec<string> = pkg_slice_vec(args, 3, args.size);
+    if sub == "init" { return pkg_cmd_init(rest); }
+    if sub == "publish" { return pkg_cmd_publish(rest); }
+    if sub == "install" { return pkg_cmd_install(rest); }
+    if sub == "uninstall" { return pkg_cmd_uninstall(rest); }
+    if sub == "list" { return pkg_cmd_list(rest); }
+    if sub == "info" { return pkg_cmd_info(rest); }
+    if sub == "update" { return pkg_cmd_update(rest); }
+    if sub == "add" { return pkg_cmd_add(rest); }
+    if sub == "lock" { return pkg_cmd_lock(rest); }
+    if sub == "search" { return pkg_cmd_search(rest); }
+    show("error: Unknown pkg command: '" + sub + "'");
+    pkg_print_usage();
+    return 1;
+}
