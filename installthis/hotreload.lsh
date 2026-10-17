@@ -21,7 +21,7 @@ pub def Reloader : class {
 
         old_code: string = "";
 
-        while 1 {
+        while true {
             f.rewind();
             new_code: string = f.read();
 

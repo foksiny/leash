@@ -1669,7 +1669,39 @@ pub def TypeChecker : class {
             // never trips this.
             if e.kind == ExprKind.BINOP && (e.op == "/" || e.op == "%") && e.right != null {
                 if e.right.kind == ExprKind.INT && e.right.ival == 0 {
-                    this.errors.pushb("Division by zero detected statically (constant-propagated divisor).");
+                    if e.op == "/" {
+                        this.errors.pushb("Division by zero detected statically!");
+                    } else {
+                        this.errors.pushb("Modulo by zero detected statically!");
+                    }
+                }
+            }
+
+            // Static shift range check (python parity): a constant shift
+            // amount outside [0, bits-1] is undefined behavior.
+            if e.kind == ExprKind.BINOP && (e.op == "<<" || e.op == ">>") && e.right != null && e.right.kind == ExprKind.INT {
+                shift_amt: int = e.right.ival;
+                bits: int = 0;
+                signed: bool = true;
+                lt_base: string = this.base_of(this.strip_ref(lt_full));
+                if lt_base == "int" || lt_base == "uint" { bits = 32; }
+                if lt_base == "char" { bits = 8; }
+                if lt_base == "bool" { bits = 1; }
+                if lt_base.size > 5 && lt_base[0] == 'i' && lt_base[1] == 'n' && lt_base[2] == 't' && lt_base[3] == '<' && lt_base[lt_base.size - 1] == '>' {
+                    bits = this.parse_small_int(this.str_slice(lt_base, 4, lt_base.size - 1));
+                }
+                if lt_base.size > 6 && lt_base[0] == 'u' && lt_base[1] == 'i' && lt_base[2] == 'n' && lt_base[3] == 't' && lt_base[4] == '<' && lt_base[lt_base.size - 1] == '>' {
+                    bits = this.parse_small_int(this.str_slice(lt_base, 5, lt_base.size - 1));
+                    signed = false;
+                }
+                if bits > 0 {
+                    if shift_amt < 0 {
+                        this.errors.pushb("Shift amount " + tostring(shift_amt) + " is negative.");
+                    } else {
+                        if shift_amt >= bits {
+                            this.errors.pushb("Shift amount " + tostring(shift_amt) + " is greater than or equal to bit-width " + tostring(bits) + " of '" + lt + "'.");
+                        }
+                    }
                 }
             }
 
@@ -2010,6 +2042,12 @@ pub def TypeChecker : class {
                 cl: ClassInfo = this.classes[obj_type];
                 return cl.get_field_type(e.sval);
             }
+            // Unknown member on a primitive/builtin value type (Python parity).
+            mem_base: string = this.base_of(mem_obj_t);
+            if mem_base == "int" || mem_base == "uint" || mem_base == "char" || mem_base == "bool" || mem_base == "float" || mem_base == "string" ||
+               (mem_obj_t.size > 2 && mem_obj_t[mem_obj_t.size - 1] == ']') {
+                this.errors.pushb("Type '" + mem_obj_t + "' has no member named '" + e.sval + "'");
+            }
             return "int";
         }
 
@@ -2094,6 +2132,11 @@ pub def TypeChecker : class {
                     bi = bi + 1;
                 }
                 return base_t;
+            }
+            // Cannot index a non-indexable value (Python parity).
+            arr_base: string = this.base_of(arr_t);
+            if arr_base == "int" || arr_base == "uint" || arr_base == "char" || arr_base == "bool" || arr_base == "float" {
+                this.errors.pushb("Cannot index a value of type '" + arr_t + "'");
             }
             return "int";
         }
@@ -3462,6 +3505,17 @@ pub def TypeChecker : class {
         // Pass 2: Register function signatures
         foreach _, f in<vector> prog.funcs {
             if this.derive_generic_params(f) { continue; }
+            // Unknown param/return types (Python M4 parity)
+            ret_bare: string = this.strip_imut(f.ret_type);
+            if f.ret_type.size > 0 && ret_bare != "void" && !this.is_multi_type(f.ret_type) && !this.is_known_type(ret_bare) {
+                this.errors.pushb("Function '" + f.name + "': return type '" + f.ret_type + "' is unknown");
+            }
+            foreach _, p in<vector> f.params {
+                pbare: string = this.strip_imut(p.typ);
+                if !this.is_multi_type(p.typ) && !this.is_known_type(pbare) {
+                    this.errors.pushb("Function '" + f.name + "': parameter '" + p.name + "' has unknown type '" + p.typ + "'");
+                }
+            }
             fkey: string = f.name;
             if f.owner.size > 0 { fkey = f.owner + "_" + f.name; }
             f_ret: string = this.resolve_type_alias(f.ret_type);
@@ -3492,10 +3546,6 @@ pub def TypeChecker : class {
             if f.owner.size > 0 { fkey2 = f.owner + "_" + f.name; }
             this.current_func_name = fkey2;
             this.enter_scope();
-
-            // Worker functions accumulate into an implicit `result`
-            // (documented in the concurrency guide).
-            if f.is_worker { this.define_var("result", "int"); }
 
             // Bind parameters; arrays passed without '&' alias the caller's
             // storage and are read-only borrows inside the callee
