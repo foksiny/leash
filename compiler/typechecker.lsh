@@ -4015,6 +4015,222 @@ pub def TypeChecker : class {
 
     // Specialise a generic template for the concrete argument types at this
     // call site. Returns the mangled instance name (no expression rewrite).
+    // ------------------------------------------------------------------
+    // Deep copies for generic instantiation: clone bodies are checked
+    // per instantiation (nested template calls resolve against concrete
+    // parameter types), so the shared template body must not be mutated.
+    // ------------------------------------------------------------------
+
+    pub fnc clone_expr(e Expr) : Expr {
+        if e == null { return e; }
+        if e.kind == ExprKind.INT {
+            n: Expr = Expr.make_int(e.ival);
+            n.sval = e.sval;
+            return n;
+        }
+        if e.kind == ExprKind.FLOAT {
+            n: Expr = Expr.make_float(e.fval);
+            n.sval = e.sval;
+            return n;
+        }
+        if e.kind == ExprKind.STRING { return Expr.make_string(e.sval); }
+        if e.kind == ExprKind.CHAR { return Expr.make_char(e.cval); }
+        if e.kind == ExprKind.BOOL { return Expr.make_bool(e.bval); }
+        if e.kind == ExprKind.NIL { return Expr.make_nil(); }
+        if e.kind == ExprKind.IDENT { return Expr.make_ident(e.sval); }
+        if e.kind == ExprKind.BINOP {
+            return Expr.make_binop(e.op, this.clone_expr(e.left), this.clone_expr(e.right));
+        }
+        if e.kind == ExprKind.UNARY {
+            return Expr.make_unary(e.op, this.clone_expr(e.left));
+        }
+        if e.kind == ExprKind.TERNARY {
+            return Expr.make_ternary(this.clone_expr(e.cond), this.clone_expr(e.left), this.clone_expr(e.right));
+        }
+        if e.kind == ExprKind.CAST {
+            return Expr.make_cast(e.sval, this.clone_expr(e.left));
+        }
+        if e.kind == ExprKind.MEMBER {
+            return Expr.make_member(this.clone_expr(e.left), e.sval);
+        }
+        if e.kind == ExprKind.POINTER_MEMBER {
+            return Expr.make_pointer_member(this.clone_expr(e.left), e.sval);
+        }
+        if e.kind == ExprKind.INDEX {
+            return Expr.make_index(this.clone_expr(e.left), this.clone_expr(e.right));
+        }
+        if e.kind == ExprKind.CALL {
+            ca: vec<Expr>;
+            foreach _, a in<vector> e.args { ca.pushb(this.clone_expr(a)); }
+            cc: Expr;
+            if e.is_create { cc = Expr.make_create(e.sval, ca); } else { cc = Expr.make_call(e.sval, ca); }
+            return cc;
+        }
+        if e.kind == ExprKind.METHOD_CALL {
+            ma: vec<Expr>;
+            foreach _, a in<vector> e.args { ma.pushb(this.clone_expr(a)); }
+            return Expr.make_method_call(this.clone_expr(e.left), e.sval, ma);
+        }
+        if e.kind == ExprKind.STRUCT_INIT {
+            sa: vec<Expr>;
+            foreach _, a in<vector> e.args { sa.pushb(this.clone_expr(a)); }
+            return Expr.make_struct_init(e.sval, e.field_names, sa);
+        }
+        if e.kind == ExprKind.ARRAY_LIT {
+            sa2: vec<Expr>;
+            foreach _, a2 in<vector> e.args { sa2.pushb(this.clone_expr(a2)); }
+            return Expr.make_array_lit(sa2);
+        }
+        return Expr.make_ident(e.sval);
+    }
+
+    pub fnc clone_exprs(es vec<Expr>) : vec<Expr> {
+        out: vec<Expr>;
+        foreach _, e in<vector> es { out.pushb(this.clone_expr(e)); }
+        return out;
+    }
+
+    pub fnc clone_stmt_list(ss vec<Stmt>) : vec<Stmt> {
+        out: vec<Stmt>;
+        foreach _, s in<vector> ss { out.pushb(this.clone_stmt(s)); }
+        return out;
+    }
+
+    pub fnc clone_stmt(s Stmt) : Stmt {
+        if s == null { return s; }
+        c: Stmt = Stmt { kind: s.kind, name: s.name, var_type: s.var_type, is_infer: s.is_infer, is_imut: s.is_imut, op: s.op, line: s.line, col: s.col, is_showb: s.is_showb, show_end: s.show_end };
+        k: int = s.kind;
+        if k == StmtKind.VAR_DECL {
+            c.value = this.clone_expr(s.value);
+            return c;
+        }
+        if k == StmtKind.ASSIGN {
+            c.target = this.clone_expr(s.target);
+            c.value = this.clone_expr(s.value);
+            return c;
+        }
+        if k == StmtKind.RETURN {
+            c.value = this.clone_expr(s.value);
+            return c;
+        }
+        if k == StmtKind.IF {
+            c.cond = this.clone_expr(s.cond);
+            c.then_block = this.clone_stmt_list(s.then_block);
+            c.else_block = this.clone_stmt_list(s.else_block);
+            return c;
+        }
+        if k == StmtKind.WHILE {
+            c.cond = this.clone_expr(s.cond);
+            c.body = this.clone_stmt_list(s.body);
+            return c;
+        }
+        if k == StmtKind.FOR {
+            c.for_init = this.clone_stmt(s.for_init);
+            c.cond = this.clone_expr(s.cond);
+            c.for_step = this.clone_stmt(s.for_step);
+            c.body = this.clone_stmt_list(s.body);
+            return c;
+        }
+        if k == StmtKind.LOOP || k == StmtKind.BLOCK {
+            c.body = this.clone_stmt_list(s.body);
+            return c;
+        }
+        if k == StmtKind.EXPR {
+            c.value = this.clone_expr(s.value);
+            return c;
+        }
+        if k == StmtKind.SHOW {
+            c.args = this.clone_exprs(s.args);
+            return c;
+        }
+        if k == StmtKind.SWITCH {
+            c.value = this.clone_expr(s.value);
+            c.switch_cases = this.clone_stmt_list(s.switch_cases);
+            c.default_block = this.clone_stmt_list(s.default_block);
+            return c;
+        }
+        if k == StmtKind.CASE {
+            c.value = this.clone_expr(s.value);
+            c.body = this.clone_stmt_list(s.body);
+            return c;
+        }
+        if k == StmtKind.FOREACH_STRUCT {
+            c.target = this.clone_expr(s.target);
+            c.body = this.clone_stmt_list(s.body);
+            return c;
+        }
+        if k == StmtKind.WORKS {
+            c.body = this.clone_stmt_list(s.body);
+            c.else_block = this.clone_stmt_list(s.else_block);
+            return c;
+        }
+        if k == StmtKind.DEFER {
+            c.body = this.clone_stmt_list(s.body);
+            return c;
+        }
+        if k == StmtKind.THROW || k == StmtKind.SPAWN {
+            c.args = this.clone_exprs(s.args);
+            return c;
+        }
+        return c;
+    }
+
+    static pub fnc str_starts_with(s string, pre string) : bool {
+        if s.size < pre.size { return false; }
+        i: int = 0;
+        while i < pre.size {
+            if s[i] != pre[i] { return false; }
+            i = i + 1;
+        }
+        return true;
+    }
+
+    // Body check for an instantiated generic clone (pass-3 equivalent).
+    // Nested calls to other templates specialize here against the clone's
+    // concrete parameter types, exactly like python's instantiated bodies.
+    pub fnc check_clone_body(f FuncDecl) : void {
+        // Operator-overload clones carry the `thisop.typ` pseudo-type, which
+        // only codegen resolves (via opdef_inner) — never re-check them.
+        if this.str_starts_with(f.name, "_opdef_") { return; }
+        this.current_func_ret = this.resolve_type_alias(f.ret_type);
+        this.in_unsafe_func = f.is_unsafe;
+        this.current_func_name = f.name;
+        this.enter_scope();
+        rb_clear: vec<string>;
+        this.readonly_borrows = rb_clear;
+        imut_clear: hash<string, bool>;
+        this.imut_vars = imut_clear;
+        am_clear: hash<string, int>;
+        this.alias_map = am_clear;
+        ag_clear: vec<vec<string>>;
+        this.alias_groups = ag_clear;
+        dv_clear: hash<string, bool>;
+        this.deleted_vars = dv_clear;
+        ua_clear: hash<string, string>;
+        this.union_active = ua_clear;
+        uat_clear: hash<string, string>;
+        this.union_active_ty = uat_clear;
+        foreach _, p in<vector> f.params {
+            if p.is_imut { this.imut_vars.push(p.name, true); }
+            this.define_var(p.name, this.resolve_type_alias(p.typ));
+            pbt2: string = this.strip_imut(p.typ);
+            if p.typ.size > 0 && p.typ[0] != '&' && this.is_array_type(pbt2)
+               && !(pbt2.size > 4 && pbt2[0] == 'v' && pbt2[1] == 'e' && pbt2[2] == 'c' && pbt2[3] == '<') {
+                this.readonly_borrows.pushb(p.name);
+            }
+        }
+        foreach _, stmt in<vector> f.body {
+            this.check_statement(stmt);
+        }
+        if f.ret_type.size > 0 {
+            fret_bare3: string = this.strip_imut(this.resolve_type_alias(f.ret_type));
+            if fret_bare3 != "void" && !this.stmt_list_returns(f.body) {
+                this.errors.pushb("Function '" + f.name + "' might not return a value on all paths.");
+            }
+        }
+        this.exit_scope();
+    }
+
     pub fnc instantiate_generic(base string, args vec<Expr>) : string {
         tparams: vec<string> = this.generic_tparams[base];
         ptypes: vec<string> = this.generic_ptypes[base];
@@ -4061,7 +4277,7 @@ pub def TypeChecker : class {
         }
         nrt: string = this.substitute_type_params(rtype, tmap);
 
-        nf: FuncDecl = FuncDecl.make(mangled, new_params, nrt, tmpl.body, tmpl.is_static, tmpl.is_pub);
+        nf: FuncDecl = FuncDecl.make(mangled, new_params, nrt, this.clone_stmt_list(tmpl.body), tmpl.is_static, tmpl.is_pub);
         nf.owner = tmpl.owner;
         nf.is_unsafe = tmpl.is_unsafe;
         nf.is_nogc = tmpl.is_nogc;
@@ -4627,6 +4843,17 @@ pub def TypeChecker : class {
                 }
                 this.exit_scope();
             }
+        }
+
+        // Specialize generic function clones: their copied bodies carry
+        // calls to other templates, which only resolve against the clone's
+        // concrete parameter types here (python fixes these up while
+        // checking the instantiated body). New clones may appear while
+        // checking, hence the index loop.
+        ci8: int = 0;
+        while ci8 < this.inst_nodes.size {
+            this.check_clone_body(this.inst_nodes.get(ci8));
+            ci8 = ci8 + 1;
         }
 
         // Instantiated generic classes join the program for codegen.

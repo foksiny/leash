@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Cross-compilation test: the self-hosted compiler targets win64.
 
-Builds one small program three ways (self-hosted -> win64,
-self-hosted -> native, python reference -> win64), checks the win64
-artifact is a real PE32+ binary, runs it (under wine when the host
-cannot execute PE files natively), and asserts identical output.
+Builds one small program two ways (self-hosted -> win64,
+self-hosted -> native), checks the win64 artifact is a real PE32+
+binary, runs it (under wine when the host cannot execute PE files
+natively), and asserts identical output.
 
 Skips cleanly when the MinGW cross-compiler or wine is unavailable.
 """
@@ -17,7 +17,6 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BIN_LEASHC = os.path.join(ROOT, "bin", "leashc")
-PYTHON_CLI = [sys.executable, "-m", "leash.cli"]
 
 # Exercises ints, string concat, float formatting, class allocation
 # with a constructor call, and vecs. Fully deterministic output.
@@ -142,10 +141,6 @@ class TestCrossWin64(unittest.TestCase):
         # ... that runs correctly under wine ...
         out = self._run(exe)
         self.assertEqual(out.splitlines(), EXPECTED_LINES)
-        # ... byte-identical to the python reference compiler's binary ...
-        py_exe = self._compile(PYTHON_CLI, "xw_py", "win64")
-        self.assertTrue(_is_pe_amd64(py_exe))
-        self.assertEqual(self._run(py_exe), out)
         # ... and line-identical (modulo CRLF) to the native build.
         native = self._compile([BIN_LEASHC], "xw_nat")
         self.assertEqual(self._run(native).splitlines(), EXPECTED_LINES)

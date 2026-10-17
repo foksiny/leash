@@ -13,8 +13,7 @@ import unittest
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO_ROOT)
 
-PYTHON = sys.executable
-CLI = [PYTHON, "-m", "leash.cli", "dbg"]
+CLI = [os.path.join(REPO_ROOT, "bin", "leashc"), "dbg"]
 
 DBG_PROG = """fnc add(a int, b int) : int {
     r: int = a + b;

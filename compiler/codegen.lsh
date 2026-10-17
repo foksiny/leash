@@ -6685,8 +6685,31 @@ pub def CodeGen : class {
             }
 
             if !s.is_showb {
-                // Emit newline
-                this.emit("  call i32 (i8*, ...) @printf(i8* getelementptr inbounds ([2 x i8], [2 x i8]* @.fmt_nl, i64 0, i64 0))");
+                // Trailing text: python's node.end (default "\n"). The
+                // default keeps the historical @.fmt_nl emission; custom
+                // values mirror _emit_printf_or_puts (puts when it ends in
+                // a newline and has no '%', printf otherwise).
+                if s.show_end == "\n" {
+                    this.emit("  call i32 (i8*, ...) @printf(i8* getelementptr inbounds ([2 x i8], [2 x i8]* @.fmt_nl, i64 0, i64 0))");
+                } also s.show_end.size > 0 {
+                    has_pct: bool = false;
+                    ei: int = 0;
+                    while ei < s.show_end.size {
+                        if s.show_end[ei] == '%' { has_pct = true; }
+                        ei = ei + 1;
+                    }
+                    if !has_pct && s.show_end[s.show_end.size - 1] == '\n' {
+                        trimmed: string = "";
+                        ti: int = 0;
+                        while ti < s.show_end.size - 1 {
+                            trimmed = trimmed + s.show_end[ti];
+                            ti = ti + 1;
+                        }
+                        this.emit("  call i32 @puts(i8* " + this.const_str_of(trimmed) + ")");
+                    } else {
+                        this.emit("  call i32 (i8*, ...) @printf(i8* " + this.const_str_of(s.show_end) + ")");
+                    }
+                }
             }
             return;
         }

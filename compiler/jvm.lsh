@@ -9694,7 +9694,13 @@ pub def JvmGen : class {
                 ai = ai + 1;
             }
             if !s.is_showb {
-                this.emit_println();
+                if s.show_end == "\n" {
+                    this.emit_println();
+                } also s.show_end.size > 0 {
+                    this.emit_getstatic_out();
+                    this.ldc_string(s.show_end);
+                    this.emit_invoke(JOp.INVOKEVIRTUAL, "java/io/PrintStream", "print", "(Ljava/lang/String;)V");
+                }
             }
             return;
         }

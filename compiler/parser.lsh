@@ -67,6 +67,7 @@ pub def Parser : class {
     pub macros: hash<string, MacroDef>; // top-level `def X : macro(...)` definitions
     pub macro_list: vec<MacroDef>;       // same, ordered (for Program.macros)
     pub lambda_counter: int;   // naming for `fnc(...) { }` function literals
+    pub deferred_templates: vec<string>; // `fnc f<T>` params -> Program.templates
 
     static pub fnc make(tokens vec<Token>) : Parser {
         empty_aliases: hash<string, string>;
@@ -75,7 +76,8 @@ pub def Parser : class {
         empty_macros: hash<string, MacroDef>;
         empty_ml: vec<MacroDef>;
         empty_de: vec<string>;
-        return Parser { tokens: tokens, pos: 0, len: tokens.size, fe_counter: 0, no_struct_init: false, type_aliases: empty_aliases, import_aliases: empty_import_aliases, quiet: false, parse_errs: 0, fatal: false, fatal_msg: "", fatal_tip: "", fatal_line: 0, fatal_col: 0, deferred_errors: empty_de, arr_rt_size: "", keep_sized: false, mod_unsafe: false, mod_nogc: false, mod_inline: false, mod_async: false, mod_worker: false, hoisted_funcs: empty_hf, hoisted_mark: 0, macros: empty_macros, lambda_counter: 0, macro_list: empty_ml };
+        empty_dt: vec<string>;
+        return Parser { tokens: tokens, pos: 0, len: tokens.size, fe_counter: 0, no_struct_init: false, type_aliases: empty_aliases, import_aliases: empty_import_aliases, quiet: false, parse_errs: 0, fatal: false, fatal_msg: "", fatal_tip: "", fatal_line: 0, fatal_col: 0, deferred_errors: empty_de, arr_rt_size: "", keep_sized: false, mod_unsafe: false, mod_nogc: false, mod_inline: false, mod_async: false, mod_worker: false, hoisted_funcs: empty_hf, hoisted_mark: 0, macros: empty_macros, lambda_counter: 0, macro_list: empty_ml, deferred_templates: empty_dt };
     }
 
     // Function literal: fnc(a int, b int) : int { ... }  (hoisted, used as a value)
@@ -481,6 +483,64 @@ pub def Parser : class {
     // Unescape a string literal after the interpolation scan (python's
     // leash_unescape): known escapes decode, unknown ones keep the
     // backslash.
+    pub fnc hex_cp_of(s string, start int, n int) : int {
+        v: int = 0;
+        i: int = 0;
+        while i < n && start + i < s.size {
+            c: char = s[start + i];
+            if c >= '0' && c <= '9' { v = v * 16 + (c - '0'); }
+            also c >= 'a' && c <= 'f' { v = v * 16 + (c - 'a') + 10; }
+            also c >= 'A' && c <= 'F' { v = v * 16 + (c - 'A') + 10; }
+            i = i + 1;
+        }
+        return v;
+    }
+
+    pub fnc cp_char(cp int) : char {
+        return '\0' + cp;
+    }
+
+    // UTF-8 encode one code point, matching python's str -> bytes output.
+    pub fnc append_cp_utf8(out string, cp int) : string {
+        if cp < 0x80 {
+            return out + this.cp_char(cp);
+        }
+        if cp < 0x800 {
+            return out + this.cp_char(0xC0 | (cp >> 6)) + this.cp_char(0x80 | (cp & 0x3F));
+        }
+        if cp < 0x10000 {
+            return out + this.cp_char(0xE0 | (cp >> 12)) + this.cp_char(0x80 | ((cp >> 6) & 0x3F)) + this.cp_char(0x80 | (cp & 0x3F));
+        }
+        return out + this.cp_char(0xF0 | (cp >> 18)) + this.cp_char(0x80 | ((cp >> 12) & 0x3F)) + this.cp_char(0x80 | ((cp >> 6) & 0x3F)) + this.cp_char(0x80 | (cp & 0x3F));
+    }
+
+    // Decode the (lexer-validated) raw character-literal text to its single
+    // code point; 8-bit chars truncate like python's codegen.
+    pub fnc decode_char_lit(s string) : char {
+        if s.size == 0 { return ' '; }
+        if s[0] != '\\' { return s[0]; }
+        if s.size < 2 { return s[0]; }
+        e: char = s[1];
+        if e == 'n' { return '\n'; }
+        if e == 't' { return '\t'; }
+        if e == 'r' { return '\r'; }
+        if e == '0' { return '\0'; }
+        if e == 'a' { return '\a'; }
+        if e == 'b' { return '\b'; }
+        if e == 'f' { return '\f'; }
+        if e == 'v' { return '\v'; }
+        if e == '\\' { return '\\'; }
+        if e == '\'' { return '\''; }
+        if e == '"' { return '"'; }
+        if e == '?' { return '?'; }
+        if e == '{' { return '{'; }
+        if e == '}' { return '}'; }
+        if e == 'x' { return this.cp_char(this.hex_cp_of(s, 2, 2)); }
+        if e == 'u' { return this.cp_char(this.hex_cp_of(s, 2, 4)); }
+        if e == 'U' { return this.cp_char(this.hex_cp_of(s, 2, 8)); }
+        return e;
+    }
+
     pub fnc unescape_str(s string) : string {
         out: string = "";
         i: int = 0;
@@ -501,6 +561,21 @@ pub def Parser : class {
                     // backslash + literal '0') — keep it literal text.
                     out = out + c;
                     out = out + esc;
+                }
+                also esc == 'x' {
+                    out = this.append_cp_utf8(out, this.hex_cp_of(s, i + 2, 2));
+                    i = i + 4;
+                    continue;
+                }
+                also esc == 'u' {
+                    out = this.append_cp_utf8(out, this.hex_cp_of(s, i + 2, 4));
+                    i = i + 6;
+                    continue;
+                }
+                also esc == 'U' {
+                    out = this.append_cp_utf8(out, this.hex_cp_of(s, i + 2, 8));
+                    i = i + 10;
+                    continue;
                 }
                 also esc == '\\' { out = out + '\\'; }
                 also esc == '"' { out = out + '"'; }
@@ -711,6 +786,15 @@ pub def Parser : class {
             }
             return v;
         }
+        if s.size > 2 && s[0] == '0' && (s[1] == 'o' || s[1] == 'O') {
+            ov: int<64> = 0;
+            oi: int = 2;
+            while oi < s.size {
+                ov = ov * 8 + (s[oi] - '0');
+                oi = oi + 1;
+            }
+            return ov;
+        }
         if s.size > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X') {
             hv: int<64> = 0;
             hi: int = 2;
@@ -790,7 +874,11 @@ pub def Parser : class {
         if this.match_tok(Tok.FLOAT) {
             f_val: float = (float)strtod(tok.val, nil);
             fe: Expr = Expr.make_float(f_val);
-            fe.sval = tok.val;
+            // Hex floats (0x1.8p1) are not valid LLVM literal text; the
+            // codegen's value-rendering fallback handles those.
+            if !(tok.val.size > 1 && tok.val[0] == '0' && (tok.val[1] == 'x' || tok.val[1] == 'X')) {
+                fe.sval = tok.val;
+            }
             return fe;
         }
 
@@ -804,26 +892,7 @@ pub def Parser : class {
 
         // Char literal
         if this.match_tok(Tok.CHAR) {
-            c_val: char = ' ';
-            if tok.val == "\\0" {
-                c_val = '\0';
-            } also tok.val.size == 4 && tok.val[0] == '\\' && tok.val[1] == 'x' {
-                // \xHH — hex byte escape
-                h1: int = 0;
-                h2: int = 0;
-                c1: char = tok.val[2];
-                c2: char = tok.val[3];
-                if c1 >= '0' && c1 <= '9' { h1 = c1 - '0'; }
-                also c1 >= 'a' && c1 <= 'f' { h1 = c1 - 'a' + 10; }
-                also c1 >= 'A' && c1 <= 'F' { h1 = c1 - 'A' + 10; }
-                if c2 >= '0' && c2 <= '9' { h2 = c2 - '0'; }
-                also c2 >= 'a' && c2 <= 'f' { h2 = c2 - 'a' + 10; }
-                also c2 >= 'A' && c2 <= 'F' { h2 = c2 - 'A' + 10; }
-                c_val = '\0' + h1 * 16 + h2;
-            } also tok.val.size > 0 {
-                c_val = tok.val[0];
-            }
-            return Expr.make_char(c_val);
+            return Expr.make_char(this.decode_char_lit(tok.val));
         }
 
         // Bool literal
@@ -1777,21 +1846,50 @@ pub def Parser : class {
             this.pos = this.pos + 1; // consume show/showb
             this.consume(Tok.LPAREN, "expected '(' after show");
             args: vec<Expr>;
+            show_end: string = "\n";
             if !this.check(Tok.RPAREN) {
-                args.pushb(this.parse_expression(Precedence.LOWEST));
-                while this.match_tok(Tok.COMMA) {
-                    if this.check(Tok.IDENT) && this.peek(1).kind == Tok.ASSIGN {
-                        kw: Token = this.consume(Tok.IDENT, "expected kwarg name");
+                loop {
+                    // `end = "..."` keyword (python parity: handled at every
+                    // position in `show`; `showb` takes plain expressions).
+                    if !is_showb && this.check(Tok.IDENT) && this.peek(1).kind == Tok.ASSIGN {
+                        kw: Token = this.current();
                         this.pos = this.pos + 1;
-                        this.parse_expression(Precedence.LOWEST);
+                        this.pos = this.pos + 1; // consume '='
+                        kw_expr: Expr = this.parse_expression(Precedence.LOWEST);
+                        if kw.val == "end" {
+                            if kw_expr != null && kw_expr.kind == ExprKind.STRING {
+                                show_end = kw_expr.sval;
+                            } else {
+                                // python raises a fatal LeashError here.
+                                this.fatal = true;
+                                this.fatal_msg = "'end' argument of show() must be a string literal";
+                                this.fatal_tip = "";
+                                this.fatal_line = kw.line;
+                                this.fatal_col = kw.col;
+                                this.pos = this.len;
+                                return Stmt.make_show(args, is_showb);
+                            }
+                        } else {
+                            this.fatal = true;
+                            this.fatal_msg = "Unexpected keyword argument '" + kw.val + "' for show()";
+                            this.fatal_tip = "";
+                            this.fatal_line = kw.line;
+                            this.fatal_col = kw.col;
+                            this.pos = this.len;
+                            return Stmt.make_show(args, is_showb);
+                        }
                     } else {
                         args.pushb(this.parse_expression(Precedence.LOWEST));
                     }
+                    if !this.match_tok(Tok.COMMA) { stop; }
+                    if this.check(Tok.RPAREN) { stop; } // trailing comma
                 }
             }
             this.consume(Tok.RPAREN, "expected ')' after show arguments");
             this.consume(Tok.SEMI, "expected ';' after show call");
-            return Stmt.make_show(args, is_showb);
+            st: Stmt = Stmt.make_show(args, is_showb);
+            st.show_end = show_end;
+            return st;
         }
 
         // Switch statement: switch expr { case ... { } default { } }
@@ -2348,6 +2446,19 @@ pub def Parser : class {
         this.mod_worker = false;
         this.consume(Tok.FNC, "expected 'fnc'");
         name_tok: Token = this.consume_member_name("expected function name");
+        // Explicit generic type parameters: `fnc ident<T>(...)`. Python
+        // scopes these to the function; the self-hosted splice shares one
+        // global template registry, so registering them as templates is
+        // equivalent for programs that don't reuse the name as a real type.
+        if this.check(Tok.LT) {
+            this.pos = this.pos + 1;
+            while !this.check(Tok.GT) && !this.check(Tok.EOF) {
+                tpn: Token = this.consume(Tok.IDENT, "expected type parameter name");
+                this.deferred_templates.pushb(tpn.val);
+                if !this.match_tok(Tok.COMMA) { stop; }
+            }
+            this.consume(Tok.GT, "expected '>' after type parameters");
+        }
         has_params: bool = this.match_tok(Tok.LPAREN);
 
         params: vec<FuncParam>;
@@ -2625,6 +2736,11 @@ pub def Parser : class {
         prog: Program = Program.make();
         this.parse_top_level_into(prog, false);
         this.drain_hoisted(prog);
+        // Explicit `fnc f<T>` type parameters become templates (the same
+        // registry `def T : template;` populates).
+        foreach _, tpl in<vector> this.deferred_templates {
+            prog.templates.pushb(tpl);
+        }
         // Macros ride on the Program so the post-import expansion pass
         // (Optimizer) can resolve names defined in imported modules too.
         foreach _, md in<vector> this.macro_list {

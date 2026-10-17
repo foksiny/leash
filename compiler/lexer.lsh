@@ -30,6 +30,143 @@ pub def Lexer : class {
         return Lexer.is_digit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
     }
 
+    static pub fnc is_bin_digit(c char) : bool {
+        return c == '0' || c == '1';
+    }
+
+    static pub fnc is_oct_digit(c char) : bool {
+        return c >= '0' && c <= '7';
+    }
+
+    // Python's BADNUM character classes: the first non-[valid-digit] char
+    // that makes a prefixed literal malformed. `p`/`P` are excluded from
+    // the hex class (they start a hex-float exponent).
+    static pub fnc is_bad_bin_char(c char) : bool {
+        return (c >= '2' && c <= '9') || Lexer.is_alpha(c);
+    }
+
+    static pub fnc is_bad_oct_char(c char) : bool {
+        return c == '8' || c == '9' || Lexer.is_alpha(c);
+    }
+
+    static pub fnc is_bad_hex_letter(c char) : bool {
+        if c >= 'a' && c <= 'z' { return !(c >= 'a' && c <= 'f') && c != 'p'; }
+        if c >= 'A' && c <= 'Z' { return !(c >= 'A' && c <= 'F') && c != 'P'; }
+        return false;
+    }
+
+    // `1_000` -> `1000`: token text feeds strtod/parse_int_text, which do
+    // not know about separators.
+    static pub fnc strip_seps(s string) : string {
+        out: string = "";
+        foreach _, c in<string> s {
+            if c != '_' { out = out + c; }
+        }
+        return out;
+    }
+
+    static pub fnc all_decimal(s string) : bool {
+        ok: bool = true;
+        foreach _, c in<string> s {
+            if c != '_' && !Lexer.is_digit(c) { ok = false; }
+        }
+        return ok;
+    }
+
+    static pub fnc hex_val(c char) : int {
+        if c >= '0' && c <= '9' { return c - '0'; }
+        if c >= 'a' && c <= 'f' { return c - 'a' + 10; }
+        if c >= 'A' && c <= 'F' { return c - 'A' + 10; }
+        return -1;
+    }
+
+    // python _LEASH_ESCAPE_MAP keys: one decoded character each.
+    static pub fnc is_simple_esc(c char) : bool {
+        if c == 'n' || c == 't' || c == 'r' || c == '0' || c == 'a' || c == 'b' || c == 'f' || c == 'v' {
+            return true;
+        }
+        if c == '\\' || c == '\'' || c == '"' || c == '?' || c == '{' || c == '}' {
+            return true;
+        }
+        return false;
+    }
+
+    static pub fnc hex_str_val(s string) : int {
+        v: int = 0;
+        foreach _, c in<string> s {
+            v = v * 16 + Lexer.hex_val(c);
+        }
+        return v;
+    }
+
+    static pub fnc hex_upper(cp int, min_width int) : string {
+        digits: string = "0123456789ABCDEF";
+        out: string = "";
+        v: int = cp;
+        if v < 0 { v = 0; }
+        n: int = 0;
+        while v > 0 || n < min_width {
+            d: int = v % 16;
+            out = digits[d] + out;
+            v = v / 16;
+            n = n + 1;
+        }
+        return out;
+    }
+
+    // Consume exactly `width` hex digits after \x / \u / \U. Emits python's
+    // "expected exactly N hex digits" error and returns a short string when
+    // the input is malformed; callers only use the digits when
+    // digits.size == width.
+    pub fnc scan_esc_digits(what char, width int) : string {
+        digits: string = "";
+        i: int = 0;
+        while i < width && Lexer.hex_val(this.peek()) >= 0 {
+            digits = digits + this.advance();
+            i = i + 1;
+        }
+        if digits.size != width {
+            ws: string = "";
+            ws = ws + what;
+            ex: string = "";
+            pad: int = width - 2;
+            while pad > 0 { ex = ex + "0"; pad = pad - 1; }
+            ex = ex + "41";
+            if !this.quiet {
+                show("error: Invalid \\", ws, " escape: expected exactly ", tostring(width), " hex digits (e.g. \\", ws, ex, ").");
+            }
+            this.errs = this.errs + 1;
+        }
+        return digits;
+    }
+
+    // python leash_unescape validation for a successfully scanned escape:
+    // range first, then surrogate; strings additionally reject NULs.
+    pub fnc check_esc_cp(what char, width int, cp int, is_string bool) : void {
+        if width >= 8 && cp > 0x10FFFF {
+            if !this.quiet {
+                show("error: Invalid \\U escape: code point U+", Lexer.hex_upper(cp, 8), " is out of range (max U+10FFFF).");
+            }
+            this.errs = this.errs + 1;
+            return;
+        }
+        if cp >= 0xD800 && cp <= 0xDFFF {
+            ws2: string = "";
+            ws2 = ws2 + what;
+            if !this.quiet {
+                show("error: Invalid \\", ws2, " escape: U+", Lexer.hex_upper(cp, 4), " is a lone UTF-16 surrogate; encode non-BMP characters directly instead.");
+            }
+            this.errs = this.errs + 1;
+            return;
+        }
+        if is_string && cp == 0 {
+            if !this.quiet {
+                show("error: NUL byte ('\\0') is not allowed inside string literals: Leash strings cannot hold embedded NULs.");
+            }
+            this.errs = this.errs + 1;
+        }
+    }
+
     static pub fnc make(src string) : Lexer {
         return Lexer { src: src, pos: 0, len: src.size, line: 1, col: 1, errs: 0, warns: 0, quiet: false };
     }
@@ -162,54 +299,192 @@ pub def Lexer : class {
     pub fnc read_number() : Token {
         start_line: int = this.line;
         start_col: int = this.col;
-        num_str: string = "";
-        is_flt: bool = false;
+        raw: string = "";
 
-        // Check for hex 0x or binary 0b
+        // Hexadecimal: 0x1F, 0x1_FFFF, 0x1.8p1, 0xDEAD.BEEF (python parity)
         if this.peek() == '0' && (this.peek_at(1) == 'x' || this.peek_at(1) == 'X') {
-            num_str = num_str + this.advance();
-            num_str = num_str + this.advance();
-            while Lexer.is_hex_digit(this.peek()) {
-                num_str = num_str + this.advance();
+            raw = raw + this.advance();
+            raw = raw + this.advance();
+            nh: int = 0;
+            got: bool = false;
+            loop {
+                if Lexer.is_hex_digit(this.peek()) {
+                    raw = raw + this.advance();
+                    nh = nh + 1;
+                    got = true;
+                } also this.peek() == '_' && nh > 0 && Lexer.is_hex_digit(this.peek_at(1)) {
+                    raw = raw + this.advance();
+                    nh = 0;
+                } else { stop; }
             }
-            return Token.make(Tok.INT, num_str, start_line, start_col);
+            is_hf: bool = false;
+            if got && this.peek() == '.' && Lexer.is_hex_digit(this.peek_at(1)) {
+                is_hf = true;
+                raw = raw + this.advance();
+                nh = 0;
+                loop {
+                    if Lexer.is_hex_digit(this.peek()) {
+                        raw = raw + this.advance();
+                        nh = nh + 1;
+                    } also this.peek() == '_' && nh > 0 && Lexer.is_hex_digit(this.peek_at(1)) {
+                        raw = raw + this.advance();
+                        nh = 0;
+                    } else { stop; }
+                }
+            }
+            pexp: bool = false;
+            if this.peek() == 'p' || this.peek() == 'P' {
+                if Lexer.is_digit(this.peek_at(1)) { pexp = true; }
+                also (this.peek_at(1) == '+' || this.peek_at(1) == '-') && Lexer.is_digit(this.peek_at(2)) { pexp = true; }
+            }
+            if pexp {
+                is_hf = true;
+                raw = raw + this.advance();
+                if this.peek() == '+' || this.peek() == '-' { raw = raw + this.advance(); }
+                while Lexer.is_digit(this.peek()) { raw = raw + this.advance(); }
+            }
+            if !got {
+                // Malformed hex (python BADNUM): '0x' + optional bad letter.
+                c: char = this.peek();
+                if Lexer.is_bad_hex_letter(c) { raw = raw + this.advance(); }
+                if !this.quiet {
+                    show("error: Invalid hexadecimal numeric literal '", raw, "'.");
+                }
+                this.errs = this.errs + 1;
+            } also Lexer.is_bad_hex_letter(this.peek()) {
+                raw = raw + this.advance();
+                if !this.quiet {
+                    show("error: Invalid hexadecimal numeric literal '", raw, "'.");
+                }
+                this.errs = this.errs + 1;
+            }
+            if is_hf {
+                return Token.make(Tok.FLOAT, Lexer.strip_seps(raw), start_line, start_col);
+            }
+            return Token.make(Tok.INT, Lexer.strip_seps(raw), start_line, start_col);
         }
+
+        // Binary: 0b1010, 0b1111_0000
         if this.peek() == '0' && (this.peek_at(1) == 'b' || this.peek_at(1) == 'B') {
-            num_str = num_str + this.advance();
-            num_str = num_str + this.advance();
-            while this.peek() == '0' || this.peek() == '1' {
-                num_str = num_str + this.advance();
+            raw = raw + this.advance();
+            raw = raw + this.advance();
+            nb: int = 0;
+            got: bool = false;
+            loop {
+                if Lexer.is_bin_digit(this.peek()) {
+                    raw = raw + this.advance();
+                    nb = nb + 1;
+                    got = true;
+                } also this.peek() == '_' && nb > 0 && Lexer.is_bin_digit(this.peek_at(1)) {
+                    raw = raw + this.advance();
+                    nb = 0;
+                } else { stop; }
             }
-            return Token.make(Tok.INT, num_str, start_line, start_col);
+            bad: bool = !got;
+            c: char = this.peek();
+            if Lexer.is_bad_bin_char(c) { raw = raw + this.advance(); bad = true; }
+            if bad {
+                if !this.quiet {
+                    show("error: Invalid binary numeric literal '", raw, "'.");
+                }
+                this.errs = this.errs + 1;
+            }
+            return Token.make(Tok.INT, Lexer.strip_seps(raw), start_line, start_col);
         }
 
-        while Lexer.is_digit(this.peek()) {
-            num_str = num_str + this.advance();
+        // Octal: 0o755, 0o7_55
+        if this.peek() == '0' && (this.peek_at(1) == 'o' || this.peek_at(1) == 'O') {
+            raw = raw + this.advance();
+            raw = raw + this.advance();
+            no: int = 0;
+            got: bool = false;
+            loop {
+                if Lexer.is_oct_digit(this.peek()) {
+                    raw = raw + this.advance();
+                    no = no + 1;
+                    got = true;
+                } also this.peek() == '_' && no > 0 && Lexer.is_oct_digit(this.peek_at(1)) {
+                    raw = raw + this.advance();
+                    no = 0;
+                } else { stop; }
+            }
+            bad: bool = !got;
+            c: char = this.peek();
+            if Lexer.is_bad_oct_char(c) { raw = raw + this.advance(); bad = true; }
+            if bad {
+                if !this.quiet {
+                    show("error: Invalid octal numeric literal '", raw, "'.");
+                }
+                this.errs = this.errs + 1;
+            }
+            return Token.make(Tok.INT, Lexer.strip_seps(raw), start_line, start_col);
         }
 
-        if this.peek() == '.' && Lexer.is_digit(this.peek_at(1)) {
+        // Decimal: 42, 3.14, .5, 3., 1e10, 2.5E-3, 1_000
+        nd: int = 0;
+        loop {
+            if Lexer.is_digit(this.peek()) {
+                raw = raw + this.advance();
+                nd = nd + 1;
+            } also this.peek() == '_' && nd > 0 && Lexer.is_digit(this.peek_at(1)) {
+                raw = raw + this.advance();
+                nd = 0;
+            } else { stop; }
+        }
+
+        is_flt: bool = false;
+        if this.peek() == '.' {
             is_flt = true;
-            num_str = num_str + this.advance(); // consume '.'
-            while Lexer.is_digit(this.peek()) {
-                num_str = num_str + this.advance();
+            raw = raw + this.advance(); // consume '.'
+            nd = 0;
+            loop {
+                if Lexer.is_digit(this.peek()) {
+                    raw = raw + this.advance();
+                    nd = nd + 1;
+                } also this.peek() == '_' && nd > 0 && Lexer.is_digit(this.peek_at(1)) {
+                    raw = raw + this.advance();
+                    nd = 0;
+                } else { stop; }
             }
         }
 
+        eok: bool = false;
         if this.peek() == 'e' || this.peek() == 'E' {
+            if Lexer.is_digit(this.peek_at(1)) { eok = true; }
+            also (this.peek_at(1) == '+' || this.peek_at(1) == '-') && Lexer.is_digit(this.peek_at(2)) { eok = true; }
+        }
+        if eok {
             is_flt = true;
-            num_str = num_str + this.advance();
+            raw = raw + this.advance();
             if this.peek() == '+' || this.peek() == '-' {
-                num_str = num_str + this.advance();
+                raw = raw + this.advance();
             }
             while Lexer.is_digit(this.peek()) {
-                num_str = num_str + this.advance();
+                raw = raw + this.advance();
             }
         }
 
         if is_flt {
-            return Token.make(Tok.FLOAT, num_str, start_line, start_col);
+            v: float = (float)strtod(Lexer.strip_seps(raw), nil);
+            // `v - v` is NaN for infinity and leash's `!=` is ordered, so
+            // compare against DBL_MAX (strtod overflows to +inf).
+            if v > 1.7976931348623157e308 {
+                if !this.quiet {
+                    show("error: Invalid numeric literal '", raw, "': '", raw, "' is out of range (evaluates to infinity).");
+                }
+                this.errs = this.errs + 1;
+            }
+            return Token.make(Tok.FLOAT, Lexer.strip_seps(raw), start_line, start_col);
         }
-        return Token.make(Tok.INT, num_str, start_line, start_col);
+
+        // Plain decimal integer — reject ambiguous leading zeros (007)
+        if raw.size > 1 && raw[0] == '0' && Lexer.all_decimal(raw) {
+            if !this.quiet {
+                show("error: Invalid numeric literal '", raw, "': leading zeros are not allowed in decimal literals.");
+            }
+            this.errs = this.errs + 1;
+        }
+        return Token.make(Tok.INT, Lexer.strip_seps(raw), start_line, start_col);
     }
 
     pub fnc read_string() : Token {
@@ -218,10 +493,31 @@ pub def Lexer : class {
         this.advance(); // consume opening "
         val: string = "";
 
-        while this.peek() != '"' && this.peek() != '\0' {
-            c: char = this.advance();
+        loop {
+            c: char = this.peek();
+            if c == '"' {
+                this.advance(); // consume closing "
+                stop;
+            }
+            if c == '\n' || c == '\0' {
+                // Raw newlines / EOF are python's MISMATCH cases.
+                if !this.quiet {
+                    show("error: Unterminated or malformed string literal.");
+                }
+                this.errs = this.errs + 1;
+                return Token.make(Tok.STRING, val, start_line, start_col);
+            }
             if c == '\\' {
-                esc: char = this.advance();
+                val = val + this.advance();
+                esc: char = this.peek();
+                if esc == '\n' || esc == '\0' {
+                    if !this.quiet {
+                        show("error: Unterminated or malformed string literal.");
+                    }
+                    this.errs = this.errs + 1;
+                    return Token.make(Tok.STRING, val, start_line, start_col);
+                }
+                val = val + this.advance();
                 if esc == '0' {
                     // Python parity: `\0` in a string literal is a hard
                     // error — Leash strings are C strings and an embedded
@@ -232,34 +528,53 @@ pub def Lexer : class {
                         show("error: NUL byte ('\\0') is not allowed inside string literals: Leash strings cannot hold embedded NULs.");
                     }
                     this.errs = this.errs + 1;
+                } also esc == 'x' || esc == 'u' || esc == 'U' {
+                    // python validates fixed-width escapes at lex time;
+                    // decoding happens once in the parser (raw text kept).
+                    w: int = 2;
+                    if esc == 'u' { w = 4; }
+                    if esc == 'U' { w = 8; }
+                    digs: string = this.scan_esc_digits(esc, w);
+                    val = val + digs;
+                    if digs.size == w {
+                        this.check_esc_cp(esc, w, Lexer.hex_str_val(digs), true);
+                    }
                 }
                 // Token values stay RAW (python keeps `tok.raw`): the parser
                 // unescapes exactly once after the interpolation scan, so
                 // `\\n` or `\\{` sequences are never decoded twice.
-                val = val + '\\';
-                val = val + esc;
             } else {
-                val = val + c;
+                val = val + this.advance();
             }
-        }
-
-        if this.peek() == '"' {
-            this.advance(); // consume closing "
         }
 
         return Token.make(Tok.STRING, val, start_line, start_col);
     }
 
-    pub fnc read_multiline_string() : Token {
+    // Lookahead: does a bare `delim delim delim` occur ahead? (`'''` is only
+    // a multi-line string in python when it actually closes; otherwise the
+    // lexer falls back to the empty character literal.)
+    pub fnc has_closing_triple(delim char) : bool {
+        i: int = 3;
+        while this.pos + i < this.len {
+            if this.peek_at(i) == delim && this.peek_at(i + 1) == delim && this.peek_at(i + 2) == delim {
+                return true;
+            }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    pub fnc read_multiline_string(delim char) : Token {
         start_line: int = this.line;
         start_col: int = this.col;
         this.advance();
         this.advance();
-        this.advance(); // consume opening """
+        this.advance(); // consume opening delimiter
         val: string = "";
 
         while this.peek() != '\0' {
-            if this.peek() == '"' && this.peek_at(1) == '"' && this.peek_at(2) == '"' {
+            if this.peek() == delim && this.peek_at(1) == delim && this.peek_at(2) == delim {
                 this.advance();
                 this.advance();
                 this.advance();
@@ -267,30 +582,43 @@ pub def Lexer : class {
             }
             c: char = this.advance();
             if c == '\\' {
-                if this.peek() == '"' {
-                    this.advance();
-                    val = val + '\\';
-                    val = val + '"';
-                } also this.peek() == '0' {
+                e: char = this.peek();
+                if e == '\0' {
+                    // EOF right after a backslash: no closing delimiter.
+                    if !this.quiet {
+                        show("error: Unterminated multi-line string literal: missing closing \"\"\".");
+                    }
+                    this.errs = this.errs + 1;
+                    return Token.make(Tok.STRING, val, start_line, start_col);
+                }
+                val = val + '\\' + this.advance();
+                if e == '0' {
                     // Python parity: `\0` in a string literal is a hard
                     // error (same as the single-quoted form)
                     if !this.quiet {
                         show("error: NUL byte ('\\0') is not allowed inside string literals: Leash strings cannot hold embedded NULs.");
                     }
                     this.errs = this.errs + 1;
-                    val = val + '\\';
-                    val = val + '0';
-                } else {
-                    // Raw escape pairs (python parity): the parser
-                    // unescapes exactly once
-                    val = val + '\\';
-                    if this.peek() != '\0' { val = val + this.advance(); }
+                } also e == 'x' || e == 'u' || e == 'U' {
+                    w: int = 2;
+                    if e == 'u' { w = 4; }
+                    if e == 'U' { w = 8; }
+                    digs: string = this.scan_esc_digits(e, w);
+                    val = val + digs;
+                    if digs.size == w {
+                        this.check_esc_cp(e, w, Lexer.hex_str_val(digs), true);
+                    }
                 }
             } else {
                 val = val + c;
             }
         }
 
+        // EOF without closing """.
+        if !this.quiet {
+            show("error: Unterminated multi-line string literal: missing closing \"\"\".");
+        }
+        this.errs = this.errs + 1;
         return Token.make(Tok.STRING, val, start_line, start_col);
     }
 
@@ -298,40 +626,64 @@ pub def Lexer : class {
         start_line: int = this.line;
         start_col: int = this.col;
         this.advance(); // consume opening '
-        val: string = "";
+        raw: string = "";
+        count: int = 0;
 
-        if this.peek() != '\'' && this.peek() != '\0' {
-            c: char = this.advance();
-            if c == '\\' {
-                esc: char = this.advance();
-                if esc == 'n' { val = val + '\n'; }
-                also esc == 't' { val = val + '\t'; }
-                also esc == 'r' { val = val + '\r'; }
-                also esc == 'a' { val = val + '\a'; }
-                also esc == 'b' { val = val + '\b'; }
-                also esc == 'f' { val = val + '\f'; }
-                also esc == 'v' { val = val + '\v'; }
-                also esc == '\\' { val = val + '\\'; }
-                also esc == '\'' { val = val + '\''; }
-                also esc == '0' { val = val + "\\0"; }
-                also esc == 'x' {
-                    // \xHH stays as raw text; the parser decodes it like \0
-                    val = val + '\\';
-                    val = val + 'x';
-                    val = val + this.advance();
-                    val = val + this.advance();
+        loop {
+            c: char = this.peek();
+            if c == '\'' {
+                this.advance(); // consume closing '
+                stop;
+            }
+            if c == '\n' || c == '\0' {
+                if !this.quiet {
+                    show("error: Unterminated or malformed character literal.");
                 }
-                else { val = val + esc; }
+                this.errs = this.errs + 1;
+                return Token.make(Tok.CHAR, raw, start_line, start_col);
+            }
+            if c == '\\' {
+                raw = raw + this.advance();
+                e: char = this.peek();
+                if e == '\n' || e == '\0' {
+                    if !this.quiet {
+                        show("error: Unterminated or malformed character literal.");
+                    }
+                    this.errs = this.errs + 1;
+                    return Token.make(Tok.CHAR, raw, start_line, start_col);
+                }
+                raw = raw + this.advance();
+                if Lexer.is_simple_esc(e) {
+                    count = count + 1;
+                } also e == 'x' || e == 'u' || e == 'U' {
+                    w: int = 2;
+                    if e == 'u' { w = 4; }
+                    if e == 'U' { w = 8; }
+                    digs: string = this.scan_esc_digits(e, w);
+                    raw = raw + digs;
+                    if digs.size == w {
+                        this.check_esc_cp(e, w, Lexer.hex_str_val(digs), false);
+                        count = count + 1;
+                    } else {
+                        count = count + 2;
+                    }
+                } else {
+                    // Unknown escapes keep the backslash: two characters.
+                    count = count + 2;
+                }
             } else {
-                val = val + c;
+                raw = raw + this.advance();
+                count = count + 1;
             }
         }
 
-        if this.peek() == '\'' {
-            this.advance(); // consume closing '
+        if count != 1 {
+            if !this.quiet {
+                show("error: Character literal must contain exactly one character (found ", count, ").");
+            }
+            this.errs = this.errs + 1;
         }
-
-        return Token.make(Tok.CHAR, val, start_line, start_col);
+        return Token.make(Tok.CHAR, raw, start_line, start_col);
     }
 
     pub fnc tokenize() : vec<Token> {
@@ -364,16 +716,20 @@ pub def Lexer : class {
             // String
             if c == '"' {
                 if this.peek_at(1) == '"' && this.peek_at(2) == '"' {
-                    tokens.pushb(this.read_multiline_string());
+                    tokens.pushb(this.read_multiline_string('"'));
                 } else {
                     tokens.pushb(this.read_string());
                 }
                 continue;
             }
 
-            // Char
+            // Char (`'''` opens a multi-line string only when it closes)
             if c == '\'' {
-                tokens.pushb(this.read_char());
+                if this.peek_at(1) == '\'' && this.peek_at(2) == '\'' && this.has_closing_triple('\'') {
+                    tokens.pushb(this.read_multiline_string('\''));
+                } else {
+                    tokens.pushb(this.read_char());
+                }
                 continue;
             }
 

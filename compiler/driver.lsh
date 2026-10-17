@@ -625,6 +625,30 @@ pub def CompilerDriver : class {
         return false;
     }
 
+    // Refuse to write through a planted symlink: `open(path, "w")` and
+    // clang's `-o` truncate whatever the link points at, so a cloned repo
+    // could clobber files outside it (python _safe_write_bytes parity).
+    pub fnc refuse_symlink_output(p string) : bool {
+        if p.size == 0 { return false; }
+        q: string = "'";
+        qi: int = 0;
+        while qi < p.size {
+            if p[qi] == '\'' {
+                q = q + "'\\''";
+            } else {
+                q = q + p[qi];
+            }
+            qi = qi + 1;
+        }
+        q = q + "'";
+        hit: string = exec("test -L " + q + " && echo 1", "wait");
+        if hit.size > 0 {
+            show("error: refusing to write '", p, "': it is a symlink");
+            return true;
+        }
+        return false;
+    }
+
     pub fnc exec_code(cmd string) : string {
         // Python-compiled exec("x","code") returns "N\n"; self-hosted returns "N".
         // "code" mode drains output silently, so on failure the command is
@@ -865,6 +889,7 @@ pub def CompilerDriver : class {
 
         if emit_llvm {
             ll_path: string = out_bin + ".ll";
+            if this.refuse_symlink_output(ll_path) { return 1; }
             f_ll: File = File.open(ll_path, "w");
             if f_ll == null {
                 show("error: cannot write to '", ll_path, "'");
@@ -1001,6 +1026,10 @@ pub def CompilerDriver : class {
             if out_bin[wi] == '.' && out_bin[wi + 1] == 'e' && out_bin[wi + 2] == 'x' && out_bin[wi + 3] == 'e' { win_sfx = false; }
             if win_sfx { out_bin = out_bin + ".exe"; }
         }
+
+        // Refuse to write the final artifact through a planted symlink
+        // (python's _safe_write_bytes guard for `-o` targets).
+        if this.refuse_symlink_output(out_bin) { return 1; }
 
         // Link flags vary by target (Python's targets.py). rsp form rides in
         // a response file; inline form is the no-rsp fallback.

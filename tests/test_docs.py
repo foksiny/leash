@@ -54,9 +54,7 @@ def extract_snippets(path):
 
 def compiler_cmd():
     compiler = os.environ.get("LEASHC", os.path.join(ROOT, "bin", "leashc"))
-    if os.path.exists(compiler):
-        return [compiler]
-    return [sys.executable, "-m", "leash.cli"]
+    return [compiler]
 
 
 def check_snippet(code):

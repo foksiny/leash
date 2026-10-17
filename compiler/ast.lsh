@@ -179,6 +179,7 @@ pub def Stmt : class {
     pub default_block: vec<Stmt>;
     pub line: int;
     pub col: int;
+    pub show_end: string;   // show(...)'s trailing text (python node.end)
 
     static pub fnc make_var_decl(name string, typ string, is_infer bool, is_imut bool, init Expr) : Stmt {
         s: Stmt = Stmt { kind: StmtKind.VAR_DECL, name: name, var_type: typ, is_infer: is_infer, is_imut: is_imut, op: "", target: null, value: init, cond: null, for_init: null, for_step: null, is_showb: false };
@@ -241,7 +242,7 @@ pub def Stmt : class {
     }
 
     static pub fnc make_show(args vec<Expr>, is_showb bool) : Stmt {
-        s: Stmt = Stmt { kind: StmtKind.SHOW, name: "", var_type: "", is_infer: false, is_imut: false, op: "", target: null, value: null, cond: null, args: args, for_init: null, for_step: null, is_showb: is_showb };
+        s: Stmt = Stmt { kind: StmtKind.SHOW, name: "", var_type: "", is_infer: false, is_imut: false, op: "", target: null, value: null, cond: null, args: args, for_init: null, for_step: null, is_showb: is_showb, show_end: "\n" };
         return s;
     }
 

@@ -13,7 +13,6 @@ import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BIN_LEASHC = os.path.join(ROOT, "bin", "leashc")
-PYTHON_CLI = ["python3", "-m", "leash.cli"]
 
 FUSION_SPIN = """\
 fusion out: int = 0;
@@ -174,14 +173,9 @@ class TestConcurrency(unittest.TestCase):
         self.assertEqual(
             self._compile_and_run([BIN_LEASHC], FUSION_SPIN, "fuspin"), "42\n")
 
-    def test_fusion_spinwait_python(self):
+    def test_fusion_counter_ops(self):
         self.assertEqual(
-            self._compile_and_run(PYTHON_CLI, FUSION_SPIN, "fuspin_py"), "42\n")
-
-    def test_fusion_counter_parity(self):
-        self.assertEqual(
-            self._compile_and_run([BIN_LEASHC], FUSION_COUNTER, "fuscnt"),
-            self._compile_and_run(PYTHON_CLI, FUSION_COUNTER, "fuscnt_py"))
+            self._compile_and_run([BIN_LEASHC], FUSION_COUNTER, "fuscnt"), "5\n")
 
     def test_shared_single_writer(self):
         self.assertEqual(
@@ -189,40 +183,28 @@ class TestConcurrency(unittest.TestCase):
             "42\n")
 
     def test_shared_two_writers_rejected(self):
-        for compiler in ([BIN_LEASHC], PYTHON_CLI):
-            src = self._write("shtwo", SHARED_TWO_WRITERS)
-            r = self._compile(compiler, src, os.path.join(self.tmp, "shtwo_bin"))
-            self.assertNotEqual(r.returncode, 0,
-                                msg=f"{compiler[0]} accepted two writers")
-            self.assertIn("shared variable", r.stdout + r.stderr)
+        src = self._write("shtwo", SHARED_TWO_WRITERS)
+        r = self._compile([BIN_LEASHC], src, os.path.join(self.tmp, "shtwo_bin"))
+        self.assertNotEqual(r.returncode, 0,
+                            msg="compiler accepted two writers")
+        self.assertIn("shared variable", r.stdout + r.stderr)
 
     def test_index_stores(self):
         self.assertEqual(
             self._compile_and_run([BIN_LEASHC], INDEX_STORES, "idxstores"),
             EXPECTED_INDEX)
 
-    def test_index_stores_python_parity(self):
-        self.assertEqual(
-            self._compile_and_run([BIN_LEASHC], INDEX_STORES, "idxst2"),
-            self._compile_and_run(PYTHON_CLI, INDEX_STORES, "idxst2_py"))
-
     def test_string_index_rejected(self):
-        for compiler in ([BIN_LEASHC], PYTHON_CLI):
-            src = self._write("stridx", STRING_INDEX_REJECT)
-            r = self._compile(compiler, src, os.path.join(self.tmp, "stridx_bin"))
-            self.assertNotEqual(r.returncode, 0,
-                                msg=f"{compiler[0]} accepted string store")
-            self.assertIn("mmutable", r.stdout + r.stderr)
+        src = self._write("stridx", STRING_INDEX_REJECT)
+        r = self._compile([BIN_LEASHC], src, os.path.join(self.tmp, "stridx_bin"))
+        self.assertNotEqual(r.returncode, 0,
+                            msg="compiler accepted string store")
+        self.assertIn("mmutable", r.stdout + r.stderr)
 
     def test_incdec(self):
         self.assertEqual(
             self._compile_and_run([BIN_LEASHC], INCDEC, "incdec"),
             EXPECTED_INCDEC)
-
-    def test_incdec_python_parity(self):
-        self.assertEqual(
-            self._compile_and_run([BIN_LEASHC], INCDEC, "incdec2"),
-            self._compile_and_run(PYTHON_CLI, INCDEC, "incdec2_py"))
 
 
 if __name__ == "__main__":
