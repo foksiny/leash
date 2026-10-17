@@ -3636,6 +3636,14 @@ pub def CodeGen : class {
                     this.af_track(res);
                     return res;
                 }
+                if atyp == "uint" {
+                    uz: string = this.new_reg();
+                    this.emit("  " + uz + " = zext i32 " + aval + " to i64");
+                    res: string = this.new_reg();
+                    this.emit("  " + res + " = call i8* @leash_uint_to_str(i64 " + uz + ")");
+                    this.af_track(res);
+                    return res;
+                }
                 if atyp == "char" {
                     ext: string = this.new_reg();
                     this.emit("  " + ext + " = zext i8 " + aval + " to i64");
