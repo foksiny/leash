@@ -22,6 +22,7 @@ import tempfile
 import unittest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BIN_LEASHC = os.path.join(REPO_ROOT, "bin", "leashc")
 sys.path.insert(0, REPO_ROOT)
 
 from leash.ast_nodes import (  # noqa: E402
@@ -152,7 +153,7 @@ class _CompileRunBase(unittest.TestCase):
             with open(src, "w") as f:
                 f.write(source)
             build = subprocess.run(
-                [sys.executable, "-m", "leash.cli", "compile", src, "to", exe],
+                [BIN_LEASHC, "compile", src, "to", exe],
                 cwd=REPO_ROOT, capture_output=True, text=True, timeout=timeout,
             )
             self.assertEqual(
@@ -284,7 +285,7 @@ class TestPhase3bRegressions(_CompileRunBase):
             with open(src_path, "w") as f:
                 f.write(source)
             build = subprocess.run(
-                [sys.executable, "-m", "leash.cli", "compile", src_path, "to", exe],
+                [BIN_LEASHC, "compile", src_path, "to", exe],
                 cwd=REPO_ROOT, capture_output=True, text=True, timeout=timeout,
             )
             self.assertNotEqual(
@@ -301,7 +302,7 @@ class TestPhase3bRegressions(_CompileRunBase):
             with open(src_path, "w") as f:
                 f.write(source)
             build = subprocess.run(
-                [sys.executable, "-m", "leash.cli", "compile", src_path, "to", exe],
+                [BIN_LEASHC, "compile", src_path, "to", exe],
                 cwd=REPO_ROOT, capture_output=True, text=True, timeout=timeout,
             )
             self.assertEqual(

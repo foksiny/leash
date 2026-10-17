@@ -112,6 +112,19 @@ pub def TypeChecker : class {
     pub classes: hash<string, ClassInfo>;      // name -> class info
     pub enums: hash<string, bool>;              // name -> true
     pub scopes: vec<hash<string, string>>;      // local variable scopes
+    // Constant propagation for the static div/mod checks (python
+    // _constant_propagation parity, restricted to plain read-only int
+    // variables): entries live on a stack truncated at scope exit.
+    pub const_modified: hash<string, bool>;     // names assigned anywhere
+    pub const_lnames: vec<string>;
+    pub const_lvals: vec<int<64>>;
+    pub const_marks: vec<int>;                  // const_lnames watermark per scope
+    // The propagated-divisor/overflow statics mirror python's LLVM codegen
+    // (the only backend with those rules). The JVM backend emits runtime
+    // guards instead; the driver turns these off for --target jvm.
+    pub propagated_checks_enabled: bool;
+    pub fold_val: int<64>;                      // fold_const_int result
+    pub fold_ok: bool;
     pub errors: vec<string>;
     pub current_func_ret: string;
     pub works_error: string;                   // captured works-block error message
@@ -156,7 +169,7 @@ pub def TypeChecker : class {
     pub in_unsafe_func: bool;                      // inside an `unsafe fnc` (pointer math gate)
 
     static pub fnc make() : TypeChecker {
-        tc: TypeChecker = TypeChecker { current_func_ret: "void", works_error: "", fatal_idx: -1, current_func_name: "<global>", in_unsafe_func: false };
+        tc: TypeChecker = TypeChecker { current_func_ret: "void", works_error: "", fatal_idx: -1, current_func_name: "<global>", in_unsafe_func: false, propagated_checks_enabled: true };
         empty_shared: hash<string, bool>;
         tc.shared_globals = empty_shared;
         empty_writers: hash<string, string>;
@@ -350,11 +363,22 @@ pub def TypeChecker : class {
     pub fnc enter_scope() : void {
         s: hash<string, string>;
         this.scopes.pushb(s);
+        this.const_marks.pushb(this.const_lnames.size);
     }
 
     pub fnc exit_scope() : void {
         if this.scopes.size > 0 {
             this.scopes.popb();
+        }
+        // Drop const entries declared in this scope (shadowing discipline):
+        // after the block ends, outer-scope uses must see the outer value.
+        if this.const_marks.size > 0 {
+            mark: int = this.const_marks.get(this.const_marks.size - 1);
+            this.const_marks.popb();
+            while this.const_lnames.size > mark {
+                this.const_lnames.popb();
+                this.const_lvals.popb();
+            }
         }
     }
 
@@ -367,6 +391,226 @@ pub def TypeChecker : class {
         } else {
             this.globals.push(name, typ);
         }
+    }
+
+    // Wrap v into the signed range of a w-bit two's-complement integer.
+    pub fnc wrap_bits(v int<64>, w int) : int<64> {
+        if w >= 64 { return v; }
+        hs: int<64> = 1;
+        hi: int = 0;
+        while hi < w { hs = hs * 2; hi = hi + 1; }
+        half: int<64> = hs / 2;
+        m: int<64> = v % hs;
+        if m < 0 { m = m + hs; }
+        if m >= half { m = m - hs; }
+        return m;
+    }
+
+    // Parse a decimal digit string into fold_val (python parity: raw
+    // literals carry their text in sval; ival is pre-wrap garbage for
+    // anything beyond int input ranges). Overflow past int<64> sets
+    // fold_ok=false instead of wrapping silently.
+    pub fnc parse_digits_safe(s string, w int) : void {
+        this.fold_ok = false;
+        // Optional sign: the parser can fuse `-<digits>` into a single
+        // INT literal whose sval keeps the minus.
+        neg: bool = false;
+        si: int = 0;
+        if s.size > 0 && (s[0] == '-' || s[0] == '+') {
+            if s[0] == '-' { neg = true; }
+            si = 1;
+        }
+        v: int<64> = 0;
+        i: int = si;
+        while i < s.size {
+            if s[i] < '0' || s[i] > '9' { return; }
+            d: int = s[i] - '0';
+            if v > 922337203685477580 { return; }
+            if v == 922337203685477580 && d > 7 { return; }
+            v = v * 10 + d;
+            i = i + 1;
+        }
+        if neg { v = 0 - v; }
+        this.fold_val = this.wrap_bits(v, w);
+        this.fold_ok = true;
+    }
+
+    // Fold e into a w-bit signed constant (INT literals, unary -/+/~,
+    // and + - * / % over them). Sets fold_ok/fold_val.
+    pub fnc fold_const_int(e Expr, w int) : void {
+        this.fold_ok = false;
+        if e == null { return; }
+        if e.kind == ExprKind.INT {
+            if e.sval.size > 0 {
+                // *2147483648*-style raw literal: parse the text; values
+                // beyond int<64> refuse to fold (python keeps those as
+                // text too — they must not wrap silently).
+                this.parse_digits_safe(e.sval, w);
+                return;
+            }
+            this.fold_val = this.wrap_bits(e.ival, w);
+            this.fold_ok = true;
+            return;
+        }
+        if e.kind == ExprKind.UNARY {
+            this.fold_const_int(e.left, w);
+            if !this.fold_ok { return; }
+            if e.op == "-" {
+                this.fold_val = this.wrap_bits(0 - this.fold_val, w);
+                this.fold_ok = true;
+                return;
+            }
+            if e.op == "+" { this.fold_ok = true; return; }
+            if e.op == "~" {
+                this.fold_val = this.wrap_bits(-1 - this.fold_val, w);
+                this.fold_ok = true;
+                return;
+            }
+            return;
+        }
+        if e.kind == ExprKind.BINOP {
+            this.fold_const_int(e.left, w);
+            if !this.fold_ok { return; }
+            lv: int<64> = this.fold_val;
+            this.fold_const_int(e.right, w);
+            if !this.fold_ok { return; }
+            rv: int<64> = this.fold_val;
+            if e.op == "+" { this.fold_val = this.wrap_bits(lv + rv, w); this.fold_ok = true; return; }
+            if e.op == "-" { this.fold_val = this.wrap_bits(lv - rv, w); this.fold_ok = true; return; }
+            if e.op == "*" { this.fold_val = this.wrap_bits(lv * rv, w); this.fold_ok = true; return; }
+            if e.op == "/" && rv != 0 { this.fold_val = this.wrap_bits(lv / rv, w); this.fold_ok = true; return; }
+            if e.op == "%" && rv != 0 { this.fold_val = this.wrap_bits(lv % rv, w); this.fold_ok = true; return; }
+            return;
+        }
+    }
+
+    // Value of e as a w-bit constant when it is an INT literal or a
+    // propagated const variable (python _constant_propagation parity).
+    pub fnc const_val_of(e Expr, w int) : void {
+        this.fold_ok = false;
+        if e == null { return; }
+        if e.kind == ExprKind.INT {
+            if e.sval.size > 0 {
+                this.parse_digits_safe(e.sval, w);
+                return;
+            }
+            this.fold_val = this.wrap_bits(e.ival, w);
+            this.fold_ok = true;
+            return;
+        }
+        if e.kind == ExprKind.IDENT && e.sval.size > 0 {
+            i: int = this.const_lnames.size - 1;
+            while i >= 0 {
+                if this.const_lnames.get(i) == e.sval {
+                    this.fold_val = this.wrap_bits(this.const_lvals.get(i), w);
+                    this.fold_ok = true;
+                    return;
+                }
+                i = i - 1;
+            }
+            // Re-fold the declared initializer if tracked through UNARY
+            // chains: also check through an alias-like second chance — a
+            // remembered int-var that failed the literal test above.
+            return;
+        }
+        this.fold_const_int(e, w);
+    }
+
+    // Record a read-only int variable as a compile-time constant
+    // (python _constant_propagation parity). Called from VAR_DECL
+    // checking when the initializer is a foldable integer expression.
+    pub fnc record_const_candidate(name string, typ string, e Expr) : void {
+        if name.size == 0 || e == null { return; }
+        if this.const_modified.isin(name) { return; }
+        bt: string = this.strip_imut(this.resolve_type_alias(typ));
+        if !this.is_sized_int_type_name(bt) { return; }
+        w: int = this.int_bits_of_name(bt);
+        if w <= 0 || w > 64 { return; }
+        this.fold_const_int(e, w);
+        if !this.fold_ok { return; }
+        this.const_lnames.pushb(name);
+        this.const_lvals.pushb(this.fold_val);
+    }
+
+    // Bit width of an int/uint type spelling (0 for non-int types).
+    pub fnc int_bits_of_name(t string) : int {
+        if t.size > 5 && t[0] == 'i' && t[1] == 'n' && t[2] == 't' && t[3] == '<' && t[t.size - 1] == '>' {
+            return this.parse_small_int(this.str_slice(t, 4, t.size - 1));
+        }
+        if t.size > 6 && t[0] == 'u' && t[1] == 'i' && t[2] == 'n' && t[3] == 't' && t[4] == '<' && t[t.size - 1] == '>' {
+            return this.parse_small_int(this.str_slice(t, 5, t.size - 1));
+        }
+        if t == "int" || t == "uint" { return 32; }
+        return 0;
+    }
+
+    pub fnc is_sized_int_type_name(t string) : bool {
+        return this.int_bits_of_name(t) > 0;
+    }
+
+    // Descend an expression marking names that are written through it
+    // (assignment targets, ++/-- operands). Conservative:
+    // any IDENT reachable in the target expression disqualifies that
+    // name as a constant-propagation candidate.
+    pub fnc collect_modified_names_expr(e Expr) : void {
+        if e == null { return; }
+        if e.kind == ExprKind.IDENT {
+            this.const_modified.push(e.sval, true);
+            return;
+        }
+        this.collect_modified_names_expr(e.left);
+        this.collect_modified_names_expr(e.right);
+        if e.args.size > 0 {
+            foreach _, a in<vector> e.args { this.collect_modified_names_expr(a); }
+        }
+    }
+
+    pub fnc collect_modified_names_stmt(s Stmt) : void {
+        if s == null { return; }
+        if s.kind == StmtKind.ASSIGN {
+            this.collect_modified_names_expr(s.target);
+            return;
+        }
+        if s.kind == StmtKind.EXPR {
+            this.collect_modified_names_expr(s.value);
+            return;
+        }
+        if s.kind == StmtKind.IF {
+            foreach _, st in<vector> s.then_block { this.collect_modified_names_stmt(st); }
+            foreach _, se in<vector> s.else_block { this.collect_modified_names_stmt(se); }
+            return;
+        }
+        if s.kind == StmtKind.WHILE || s.kind == StmtKind.LOOP || s.kind == StmtKind.BLOCK || s.kind == StmtKind.DEFER {
+            foreach _, st in<vector> s.body { this.collect_modified_names_stmt(st); }
+            return;
+        }
+        if s.kind == StmtKind.FOR {
+            if s.for_init != null { this.collect_modified_names_stmt(s.for_init); }
+            if s.for_step != null { this.collect_modified_names_stmt(s.for_step); }
+            foreach _, st in<vector> s.body { this.collect_modified_names_stmt(st); }
+            return;
+        }
+        if s.kind == StmtKind.FOREACH_STRUCT {
+            this.const_modified.push(s.name, true);
+            this.const_modified.push(s.var_type, true);
+            foreach _, st in<vector> s.body { this.collect_modified_names_stmt(st); }
+            return;
+        }
+        if s.kind == StmtKind.SWITCH {
+            foreach _, c in<vector> s.switch_cases {
+                foreach _, cs in<vector> c.body { this.collect_modified_names_stmt(cs); }
+            }
+            foreach _, ds in<vector> s.default_block { this.collect_modified_names_stmt(ds); }
+            return;
+        }
+        if s.kind == StmtKind.WORKS {
+            foreach _, st in<vector> s.body { this.collect_modified_names_stmt(st); }
+            return;
+        }
+    }
+
+    pub fnc collect_modified_names_list(body vec<Stmt>) : void {
+        foreach _, st in<vector> body { this.collect_modified_names_stmt(st); }
     }
 
     pub fnc lookup_var(name string) : string {
@@ -1694,6 +1938,41 @@ pub def TypeChecker : class {
                         this.errors.pushb("Modulo by zero detected statically!");
                     }
                 }
+                // Constant propagation (python _constant_propagation +
+                // codegen static-check parity): divisors and operands
+                // that fold to constants are validated here.
+                lw2: int = this.int_bits_of_name(this.strip_imut(this.strip_ref(this.resolve_type_alias(lt_full))));
+                if lw2 > 0 && this.propagated_checks_enabled {
+                    this.const_val_of(e.right, lw2);
+                    if this.fold_ok && this.fold_val == 0 {
+                        // python's propagated check is shared by / and %.
+                        this.errors.pushb("Division by zero detected statically (constant-propagated divisor).");
+                    }
+                    this.const_val_of(e.left, lw2);
+                    if this.fold_ok {
+                        lv2: int<64> = this.fold_val;
+                        this.const_val_of(e.right, lw2);
+                        if this.fold_ok {
+                            // INT_MIN at this width (repeated doubling keeps
+                            // the arithmetic inside int<64>; at width 64 the
+                            // overflow wraps to the same value).
+                            mn2: int<64> = 1;
+                            mi3: int = 0;
+                            while mi3 < lw2 - 1 { mn2 = mn2 * 2; mi3 = mi3 + 1; }
+                            mn2 = 0 - mn2;
+                            if lv2 == mn2 && this.fold_val == -1 {
+                                // Unsigned types have no INT_MIN (python
+                                // only checks the signed div path).
+                                usign_chk: string = this.strip_imut(this.strip_ref(this.resolve_type_alias(lt_full)));
+                                if !(usign_chk.size > 4 && usign_chk[0] == 'u') {
+                                    this.errors.pushb("Signed division overflow (INT_MIN / -1) detected statically.");
+                                    this.fatal_idx = this.errors.size - 1;
+                                    return "int";
+                                }
+                            }
+                        }
+                    }
+                }
             }
 
             // Static shift range check (python parity): a constant shift
@@ -2658,6 +2937,7 @@ pub def TypeChecker : class {
                 }
             }
             this.define_var(s.name, var_t);
+            this.record_const_candidate(s.name, var_t, s.value);
             return;
         }
 
@@ -4201,6 +4481,22 @@ pub def TypeChecker : class {
             this.func_param_names.push(fkey, pnames);
             if f.is_async { this.async_funcs.push(fkey, true); }
             if f.is_worker { this.worker_funcs.push(fkey, true); }
+        }
+
+        // Collect program-wide assigned names (python
+        // _collect_all_modified_vars parity): a name assigned ANYWHERE
+        // disqualifies constant propagation everywhere, so later
+        // re-assignments can never make a tracked value stale.
+        cm_clear: hash<string, bool>;
+        this.const_modified = cm_clear;
+        cl_clear: vec<string>;
+        this.const_lnames = cl_clear;
+        cv_clear: vec<int<64>>;
+        this.const_lvals = cv_clear;
+        cmarks_clear: vec<int>;
+        this.const_marks = cmarks_clear;
+        foreach _, f in<vector> prog.funcs {
+            this.collect_modified_names_list(f.body);
         }
 
         // Pass 3: Typecheck function bodies

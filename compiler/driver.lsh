@@ -761,6 +761,9 @@ pub def CompilerDriver : class {
         // Typecheck
         if verbose { show("[verbose] type-checking"); }
         tc: TypeChecker = TypeChecker.make();
+        // JVM backend parity: python's propagated-divisor/overflow statics
+        // live in the LLVM codegen only; the JVM path guards at runtime.
+        if target_name == "jvm" { tc.propagated_checks_enabled = false; }
         tc.check_program(prog);
         // Surface parser-deferred diagnostics (M5 runtime array sizes) as
         // regular typecheck errors — both the main file and imports.
