@@ -1682,17 +1682,20 @@ pub def TypeChecker : class {
             if e.kind == ExprKind.BINOP && (e.op == "<<" || e.op == ">>") && e.right != null && e.right.kind == ExprKind.INT {
                 shift_amt: int = e.right.ival;
                 bits: int = 0;
-                signed: bool = true;
-                lt_base: string = this.base_of(this.strip_ref(lt_full));
-                if lt_base == "int" || lt_base == "uint" { bits = 32; }
-                if lt_base == "char" { bits = 8; }
-                if lt_base == "bool" { bits = 1; }
-                if lt_base.size > 5 && lt_base[0] == 'i' && lt_base[1] == 'n' && lt_base[2] == 't' && lt_base[3] == '<' && lt_base[lt_base.size - 1] == '>' {
-                    bits = this.parse_small_int(this.str_slice(lt_base, 4, lt_base.size - 1));
+                // Width detection must run on the FULL type spelling —
+                // base_of strips `uint<128>` to `uint`, which would cap
+                // every sized int at the bare 32-bit default.
+                lt_full_s: string = this.strip_imut(this.strip_ref(this.resolve_type_alias(lt_full)));
+                if lt_full_s.size > 5 && lt_full_s[0] == 'i' && lt_full_s[1] == 'n' && lt_full_s[2] == 't' && lt_full_s[3] == '<' && lt_full_s[lt_full_s.size - 1] == '>' {
+                    bits = this.parse_small_int(this.str_slice(lt_full_s, 4, lt_full_s.size - 1));
                 }
-                if lt_base.size > 6 && lt_base[0] == 'u' && lt_base[1] == 'i' && lt_base[2] == 'n' && lt_base[3] == 't' && lt_base[4] == '<' && lt_base[lt_base.size - 1] == '>' {
-                    bits = this.parse_small_int(this.str_slice(lt_base, 5, lt_base.size - 1));
-                    signed = false;
+                if lt_full_s.size > 6 && lt_full_s[0] == 'u' && lt_full_s[1] == 'i' && lt_full_s[2] == 'n' && lt_full_s[3] == 't' && lt_full_s[4] == '<' && lt_full_s[lt_full_s.size - 1] == '>' {
+                    bits = this.parse_small_int(this.str_slice(lt_full_s, 5, lt_full_s.size - 1));
+                }
+                if bits == 0 {
+                    if lt_full_s == "int" || lt_full_s == "uint" { bits = 32; }
+                    if lt_full_s == "char" { bits = 8; }
+                    if lt_full_s == "bool" { bits = 1; }
                 }
                 if bits > 0 {
                     if shift_amt < 0 {
@@ -2036,11 +2039,25 @@ pub def TypeChecker : class {
             }
             if this.structs.isin(obj_type) {
                 st: StructInfo = this.structs[obj_type];
-                return st.get_field_type(e.sval);
+                sft: string = st.get_field_type(e.sval);
+                if sft.size > 0 { return sft; }
+                // Static struct fields live in the flat static_fields map.
+                if this.static_fields.isin(obj_type + "_" + e.sval) {
+                    return this.static_fields[obj_type + "_" + e.sval];
+                }
+                return sft;
             }
             if this.classes.isin(obj_type) {
                 cl: ClassInfo = this.classes[obj_type];
-                return cl.get_field_type(e.sval);
+                cft: string = cl.get_field_type(e.sval);
+                if cft.size > 0 { return cft; }
+                // Static fields live in the flat static_fields map
+                // (`Class_field`) — the instance layout misses them, so
+                // `this.staticField` inside (static) methods resolves here.
+                if this.static_fields.isin(obj_type + "_" + e.sval) {
+                    return this.static_fields[obj_type + "_" + e.sval];
+                }
+                return cft;
             }
             // Unknown member on a primitive/builtin value type (Python parity).
             mem_base: string = this.base_of(mem_obj_t);
@@ -3547,6 +3564,13 @@ pub def TypeChecker : class {
             this.current_func_name = fkey2;
             this.enter_scope();
 
+            // Register 'this' for struct-attached functions (`-> Type`):
+            // the receiver is the struct instance (python parity — without
+            // this, `this.field` inside a struct fnc inferred as int).
+            if f.owner.size > 0 && this.structs.isin(f.owner) {
+                this.define_var("this", f.owner);
+            }
+
             // Bind parameters; arrays passed without '&' alias the caller's
             // storage and are read-only borrows inside the callee
             rb_clear: vec<string>;
@@ -3575,9 +3599,10 @@ pub def TypeChecker : class {
                 this.current_func_ret = this.resolve_type_alias(m.ret_type);
                 this.current_func_name = c.name + "_" + m.name;
                 this.enter_scope();
-                if !m.is_static {
-                    this.define_var("this", c.name);
-                }
+                // Always add 'this', even for static methods — python
+                // parity: class-level access (`this.staticField`) inside
+                // static methods relies on it.
+                this.define_var("this", c.name);
                 foreach _, p in<vector> m.params {
                     this.define_var(p.name, this.resolve_type_alias(p.typ));
                 }

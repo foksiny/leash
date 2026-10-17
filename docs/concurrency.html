@@ -82,6 +82,7 @@
 <p>Mark a function with <code>worker fnc</code> instead of <code>fnc</code> to make it runnable in its own OS thread. Workers are declared just like regular functions but with the <code>worker</code> keyword, accept parameters normally, and typically run in an infinite loop &mdash; checking <code>thisworker.interrupted</code> to know when the program is shutting down.</p>
 
 <pre><code><span class="kw">worker</span> <span class="kw">fnc</span> <span class="fn">calculate</span>(a <span class="kw">int</span>, b <span class="kw">int</span>) {
+    result: <span class="kw">int</span> = 0;
     <span class="kw">while</span> !thisworker.interrupted {
         result = a + b + result;
         <span class="fn">show</span>(<span class="str">"calculate updated result to: "</span>, result);

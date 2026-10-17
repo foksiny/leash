@@ -2477,6 +2477,7 @@ pub def Parser : class {
         while !this.check(Tok.RBRACE) && !this.check(Tok.EOF) {
             is_pub: bool = true;
             is_static: bool = false;
+            is_imut_m: bool = false;
 
             loop {
                 if this.match_tok(Tok.STATIC) { is_static = true; }
@@ -2486,13 +2487,18 @@ pub def Parser : class {
                 also this.match_tok(Tok.NOGC) { this.mod_nogc = true; }
                 also this.match_tok(Tok.INLINE) { this.mod_inline = true; }
                 also this.match_tok(Tok.ASYNC) { this.mod_async = true; }
+                also this.match_tok(Tok.IMUT) { is_imut_m = true; }
                 else { stop; }
             }
 
             if this.check(Tok.FNC) {
-                methods.pushb(this.parse_function(is_static, is_pub));
+                m_fd: FuncDecl = this.parse_function(is_static, is_pub);
+                m_fd.is_imut = is_imut_m;
+                methods.pushb(m_fd);
             } also this.check(Tok.IDENT) && this.peek(1).kind == Tok.LPAREN {
-                methods.pushb(this.parse_method_nofn(is_static, is_pub));
+                m_nf: FuncDecl = this.parse_method_nofn(is_static, is_pub);
+                m_nf.is_imut = is_imut_m;
+                methods.pushb(m_nf);
             } else {
                 fname: Token = this.consume_member_name("expected field or method in class");
                 this.consume(Tok.COLON, "expected ':' after field name");

@@ -233,11 +233,13 @@ result: <span class="kw">string</span> = x &gt; 3 ? <span class="str">"big"</spa
 <pre><code><span class="kw">fnc</span> <span class="fn">add</span>(a <span class="kw">int</span>, b <span class="kw">int</span>, c <span class="kw">int</span> = 0) : <span class="kw">int</span> {
     <span class="kw">return</span> a + b + c;
 }
-<span class="fn">show</span>(add(10, 20));       <span class="cm">// 30 (uses c=0)</span>
-<span class="fn">show</span>(add(10, 20, 30));   <span class="cm">// 60</span>
+<span class="kw">fnc</span> <span class="fn">main</span>() {
+    <span class="fn">show</span>(add(10, 20));       <span class="cm">// 30 (uses c=0)</span>
+    <span class="fn">show</span>(add(10, 20, 30));   <span class="cm">// 60</span>
+}
 
 <span class="cm">// Valid: required before optional</span>
-<span class="kw">fnc</span> <span class="fn">valid</span>(a <span class="kw">int</span>, b <span class="kw">int</span> = 1, c <span class="kw">int</span> = 2) : <span class="kw">int</span> { ... }
+<span class="kw">fnc</span> <span class="fn">valid</span>(a <span class="kw">int</span>, b <span class="kw">int</span> = 1, c <span class="kw">int</span> = 2) : <span class="kw">int</span> { <span class="kw">return</span> a + b + c; }
 
 <span class="cm">// Invalid: compile error</span>
 <span class="cm">// fnc invalid(a int = 1, b int) : int { ... }</span></code></pre>
@@ -245,11 +247,13 @@ result: <span class="kw">string</span> = x &gt; 3 ? <span class="str">"big"</spa
 <h3>Named Arguments</h3>
 <p>When calling a function, you can specify arguments by name using the <code>name=value</code> syntax. This is especially useful when a function has many parameters with default values and you want to skip some optional parameters while specifying others.</p>
 
-<pre><code><span class="kw">fnc</span> <span class="fn">math</span>(a <span class="kw">int</span> = 1, b <span class="kw">int</span> = 2, typ <span class="kw">int</span> = 0) : <span class="kw">int</span> { ... }
+<pre><code><span class="kw">fnc</span> <span class="fn">math</span>(a <span class="kw">int</span> = 1, b <span class="kw">int</span> = 2, typ <span class="kw">int</span> = 0) : <span class="kw">int</span> { <span class="kw">return</span> a + b + typ; }
 
-<span class="fn">show</span>(math());                   <span class="cm">// 3 (all defaults)</span>
-<span class="fn">show</span>(math(10, 20));            <span class="cm">// 30 (positional)</span>
-<span class="fn">show</span>(math(b=20, typ=2));       <span class="cm">// 40 (a=1 default, b=20, typ=2)</span></code></pre>
+<span class="kw">fnc</span> <span class="fn">main</span>() {
+    <span class="fn">show</span>(math());               <span class="cm">// 3 (all defaults)</span>
+    <span class="fn">show</span>(math(10, 20));        <span class="cm">// 30 (positional)</span>
+    <span class="fn">show</span>(math(b=20, typ=2));   <span class="cm">// 23 (a=1 default, b=20, typ=2)</span>
+}</code></pre>
 
 <h3>Command Line Arguments</h3>
 <p>To accept command line arguments, declare <code>main</code> with an <code>args string[]</code> parameter. The built-in <code>show()</code> function makes printing multiple values easy.</p>
@@ -720,10 +724,14 @@ p3: Person = Person { name: <span class="str">"Bob"</span>, age: 30 };   <span c
 
 <h3>Struct Functions</h3>
 <p>Structs can have functions attached using <code>fnc ... -&gt; StructType</code> syntax. The function receives an implicit <code>this</code> pointer with no heap allocation or vtable dispatch.</p>
-<pre><code><span class="kw">fnc</span> <span class="fn">getName</span>() : <span class="kw">string</span> -&gt; Person {
+<pre><code><span class="kw">def</span> Person : <span class="kw">struct</span> { name: <span class="kw">string</span> };
+<span class="kw">fnc</span> <span class="fn">getName</span>() : <span class="kw">string</span> -&gt; Person {
     <span class="kw">return</span> <span class="kw">this</span>.name;
 }
-p.<span class="fn">getName</span>();  <span class="cm">// called on instance</span></code></pre>
+<span class="kw">fnc</span> <span class="fn">main</span>() {
+    p: Person = Person {name: <span class="str">"Ada"</span>};
+    <span class="fn">show</span>(p.<span class="fn">getName</span>());  <span class="cm">// called on instance</span>
+}</code></pre>
 
 <h2>Pointers</h2>
 
@@ -747,13 +755,17 @@ increment(a);  <span class="cm">// passes address automatically</span></code></p
 <span class="fn">show</span>(*(c_str + 4)); <span class="cm">// 'o'</span></code></pre>
 
 <h3>Pointer Member Access (<code>-&gt;</code>)</h3>
-<pre><code><span class="kw">fnc</span> <span class="fn">print_point</span>(p *Point) : <span class="kw">void</span> {
+<pre><code><span class="kw">def</span> Point : <span class="kw">struct</span> { x: <span class="kw">int</span>; y: <span class="kw">int</span> };
+<span class="kw">unsafe</span> <span class="kw">fnc</span> <span class="fn">print_point</span>(p *Point) : <span class="kw">void</span> {
     <span class="fn">show</span>(p-&gt;x);
     <span class="fn">show</span>(p-&gt;y);
 }
 
-pt: Point = Point {x: 10, y: 20};
-print_point(&amp;pt);</code></pre>
+<span class="kw">unsafe</span> <span class="kw">fnc</span> <span class="fn">main</span>() {
+    pt: Point = Point {x: 10, y: 20};
+    pp: *Point = &amp;pt;
+    <span class="fn">print_point</span>(pp);
+}</code></pre>
 
 <h3>Generic Pointer Syntax (<code>pointer&lt;T&gt;</code>)</h3>
 <p>Leash supports a generic pointer syntax <code>pointer&lt;T&gt;</code> as an alternative to <code>*T</code>, particularly useful in complex generic types. It is canonicalized to <code>*T</code> at parse time, so both forms are interchangeable.</p>
@@ -1083,7 +1095,9 @@ d = (Dog)a2;                           <span class="cm">// downcast (explicit)</
 
 <h4>Preventing Overrides with <code>imut</code></h4>
 <p>Use <code>imut</code> before <code>fnc</code> to make a method non-overridable by subclasses, ensuring consistent behavior for critical operations.</p>
-<pre><code><span class="kw">pub</span> <span class="kw">imut</span> <span class="kw">fnc</span> <span class="fn">talk</span>() : <span class="kw">void</span> { ... }  <span class="cm">// cannot be overridden</span></code></pre>
+<pre><code><span class="kw">def</span> Animal : <span class="kw">class</span> {
+    <span class="kw">pub</span> <span class="kw">imut</span> <span class="kw">fnc</span> <span class="fn">talk</span>() : <span class="kw">void</span> { <span class="fn">show</span>(<span class="str">"..."</span>); }  <span class="cm">// cannot be overridden</span>
+};</code></pre>
 
 <h3>Class-Based Entry Points</h3>
 <p>Instead of a top-level <code>fnc main()</code>, you can define a class named <code>Main</code> with a <code>static fnc main</code> method. The compiler detects this and generates the appropriate <code>main</code> wrapper automatically.</p>
