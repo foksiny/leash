@@ -7,13 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [1.6.0] - 2026-10-18
 
+### Removed
+- The last Python in the repository. The package-manager reference
+  `leash/leashed.py` (and `leash/__init__.py` / `leash/native/`) is gone,
+  so `leash/` now contains only the compiler's C runtime (`gc.c`, `gc.h`,
+  `cross_compile_stubs.c`, `windows_stubs.c`). The `leash pkg` port in
+  `compiler/leashed.lsh` is the sole implementation.
+- `tests/test_leashed.py` (which unit-tested the Python reference) is
+  replaced by `tests/test_registry_validator.py` (registry CI checks) and
+  golden-value assertions in `tests/test_pkg.py` captured from the
+  reference before deletion.
+
 ### Added
 - A **Known Limitations** page (`docs/limitations.html`, linked from the
   docs sidebar and the README) that states the platform's deliberate
-  limits with a severity rating: `leash/leashed.py` surviving only as a
-  test oracle, `serve_tls` being POSIX-only (Windows serves h2c), the
-  three `@from`-native stdlib modules (`http`, `httpserver`, `sql`)
-  lacking JVM support, and the absence of HTTP/3 / QUIC.
+  limits with a severity rating: `serve_tls` being POSIX-only (Windows
+  serves h2c), the three `@from`-native stdlib modules (`http`,
+  `httpserver`, `sql`) lacking JVM support, and the absence of HTTP/3 /
+  QUIC.
 
 ### Changed
 - Version bumped to 1.6.0; the cross-target bootstrap seeds are now

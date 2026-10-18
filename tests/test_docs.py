@@ -131,7 +131,10 @@ class TestDocs(unittest.TestCase):
         # package-manager.html documents machine-checked contracts (the
         # leash.lock shape, the --version output), so it gets its own
         # assertions: docs drift here used to go unnoticed.
-        from leash import leashed as leashed_mod
+        # These constants mirror compiler/leashed.lsh (and `leash pkg
+        # --version`); the Python reference oracle has been removed.
+        LOCKFILE_VERSION = 1
+        LEASHED_VERSION = "0.5.0"
 
         with open(os.path.join(DOCS, "package-manager.html"),
                   encoding="utf-8", errors="replace") as fh:
@@ -147,7 +150,7 @@ class TestDocs(unittest.TestCase):
         self.assertTrue(lock_blocks, "leash.lock example missing from docs")
         import json
         doc = json.loads(re.sub(r"#[^\n]*", "", lock_blocks[0]))
-        self.assertEqual(doc["version"], leashed_mod.LOCKFILE_VERSION)
+        self.assertEqual(doc["version"], LOCKFILE_VERSION)
         self.assertTrue(doc["packages"], "lock example has no packages")
         for pkg_name, entry in doc["packages"].items():
             for field in ("version", "repo", "tag", "rev"):
@@ -157,12 +160,12 @@ class TestDocs(unittest.TestCase):
             self.assertRegex(entry["rev"], r"^[0-9a-f]{40}$")
 
         # 2. The `leash pkg --version` / `leashed --version` examples must
-        # match the protocol version both implementations carry.
+        # match the protocol version the port carries.
         ver_blocks = [b for b in blocks if "leash pkg --version" in b]
         self.assertTrue(ver_blocks, "--version example missing from docs")
         m = re.search(r"# leash pkg v(\d+\.\d+\.\d+)", ver_blocks[0])
         self.assertIsNotNone(m, "--version example output missing from docs")
-        self.assertEqual(m.group(1), leashed_mod.LEASHED_VERSION)
+        self.assertEqual(m.group(1), LEASHED_VERSION)
 
 
 if __name__ == "__main__":

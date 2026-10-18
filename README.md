@@ -16,7 +16,7 @@ The compiler shipped as `leash`/`leashc` is **written in Leash** and builds itse
 
 - `leashc` (alias `leash`) — the **self-hosted compiler**, the whole toolchain natively: `compile`, `run` (file or project), `check`, `dump`, `init`, `build`, `install`, `update`, `pkg` (the package manager), `self-host` (3-stage bootstrap + fixed-point check), and `dbg` (the interactive source-level debugger).
 
-Output parity with the original Python reference compiler is enforced by a frozen corpus: **88/88 example programs compile and run with identical output**.
+Output parity with the original reference compiler is enforced by a frozen corpus: **88/88 example programs compile and run with identical output**.
 
 ## Quick Start
 
@@ -103,7 +103,6 @@ Leash 1.6.0 is a complete, self-hosted toolchain with no Python in the build or 
 
 | Limitation | Severity | Comment |
 |------------|----------|---------|
-| `leashed.py` still exists (test oracle) | 🟢 Low | Acceptable — it's a test, not a toolchain. |
 | `serve_tls` POSIX-only | 🟡 Medium | Windows only serves h2c. Documented. |
 | 3 stdlib modules without JVM | 🟢 Low | `@from` native (sockets/TLS/SQLite) is impossible without a shim. |
 | HTTP/3 / QUIC | 🟢 Low | Not implemented, but nobody expects it in 1.x. |

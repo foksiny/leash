@@ -1350,6 +1350,9 @@ fnc pkg_write_lockfile(names vec<string>, entries vec<PkgLockEntry>) : string {
 
 fnc pkg_validate_index_shape(v PkgJson) : string {
     if v == null || v.kind != 5 { return "expected a JSON object"; }
+    // Reference semantics: a missing "libraries" key defaults to {} (OK);
+    // only a *present* non-object value is malformed.
+    if !pkg_json_has(v, "libraries") { return ""; }
     libs: PkgJson = pkg_json_get(v, "libraries");
     if libs.kind != 5 { return "expected {\"libraries\": {...}}"; }
     return "";

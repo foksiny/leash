@@ -54,11 +54,6 @@
 <table>
     <tr><th>Limitation</th><th>Severity</th><th>Comment</th></tr>
     <tr>
-        <td><code>leashed.py</code> still exists (test oracle)</td>
-        <td>&#128994; Low</td>
-        <td>Acceptable &mdash; it's a test, not a toolchain.</td>
-    </tr>
-    <tr>
         <td><code>serve_tls</code> POSIX-only</td>
         <td>&#128993; Medium</td>
         <td>Windows only serves h2c. Documented.</td>
@@ -74,10 +69,6 @@
         <td>Not implemented, but nobody expects it in 1.x.</td>
     </tr>
 </table>
-
-<h2><code>leashed.py</code> still exists (test oracle)</h2>
-
-<p>The package-manager reference implementation <code>leash/leashed.py</code> is the only remaining Python in the repository. It is <strong>not part of the toolchain</strong>: the shipping <code>leash pkg</code> command is a full native port (see <a href="package-manager.html">Package Manager</a>), and <code>leashed.py</code> is kept solely as a differential-test oracle for <code>tests/test_pkg.py</code> / <code>tests/test_leashed.py</code>. It is never invoked by a normal build, compile, or run.</p>
 
 <h2><code>serve_tls</code> is POSIX-only</h2>
 

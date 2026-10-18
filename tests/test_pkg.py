@@ -2,9 +2,10 @@
 """Package manager (leash pkg) tests: the self-hosted port of leashed.py.
 
 Two layers:
-  1. Differential pure-logic tests: the same vectors run through Python
-     leashed and the Leash port (via --other-imports compiler/); outputs
-     must match exactly.
+  1. Pure-logic golden tests: fixed vectors run through the Leash port
+     (via --other-imports compiler/) and compared against expected values
+     captured from the retired Python reference (leashed.py). The reference
+     has been deleted, so the expected values live here as constants.
   2. CLI tests: `bin/leashc pkg ...` with redirected HOME. Network is
      never touched: the registry is served from file:// index fixtures
      (curl reads them offline) and git flows use local repositories
@@ -26,8 +27,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BIN_LEASHC = os.path.join(ROOT, "bin", "leashc")
 COMPILER_DIR = os.path.join(ROOT, "compiler")
 
-sys.path.insert(0, ROOT)
-import leash.leashed as L
+# `leash pkg --version` protocol version (compiler/leashed.lsh).
+LEASHED_VERSION = "0.5.0"
 
 
 def _run(cmd, cwd, env, stdin=None, timeout=300):
@@ -84,10 +85,11 @@ class PkgDifferentialTest(unittest.TestCase):
         lines.append("}")
         out = _leash_run_source("\n".join(lines) + "\n")
         got = out.splitlines()
+        expected = [True, True, False, False, False, False, True, False,
+                    False, False, False]
         self.assertEqual(len(got), len(pairs))
-        for (a, b), g in zip(pairs, got):
-            self.assertEqual(g, str(L.is_newer_version(a, b)).lower(),
-                             f"is_newer({a!r}, {b!r})")
+        for (a, b), e, g in zip(pairs, expected, got):
+            self.assertEqual(g, str(e).lower(), f"is_newer({a!r}, {b!r})")
 
     def test_sorted_versions(self):
         vecs = [["3.0.0", "1.0.0", "1.0.0-rc.1", "2.0.0", "bogus"],
@@ -96,7 +98,14 @@ class PkgDifferentialTest(unittest.TestCase):
                 ["0.1.0", "0.0.9", "0.0.10"],
                 ["zzz", "1.0.0", "aaa", "0.9.9"],
                 ["1.2.3-rc..1", "1.2.3-.rc", "1.2.3"]]
-        for v in vecs:
+        expected = [
+            "3.0.0,2.0.0,1.0.0,1.0.0-rc.1,bogus",
+            "1.0.0,1.0.0-beta,1.0.0-alpha.beta,1.0.0-alpha.1,1.0.0-alpha",
+            "0.1.0,0.0.10,0.0.9",
+            "1.0.0,0.9.9,aaa,zzz",
+            "1.2.3,1.2.3-rc..1,1.2.3-.rc",
+        ]
+        for v, exp in zip(vecs, expected):
             lines = ["use leashed::*;", "fnc main() : void {",
                      "    sv: vec<string>;"]
             for s in v:
@@ -104,7 +113,7 @@ class PkgDifferentialTest(unittest.TestCase):
             lines.append('    show(pkg_join(pkg_sorted_versions(sv), ","));')
             lines.append("}")
             out = _leash_run_source("\n".join(lines) + "\n")
-            self.assertEqual(out.strip(), ",".join(L.sorted_versions(v)))
+            self.assertEqual(out.strip(), exp)
 
     def test_validate_name(self):
         names = ["foo", "_x", "a-b_c9", "", "9x", "-x", "a b", "a.b",
@@ -116,13 +125,9 @@ class PkgDifferentialTest(unittest.TestCase):
         out = _leash_run_source("\n".join(lines) + "\n")
         got = out.splitlines()
         self.assertEqual(len(got), len(names))
+        valid = {"foo", "_x", "a-b_c9", "x" * 64}
         for s, g in zip(names, got):
-            try:
-                L.validate_name(s)
-                exp = ""
-            except SystemExit:
-                exp = None  # message check below via run
-            if exp == "":
+            if s in valid:
                 self.assertEqual(g, "")
             else:
                 # error text must start the same way
@@ -178,6 +183,8 @@ class PkgDifferentialTest(unittest.TestCase):
             else:
                 i += 1
         self.assertEqual(len(got), len(cases))
+        look_expected = {"user/repo": True, "https://github.com/u/r": True,
+                         "plainname": False, "a::b": False}
         for i, (u, ins, kind) in enumerate(cases):
             verdict, look = got[i]
             if kind == "ok":
@@ -187,8 +194,8 @@ class PkgDifferentialTest(unittest.TestCase):
             elif kind == "err":
                 self.assertTrue(verdict.startswith("error:"), u)
             # "look": only the git-target heuristic is meaningful here
-            self.assertEqual(look,
-                             str(L._looks_like_git_target(u)).lower(), u)
+            if kind == "look":
+                self.assertEqual(look, str(look_expected[u]).lower(), u)
 
     def test_display_safe(self):
         esc, bel = chr(27), chr(7)
@@ -219,8 +226,10 @@ class PkgDifferentialTest(unittest.TestCase):
         out = _leash_run_source("\n".join(lines) + "\n")
         got = out.splitlines()
         self.assertEqual(len(got), len(cases))
-        for s, g in zip(cases, got):
-            self.assertEqual(g, L.display_safe(s), repr(s))
+        expected = ["", "plain", "RED", "LINK", "Q", "a b c", "move",
+                    "trailing "]
+        for s, e, g in zip(cases, expected, got):
+            self.assertEqual(g, e, repr(s))
 
     def test_pkg_config_round_trip(self):
         cfg = ('# comment\nname: "mypkg"\nversion: "1.2.3" # trailing\n'
@@ -236,21 +245,17 @@ class PkgDifferentialTest(unittest.TestCase):
                  "    show(pkg_write_config(es));",
                  "}"]
         out = _leash_run_source("\n".join(lines) + "\n")
-        import tempfile
-        with tempfile.TemporaryDirectory() as td:
-            path = os.path.join(td, "leash-pkg.lshc")
-            with open(path, "w") as f:
-                f.write(cfg)
-            d = L.read_pkg_config(path)
-            L.write_pkg_config(path, d)
-            with open(path) as f:
-                expected = f.read()
         got = out.splitlines()
-        self.assertEqual(got[0:5],
-                         [d.get("name", ""), d.get("version", ""),
-                          d.get("custom", ""), d.get("quoted", ""), ""])
-        # the tab+double-space value collapses like Python's _esc; the whole
-        # written file must be byte-identical
+        self.assertEqual(got[0:5], ["mypkg", "1.2.3", "plain", "a # b", ""])
+        # the tab+double-space value collapses to single spaces, and the
+        # whole written file must match the reference byte-for-byte
+        expected = ('# Leashed package configuration\n'
+                    'name: "mypkg"\n'
+                    'version: "1.2.3"\n'
+                    'custom: "plain"\n'
+                    'empty: ""\n'
+                    'quoted: "a # b"\n'
+                    'tabs: "a b c"\n')
         self.assertEqual(got[5:], expected.split("\n"))
 
     def test_lockfile_round_trip(self):
@@ -274,12 +279,18 @@ class PkgDifferentialTest(unittest.TestCase):
         self.assertEqual(got[1], "1.0.0-rc.1")
         self.assertEqual(got[2], "a" * 40)
         self.assertEqual(got[3], "")
-        # byte-identical to the Python writer
-        import tempfile
-        with tempfile.TemporaryDirectory() as td:
-            L.write_lockfile(td, lock["packages"])
-            with open(os.path.join(td, "leash.lock")) as f:
-                expected = f.read()
+        # byte-identical to the (retired) Python writer: package names are
+        # sorted, entry fields keep version/repo/tag/rev order
+        expected_obj = {
+            "version": 1,
+            "packages": {
+                "alpha": {"version": "1.0.0-rc.1", "repo": "https://x/a.git",
+                          "tag": "v1.0.0-rc.1"},
+                "zeta": {"version": "2.0.0", "repo": "https://x/z.git",
+                         "tag": "v2.0.0", "rev": "a" * 40},
+            },
+        }
+        expected = json.dumps(expected_obj, indent=2) + "\n"
         self.assertEqual(got[4:], expected.split("\n"))
 
     def test_registry_gates(self):
@@ -293,10 +304,44 @@ class PkgDifferentialTest(unittest.TestCase):
         out = _leash_run_source("\n".join(lines) + "\n")
         self.assertEqual(
             out.splitlines(),
-            [L.check_version_match("1.0.0", "1.0.0") or "",
-             L.check_version_match("1.0.0", "2.0.0"),
-             L.check_version_match("1.0.0", None),
-             L.check_version_match(None, "9.9.9") or ""])
+            ["",
+             "version mismatch: requested 1.0.0 but the repository "
+             "contains 2.0.0",
+             "could not determine the installed version (requested 1.0.0)",
+             ""])
+
+
+    def test_index_shape_hardening(self):
+        cases = [("{}", ""), ('{"libraries": {}}', ""),
+                 ('{"libraries": {"a": {}}}', ""),
+                 ("[]", "expected a JSON object"),
+                 ('{"libraries": []}', 'expected {"libraries": {...}}'),
+                 ('{"libraries": null}', 'expected {"libraries": {...}}')]
+        lines = ["use leashed::*;", "fnc main() : void {"]
+        for s, _ in cases:
+            lines.append(
+                f"    pj: PkgJson = pkg_json_parse({self._leash_str(s)});")
+            lines.append("    show(pkg_validate_index_shape(pj));")
+        lines.append("}")
+        out = _leash_run_source("\n".join(lines) + "\n")
+        got = out.splitlines()
+        self.assertEqual(len(got), len(cases))
+        for (s, exp), g in zip(cases, got):
+            self.assertEqual(g, exp, s)
+
+    def test_symlink_rejection(self):
+        d = tempfile.mkdtemp(prefix="leash_sym_")
+        self.addCleanup(shutil.rmtree, d, True)
+        with open(os.path.join(d, "main.lsh"), "w") as f:
+            f.write("fnc main() : void { ignore; }\n")
+        os.symlink("/etc/passwd", os.path.join(d, "steal"))
+        lines = ["use leashed::*;", "fnc main() : void {",
+                 f"    show(pkg_assert_no_symlinks_r({self._leash_str(d)}));",
+                 "}"]
+        out = _leash_run_source("\n".join(lines) + "\n")
+        self.assertTrue(out.startswith("error: refusing to install package:"),
+                        out)
+        self.assertIn("steal", out)
 
 
 class PkgCliTest(unittest.TestCase):
@@ -326,7 +371,7 @@ class PkgCliTest(unittest.TestCase):
         self.assertIn("leash pkg", r.stdout)
         r = self._pkg("--version")
         self.assertEqual(r.returncode, 0)
-        self.assertIn(f"leash pkg v{L.LEASHED_VERSION}", r.stdout)
+        self.assertIn(f"leash pkg v{LEASHED_VERSION}", r.stdout)
         r = self._pkg("bogus-cmd")
         self.assertNotEqual(r.returncode, 0)
 

@@ -49,7 +49,7 @@
 
 <h1>Package Manager (<code>leash pkg</code>)</h1>
 
-<p><code>leash pkg</code> is the official package manager for Leash, built into the self-hosted compiler. It lets you create, publish, share, and install Leash libraries through a central registry at <code>github.com/foksiny/leash-packages</code>. Every library lives in its own GitHub repository; the registry is an <code>index.json</code> that maps library names to repo URLs. A standalone Python reference implementation (<code>leash/leashed.py</code>) ships alongside it for development and testing.</p>
+<p><code>leash pkg</code> is the official package manager for Leash, built into the self-hosted compiler. It lets you create, publish, share, and install Leash libraries through a central registry at <code>github.com/foksiny/leash-packages</code>. Every library lives in its own GitHub repository; the registry is an <code>index.json</code> that maps library names to repo URLs. The package manager is implemented natively in the self-hosted compiler (<code>compiler/leashed.lsh</code>) &mdash; there is no Python component.</p>
 
 <p>Publishing is <strong>fully self-service</strong>: a validation bot reviews and merges registry updates automatically &mdash; no maintainer approval, no waiting on humans. The registry is also optional: you can install any library directly from its Git URL.</p>
 

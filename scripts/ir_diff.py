@@ -116,16 +116,8 @@ def parity(path):
 def dump_ir(path):
     run(["bin/leashc", "compile", path, "--emit-llvm", "to", "/tmp/irdiff_sh"], timeout=180)
     dumps = [("SELFHOSTED", "/tmp/irdiff_sh.ll")]
-    # Python reference IR: only when the (removed) Python toolchain is
-    # still importable, e.g. for archaeology.
-    staged = "/tmp/irdiff_py_input.lsh"
-    with open(os.path.join(ROOT, path)) as fh:
-        open(staged, "w").write(fh.read())
-    py = run([sys.executable, "-m", "leash.cli", "dump", staged], timeout=180)
-    if py.returncode == 0 and os.path.exists("/tmp/irdiff_py_input.ll"):
-        dumps.insert(0, ("PYTHON", "/tmp/irdiff_py_input.ll"))
-    else:
-        print("(python toolchain not available: python IR dump skipped)")
+    # The Python reference toolchain has been removed (1.5.1), so only the
+    # self-hosted IR dump is available.
     for label, p in dumps:
         print(f"===== {label} IR: {p} =====")
         if os.path.exists(p):
