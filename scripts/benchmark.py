@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parent.parent
 TASKS_DIR = ROOT / "benchmarking" / "tasks"
 BUILD_DIR = Path(tempfile.mkdtemp(prefix="leash_bench_"))
 
-leash_python = "python" if sys.platform == "win32" else "python3"
+leash_binary = ROOT / "bin" / "leashc"
 
 # ── compilers ──────────────────────────────────────────────────────
 LANG_CC = shutil.which("gcc") or shutil.which("clang") or ""
@@ -32,10 +32,14 @@ LANG_RUST = shutil.which("rustc") or ""
 
 
 def _find_leash_cmd():
-    candidate = shutil.which("leash")
+    if leash_binary.exists():
+        return [str(leash_binary)]
+    candidate = shutil.which("leashc") or shutil.which("leash")
     if candidate:
         return [candidate]
-    return [leash_python, "-m", "leash.cli"]
+    raise SystemExit(
+        "error: no leash compiler found (need bin/leashc in the repo, or "
+        "leash/leashc on PATH)")
 
 
 LEASH_CMD = _find_leash_cmd()
@@ -48,7 +52,7 @@ def _build_leash(task_path, opt_level, build_dir):
     exe = build_dir / f"leash_{stem}_O{opt_level}.exe"
     t0 = time.perf_counter()
     result = subprocess.run(
-        [*LEASH_CMD, "compile", str(task_path), "-O", str(opt_level), "to", str(exe)],
+        [*LEASH_CMD, "compile", str(task_path), f"-O{opt_level}", "to", str(exe)],
         capture_output=True, text=True, timeout=120, cwd=ROOT,
     )
     elapsed = time.perf_counter() - t0

@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Parity + differential-IR harness for the self-hosted compiler.
 
-Primary metric: runtime output parity with the Python compiler
-(tests/expected/*.out). Secondary: side-by-side IR dumps for debugging
-when outputs diverge (the Python IR serves as the reference base).
+Primary metric: runtime output parity with the frozen reference corpus
+(tests/expected/*.out, recorded from the original Python compiler and
+kept as the ground truth). Secondary: side-by-side IR dumps for debugging
+(the Python reference IR is shown only when the Python toolchain is still
+installed).
 
 Usage:
   python3 scripts/ir_diff.py                     # parity over expected corpus
@@ -112,12 +114,19 @@ def parity(path):
 
 
 def dump_ir(path):
+    run(["bin/leashc", "compile", path, "--emit-llvm", "to", "/tmp/irdiff_sh"], timeout=180)
+    dumps = [("SELFHOSTED", "/tmp/irdiff_sh.ll")]
+    # Python reference IR: only when the (removed) Python toolchain is
+    # still importable, e.g. for archaeology.
     staged = "/tmp/irdiff_py_input.lsh"
     with open(os.path.join(ROOT, path)) as fh:
         open(staged, "w").write(fh.read())
-    run([sys.executable, "-m", "leash.cli", "dump", staged], timeout=180)
-    run(["bin/leashc", "compile", path, "--emit-llvm", "to", "/tmp/irdiff_sh"], timeout=180)
-    for label, p in [("PYTHON", "/tmp/irdiff_py_input.ll"), ("SELFHOSTED", "/tmp/irdiff_sh.ll")]:
+    py = run([sys.executable, "-m", "leash.cli", "dump", staged], timeout=180)
+    if py.returncode == 0 and os.path.exists("/tmp/irdiff_py_input.ll"):
+        dumps.insert(0, ("PYTHON", "/tmp/irdiff_py_input.ll"))
+    else:
+        print("(python toolchain not available: python IR dump skipped)")
+    for label, p in dumps:
         print(f"===== {label} IR: {p} =====")
         if os.path.exists(p):
             os.system(f"sed -n '/user_main/,/^}}/p' {p} | head -60")

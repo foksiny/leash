@@ -9,6 +9,20 @@ pub def Lexer : class {
     pub errs: int;   // fatal lex errors (e.g. NUL in a string literal)
     pub warns: int;  // recoverable lex warnings (unknown characters)
     pub quiet: bool; // suppress warnings (sub-lexers inside interpolation)
+    pub err_msg: string; // first fatal lexer error (driver prints with location)
+    pub err_line: int;
+    pub err_col: int;
+
+    // Record a fatal lexer error. The driver renders the first one with its
+    // source location (python raises on the first error and aborts).
+    pub fnc fail(msg string, line_no int, col int) : void {
+        this.errs = this.errs + 1;
+        if this.err_msg.size == 0 {
+            this.err_msg = msg;
+            this.err_line = line_no;
+            this.err_col = col;
+        }
+    }
 
     static pub fnc is_digit(c char) : bool {
         return c >= '0' && c <= '9';
@@ -118,7 +132,7 @@ pub def Lexer : class {
     // "expected exactly N hex digits" error and returns a short string when
     // the input is malformed; callers only use the digits when
     // digits.size == width.
-    pub fnc scan_esc_digits(what char, width int) : string {
+    pub fnc scan_esc_digits(what char, width int, sline int, scol int) : string {
         digits: string = "";
         i: int = 0;
         while i < width && Lexer.hex_val(this.peek()) >= 0 {
@@ -132,43 +146,31 @@ pub def Lexer : class {
             pad: int = width - 2;
             while pad > 0 { ex = ex + "0"; pad = pad - 1; }
             ex = ex + "41";
-            if !this.quiet {
-                show("error: Invalid \\", ws, " escape: expected exactly ", tostring(width), " hex digits (e.g. \\", ws, ex, ").");
-            }
-            this.errs = this.errs + 1;
+            this.fail("Invalid \\" + ws + " escape: expected exactly " + tostring(width) + " hex digits (e.g. \\" + ws + ex + ").", sline, scol);
         }
         return digits;
     }
 
     // python leash_unescape validation for a successfully scanned escape:
     // range first, then surrogate; strings additionally reject NULs.
-    pub fnc check_esc_cp(what char, width int, cp int, is_string bool) : void {
+    pub fnc check_esc_cp(what char, width int, cp int, is_string bool, sline int, scol int) : void {
         if width >= 8 && cp > 0x10FFFF {
-            if !this.quiet {
-                show("error: Invalid \\U escape: code point U+", Lexer.hex_upper(cp, 8), " is out of range (max U+10FFFF).");
-            }
-            this.errs = this.errs + 1;
+            this.fail("Invalid \\U escape: code point U+" + Lexer.hex_upper(cp, 8) + " is out of range (max U+10FFFF).", sline, scol);
             return;
         }
         if cp >= 0xD800 && cp <= 0xDFFF {
             ws2: string = "";
             ws2 = ws2 + what;
-            if !this.quiet {
-                show("error: Invalid \\", ws2, " escape: U+", Lexer.hex_upper(cp, 4), " is a lone UTF-16 surrogate; encode non-BMP characters directly instead.");
-            }
-            this.errs = this.errs + 1;
+            this.fail("Invalid \\" + ws2 + " escape: U+" + Lexer.hex_upper(cp, 4) + " is a lone UTF-16 surrogate; encode non-BMP characters directly instead.", sline, scol);
             return;
         }
         if is_string && cp == 0 {
-            if !this.quiet {
-                show("error: NUL byte ('\\0') is not allowed inside string literals: Leash strings cannot hold embedded NULs.");
-            }
-            this.errs = this.errs + 1;
+            this.fail("NUL byte ('\\0') is not allowed inside string literals: Leash strings cannot hold embedded NULs.", sline, scol);
         }
     }
 
     static pub fnc make(src string) : Lexer {
-        return Lexer { src: src, pos: 0, len: src.size, line: 1, col: 1, errs: 0, warns: 0, quiet: false };
+        return Lexer { src: src, pos: 0, len: src.size, line: 1, col: 1, errs: 0, warns: 0, quiet: false, err_msg: "", err_line: 0, err_col: 0 };
     }
 
     pub fnc peek() : char {
@@ -214,15 +216,24 @@ pub def Lexer : class {
                 }
             } also c == '/' && this.peek_at(1) == '*' {
                 // Block comment
+                bc_line: int = this.line;
+                bc_col: int = this.col;
                 this.advance();
                 this.advance();
+                bc_closed: bool = false;
                 while this.peek() != '\0' {
                     if this.peek() == '*' && this.peek_at(1) == '/' {
                         this.advance();
                         this.advance();
+                        bc_closed = true;
                         stop;
                     }
                     this.advance();
+                }
+                if !bc_closed {
+                    // python parity: unterminated block comments are a hard
+                    // lexer error.
+                    this.fail("Unterminated block comment: missing '*/'.", bc_line, bc_col);
                 }
             } else {
                 stop;
@@ -347,16 +358,10 @@ pub def Lexer : class {
                 // Malformed hex (python BADNUM): '0x' + optional bad letter.
                 c: char = this.peek();
                 if Lexer.is_bad_hex_letter(c) { raw = raw + this.advance(); }
-                if !this.quiet {
-                    show("error: Invalid hexadecimal numeric literal '", raw, "'.");
-                }
-                this.errs = this.errs + 1;
+                this.fail("Invalid hexadecimal numeric literal '" + raw + "'.", start_line, start_col);
             } also Lexer.is_bad_hex_letter(this.peek()) {
                 raw = raw + this.advance();
-                if !this.quiet {
-                    show("error: Invalid hexadecimal numeric literal '", raw, "'.");
-                }
-                this.errs = this.errs + 1;
+                this.fail("Invalid hexadecimal numeric literal '" + raw + "'.", start_line, start_col);
             }
             if is_hf {
                 return Token.make(Tok.FLOAT, Lexer.strip_seps(raw), start_line, start_col);
@@ -384,10 +389,7 @@ pub def Lexer : class {
             c: char = this.peek();
             if Lexer.is_bad_bin_char(c) { raw = raw + this.advance(); bad = true; }
             if bad {
-                if !this.quiet {
-                    show("error: Invalid binary numeric literal '", raw, "'.");
-                }
-                this.errs = this.errs + 1;
+                this.fail("Invalid binary numeric literal '" + raw + "'.", start_line, start_col);
             }
             return Token.make(Tok.INT, Lexer.strip_seps(raw), start_line, start_col);
         }
@@ -412,10 +414,7 @@ pub def Lexer : class {
             c: char = this.peek();
             if Lexer.is_bad_oct_char(c) { raw = raw + this.advance(); bad = true; }
             if bad {
-                if !this.quiet {
-                    show("error: Invalid octal numeric literal '", raw, "'.");
-                }
-                this.errs = this.errs + 1;
+                this.fail("Invalid octal numeric literal '" + raw + "'.", start_line, start_col);
             }
             return Token.make(Tok.INT, Lexer.strip_seps(raw), start_line, start_col);
         }
@@ -469,20 +468,14 @@ pub def Lexer : class {
             // `v - v` is NaN for infinity and leash's `!=` is ordered, so
             // compare against DBL_MAX (strtod overflows to +inf).
             if v > 1.7976931348623157e308 {
-                if !this.quiet {
-                    show("error: Invalid numeric literal '", raw, "': '", raw, "' is out of range (evaluates to infinity).");
-                }
-                this.errs = this.errs + 1;
+                this.fail("Invalid numeric literal '" + raw + "': '" + raw + "' is out of range (evaluates to infinity).", start_line, start_col);
             }
             return Token.make(Tok.FLOAT, Lexer.strip_seps(raw), start_line, start_col);
         }
 
         // Plain decimal integer — reject ambiguous leading zeros (007)
         if raw.size > 1 && raw[0] == '0' && Lexer.all_decimal(raw) {
-            if !this.quiet {
-                show("error: Invalid numeric literal '", raw, "': leading zeros are not allowed in decimal literals.");
-            }
-            this.errs = this.errs + 1;
+            this.fail("Invalid numeric literal '" + raw + "': leading zeros are not allowed in decimal literals.", start_line, start_col);
         }
         return Token.make(Tok.INT, Lexer.strip_seps(raw), start_line, start_col);
     }
@@ -501,20 +494,14 @@ pub def Lexer : class {
             }
             if c == '\n' || c == '\0' {
                 // Raw newlines / EOF are python's MISMATCH cases.
-                if !this.quiet {
-                    show("error: Unterminated or malformed string literal.");
-                }
-                this.errs = this.errs + 1;
+                this.fail("Unterminated or malformed string literal.", start_line, start_col);
                 return Token.make(Tok.STRING, val, start_line, start_col);
             }
             if c == '\\' {
                 val = val + this.advance();
                 esc: char = this.peek();
                 if esc == '\n' || esc == '\0' {
-                    if !this.quiet {
-                        show("error: Unterminated or malformed string literal.");
-                    }
-                    this.errs = this.errs + 1;
+                    this.fail("Unterminated or malformed string literal.", start_line, start_col);
                     return Token.make(Tok.STRING, val, start_line, start_col);
                 }
                 val = val + this.advance();
@@ -524,20 +511,17 @@ pub def Lexer : class {
                     // NUL would silently truncate. Keep the pair text so
                     // later phases see sane tokens; the driver aborts on
                     // the error count.
-                    if !this.quiet {
-                        show("error: NUL byte ('\\0') is not allowed inside string literals: Leash strings cannot hold embedded NULs.");
-                    }
-                    this.errs = this.errs + 1;
+                    this.fail("NUL byte ('\\0') is not allowed inside string literals: Leash strings cannot hold embedded NULs.", start_line, start_col);
                 } also esc == 'x' || esc == 'u' || esc == 'U' {
                     // python validates fixed-width escapes at lex time;
                     // decoding happens once in the parser (raw text kept).
                     w: int = 2;
                     if esc == 'u' { w = 4; }
                     if esc == 'U' { w = 8; }
-                    digs: string = this.scan_esc_digits(esc, w);
+                    digs: string = this.scan_esc_digits(esc, w, start_line, start_col);
                     val = val + digs;
                     if digs.size == w {
-                        this.check_esc_cp(esc, w, Lexer.hex_str_val(digs), true);
+                        this.check_esc_cp(esc, w, Lexer.hex_str_val(digs), true, start_line, start_col);
                     }
                 }
                 // Token values stay RAW (python keeps `tok.raw`): the parser
@@ -585,28 +569,22 @@ pub def Lexer : class {
                 e: char = this.peek();
                 if e == '\0' {
                     // EOF right after a backslash: no closing delimiter.
-                    if !this.quiet {
-                        show("error: Unterminated multi-line string literal: missing closing \"\"\".");
-                    }
-                    this.errs = this.errs + 1;
+                    this.fail("Unterminated multi-line string literal: missing closing \"\"\".", start_line, start_col);
                     return Token.make(Tok.STRING, val, start_line, start_col);
                 }
                 val = val + '\\' + this.advance();
                 if e == '0' {
                     // Python parity: `\0` in a string literal is a hard
                     // error (same as the single-quoted form)
-                    if !this.quiet {
-                        show("error: NUL byte ('\\0') is not allowed inside string literals: Leash strings cannot hold embedded NULs.");
-                    }
-                    this.errs = this.errs + 1;
+                    this.fail("NUL byte ('\\0') is not allowed inside string literals: Leash strings cannot hold embedded NULs.", start_line, start_col);
                 } also e == 'x' || e == 'u' || e == 'U' {
                     w: int = 2;
                     if e == 'u' { w = 4; }
                     if e == 'U' { w = 8; }
-                    digs: string = this.scan_esc_digits(e, w);
+                    digs: string = this.scan_esc_digits(e, w, start_line, start_col);
                     val = val + digs;
                     if digs.size == w {
-                        this.check_esc_cp(e, w, Lexer.hex_str_val(digs), true);
+                        this.check_esc_cp(e, w, Lexer.hex_str_val(digs), true, start_line, start_col);
                     }
                 }
             } else {
@@ -615,10 +593,7 @@ pub def Lexer : class {
         }
 
         // EOF without closing """.
-        if !this.quiet {
-            show("error: Unterminated multi-line string literal: missing closing \"\"\".");
-        }
-        this.errs = this.errs + 1;
+        this.fail("Unterminated multi-line string literal: missing closing \"\"\".", start_line, start_col);
         return Token.make(Tok.STRING, val, start_line, start_col);
     }
 
@@ -636,20 +611,14 @@ pub def Lexer : class {
                 stop;
             }
             if c == '\n' || c == '\0' {
-                if !this.quiet {
-                    show("error: Unterminated or malformed character literal.");
-                }
-                this.errs = this.errs + 1;
+                this.fail("Unterminated or malformed character literal.", start_line, start_col);
                 return Token.make(Tok.CHAR, raw, start_line, start_col);
             }
             if c == '\\' {
                 raw = raw + this.advance();
                 e: char = this.peek();
                 if e == '\n' || e == '\0' {
-                    if !this.quiet {
-                        show("error: Unterminated or malformed character literal.");
-                    }
-                    this.errs = this.errs + 1;
+                    this.fail("Unterminated or malformed character literal.", start_line, start_col);
                     return Token.make(Tok.CHAR, raw, start_line, start_col);
                 }
                 raw = raw + this.advance();
@@ -659,10 +628,10 @@ pub def Lexer : class {
                     w: int = 2;
                     if e == 'u' { w = 4; }
                     if e == 'U' { w = 8; }
-                    digs: string = this.scan_esc_digits(e, w);
+                    digs: string = this.scan_esc_digits(e, w, start_line, start_col);
                     raw = raw + digs;
                     if digs.size == w {
-                        this.check_esc_cp(e, w, Lexer.hex_str_val(digs), false);
+                        this.check_esc_cp(e, w, Lexer.hex_str_val(digs), false, start_line, start_col);
                         count = count + 1;
                     } else {
                         count = count + 2;
@@ -678,10 +647,7 @@ pub def Lexer : class {
         }
 
         if count != 1 {
-            if !this.quiet {
-                show("error: Character literal must contain exactly one character (found ", count, ").");
-            }
-            this.errs = this.errs + 1;
+            this.fail("Character literal must contain exactly one character (found " + tostring(count) + ").", start_line, start_col);
         }
         return Token.make(Tok.CHAR, raw, start_line, start_col);
     }
@@ -886,10 +852,9 @@ pub def Lexer : class {
             also c == '!' { tokens.pushb(Token.make(Tok.NOT, "!", cur_line, cur_col)); }
             also c == '@' { tokens.pushb(Token.make(Tok.AT, "@", cur_line, cur_col)); }
             else {
-                this.warns = this.warns + 1;
-                if !this.quiet {
-                    show("lexer warning: unknown character '", c, "' at ", cur_line, ":", cur_col);
-                }
+                // python parity: an unexpected character is a hard lexer
+                // error (`Unexpected character: '#'`).
+                this.fail("Unexpected character: '" + c + "'", cur_line, cur_col);
             }
         }
 

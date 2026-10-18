@@ -13,10 +13,9 @@ WORKSPACE_DIR = Path(__file__).resolve().parent.parent
 EXAMPLES_DIR = WORKSPACE_DIR / "examples"
 EXPECTED_DIR = WORKSPACE_DIR / "tests" / "expected"
 
-# Command to run leash
-python_cmd = "python" if sys.platform == "win32" else "python3"
-LEASH_RUN_CMD = [python_cmd, "-m", "leash.cli", "run"]
-LEASH_COMPILE_CMD = [python_cmd, "-m", "leash.cli", "compile"]
+# Command to run leash (self-hosted compiler from this checkout)
+LEASHC_BIN = WORKSPACE_DIR / "bin" / "leashc"
+LEASH_RUN_CMD = [str(LEASHC_BIN), "run"]
 
 # Pattern to match pointer values (e.g., 0x7ffe417814fc)
 POINTER_PATTERN = re.compile(r"0x[0-9a-fA-F]+")

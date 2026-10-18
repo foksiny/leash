@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v1.5.0 Release</div>
+        <div class="version">v1.5.1 Release</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -100,27 +100,24 @@ winget install Git.Git GitHub.cli</code></pre>
 
 <h2>Install Leash</h2>
 
-<p>Once the prerequisites are installed, install Leash from the project directory. The installation <strong>bootstraps the self-hosted compiler</strong>: the Python reference compiler builds the first native binary from <code>compiler/*.lsh</code>, and that binary then compiles itself &mdash; the result ships inside the package and is what the <code>leash</code> command runs.</p>
+<p>Once the prerequisites are installed, build Leash from the project directory. The installation <strong>bootstraps the self-hosted compiler</strong>: a checked-in bootstrap seed compiles the current sources, and that binary then compiles itself &mdash; the result is <code>bin/leashc</code> and is what the <code>leash</code> command runs.</p>
 
 <pre><code><span class="cm"># Navigate to the Leash project directory, then:</span>
-pip install .
+./scripts/bootstrap.sh
 
-<span class="cm"># Editable mode (development)</span>
-pip install -e .</code></pre>
+<span class="cm"># Optional: put the compiler on your PATH</span>
+cp bin/leashc ~/.local/bin/leash</code></pre>
 
-<p>This installs four CLI tools:</p>
+<p>This produces the native compiler with the following tools:</p>
 <ul>
-    <li><code>leash</code> &mdash; the <strong>self-hosted compiler</strong> (written in Leash): compiling, running, checking, debugging, projects, and <code>leash self-host</code></li>
-    <li><code>leashp</code> &mdash; the pure Python compiler/toolchain, the reference implementation and cross-compile backend</li>
-    <li><code>leashc</code> &mdash; an alias of <code>leash</code></li>
-    <li><code>leashed</code> &mdash; the standalone Python entry point of the package manager (the self-hosted compiler has it built in as <code>leash pkg</code>)</li>
+    <li><code>leash</code> / <code>leashc</code> &mdash; the <strong>self-hosted compiler</strong> (written in Leash): compiling, running, checking, debugging, projects, and <code>leash self-host</code></li>
+    <li><code>leash pkg</code> &mdash; the built-in package manager (also available standalone as the Python reference in <code>leash/leashed.py</code>)</li>
 </ul>
 
 <pre><code><span class="cm"># Verify installation</span>
 leash version
-<span class="cm"># leash 1.5.0 (self-hosted)</span>
-leash pkg --version
-leashed --version</code></pre>
+<span class="cm"># leash 1.5.1 (self-hosted)</span>
+leash pkg --version</code></pre>
 
 <h2>Running Leash Programs</h2>
 

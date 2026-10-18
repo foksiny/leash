@@ -19,7 +19,7 @@ TESTS_DIR = WORKSPACE / "tests" / "stdlib"
 EXPECTED_DIR = TESTS_DIR / "expected"
 STDLIB_DIR = WORKSPACE / "installthis"
 
-PYTHON = "python" if sys.platform == "win32" else "python3"
+LEASHC_BIN = WORKSPACE / "bin" / "leashc"
 
 
 def normalize(text: str) -> str:
@@ -43,13 +43,13 @@ def normalize(text: str) -> str:
 
 def compiler_cmd():
     # LEASHC overrides the compiler under test (e.g. LEASHC=bin/leashc_stage1
-    # runs the suite against the self-hosted compiler); default: the Python
-    # reference toolchain.
+    # runs the suite against a specific bootstrap stage); default: the
+    # self-hosted compiler from this checkout.
     import os
     override = os.environ.get("LEASHC")
     if override:
         return [override]
-    return [PYTHON, "-m", "leash.cli"]
+    return [str(LEASHC_BIN)]
 
 
 def run_test(path: Path):

@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v1.5.0 Release</div>
+        <div class="version">v1.5.1 Release</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -48,18 +48,14 @@
 
 <h1>Package Manager (<code>leash pkg</code>)</h1>
 
-<p><code>leash pkg</code> is the official package manager for Leash, built into the self-hosted compiler. It lets you create, publish, share, and install Leash libraries through a central registry at <code>github.com/foksiny/leash-packages</code>. Every library lives in its own GitHub repository; the registry is an <code>index.json</code> that maps library names to repo URLs. The Python reference toolchain ships the same implementation as the standalone <code>leashed</code> entry point.</p>
+<p><code>leash pkg</code> is the official package manager for Leash, built into the self-hosted compiler. It lets you create, publish, share, and install Leash libraries through a central registry at <code>github.com/foksiny/leash-packages</code>. Every library lives in its own GitHub repository; the registry is an <code>index.json</code> that maps library names to repo URLs. A standalone Python reference implementation (<code>leash/leashed.py</code>) ships alongside it for development and testing.</p>
 
 <p>Publishing is <strong>fully self-service</strong>: a validation bot reviews and merges registry updates automatically &mdash; no maintainer approval, no waiting on humans. The registry is also optional: you can install any library directly from its Git URL.</p>
 
 <h2>Installation</h2>
 <pre><code><span class="cm"># Built into the self-hosted compiler - no extra install step</span>
 leash pkg --version
-<span class="cm"># leash pkg v0.5.0</span>
-
-<span class="cm"># Python reference implementation (same protocol, used for bootstrap)</span>
-leashed --version
-<span class="cm"># leashed v0.5.0</span></code></pre>
+<span class="cm"># leash pkg v0.5.0</span></code></pre>
 
 <h2>Creating a Package</h2>
 <p>Scaffold a new library project with <code>leash pkg init</code>. This creates the standard library structure with a package configuration file where you specify the library's name, version, author, and entry point.</p>

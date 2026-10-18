@@ -4,7 +4,7 @@
 
 # Leash Programming Language
 
-**Version 1.5.0** — Leash compiles itself.
+**Version 1.5.1** — Leash compiles itself.
 
 Leash is a strongly-typed, modern compiled programming language built on LLVM. It features an intuitive syntax and native performance with a built-in garbage collector, package manager, and cross-platform support.
 
@@ -12,13 +12,11 @@ Leash is a strongly-typed, modern compiled programming language built on LLVM. I
 
 ## Self-Hosted since 1.0
 
-The compiler shipped as `leash` is **written in Leash**. Installing the package bootstraps it: the Python reference compiler builds the first self-hosted binary, that binary then compiles itself, and the result is what gets installed — verified as a **bootstrap fixed point** (stage N emits IR byte-identical to stage N+1).
+The compiler shipped as `leash`/`leashc` is **written in Leash** and builds itself from a checked-in bootstrap seed with **no Python dependency**: the seed binary compiles the current sources, that binary then compiles itself, and the result is what gets installed — verified as a **bootstrap fixed point** (stage N emits IR byte-identical to stage N+1).
 
-- `leash` — the **self-hosted compiler**, the whole toolchain natively: `compile`, `run` (file or project), `check`, `dump`, `init`, `build`, `install`, `update`, `pkg` (the package manager), `self-host` (3-stage bootstrap + fixed-point check), and `dbg` (the interactive source-level debugger).
-- `leashp` — the pure Python compiler/toolchain, kept as the reference implementation and for cross-compilation targets other than `linux64`.
-- `leashc` — an alias of `leash`.
+- `leashc` (alias `leash`) — the **self-hosted compiler**, the whole toolchain natively: `compile`, `run` (file or project), `check`, `dump`, `init`, `build`, `install`, `update`, `pkg` (the package manager), `self-host` (3-stage bootstrap + fixed-point check), and `dbg` (the interactive source-level debugger).
 
-Output parity with the reference compiler is enforced by a test harness: **88/88 example programs compile and run with identical output** on both compilers.
+Output parity with the original Python reference compiler is enforced by a frozen corpus: **88/88 example programs compile and run with identical output**.
 
 ## Quick Start
 
@@ -26,48 +24,49 @@ Output parity with the reference compiler is enforced by a test harness: **88/88
 
 | Dependency | Version |
 |------------|---------|
-| **Python 3** | 3.8+ (build stage 0 + `leashp`) |
-| **llvmlite** | installed automatically by pip |
-| **C compiler** (`clang`/`gcc`) | any recent (builds the self-hosted compiler) |
+| **C compiler** (`clang`/`gcc`) | any recent (links the compiled programs) |
 
 ### Install
 
 ```bash
-pip install .
-leash version
-# leash 1.5.0 (self-hosted)
+git clone https://github.com/foksiny/leash && cd leash
+./scripts/bootstrap.sh     # seeds from bootstrap/, builds bin/leashc (Python-free)
+bin/leashc version
+# leash 1.5.1 (self-hosted)
 ```
 
-The install compiles `compiler/*.lsh` twice (Python → stage 1 → itself) and ships the resulting native compiler inside the package. No repository checkout is needed afterwards — the binary locates its runtime from any working directory.
+The bootstrap compiles `compiler/*.lsh` and installs the resulting native compiler at `bin/leashc`. Optionally put it on your `PATH`:
+
+```bash
+cp bin/leashc ~/.local/bin/leash
+```
 
 ### Run a program
 
 ```bash
-leash run hello.lsh
+bin/leashc run hello.lsh
 ```
 
 ### Compile to a binary
 
 ```bash
-leash compile hello.lsh to hello
+bin/leashc compile hello.lsh to hello
 ./hello
 ```
 
 ### Scaffold a project
 
 ```bash
-leash init my_project
+bin/leashc init my_project
 cd my_project
-leash build
-leash run
+bin/leashc build
+bin/leashc run
 ```
 
 ### Rebuild the compiler from source
 
 ```bash
-git clone https://github.com/foksiny/leash && cd leash
-pip install .
-leash self-host   # 3-stage bootstrap + fixed-point check, installs bin/leashc
+bin/leashc self-host   # 3-stage bootstrap + fixed-point check, installs bin/leashc
 ```
 
 ## Key Features

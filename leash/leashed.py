@@ -38,6 +38,22 @@ VERBOSE = False
 MAX_INDEX_BYTES = 32 * 1024 * 1024
 
 
+def _leashc_compiler():
+    """Locate the self-hosted leash compiler (Python-free)."""
+    env = os.environ.get("LEASHC")
+    if env:
+        return env
+    repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cand = os.path.join(repo_root, "bin", "leashc")
+    if os.path.exists(cand):
+        return cand
+    for name in ("leashc", "leash"):
+        p = shutil.which(name)
+        if p:
+            return p
+    return None
+
+
 def eprint(*args, **kwargs):
     print(*args, file=sys.stderr, **kwargs)
 
@@ -475,52 +491,37 @@ def write_pkg_config(path, config):
 
 
 def run_leash_check(filepath, extra_import_dirs=None):
-    try:
-        from leash.cli import check_file
-        errs, warns = check_file(filepath, verbose=VERBOSE, extra_import_dirs=extra_import_dirs)
-        if errs:
-            eprint(f"error: {len(errs)} error(s) found in source code. Fix them before publishing.")
-            for e in errs:
-                eprint(f"  {e}")
-            sys.exit(1)
-        if warns and VERBOSE:
-            print(f"[leashed] {len(warns)} warning(s) found (continuing)")
-        return True
-    except ImportError:
-        cmd = [sys.executable, "-m", "leash.cli", "check", filepath]
-        if extra_import_dirs:
-            for d in extra_import_dirs:
-                cmd.extend(["-oi", d])
-        rc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-        if rc.returncode != 0:
-            eprint("error: Source code check failed. Fix errors before publishing.")
-            eprint(rc.stderr)
-            sys.exit(1)
-        return True
+    compiler = _leashc_compiler()
+    if compiler is None:
+        eprint("error: cannot check source: no self-hosted compiler available")
+        sys.exit(1)
+    cmd = [compiler, "check", filepath]
+    if extra_import_dirs:
+        for d in extra_import_dirs:
+            cmd.extend(["-oi", d])
+    rc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    if rc.returncode != 0:
+        eprint("error: Source code check failed. Fix errors before publishing.")
+        eprint(rc.stderr or rc.stdout)
+        sys.exit(1)
+    return True
 
 
 def run_leash_compile(filepath, output_stem, extra_import_dirs=None):
-    try:
-        from leash.cli import compile_file
-        compile_file(
-            filepath,
-            output_name=output_stem,
-            output_type="static",
-            is_run_mode=False,
-            extra_import_dirs=extra_import_dirs,
-        )
-        return True
-    except ImportError:
-        cmd = [sys.executable, "-m", "leash.cli", "compile", filepath, "to-static", output_stem]
-        if extra_import_dirs:
-            for d in extra_import_dirs:
-                cmd.extend(["-oi", d])
-        rc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-        if rc.returncode != 0:
-            eprint("error: Compilation failed.")
-            eprint(rc.stderr)
-            sys.exit(1)
-        return True
+    compiler = _leashc_compiler()
+    if compiler is None:
+        eprint("error: cannot compile: no self-hosted compiler available")
+        return False
+    cmd = [compiler, "compile", filepath, "to-static", output_stem]
+    if extra_import_dirs:
+        for d in extra_import_dirs:
+            cmd.extend(["-oi", d])
+    rc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    if rc.returncode != 0:
+        eprint("error: Compilation failed.")
+        eprint(rc.stderr or rc.stdout)
+        sys.exit(1)
+    return True
 
 
 def cmd_init(args):
@@ -1571,15 +1572,16 @@ def _install_global_commands(dest_root, tools):
     """Build each {name: src} tool to the global bin dir. Returns (installed, failed)."""
     if not isinstance(tools, dict) or not tools:
         return [], []
-    try:
-        from leash.cli import compile_file
-    except ImportError:
-        eprint("error: cannot build global commands: the Python toolchain is unavailable")
+    compiler = _leashc_compiler()
+    if compiler is None:
+        eprint("error: cannot build global commands: no self-hosted compiler available")
         return [], list(tools.keys())
     bindir = _global_bin_dir()
     os.makedirs(bindir, exist_ok=True)
     suffix = ".exe" if sys.platform == "win32" else ""
     installed, failed = [], []
+    # keep a reference to the compiler for the loop body
+    _compiler = compiler
     for tname, tsrc in tools.items():
         if not re.match(r'^[A-Za-z_][A-Za-z0-9_-]*$', tname or ""):
             eprint(f"error: skipping global command with invalid name: {tname!r}")
@@ -1602,8 +1604,11 @@ def _install_global_commands(dest_root, tools):
         if os.path.exists(out):
             print(f"[leashed] warning: overwriting existing global command '{tname}'")
         try:
-            compile_file(src_abs, out, "executable", False, None, False,
-                         False, [], "2", [dest_root])
+            rc = subprocess.run(
+                [_compiler, "compile", src_abs, "to", out, "-oi", dest_root],
+                capture_output=True, text=True, timeout=300).returncode
+            if rc != 0:
+                raise SystemExit(rc)
         except SystemExit as e:
             # compile_file reports its own diagnostics, then exits: a
             # broken tool must not take down the library install (nor the

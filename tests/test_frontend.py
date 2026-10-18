@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Frontend (lexer/parser) regression tests for the Phase-1 audit fixes.
+"""Frontend (lexer/parser) regression tests, black-box against bin/leashc.
 
 Each test maps to a specific audit finding so future changes cannot silently
 regress it:
@@ -13,210 +13,193 @@ regress it:
            chains a < b > c / >>, generic speculation + error propagation,
            bit-width validation, expression depth guard, interpolation error
            surfacing (parser errors) vs literal fallback (lexer errors),
-           AST positions on MethodCall/IndexAccess/ArrayInit, show(end=)
-           diagnostic position, statement-start whitelist, multi-line string
-           interpolation, type expression pretty-printing.
+           show(end=) diagnostic position, statement-start whitelist, multi-
+           line string interpolation.
+
+AST-internal assertions (node kinds, member positions, _type_expr_str) have
+no CLI-observable equivalent; their behaviour is covered by the source-level
+checks above.
 
 Run: python3 -m unittest tests.test_frontend
 """
 import os
-import sys
+import shutil
+import subprocess
+import tempfile
 import unittest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, REPO_ROOT)
-
-from leash.lexer import Lexer, leash_unescape  # noqa: E402
-from leash.parser_l import Parser  # noqa: E402
-from leash.errors import LeashError  # noqa: E402
-from leash import ast_nodes as A  # noqa: E402
+BIN_LEASHC = os.path.join(REPO_ROOT, "bin", "leashc")
 
 
-def tokenize(src):
-    return Lexer(src).tokenize()
+def _leashc(*args, cwd=None):
+    return subprocess.run(
+        [BIN_LEASHC, *args],
+        capture_output=True, text=True, cwd=cwd, timeout=600,
+    )
 
 
-def parse(src, file="<test>"):
-    return Parser(tokenize(src), source_file=file).parse()
+class FrontendTestCase(unittest.TestCase):
+    """Helpers: write a source file, compile it with --check, or run it."""
+
+    def setUp(self):
+        if not os.path.exists(BIN_LEASHC):
+            raise unittest.SkipTest("bin/leashc missing (run `leash self-host`)")
+        self.dir = tempfile.mkdtemp(prefix="leash_frontend_test_")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _write(self, src):
+        p = os.path.join(self.dir, "main.lsh")
+        # newline="" keeps CRLF fixtures byte-exact.
+        with open(p, "w", encoding="utf-8", newline="") as f:
+            f.write(src)
+        return p
+
+    def _check(self, src):
+        self._write(src)
+        r = _leashc("compile", "main.lsh", "--check", cwd=self.dir)
+        return r.stdout + r.stderr
+
+    def _run(self, src):
+        self._write(src)
+        r = _leashc("run", "main.lsh", cwd=self.dir)
+        out = r.stdout + r.stderr
+        return "\n".join(
+            ln for ln in out.splitlines() if not ln.startswith("--- Executed at")
+        ).strip()
+
+    def _check_body(self, body):
+        return self._check("fnc main() : void { %s }\n" % body)
+
+    def assertParseOk(self, out, src):
+        self.assertNotIn("parse error", out,
+                         "unexpected parse error for %r:\n%s" % (src, out))
+        self.assertNotIn("Expected ',' or", out,
+                         "unexpected separator error for %r:\n%s" % (src, out))
+        self.assertNotIn("Unexpected token", out,
+                         "unexpected fatal parse error for %r:\n%s" % (src, out))
 
 
-def parse_expr(src):
-    return Parser(tokenize(src), source_file="<test>").parse_expression()
-
-
-def body_of(src):
-    """Parse `fnc main() : void { <src> }` and return its statement list."""
-    prog = parse("fnc main() : void { %s }" % src)
-    return prog.items[0].body
-
-
-def parse_stmt(src):
-    """Parse a single statement (no wrapper, so positions are exact)."""
-    return Parser(tokenize(src), source_file="<test>").parse_statement()
-
-
-def err_of(fn, *args, **kwargs):
-    """Run fn(*args, **kwargs) and return the LeashError, or None if none."""
-    try:
-        fn(*args, **kwargs)
-    except LeashError as e:
-        return e
-    except Exception as e:  # noqa: BLE001 - test wants any unexpected raise
-        raise AssertionError("expected LeashError, got %r" % (e,))
-    return None
-
-
-class TestLexerEscapes(unittest.TestCase):
+class TestLexerEscapes(FrontendTestCase):
     def test_valid_fixed_width_hex_escapes(self):
-        self.assertEqual(leash_unescape(r"\x41"), "A")
-        self.assertEqual(leash_unescape(r"\u0041"), "A")
-        self.assertEqual(leash_unescape(r"\U00000041"), "A")
+        out = self._run('fnc main() : void { show("\\x41\\u0041\\U00000041"); }')
+        self.assertEqual(out, "AAA")
 
     def test_invalid_hex_escape_is_rejected(self):
         cases = {
-            r"\xZZ": r"\x escape",
-            r"\x4": r"\x escape",
-            r"\u12": r"\u escape",
-            r"\uZZZZ": r"\u escape",
-            r"\U0000": r"\U escape",
+            "\\xZZ": "\\x escape",
+            "\\x4": "\\x escape",
+            "\\u12": "\\u escape",
+            "\\uZZZZ": "\\u escape",
+            "\\U0000": "\\U escape",
         }
         for raw, fragment in cases.items():
             with self.subTest(raw=raw):
-                e = err_of(leash_unescape, raw, line=1, col=1)
-                self.assertIsNotNone(e)
-                self.assertIn(fragment, e.msg)
-                self.assertIn("hex digits", e.msg)
+                out = self._check('s := "%s";\n' % raw)
+                self.assertIn(fragment, out)
+                self.assertIn("hex digits", out)
 
     def test_escape_example_is_zero_padded(self):
         # The diagnostic example must show the full-width escape form.
-        e = err_of(leash_unescape, r"\x0g", line=1, col=1)
-        self.assertIsNotNone(e)
-        self.assertIn(r"(e.g. \x41)", e.msg)
-        e = err_of(leash_unescape, r"\u00", line=1, col=1)
-        self.assertIsNotNone(e)
-        self.assertIn(r"(e.g. \u0041)", e.msg)
-        e = err_of(leash_unescape, r"\U00", line=1, col=1)
-        self.assertIsNotNone(e)
-        self.assertIn(r"(e.g. \U00000041)", e.msg)
+        self.assertIn(r"(e.g. \x41)", self._check('s := "\\x0g";\n'))
+        self.assertIn(r"(e.g. \u0041)", self._check('s := "\\u00";\n'))
+        self.assertIn(r"(e.g. \U00000041)", self._check('s := "\\U00";\n'))
 
     def test_surrogate_escape_is_rejected(self):
-        e = err_of(leash_unescape, r"\ud800", line=1, col=1)
-        self.assertIsNotNone(e)
-        self.assertIn("surrogate", e.msg)
+        out = self._check('s := "\\ud800";\n')
+        self.assertIn("surrogate", out)
 
     def test_code_point_above_max_is_rejected(self):
-        e = err_of(leash_unescape, r"\U0011FFFF", line=1, col=1)
-        self.assertIsNotNone(e)
-        self.assertIn("out of range", e.msg)
-        self.assertIn("U+10FFFF", e.msg)
+        out = self._check('s := "\\U0011FFFF";\n')
+        self.assertIn("out of range", out)
+        self.assertIn("U+10FFFF", out)
+
+    def test_escape_error_reports_literal_position(self):
+        # python reports the string literal's own position (line 1, col 5).
+        out = self._check('s := "\\xZZ";\n')
+        self.assertIn(":1:5", out)
 
 
-class TestLexerStringLiterals(unittest.TestCase):
+class TestLexerStringLiterals(FrontendTestCase):
     def test_multiline_string_is_non_greedy(self):
-        # Greedy [\s\S]* swallowed everything up to the LAST """ on the line.
-        toks = tokenize('a = """one""" + """two""";')
-        strings = [t for t in toks if t.type == "MLSTRING_D"]
-        self.assertEqual(len(strings), 2)
-        self.assertEqual(strings[0].value, "one")
-        self.assertEqual(strings[1].value, "two")
+        # Greedy matching used to swallow everything up to the LAST """.
+        out = self._run('fnc main() : void { show("""one""" + """two"""); }')
+        self.assertEqual(out, "onetwo")
 
     def test_string_cannot_span_raw_newline(self):
-        e = err_of(tokenize, 's := "abc\ndef";')
-        self.assertIsNotNone(e)
-        self.assertIn("Unterminated or malformed string", e.msg)
-        self.assertEqual(e.line, 1)
+        out = self._check('s := "abc\ndef";\n')
+        self.assertIn("Unterminated or malformed string", out)
+        self.assertIn(":1:5", out)
 
     def test_char_cannot_span_raw_newline(self):
-        e = err_of(tokenize, "c := 'a\nb';")
-        self.assertIsNotNone(e)
-        self.assertIn("Unterminated or malformed character", e.msg)
+        out = self._check("c := 'a\nb';\n")
+        self.assertIn("Unterminated or malformed character", out)
 
     def test_unterminated_string_message_and_position(self):
-        e = err_of(tokenize, 's := "abc')
-        self.assertIsNotNone(e)
-        self.assertIn("Unterminated or malformed string", e.msg)
-        self.assertEqual(e.line, 1)
-        self.assertEqual(e.col, 5)
+        out = self._check('s := "abc')
+        self.assertIn("Unterminated or malformed string", out)
+        self.assertIn(":1:5", out)
 
     def test_unterminated_multiline_string_message(self):
-        e = err_of(tokenize, 's := """abc')
-        self.assertIsNotNone(e)
-        self.assertIn("multi-line string", e.msg)
-        self.assertIn('"""', e.msg)
+        out = self._check('s := """abc')
+        self.assertIn("multi-line string", out)
+        self.assertIn('"""', out)
 
     def test_unterminated_char_message(self):
-        e = err_of(tokenize, "c := 'a")
-        self.assertIsNotNone(e)
-        self.assertIn("Unterminated or malformed character", e.msg)
+        out = self._check("c := 'a")
+        self.assertIn("Unterminated or malformed character", out)
 
     def test_multiline_string_interpolates(self):
-        # MLSTRING tokens must carry the raw inner text so {expr} is parsed.
-        st = body_of('v := """pre {1 + 2} post""";')[0]
-        self.assertIsInstance(st, A.VariableDecl)
-        node = st.value
-        self.assertIsInstance(node, A.InterpolatedString)
-        kinds = [type(p[1]).__name__ if p[1] is not None else None for p in node.parts]
-        self.assertIn("BinaryOp", kinds)
-        literals = [p[0] for p in node.parts if p[0] is not None]
-        self.assertTrue(any("pre" in lit for lit in literals))
-        self.assertTrue(any("post" in lit for lit in literals))
+        out = self._run('fnc main() : void { show("""pre {1 + 2} post"""); }')
+        self.assertEqual(out, "pre 3 post")
 
 
-class TestLexerLinesAndComments(unittest.TestCase):
+class TestLexerLinesAndComments(FrontendTestCase):
     def test_crlf_counts_one_line(self):
-        e = err_of(tokenize, "x := 1;\r\ny := 1;\r\n#")
-        self.assertIsNotNone(e)
-        self.assertEqual(e.line, 3)
-        self.assertIn("Unexpected character", e.msg)
+        out = self._check("x := 1;\r\ny := 1;\r\n#\n")
+        self.assertIn("Unexpected character", out)
+        self.assertIn(":3:0", out)
 
     def test_line_tracking_after_multiline_token(self):
-        src = 'a := """\nline2\nline3""";\n#'
-        e = err_of(tokenize, src)
-        self.assertIsNotNone(e)
-        self.assertEqual(e.line, 4)
+        out = self._check('a := """\nline2\nline3""";\n#\n')
+        self.assertIn(":4:0", out)
 
     def test_unterminated_block_comment(self):
-        e = err_of(tokenize, "/* abc")
-        self.assertIsNotNone(e)
-        self.assertIn("Unterminated block comment", e.msg)
-        self.assertIn("*/", e.msg)
+        out = self._check("/* abc")
+        self.assertIn("Unterminated block comment", out)
+        self.assertIn("*/", out)
 
 
-class TestLexerNumbers(unittest.TestCase):
+class TestLexerNumbers(FrontendTestCase):
     def test_bad_binary_octal_hex_digits(self):
         for src, fragment in [("x := 0b2;", "binary"), ("x := 0o8;", "octal"),
                               ("x := 0xZ;", "hexadecimal")]:
             with self.subTest(src=src):
-                e = err_of(tokenize, src)
-                self.assertIsNotNone(e)
-                self.assertIn(fragment, e.msg)
-                self.assertIn("Invalid", e.msg)
+                out = self._check(src + "\n")
+                self.assertIn(fragment, out)
+                self.assertIn("Invalid", out)
 
     def test_digit_separators(self):
-        self.assertEqual(tokenize("1_000")[0].value, 1000)
-        self.assertEqual(tokenize("0x1_FFFF")[0].value, 0x1FFFF)
-        self.assertEqual(tokenize("0b1111_0000")[0].value, 0b11110000)
-        self.assertEqual(tokenize("0o17")[0].value, 15)
+        out = self._run('fnc main() : void { show(1_000, " ", 0x1_FFFF, " ", '
+                        '0b1111_0000, " ", 0o17); }')
+        self.assertEqual(out, "1000 131071 240 15")
 
     def test_hex_float(self):
-        self.assertEqual(tokenize("0x1.8p1")[0].value, 3.0)
+        out = self._run("fnc main() : void { show(0x1.8p1); }")
+        self.assertEqual(out, "3.000000")
 
     def test_leading_zero_decimal_rejected(self):
-        e = err_of(tokenize, "x := 0123;")
-        self.assertIsNotNone(e)
-        self.assertIn("leading zeros", e.msg)
+        out = self._check("x := 0123;\n")
+        self.assertIn("leading zeros", out)
 
     def test_float_overflow_rejected(self):
-        e = err_of(tokenize, "x := 1e999;")
-        self.assertIsNotNone(e)
-        self.assertIn("out of range", e.msg)
-
-    def test_number_separators_reach_ast(self):
-        node = body_of("x := 1_000;")[0]
-        self.assertEqual(node.value.value, 1000)
+        out = self._check("x := 1e999;\n")
+        self.assertIn("out of range", out)
 
 
-class TestParserSeparators(unittest.TestCase):
+class TestParserSeparators(FrontendTestCase):
     """L5: space-separated lists were silently accepted."""
 
     BAD = [
@@ -227,7 +210,7 @@ class TestParserSeparators(unittest.TestCase):
         ("p := P { x: 1 y: 2 };", "struct initializer"),
         ('h := {"a": 1 "b": 2};', "hash initializer"),
         ("v := {1 2 3};", "array literal"),
-        ("show(\"a\", end = \"x\" \"y\");", "show() argument list"),
+        ('show("a", end = "x" "y");', "show() argument list"),
         ("fnc inner(a int b int) : int { return a; }", "method parameter list"),
         ("f := fnc(a int b int) : int { return a; };", "lambda parameter list"),
     ]
@@ -246,7 +229,7 @@ class TestParserSeparators(unittest.TestCase):
         "c := create Foo(1, 2);",
         "throw Err(1, 2);",
         "show('a', 'b');",
-        "show(end = \"x\");",
+        'show(end = "x");',
         "showb('a', true);",
         "x: fnc(int, int) : int = nil;",
     ]
@@ -254,176 +237,138 @@ class TestParserSeparators(unittest.TestCase):
     def test_missing_separator_is_rejected(self):
         for src, fragment in self.BAD:
             with self.subTest(src=src):
-                e = err_of(lambda s: parse("fnc main() : void { %s }" % s), src)
-                self.assertIsNotNone(e, "expected error for %r" % src)
-                self.assertIn("Expected ',' or", e.msg)
-                self.assertIn(fragment, e.msg)
+                out = self._check_body(src)
+                self.assertIn("Expected ',' or", out, "no error for %r:\n%s" % (src, out))
+                self.assertIn(fragment, out, "wrong context for %r:\n%s" % (src, out))
 
     def test_valid_lists_still_parse(self):
         for src in self.GOOD:
             with self.subTest(src=src):
-                e = err_of(lambda s: parse("fnc main() : void { %s }" % s), src)
-                self.assertIsNone(e, "unexpected error for %r: %s"
-                                  % (src, e.msg if e else ""))
+                self.assertParseOk(self._check_body(src), src)
 
     def test_toplevel_generic_function_params(self):
-        e = err_of(parse, "fnc f<T>(a int b int) : T { return a; }")
-        self.assertIsNotNone(e)
-        self.assertIn("Expected ',' or", e.msg)
+        out = self._check("fnc f<T>(a int b int) : T { return a; }\n")
+        self.assertIn("Expected ',' or", out)
+        self.assertIn("parameter list", out)
 
     def test_enum_semicolon_members_unaffected(self):
-        e = err_of(parse, "def Color : enum { RED; GREEN; BLUE };")
-        self.assertIsNone(e, e.msg if e else "")
+        out = self._check("def Color : enum { RED; GREEN; BLUE };\n"
+                          "fnc main() : void { c: Color = Color::RED; show(c); }\n")
+        self.assertParseOk(out, "enum with semicolon members")
 
 
-class TestParserGenericRelational(unittest.TestCase):
+class TestParserGenericRelational(FrontendTestCase):
     """L4/H5: `a < b > c` must parse as comparisons, not generic syntax."""
 
+    PARSE_OK = [
+        "x := a < b > c;",
+        "x := a < b >> c;",
+        "x := ident<int>(1);",
+        "x := Vec<int>.sum(1);",
+        "v: vec<vec<int>> = {};",
+    ]
+
     def test_relational_chain(self):
-        e = err_of(lambda: body_of("x := a < b > c;"))
-        self.assertIsNone(e, e.msg if e else "")
+        self.assertParseOk(self._check_body("x := a < b > c;"), "x := a < b > c;")
 
     def test_relational_chain_with_shift(self):
-        e = err_of(lambda: body_of("x := a < b >> c;"))
-        self.assertIsNone(e, e.msg if e else "")
+        self.assertParseOk(self._check_body("x := a < b >> c;"), "x := a < b >> c;")
 
     def test_generic_call(self):
-        e = err_of(lambda: body_of("x := ident<int>(1);"))
-        self.assertIsNone(e, e.msg if e else "")
+        self.assertParseOk(self._check_body("x := ident<int>(1);"), "ident<int>")
 
     def test_generic_static_access(self):
-        e = err_of(lambda: body_of("x := Vec<int>.sum(1);"))
-        self.assertIsNone(e, e.msg if e else "")
+        self.assertParseOk(self._check_body("x := Vec<int>.sum(1);"), "Vec<int>.sum")
 
     def test_nested_generic_type_with_shift_tokens(self):
-        e = err_of(lambda: body_of("v: vec<vec<int>> = {};"))
-        self.assertIsNone(e, e.msg if e else "")
+        self.assertParseOk(self._check_body("v: vec<vec<int>> = {};"),
+                           "vec<vec<int>>")
 
     def test_error_inside_committed_generic_is_not_swallowed(self):
         # M8: once `fnc f<T>(` is seen, argument errors must propagate
         # instead of silently abandoning the generic parse.
-        e = err_of(parse, "fnc f<T>(a int b int) : T { return a; }")
-        self.assertIsNotNone(e)
-        self.assertIn("Expected ',' or", e.msg)
+        out = self._check("fnc f<T>(a int b int) : T { return a; }\n")
+        self.assertIn("Expected ',' or", out)
 
     def test_generic_function_definition(self):
-        e = err_of(parse, "fnc ident<T>(a T) : T { return a; }")
-        self.assertIsNone(e, e.msg if e else "")
+        self.assertParseOk(self._check("fnc ident<T>(a T) : T { return a; }\n"),
+                           "fnc ident<T>")
 
 
-class TestParserTypes(unittest.TestCase):
+class TestParserTypes(FrontendTestCase):
     def test_invalid_fractional_bit_width(self):
-        e = err_of(lambda: body_of("x: int<32.5> = 5;"))
-        self.assertIsNotNone(e)
-        self.assertIn("Invalid bit width", e.msg)
-        self.assertIn("positive integer", e.msg)
+        out = self._check_body("x: int<32.5> = 5;")
+        self.assertIn("Invalid bit width", out)
+        self.assertIn("positive integer", out)
+        self.assertIn("'32.5'", out)
 
     def test_zero_bit_width(self):
-        e = err_of(lambda: body_of("x: int<0> = 5;"))
-        self.assertIsNotNone(e)
-        self.assertIn("Invalid bit width", e.msg)
+        out = self._check_body("x: int<0> = 5;")
+        self.assertIn("Invalid bit width", out)
+        self.assertIn("'0'", out)
 
     def test_multi_return_type_lookahead(self):
-        p = Parser(tokenize("(int, string)"), source_file="<test>")
-        self.assertEqual(p.parse_type(), "(int, string)")
+        out = self._check('fnc pair() : (int, string) { return 1, "a"; }\n'
+                          "fnc main() : void { show(pair()); }\n")
+        self.assertParseOk(out, "(int, string)")
 
     def test_grouping_paren_is_not_multi_return(self):
-        # Non-multi-return lookahead must restore instead of consuming.
-        p = Parser(tokenize("(int)"), source_file="<test>")
-        e = err_of(p.parse_type)
-        self.assertIsNotNone(e)
-        self.assertEqual(e.msg, "Unexpected token LPAREN ('(') where a type was expected")
+        # A non-multi-return paren at type position is a fatal error.
+        out = self._check_body("x: (int) = 5;")
+        self.assertIn("Unexpected token LPAREN ('(') where a type was expected", out)
 
     def test_array_size_type_expr_has_no_object_repr(self):
-        st = body_of("x: int[a(1)];")[0]
-        self.assertEqual(st.var_type, "int[a(1)]")
-        self.assertNotIn("object at", st.var_type)
-
-    def test_type_expr_str_handles_nodes(self):
-        expr = parse_expr("a(1, 2)")
-        self.assertEqual(Parser._type_expr_str(expr), "a(1, 2)")
-        self.assertNotIn("object at", Parser._type_expr_str(expr))
+        out = self._check("fnc a(n int, m int) : int { return n; }\n"
+                          "fnc main() : void { x: int[a(1, 2)]; }\n")
+        self.assertNotIn("object at", out)
 
 
-class TestParserDepthGuard(unittest.TestCase):
+class TestParserDepthGuard(FrontendTestCase):
     def test_deep_nesting_raises_leash_error(self):
         src = "x := " + "(" * 150 + "1" + ")" * 150 + ";"
-        e = err_of(lambda: body_of(src))
-        self.assertIsNotNone(e, "deep nesting must fail with LeashError")
-        self.assertIn("too deep", e.msg)
+        out = self._check_body(src)
+        self.assertIn("too deep", out)
+        self.assertIn("maximum 100 levels", out)
 
     def test_moderate_nesting_ok(self):
         src = "x := " + "(" * 20 + "1" + ")" * 20 + ";"
-        e = err_of(lambda: body_of(src))
-        self.assertIsNone(e, e.msg if e else "")
+        self.assertParseOk(self._check_body(src), "20 levels")
 
 
-class TestParserInterpolation(unittest.TestCase):
+class TestParserInterpolation(FrontendTestCase):
     def test_parser_error_inside_interpolation_surfaces(self):
-        e = err_of(lambda: body_of('s := "pre {x +} post";'))
-        self.assertIsNotNone(e)
-        self.assertIn("Invalid interpolation expression", e.msg)
-        self.assertIn("x +", e.msg)
-        self.assertEqual(e.line, 1)
+        out = self._check_body('s := "pre {x +} post";')
+        self.assertIn("Invalid interpolation expression", out)
+        self.assertIn("x +", out)
+        self.assertIn(":1:", out)
 
     def test_interpolation_error_position_is_string_token(self):
-        src = 'fnc main() : void {\n    s := "pre {x +} post";\n}'
-        e = err_of(parse, src)
-        self.assertIsNotNone(e)
-        self.assertEqual(e.line, 2)
+        src = 'fnc main() : void {\n    s := "pre {x +} post";\n}\n'
+        out = self._check(src)
+        self.assertIn("Invalid interpolation expression", out)
+        self.assertIn(":2:", out)
 
     def test_unlexable_interpolation_stays_literal(self):
         # JSON-style content with \" escapes must not become a parse error.
-        node = body_of("""s := "json {\\"a\\": 1}";""")[0]
-        self.assertIsInstance(node, A.VariableDecl)
-        self.assertIsInstance(node.value, A.InterpolatedString)
-        text = "".join(p[0] for p in node.value.parts if p[0] is not None)
-        self.assertEqual(text, 'json {"a": 1}')
+        out = self._run('fnc main() : void { s := "json {\\"a\\": 1}"; show(s); }')
+        self.assertEqual(out, 'json {"a": 1}')
 
 
-class TestParserPositions(unittest.TestCase):
-    """M6: call/index/array nodes carried no line/col (diagnostics had none)."""
-
-    def test_method_call_position(self):
-        st = parse_stmt("obj.method(1);")
-        call = st.expr
-        self.assertIsInstance(call, A.MethodCall)
-        self.assertEqual(call.line, 1)
-        self.assertEqual(call.col, 4)  # 0-based col of `method`
-
-    def test_index_access_position(self):
-        st = parse_stmt("arr[0];")
-        idx = st.expr
-        self.assertIsInstance(idx, A.IndexAccess)
-        self.assertEqual(idx.line, 1)
-        self.assertEqual(idx.col, 3)  # 0-based col of `[`
-
-    def test_array_init_position(self):
-        st = parse_stmt("v := {1};")
-        self.assertIsInstance(st.value, A.ArrayInit)
-        self.assertEqual(st.value.line, 1)
-        self.assertEqual(st.value.col, 5)  # 0-based col of `{`
-
-
-class TestParserShowDiagnostics(unittest.TestCase):
+class TestParserShowDiagnostics(FrontendTestCase):
     def test_show_end_error_points_at_end_keyword(self):
-        src = 'fnc main() : void {\n    show("a", end = 1);\n}'
-        e = err_of(parse, src)
-        self.assertIsNotNone(e)
-        self.assertIn("must be a string literal", e.msg)
-        self.assertEqual(e.line, 2)
-        self.assertEqual(e.col, 14)  # 0-based col of `end`
+        src = 'fnc main() : void {\n    show("a", end = 1);\n}\n'
+        out = self._check(src)
+        self.assertIn("must be a string literal", out)
+        self.assertIn(":2:14", out)
 
     def test_show_unexpected_kwarg_points_at_keyword(self):
-        src = 'fnc main() : void {\n    show("a", endd = 1);\n}'
-        e = err_of(parse, src)
-        self.assertIsNotNone(e)
-        self.assertIn("Unexpected keyword argument 'endd'", e.msg)
-        self.assertEqual(e.line, 2)
-        self.assertEqual(e.col, 14)
+        src = 'fnc main() : void {\n    show("a", endd = 1);\n}\n'
+        out = self._check(src)
+        self.assertIn("Unexpected keyword argument 'endd'", out)
+        self.assertIn(":2:14", out)
 
 
-class TestParserStatementWhitelist(unittest.TestCase):
+class TestParserStatementWhitelist(FrontendTestCase):
     """L1: parse_statement's start whitelist rejected valid statements."""
 
     VALID = [
@@ -439,7 +384,7 @@ class TestParserStatementWhitelist(unittest.TestCase):
         "x := thisworker.id();",
         's := """a""";',
         "b := true;",
-        "s := \"str\";",
+        's := "str";',
         "n := -1;",
         "x := (1 + 2);",
         "p := &x;",
@@ -449,17 +394,13 @@ class TestParserStatementWhitelist(unittest.TestCase):
     def test_statement_start_whitelist(self):
         for src in self.VALID:
             with self.subTest(src=src):
-                e = err_of(lambda s: body_of(s), src)
-                self.assertIsNone(e, "unexpected error for %r: %s"
-                                  % (src, e.msg if e else ""))
+                self.assertParseOk(self._check_body(src), src)
 
     def test_char_statement_parses_as_expression(self):
-        stmts = body_of("'c';")
-        self.assertIsInstance(stmts[0], A.ExpressionStatement)
+        self.assertParseOk(self._check_body("'c';"), "'c';")
 
     def test_increment_statement_parses(self):
-        stmts = body_of("i := 0; ++i;")
-        self.assertIsInstance(stmts[1], A.ExpressionStatement)
+        self.assertParseOk(self._check_body("i := 0; ++i;"), "++i")
 
 
 if __name__ == "__main__":

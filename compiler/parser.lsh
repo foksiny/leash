@@ -50,6 +50,10 @@ pub def Parser : class {
     pub import_aliases: hash<string, string>; // aliasName -> modulePath
     pub quiet: bool;
     pub parse_errs: int;   // bumped by every failed consume (even when quiet)
+    pub depth: int;        // shared expression/statement/type nesting guard
+    pub last_err_msg: string; // last recorded parse error (interpolation wrapping)
+    pub parse_fail: bool;  // an expression could not be parsed (sub-parse probe)
+    pub param_what: string; // separator context for the next parameter list
     pub fatal: bool;       // python-parity: fatal parse errors (rc=1)
     pub fatal_msg: string; // full `error: ...` message (original case kept)
     pub fatal_tip: string; // python's help tip (may be "")
@@ -77,7 +81,7 @@ pub def Parser : class {
         empty_ml: vec<MacroDef>;
         empty_de: vec<string>;
         empty_dt: vec<string>;
-        return Parser { tokens: tokens, pos: 0, len: tokens.size, fe_counter: 0, no_struct_init: false, type_aliases: empty_aliases, import_aliases: empty_import_aliases, quiet: false, parse_errs: 0, fatal: false, fatal_msg: "", fatal_tip: "", fatal_line: 0, fatal_col: 0, deferred_errors: empty_de, arr_rt_size: "", keep_sized: false, mod_unsafe: false, mod_nogc: false, mod_inline: false, mod_async: false, mod_worker: false, hoisted_funcs: empty_hf, hoisted_mark: 0, macros: empty_macros, lambda_counter: 0, macro_list: empty_ml, deferred_templates: empty_dt };
+        return Parser { tokens: tokens, pos: 0, len: tokens.size, fe_counter: 0, no_struct_init: false, type_aliases: empty_aliases, import_aliases: empty_import_aliases, quiet: false, parse_errs: 0, depth: 0, last_err_msg: "", parse_fail: false, param_what: "parameter list", fatal: false, fatal_msg: "", fatal_tip: "", fatal_line: 0, fatal_col: 0, deferred_errors: empty_de, arr_rt_size: "", keep_sized: false, mod_unsafe: false, mod_nogc: false, mod_inline: false, mod_async: false, mod_worker: false, hoisted_funcs: empty_hf, hoisted_mark: 0, macros: empty_macros, lambda_counter: 0, macro_list: empty_ml, deferred_templates: empty_dt };
     }
 
     // Function literal: fnc(a int, b int) : int { ... }  (hoisted, used as a value)
@@ -93,6 +97,7 @@ pub def Parser : class {
             if this.match_tok(Tok.ASSIGN) { lp_def = this.parse_expression(Precedence.LOWEST); }
             lparams.pushb(FuncParam.make(lp_tok.val, lp_typ, false, lp_def));
             while this.match_tok(Tok.COMMA) {
+                if this.check(Tok.RPAREN) { stop; }
                 lp_tok2: Token = this.consume(Tok.IDENT, "expected lambda parameter name");
                 this.match_tok(Tok.COLON);
                 lp_typ2: string = this.parse_type();
@@ -101,6 +106,7 @@ pub def Parser : class {
                 lparams.pushb(FuncParam.make(lp_tok2.val, lp_typ2, false, lp_def2));
             }
         }
+        if !this.check(Tok.RPAREN) && !this.fatal { this.sep_fatal(")", "lambda parameter list"); }
         this.consume(Tok.RPAREN, "expected ')' after lambda parameters");
         lp_ret: string = "void";
         if this.match_tok(Tok.COLON) {
@@ -292,14 +298,124 @@ pub def Parser : class {
             return tok;
         }
         this.parse_errs = this.parse_errs + 1;
+        this.last_err_msg = err_msg;
         if !this.quiet && !this.fatal {
             show("parse error: ", err_msg, " at line ", tok.line, ":", tok.col, " (got ", Tok.name(tok.kind), " '", tok.val, "')");
         }
         return tok;
     }
 
+    // python-style token type names for parity diagnostics
+    // ("Unexpected token RPAREN (')') in expression").
+    static pub fnc py_tok_name(kind int) : string {
+        if kind == Tok.IDENT { return "IDENT"; }
+        if kind == Tok.INT || kind == Tok.FLOAT { return "NUMBER"; }
+        if kind == Tok.STRING { return "STRING"; }
+        if kind == Tok.CHAR { return "CHAR"; }
+        if kind == Tok.BOOL { return "BOOL"; }
+        if kind == Tok.NIL { return "NIL"; }
+        if kind == Tok.LPAREN { return "LPAREN"; }
+        if kind == Tok.RPAREN { return "RPAREN"; }
+        if kind == Tok.LBRACE { return "LBRACE"; }
+        if kind == Tok.RBRACE { return "RBRACE"; }
+        if kind == Tok.LBRACKET { return "LBRACKET"; }
+        if kind == Tok.RBRACKET { return "RBRACKET"; }
+        if kind == Tok.SEMI { return "SEMI"; }
+        if kind == Tok.COLON { return "COLON"; }
+        if kind == Tok.COMMA { return "COMMA"; }
+        if kind == Tok.DOT { return "DOT"; }
+        if kind == Tok.PLUS { return "PLUS"; }
+        if kind == Tok.MINUS { return "MINUS"; }
+        if kind == Tok.STAR { return "STAR"; }
+        if kind == Tok.SLASH { return "SLASH"; }
+        if kind == Tok.PERCENT { return "PERCENT"; }
+        if kind == Tok.EQ { return "EQ"; }
+        if kind == Tok.NEQ { return "NEQ"; }
+        if kind == Tok.LT { return "LT"; }
+        if kind == Tok.LTE { return "LTE"; }
+        if kind == Tok.GT { return "GT"; }
+        if kind == Tok.GTE { return "GTE"; }
+        if kind == Tok.ASSIGN { return "ASSIGN"; }
+        if kind == Tok.AND { return "AND"; }
+        if kind == Tok.OR { return "OR"; }
+        if kind == Tok.NOT { return "NOT"; }
+        return Tok.name(kind);
+    }
+
+    // Consume exactly one generic-closing '>'; a '>>' token is spliced into
+    // two GTs first (python `_eat_gt`, needed for `vec<uint<128>>`).
+    pub fnc eat_gt() : Token {
+        if this.check(Tok.RSHIFT) {
+            new_toks: vec<Token>;
+            bi: int = 0;
+            while bi < this.tokens.size {
+                t_tok2: Token = this.tokens.get(bi);
+                if bi == this.pos {
+                    t_tok2.kind = Tok.GT;
+                    t_tok2.val = ">";
+                    new_toks.pushb(t_tok2);
+                    extra: Token = Token.make(Tok.GT, ">", t_tok2.line, t_tok2.col);
+                    new_toks.pushb(extra);
+                } else {
+                    new_toks.pushb(t_tok2);
+                }
+                bi = bi + 1;
+            }
+            this.tokens = new_toks;
+            this.len = this.tokens.size;
+        }
+        return this.consume(Tok.GT, "expected '>'");
+    }
+
+    // Fatal parse error with python's rendering (message + source position).
+    pub fnc raise_fatal(err_msg string, tip string, at Token) : void {
+        this.fatal = true;
+        this.fatal_msg = err_msg;
+        this.fatal_tip = tip;
+        this.fatal_line = at.line;
+        this.fatal_col = at.col;
+        this.pos = this.len;
+    }
+
+    // Fatal error in a type position. Speculative parses (the cast
+    // lookahead) must merely fail their trial, never abort the unit.
+    pub fnc type_fatal(err_msg string, at Token) : void {
+        if this.quiet {
+            this.parse_errs = this.parse_errs + 1;
+            this.last_err_msg = err_msg;
+            return;
+        }
+        this.raise_fatal(err_msg, "", at);
+    }
+
+    // python _expect_sep: `Expected ',' or '<close>' to separate items in
+    // <what>, but found '<tok>'` (fatal).
+    pub fnc sep_fatal(close_ch string, what string) : void {
+        at: Token = this.current();
+        this.raise_fatal("Expected ',' or '" + close_ch + "' to separate items in " + what + ", but found '" + at.val + "'", "", at);
+    }
+
+    // Shared nesting-depth guard (python _enter parity): one counter backs
+    // expression, statement, and type nesting.
+    pub fnc depth_guard(what string) : bool {
+        if this.depth < 100 { return false; }
+        if !this.fatal {
+            at: Token = this.current();
+            this.type_fatal(what + " nesting is too deep (maximum 100 levels).", at);
+        }
+        return true;
+    }
+
     // --- Type Parsing ---
     pub fnc parse_type() : string {
+        if this.depth_guard("Type") { return ""; }
+        this.depth = this.depth + 1;
+        t: string = this.parse_type_inner();
+        this.depth = this.depth - 1;
+        return t;
+    }
+
+    pub fnc parse_type_inner() : string {
         t: string = "";
         this.arr_rt_size = "";
         // Multi-type syntax: [T1, T2, ...] — only valid at the start of a
@@ -350,10 +466,17 @@ pub def Parser : class {
             return t;
         }
 
-        // Tuple type: (T1, T2, ...)
+        // Tuple type: (T1, T2, ...). python only accepts the paren form
+        // when a comma follows the first type — a bare grouping paren such
+        // as `(int)` is a fatal error at type position.
         if this.check(Tok.LPAREN) {
+            lp_tok: Token = this.current();
             this.pos = this.pos + 1;
             t = "(" + this.parse_type();
+            if !this.check(Tok.COMMA) && !this.fatal {
+                this.type_fatal("Unexpected token LPAREN ('(') where a type was expected", lp_tok);
+                return t;
+            }
             while this.match_tok(Tok.COMMA) {
                 t = t + ", " + this.parse_type();
             }
@@ -387,6 +510,23 @@ pub def Parser : class {
             }
             // Check for generics: vec<T>, hash<K,V>
             if this.match_tok(Tok.LT) {
+                // Sized primitive (`int<32>`, `uint<8>`, `float<64>`):
+                // python reads a NUMBER here and rejects non-positive or
+                // fractional widths; anything else is a generic argument
+                // list (vec<T>, Hash<K, V>).
+                if this.check(Tok.INT) || this.check(Tok.FLOAT) {
+                    sz_tok: Token = this.current();
+                    this.pos = this.pos + 1;
+                    sz_ok: bool = true;
+                    if sz_tok.kind == Tok.FLOAT { sz_ok = false; }
+                    if sz_tok.kind == Tok.INT && this.parse_int_text(sz_tok.val) <= 0 { sz_ok = false; }
+                    if !sz_ok {
+                        this.type_fatal("Invalid bit width '" + sz_tok.val + "' for '" + t + "': expected a positive integer (e.g. int<32>, uint<8>).", sz_tok);
+                    } else {
+                        this.eat_gt();
+                        t = t + "<" + sz_tok.val + ">";
+                    }
+                } else {
                 gargs: vec<string>;
                 gargs.pushb(this.parse_type());
                 while this.match_tok(Tok.COMMA) {
@@ -425,6 +565,7 @@ pub def Parser : class {
                         gi = gi + 1;
                     }
                     t = t + ">";
+                }
                 }
             }
             also this.check(Tok.LPAREN) && (this.peek(1).kind == Tok.RPAREN
@@ -614,7 +755,7 @@ pub def Parser : class {
         return Expr.make_binop("+", result, node);
     }
 
-    pub fnc parse_interpolated(s string) : Expr {
+    pub fnc parse_interpolated(s string, str_tok Token) : Expr {
         result: Expr = null;
         lit: string = "";
         i: int = 0;
@@ -677,6 +818,22 @@ pub def Parser : class {
                         sub_par: Parser = Parser.make(sub_toks);
                         sub_par.quiet = true;
                         inner = sub_par.parse_expression(Precedence.LOWEST);
+                        if sub_par.fatal || sub_par.parse_errs > 0 || sub_par.parse_fail {
+                            // Tokens lexed but the expression does not parse:
+                            // python raises LeashError here and surfaces it.
+                            stripped: string = "";
+                            sa: int = 0;
+                            while sa < expr_src.size && (expr_src[sa] == ' ' || expr_src[sa] == '\t') { sa = sa + 1; }
+                            sb: int = expr_src.size;
+                            while sb > sa && (expr_src[sb - 1] == ' ' || expr_src[sb - 1] == '\t') { sb = sb - 1; }
+                            si: int = sa;
+                            while si < sb {
+                                stripped = stripped + expr_src[si];
+                                si = si + 1;
+                            }
+                            this.raise_fatal("Invalid interpolation expression '" + stripped + "': " + sub_par.last_err_msg, "", str_tok);
+                            return Expr.make_string("");
+                        }
                         if inner != null && inner.kind != ExprKind.NIL && sub_par.current().kind == Tok.EOF {
                             is_expr = true;
                         }
@@ -743,6 +900,8 @@ pub def Parser : class {
     }
 
     pub fnc parse_expression(prec int) : Expr {
+        if this.depth_guard("Expression") { return Expr.make_nil(); }
+        this.depth = this.depth + 1;
         left: Expr = this.parse_prefix();
 
         loop {
@@ -753,6 +912,7 @@ pub def Parser : class {
             left = this.parse_infix(left);
         }
 
+        this.depth = this.depth - 1;
         return left;
     }
 
@@ -885,7 +1045,7 @@ pub def Parser : class {
         // String literal (with optional {expr} interpolation)
         if this.match_tok(Tok.STRING) {
             if this.has_braces(tok.val) {
-                return this.parse_interpolated(tok.val);
+                return this.parse_interpolated(tok.val, tok);
             }
             return Expr.make_string(this.unescape_str(tok.val));
         }
@@ -1027,6 +1187,10 @@ pub def Parser : class {
                     }
                 }
             }
+            if !this.check(Tok.RBRACE) && !this.fatal {
+                if is_hash_lit { this.sep_fatal("}", "hash initializer"); }
+                else { this.sep_fatal("}", "array literal"); }
+            }
             this.consume(Tok.RBRACE, "expected '}' after literal");
             if is_hash_lit {
                 he: Expr = Expr.make_array_lit(elems);
@@ -1064,21 +1228,14 @@ pub def Parser : class {
                 if !this.check(Tok.RPAREN) {
                     cargs.pushb(this.parse_expression(Precedence.LOWEST));
                     while this.match_tok(Tok.COMMA) {
+                        if this.check(Tok.RPAREN) { stop; }
                         cargs.pushb(this.parse_expression(Precedence.LOWEST));
                     }
                 }
-                // Python parity: keyword arguments are rejected inside
-                // `create(...)` with a dedicated message (fatal, like its
-                // LeashError).
-                if this.check(Tok.ASSIGN) {
-                    at: Token = this.current();
-                    this.fatal = true;
-                    this.fatal_msg = "Expected ',' or ')' to separate items in create expression argument list, but found '='";
-                    this.fatal_tip = "";
-                    this.fatal_line = at.line;
-                    this.fatal_col = at.col;
-                    this.pos = this.len;
-                    return Expr.make_create(cname_tok.val, cargs);
+                // Python parity: a missing separator (including a keyword
+                // argument's '=') is a fatal `Expected ',' or ')'` error.
+                if !this.check(Tok.RPAREN) && !this.fatal {
+                    this.sep_fatal(")", "create expression argument list");
                 }
                 this.consume(Tok.RPAREN, "expected ')' after 'create' arguments");
                 return Expr.make_create(cname_tok.val, cargs);
@@ -1167,9 +1324,11 @@ pub def Parser : class {
                 if !this.check(Tok.RPAREN) {
                     args.pushb(this.parse_call_arg());
                     while this.match_tok(Tok.COMMA) {
+                        if this.check(Tok.RPAREN) { stop; }
                         args.pushb(this.parse_call_arg());
                     }
                 }
+                if !this.check(Tok.RPAREN) && !this.fatal { this.sep_fatal(")", "call argument list"); }
                 this.consume(Tok.RPAREN, "expected ')' after call arguments");
                 if this.macros.isin(name) {
                     pm_def: MacroDef = this.macros[name];
@@ -1193,6 +1352,9 @@ pub def Parser : class {
                         stop;
                     }
                 }
+                if !this.check(Tok.RBRACE) && !this.check(Tok.EOF) && !this.fatal {
+                    this.sep_fatal("}", "struct initializer");
+                }
                 this.consume(Tok.RBRACE, "expected '}' after struct init");
                 return Expr.make_struct_init(name, fnames, fvals);
             }
@@ -1209,6 +1371,8 @@ pub def Parser : class {
             return Expr.make_ident(name);
         }
 
+        this.last_err_msg = "Unexpected token " + Parser.py_tok_name(tok.kind) + " ('" + tok.val + "') in expression";
+        this.parse_fail = true;
         if !this.quiet {
             show("parse error: unexpected token in expression: ", Tok.name(tok.kind), " '", tok.val, "' at ", tok.line, ":", tok.col);
         }
@@ -1301,9 +1465,11 @@ pub def Parser : class {
                 if !this.check(Tok.RPAREN) {
                     args.pushb(this.parse_call_arg());
                     while this.match_tok(Tok.COMMA) {
+                        if this.check(Tok.RPAREN) { stop; }
                         args.pushb(this.parse_call_arg());
                     }
                 }
+                if !this.check(Tok.RPAREN) && !this.fatal { this.sep_fatal(")", "method call argument list"); }
                 this.consume(Tok.RPAREN, "expected ')' after method arguments");
                 if left.kind == ExprKind.IDENT && this.import_aliases.isin(left.sval) {
                     return Expr.make_call(left.sval + "_" + mem_tok.val, args);
@@ -1342,9 +1508,11 @@ pub def Parser : class {
             if !this.check(Tok.RPAREN) {
                 args.pushb(this.parse_call_arg());
                 while this.match_tok(Tok.COMMA) {
+                    if this.check(Tok.RPAREN) { stop; }
                     args.pushb(this.parse_call_arg());
                 }
             }
+            if !this.check(Tok.RPAREN) && !this.fatal { this.sep_fatal(")", "call argument list"); }
             this.consume(Tok.RPAREN, "expected ')' after call arguments");
             if left.kind == ExprKind.IDENT && this.macros.isin(left.sval) {
                 m_def: MacroDef = this.macros[left.sval];
@@ -1434,12 +1602,18 @@ pub def Parser : class {
     }
 
     pub fnc parse_statement() : Stmt {
+        if this.depth_guard("Statement") {
+            no_stmts: vec<Stmt>;
+            return Stmt.make_block(no_stmts);
+        }
+        this.depth = this.depth + 1;
         pos_tok: Token = this.current();
         inner: Stmt = this.parse_statement_inner();
         if inner != null {
             inner.line = pos_tok.line;
             inner.col = pos_tok.col;
         }
+        this.depth = this.depth - 1;
         return inner;
     }
 
@@ -1532,9 +1706,11 @@ pub def Parser : class {
             if !this.check(Tok.RPAREN) {
                 targs.pushb(this.parse_expression(Precedence.LOWEST));
                 while this.match_tok(Tok.COMMA) {
+                    if this.check(Tok.RPAREN) { stop; }
                     targs.pushb(this.parse_expression(Precedence.LOWEST));
                 }
             }
+            if !this.check(Tok.RPAREN) && !this.fatal { this.sep_fatal(")", "throw argument list"); }
             this.consume(Tok.RPAREN, "expected ')' after throw arguments");
             this.consume(Tok.SEMI, "expected ';' after throw");
             throw_stmt: Stmt = Stmt.make_throw(tname_tok.val, targs);
@@ -1668,7 +1844,10 @@ pub def Parser : class {
         // Nested function declaration: `fnc name(...) { ... }`
         // Hoisted to top level (python resolves the name in the enclosing scope).
         if this.check(Tok.FNC) {
+            pw_save: string = this.param_what;
+            this.param_what = "method parameter list";
             nested_fd: FuncDecl = this.parse_function(false, true);
+            this.param_what = pw_save;
             this.hoisted_funcs.pushb(nested_fd);
             nf_body: vec<Stmt>;
             return Stmt.make_block(nf_body);
@@ -1885,6 +2064,10 @@ pub def Parser : class {
                     if this.check(Tok.RPAREN) { stop; } // trailing comma
                 }
             }
+            if !this.check(Tok.RPAREN) && !this.fatal {
+                if is_showb { this.sep_fatal(")", "showb() argument list"); }
+                else { this.sep_fatal(")", "show() argument list"); }
+            }
             this.consume(Tok.RPAREN, "expected ')' after show arguments");
             this.consume(Tok.SEMI, "expected ';' after show call");
             st: Stmt = Stmt.make_show(args, is_showb);
@@ -1915,12 +2098,9 @@ pub def Parser : class {
             return Stmt.make_switch(val, cases, default_b);
         }
 
-        // Block statement: { ... }
-        if this.check(Tok.LBRACE) {
-            body: vec<Stmt> = this.parse_block();
-            return Stmt.make_block(body);
-        }
-
+        // python parity: a `{` at statement start is an array/hash literal
+        // expression, not a bare block statement (python has no block
+        // statements — `{1, 2};` parses as an expression statement).
         // Expression statement or Assignment
         expr: Expr = this.parse_expression(Precedence.LOWEST);
 
@@ -2232,6 +2412,7 @@ pub def Parser : class {
             if this.match_tok(Tok.ASSIGN) { pdef = this.parse_expression(Precedence.LOWEST); }
             params.pushb(FuncParam.make(pn.val, pt, false, pdef));
             while this.match_tok(Tok.COMMA) {
+                if this.check(Tok.RPAREN) { stop; }
                 pn2: Token = this.consume(Tok.IDENT, "expected parameter name");
                 this.match_tok(Tok.COLON);
                 pt2: string = this.parse_type();
@@ -2240,6 +2421,7 @@ pub def Parser : class {
                 params.pushb(FuncParam.make(pn2.val, pt2, false, pdef2));
             }
         }
+        if !this.check(Tok.RPAREN) && !this.fatal { this.sep_fatal(")", "method parameter list"); }
         this.consume(Tok.RPAREN, "expected ')' after method parameter list");
         ret_type: string = "void";
         if this.match_tok(Tok.COLON) {
@@ -2477,6 +2659,7 @@ pub def Parser : class {
                 params.pushb(FuncParam.make(p_name.val, p_type, p_imut, pdef));
 
                 while this.match_tok(Tok.COMMA) {
+                    if this.check(Tok.RPAREN) { stop; }
                     pn: Token = this.consume(Tok.IDENT, "expected parameter name");
                     pi: bool = false;
                     if this.current().val == "imut" {
@@ -2490,6 +2673,7 @@ pub def Parser : class {
                     params.pushb(FuncParam.make(pn.val, pt, pi, pdef2));
                 }
             }
+            if !this.check(Tok.RPAREN) && !this.fatal { this.sep_fatal(")", this.param_what); }
             this.consume(Tok.RPAREN, "expected ')' after parameter list");
         }
 
@@ -2555,7 +2739,10 @@ pub def Parser : class {
             }
 
             if this.check(Tok.FNC) {
+                cls_pw: string = this.param_what;
+                this.param_what = "method parameter list";
                 methods.pushb(this.parse_function(false, is_pub));
+                this.param_what = cls_pw;
             } else {
                 fname: Token = this.consume(Tok.IDENT, "expected field name");
                 this.consume(Tok.COLON, "expected ':' after field name");
@@ -2627,7 +2814,10 @@ pub def Parser : class {
             }
 
             if this.check(Tok.FNC) {
+                cls_pw2: string = this.param_what;
+                this.param_what = "method parameter list";
                 m_fd: FuncDecl = this.parse_function(is_static, is_pub);
+                this.param_what = cls_pw2;
                 m_fd.is_imut = is_imut_m;
                 methods.pushb(m_fd);
             } also this.check(Tok.IDENT) && this.peek(1).kind == Tok.LPAREN {
@@ -2699,7 +2889,8 @@ pub def Parser : class {
             ev.str_val = v_sval;
             ev.has_str = v_has_str;
             variants.pushb(ev);
-            if !this.match_tok(Tok.COMMA) {
+            // python parity: enum members may be comma- or semicolon-separated.
+            if !this.match_tok(Tok.COMMA) && !this.match_tok(Tok.SEMI) {
                 stop;
             }
         }

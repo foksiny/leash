@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """Regression tests for Phase 3 (optimizer + codegen) audit fixes.
 
+All tests are black-box against bin/leashc: they compile a Leash program and
+either run the produced binary or inspect the emitted LLVM IR.
+
 Covers:
-- dead-branch elimination must preserve non-literal `also` chains behind an
-  always-false condition (previously silently dropped reachable code)
 - exec(..., "wait"/"silent") must accumulate ALL output lines (previously the
   result buffer aliased the fgets line buffer, so output was corrupted)
 - File.replace/replaceall with an empty old_str must be a no-op (previously an
   infinite loop in replaceall) and an empty new_str must not under-allocate
   the result buffer (previously a 1-byte heap overflow)
-- sizeof uses ABI-padded struct sizes (via _type_byte_size -> _get_type_size)
+- sizeof uses ABI-padded struct sizes
 
 Run directly:  python3 tests/test_codegen_fixes.py
 Or via unittest discovery from the repo root:
@@ -17,130 +18,11 @@ Or via unittest discovery from the repo root:
 """
 import os
 import subprocess
-import sys
 import tempfile
 import unittest
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BIN_LEASHC = os.path.join(REPO_ROOT, "bin", "leashc")
-sys.path.insert(0, REPO_ROOT)
-
-from leash.ast_nodes import (  # noqa: E402
-    BinaryOp,
-    Block,
-    BoolLiteral,
-    ExpressionStatement,
-    Function,
-    Identifier,
-    IfStatement,
-    NumberLiteral,
-    Program,
-)
-from leash.ast_optimize import _walk_stmt_dead_branch, optimize_ast  # noqa: E402
-
-
-def _mark(name):
-    return ExpressionStatement(Identifier(name))
-
-
-class TestDeadBranchAlsoChain(unittest.TestCase):
-    """ast_optimize dead-branch pass must not drop reachable also-chains."""
-
-    def test_nonliteral_also_chain_is_preserved(self):
-        mid_cond = BinaryOp(Identifier("x"), ">", NumberLiteral(2))
-        stmt = IfStatement(
-            BoolLiteral(False),
-            Block([_mark("then")]),
-            [
-                (mid_cond, Block([_mark("middle")]), False),
-                (BoolLiteral(True), Block([_mark("late")]), False),
-            ],
-            Block([_mark("else")]),
-        )
-        out = _walk_stmt_dead_branch(stmt)
-        self.assertIsInstance(out, IfStatement)
-        self.assertIs(out.condition, mid_cond)
-        self.assertEqual(
-            [s.expr.name for s in out.then_block.statements], ["middle"]
-        )
-        self.assertEqual(len(out.also_blocks), 1)
-        ac, ab, inv = out.also_blocks[0]
-        self.assertIsInstance(ac, BoolLiteral)
-        self.assertTrue(ac.value)
-        self.assertFalse(inv)
-        self.assertEqual([s.expr.name for s in ab.statements], ["late"])
-        self.assertIsNotNone(out.else_block)
-        self.assertEqual(
-            [s.expr.name for s in out.else_block.statements], ["else"]
-        )
-
-    def test_nonliteral_also_without_else_promoted(self):
-        cond = BinaryOp(Identifier("y"), ">", NumberLiteral(1))
-        stmt = IfStatement(
-            BoolLiteral(False),
-            Block([_mark("then")]),
-            [(cond, Block([_mark("body")]), False)],
-            None,
-        )
-        out = _walk_stmt_dead_branch(stmt)
-        self.assertIsInstance(out, IfStatement)
-        self.assertIs(out.condition, cond)
-        self.assertEqual([s.expr.name for s in out.then_block.statements], ["body"])
-        self.assertEqual(out.also_blocks, [])
-        self.assertIsNone(out.else_block)
-
-    def test_literal_true_also_returns_that_block(self):
-        stmt = IfStatement(
-            BoolLiteral(False),
-            Block([_mark("then")]),
-            [(BoolLiteral(True), Block([_mark("late")]), False)],
-            Block([_mark("else")]),
-        )
-        out = _walk_stmt_dead_branch(stmt)
-        self.assertIsInstance(out, list)
-        self.assertEqual([s.expr.name for s in out], ["late"])
-
-    def test_literal_false_also_skipped_to_next(self):
-        stmt = IfStatement(
-            BoolLiteral(False),
-            Block([_mark("then")]),
-            [
-                (BoolLiteral(False), Block([_mark("never")]), False),
-                (BoolLiteral(True), Block([_mark("late")]), False),
-            ],
-            None,
-        )
-        out = _walk_stmt_dead_branch(stmt)
-        self.assertIsInstance(out, list)
-        self.assertEqual([s.expr.name for s in out], ["late"])
-
-    def test_true_condition_keeps_then(self):
-        stmt = IfStatement(
-            BoolLiteral(True),
-            Block([_mark("then")]),
-            [(BinaryOp(Identifier("x"), ">", NumberLiteral(0)),
-              Block([_mark("never")]), False)],
-            Block([_mark("else")]),
-        )
-        out = _walk_stmt_dead_branch(stmt)
-        self.assertIsInstance(out, list)
-        self.assertEqual([s.expr.name for s in out], ["then"])
-
-    def test_also_chain_survives_full_optimize_ast(self):
-        mid_cond = BinaryOp(Identifier("x"), ">", NumberLiteral(2))
-        stmt = IfStatement(
-            BoolLiteral(False),
-            Block([_mark("then")]),
-            [(mid_cond, Block([_mark("middle")]), False)],
-            Block([_mark("else")]),
-        )
-        fn = Function(
-            "main", [], "void", Block([stmt]), visibility="pub"
-        )
-        prog = optimize_ast(Program([fn]))
-        out = prog.items[0].body.statements[0]
-        self.assertIsInstance(out, IfStatement)
-        self.assertIs(out.condition, mid_cond)
 
 
 class _CompileRunBase(unittest.TestCase):
@@ -609,17 +491,12 @@ class TestFusionAtomics(_CompileRunBase):
                     "fnc main() : void { spawn bump(); counter = counter + 5; show(counter); }\n"
                 )
             build = subprocess.run(
-                [sys.executable, "-m", "leash.cli", "dump", src_path, "to", ll_path],
+                [BIN_LEASHC, "compile", src_path, "--emit-llvm", "to", ll_path],
                 cwd=REPO_ROOT, capture_output=True, text=True, timeout=300,
             )
-            if build.returncode != 0:
-                # older CLI syntax: dump writes <input>.ll next to the source
-                build = subprocess.run(
-                    [sys.executable, "-m", "leash.cli", "dump", src_path],
-                    cwd=REPO_ROOT, capture_output=True, text=True, timeout=300,
-                )
-                self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
-                ll_path = os.path.join(td, "main.ll")
+            self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
+            # the self-hosted compiler appends .ll to the output name
+            ll_path = ll_path + ".ll"
             ir_text = open(ll_path).read()
             self.assertIn("atomicrmw add", ir_text)
             self.assertIn("load atomic", ir_text)

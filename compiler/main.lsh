@@ -6,9 +6,9 @@ use leashed::*;
 // ---------------------------------------------------------------------------
 
 // Single source of truth for the release version. Bump discipline:
-// setup.py, leash/cli.py VERSION_STRING, README, docs badges, CHANGELOG.
+// README, docs badges, CHANGELOG.
 fnc leash_version() : string {
-    return "1.5.0";
+    return "1.5.1";
 }
 
 // Prefix test (no stdlib dependency this early in main.lsh).
@@ -710,6 +710,27 @@ fnc empty_libs_global() : vec<string> {
 // ---------------------------------------------------------------------------
 
 fnc cmd_install(args string[]) : int {
+    // Convenience: `leash install <dir>` (or `leash install compiler`)
+    // runs a global install from that project directory, so the compiler
+    // (and any other global_install entries) land in ~/.leash/bin.
+    if args.size == 3 {
+        d: string = args[2];
+        if d == "compiler" {
+            root: string = find_repo_root(Path.dirname(xout("realpath " + args[0])));
+            if root.size == 0 && xfile_exists("compiler/main.lsh") { root = xout("realpath ."); }
+            if root.size > 0 { d = root + "/compiler"; }
+        }
+        abs: string = xout("realpath -m " + d);
+        if xis_dir(abs) && xfile_exists(abs + "/config.lshc") {
+            show("Installing from ", abs, " ...");
+            self: string = xout("realpath " + args[0]);
+            rc: int = xcode("cd " + abs + " && " + self + " install");
+            if rc == 0 {
+                show("Installed 'leash' and 'leashc' to ", leash_bin_dir());
+            }
+            return rc;
+        }
+    }
     if args.size < 3 {
         // No paths: global binary installs from config.lshc.
         return cmd_install_global(args);
@@ -1234,10 +1255,18 @@ fnc cmd_self_host(args string[]) : int {
     }
     exec("mkdir -p " + root + "/bin", nil);
 
-    show("[self-host] Stage 0: python compiler -> bin/leashc_stage1");
-    rc: int = xcode("cd " + root + " && python3 -m leash.cli compile compiler/main.lsh to bin/leashc_stage1");
+    // Python-free stage 0: seed from the installed self-hosted binary, or
+    // from the checked-in bootstrap compiler when bin/leashc is missing.
+    seed: string = root + "/bin/leashc";
+    if !xfile_exists(seed) { seed = root + "/bootstrap/leash-1.5.1-target-x86_64"; }
+    if !xfile_exists(seed) {
+        show("error: no seed compiler found (need bin/leashc or bootstrap/leash-1.5.1-target-x86_64)");
+        return 1;
+    }
+    show("[self-host] Stage 0: seeding bin/leashc_stage1 from ", seed);
+    rc: int = xcode("cd " + root + " && cp " + seed + " bin/leashc_stage1 && chmod +x bin/leashc_stage1");
     if rc != 0 {
-        show("error: stage 0 failed (is the Python toolchain installed? try: leashp)");
+        show("error: stage 0 failed (seed -> bin/leashc_stage1)");
         return rc;
     }
     show("[self-host] Stage 1: bin/leashc_stage1 compiles itself -> bin/leashc_stage2");

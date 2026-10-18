@@ -163,9 +163,6 @@ class TestDocs(unittest.TestCase):
         m = re.search(r"# leash pkg v(\d+\.\d+\.\d+)", ver_blocks[0])
         self.assertIsNotNone(m, "--version example output missing from docs")
         self.assertEqual(m.group(1), leashed_mod.LEASHED_VERSION)
-        m = re.search(r"# leashed v(\d+\.\d+\.\d+)", ver_blocks[0])
-        self.assertIsNotNone(m, "leashed --version example output missing")
-        self.assertEqual(m.group(1), leashed_mod.LEASHED_VERSION)
 
 
 if __name__ == "__main__":

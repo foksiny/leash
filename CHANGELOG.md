@@ -5,7 +5,28 @@ All notable changes to the Leash compiler are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [1.5.0] - 2026-10-16
+## [1.5.1] - 2026-10-18
+
+### Changed
+- The Python reference compiler (`leash/cli.py` and the 12 other
+  `leash/*.py` modules) has been removed. The self-hosted compiler is
+  now the sole toolchain: it bootstraps itself from the checked-in
+  `bootstrap/leash-1.5.1-target-*` seed binaries with no Python
+  dependency (`./scripts/bootstrap.sh`, `leash self-host`). `pip
+  install .` / `leashp` are no longer provided; use `bin/leashc` (or
+  `leash`/`leashc` on PATH) instead.
+- The package manager's reference oracle remains in
+  `leash/leashed.py` (used by `tests/test_pkg.py` / `tests/test_leashed.py`),
+  now driven by the self-hosted compiler instead of the Python toolchain.
+- Lexer/parser now match the Python reference's diagnostics byte-for-byte
+  (lexer error positions, CRLF line counting, bit-width validation,
+  interpolation error surfacing, trailing commas in all list contexts,
+  strict escape/number handling), closing the last frontend parity gaps.
+- `tests/test_frontend.py` ported to run against `bin/leashc`.
+
+### Removed
+- `setup.py`, `pyproject.toml`, `MANIFEST.in` (Python packaging) and the
+  `leashp` console entry point.
 
 Minor release: the package manager is now built into the self-hosted
 compiler as `leash pkg` — a full port of the Python reference tool

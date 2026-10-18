@@ -789,15 +789,20 @@ class TestIntegrityHardening(unittest.TestCase):
         open(os.path.join(dest, "src", "t.lsh"), "w").write("x")
         built = []
 
-        import leash.cli as cli_mod
-        orig_compile = cli_mod.compile_file
+        import subprocess as _sp
+        orig_compiler = L._leashc_compiler
+        L._leashc_compiler = lambda: "/fake/leashc"
+        orig_run = _sp.run
 
-        def fake_compile(src, out, *a, **k):
-            built.append((src, out))
-            with open(out, "w") as fh:
+        def fake_run(cmd, *a, **k):
+            built.append((cmd[2], cmd[4]))
+            with open(cmd[4], "w") as fh:
                 fh.write("bin")
+            class _R:
+                returncode = 0
+            return _R()
 
-        cli_mod.compile_file = fake_compile
+        _sp.run = fake_run
         orig_libs = L.LEASH_LIBS_DIR
         L.LEASH_LIBS_DIR = os.path.join(tmp, "libs")
         try:
@@ -805,7 +810,8 @@ class TestIntegrityHardening(unittest.TestCase):
                 dest, {"t": "src/t.lsh", "../evil": "src/t.lsh",
                        "ghost": "src/missing.lsh"})
         finally:
-            cli_mod.compile_file = orig_compile
+            L._leashc_compiler = orig_compiler
+            _sp.run = orig_run
             L.LEASH_LIBS_DIR = orig_libs
         self.assertEqual(failed, ["../evil", "ghost"])
         self.assertEqual(len(installed), 1)

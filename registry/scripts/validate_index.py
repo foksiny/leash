@@ -24,6 +24,7 @@ Usage:
       [--report out.md] [--skip-network] [--compile]
 """
 import argparse
+import atexit
 import json
 import os
 import re
@@ -297,6 +298,45 @@ def validate_entry(name, entry, prev, pr_author, do_network=True, warnings=None)
     return problems
 
 
+_COMPILER_CACHE = {}
+
+
+def _selfhosted_compiler():
+    """Build (once) a current self-hosted compiler from the compiler repo.
+
+    Python-free: clone the repo shallowly, seed bin/leashc_stage1 from the
+    checked-in bootstrap binary, and compile compiler/main.lsh with it.
+    Returns the compiler path, or None (reason in _COMPILER_CACHE["error"]).
+    """
+    if "path" in _COMPILER_CACHE:
+        return _COMPILER_CACHE["path"]
+    if "error" in _COMPILER_CACHE:
+        return None
+    checkout = tempfile.mkdtemp(prefix="regcompiler_")
+    atexit.register(shutil.rmtree, checkout, ignore_errors=True)
+    rc, _, _ = run_git(["clone", "--depth", "1", LEASH_COMPILER_REPO, checkout])
+    if rc != 0:
+        _COMPILER_CACHE["error"] = "compiler repo clone failed"
+        return None
+    seed = os.path.join(checkout, "bootstrap", "leash-1.5.1-target-x86_64")
+    if not os.path.exists(seed):
+        _COMPILER_CACHE["error"] = "bootstrap seed missing"
+        return None
+    os.makedirs(os.path.join(checkout, "bin"), exist_ok=True)
+    stage1 = os.path.join(checkout, "bin", "leashc_stage1")
+    shutil.copy2(seed, stage1)
+    os.chmod(stage1, 0o755)
+    compiler = os.path.join(checkout, "bin", "leashc")
+    r = subprocess.run(
+        [stage1, "compile", "compiler/main.lsh", "to", compiler],
+        cwd=checkout, capture_output=True, text=True, timeout=1800)
+    if r.returncode != 0:
+        _COMPILER_CACHE["error"] = "seed failed to compile compiler/main.lsh"
+        return None
+    _COMPILER_CACHE["path"] = compiler
+    return compiler
+
+
 def smoke_compile(entry, warnings):
     """Best-effort compile of the published library. Never blocks merging."""
     name = entry.get("name", "?")
@@ -319,16 +359,15 @@ def smoke_compile(entry, warnings):
         if not target or not os.path.exists(target):
             warnings.append(f"`{name}`: compile smoke test skipped (no entry file)")
             return
-        pip = subprocess.run(
-            [sys.executable, "-m", "pip", "install", "--quiet",
-             f"git+{LEASH_COMPILER_REPO}"],
-            capture_output=True, text=True, timeout=600)
-        if pip.returncode != 0:
-            warnings.append(f"`{name}`: compile smoke test skipped (compiler install failed)")
+        compiler = _selfhosted_compiler()
+        if compiler is None:
+            warnings.append(
+                f"`{name}`: compile smoke test skipped "
+                f"(no self-hosted compiler available: {_COMPILER_CACHE.get('error')})")
             return
         out_tmp = tempfile.mkdtemp(prefix="regbuild_")
         comp = subprocess.run(
-            [sys.executable, "-m", "leash.cli", "compile", target,
+            [compiler, "compile", target,
              "to-static", os.path.join(out_tmp, name)],
             capture_output=True, text=True, timeout=600)
         if comp.returncode != 0:

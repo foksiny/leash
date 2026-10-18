@@ -1,8 +1,8 @@
 # Leash package configuration for the self-hosted compiler.
 name: "leash"
-version: "1.5.0"
+version: "1.5.1"
 author: "foksiny"
 description: "The Leash self-hosted compiler (LLVM native + JVM targets)"
 main: "main.lsh"
-global_install: "{leashc: main.lsh}"
+global_install: "{leash: main.lsh, leashc: main.lsh}"
 repo: "https://github.com/foksiny/leash.git"

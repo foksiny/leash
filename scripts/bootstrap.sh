@@ -10,27 +10,28 @@ mkdir -p bin
 
 # Stage 0 produces the first self-hosted compiler binary. Prefer an
 # already-built self-hosted seed (bin/leashc) so the bootstrap can run
-# with NO Python dependency; fall back to the (deprecated) Python
-# compiler only when no seed is available.
+# with NO Python dependency; fall back to the checked-in bootstrap
+# compiler binary.
 if [ -x bin/leashc ]; then
-    echo "[bootstrap] Stage 0: seeding from existing bin/leashc (Python-free)"
+    echo "[bootstrap] Stage 0: seeding from existing bin/leashc"
     cp bin/leashc bin/leashc_stage1
     chmod +x bin/leashc_stage1
-elif command -v python3 >/dev/null 2>&1 && python3 -c "import leash.cli" 2>/dev/null; then
-    echo "[bootstrap] Stage 0: python compiler -> bin/leashc_stage1 (deprecated; install a seed binary to go Python-free)"
-    python3 -m leash.cli compile compiler/main.lsh to bin/leashc_stage1
+elif [ -x bootstrap/leash-1.5.1-target-x86_64 ]; then
+    echo "[bootstrap] Stage 0: seeding from bootstrap/leash-1.5.1-target-x86_64"
+    cp bootstrap/leash-1.5.1-target-x86_64 bin/leashc_stage1
+    chmod +x bin/leashc_stage1
 else
     echo "[bootstrap] ERROR: no seed compiler found." >&2
-    echo "  Provide bin/leashc (a self-hosted seed) or install the Python" >&2
-    echo "  reference package (leashp) for the legacy Stage 0." >&2
+    echo "  Provide bin/leashc (a self-hosted seed) or" >&2
+    echo "  bootstrap/leash-1.5.1-target-x86_64." >&2
     exit 1
 fi
 
 echo "[bootstrap] Stage 1: bin/leashc_stage1 compiles compiler/main.lsh -> bin/leashc_stage2"
-bin/leashc_stage1 compile compiler/main.lsh -o bin/leashc_stage2
+bin/leashc_stage1 compile compiler/main.lsh to bin/leashc_stage2
 
 echo "[bootstrap] Stage 2: bin/leashc_stage2 compiles compiler/main.lsh -> bin/leashc_stage3"
-bin/leashc_stage2 compile compiler/main.lsh -o bin/leashc_stage3
+bin/leashc_stage2 compile compiler/main.lsh to bin/leashc_stage3
 
 # Always regenerate both IRs explicitly: a plain compile only writes the
 # temporary .ll when its object cache misses, so relying on those leftovers
@@ -38,8 +39,8 @@ bin/leashc_stage2 compile compiler/main.lsh -o bin/leashc_stage3
 IR2="/tmp/leashc_boot_stage2"
 IR3="/tmp/leashc_boot_stage3"
 rm -f "$IR2.ll" "$IR3.ll"
-bin/leashc_stage2 compile compiler/main.lsh --emit-llvm -o "$IR2"
-bin/leashc_stage3 compile compiler/main.lsh --emit-llvm -o "$IR3"
+bin/leashc_stage2 compile compiler/main.lsh --emit-llvm to "$IR2"
+bin/leashc_stage3 compile compiler/main.lsh --emit-llvm to "$IR3"
 
 echo "[bootstrap] Comparing Stage 2 IR vs Stage 3 IR for fixed point..."
 if diff <(grep -v '^;' "$IR2.ll" | tr -d ' ') <(grep -v '^;' "$IR3.ll" | tr -d ' ') > /dev/null; then

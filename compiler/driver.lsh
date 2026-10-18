@@ -298,6 +298,9 @@ pub def CompilerDriver : class {
             mod_lex: Lexer = Lexer.make(mod_code);
             mod_toks: vec<Token> = mod_lex.tokenize();
             if mod_lex.errs > 0 {
+                if mod_lex.err_msg.size > 0 {
+                    this.print_parse_error(mod_lex.err_msg, "", this.realpath_str(mod_file), mod_lex.err_line, mod_lex.err_col);
+                }
                 this.imports_fatal = true;
                 return;
             }
@@ -727,8 +730,11 @@ pub def CompilerDriver : class {
         lexer: Lexer = Lexer.make(source);
         tokens: vec<Token> = lexer.tokenize();
         if lexer.errs > 0 {
-            // Fatal lex errors (NUL in a string literal) stop the compile
-            // before parsing (python's lexer raises).
+            // Fatal lex errors stop the compile before parsing (python's
+            // lexer raises on the first one); render it with its location.
+            if lexer.err_msg.size > 0 {
+                this.print_parse_error(lexer.err_msg, "", this.realpath_str(input_file), lexer.err_line, lexer.err_col);
+            }
             return 1;
         }
 

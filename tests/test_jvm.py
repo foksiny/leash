@@ -399,7 +399,7 @@ class TestJvmTarget(unittest.TestCase):
             '    v.pushb(1);\n'
             '    v.pushb(2);\n'
             '    showb(v);\n'
-            '    showb("\n");\n'
+            '    showb("\\n");\n'
             '}\n')
 
     def test_async_parity(self):
@@ -645,17 +645,6 @@ class TestJvmTarget(unittest.TestCase):
                  "--emit-llvm", "to", os.path.join(self.tmp, "ll")])
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("--emit-llvm", r.stdout + r.stderr)
-
-    def test_python_cli_rejects_jvm(self):
-        # The Python reference toolchain does not emit JVM bytecode; it
-        # must steer users to the self-hosted compiler with a clean error.
-        r = _sh(["python3", "-m", "leash.cli", "compile",
-                 os.path.join(REPO_ROOT, "examples", "hello.lsh"),
-                 "--target", "jvm", "to", os.path.join(self.tmp, "pyjvm")])
-        self.assertNotEqual(r.returncode, 0)
-        combined = r.stdout + r.stderr
-        self.assertIn("jvm", combined)
-        self.assertIn("self-hosted", combined)
 
     def test_no_main_is_error(self):
         path = os.path.join(self.tmp, "nomain.lsh")
