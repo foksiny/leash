@@ -105,9 +105,10 @@
     <span class="fn">show</span>(<span class="str">"Hello, World!"</span>);
 }</code></pre>
 
-<pre><code><span class="cm"># Install (builds and installs the self-hosted compiler)</span>
-pip install .
-leash version
+<pre><code><span class="cm"># Build the self-hosted compiler (Python-free)</span>
+git clone https://github.com/foksiny/leash && cd leash
+./scripts/bootstrap.sh
+bin/leashc version
 
 <span class="cm"># Run directly &mdash; the compiler is written in Leash itself</span>
 leash run hello.lsh
