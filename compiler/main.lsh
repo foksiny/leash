@@ -8,7 +8,7 @@ use leashed::*;
 // Single source of truth for the release version. Bump discipline:
 // README, docs badges, CHANGELOG.
 fnc leash_version() : string {
-    return "1.5.1";
+    return "1.6.0";
 }
 
 // Prefix test (no stdlib dependency this early in main.lsh).
@@ -1258,9 +1258,9 @@ fnc cmd_self_host(args string[]) : int {
     // Python-free stage 0: seed from the installed self-hosted binary, or
     // from the checked-in bootstrap compiler when bin/leashc is missing.
     seed: string = root + "/bin/leashc";
-    if !xfile_exists(seed) { seed = root + "/bootstrap/leash-1.5.1-target-x86_64"; }
+    if !xfile_exists(seed) { seed = root + "/bootstrap/leash-1.6.0-target-x86_64"; }
     if !xfile_exists(seed) {
-        show("error: no seed compiler found (need bin/leashc or bootstrap/leash-1.5.1-target-x86_64)");
+        show("error: no seed compiler found (need bin/leashc or bootstrap/leash-1.6.0-target-x86_64)");
         return 1;
     }
     show("[self-host] Stage 0: seeding bin/leashc_stage1 from ", seed);

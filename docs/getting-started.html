@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v1.5.1 Release</div>
+        <div class="version">v1.6.0 Release</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -36,6 +36,7 @@
             <a href="package-manager.html">Package Manager</a>
             <a href="concurrency.html">Concurrency Model</a>
             <a href="advanced.html">Advanced Topics</a>
+            <a href="limitations.html">Known Limitations</a>
         </div>
     </nav>
 </aside>
@@ -96,7 +97,7 @@ brew install git</code></pre>
 
 <h2>Install Leash</h2>
 
-<p>Leash compiles itself. The repository ships a checked-in bootstrap seed (<code>bootstrap/leash-1.5.1-target-*</code>) that compiles the current sources; that binary then compiles itself and the result is <code>bin/leashc</code>. No Python, no pip, no LLVM development libraries.</p>
+<p>Leash compiles itself. The repository ships a checked-in bootstrap seed (<code>bootstrap/leash-1.6.0-target-*</code>) that compiles the current sources; that binary then compiles itself and the result is <code>bin/leashc</code>. No Python, no pip, no LLVM development libraries.</p>
 
 <pre><code><span class="cm"># 1. Clone the repository</span>
 git clone https://github.com/foksiny/leash && cd leash
@@ -106,7 +107,7 @@ git clone https://github.com/foksiny/leash && cd leash
 
 <span class="cm"># 3. Verify</span>
 bin/leashc version
-<span class="cm"># leash 1.5.1 (self-hosted)</span></code></pre>
+<span class="cm"># leash 1.6.0 (self-hosted)</span></code></pre>
 
 <h3>Put <code>leash</code> on your PATH (global install)</h3>
 
@@ -132,7 +133,7 @@ $env:PATH = "$env:USERPROFILE\.leash\bin;$env:PATH"   <span class="cm"># persist
 <pre><code>cp bin/leashc /usr/local/bin/leash
 cp bin/leashc /usr/local/bin/leashc</code></pre>
 
-<p>Afterwards, <code>leash version</code> (or <code>leashc version</code>) should print <code>leash 1.5.1 (self-hosted)</code> from any directory.</p>
+<p>Afterwards, <code>leash version</code> (or <code>leashc version</code>) should print <code>leash 1.6.0 (self-hosted)</code> from any directory.</p>
 
 <h3>Rebuild the compiler from source</h3>
 <pre><code>leash self-host   <span class="cm"># 3-stage bootstrap + fixed-point check, reinstalls bin/leashc</span></code></pre>

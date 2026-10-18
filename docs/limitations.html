@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="color-scheme" content="dark">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Crect width=%27100%27 height=%27100%27 rx=%2722%27 fill=%27%237c3aed%27/%3E%3Ctext x=%2750%27 y=%2768%27 font-size=%2752%27 text-anchor=%27middle%27 font-family=%27monospace%27 fill=%27white%27%3EL%3C/text%3E%3C/svg%3E">
+<title>Known Limitations - Leash</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<button class="menu-toggle" onclick="document.querySelector('.sidebar').classList.toggle('open')">&#9776;</button>
+
+<aside class="sidebar">
+    <div class="sidebar-header">
+        <h1>Leash</h1>
+        <div class="version">v1.6.0 Release</div>
+        <div class="subtitle">Programming Language</div>
+    </div>
+    <nav class="sidebar-nav">
+        <div class="nav-section">
+            <div class="nav-section-title">Getting Started</div>
+            <a href="index.html">Overview</a>
+            <a href="getting-started.html">Installation &amp; Setup</a>
+        </div>
+        <div class="nav-section">
+            <div class="nav-section-title">Language Guide</div>
+            <a href="language-guide.html">Language Reference</a>
+            <a href="compiler.html">Compiler &amp; CLI</a>
+            <a href="self-hosted.html">Self-Hosted Compiler</a>
+            <a href="stdlib.html">Standard Library</a>
+        </div>
+        <div class="nav-section">
+            <div class="nav-section-title">Ecosystem</div>
+            <a href="package-manager.html">Package Manager</a>
+            <a href="concurrency.html">Concurrency Model</a>
+            <a href="advanced.html">Advanced Topics</a>
+            <a href="limitations.html" class="active">Known Limitations</a>
+        </div>
+    </nav>
+</aside>
+
+<main class="main">
+
+<div class="breadcrumb">
+    <a href="index.html">Home</a> <span class="sep">/</span> <span class="current">Known Limitations</span>
+</div>
+
+<h1>Known Limitations</h1>
+
+<p>Leash 1.6.0 is a complete, self-hosted toolchain: the compiler is written in Leash, builds itself from a checked-in bootstrap seed with no Python, and passes an 88/88 output-parity corpus. The items below are the honest, currently-known limits of the platform &mdash; each is intentional, scoped, and stable for 1.x.</p>
+
+<table>
+    <tr><th>Limitation</th><th>Severity</th><th>Comment</th></tr>
+    <tr>
+        <td><code>leashed.py</code> still exists (test oracle)</td>
+        <td>&#128994; Low</td>
+        <td>Acceptable &mdash; it's a test, not a toolchain.</td>
+    </tr>
+    <tr>
+        <td><code>serve_tls</code> POSIX-only</td>
+        <td>&#128993; Medium</td>
+        <td>Windows only serves h2c. Documented.</td>
+    </tr>
+    <tr>
+        <td>3 stdlib modules without JVM</td>
+        <td>&#128994; Low</td>
+        <td><code>@from</code> native (sockets/TLS/SQLite) is impossible without a shim.</td>
+    </tr>
+    <tr>
+        <td>HTTP/3 / QUIC</td>
+        <td>&#128994; Low</td>
+        <td>Not implemented, but nobody expects it in 1.x.</td>
+    </tr>
+</table>
+
+<h2><code>leashed.py</code> still exists (test oracle)</h2>
+
+<p>The package-manager reference implementation <code>leash/leashed.py</code> is the only remaining Python in the repository. It is <strong>not part of the toolchain</strong>: the shipping <code>leash pkg</code> command is a full native port (see <a href="package-manager.html">Package Manager</a>), and <code>leashed.py</code> is kept solely as a differential-test oracle for <code>tests/test_pkg.py</code> / <code>tests/test_leashed.py</code>. It is never invoked by a normal build, compile, or run.</p>
+
+<h2><code>serve_tls</code> is POSIX-only</h2>
+
+<p>The <code>httpserver</code> module's TLS listener, <code>serve_tls(port, cert, key, handler)</code> (and <code>serve_tls_ex</code>), is available on Linux, Linux ARM64, and macOS. On Windows the server is HTTP/2 cleartext (<strong>h2c</strong>) and HTTP/1.1 only &mdash; there is no TLS listener. This mirrors the underlying shim: Windows uses the WinHTTP-style stack while POSIX uses BSD sockets + OpenSSL. See the <code>installthis/httpserver/README.md</code> for the per-platform matrix.</p>
+
+<h2>3 stdlib modules without JVM support</h2>
+
+<p>The JVM target (<code>--target jvm</code>) supports the full core language and almost all of the standard library. Three modules are backed by <code>@from</code> native archives and therefore stay platform-bound: <strong><code>http</code></strong> (sockets/TLS), <strong><code>httpserver</code></strong> (sockets/TLS), and <strong><code>sql</code></strong> (SQLite). Importing them on the JVM works, but calling into a native body aborts with a clear <code>not supported on the jvm target</code> error rather than miscompiling &mdash; implementing them would require a JVM-side shim (e.g. <code>java.net</code> / JDBC), which is out of scope for 1.x.</p>
+
+<h2>HTTP/3 / QUIC</h2>
+
+<p>Neither the <code>http</code> client nor the <code>httpserver</code> speaks HTTP/3 or QUIC. HTTP/1.1 and HTTP/2 (h2c and h2-over-TLS) are fully supported; HTTP/3 is a deliberate non-goal for the 1.x series.</p>
+
+<div class="callout callout-info">Documented here deliberately: shipping a compiler means being explicit about what it does <em>not</em> do. If any of these becomes important, open an issue at <a href="https://github.com/foksiny/leash">github.com/foksiny/leash</a>.</div>
+
+</main>
+
+<script src="docs.js"></script>
+</body>
+</html>

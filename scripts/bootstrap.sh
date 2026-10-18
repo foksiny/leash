@@ -16,14 +16,14 @@ if [ -x bin/leashc ]; then
     echo "[bootstrap] Stage 0: seeding from existing bin/leashc"
     cp bin/leashc bin/leashc_stage1
     chmod +x bin/leashc_stage1
-elif [ -x bootstrap/leash-1.5.1-target-x86_64 ]; then
-    echo "[bootstrap] Stage 0: seeding from bootstrap/leash-1.5.1-target-x86_64"
-    cp bootstrap/leash-1.5.1-target-x86_64 bin/leashc_stage1
+elif [ -x bootstrap/leash-1.6.0-target-x86_64 ]; then
+    echo "[bootstrap] Stage 0: seeding from bootstrap/leash-1.6.0-target-x86_64"
+    cp bootstrap/leash-1.6.0-target-x86_64 bin/leashc_stage1
     chmod +x bin/leashc_stage1
 else
     echo "[bootstrap] ERROR: no seed compiler found." >&2
     echo "  Provide bin/leashc (a self-hosted seed) or" >&2
-    echo "  bootstrap/leash-1.5.1-target-x86_64." >&2
+    echo "  bootstrap/leash-1.6.0-target-x86_64." >&2
     exit 1
 fi
 

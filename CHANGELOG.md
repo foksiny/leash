@@ -5,6 +5,21 @@ All notable changes to the Leash compiler are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.0] - 2026-10-18
+
+### Added
+- A **Known Limitations** page (`docs/limitations.html`, linked from the
+  docs sidebar and the README) that states the platform's deliberate
+  limits with a severity rating: `leash/leashed.py` surviving only as a
+  test oracle, `serve_tls` being POSIX-only (Windows serves h2c), the
+  three `@from`-native stdlib modules (`http`, `httpserver`, `sql`)
+  lacking JVM support, and the absence of HTTP/3 / QUIC.
+
+### Changed
+- Version bumped to 1.6.0; the cross-target bootstrap seeds are now
+  `bootstrap/leash-1.6.0-target-*` (`x86_64`, `x86`, `arm`, `win64`,
+  `java`).
+
 ## [1.5.1] - 2026-10-18
 
 ### Changed

@@ -4,7 +4,7 @@
 
 # Leash Programming Language
 
-**Version 1.5.1** — Leash compiles itself.
+**Version 1.6.0** — Leash compiles itself.
 
 Leash is a strongly-typed, modern compiled programming language built on LLVM. It features an intuitive syntax and native performance with a built-in garbage collector, package manager, and cross-platform support.
 
@@ -32,7 +32,7 @@ Output parity with the original Python reference compiler is enforced by a froze
 git clone https://github.com/foksiny/leash && cd leash
 ./scripts/bootstrap.sh     # seeds from bootstrap/, builds bin/leashc (Python-free)
 bin/leashc version
-# leash 1.5.1 (self-hosted)
+# leash 1.6.0 (self-hosted)
 ```
 
 The bootstrap compiles `compiler/*.lsh` and installs the resulting native compiler at `bin/leashc`. Optionally put it on your `PATH`:
@@ -95,6 +95,20 @@ bin/leashc self-host   # 3-stage bootstrap + fixed-point check, installs bin/lea
 | **Package Manager** | [docs/package-manager.html](docs/package-manager.html) |
 | **Concurrency** | [docs/concurrency.html](docs/concurrency.html) |
 | **Advanced Topics** (FFI, memory, error handling) | [docs/advanced.html](docs/advanced.html) |
+| **Known Limitations** | [docs/limitations.html](docs/limitations.html) |
+
+## Known Limitations
+
+Leash 1.6.0 is a complete, self-hosted toolchain with no Python in the build or run path. The items below are the honest, currently-known limits of the platform &mdash; each is intentional and stable for 1.x.
+
+| Limitation | Severity | Comment |
+|------------|----------|---------|
+| `leashed.py` still exists (test oracle) | 🟢 Low | Acceptable — it's a test, not a toolchain. |
+| `serve_tls` POSIX-only | 🟡 Medium | Windows only serves h2c. Documented. |
+| 3 stdlib modules without JVM | 🟢 Low | `@from` native (sockets/TLS/SQLite) is impossible without a shim. |
+| HTTP/3 / QUIC | 🟢 Low | Not implemented, but nobody expects it in 1.x. |
+
+See [docs/limitations.html](docs/limitations.html) for the full explanation of each item.
 
 ## Syntax Highlighting
 
