@@ -831,7 +831,7 @@ fnc main() {
 
 <h2>HTTP Client (<code>http::http</code>)</h2>
 
-<p>A native HTTP client speaking <strong>HTTP/1.1 and HTTP/2</strong>, built on a small C shim bound via the <code>@from</code> FFI directive. Cleartext <code>http://</code> requests speak <strong>h2c</strong> (prior knowledge) through the <code>*_h2</code> API; <code>https://</code> offers ALPN and speaks h2 when the server selects it, falling back to HTTP/1.1 otherwise. Linux bundles OpenSSL statically into <code>linux/liblshhttp.a</code> (no extra packages needed); Windows uses the built-in WinHTTP API (which negotiates h2 itself on TLS); macOS users can rebuild the shim with Homebrew OpenSSL in one command (see <code>installthis/http/README.md</code>). Responses follow redirects automatically, decode chunked transfer encoding, and honor per-request timeouts.</p>
+<p>A native HTTP client speaking <strong>HTTP/1.1 and HTTP/2</strong>, built on a small C shim bound via the <code>@from</code> FFI directive. Cleartext <code>http://</code> requests speak <strong>h2c</strong> (prior knowledge) through the <code>*_h2</code> API; <code>https://</code> offers ALPN and speaks h2 when the server selects it, falling back to HTTP/1.1 otherwise. Linux bundles OpenSSL statically into <code>linux/liblshhttp.a</code> (no extra packages needed); Windows uses the built-in WinHTTP API (which negotiates h2 itself on TLS); macOS users can rebuild the shim with Homebrew OpenSSL in one command (see <code>installthis/http/README.md</code>). Responses follow redirects automatically, decode chunked transfer encoding, and honor per-request timeouts. On the <strong>JVM target</strong> the same API rides a bundled Java shim over <code>java.net.http</code> (Java 11+): h2 still negotiates over TLS via ALPN, but h2c is unavailable, so cleartext <code>*_h2</code> calls report <code>proto = "http/1.1"</code>.</p>
 
 <pre><code><span class="kw">use</span> http::http::*;
 
@@ -894,7 +894,7 @@ fnc main() {
 
 <h2>HTTP Server (<code>httpserver::httpserver</code>)</h2>
 
-<p>A native HTTP server speaking <strong>HTTP/1.1 and HTTP/2</strong>, built on a small C shim (<code>lshhttpd</code>) bound through <code>@from</code> — completing the web stack started by the <code>http</code> client. h2c arrives via client-preface detection on the same port (same handler contract); <code>serve_tls</code> adds a TLS listener where ALPN negotiates h2 or HTTP/1.1 per connection. Linux <code>liblshhttpd.a</code> bundles OpenSSL statically like the client archive; Windows uses the built-in SChannel stack (HTTP/1.1 over TLS) alongside h2c over Winsock2.</p>
+<p>A native HTTP server speaking <strong>HTTP/1.1 and HTTP/2</strong>, built on a small C shim (<code>lshhttpd</code>) bound through <code>@from</code> — completing the web stack started by the <code>http</code> client. h2c arrives via client-preface detection on the same port (same handler contract); <code>serve_tls</code> adds a TLS listener where ALPN negotiates h2 or HTTP/1.1 per connection. Linux <code>liblshhttpd.a</code> bundles OpenSSL statically like the client archive; Windows uses the built-in SChannel stack (HTTP/1.1 over TLS) alongside h2c over Winsock2. On the <strong>JVM target</strong> the same API (handlers, <code>reply_*</code> helpers, <code>serve_tls</code>, <code>shutdown()</code>) rides a bundled Java shim over <code>jdk.httpserver</code> (Java 11+) speaking HTTP/1.1 only.</p>
 
 <pre><code><span class="kw">use</span> httpserver::httpserver::*;
 

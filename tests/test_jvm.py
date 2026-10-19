@@ -4,11 +4,18 @@ These verify that the self-hosted compiler emits real, runnable JVM
 class files whose observable behavior matches the native backend.
 Skipped entirely when no `java` runtime is on PATH.
 """
+import http.server
+import json
 import os
 import shutil
+import socket
+import ssl
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
+import urllib.request
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BIN_LEASHC = os.path.join(REPO_ROOT, "bin", "leashc")
@@ -40,14 +47,22 @@ class TestJvmTarget(unittest.TestCase):
         self.n += 1
         return f"jt{self.n}"
 
-    def _compile_jvm(self, src, main_class=None, run_args=""):
-        """Compile `src` to JVM bytecode; return (class_dir, main_class)."""
+    def _compile_jvm(self, src, main_class=None, run_args="", stdlib=False):
+        """Compile `src` to JVM bytecode; return (class_dir, main_class).
+
+        stdlib=True resolves stdlib imports from the working tree
+        (installthis/) instead of the user-installed ~/.leash/libs copy.
+        """
         name = main_class or self._next_name()
         path = os.path.join(self.tmp, f"{name}.lsh")
         with open(path, "w") as f:
             f.write(src)
         out = os.path.join(self.tmp, name)
-        r = _sh([BIN_LEASHC, "compile", path, "--target", "jvm", "to", out])
+        cmd = [BIN_LEASHC, "compile", path, "--target", "jvm"]
+        if stdlib:
+            cmd += ["--other-imports", os.path.join(REPO_ROOT, "installthis")]
+        cmd += ["to", out]
+        r = _sh(cmd)
         self.assertEqual(r.returncode, 0, msg=r.stdout + r.stderr)
         self.assertTrue(os.path.exists(os.path.join(self.tmp, f"{name}.class")),
                         "no .class emitted")
@@ -592,6 +607,338 @@ class TestJvmTarget(unittest.TestCase):
         self.assertEqual(rj.stdout, rn.stdout,
                          f"stdout differs:\n--- jvm ---\n{rj.stdout}\n--- native ---\n{rn.stdout}")
 
+    # ---- http module on the JVM (bundled LeashHttp shim) ---------------
+
+    class _Handler(http.server.BaseHTTPRequestHandler):
+        """Routes: /hello (GET+POST), /redir -> /hello, /json (GET)."""
+
+        def log_message(self, *a):
+            pass
+
+        def _send(self, code, body=b"", ctype="text/plain", headers=()):
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            for k, v in headers:
+                self.send_header(k, v)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            if body:
+                self.wfile.write(body)
+
+        def do_GET(self):
+            if self.path == "/hello":
+                self._send(200, b"hello-jvm", headers=[("X-Custom", "abc")])
+            elif self.path == "/redir":
+                self.send_response(302)
+                self.send_header("Location", "/hello")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+            elif self.path == "/json":
+                self._send(200, json.dumps({"a": 1, "b": [2, 3]}).encode(),
+                           ctype="application/json")
+            elif self.path == "/404":
+                self._send(404, b"nope")
+            else:
+                self._send(404, b"nope")
+
+        def do_POST(self):
+            n = int(self.headers.get("Content-Length", "0") or "0")
+            body = self.rfile.read(n) if n else b""
+            if self.path == "/hello":
+                echoed = body.decode("utf-8", "replace").upper()
+                self._send(200, ("saw=" + echoed +
+                                 ";ct=" + (self.headers.get("Content-Type") or "")
+                                 ).encode())
+            else:
+                self._send(404, b"nope")
+
+    def _start_http(self, tls=False):
+        """Start a local server; returns (server, port)."""
+        if tls:
+            server = http.server.HTTPServer(("127.0.0.1", 0),
+                                            TestJvmTarget._Handler)
+            ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+            ctx.load_cert_chain(
+                os.path.join(REPO_ROOT, "tests", "stdlib", "fixtures",
+                             "localhost.crt"),
+                os.path.join(REPO_ROOT, "tests", "stdlib", "fixtures",
+                             "localhost.key"))
+            server.socket = ctx.wrap_socket(server.socket, server_side=True)
+        else:
+            server = http.server.ThreadingHTTPServer(("127.0.0.1", 0),
+                                                     TestJvmTarget._Handler)
+        port = server.server_address[1]
+        t = threading.Thread(target=server.serve_forever, daemon=True)
+        t.start()
+        self.addCleanup(server.shutdown)
+        return server, port
+
+    def test_jvm_http_get_post_redirect(self):
+        # The @from http surface really works on the JVM: requests lower
+        # into the bundled LeashHttp shim (java.net.http under the hood).
+        _, port = self._start_http()
+        src = ('use http::http::*;\n'
+               'fnc main() : void {\n'
+               f'    r: HttpResponse = Http.get("http://127.0.0.1:{port}/hello");\n'
+               '    show(r.ok); show(tostring(r.status)); show(r.body);\n'
+               '    show(r.content_type()); show(r.header("x-custom"));\n'
+               f'    p: HttpResponse = Http.post("http://127.0.0.1:{port}/hello", "the-body");\n'
+               '    show(tostring(p.status)); show(p.body);\n'
+               f'    d: HttpResponse = Http.get("http://127.0.0.1:{port}/redir");\n'
+               '    show(tostring(d.status)); show(d.body);\n'
+               f'    n: HttpResponse = Http.get("http://127.0.0.1:{port}/404");\n'
+               '    show(tostring(n.status)); show(tostring(n.success()));\n'
+               '}\n')
+        class_dir, main_class = self._compile_jvm(src, stdlib=True)
+        r = self._run_jvm(class_dir, main_class)
+        self.assertEqual(r.returncode, 0, msg=r.stdout + r.stderr)
+        out = r.stdout
+        self.assertIn("true", out)
+        self.assertIn("200", out)
+        self.assertIn("hello-jvm", out)
+        self.assertIn("text/plain", out)
+        self.assertIn("abc", out)
+        self.assertIn("saw=THE-BODY", out)
+        # 302 -> /hello follows transparently
+        self.assertIn("hello-jvm", out.split("saw=THE-BODY")[1])
+        self.assertIn("404", out)
+        self.assertIn("false", out)
+
+    def test_jvm_http_error_codes(self):
+        # Refused connection surfaces as the C engine's error contract:
+        # ok=false, a negative status, and strerror() text.
+        src = ('use http::http::*;\n'
+               'fnc main() : void {\n'
+               '    r: HttpResponse = Http.get("http://127.0.0.1:1/x");\n'
+               '    show(tostring(r.ok)); show(tostring(r.status)); show(r.err);\n'
+               '    show(Http.strerror(-2)); show(Http.strerror(-9));\n'
+               '    show(Http.version());\n'
+               '}\n')
+        class_dir, main_class = self._compile_jvm(src, stdlib=True)
+        r = self._run_jvm(class_dir, main_class)
+        self.assertEqual(r.returncode, 0, msg=r.stdout + r.stderr)
+        out = r.stdout
+        self.assertIn("false", out)
+        self.assertIn("-3", out)
+        self.assertIn("could not connect", out)
+        self.assertIn("could not resolve host", out)
+        self.assertIn("too many redirects", out)
+        self.assertIn("leash-http/1.1", out)
+
+    def test_jvm_http_download(self):
+        _, port = self._start_http()
+        dest = os.path.join(self.tmp, "jvm_dl.txt")
+        src = ('use http::http::*;\n'
+               'fnc main() : void {\n'
+               f'    r: HttpResponse = Http.download("http://127.0.0.1:{port}/json", "{dest}");\n'
+               '    show(tostring(r.status));\n'
+               '}\n')
+        class_dir, main_class = self._compile_jvm(src, stdlib=True)
+        r = self._run_jvm(class_dir, main_class)
+        self.assertEqual(r.returncode, 0, msg=r.stdout + r.stderr)
+        self.assertIn("200", r.stdout)
+        with open(dest, "r") as f:
+            content = f.read()
+        self.assertEqual(json.loads(content), {"a": 1, "b": [2, 3]})
+
+    def test_jvm_http_h2_cleartext_reports_http11(self):
+        # java.net.http has no h2c prior-knowledge, so *_h2 over cleartext
+        # falls back to HTTP/1.1 and reports proto "http/1.1".
+        _, port = self._start_http()
+        src = ('use http::http::*;\n'
+               'fnc main() : void {\n'
+               f'    r: HttpResponse = Http.get_h2("http://127.0.0.1:{port}/hello");\n'
+               '    show(tostring(r.status)); show(r.proto); show(tostring(r.is_h2()));\n'
+               '}\n')
+        class_dir, main_class = self._compile_jvm(src, stdlib=True)
+        r = self._run_jvm(class_dir, main_class)
+        self.assertEqual(r.returncode, 0, msg=r.stdout + r.stderr)
+        self.assertIn("200", r.stdout)
+        self.assertIn("http/1.1", r.stdout)
+        self.assertIn("false", r.stdout)
+
+    def test_jvm_http_tls(self):
+        # verify off trusts the self-signed fixture; verify on rejects it.
+        _, port = self._start_http(tls=True)
+        src = ('use http::http::*;\n'
+               'fnc main() : void {\n'
+               f'    a: HttpResponse = Http.request_ex("GET", "https://127.0.0.1:{port}/hello", "", "", 5000, 10, false);\n'
+               '    show(tostring(a.ok)); show(tostring(a.status)); show(a.body);\n'
+               f'    b: HttpResponse = Http.request_ex("GET", "https://127.0.0.1:{port}/hello", "", "", 5000, 10, true);\n'
+               '    show(tostring(b.ok)); show(tostring(b.status));\n'
+               '}\n')
+        class_dir, main_class = self._compile_jvm(src, stdlib=True)
+        r = self._run_jvm(class_dir, main_class)
+        self.assertEqual(r.returncode, 0, msg=r.stdout + r.stderr)
+        out = r.stdout
+        self.assertIn("true", out)
+        self.assertIn("hello-jvm", out)
+        self.assertIn("false", out)
+        self.assertIn("-4", out)  # LSH_E_TLS
+
+    # ---- httpserver module on the JVM (bundled LeashHttpServer shim) ----
+
+    def _free_port(self):
+        s = socket.socket()
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+        s.close()
+        return port
+
+    def _run_jvm_bg(self, name, port):
+        """Run a compiled JVM program in the background; wait until it
+        listens on `port`. Returns the Popen."""
+        proc = subprocess.Popen([JAVA, "-cp", self.tmp, name],
+                                 stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT, text=True)
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            try:
+                s = socket.create_connection(("127.0.0.1", port), 0.2)
+                s.close()
+                return proc
+            except OSError:
+                if proc.poll() is not None:
+                    out = proc.stdout.read()
+                    self.fail(f"server exited early:\n{out}")
+                time.sleep(0.1)
+        proc.kill()
+        self.fail("server never started listening")
+        return None
+
+    def test_jvm_httpserver_serve(self):
+        # serve()/serve_ex() on the JVM: real listener, handler callbacks
+        # through a generated LshHttpHandler adapter, reply helpers,
+        # query parsing, shutdown() from inside a handler, served count.
+        port = self._free_port()
+        src = ('use httpserver::httpserver::*;\n'
+               'fnc handle(method string, path string, query string, headers string, body string) : int {\n'
+               '    if path == "/q" {\n'
+               '        q: HttpQuery = HttpServer.parse_query(query);\n'
+               '        return HttpServer.reply_text(200, "a=" + q.get("a"));\n'
+               '    }\n'
+               '    if path == "/stop" {\n'
+               '        HttpServer.set_body("bye");\n'
+               '        HttpServer.shutdown();\n'
+               '        return 200;\n'
+               '    }\n'
+               '    if path == "/post" {\n'
+               '        return HttpServer.reply_text(200, "got:" + body);\n'
+               '    }\n'
+               '    return HttpServer.reply_text(200, "hello");\n'
+               '}\n'
+               'fnc main() : int {\n'
+               f'    served: int = HttpServer.serve_ex({port}, 10, &handle);\n'
+               '    show("served=" + tostring(served));\n'
+               '    return 0;\n'
+               '}\n')
+        class_dir, main_class = self._compile_jvm(src, stdlib=True)
+        proc = self._run_jvm_bg(main_class, port)
+        try:
+            def get(path):
+                with urllib.request.urlopen(
+                        f"http://127.0.0.1:{port}{path}", timeout=10) as r:
+                    return r.status, r.read().decode()
+
+            def post(path, data):
+                req = urllib.request.Request(
+                    f"http://127.0.0.1:{port}{path}", data=data,
+                    method="POST")
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    return r.status, r.read().decode()
+
+            self.assertEqual(get("/"), (200, "hello"))
+            self.assertEqual(get("/q?a=42"), (200, "a=42"))
+            self.assertEqual(post("/post", b"hello-body"), (200, "got:hello-body"))
+            self.assertEqual(get("/stop"), (200, "bye"))
+            out, _ = proc.communicate(timeout=30)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+        self.assertIn("served=4", out)
+
+    def test_jvm_httpserver_tls(self):
+        # serve_tls() with the repo's self-signed fixture: 2 requests,
+        # then the max_requests quota ends the listener cleanly.
+        port = self._free_port()
+        crt = os.path.join(REPO_ROOT, "tests", "stdlib", "fixtures",
+                           "localhost.crt")
+        key = os.path.join(REPO_ROOT, "tests", "stdlib", "fixtures",
+                           "localhost.key")
+        src = ('use httpserver::httpserver::*;\n'
+               'fnc handle(method string, path string, query string, headers string, body string) : int {\n'
+               '    return HttpServer.reply_text(200, "tls-jvm");\n'
+               '}\n'
+               'fnc main() : int {\n'
+               f'    served: int = HttpServer.serve_tls_ex({port}, 2, "{crt}", "{key}", &handle);\n'
+               '    show("served_tls=" + tostring(served));\n'
+               '    return 0;\n'
+               '}\n')
+        class_dir, main_class = self._compile_jvm(src, stdlib=True)
+        proc = self._run_jvm_bg(main_class, port)
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        try:
+            for _ in range(2):
+                with urllib.request.urlopen(
+                        f"https://127.0.0.1:{port}/x", timeout=10,
+                        context=ctx) as r:
+                    self.assertEqual((r.status, r.read().decode()),
+                                     (200, "tls-jvm"))
+            out, _ = proc.communicate(timeout=30)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+        self.assertIn("served_tls=2", out)
+
+    def test_jvm_httpserver_error_codes(self):
+        # Bind conflict -> LSHD_E_BIND; bad TLS material -> LSHD_E_TLS;
+        # strerror/version parity.
+        port = self._free_port()
+        sock = socket.socket()
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind(("127.0.0.1", port))
+        sock.listen(1)
+        self.addCleanup(sock.close)
+        src = ('use httpserver::httpserver::*;\n'
+               'fnc handle(method string, path string, query string, headers string, body string) : int {\n'
+               '    return 200;\n'
+               '}\n'
+               'fnc main() : int {\n'
+               f'    conflict: int = HttpServer.serve_ex({port}, 1, &handle);\n'
+               '    show("conflict=" + tostring(conflict));\n'
+               '    show("detail=" + HttpServer.strerror(conflict));\n'
+               '    bad: int = HttpServer.serve_tls(1, "/nope.crt", "/nope.key", &handle);\n'
+               '    show("bad=" + tostring(bad));\n'
+               '    show("v=" + HttpServer.version());\n'
+               '    return 0;\n'
+               '}\n')
+        class_dir, main_class = self._compile_jvm(src, stdlib=True)
+        r = self._run_jvm(class_dir, main_class)
+        self.assertEqual(r.returncode, 0, msg=r.stdout + r.stderr)
+        self.assertIn("conflict=-3", r.stdout)
+        self.assertIn("could not bind the port", r.stdout)
+        self.assertIn("bad=-8", r.stdout)
+        self.assertIn("leash-httpd/1.2", r.stdout)
+
+    def test_jvm_fn_values(self):
+        # First-class function values: &fname lowers to an adapter, and
+        # indirect calls through locals/params invoke it.
+        src = ('fnc addone(x int) : int { return x + 1; }\n'
+               'fnc scale(x int, f float) : float { return tofloat(float, x) * f; }\n'
+               'fnc apply(f fnc(int) : int, v int) : int { return f(v); }\n'
+               'fnc main() : void {\n'
+               '    show(tostring(apply(&addone, 41)));\n'
+               '    g: fnc(int, float) : float = &scale;\n'
+               '    show(tostring(g(7, 3.0)));\n'
+               '}\n')
+        class_dir, main_class = self._compile_jvm(src)
+        r = self._run_jvm(class_dir, main_class)
+        self.assertEqual(r.returncode, 0, msg=r.stdout + r.stderr)
+        self.assertIn("42", r.stdout)
+        self.assertIn("21.000000", r.stdout)
+
     def test_string_ordering_parity(self):
         # Lexicographic ordering matches native on all six operators.
         self._parity(
@@ -624,14 +971,17 @@ class TestJvmTarget(unittest.TestCase):
             '}\n')
 
     def test_native_call_fails_loud(self):
-        # Calling a native @from function on JVM compiles (mixed modules
-        # stay importable) but aborts with a clear message when executed.
-        src = ('use http::http::*;\n'
+        # Calling a native @from function with no JVM shim (sql is backed
+        # by the SQLite C archive only) compiles — mixed modules stay
+        # importable — but aborts with a clear message when executed.
+        # (http used to be the example here; the JVM target now lowers its
+        # calls into the bundled LeashHttp shim, so it really works.)
+        src = ('use sql::sql::*;\n'
                'fnc main() : void {\n'
-               '    r: HttpResponse = Http.get("http://127.0.0.1:1/x");\n'
-               '    show(r.status);\n'
+               '    db: Db = Db.open(":memory:");\n'
+               '    show(db.ok);\n'
                '}\n')
-        class_dir, main_class = self._compile_jvm(src)
+        class_dir, main_class = self._compile_jvm(src, stdlib=True)
         r = self._run_jvm(class_dir, main_class)
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("not supported on the jvm target",

@@ -482,7 +482,7 @@ pub def CompilerDriver : class {
     // Returns the number of fatal errors. main_file is the realpath'd entry
     // source (identity comparisons); input_file is the path as given (used
     // verbatim in diagnostics pointing at the main file, like Python).
-    pub fnc security_scan(prog Program, main_file string, input_file string) : int {
+    pub fnc security_scan(prog Program, main_file string, input_file string, target_name string) : int {
         fatal: int = 0;
         exts: vec<string>;
         exts.pushb(".so");
@@ -578,8 +578,12 @@ pub def CompilerDriver : class {
                 continue;
             }
 
-            // Transitive native-link request from an imported module
-            if src.size > 0 && src != main_file && !this.treat_from_safe {
+            // Transitive native-link request from an imported module. The
+            // JVM target links no archive (@from only declares signatures
+            // there; the backend lowers them to bundled Java shims), so
+            // the "links a native library" warning would be noise.
+            if target_name == "jvm" { }
+            also src.size > 0 && src != main_file && !this.treat_from_safe {
                 this.print_sec_warning(
                     "Security: imported module '" + Path.basename(src) + "' links native library '" + lib + "' into this build via @from — native libraries from dependencies run with your program's full privileges",
                     "Confirm the dependency is expected to ship a native library, or review/build it from source.",
@@ -779,7 +783,7 @@ pub def CompilerDriver : class {
         // Security scan (Python cli.py parity): @from path checks +
         // transitive native-library warnings; fatal errors short-circuit.
         if verbose { show("[verbose] security scan (", tostring(prog.native_libs.size), " @from blocks)"); }
-        if this.security_scan(prog, abs_main, input_file) > 0 {
+        if this.security_scan(prog, abs_main, input_file, target_name) > 0 {
             return 1;
         }
 
@@ -1484,6 +1488,21 @@ pub def CompilerDriver : class {
             kf.writebytes(kb);
             kf.close();
         }
+        // Bundled-shim natives (http/httpserver on the JVM): copy the
+        // whole shim runtime (client, server, handler interface) next
+        // to the output so `java -cp <dir>` resolves everything.
+        if jg.used_shims.size > 0 {
+            jvm_rt: string = this.find_jvm_runtime_dir();
+            if jvm_rt.size == 0 {
+                show("error: cannot find the Leash JVM runtime (leash/jvm/)");
+                show("       run from the repository root, or install the leash package");
+                return 1;
+            }
+            if this.exec_code("cp " + jvm_rt + "/*.class " + dir + "/") != "0" {
+                show("error: cannot copy the JVM runtime shims into '" + dir + "'");
+                return 1;
+            }
+        }
         if !run_mode {
             show("[leash] Compiled ", input_file, " -> ", class_path);
         }
@@ -1515,6 +1534,53 @@ pub def CompilerDriver : class {
             return rv;
         }
         return 0;
+    }
+
+    // Locate the JVM shim runtime directory (leash/jvm/*.class),
+    // mirroring the gc.c discovery: cwd first, then LEASH_RUNTIME,
+    // then argv[0]-relative (dev: <repo>/bin/leashc -> <repo>/leash/jvm).
+    pub fnc find_jvm_runtime_dir() : string {
+        if this.file_exists("leash/jvm/LeashHttp.class") {
+            return "leash/jvm";
+        }
+        rt_env: string = this.exec_out("printenv LEASH_RUNTIME");
+        if rt_env.size > 0 && this.file_exists(rt_env + "/jvm/LeashHttp.class") {
+            return rt_env + "/jvm";
+        }
+        if this.self_path.size > 0 {
+            sp: string = this.self_path;
+            sp_has_slash: bool = false;
+            spi: int = 0;
+            while spi < sp.size {
+                if sp[spi] == '/' { sp_has_slash = true; }
+                spi = spi + 1;
+            }
+            if !sp_has_slash { sp = this.exec_out("command -v " + sp); }
+            if sp.size > 0 {
+                abs_exe: string = this.exec_out("readlink -f " + sp);
+                slash: int = -1;
+                si: int = 0;
+                while si < abs_exe.size {
+                    if abs_exe[si] == '/' { slash = si; }
+                    si = si + 1;
+                }
+                if slash > 0 {
+                    exe_dir: string = "";
+                    si = 0;
+                    while si < slash {
+                        exe_dir = exe_dir + abs_exe[si];
+                        si = si + 1;
+                    }
+                    cand1: string = exe_dir + "/../leash/jvm";
+                    cand2: string = exe_dir + "/../jvm";
+                    cand3: string = exe_dir + "/jvm";
+                    if this.file_exists(cand1 + "/LeashHttp.class") { return cand1; }
+                    also this.file_exists(cand2 + "/LeashHttp.class") { return cand2; }
+                    also this.file_exists(cand3 + "/LeashHttp.class") { return cand3; }
+                }
+            }
+        }
+        return "";
     }
 
     // Sanitize an output basename into a valid Java class name.

@@ -11,6 +11,13 @@ HTTP/2 (h2c everywhere; h2 over TLS via `serve_tls` on POSIX).
 | Linux ARM64| BSD sockets (`arm64/liblshhttpd.a` — rebuild, see below) |
 | Windows    | Winsock2 + SChannel (TLS), no external dependency (`win/liblshhttpd.a`, prebuilt) |
 | macOS      | BSD sockets (`macos/liblshhttpd.a` — rebuild) |
+| JVM target | Bundled Java shim over `jdk.httpserver` (`leash/jvm/LeashHttpServer.java`, Java 11+) |
+
+On the JVM target the handler `&fname` value lowers to a generated
+adapter class implementing the shim's `LshHttpHandler` interface; the
+handler contract, `reply_*` helpers, `shutdown()` semantics, request
+quotas and error codes are identical, but the listener speaks
+HTTP/1.1 only (no h2/h2c).
 
 ## Usage
 

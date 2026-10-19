@@ -196,6 +196,8 @@ pub def JAcc : class {
     static pub SYNCHRONIZED: int = 32;
     static pub FINAL: int = 16;
     static pub SUPER: int = 32;
+    static pub INTERFACE: int = 512;
+    static pub ABSTRACT: int = 1024;
 }
 
 // Constant-pool tags.
@@ -421,6 +423,7 @@ pub def JvmMethod : class {
     pub locals_used: int;
     pub errors: vec<string>;
     pub tmps: hash<string, int>;
+    pub is_abstract: bool;   // interface methods: no Code attribute
 
     static pub fnc make(name_i int, desc_i int, access int) : JvmMethod {
         empty_code: vec<int>;
@@ -430,7 +433,7 @@ pub def JvmMethod : class {
         empty_err: vec<string>;
         empty_tmps: hash<string, int>;
         empty_sd: hash<int, int>;
-        return JvmMethod { name_i: name_i, desc_i: desc_i, access: access, code: empty_code, labels: empty_labels, patch_pos: empty_pos, patch_lbl: empty_lbl, depth: 0, max_depth: 0, site_delta: empty_sd, last_op: 0, locals_used: 0, errors: empty_err, tmps: empty_tmps };
+        return JvmMethod { name_i: name_i, desc_i: desc_i, access: access, code: empty_code, labels: empty_labels, patch_pos: empty_pos, patch_lbl: empty_lbl, depth: 0, max_depth: 0, site_delta: empty_sd, last_op: 0, locals_used: 0, errors: empty_err, tmps: empty_tmps, is_abstract: false };
     }
 
     // A reusable scratch slot per descriptor (for stack juggling).
@@ -824,6 +827,13 @@ pub def JvmMethod : class {
         out.pushb(this.name_i & 255);
         out.pushb((this.desc_i >> 8) & 255);
         out.pushb(this.desc_i & 255);
+        if this.is_abstract {
+            // Interface methods carry no Code attribute (a Code
+            // attribute on an abstract method fails class loading).
+            out.pushb(0);
+            out.pushb(0);
+            return out;
+        }
         out.pushb(0);
         out.pushb(1);
         out.pushb((code_idx >> 8) & 255);
@@ -868,6 +878,7 @@ pub def JvmClass : class {
     pub f_name: vec<int>;
     pub f_desc: vec<int>;
     pub methods: vec<JvmMethod>;
+    pub access: int;   // class access flags (0x21 class, 0x241 interface)
 
     static pub fnc make(name string, super_name string) : JvmClass {
         empty_a: vec<int>;
@@ -875,7 +886,7 @@ pub def JvmClass : class {
         empty_d: vec<int>;
         empty_m: vec<JvmMethod>;
         empty_if: vec<string>;
-        return JvmClass { name: name, super_name: super_name, ifaces: empty_if, cp: JvmCp.make(), f_access: empty_a, f_name: empty_n, f_desc: empty_d, methods: empty_m };
+        return JvmClass { name: name, super_name: super_name, ifaces: empty_if, cp: JvmCp.make(), f_access: empty_a, f_name: empty_n, f_desc: empty_d, methods: empty_m, access: 33 };
     }
 
     pub fnc add_field(access int, name string, desc string) : void {
@@ -920,15 +931,16 @@ pub def JvmClass : class {
             out.pushb(cpp.get(ci));
             ci = ci + 1;
         }
-        out.pushb(0);
-        out.pushb(33);
+        // access_flags: public class (0x21) or public abstract
+        // interface (0x241) for the generated function-value types.
+        out.pushb((this.access >> 8) & 255);
+        out.pushb(this.access & 255);
         out.pushb((this_i >> 8) & 255);
         out.pushb(this_i & 255);
         out.pushb((super_i >> 8) & 255);
         out.pushb(super_i & 255);
         out.pushb((iface_idx.size >> 8) & 255);
-        out.pushb(iface_idx.size & 255);
-        ii = 0;
+        out.pushb(iface_idx.size & 255);        ii = 0;
         while ii < iface_idx.size {
             if_i: int = iface_idx.get(ii);
             out.pushb((if_i >> 8) & 255);
@@ -997,6 +1009,21 @@ pub def JvmGen : class {
     pub klass_idx: hash<string, int>;
     pub extern_names: hash<string, bool>;
     pub current_class: string;
+    // @from natives with a bundled JVM shim (name -> shim class): the
+    // backend lowers calls straight into the shim instead of the
+    // runtime-throwing stub. Populated in gen_program.
+    pub jvm_native_map: hash<string, string>;
+    // Shim class prefixes the program actually used; the driver copies
+    // those .class files next to the output.
+    pub used_shims: vec<string>;
+    // Function-value support: signature descriptor -> interface class
+    // (LshHttpHandler for the bundled handler shape, <Main>_LshFn<n> generated
+    // for anything else), and iface|fname -> adapter class name.
+    pub fn_iface_map: hash<string, string>;
+    pub fn_iface_descs: hash<string, string>;
+    pub fn_iface_mnames: hash<string, string>;
+    pub fn_adapter_map: hash<string, string>;
+    pub fn_class_counter: int;
 
     static pub fnc make(tc TypeChecker, main_class string) : JvmGen {
         empty_err: vec<string>;
@@ -1008,7 +1035,13 @@ pub def JvmGen : class {
         empty_he: vec<string>;
         empty_kl: vec<JvmClass>;
         empty_ki: hash<string, int>;
-        return JvmGen { tc: tc, cg: CodeGen.make(tc), main_class: main_class, errors: empty_err, var_types: empty_vt, var_slots: empty_vs, label_counter: 0, defer_stack: empty_defers, fusion_names: empty_fn, loop_heads: empty_hh, loop_exits: empty_he, current_func_ret: "void", current_func_name: "", current_func_unsafe: false, current_helper_name: "", opdef_inner: "", tmap_owner: "", cur_cp: JvmCp.make(), cur_method: JvmMethod.make(0, 0, 0), has_entry: false, src_file: "", klasses: empty_kl, klass_idx: empty_ki, current_class: "", array_base_override: "" };
+        empty_jnm: hash<string, string>;
+        empty_ush: vec<string>;
+        empty_fim: hash<string, string>;
+        empty_fid: hash<string, string>;
+        empty_fmn: hash<string, string>;
+        empty_fam: hash<string, string>;
+        return JvmGen { tc: tc, cg: CodeGen.make(tc), main_class: main_class, errors: empty_err, var_types: empty_vt, var_slots: empty_vs, label_counter: 0, defer_stack: empty_defers, fusion_names: empty_fn, loop_heads: empty_hh, loop_exits: empty_he, current_func_ret: "void", current_func_name: "", current_func_unsafe: false, current_helper_name: "", opdef_inner: "", tmap_owner: "", cur_cp: JvmCp.make(), cur_method: JvmMethod.make(0, 0, 0), has_entry: false, src_file: "", klasses: empty_kl, klass_idx: empty_ki, current_class: "", array_base_override: "", jvm_native_map: empty_jnm, used_shims: empty_ush, fn_iface_map: empty_fim, fn_iface_descs: empty_fid, fn_iface_mnames: empty_fmn, fn_adapter_map: empty_fam, fn_class_counter: 0 };
     }
 
     // Keep the oracle's view of locals identical to ours.
@@ -1242,12 +1275,107 @@ pub def JvmGen : class {
         if this.tc.classes.isin(t) { return "L" + t + ";"; }
         if this.tc.unions.isin(t) { return "[Ljava/lang/Object;"; }
         if t == "nil" { return "Ljava/lang/Object;"; }
+        // Function values ride single-method interface refs (see
+        // fn_iface): the httpserver handler shape uses the bundled
+        // LshHttpHandler, other signatures get generated <Main>_LshFn<n>.
+        if this.is_fnc_type(t) {
+            nm: string = this.fn_iface(t);
+            if nm.size > 0 { return "L" + nm + ";"; }
+        }
         return "";
     }
 
     pub fnc slots_of(d string) : int {
         if d == "J" || d == "D" { return 2; }
         return 1;
+    }
+
+    // --- JVM descriptor walking (for adapter invoke methods) ---------
+
+    // The i-th parameter descriptor of "(...)ret".
+    pub fnc desc_piece_at(desc string, idx int) : string {
+        i: int = 1;
+        n: int = 0;
+        while i < desc.size && desc[i] != ')' {
+            c: char = desc[i];
+            piece: string = "";
+            if c == 'J' || c == 'D' {
+                piece = "" + c;
+                i = i + 1;
+            } also c == 'L' {
+                piece = "L";
+                while i < desc.size && desc[i] != ';' {
+                    piece = piece + desc[i];
+                    i = i + 1;
+                }
+                piece = piece + ";";
+                i = i + 1;
+            } also c == '[' {
+                piece = "[";
+                i = i + 1;
+                while i < desc.size && desc[i] == '[' {
+                    piece = piece + "[";
+                    i = i + 1;
+                }
+                if i < desc.size && desc[i] == 'L' {
+                    piece = piece + "L";
+                    while i < desc.size && desc[i] != ';' {
+                        piece = piece + desc[i];
+                        i = i + 1;
+                    }
+                    piece = piece + ";";
+                    i = i + 1;
+                } else {
+                    if i < desc.size {
+                        piece = piece + desc[i];
+                        i = i + 1;
+                    }
+                }
+            } else {
+                piece = "" + c;
+                i = i + 1;
+            }
+            if n == idx { return piece; }
+            n = n + 1;
+        }
+        return "";
+    }
+
+    // The return descriptor of "(...)ret".
+    pub fnc ret_piece(desc string) : string {
+        i: int = 0;
+        while i < desc.size && desc[i] != ')' { i = i + 1; }
+        if i >= desc.size { return ""; }
+        i = i + 1;
+        out: string = "";
+        while i < desc.size {
+            out = out + desc[i];
+            i = i + 1;
+        }
+        return out;
+    }
+
+    // Number of parameter descriptors in "(...)ret".
+    pub fnc desc_param_count(desc string) : int {
+        i: int = 1;
+        n: int = 0;
+        while i < desc.size && desc[i] != ')' {
+            c: char = desc[i];
+            if c == 'L' {
+                while i < desc.size && desc[i] != ';' { i = i + 1; }
+                i = i + 1;
+            } also c == '[' {
+                while i < desc.size && desc[i] == '[' { i = i + 1; }
+                if i < desc.size && desc[i] == 'L' {
+                    while i < desc.size && desc[i] != ';' { i = i + 1; }
+                }
+                i = i + 1;
+            } else {
+                i = i + 1;
+            }
+            n = n + 1;
+        }
+        return n;
     }
 
     pub fnc is_uint_leash(t string) : bool {
@@ -3435,6 +3563,34 @@ pub def JvmGen : class {
                 this.gen_expr(e.left);
                 return;
             }
+            // &fname: a function value. The signature comes from the
+            // function's own declaration (the typechecker already proved
+            // it fits the expected fnc type); it lowers to a generated
+            // adapter instance implementing the signature's interface.
+            if e.left != null && e.left.kind == ExprKind.IDENT && this.tc.funcs.isin(e.left.sval) {
+                fname: string = e.left.sval;
+                parts: vec<string>;
+                if this.tc.func_params.isin(fname) {
+                    parts = this.tc.func_params[fname];
+                }
+                ret_t: string = this.tc.funcs[fname];
+                // Rebuild the canonical signature string, then map it to
+                // the interface the flow expects.
+                sig: string = "fnc(";
+                si: int = 0;
+                while si < parts.size {
+                    if si > 0 { sig = sig + ", "; }
+                    sig = sig + parts.get(si);
+                    si = si + 1;
+                }
+                sig = sig + ") : " + ret_t;
+                iface: string = this.fn_iface(sig);
+                if iface.size > 0 {
+                    idesc: string = this.fn_iface_desc(iface);
+                    this.emit_fn_adapter(iface, fname, idesc);
+                    return;
+                }
+            }
         }
         if e.op == "*" {
             lt: string = this.deref_t(this.expr_type(e.left));
@@ -3626,6 +3782,252 @@ pub def JvmGen : class {
             return "Ljava/lang/Object;";
         }
         return "";
+    }
+
+    // Descriptor piece for a bundled-shim parameter (see gen_shim_call):
+    // scalars/strings keep their natural lanes, pointer-typed
+    // out-params ride as one-element Object[] boxes, and function-typed
+    // parameters ride the shim's interface (LshHttpHandler).
+    pub fnc shim_piece(t string) : string {
+        if t == "string" { return "Ljava/lang/String;"; }
+        if t == "pointer<char>" || t == "*char" { return "Ljava/lang/String;"; }
+        if this.is_fnc_type(t) {
+            nm: string = this.fn_iface(t);
+            if nm.size > 0 { return "L" + nm + ";"; }
+        }
+        d: string = this.jdesc(t);
+        if d.size > 0 && d != "Ljava/lang/Object;" { return d; }
+        if t.size > 7 && t[0] == 'p' && t[1] == 'o' && t[2] == 'i' && t[3] == 'n' && t[4] == 't' && t[5] == 'e' && t[6] == 'r' && t[7] == '<' {
+            return "[Ljava/lang/Object;";
+        }
+        if t.size > 0 && t[0] == '*' {
+            return "[Ljava/lang/Object;";
+        }
+        return "";
+    }
+
+    // True for pointer-typed parameters (C out-params in the shim ABI).
+    pub fnc is_pointer_param(t string) : bool {
+        if t.size > 7 && t[0] == 'p' && t[1] == 'o' && t[2] == 'i' && t[3] == 'n' && t[4] == 't' && t[5] == 'e' && t[6] == 'r' && t[7] == '<' { return true; }
+        if t.size > 0 && t[0] == '*' { return true; }
+        return false;
+    }
+
+    // ===================== function values =============================
+    // fnc(...) : T rides as an instance of a single-method interface:
+    //   * the httpserver handler shape rides the bundled LshHttpHandler
+    //     (the Java shim receives its own interface type),
+    //   * any other signature gets a generated <Main>_LshFn<n> interface,
+    //   * `&fname` lowers to a generated adapter class whose invoke
+    //     tail-calls the top-level function.
+    // Memoized per signature; interface/adapter classes are emitted
+    // alongside the program's own classes.
+
+    pub fnc is_fnc_type(t string) : bool {
+        if t.size > 3 && t[0] == 'f' && t[1] == 'n' && t[2] == 'c' && t[3] == '(' { return true; }
+        return false;
+    }
+
+    // Split "fnc(p1, ..., pn) : ret" into [p1, ..., pn, ret], respecting
+    // nesting (tuple params contain commas).
+    pub fnc split_fnc_sig(t string) : vec<string> {
+        parts: vec<string>;
+        if !this.is_fnc_type(t) { return parts; }
+        i: int = 4; // skip "fnc("
+        depth: int = 0;
+        cur: string = "";
+        while i < t.size && !(depth == 0 && t[i] == ')') {
+            c: char = t[i];
+            if c == '(' || c == '<' || c == '[' { depth = depth + 1; }
+            if (c == ')' || c == '>') && depth > 0 { depth = depth - 1; }
+            if c == ',' && depth == 0 {
+                parts.pushb(this.trim_ws(cur));
+                cur = "";
+            } else {
+                cur = cur + c;
+            }
+            i = i + 1;
+        }
+        if this.trim_ws(cur).size > 0 { parts.pushb(this.trim_ws(cur)); }
+        // Return type after ") : "
+        ret: string = "";
+        while i < t.size && t[i] != ':' { i = i + 1; }
+        i = i + 1;
+        while i < t.size && t[i] == ' ' { i = i + 1; }
+        while i < t.size {
+            ret = ret + t[i];
+            i = i + 1;
+        }
+        parts.pushb(this.trim_ws(ret));
+        return parts;
+    }
+
+    pub fnc trim_ws(s string) : string {
+        a: int = 0;
+        b: int = s.size;
+        while a < b && (s[a] == ' ' || s[a] == '\t') { a = a + 1; }
+        while b > a && (s[b - 1] == ' ' || s[b - 1] == '\t') { b = b - 1; }
+        out: string = "";
+        while a < b {
+            out = out + s[a];
+            a = a + 1;
+        }
+        return out;
+    }
+
+    // Descriptor of the interface's single invoke method for a parsed
+    // signature ([params..., ret]).
+    pub fnc fnc_sig_desc(parts vec<string>) : string {
+        desc: string = "(";
+        pi: int = 0;
+        while pi + 1 < parts.size {
+            pd: string = this.jdesc(parts.get(pi));
+            if pd.size == 0 {
+                // Unrepresentable parameter lanes ride boxed Objects so
+                // exotic function types still flow.
+                pd = "Ljava/lang/Object;";
+            }
+            desc = desc + pd;
+            pi = pi + 1;
+        }
+        rd: string = "V";
+        if parts.size > 0 {
+            rd = this.jdesc(parts.get(parts.size - 1));
+        }
+        if rd.size == 0 { rd = "Ljava/lang/Object;"; }
+        desc = desc + ")" + rd;
+        return desc;
+    }
+
+    // Interface class name for a function type (memoized, generating the
+    // <Main>_LshFn<n> class on first sight).
+    pub fnc fn_iface(t string) : string {
+        if !this.is_fnc_type(t) { return ""; }
+        parts: vec<string> = this.split_fnc_sig(t);
+        if parts.size == 0 { return ""; }
+        desc: string = this.fnc_sig_desc(parts);
+        if this.fn_iface_map.isin(desc) { return this.fn_iface_map[desc]; }
+        name: string = "";
+        if parts.size == 6 && parts.get(5) == "int"
+            && parts.get(0) == "string" && parts.get(1) == "string"
+            && parts.get(2) == "string" && parts.get(3) == "string"
+            && parts.get(4) == "string" {
+            // The httpserver handler contract: the bundled shim defines
+            // the interface itself (leash/jvm/LshHttpHandler.java) —
+            // its method is `handle`, not `invoke`.
+            name = "LshHttpHandler";
+        } else {
+            // Namespaced by the main class so programs sharing an
+            // output directory don't silently swap generated types.
+            this.fn_class_counter = this.fn_class_counter + 1;
+            name = this.main_class + "_LshFn" + tostring(this.fn_class_counter);
+            ic: JvmClass = JvmClass.make(name, "java/lang/Object");
+            ic.access = JAcc.PUBLIC + JAcc.INTERFACE + JAcc.ABSTRACT;
+            im: JvmMethod = JvmMethod.make(ic.cp.utf8("invoke"), ic.cp.utf8(desc), JAcc.PUBLIC + JAcc.ABSTRACT);
+            im.is_abstract = true;
+            ic.add_method(im);
+            this.klasses.pushb(ic);
+        }
+        this.fn_iface_map.push(desc, name);
+        this.fn_iface_descs.push(name, desc);
+        if name == "LshHttpHandler" {
+            this.fn_iface_mnames.push(name, "handle");
+        } else {
+            this.fn_iface_mnames.push(name, "invoke");
+        }
+        return name;
+    }
+
+    // The interface's method name (handle for the bundled handler
+    // interface, invoke for the generated <Main>_LshFn<n> ones).
+    pub fnc fn_iface_mname(name string) : string {
+        if this.fn_iface_mnames.isin(name) { return this.fn_iface_mnames[name]; }
+        return "invoke";
+    }
+
+    // The invoke descriptor of an interface resolved through fn_iface.
+    pub fnc fn_iface_desc(name string) : string {
+        if this.fn_iface_descs.isin(name) { return this.fn_iface_descs[name]; }
+        return "";
+    }
+
+    // Emit `new <Adapter>()` where the adapter implements `iface` and
+    // its invoke tail-calls the top-level function `fname`.
+    pub fnc emit_fn_adapter(iface string, fname string, desc string) : void {
+        key: string = iface + "|" + fname + "|" + desc;
+        ad_name: string = "";
+        if this.fn_adapter_map.isin(key) {
+            ad_name = this.fn_adapter_map[key];
+        } else {
+            this.fn_class_counter = this.fn_class_counter + 1;
+            // Namespaced by the main class (see fn_iface): programs
+            // sharing an output directory must not swap adapters.
+            ad_name = this.main_class + "_LshFnH" + tostring(this.fn_class_counter);
+            ac: JvmClass = JvmClass.make(ad_name, "java/lang/Object");
+            ac.ifaces.pushb(iface);
+            // <init>()V -> super()
+            init_m: JvmMethod = JvmMethod.make(ac.cp.utf8("<init>"), ac.cp.utf8("()V"), JAcc.PUBLIC);
+            save_cp: JvmCp = this.cur_cp;
+            save_m: JvmMethod = this.cur_method;
+            this.cur_cp = ac.cp;
+            this.cur_method = init_m;
+            init_m.alloc_local(1); // `this` in slot 0
+            init_m.op(JOp.ALOAD_0, 1);
+            this.emit_invoke(JOp.INVOKESPECIAL, "java/lang/Object", "<init>", "()V");
+            init_m.op(JOp.RETURN, 0);
+            if !init_m.finalize(ac.cp) {
+                foreach _, fe in<vector> init_m.errors { this.fail(fe); }
+            }
+            ac.add_method(init_m);
+            // <mname>(params)ret -> INVOKESTATIC main.fname
+            iv: JvmMethod = JvmMethod.make(ac.cp.utf8(this.fn_iface_mname(iface)), ac.cp.utf8(desc), JAcc.PUBLIC);
+            this.cur_cp = ac.cp;
+            this.cur_method = iv;
+            iv.alloc_local(1); // `this` in slot 0 (invoke is an instance method)
+            pi: int = 0;
+            more: bool = true;
+            while more && pi < this.desc_param_count(desc) {
+                pd: string = this.desc_piece_at(desc, pi);
+                if pd.size == 0 {
+                    more = false;
+                } else {
+                    // The incoming arguments follow `this` — reserve each
+                    // slot before loading it (max_locals must cover them
+                    // or the class fails to load).
+                    pslot: int = iv.alloc_local(this.slots_of(pd));
+                    iv.load_local(pd, pslot);
+                    pi = pi + 1;
+                }
+            }
+            this.emit_invoke(JOp.INVOKESTATIC, this.main_class, fname, desc);
+            rd: string = this.ret_piece(desc);
+            if rd == "V" {
+                iv.op(JOp.RETURN, 0);
+            } also rd == "J" {
+                iv.op(JOp.LRETURN, -2);
+            } also rd == "D" {
+                iv.op(JOp.DRETURN, -2);
+            } also rd.size > 0 && (rd[0] == 'L' || rd[0] == '[') {
+                iv.op(JOp.ARETURN, -1);
+            } else {
+                iv.op(JOp.IRETURN, -1);
+            }
+            if !iv.finalize(ac.cp) {
+                foreach _, fe2 in<vector> iv.errors { this.fail(fe2); }
+            }
+            ac.add_method(iv);
+            this.klasses.pushb(ac);
+            this.cur_cp = save_cp;
+            this.cur_method = save_m;
+            this.fn_adapter_map.push(key, ad_name);
+        }
+        // new <Adapter>()
+        this.cur_method.op(JOp.NEW, 1);
+        ai2: int = this.cur_cp.class_entry(ad_name);
+        this.cur_method.emit_u8((ai2 >> 8) & 255);
+        this.cur_method.emit_u8(ai2 & 255);
+        this.cur_method.op(JOp.DUP, 1);
+        this.emit_invoke(JOp.INVOKESPECIAL, ad_name, "<init>", "()V");
     }
 
     pub fnc extern_desc(f FuncDecl) : string {
@@ -4060,6 +4462,24 @@ pub def JvmGen : class {
                 this.extern_names.push(ef.name, true);
             }
         }
+        // Natives the bundled JVM shims implement (leash/jvm/*.java):
+        // calls lower straight into the shim; the stub stays as a dead
+        // fallback. Keyed by function name — every native surface uses
+        // a distinct lsh_/lsql_/lshhttpd_ prefix.
+        this.jvm_native_map.push("lsh_http_request", "LeashHttp");
+        this.jvm_native_map.push("lsh_http_request_h2", "LeashHttp");
+        this.jvm_native_map.push("lsh_http_download", "LeashHttp");
+        this.jvm_native_map.push("lsh_http_download_h2", "LeashHttp");
+        this.jvm_native_map.push("lsh_http_strerror", "LeashHttp");
+        this.jvm_native_map.push("lsh_http_version", "LeashHttp");
+        this.jvm_native_map.push("lshhttpd_serve", "LeashHttpServer");
+        this.jvm_native_map.push("lshhttpd_serve_tls", "LeashHttpServer");
+        this.jvm_native_map.push("lshhttpd_shutdown", "LeashHttpServer");
+        this.jvm_native_map.push("lshhttpd_set_body", "LeashHttpServer");
+        this.jvm_native_map.push("lshhttpd_add_header", "LeashHttpServer");
+        this.jvm_native_map.push("lshhttpd_set_header", "LeashHttpServer");
+        this.jvm_native_map.push("lshhttpd_version", "LeashHttpServer");
+        this.jvm_native_map.push("lshhttpd_strerror", "LeashHttpServer");
         this.cur_cp = cls.cp;
         // Globals become static fields (fusion integers become atomics).
         foreach _, g in<vector> prog.globals {
@@ -4620,6 +5040,14 @@ pub def JvmGen : class {
             return;
         }
         if !this.tc.funcs.isin(fname) {
+            // Indirect call through a function value: `f(x)` where `f`
+            // is a local/param of fnc type. The receiver holds the
+            // interface ref an `&fname` adapter (or another indirect
+            // value) produced.
+            if this.var_types.isin(fname) && this.is_fnc_type(this.var_types[fname]) {
+                this.gen_fn_value_call(e, fname);
+                return;
+            }
             this.jvm_unsupported("call to unknown function '" + fname + "'");
             return;
         }
@@ -4628,6 +5056,12 @@ pub def JvmGen : class {
             ptypes = this.tc.func_params[fname];
         }
         is_ext: bool = this.extern_names.isin(fname);
+        if is_ext && this.jvm_native_map.isin(fname) {
+            // Bundled-shim native (http on the JVM): lower straight
+            // into the Java shim with boxed out-params.
+            this.gen_shim_call(e, fname, ptypes);
+            return;
+        }
         desc: string = "(";
         ai: int = 0;
         while ai < e.args.size {
@@ -4692,6 +5126,147 @@ pub def JvmGen : class {
             ai = ai + 1;
         }
         this.emit_invoke(JOp.INVOKESTATIC, this.main_class, fname, desc);
+        this.narrow_to(ret_t);
+    }
+
+    // Indirect call through a function value: the callee variable holds
+    // an interface ref; args marshal exactly like a direct call and the
+    // return value flows back per the signature.
+    pub fnc gen_fn_value_call(e Expr, fname string) : void {
+        ftype: string = this.var_types[fname];
+        parts: vec<string> = this.split_fnc_sig(ftype);
+        if parts.size == 0 {
+            this.jvm_unsupported("function value '" + fname + "'");
+            return;
+        }
+        desc: string = this.fnc_sig_desc(parts);
+        iface: string = this.fn_iface(ftype);
+        if iface.size == 0 || desc.size == 0 {
+            this.jvm_unsupported("function value '" + fname + "' of type '" + ftype + "'");
+            return;
+        }
+        mname: string = this.fn_iface_mname(iface);
+
+        // Receiver: the interface ref in the variable's slot.
+        slot: int = 0;
+        if this.var_slots.isin(fname) { slot = this.var_slots[fname]; }
+        this.cur_method.load_local("Ljava/lang/Object;", slot);
+
+        // Arguments marshal against the signature's parameter lanes.
+        if e.args.size + 1 != parts.size {
+            this.jvm_unsupported("function value '" + fname + "' called with " + tostring(e.args.size) + " argument(s)");
+            return;
+        }
+        ai: int = 0;
+        while ai < e.args.size {
+            pt: string = parts.get(ai);
+            at: string = this.expr_type(e.args.get(ai));
+            this.gen_expr(e.args.get(ai));
+            if !this.coerce_val(at, pt) {
+                this.jvm_coerce(at, pt);
+                this.narrow_to(pt);
+            }
+            ai = ai + 1;
+        }
+        this.emit_invoke(JOp.INVOKEINTERFACE, iface, mname, desc);
+        ret_t: string = parts.get(parts.size - 1);
+        this.narrow_to(ret_t);
+    }
+
+    // Bundled-shim native call: INVOKESTATIC straight into the Java
+    // shim class (leash/jvm/<Shim>.java). Pointer-typed parameters with
+    // a `&local` argument ride as one-element Object[] boxes holding the
+    // current value; after the call element 0 is copied back into the
+    // local, mirroring the C engine's char**/int* out-parameters.
+    pub fnc gen_shim_call(e Expr, fname string, ptypes vec<string>) : void {
+        shim: string = this.jvm_native_map[fname];
+        if !this.used_shims.isin(shim) {
+            this.used_shims.pushb(shim);
+        }
+
+        // The shim's descriptor over its own parameter lanes.
+        desc: string = "(";
+        ai: int = 0;
+        while ai < e.args.size {
+            pt: string = "int";
+            if ai < ptypes.size { pt = ptypes.get(ai); }
+            pd: string = this.shim_piece(pt);
+            if pd.size == 0 {
+                this.jvm_unsupported("native '" + fname + "' parameter type '" + pt + "' on jvm");
+                return;
+            }
+            desc = desc + pd;
+            ai = ai + 1;
+        }
+        ret_t: string = this.tc.funcs[fname];
+        rd: string = this.jdesc(ret_t);
+        if rd.size == 0 {
+            this.jvm_unsupported("native '" + fname + "' return type '" + ret_t + "' on jvm");
+            return;
+        }
+        desc = desc + ")" + rd;
+
+        out_boxes: vec<int>;
+        out_names: vec<string>;
+        ai = 0;
+        while ai < e.args.size {
+            pt: string = "int";
+            if ai < ptypes.size { pt = ptypes.get(ai); }
+            arg: Expr = e.args.get(ai);
+            if this.is_pointer_param(pt) && arg.kind == ExprKind.UNARY && arg.op == "&" && arg.left != null
+               && arg.left.kind == ExprKind.IDENT && this.var_slots.isin(arg.left.sval) {
+                // Out-param: Object[1] { currentValue }, copied back below.
+                name: string = arg.left.sval;
+                box: int = this.cur_method.alloc_local(1);
+                this.iconst(1);
+                this.emit_anewarray_object(1);
+                this.cur_method.store_local("X", box);
+                this.cur_method.load_local("X", box);
+                this.iconst(0);
+                lat: string = "";
+                if this.var_types.isin(name) { lat = this.var_types[name]; }
+                this.gen_expr(arg.left);
+                if lat.size > 0 { this.box_for(lat); }
+                this.cur_method.op(JOp.AASTORE, -3);
+                this.cur_method.load_local("X", box);
+                out_boxes.pushb(box);
+                out_names.pushb(name);
+            } else {
+                at: string = this.expr_type(arg);
+                this.gen_expr(arg);
+                if !this.coerce_val(at, pt) {
+                    this.jvm_coerce(at, pt);
+                    this.narrow_to(pt);
+                }
+            }
+            ai = ai + 1;
+        }
+        this.emit_invoke(JOp.INVOKESTATIC, shim, fname, desc);
+
+        if out_boxes.size > 0 {
+            // Park the call result, copy the boxes back, restore.
+            tmp: int = this.cur_method.alloc_local(1);
+            this.cur_method.store_local(rd, tmp);
+            bi: int = 0;
+            while bi < out_boxes.size {
+                this.cur_method.load_local("X", out_boxes.get(bi));
+                this.iconst(0);
+                this.cur_method.op(JOp.AALOAD, -1);
+                nme: string = out_names.get(bi);
+                nt: string = "";
+                if this.var_types.isin(nme) { nt = this.var_types[nme]; }
+                nslot: int = 0;
+                if this.var_slots.isin(nme) { nslot = this.var_slots[nme]; }
+                if nt.size > 0 {
+                    this.unbox_to(nt);
+                    this.cur_method.store_local(this.jdesc(nt), nslot);
+                } else {
+                    this.cur_method.op(JOp.POP, -1);
+                }
+                bi = bi + 1;
+            }
+            this.cur_method.load_local(rd, tmp);
+        }
         this.narrow_to(ret_t);
     }
 

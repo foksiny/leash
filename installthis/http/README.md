@@ -12,6 +12,13 @@ Both HTTP and HTTPS are supported on every platform:
 | Windows  | WinHTTP (`win/liblshhttp.a`, no external dependencies) |
 | macOS    | BSD sockets + OpenSSL (build once, see below) |
 | Linux ARM64 | BSD sockets + OpenSSL (`arm64/` — rebuild, see below) |
+| JVM target | Bundled Java shim over `java.net.http` (`leash/jvm/LeashHttp.java`, Java 11+) |
+
+On the JVM target the compiler lowers `@from` calls into the bundled
+shim and copies its classes next to the output; the API, error codes,
+redirect rules and `strerror` text are identical, but h2c prior
+knowledge is unavailable (cleartext `*_h2` calls report
+`proto = "http/1.1"`) and response header casing follows the JDK.
 
 ## Usage
 

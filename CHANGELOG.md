@@ -30,12 +30,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   MinGW-w64 and exercised end-to-end under Wine, but has not yet been
   battle-tested on real Windows hosts. The win64 link line now pulls
   `ws2_32 secur32 crypt32 ncrypt`.
+- **`http` and `httpserver` now work on the JVM target** through bundled
+  Java shims (`leash/jvm/LeashHttp.java`, `LeashHttpServer.java`,
+  `LshHttpHandler.java`; source shipped, prebuilt `.class` files
+  committed like the `liblsh*.a` archives). The compiler lowers the
+  `@from` calls into the shims and copies their classes next to the
+  output. The client rides `java.net.http` with identical API, error
+  codes, redirect rules and `strerror` text (h2 over TLS via ALPN;
+  h2c unavailable — cleartext `*_h2` reports `http/1.1`). The server
+  rides `jdk.httpserver` with the same handler contract, `reply_*`
+  helpers, `shutdown()` semantics and `LSHD_E_*` codes, speaking
+  HTTP/1.1 only. Both require a Java 11+ runtime; other JVM programs
+  keep the Java 5 class-file floor.
+- **First-class function values on the JVM target**: `fnc(...)` types
+  lower to single-method interfaces (the handler shape to the shim's
+  `LshHttpHandler`, other signatures to generated `<Main>_LshFn<n>`
+  classes, namespaced by the program's main class),
+  `&fname` lowers to a generated adapter class, and indirect calls
+  through locals and parameters invoke them — previously any function
+  value failed to compile on the JVM.
+- The JVM build no longer warns about `@from` native libraries: the JVM
+  target links no archive, so the transitive native-library security
+  warning was noise (path/symlink checks still run).
 - A **Known Limitations** page (`docs/limitations.html`, linked from the
   docs sidebar and the README) that states the platform's deliberate
   limits with a severity rating: the Windows `serve_tls` listener being
-  experimental, the three `@from`-native stdlib modules (`http`,
-  `httpserver`, `sql`) lacking JVM support, and the absence of HTTP/3 /
-  QUIC.
+  experimental, the `sql` module lacking JVM support (the JDK ships no
+  embedded database; lifting it means bundling a SQLite JDBC driver),
+  and the absence of HTTP/3 / QUIC.
 
 ### Changed
 - Version bumped to 1.6.0; the cross-target bootstrap seeds are now
