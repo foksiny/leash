@@ -66,6 +66,15 @@ extern void *leash_gc_alloc_string(long long len);
 # endif
 # include <winsock2.h>
 # include <ws2tcpip.h>
+/* Windows TLS uses SChannel (secur32) plus Crypt32/CNG for PEM cert/key
+ * loading. No external dependency: these ship with every Windows. */
+# include <wincrypt.h>
+# include <ncrypt.h>
+# ifndef SECURITY_WIN32
+#  define SECURITY_WIN32
+# endif
+# include <security.h>
+# include <schannel.h>
  typedef SOCKET lsh_fd_t;
 # define LSHD_INVALID_FD INVALID_SOCKET
 #else
@@ -110,7 +119,7 @@ enum {
     LSHD_E_ACCEPT  = -5,  /* accept()/recv()/send() failure                 */
     LSHD_E_MEMORY  = -6,  /* out of memory / size cap hit                   */
     LSHD_E_ABORTED = -7,  /* stop() requested before serving any request    */
-    LSHD_E_TLS     = -8   /* TLS setup/handshake failure (POSIX only)       */
+    LSHD_E_TLS     = -8   /* TLS setup/handshake failure                    */
 };
 
 /* Handler installed by Leash.  Returns the HTTP status code to reply with
@@ -435,7 +444,7 @@ static int lshd_is_head_method(const char *method) {
 
 typedef struct {
     lsh_fd_t  fd;
-    void     *tls;         /* SSL* when serving TLS, else NULL (POSIX only) */
+    void     *tls;         /* SSL* (POSIX) / lshd_tls_win* (Windows) when serving TLS */
     int       tls_hs;      /* TLS handshake still in progress                */
     int       is_h2;       /* HTTP/2 framing active on this connection       */
     void     *h2;          /* lshd_h2ctx* when is_h2                         */
@@ -452,6 +461,13 @@ typedef struct {
     int       h2checked;   /* protocol decided (h2 promoted or 1.1 pinned)    */
     size_t    h2_out_off;  /* flush offset for the h2 output buffer          */
 } lshd_conn;
+
+#ifdef _WIN32
+/* Windows SChannel TLS backend (implemented near the serving section).
+ * Same contract as the OpenSSL path: >0 = bytes, 0 = would-block, <0 fatal. */
+static int lshd_win_tls_read(lshd_conn *c, char *buf, size_t len);
+static int lshd_win_tls_write(lshd_conn *c, const char *buf, size_t len);
+#endif
 
 static lshd_conn *g_conns[LSHD_MAX_CONNS];
 static int        g_nconns = 0;
@@ -574,6 +590,18 @@ static int lshd_conn_flush(lshd_conn *c) {
     size_t before = c->out.len - c->out_off;
     while (c->out_off < c->out.len) {
 #ifdef _WIN32
+        if (c->tls) {
+            int r = lshd_win_tls_write(c, c->out.p + c->out_off,
+                                       (int)(c->out.len - c->out_off));
+            if (r > 0) {
+                c->out_off += (size_t)r;
+                c->last_ms = lshd_now_ms();
+                continue;
+            }
+            if (r == 0) break;
+            lshd_set_detail("TLS write failed");
+            return LSHD_E_ACCEPT;
+        }
         int n = send(c->fd, c->out.p + c->out_off, (int)(c->out.len - c->out_off), 0);
         if (n > 0) {
             c->out_off += (size_t)n;
@@ -619,6 +647,12 @@ static int lshd_conn_flush(lshd_conn *c) {
     if (c->out_off >= c->out.len) {
         c->out.len = 0;
         c->out_off = 0;
+#ifdef _WIN32
+        /* SChannel queues ciphertext internally; once the plaintext
+         * drains there is nothing left to write, so drop POLLOUT
+         * interest or idle connections would spin poll(). */
+        c->want_out = 0;
+#endif
         return 1;
     }
     return 0;
@@ -669,6 +703,21 @@ static int lshd_conn_read_avail(lshd_conn *c) {
             c->req_start = lshd_now_ms(); /* a fresh request is arriving */
         }
 #ifdef _WIN32
+        if (c->tls) {
+            int r = lshd_win_tls_read(c, chunk, sizeof(chunk));
+            if (r > 0) {
+                if (!buf_append(&c->acc, chunk, (size_t)r)) return LSHD_E_MEMORY;
+                g_total_buf_bytes += (long long)r;
+                c->last_ms = lshd_now_ms();
+                c->has_bytes = 1;
+                pulled += (size_t)r;
+                continue;
+            }
+            if (r == 0) return 0;
+            if (r == -100) return 1;
+            lshd_set_detail("TLS read failed");
+            return LSHD_E_ACCEPT;
+        }
         int n = recv(c->fd, chunk, (int)sizeof(chunk), 0);
         if (n > 0) {
             if (!buf_append(&c->acc, chunk, (size_t)n)) return LSHD_E_MEMORY;
@@ -1268,7 +1317,8 @@ static int lshd_conn_serve(lshd_conn *c, lshhttpd_handler_t handler,
 
 /* ------------------------------------------------------------------ */
 /* HTTP/2 + TLS serving (h2c prior knowledge, h2 over TLS via ALPN).    */
-/* Cleartext H2 works on every platform; TLS serving is POSIX-only.     */
+/* Cleartext H2 works on every platform; TLS serving uses OpenSSL on
+ * POSIX and SChannel on Windows.                                     */
 /* ------------------------------------------------------------------ */
 
 #ifndef _WIN32
@@ -1474,6 +1524,13 @@ static int h2d_raw_send(lshd_conn *c, const char *buf, size_t len) {
     }
 #endif
 #ifdef _WIN32
+    if (c->tls) {
+        int r = lshd_win_tls_write(c, buf, len);
+        if (r > 0) return r;
+        if (r == 0) return 0;
+        lshd_set_detail("TLS write failed");
+        return LSHD_E_ACCEPT;
+    }
     int n = send(c->fd, buf, (int)len, 0);
     if (n > 0) return n;
     int e = WSAGetLastError();
@@ -1506,6 +1563,14 @@ static int h2d_raw_recv(lshd_conn *c, char *buf, size_t len) {
     }
 #endif
 #ifdef _WIN32
+    if (c->tls) {
+        int r = lshd_win_tls_read(c, buf, len);
+        if (r > 0) return r;
+        if (r == 0) return 0;
+        if (r == -100) return -100;
+        lshd_set_detail("TLS read failed");
+        return LSHD_E_ACCEPT;
+    }
     int n = recv(c->fd, buf, (int)len, 0);
     if (n > 0) return n;
     if (n == 0) return -100; /* EOF marker distinct from would-block */
@@ -2186,6 +2251,648 @@ static void lshd_tls_ctx_free(void) {
 }
 #endif
 
+#ifdef _WIN32
+/* ------------------------------------------------------------------ */
+/* Windows TLS: SChannel backend. This is the counterpart of the        */
+/* OpenSSL path above. It is cross-compiled with MinGW and links        */
+/* against secur32/crypt32/ncrypt (all shipped with Windows), but it is */
+/* not exercised on a real Windows host in CI — treat it as             */
+/* experimental.                                                        */
+/* ------------------------------------------------------------------ */
+
+#define LSHD_WIN_TLS_IN    (64 * 1024)   /* raw ciphertext buffer          */
+#define LSHD_WIN_TLS_PLAIN (32 * 1024)   /* decrypted plaintext buffer     */
+
+typedef struct {
+    CtxtHandle                ctx;
+    int                       have_ctx;
+    int                       established;
+    int                       eof;
+    SecPkgContext_StreamSizes sizes;
+    unsigned char             in[LSHD_WIN_TLS_IN];
+    size_t                    in_len;
+    unsigned char             plain[LSHD_WIN_TLS_PLAIN];
+    size_t                    plain_len, plain_off;
+    unsigned char            *pend;      /* ciphertext queued for the socket */
+    size_t                    pend_cap, pend_len, pend_off;
+    size_t                    pend_plain; /* plaintext `pend` represents     */
+} lshd_tls_win;
+
+static int            g_win_tls_mode = 0;
+static CredHandle     g_win_cred;
+static int            g_win_cred_ok = 0;
+static PCCERT_CONTEXT g_win_cert = NULL;
+static HCRYPTPROV     g_win_prov = 0;
+static HCRYPTKEY      g_win_key = 0;
+static NCRYPT_PROV_HANDLE g_win_nprov = 0;
+static NCRYPT_KEY_HANDLE  g_win_nkey = 0;
+
+/* ALPN list offered to clients: length-prefixed names (h2 preferred). */
+static const unsigned char g_win_alpn[] = {
+    2, 'h', '2',
+    8, 'h', 't', 't', 'p', '/', '1', '.', '1'
+};
+
+/* Read a whole file into a malloc'd, NUL-terminated buffer. */
+static char *lshd_win_read_file(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return NULL; }
+    long n = ftell(f);
+    if (n < 0) { fclose(f); return NULL; }
+    rewind(f);
+    char *buf = (char *)malloc((size_t)n + 1);
+    if (!buf) { fclose(f); return NULL; }
+    size_t got = fread(buf, 1, (size_t)n, f);
+    fclose(f);
+    buf[got] = '\0';
+    return buf;
+}
+
+/* Decode the first "-----BEGIN <label>-----" PEM block to DER. */
+static unsigned char *lshd_win_pem_to_der(const char *pem, const char *label,
+                                          DWORD *out_len) {
+    char begin[96], end[96];
+    snprintf(begin, sizeof(begin), "-----BEGIN %s-----", label);
+    snprintf(end, sizeof(end), "-----END %s-----", label);
+    const char *b = strstr(pem, begin);
+    if (!b) return NULL;
+    b += strlen(begin);
+    const char *e = strstr(b, end);
+    if (!e) return NULL;
+    DWORD body_len = (DWORD)(e - b);
+    DWORD der_len = 0;
+    if (!CryptStringToBinaryA(b, body_len, CRYPT_STRING_BASE64,
+                              NULL, &der_len, NULL, NULL)) {
+        return NULL;
+    }
+    unsigned char *der = (unsigned char *)malloc(der_len ? der_len : 1);
+    if (!der) return NULL;
+    if (!CryptStringToBinaryA(b, body_len, CRYPT_STRING_BASE64,
+                              der, &der_len, NULL, NULL)) {
+        free(der);
+        return NULL;
+    }
+    *out_len = der_len;
+    return der;
+}
+
+static PCCERT_CONTEXT lshd_win_load_cert(const char *path) {
+    char *pem = lshd_win_read_file(path);
+    if (!pem) return NULL;
+    DWORD der_len = 0;
+    unsigned char *der = lshd_win_pem_to_der(pem, "CERTIFICATE", &der_len);
+    free(pem);
+    if (!der) return NULL;
+    PCCERT_CONTEXT cc = CertCreateCertificateContext(
+        X509_ASN_ENCODING, der, der_len);
+    free(der);
+    return cc;
+}
+
+/* Read one DER TLV: expects `tag`, returns a pointer to the content and
+ * advances *off past it. NULL on malformed input. */
+static const unsigned char *lshd_win_der_tlv(const unsigned char *p, size_t n,
+                                             size_t *off, unsigned char tag,
+                                             size_t *out_len) {
+    size_t i = *off;
+    if (i >= n || p[i] != tag) return NULL;
+    i++;
+    if (i >= n) return NULL;
+    size_t len = p[i++];
+    if (len & 0x80) {
+        size_t k = len & 0x7f;
+        if (k == 0 || k > 4 || i + k > n) return NULL;
+        len = 0;
+        for (size_t j = 0; j < k; j++) len = (len << 8) | p[i++];
+    }
+    if (i + len > n) return NULL;
+    *off = i + len;
+    *out_len = len;
+    return p + i;
+}
+
+/* PKCS#8 PrivateKeyInfo -> the inner PKCS#1 RSAPrivateKey DER bytes. */
+static const unsigned char *lshd_win_pkcs8_inner(const unsigned char *der,
+                                                 size_t n, size_t *out_len) {
+    size_t off = 0, seqlen = 0;
+    if (!lshd_win_der_tlv(der, n, &off, 0x30, &seqlen)) return NULL;
+    size_t end = off;            /* end of the outer SEQUENCE content */
+    size_t o = off - seqlen;     /* start of that content             */
+    if (!lshd_win_der_tlv(der, end, &o, 0x02, &seqlen)) return NULL; /* version  */
+    if (!lshd_win_der_tlv(der, end, &o, 0x30, &seqlen)) return NULL; /* algorithm*/
+    size_t klen = 0;
+    const unsigned char *k = lshd_win_der_tlv(der, end, &o, 0x04, &klen);
+    if (!k) return NULL;
+    *out_len = klen;
+    return k;
+}
+
+/* Import an RSA private key and attach it to the certificate using the
+ * modern CNG interface (correct on real Windows). Returns 0 if the CNG
+ * provider cannot take the PKCS#8 blob (e.g. under Wine). */
+static int lshd_win_attach_key_ncrypt(PCCERT_CONTEXT cert,
+                                      const unsigned char *der8, DWORD len) {
+    if (!g_win_nprov) {
+        if (NCryptOpenStorageProvider(&g_win_nprov, MS_KEY_STORAGE_PROVIDER,
+                                      0) != 0) {
+            g_win_nprov = 0;
+            return 0;
+        }
+    }
+    if (!g_win_nkey) {
+        if (NCryptImportKey(g_win_nprov, 0, NCRYPT_PKCS8_PRIVATE_KEY_BLOB, NULL,
+                            &g_win_nkey, (PBYTE)der8, len, 0) != 0) {
+            g_win_nkey = 0;
+            return 0;
+        }
+    }
+    return CertSetCertificateContextProperty(cert, CERT_NCRYPT_KEY_HANDLE_PROP_ID,
+                                             0, (const void *)&g_win_nkey) ? 1 : 0;
+}
+
+/* Import an RSA private key through the legacy CryptoAPI CSP (also what
+ * Wine implements). Takes the PKCS#1 RSAPrivateKey DER bytes. The key is
+ * placed in a per-process key container so Schannel can find it through
+ * CryptGetUserKey(). */
+static char g_win_container[64] = "";
+
+static int lshd_win_attach_key_legacy(PCCERT_CONTEXT cert,
+                                      const unsigned char *pkcs1, DWORD len) {
+    DWORD blob_len = 0;
+    if (!CryptDecodeObjectEx(X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
+                             PKCS_RSA_PRIVATE_KEY, pkcs1, len,
+                             0, NULL, NULL, &blob_len)) {
+        return 0;
+    }
+    BYTE *blob = (BYTE *)malloc(blob_len);
+    if (!blob) return 0;
+    BOOL ok = CryptDecodeObjectEx(X509_ASN_ENCODING | PKCS_7_ASN_ENCODING,
+                                  PKCS_RSA_PRIVATE_KEY, pkcs1, len,
+                                  0, NULL, blob, &blob_len);
+    if (!ok) { free(blob); return 0; }
+
+    if (!g_win_prov) {
+        snprintf(g_win_container, sizeof(g_win_container), "leash-tls-%lu",
+                 (unsigned long)GetCurrentProcessId());
+        if (!CryptAcquireContextA(&g_win_prov, g_win_container,
+                                  MS_ENH_RSA_AES_PROV, PROV_RSA_AES,
+                                  CRYPT_NEWKEYSET)) {
+            /* A stale container may linger from a previous run. */
+            CryptAcquireContextA(&g_win_prov, g_win_container,
+                                 MS_ENH_RSA_AES_PROV, PROV_RSA_AES,
+                                 CRYPT_DELETEKEYSET);
+            if (!CryptAcquireContextA(&g_win_prov, g_win_container,
+                                      MS_ENH_RSA_AES_PROV, PROV_RSA_AES,
+                                      CRYPT_NEWKEYSET)) {
+                free(blob);
+                g_win_prov = 0;
+                return 0;
+            }
+        }
+    }
+    if (!g_win_key &&
+        !CryptImportKey(g_win_prov, blob, blob_len, 0, CRYPT_EXPORTABLE,
+                        &g_win_key)) {
+        free(blob);
+        return 0;
+    }
+    free(blob);
+
+    CERT_KEY_CONTEXT kctx;
+    memset(&kctx, 0, sizeof(kctx));
+    kctx.cbSize = sizeof(kctx);
+    kctx.dwKeySpec = AT_KEYEXCHANGE;
+    kctx.hCryptProv = g_win_prov;
+    return CertSetCertificateContextProperty(cert, CERT_KEY_CONTEXT_PROP_ID,
+                                             0, &kctx) ? 1 : 0;
+}
+
+/* Attach an RSA private key (PKCS#8 "BEGIN PRIVATE KEY" or PKCS#1
+ * "BEGIN RSA PRIVATE KEY") to the certificate. CNG is tried first; the
+ * legacy CSP is the fallback. */
+static int lshd_win_attach_key(PCCERT_CONTEXT cert, const char *path) {
+    char *pem = lshd_win_read_file(path);
+    if (!pem) return 0;
+
+    DWORD der8_len = 0, der1_len = 0;
+    unsigned char *der8 = lshd_win_pem_to_der(pem, "PRIVATE KEY", &der8_len);
+    unsigned char *der1 = lshd_win_pem_to_der(pem, "RSA PRIVATE KEY", &der1_len);
+    free(pem);
+
+    int ok = 0;
+    if (der8) ok = lshd_win_attach_key_ncrypt(cert, der8, der8_len);
+    if (!ok) {
+        const unsigned char *pkcs1 = NULL;
+        DWORD pklen = 0;
+        if (der8) {
+            size_t inner = 0;
+            const unsigned char *p = lshd_win_pkcs8_inner(der8, der8_len, &inner);
+            if (p) { pkcs1 = p; pklen = (DWORD)inner; }
+        }
+        if (!pkcs1 && der1) { pkcs1 = der1; pklen = der1_len; }
+        if (pkcs1) ok = lshd_win_attach_key_legacy(cert, pkcs1, pklen);
+    }
+    free(der8);
+    free(der1);
+    return ok;
+}
+
+static void lshd_win_tls_ctx_free(void) {
+    if (g_win_cred_ok) {
+        FreeCredentialsHandle(&g_win_cred);
+        g_win_cred_ok = 0;
+    }
+    if (g_win_cert) {
+        CertFreeCertificateContext(g_win_cert);
+        g_win_cert = NULL;
+    }
+    if (g_win_key) { CryptDestroyKey(g_win_key); g_win_key = 0; }
+    if (g_win_prov) { CryptReleaseContext(g_win_prov, 0); g_win_prov = 0; }
+    if (g_win_container[0]) {
+        HCRYPTPROV dp = 0;
+        CryptAcquireContextA(&dp, g_win_container, MS_ENH_RSA_AES_PROV,
+                             PROV_RSA_AES, CRYPT_DELETEKEYSET);
+        g_win_container[0] = '\0';
+    }
+    if (g_win_nkey) { NCryptFreeObject(g_win_nkey); g_win_nkey = 0; }
+    if (g_win_nprov) { NCryptFreeObject(g_win_nprov); g_win_nprov = 0; }
+    g_win_tls_mode = 0;
+}
+
+static int lshd_win_tls_ctx_new(const char *cert, const char *key) {
+    if (g_win_cred_ok) return 0;
+    g_win_cert = lshd_win_load_cert(cert);
+    if (!g_win_cert) {
+        lshd_set_detail("cannot load TLS certificate (PEM)");
+        return LSHD_E_TLS;
+    }
+    if (!lshd_win_attach_key(g_win_cert, key)) {
+        lshd_set_detail("cannot load TLS private key (RSA PKCS#8/PKCS#1 PEM)");
+        return LSHD_E_TLS;
+    }
+    SCHANNEL_CRED sc;
+    memset(&sc, 0, sizeof(sc));
+    sc.dwVersion = SCHANNEL_CRED_VERSION;
+    sc.cCreds = 1;
+    sc.paCred = &g_win_cert;
+    sc.grbitEnabledProtocols = SP_PROT_TLS1_2_SERVER;
+    sc.dwFlags = SCH_USE_STRONG_CRYPTO;
+    TimeStamp ts;
+    SECURITY_STATUS ss = AcquireCredentialsHandleW(
+        NULL, (SEC_WCHAR *)UNISP_NAME_W, SECPKG_CRED_INBOUND, NULL,
+        &sc, NULL, NULL, &g_win_cred, &ts);
+    if (ss != SEC_E_OK) {
+        lshd_set_detail("AcquireCredentialsHandle failed");
+        return LSHD_E_TLS;
+    }
+    g_win_cred_ok = 1;
+    return 0;
+}
+
+static int lshd_win_tls_conn_new(lshd_conn *c) {
+    lshd_tls_win *st = (lshd_tls_win *)calloc(1, sizeof(lshd_tls_win));
+    if (!st) return -1;
+    c->tls = st;
+    return 0;
+}
+
+static void lshd_win_tls_conn_free(lshd_conn *c) {
+    lshd_tls_win *st = (lshd_tls_win *)c->tls;
+    if (!st) return;
+    if (st->have_ctx) DeleteSecurityContext(&st->ctx);
+    free(st->pend);
+    free(st);
+}
+
+/* Push queued ciphertext to the socket. 1 drained, 0 would-block, -1 err. */
+static int lshd_win_tls_flush_pend(lshd_conn *c, lshd_tls_win *st) {
+    while (st->pend_off < st->pend_len) {
+        int n = send(c->fd, (const char *)st->pend + st->pend_off,
+                     (int)(st->pend_len - st->pend_off), 0);
+        if (n > 0) {
+            st->pend_off += (size_t)n;
+            c->last_ms = lshd_now_ms();
+            continue;
+        }
+        int e = WSAGetLastError();
+        if (e == WSAEINTR) continue;
+        if (e == WSAEWOULDBLOCK) return 0;
+        return -1;
+    }
+    return 1;
+}
+
+static int lshd_win_tls_write(lshd_conn *c, const char *buf, size_t len) {
+    lshd_tls_win *st = (lshd_tls_win *)c->tls;
+    if (!st || !st->established) return -1;
+
+    /* Finish a record queued by an earlier, partially-sent call. */
+    int f = lshd_win_tls_flush_pend(c, st);
+    if (f < 0) return -1;
+    if (f == 0) { c->want_out = 1; return 0; }
+    if (st->pend_plain > 0) {
+        int done = (int)st->pend_plain;
+        st->pend_plain = 0;
+        st->pend_len = st->pend_off = 0;
+        return done;
+    }
+    if (len == 0) return 0;
+
+    size_t chunk = len;
+    if (chunk > st->sizes.cbMaximumMessage) chunk = st->sizes.cbMaximumMessage;
+
+    SecBuffer bufs[4];
+    bufs[0].BufferType = SECBUFFER_STREAM_HEADER;
+    bufs[0].pvBuffer = st->pend;
+    bufs[0].cbBuffer = st->sizes.cbHeader;
+    bufs[1].BufferType = SECBUFFER_DATA;
+    bufs[1].pvBuffer = st->pend + st->sizes.cbHeader;
+    bufs[1].cbBuffer = (unsigned long)chunk;
+    memcpy(bufs[1].pvBuffer, buf, chunk);
+    bufs[2].BufferType = SECBUFFER_STREAM_TRAILER;
+    bufs[2].pvBuffer = st->pend + st->sizes.cbHeader + chunk;
+    bufs[2].cbBuffer = st->sizes.cbTrailer;
+    bufs[3].BufferType = SECBUFFER_EMPTY;
+    bufs[3].pvBuffer = NULL;
+    bufs[3].cbBuffer = 0;
+    SecBufferDesc desc;
+    desc.ulVersion = SECBUFFER_VERSION;
+    desc.cBuffers = 4;
+    desc.pBuffers = bufs;
+    if (EncryptMessage(&st->ctx, 0, &desc, 0) != SEC_E_OK) return -1;
+    st->pend_len = bufs[0].cbBuffer + bufs[1].cbBuffer + bufs[2].cbBuffer;
+    st->pend_off = 0;
+
+    f = lshd_win_tls_flush_pend(c, st);
+    if (f < 0) return -1;
+    if (f == 0) {
+        st->pend_plain = chunk;
+        c->want_out = 1;
+        return 0;
+    }
+    st->pend_len = st->pend_off = 0;
+    return (int)chunk;
+}
+
+static int lshd_win_tls_read(lshd_conn *c, char *buf, size_t len) {
+    lshd_tls_win *st = (lshd_tls_win *)c->tls;
+    if (!st || !st->established) return -1;
+
+    if (st->plain_off < st->plain_len) {
+        size_t n = st->plain_len - st->plain_off;
+        if (n > len) n = len;
+        memcpy(buf, st->plain + st->plain_off, n);
+        st->plain_off += n;
+        if (st->plain_off >= st->plain_len) st->plain_len = st->plain_off = 0;
+        return (int)n;
+    }
+    if (st->eof) return -100;
+
+    for (;;) {
+        if (st->in_len > 0) {
+            SecBuffer bufs[4];
+            bufs[0].BufferType = SECBUFFER_DATA;
+            bufs[0].pvBuffer = st->in;
+            bufs[0].cbBuffer = (unsigned long)st->in_len;
+            bufs[1].BufferType = SECBUFFER_EMPTY;
+            bufs[1].pvBuffer = NULL;
+            bufs[1].cbBuffer = 0;
+            bufs[2].BufferType = SECBUFFER_EMPTY;
+            bufs[2].pvBuffer = NULL;
+            bufs[2].cbBuffer = 0;
+            bufs[3].BufferType = SECBUFFER_EMPTY;
+            bufs[3].pvBuffer = NULL;
+            bufs[3].cbBuffer = 0;
+            SecBufferDesc desc;
+            desc.ulVersion = SECBUFFER_VERSION;
+            desc.cBuffers = 4;
+            desc.pBuffers = bufs;
+            SECURITY_STATUS ss = DecryptMessage(&st->ctx, &desc, 0, NULL);
+            if (ss == SEC_E_OK) {
+                /* Windows/Wine repurposes the input buffer as
+                 * SECBUFFER_STREAM_HEADER and hands the plaintext back in a
+                 * separate SECBUFFER_DATA buffer, so find it by type. */
+                unsigned char *data = NULL;
+                size_t dlen = 0, extra = 0;
+                for (int k = 0; k < 4; k++) {
+                    if (bufs[k].BufferType == SECBUFFER_DATA && data == NULL) {
+                        data = (unsigned char *)bufs[k].pvBuffer;
+                        dlen = bufs[k].cbBuffer;
+                    } else if (bufs[k].BufferType == SECBUFFER_EXTRA) {
+                        extra = bufs[k].cbBuffer;
+                    }
+                }
+                size_t n = 0;
+                if (data && dlen > 0) {
+                    n = dlen > len ? len : dlen;
+                    memcpy(buf, data, n);
+                    if (dlen > n) {
+                        size_t rem = dlen - n;
+                        if (rem > sizeof(st->plain)) rem = sizeof(st->plain);
+                        memcpy(st->plain, data + n, rem);
+                        st->plain_len = rem;
+                        st->plain_off = 0;
+                    }
+                }
+                if (extra > 0 && extra <= st->in_len) {
+                    memmove(st->in, st->in + st->in_len - extra, extra);
+                    st->in_len = extra;
+                } else {
+                    st->in_len = 0;
+                }
+                if (n > 0) return (int)n;
+                continue; /* control record consumed: read more */
+            }
+            if (ss == SEC_I_CONTEXT_EXPIRED) {
+                st->eof = 1;
+                return -100;
+            }
+            if (ss != SEC_E_INCOMPLETE_MESSAGE) {
+                lshd_set_detail("TLS decrypt failed");
+                return -1;
+            }
+            /* incomplete record: fall through and read more */
+        }
+        if (st->in_len >= sizeof(st->in)) {
+            lshd_set_detail("TLS record too large");
+            return -1;
+        }
+        int n = recv(c->fd, (char *)st->in + st->in_len,
+                     (int)(sizeof(st->in) - st->in_len), 0);
+        if (n > 0) {
+            st->in_len += (size_t)n;
+            c->last_ms = lshd_now_ms();
+            c->has_bytes = 1;
+            continue;
+        }
+        if (n == 0) { st->eof = 1; return -100; }
+        int e = WSAGetLastError();
+        if (e == WSAEINTR) continue;
+        if (e == WSAEWOULDBLOCK) return 0;
+        lshd_set_detail("recv failed");
+        return -1;
+    }
+}
+
+/* Flush queued ciphertext, briefly waiting for the socket to accept it.
+ * Used only to send the small final handshake token. 1 drained, 0 timeout,
+ * -1 error. */
+static int lshd_win_tls_flush_wait(lshd_conn *c, lshd_tls_win *st,
+                                   int budget_ms) {
+    int waited = 0;
+    for (;;) {
+        int f = lshd_win_tls_flush_pend(c, st);
+        if (f != 0) return f;
+        if (waited >= budget_ms) return 0;
+        fd_set wf;
+        FD_ZERO(&wf);
+        FD_SET(c->fd, &wf);
+        struct timeval tv;
+        tv.tv_sec = 0;
+        tv.tv_usec = 20000;
+        int r = select(0, NULL, &wf, NULL, &tv);
+        if (r < 0 && WSAGetLastError() != WSAEINTR) return -1;
+        waited += 20;
+    }
+}
+
+/* Drive one handshake step. 1 done, 0 want I/O, <0 fatal. */
+static int lshd_win_tls_handshake(lshd_conn *c) {
+    lshd_tls_win *st = (lshd_tls_win *)c->tls;
+
+    if (st->pend_len > st->pend_off) {
+        int f = lshd_win_tls_flush_pend(c, st);
+        if (f < 0) return -1;
+        if (f == 0) { c->want_out = 1; return 0; }
+        st->pend_len = st->pend_off = 0;
+    }
+
+    for (;;) {
+        if (st->in_len >= sizeof(st->in)) break;
+        int n = recv(c->fd, (char *)st->in + st->in_len,
+                     (int)(sizeof(st->in) - st->in_len), 0);
+        if (n > 0) {
+            st->in_len += (size_t)n;
+            c->last_ms = lshd_now_ms();
+            c->has_bytes = 1;
+            continue;
+        }
+        if (n == 0) return -1;
+        int e = WSAGetLastError();
+        if (e == WSAEINTR) continue;
+        if (e == WSAEWOULDBLOCK) break;
+        return -1;
+    }
+    if (st->in_len == 0) { c->want_out = 0; return 0; }
+
+    SecBuffer inbufs[3];
+    inbufs[0].BufferType = SECBUFFER_TOKEN;
+    inbufs[0].pvBuffer = st->in;
+    inbufs[0].cbBuffer = (unsigned long)st->in_len;
+    inbufs[1].BufferType = SECBUFFER_APPLICATION_PROTOCOLS;
+    inbufs[1].pvBuffer = (void *)g_win_alpn;
+    inbufs[1].cbBuffer = (unsigned long)sizeof(g_win_alpn);
+    inbufs[2].BufferType = SECBUFFER_EMPTY;
+    inbufs[2].pvBuffer = NULL;
+    inbufs[2].cbBuffer = 0;
+    SecBufferDesc indesc;
+    indesc.ulVersion = SECBUFFER_VERSION;
+    indesc.cBuffers = 3;
+    indesc.pBuffers = inbufs;
+
+    SecBuffer outbufs[2];
+    outbufs[0].BufferType = SECBUFFER_TOKEN;
+    outbufs[0].pvBuffer = NULL;
+    outbufs[0].cbBuffer = 0;
+    outbufs[1].BufferType = SECBUFFER_APPLICATION_PROTOCOLS;
+    outbufs[1].pvBuffer = NULL;
+    outbufs[1].cbBuffer = 0;
+    SecBufferDesc outdesc;
+    outdesc.ulVersion = SECBUFFER_VERSION;
+    outdesc.cBuffers = 2;
+    outdesc.pBuffers = outbufs;
+
+    unsigned long flags = ASC_REQ_SEQUENCE_DETECT | ASC_REQ_REPLAY_DETECT |
+                          ASC_REQ_CONFIDENTIALITY | ASC_REQ_STREAM |
+                          ASC_REQ_EXTENDED_ERROR | ASC_REQ_ALLOCATE_MEMORY;
+    unsigned long outflags = 0;
+    PCtxtHandle phNew = st->have_ctx ? NULL : &st->ctx;
+    PCtxtHandle phCtx = st->have_ctx ? &st->ctx : NULL;
+    SECURITY_STATUS ss = AcceptSecurityContext(&g_win_cred, phCtx, &indesc,
+                                               flags, 0, phNew, &outdesc,
+                                               &outflags, NULL);
+
+    if (outbufs[0].pvBuffer && outbufs[0].cbBuffer > 0) {
+        if (!st->pend || st->pend_cap < outbufs[0].cbBuffer) {
+            free(st->pend);
+            st->pend_cap = outbufs[0].cbBuffer;
+            st->pend = (unsigned char *)malloc(st->pend_cap);
+            if (!st->pend) st->pend_cap = 0;
+        }
+        if (st->pend) {
+            memcpy(st->pend, outbufs[0].pvBuffer, outbufs[0].cbBuffer);
+            st->pend_len = outbufs[0].cbBuffer;
+            st->pend_off = 0;
+        }
+        FreeContextBuffer(outbufs[0].pvBuffer);
+    }
+
+    if (ss == SEC_E_INCOMPLETE_MESSAGE) {
+        c->want_out = (st->pend_len > st->pend_off) ? 1 : 0;
+        return 0;
+    }
+    if (ss == SEC_I_CONTINUE_NEEDED || ss == SEC_I_COMPLETE_NEEDED ||
+        ss == SEC_I_COMPLETE_AND_CONTINUE) {
+        if (ss != SEC_I_CONTINUE_NEEDED) {
+            CompleteAuthToken(phCtx ? phCtx : &st->ctx, &outdesc);
+        }
+        st->have_ctx = 1;
+        st->in_len = 0;
+        c->want_out = (st->pend_len > st->pend_off) ? 1 : 0;
+        return 0;
+    }
+    if (ss == SEC_E_OK) {
+        st->have_ctx = 1;
+        st->in_len = 0;
+        /* The server's final handshake token (ChangeCipherSpec/Finished)
+         * is queued in st->pend. Send it before the buffer is reused for
+         * record encryption, otherwise the peer never finishes. */
+        if (st->pend_len > st->pend_off) {
+            int f = lshd_win_tls_flush_wait(c, st, 5000);
+            if (f < 0) return -1;
+            if (f == 0) {
+                lshd_set_detail("TLS handshake flush timed out");
+                return -1;
+            }
+            st->pend_len = st->pend_off = 0;
+        }
+        SecPkgContext_StreamSizes sizes;
+        if (QueryContextAttributes(&st->ctx, SECPKG_ATTR_STREAM_SIZES,
+                                   &sizes) != SEC_E_OK) {
+            lshd_set_detail("TLS stream sizes unavailable");
+            return -1;
+        }
+        st->sizes = sizes;
+        free(st->pend);
+        st->pend_cap = (size_t)sizes.cbHeader + sizes.cbMaximumMessage +
+                       sizes.cbTrailer;
+        st->pend = (unsigned char *)malloc(st->pend_cap);
+        if (!st->pend) {
+            lshd_set_detail("out of memory");
+            return -1;
+        }
+        st->pend_len = st->pend_off = 0;
+        st->established = 1;
+        c->tls_hs = 0;
+        c->want_out = 0;
+        return 1;
+    }
+    lshd_set_detail("TLS handshake failed");
+    return -1;
+}
+#endif
+
 static void lshd_conn_free(lshd_conn *c) {
     if (!c) return;
     /* Un-account whatever is still buffered on this connection (request
@@ -2195,6 +2902,12 @@ static void lshd_conn_free(lshd_conn *c) {
     if (c->tls) {
         SSL_shutdown((SSL *)c->tls);
         SSL_free((SSL *)c->tls);
+        c->tls = NULL;
+    }
+#endif
+#ifdef _WIN32
+    if (c->tls) {
+        lshd_win_tls_conn_free(c);
         c->tls = NULL;
     }
 #endif
@@ -2500,6 +3213,19 @@ static int lshd_serve_impl(int port, long long max_requests,
                     cc->want_out = 1;
                 }
 #endif
+#ifdef _WIN32
+                if (g_win_tls_mode && g_win_cred_ok) {
+                    if (lshd_win_tls_conn_new(cc) != 0) {
+                        lshd_close_fd(client);
+                        free(cc);
+                        continue;
+                    }
+                    /* Incomplete handshake: want_out is only raised when a
+                     * token is queued, so an idle peer does not spin poll. */
+                    cc->tls_hs = 1;
+                    cc->want_out = 0;
+                }
+#endif
                 g_conns[g_nconns++] = cc;
             }
         }
@@ -2509,10 +3235,13 @@ static int lshd_serve_impl(int port, long long max_requests,
         for (int i = 0; i < g_nconns; i++) {
             lshd_conn *cc = g_conns[i];
 
-#ifndef _WIN32
             /* --- 0. TLS handshake drive --- */
             if (cc->tls_hs) {
+#ifdef _WIN32
+                int hs = lshd_win_tls_handshake(cc);
+#else
                 int hs = lshd_tls_accept_step(cc);
+#endif
                 if (hs < 0) {
                     lshd_conn_drop(i);
                     i--;
@@ -2520,9 +3249,7 @@ static int lshd_serve_impl(int port, long long max_requests,
                 }
                 if (hs == 0) continue; /* want I/O: revisit next slice */
                 /* Handshake done: fall through to framing below. */
-            }
-#endif
-            /* --- 0b. HTTP/2 connections run their own pump --- */
+            }            /* --- 0b. HTTP/2 connections run their own pump --- */
             if (cc->is_h2) {
                 lshd_h2ctx *h2 = (lshd_h2ctx *)cc->h2;
                 if (max_requests >= 0 && served >= max_requests)
@@ -2715,6 +3442,7 @@ static int lshd_serve_impl(int port, long long max_requests,
     lshd_tls_ctx_free();
 #endif
 #ifdef _WIN32
+    lshd_win_tls_ctx_free();
     WSACleanup();
 #endif
     lshd_running = 0;
@@ -2735,13 +3463,13 @@ int lshhttpd_serve(int port, long long max_requests,
 int lshhttpd_serve_tls(int port, long long max_requests, const char *cert,
                        const char *key, lshhttpd_handler_t handler) {
 #ifdef _WIN32
-    (void)port;
-    (void)max_requests;
-    (void)cert;
-    (void)key;
-    (void)handler;
-    lshd_set_detail("TLS serving needs OpenSSL (POSIX builds)");
-    return LSHD_E_TLS;
+    if (!cert || !cert[0] || !key || !key[0]) {
+        lshd_set_detail("TLS serving needs a certificate and key file");
+        return LSHD_E_TLS;
+    }
+    if (lshd_win_tls_ctx_new(cert, key) != 0) return LSHD_E_TLS;
+    g_win_tls_mode = 1;
+    return lshd_serve_impl(port, max_requests, handler, cert, key);
 #else
     if (!cert || !cert[0] || !key || !key[0]) {
         lshd_set_detail("TLS serving needs a certificate and key file");

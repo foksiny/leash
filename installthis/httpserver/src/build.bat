@@ -1,6 +1,8 @@
 @echo off
 rem Builds liblshhttpd.a for Windows (MinGW-w64) -> ..\win\liblshhttpd.a
-rem The server needs only ws2_32, which the Leash linker already provides.
+rem The server needs ws2_32 (sockets), secur32 (SChannel TLS) and
+rem crypt32 + ncrypt (PEM cert/key loading). The Leash linker provides
+rem all four for --target win64, so consumers need no extra flags.
 
 setlocal
 set DIR=%~dp0
@@ -11,7 +13,7 @@ if "%CC%"=="" set CC=gcc
 if not exist "%OUT_DIR%" mkdir "%OUT_DIR%"
 
 echo compiling lshhttpd.c...
-"%CC%" -c "%DIR%lshhttpd.c" -o "%DIR%lshhttpd.o" -O2 -Wall -Wextra -lws2_32
+"%CC%" -c "%DIR%lshhttpd.c" -o "%DIR%lshhttpd.o" -O2 -Wall -Wextra
 if errorlevel 1 goto :fail
 
 ar rcs "%OUT_DIR%\liblshhttpd.a" "%DIR%lshhttpd.o"

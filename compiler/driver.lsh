@@ -1052,7 +1052,10 @@ pub def CompilerDriver : class {
                              "-Wl,--gc-sections\n" +
                              "-Wl,--strip-all\n";
             link_flags_inline = "-mconsole -Wl,--gc-sections -Wl,--strip-all";
-            tail_flags = "";
+            /* SChannel (serve_tls) plus Crypt32/NCrypt (PEM cert/key) and
+             * Winsock: all shipped with Windows. Unused import libs are
+             * dropped by the linker, so this is safe for every program. */
+            tail_flags = " -lws2_32 -lsecur32 -lcrypt32 -lncrypt";
         } also is_macos {
             link_rsp_flags = "-Wl,-dead_strip\n" +
                              "-Wl,-S\n";

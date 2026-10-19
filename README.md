@@ -103,7 +103,7 @@ Leash 1.6.0 is a complete, self-hosted toolchain with no Python in the build or 
 
 | Limitation | Severity | Comment |
 |------------|----------|---------|
-| `serve_tls` POSIX-only | 🟡 Medium | Windows only serves h2c. Documented. |
+| Windows `serve_tls` is experimental | 🟢 Low | SChannel backend; cross-compiled and exercised under Wine, but not yet battle-tested on real Windows hosts. |
 | 3 stdlib modules without JVM | 🟢 Low | `@from` native (sockets/TLS/SQLite) is impossible without a shim. |
 | HTTP/3 / QUIC | 🟢 Low | Not implemented, but nobody expects it in 1.x. |
 

@@ -19,10 +19,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   reference before deletion.
 
 ### Added
+- **`serve_tls` now works on Windows.** The httpserver shim gained a
+  system-SChannel TLS backend (`secur32` + `crypt32`, no external
+  dependency): PEM certificate loading plus RSA key import (PKCS#8
+  `BEGIN PRIVATE KEY` or PKCS#1 `BEGIN RSA PRIVATE KEY`) through a
+  per-process key container, a non-blocking handshake driven by the same
+  poll slice, ALPN advertisement, and record encrypt/decrypt wired into
+  the existing HTTP/1.1 engine. The Windows listener speaks HTTP/1.1
+  over TLS and is marked **experimental**: it is cross-compiled with
+  MinGW-w64 and exercised end-to-end under Wine, but has not yet been
+  battle-tested on real Windows hosts. The win64 link line now pulls
+  `ws2_32 secur32 crypt32 ncrypt`.
 - A **Known Limitations** page (`docs/limitations.html`, linked from the
   docs sidebar and the README) that states the platform's deliberate
-  limits with a severity rating: `serve_tls` being POSIX-only (Windows
-  serves h2c), the three `@from`-native stdlib modules (`http`,
+  limits with a severity rating: the Windows `serve_tls` listener being
+  experimental, the three `@from`-native stdlib modules (`http`,
   `httpserver`, `sql`) lacking JVM support, and the absence of HTTP/3 /
   QUIC.
 
@@ -30,6 +41,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Version bumped to 1.6.0; the cross-target bootstrap seeds are now
   `bootstrap/leash-1.6.0-target-*` (`x86_64`, `x86`, `arm`, `win64`,
   `java`).
+- `installthis/httpserver/src/build.sh` learned `TARGET_DIR=win` (MinGW-w64
+  cross-compile), so the Windows `liblshhttpd.a` can be rebuilt from Linux
+  as well as on Windows.
 
 ## [1.5.1] - 2026-10-18
 

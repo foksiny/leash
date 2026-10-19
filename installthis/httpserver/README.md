@@ -3,13 +3,13 @@
 A native HTTP server shim (`lshhttpd`) bound through Leash's `@from` FFI
 directive. It completes the web stack started by the `http` client package:
 both sides of the wire are now native Leash. HTTP/1.1 keep-alive plus
-HTTP/2 (h2c, and h2 over TLS via `serve_tls` on POSIX).
+HTTP/2 (h2c everywhere; h2 over TLS via `serve_tls` on POSIX).
 
 | Platform   | Backend |
 |------------|---------|
 | Linux      | BSD sockets + OpenSSL, statically bundled (`linux/liblshhttpd.a`, prebuilt) |
 | Linux ARM64| BSD sockets (`arm64/liblshhttpd.a` — rebuild, see below) |
-| Windows    | Winsock2 (`win/liblshhttpd.a`, prebuilt) |
+| Windows    | Winsock2 + SChannel (TLS), no external dependency (`win/liblshhttpd.a`, prebuilt) |
 | macOS      | BSD sockets (`macos/liblshhttpd.a` — rebuild) |
 
 ## Usage
@@ -77,7 +77,7 @@ handler's return value: `return HttpServer.reply(200, "text/plain", "hi");`
 | `set_content_type(ct)` | Shortcut for `add_header("Content-Type", ct)` |
 | `reply(status, ct, body)` / `reply_raw(status, body)` | One-liner responses usable as handler return values |
 | `reply_json(status, body)` / `reply_html(status, body)` / `reply_text(status, body)` | One-liners with the Content-Type preset |
-| `serve_tls(port, cert, key, handler)` / `serve_tls_ex(port, max, cert, key, handler)` | HTTPS listener (POSIX): PEM cert+key; ALPN negotiates h2 or HTTP/1.1 per connection |
+| `serve_tls(port, cert, key, handler)` / `serve_tls_ex(port, max, cert, key, handler)` | HTTPS listener: PEM cert+key; on POSIX ALPN negotiates h2 or HTTP/1.1, on Windows SChannel serves HTTP/1.1 |
 | `parse_query(q)` → `HttpQuery` | Split `a=1&b=2` into a query object (`q.get("a")`, `q.has("b")`, `q.count()`) |
 | `path_matches(path, prefix)` | Prefix matcher for simple routing |
 | `version()` / `strerror(code)` | Diagnostics |
@@ -96,7 +96,8 @@ handler's return value: `return HttpServer.reply(200, "text/plain", "hi");`
   same handler contract. Up to 16 concurrent streams per connection,
   HPACK with dynamic table, flow-control top-ups, PING/SETTINGS/WINDOW_UPDATE
   handling and GOAWAY on shutdown. `serve_tls()` additionally negotiates
-  h2 over TLS via ALPN (fallback: HTTP/1.1 over the same TLS connection).
+  h2 over TLS via ALPN on POSIX (fallback: HTTP/1.1 over the same TLS
+  connection); the Windows SChannel listener speaks HTTP/1.1 over TLS.
   SIGPIPE is ignored while serving so vanishing peers cannot kill the host.
 - **Connection hygiene:** up to 128 concurrent connections; an idle
   keep-alive connection closes after 60 s of silence, a request whose
@@ -105,7 +106,12 @@ handler's return value: `return HttpServer.reply(200, "text/plain", "hi");`
 - **Binds all interfaces** (`0.0.0.0`): `localhost` shortcuts work, but so do
   network callers. For anything beyond toy/demo servers, put it behind a
   reverse proxy (nginx, Caddy) for hardening; `serve_tls()` terminates
-  TLS itself (POSIX only — needs OpenSSL at build time).
+  TLS itself. On POSIX that needs OpenSSL at build time; on Windows it uses
+  the system SChannel stack, so `cert`/`key` must be RSA keys in PEM form
+  (PKCS#8 `BEGIN PRIVATE KEY` or PKCS#1 `BEGIN RSA PRIVATE KEY`). The
+  Windows TLS listener is **experimental**: it is cross-compiled with
+  MinGW-w64 and exercised under Wine, but has not yet been battle-tested on
+  real Windows hosts.
 - `HEAD` requests run the handler but suppress the body (with a correct
   `Content-Length`).
 - Malformed request lines are answered with `400 Bad Request` without
@@ -150,7 +156,8 @@ modifying `src/lshhttpd.c`:
 ```bash
 cd src && sh build.sh                                    # Linux -> ../linux/
                                                        # (bundles OpenSSL statically for serve_tls)
-cd src && build.bat                                      # Windows -> ..\win\
+cd src && build.bat                                      # Windows -> ..\win\  (MinGW-w64)
+cd src && TARGET_DIR=win CC=x86_64-w64-mingw32-gcc sh build.sh   # Windows cross from Linux
 cd src && OPENSSL_ROOT=$(brew --prefix openssl) sh build.sh  # macOS -> ../macos/
 cd src && TARGET_DIR=arm64 CC=aarch64-linux-gnu-gcc sh build.sh
                                                          # Linux ARM64 cross

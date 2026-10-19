@@ -894,7 +894,7 @@ fnc main() {
 
 <h2>HTTP Server (<code>httpserver::httpserver</code>)</h2>
 
-<p>A native HTTP server speaking <strong>HTTP/1.1 and HTTP/2</strong>, built on a small C shim (<code>lshhttpd</code>) bound through <code>@from</code> — completing the web stack started by the <code>http</code> client. h2c arrives via client-preface detection on the same port (same handler contract); <code>serve_tls</code> adds a TLS listener where ALPN negotiates h2 or HTTP/1.1 per connection. Linux <code>liblshhttpd.a</code> bundles OpenSSL statically like the client archive; Windows serves h2c over Winsock2 (TLS serving is POSIX-only).</p>
+<p>A native HTTP server speaking <strong>HTTP/1.1 and HTTP/2</strong>, built on a small C shim (<code>lshhttpd</code>) bound through <code>@from</code> — completing the web stack started by the <code>http</code> client. h2c arrives via client-preface detection on the same port (same handler contract); <code>serve_tls</code> adds a TLS listener where ALPN negotiates h2 or HTTP/1.1 per connection. Linux <code>liblshhttpd.a</code> bundles OpenSSL statically like the client archive; Windows uses the built-in SChannel stack (HTTP/1.1 over TLS) alongside h2c over Winsock2.</p>
 
 <pre><code><span class="kw">use</span> httpserver::httpserver::*;
 
@@ -924,7 +924,7 @@ fnc main() {
     <tr><td><code>shutdown()</code></td><td>Stop a running server; from a handler: after the current response; from another thread: unblocks <code>accept()</code> immediately</td></tr>
     <tr><td><code>set_body(body)</code> / <code>add_header(name, value)</code> / <code>set_content_type(ct)</code></td><td>Fill the current response (call from the handler)</td></tr>
     <tr><td><code>reply(status, content_type, body)</code> / <code>reply_raw(status, body)</code></td><td>One-liner response — returns <code>status</code>, so it's the handler's return value</td></tr>
-    <tr><td><code>serve_tls(port, cert, key, handler)</code> / <code>serve_tls_ex(port, max, cert, key, handler)</code></td><td>HTTPS listener (POSIX): <code>cert</code>/<code>key</code> are PEM paths; ALPN picks h2 or HTTP/1.1 per connection</td></tr>
+    <tr><td><code>serve_tls(port, cert, key, handler)</code> / <code>serve_tls_ex(port, max, cert, key, handler)</code></td><td>HTTPS listener: <code>cert</code>/<code>key</code> are PEM paths; ALPN picks h2 or HTTP/1.1 per connection (POSIX), or HTTP/1.1 over SChannel on Windows</td></tr>
     <tr><td><code>reply_json(status, body)</code> / <code>reply_html(status, body)</code> / <code>reply_text(status, body)</code></td><td>One-liners with the matching Content-Type preset</td></tr>
     <tr><td><code>parse_query(q)</code></td><td>Split <code>"a=1&amp;b=2"</code> into a <code>HttpQuery</code> (<code>get</code>/<code>has</code>/<code>count</code>)</td></tr>
     <tr><td><code>path_matches(path, prefix)</code></td><td>Prefix routing helper</td></tr>

@@ -38,7 +38,7 @@
     // Append a raw header line ("Name: value") for the current request.
     fnc lshhttpd_set_header(line string) : void;
 
-    // Serve with TLS (POSIX only): `cert`/`key` are PEM file paths.
+    // Serve with TLS: `cert`/`key` are PEM file paths.
     // ALPN negotiates h2 when the client offers it, else HTTP/1.1 over
     // the same TLS connection. Same request contract and return codes
     // as lshhttpd_serve.
@@ -113,7 +113,7 @@ pub def HttpServer : class {
     }
 
     //====================================================
-    // TLS serving (POSIX only; needs cert + key PEM files)
+    // TLS serving (needs cert + key PEM files)
     //====================================================
 
     // Serves HTTPS on `port`: clients offering ALPN "h2" get HTTP/2,
