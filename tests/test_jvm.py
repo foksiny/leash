@@ -939,6 +939,64 @@ class TestJvmTarget(unittest.TestCase):
         self.assertIn("42", r.stdout)
         self.assertIn("21.000000", r.stdout)
 
+    # ---- sql module on the JVM (bundled LeashSql shim) -----------------
+
+    def test_jvm_sql_matches_native(self):
+        # The stdlib sql test program must produce identical output on
+        # the JVM (LeashSql interpreter) and natively (SQLite C archive).
+        path = os.path.join(REPO_ROOT, "tests", "stdlib", "sql_sqlite.lsh")
+        out_j = os.path.join(self.tmp, "sqlj")
+        rj = _sh([BIN_LEASHC, "compile", path, "--target", "jvm",
+                  "--other-imports", os.path.join(REPO_ROOT, "installthis"),
+                  "to", out_j])
+        self.assertEqual(rj.returncode, 0, msg=rj.stdout + rj.stderr)
+        pj = subprocess.run([JAVA, "-cp", self.tmp, "sqlj"],
+                            capture_output=True, text=True,
+                            errors="replace", timeout=60)
+        self.assertEqual(pj.returncode, 0, msg=pj.stdout + pj.stderr)
+        out_n = os.path.join(self.tmp, "sqln")
+        rn_c = _sh([BIN_LEASHC, "compile", path,
+                    "--other-imports", os.path.join(REPO_ROOT, "installthis"),
+                    "to", out_n])
+        self.assertEqual(rn_c.returncode, 0, msg=rn_c.stdout + rn_c.stderr)
+        pn = subprocess.run([out_n], capture_output=True, text=True,
+                            errors="replace", timeout=60)
+        self.assertEqual(pn.returncode, 0, msg=pn.stdout + pn.stderr)
+        self.assertEqual(pj.stdout, pn.stdout,
+                         f"stdout differs:\n--- jvm ---\n{pj.stdout}\n--- native ---\n{pn.stdout}")
+
+    def test_jvm_sql_persistence(self):
+        # File-backed databases round-trip through close/reopen on the
+        # JVM engine; transactions roll back; a real sqlite3 file is
+        # rejected instead of misread.
+        dbfile = os.path.join(self.tmp, "jvm_sql.db")
+        src = ('use sql::sql::*;\n'
+               'fnc main() : void {\n'
+               f'    db: Db = Db.open("{dbfile}");\n'
+               '    show(tostring(db.exec("CREATE TABLE kv (k TEXT, v INTEGER)")));\n'
+               '    show(tostring(db.exec_args("INSERT INTO kv VALUES (?, ?)", (vec<string>){"alpha", "42"})));\n'
+               '    show(tostring(db.transaction((vec<string>){"INSERT INTO kv VALUES (\'beta\', 7)"})));\n'
+               '    db.close();\n'
+               '}\n')
+        class_dir, main_class = self._compile_jvm(src, stdlib=True)
+        r = self._run_jvm(class_dir, main_class)
+        self.assertEqual(r.returncode, 0, msg=r.stdout + r.stderr)
+        self.assertEqual(r.stdout, "true\ntrue\ntrue\n")
+        src2 = ('use sql::sql::*;\n'
+                'fnc main() : void {\n'
+                f'    db: Db = Db.open("{dbfile}");\n'
+                '    res: QueryResult = db.query("SELECT k, v FROM kv ORDER BY k");\n'
+                '    show(tostring(res.row_count()));\n'
+                '    show(res.at(0, 0).as_text());\n'
+                '    show(tostring(res.at(0, 1).as_int()));\n'
+                '    show(res.at(1, 0).as_text());\n'
+                '    db.close();\n'
+                '}\n')
+        class_dir2, main_class2 = self._compile_jvm(src2, stdlib=True)
+        r2 = self._run_jvm(class_dir2, main_class2)
+        self.assertEqual(r2.returncode, 0, msg=r2.stdout + r2.stderr)
+        self.assertEqual(r2.stdout, "2\nalpha\n42\nbeta\n")
+
     def test_string_ordering_parity(self):
         # Lexicographic ordering matches native on all six operators.
         self._parity(
@@ -971,17 +1029,17 @@ class TestJvmTarget(unittest.TestCase):
             '}\n')
 
     def test_native_call_fails_loud(self):
-        # Calling a native @from function with no JVM shim (sql is backed
-        # by the SQLite C archive only) compiles — mixed modules stay
-        # importable — but aborts with a clear message when executed.
-        # (http used to be the example here; the JVM target now lowers its
-        # calls into the bundled LeashHttp shim, so it really works.)
-        src = ('use sql::sql::*;\n'
+        # A native @from function with no JVM shim compiles (mixed modules
+        # stay importable) but aborts with a clear message when executed.
+        # The stdlib's http/httpserver/sql all have JVM shims now, so this
+        # uses a raw @from declaration — no module coupling.
+        src = ('@from("libnope.a") {\n'
+               '    fnc lsh_nope_do(x int) : int;\n'
+               '}\n'
                'fnc main() : void {\n'
-               '    db: Db = Db.open(":memory:");\n'
-               '    show(db.ok);\n'
+               '    show(lsh_nope_do(1));\n'
                '}\n')
-        class_dir, main_class = self._compile_jvm(src, stdlib=True)
+        class_dir, main_class = self._compile_jvm(src)
         r = self._run_jvm(class_dir, main_class)
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("not supported on the jvm target",

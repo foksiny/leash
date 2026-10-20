@@ -1,6 +1,6 @@
 #!/bin/sh
 # Rebuild the JVM stdlib shims (leash/jvm/*.class) that implement the
-# http and httpserver modules' @from surfaces for --target jvm.
+# http, httpserver and sql modules' @from surfaces for --target jvm.
 #
 # Bytecode target is Java 11: java.net.http (the JDK HTTP client the
 # client shim rides on) first shipped in JDK 11, so http/httpserver on
@@ -13,5 +13,5 @@
 # any program that actually calls into a shim.
 set -e
 cd "$(dirname "$0")"
-javac --release 11 LeashHttp.java LeashHttpServer.java LshHttpHandler.java
+javac --release 11 LeashHttp.java LeashHttpServer.java LshHttpHandler.java LeashSql.java
 echo "ok: JVM shims rebuilt"

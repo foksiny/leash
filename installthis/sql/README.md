@@ -11,6 +11,18 @@ compiled in, so no external packages are ever needed:
 | Linux ARM64 | `arm64/liblshsql.a` (cross-build: `TARGET_DIR=arm64 CC=aarch64-linux-gnu-gcc sh build.sh`) |
 | Windows  | `win/liblshsql.a` |
 | macOS    | build once with `src/build.sh` |
+| JVM target | Bundled small SQL interpreter (`leash/jvm/LeashSql.java`, no Java version floor) |
+
+On the JVM target the compiler lowers `@from` calls into the bundled
+interpreter and copies its classes next to the output. The `lsql_*`
+contract (result codes, column types, prepare-time metadata, affinity,
+transactions, `changes()`/`last_insert_rowid()`) matches the C shim, and
+the stdlib test program runs byte-identically. Two deliberate limits:
+the supported surface is CREATE TABLE / INSERT / SELECT / UPDATE /
+DELETE / DROP TABLE / transactions (no joins, subqueries, indexes or
+GROUP BY), and database *files* use the engine's own `LEASHSQL1` format
+— not sqlite3 files, so a database written by one engine cannot be
+opened by the other.
 
 ## Usage
 

@@ -59,9 +59,9 @@
         <td>SChannel backend; cross-compiled and exercised under Wine, not yet battle-tested on real Windows.</td>
     </tr>
     <tr>
-        <td>1 stdlib module without JVM</td>
+        <td>JVM <code>sql</code> is a mini engine, not SQLite</td>
         <td>&#128994; Low</td>
-        <td><code>sql</code> needs a SQLite driver; <code>http</code>/<code>httpserver</code> ride bundled Java shims.</td>
+        <td>Same API and semantics for the supported subset; own file format, so sqlite3 files don't open.</td>
     </tr>
     <tr>
         <td>HTTP/3 / QUIC</td>
@@ -74,20 +74,21 @@
 
 <p>The <code>httpserver</code> module's TLS listener, <code>serve_tls(port, cert, key, handler)</code> (and <code>serve_tls_ex</code>), is available on every supported platform. On Linux, Linux ARM64 and macOS the shim uses BSD sockets + OpenSSL and ALPN negotiates <strong>h2</strong> or HTTP/1.1 per connection. On Windows the shim uses the system <strong>SChannel</strong> stack (no external dependency): the key must be an RSA key in PEM form (PKCS#8 <code>BEGIN PRIVATE KEY</code> or PKCS#1 <code>BEGIN RSA PRIVATE KEY</code>) and the listener speaks <strong>HTTP/1.1 over TLS</strong> &mdash; Windows ALPN is not wired up, so h2 clients fall back to HTTP/1.1. The Windows arm is cross-compiled with MinGW-w64 and exercised under Wine in CI; it has not yet been battle-tested on real Windows hosts, so treat it as experimental for now. See the <code>installthis/httpserver/README.md</code> for the per-platform matrix.</p>
 
-<h2>1 stdlib module without JVM support</h2>
+<h2>JVM <code>sql</code> is a mini engine, not SQLite</h2>
 
-<p>The JVM target (<code>--target jvm</code>) supports the full core language and almost all of the standard library. Two of the three former <code>@from</code>-only modules now work on the JVM through <strong>bundled Java shims</strong> (source under <code>leash/jvm/</code>, compiled to <code>.class</code> files shipped with the runtime, the same policy as the prebuilt <code>liblsh*.a</code> archives):</p>
+<p>All three former <code>@from</code>-only stdlib modules now work on the JVM target through <strong>bundled Java shims</strong> (source under <code>leash/jvm/</code>, prebuilt <code>.class</code> files shipped with the runtime, the same policy as the <code>liblsh*.a</code> archives):</p>
 
 <ul>
 <li><strong><code>http</code></strong> &mdash; rides <code>java.net.http</code>: the same request API, redirect rules, error codes (<code>LSH_E_*</code>), <code>strerror</code> text, <code>leash-http/1.1</code> user agent, binary-safe downloads and TLS (with the <code>verify_tls</code> opt-out). <code>*_h2</code> calls negotiate h2 over TLS via ALPN and fall back to HTTP/1.1; <strong>h2c prior-knowledge is not available</strong> (the JDK client has no cleartext h2), so cleartext <code>*_h2</code> calls report <code>proto = "http/1.1"</code>.</li>
 <li><strong><code>httpserver</code></strong> &mdash; rides <code>jdk.httpserver</code>: same <code>serve</code>/<code>serve_ex</code>/<code>serve_tls</code> API, handler contract, <code>reply_*</code> helpers, response-body/header context, <code>shutdown()</code> semantics (stops after the current response), request quotas and <code>LSHD_E_*</code> error codes. The listener speaks <strong>HTTP/1.1 only</strong> (no h2/h2c), and accepts RSA keys in PEM form (PKCS#8 or PKCS#1).</li>
+<li><strong><code>sql</code></strong> &mdash; rides a <strong>small SQL interpreter</strong> (<code>leash/jvm/LeashSql.java</code>), not SQLite. The <code>lsql_*</code> contract is faithful: sqlite3 result codes (OK/ROW/DONE), column-type numbering, prepare-time column metadata, <code>reset()</code> keeping bindings, <code>changes()</code>/<code>last_insert_rowid()</code>, <code>INTEGER PRIMARY KEY</code> rowid aliasing, BEGIN/COMMIT/ROLLBACK, and SQLite's type-affinity rules for storage and comparisons. The supported surface is <code>CREATE TABLE</code>, <code>INSERT</code>, <code>SELECT</code> (columns, <code>*</code>, <code>COUNT(*)</code>, <code>WHERE</code>, <code>ORDER BY [DESC]</code>), <code>UPDATE</code>, <code>DELETE</code>, <code>DROP TABLE</code> and transactions with <code>?</code> parameters. The stdlib test program (<code>tests/stdlib/sql_sqlite.lsh</code>) produces byte-identical output on the JVM and natively.</li>
 </ul>
 
-<p>Function values needed to pass handlers around are now supported on the JVM: <code>fnc(...)</code> types lower to single-method interfaces (the handler shape to the shim's <code>LshHttpHandler</code>, anything else to a generated <code><Main>_LshFn<n></code>), and <code>&fname</code> lowers to a generated adapter class, so <code>&handler_fn</code> locals, parameters and indirect calls work.</p>
+<p>The two honest caveats for JVM <code>sql</code>: expressions beyond the surface above (joins, subqueries, indexes, <code>GROUP BY</code>) are not available, and database <strong>files use the engine's own line format</strong> (<code>LEASHSQL1</code> magic) &mdash; they are <em>not</em> sqlite3 files. Opening an existing sqlite3 file on the JVM fails cleanly (and a JVM-written file is "not a database" to native SQLite). Use <code>:memory:</code> or files written by the same engine.</p>
 
-<p>What remains JVM-bound is <strong><code>sql</code></strong>: the JDK has no embedded database, so the module still aborts with a clear <code>not supported on the jvm target</code> when called. Lifting it would mean bundling a SQLite JDBC driver jar &mdash; a new binary dependency &mdash; which is out of scope for 1.x.</p>
+<p>Function values needed to pass handlers around are supported on the JVM: <code>fnc(...)</code> types lower to single-method interfaces (the handler shape to the shim's <code>LshHttpHandler</code>, anything else to a generated <code><Main>_LshFn<n></code>), and <code>&fname</code> lowers to a generated adapter class, so <code>&handler_fn</code> locals, parameters and indirect calls work.</p>
 
-<p>Runtime note: the JVM shims ride <code>java.net.http</code> (JDK 11+), so programs using <code>http</code>/<code>httpserver</code> on the JVM need a Java 11+ runtime. Programs that don't use them keep the JVM target's usual Java 5 class-file floor. Minor engine differences are inherent to the JDK: response header casing/order follows the JDK (lookups stay case-insensitive), and the server's own <code>Date</code>/keep-alive handling replaces the C engine's.</p>
+<p>Runtime note: the JVM shims ride <code>java.net.http</code> (JDK 11+), so programs using <code>http</code>/<code>httpserver</code> on the JVM need a Java 11+ runtime; <code>sql</code> itself has no such floor. Programs that use none of the shims keep the JVM target's usual Java 5 class-file floor. Minor engine differences are inherent to the JDK for the web modules: response header casing/order follows the JDK (lookups stay case-insensitive), and the server's own <code>Date</code>/keep-alive handling replaces the C engine's.</p>
 
 <h2>HTTP/3 / QUIC</h2>
 

@@ -104,7 +104,7 @@ Leash 1.6.0 is a complete, self-hosted toolchain with no Python in the build or 
 | Limitation | Severity | Comment |
 |------------|----------|---------|
 | Windows `serve_tls` is experimental | 🟢 Low | SChannel backend; cross-compiled and exercised under Wine, but not yet battle-tested on real Windows hosts. |
-| 1 stdlib module without JVM | 🟢 Low | `sql` needs an embedded database the JDK doesn't ship; `http`/`httpserver` work on the JVM via bundled Java shims (Java 11+). |
+| JVM `sql` is a mini engine, not SQLite | 🟢 Low | All stdlib modules now run on the JVM via bundled Java shims; the `sql` shim is a small interpreter with its own file format (not sqlite3 files). |
 | HTTP/3 / QUIC | 🟢 Low | Not implemented, but nobody expects it in 1.x. |
 
 See [docs/limitations.html](docs/limitations.html) for the full explanation of each item.

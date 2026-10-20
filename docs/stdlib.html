@@ -943,7 +943,7 @@ fnc main() {
 
 <h2>SQL Database (<code>sql::sql</code>)</h2>
 
-<p>An embedded, zero-configuration SQL database powered by <a href="https://www.sqlite.org/">SQLite</a>, bound through the <code>@from</code> FFI directive. The SQLite amalgamation is vendored into the package and statically compiled into each platform archive (<code>linux/liblshsql.a</code>, <code>win/liblshsql.a</code>), so nothing external needs to be installed. Databases are single files (or in-memory), with prepared statements, typed bindings, and transactions.</p>
+<p>An embedded, zero-configuration SQL database powered by <a href="https://www.sqlite.org/">SQLite</a>, bound through the <code>@from</code> FFI directive. The SQLite amalgamation is vendored into the package and statically compiled into each platform archive (<code>linux/liblshsql.a</code>, <code>win/liblshsql.a</code>), so nothing external needs to be installed. Databases are single files (or in-memory), with prepared statements, typed bindings, and transactions. On the <strong>JVM target</strong> the same API rides a bundled small SQL interpreter (<code>leash/jvm/LeashSql.java</code>) with SQLite's result codes, column typing, affinity rules and transaction semantics for the core surface (CREATE/INSERT/SELECT/UPDATE/DELETE/transactions); database <em>files</em> use the engine's own format there, not sqlite3 files.</p>
 
 <pre><code><span class="kw">use</span> sql::sql::*;
 

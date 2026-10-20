@@ -1251,6 +1251,9 @@ pub def JvmGen : class {
         // C strings ride as Java strings (or null); arithmetic on other
         // pointer types stays unsupported.
         if t == "pointer<char>" || t == "*char" { return "Ljava/lang/String;"; }
+        // Opaque handles (sql's sqlite3*, generic void*): ride as plain
+        // references; they are only passed around, never dereferenced.
+        if t == "pointer<void>" || t == "void*" || t == "*void" { return "Ljava/lang/Object;"; }
         if t.size > 8 && t[0] == 'f' && t[1] == 'u' && t[2] == 't' && t[3] == 'u' && t[4] == 'r' && t[5] == 'e' && t[6] == '<' { return "Ljava/util/concurrent/CompletableFuture;"; }
         if t == "void" { return "V"; }
         if t.size > 4 && t[0] == 'v' && t[1] == 'e' && t[2] == 'c' && t[3] == '<' { return "Ljava/util/ArrayList;"; }
@@ -3785,12 +3788,14 @@ pub def JvmGen : class {
     }
 
     // Descriptor piece for a bundled-shim parameter (see gen_shim_call):
-    // scalars/strings keep their natural lanes, pointer-typed
-    // out-params ride as one-element Object[] boxes, and function-typed
-    // parameters ride the shim's interface (LshHttpHandler).
+    // scalars/strings keep their natural lanes, opaque handles
+    // (pointer<void>) ride as Object refs, pointer-typed out-params ride
+    // as one-element Object[] boxes, and function-typed parameters ride
+    // the shim's interface (LshHttpHandler).
     pub fnc shim_piece(t string) : string {
         if t == "string" { return "Ljava/lang/String;"; }
         if t == "pointer<char>" || t == "*char" { return "Ljava/lang/String;"; }
+        if t == "pointer<void>" || t == "void*" || t == "*void" { return "Ljava/lang/Object;"; }
         if this.is_fnc_type(t) {
             nm: string = this.fn_iface(t);
             if nm.size > 0 { return "L" + nm + ";"; }
@@ -3807,7 +3812,10 @@ pub def JvmGen : class {
     }
 
     // True for pointer-typed parameters (C out-params in the shim ABI).
+    // Opaque handles (pointer<void>) are never out-params: they flow as
+    // plain references.
     pub fnc is_pointer_param(t string) : bool {
+        if t == "pointer<void>" || t == "void*" || t == "*void" { return false; }
         if t.size > 7 && t[0] == 'p' && t[1] == 'o' && t[2] == 'i' && t[3] == 'n' && t[4] == 't' && t[5] == 'e' && t[6] == 'r' && t[7] == '<' { return true; }
         if t.size > 0 && t[0] == '*' { return true; }
         return false;
@@ -4480,6 +4488,26 @@ pub def JvmGen : class {
         this.jvm_native_map.push("lshhttpd_set_header", "LeashHttpServer");
         this.jvm_native_map.push("lshhttpd_version", "LeashHttpServer");
         this.jvm_native_map.push("lshhttpd_strerror", "LeashHttpServer");
+        this.jvm_native_map.push("lsql_open", "LeashSql");
+        this.jvm_native_map.push("lsql_close", "LeashSql");
+        this.jvm_native_map.push("lsql_exec", "LeashSql");
+        this.jvm_native_map.push("lsql_errmsg", "LeashSql");
+        this.jvm_native_map.push("lsql_changes", "LeashSql");
+        this.jvm_native_map.push("lsql_last_insert_rowid", "LeashSql");
+        this.jvm_native_map.push("lsql_prepare", "LeashSql");
+        this.jvm_native_map.push("lsql_bind_int", "LeashSql");
+        this.jvm_native_map.push("lsql_bind_float", "LeashSql");
+        this.jvm_native_map.push("lsql_bind_text", "LeashSql");
+        this.jvm_native_map.push("lsql_bind_null", "LeashSql");
+        this.jvm_native_map.push("lsql_step", "LeashSql");
+        this.jvm_native_map.push("lsql_reset", "LeashSql");
+        this.jvm_native_map.push("lsql_finalize", "LeashSql");
+        this.jvm_native_map.push("lsql_column_count", "LeashSql");
+        this.jvm_native_map.push("lsql_column_name", "LeashSql");
+        this.jvm_native_map.push("lsql_column_type", "LeashSql");
+        this.jvm_native_map.push("lsql_column_int", "LeashSql");
+        this.jvm_native_map.push("lsql_column_float", "LeashSql");
+        this.jvm_native_map.push("lsql_column_text", "LeashSql");
         this.cur_cp = cls.cp;
         // Globals become static fields (fusion integers become atomics).
         foreach _, g in<vector> prog.globals {
