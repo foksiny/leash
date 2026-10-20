@@ -111,27 +111,29 @@ bin/leashc version
 
 <h3>Put <code>leash</code> on your PATH (global install)</h3>
 
-<p>Once <code>bin/leashc</code> exists, install it globally so <code>leash</code> / <code>leashc</code> work from any directory:</p>
+<p>Once <code>bin/leashc</code> exists, install the toolchain globally so <code>leash</code> / <code>leashc</code> work from any directory. The built-in installer builds the compiler into <code>~/.leash/bin</code> and also installs the Leash runtime (the C sources programs are compiled against) to <code>~/.leash/leash</code> and the bundled standard library to <code>~/.leash/libs</code>, so the installed toolchain is self-contained:</p>
 
-<pre><code><span class="cm"># Option A: copy the binary onto your PATH</span>
-cp bin/leashc ~/.local/bin/leash          <span class="cm"># Linux / macOS</span>
-cp bin/leashc ~/.local/bin/leashc
-
-<span class="cm"># Option B: use the built-in global installer (builds into ~/.leash/bin)</span>
+<pre><code><span class="cm"># Option A (recommended): built-in global installer</span>
 leash install compiler
-export PATH="$HOME/.leash/bin:$PATH"       <span class="cm"># add to ~/.bashrc / ~/.zshrc</span></code></pre>
+export PATH="$HOME/.leash/bin:$PATH"       <span class="cm"># add to ~/.bashrc / ~/.zshrc (use $HOME, not ~)</span>
+
+<span class="cm"># Option B: copy the binary onto your PATH</span>
+cp bin/leashc ~/.local/bin/leash          <span class="cm"># works anywhere once Option A has installed the runtime</span>
+cp bin/leashc ~/.local/bin/leashc</code></pre>
+
+<p>The compiler looks for its runtime next to the executable, then in <code>~/.leash/leash</code>, then wherever <code>LEASH_RUNTIME</code> points — so a plain copy of the binary works from any directory once the global install has run (or while a repository checkout is nearby). Use <code>export PATH="$HOME/.leash/bin:$PATH"</code> rather than <code>"~/.leash/bin"</code>: the tilde stays literal inside quotes, and shells that don&rsquo;t expand it in <code>PATH</code> would break the compiler&rsquo;s lookups.</p>
 
 <h4>Windows (PowerShell)</h4>
-<pre><code><span class="cm"># Option A: copy onto PATH</span>
-Copy-Item bin\leashc.exe $env:USERPROFILE\bin\leash.exe
-
-<span class="cm"># Option B: global installer</span>
+<pre><code><span class="cm"># Option A (recommended): global installer</span>
 leash install compiler
-$env:PATH = "$env:USERPROFILE\.leash\bin;$env:PATH"   <span class="cm"># persist via System Settings</span></code></pre>
+$env:PATH = "$env:USERPROFILE\.leash\bin;$env:PATH"   <span class="cm"># persist via System Settings</span>
+
+<span class="cm"># Option B: copy onto PATH</span>
+Copy-Item bin\leashc.exe $env:USERPROFILE\bin\leash.exe</code></pre>
 
 <h4>macOS</h4>
-<pre><code>cp bin/leashc /usr/local/bin/leash
-cp bin/leashc /usr/local/bin/leashc</code></pre>
+<pre><code>leash install compiler
+export PATH="$HOME/.leash/bin:$PATH"</code></pre>
 
 <p>Afterwards, <code>leash version</code> (or <code>leashc version</code>) should print <code>leash 1.6.0 (self-hosted)</code> from any directory.</p>
 

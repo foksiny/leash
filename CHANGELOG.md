@@ -78,6 +78,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   cross-compile), so the Windows `liblshhttpd.a` can be rebuilt from Linux
   as well as on Windows.
 
+### Fixed
+- **`leash install` now installs a working toolchain, not just binaries.**
+  The global install also copies the runtime (`leash/gc.c`, `gc.h`, the
+  cross-compile/Windows stubs and the bundled JVM shim classes) to
+  `~/.leash/leash` and the bundled standard library to `~/.leash/libs` —
+  the exact layout the compiler already searches relative to its own
+  executable — so `leash run` works from any directory afterwards.
+  Previously an installed `leash`/`leashc` died with "cannot find the
+  Leash runtime (leash/gc.c)" everywhere outside a repository checkout.
+- **Executable lookup for a bare `argv[0]` no longer leans on the shell's
+  `command -v`.** The compiler scans `PATH` itself and expands a leading
+  `~` via `HOME`. Shells like dash do not expand `~` in PATH entries, so
+  with `export PATH="~/.leash/bin:$PATH"` (quotes keep the tilde literal;
+  bash still finds the binary) every runtime and JVM-shim lookup inside
+  the compiler failed. The "not on your PATH" check applies the same
+  expansion, so it no longer nags when the tilde form works.
+- **`leash install <dir>` no longer crashes on a bare `argv[0]`.** It
+  resolved itself with `realpath leash`, which resolves lexically to
+  `<cwd>/leash` even when no such file exists, then handed that phantom
+  path to the child shell (`sh: 1: <cwd>/leash: not found`). The child
+  install also runs with inherited stdio now, so its output and errors
+  are no longer silently drained by the exit-code capture.
+- **Re-installing from a checkout refreshes the installed runtime**: the
+  installer prefers the sibling runtime of the project it installs from
+  (`compiler/../leash`) over the already-installed one, and skips the
+  copy when source and destination are the same directory instead of
+  failing with "are the same file".
+
 ## [1.5.1] - 2026-10-18
 
 ### Changed

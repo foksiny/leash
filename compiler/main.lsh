@@ -260,7 +260,7 @@ fnc print_usage() : void {
     show("  check <file.lsh>      Type-check only; report errors and warnings");
     show("  init [dir]            Scaffold a new Leash project (default: .)");
     show("  build                 Compile the project described by config.lshc");
-    show("  install [<path>...]      Install libraries into ~/.leash/libs/ (no args: install global_install binaries)");
+    show("  install [<path>...]      Install libraries into ~/.leash/libs/ (no args: install global_install binaries + runtime)");
     show("  pkg <subcommand>      Package manager: init/publish/install/uninstall/list/info/update/add/lock/search");
     show("  rm <name>...            Remove globally installed binaries (asks first; empty answer means yes)");
     show("  update                Check for updates and pull the latest source");
@@ -709,6 +709,39 @@ fnc empty_libs_global() : vec<string> {
 // install — libraries into ~/.leash/libs
 // ---------------------------------------------------------------------------
 
+// Locate the Leash runtime directory (the one holding leash/gc.c),
+// for the installer: cwd/checkout-relative first, then LEASH_RUNTIME,
+// then the standard install root, then argv[0]-relative. Empty when
+// nothing is found.
+fnc find_runtime_dir(argv0 string) : string {
+    if xfile_exists("leash/gc.c") { return "leash"; }
+    // Installing from a compiler/ dir inside a checkout: prefer the
+    // sibling runtime so a pull-and-reinstall refreshes it instead of
+    // copying the already-installed runtime onto itself.
+    if xfile_exists("../leash/gc.c") { return "../leash"; }
+    if xfile_exists("../gc.c") { return ".."; }
+    rt_env: string = xout("printenv LEASH_RUNTIME");
+    if rt_env.size > 0 && xfile_exists(rt_env + "/gc.c") { return rt_env; }
+    // Standard install root: a binary copied to an arbitrary PATH
+    // directory still finds the runtime ~/.leash/leash.
+    home_rt: string = xout("printenv HOME");
+    if home_rt.size == 0 { home_rt = xout("printenv USERPROFILE"); }
+    if home_rt.size > 0 && xfile_exists(home_rt + "/.leash/leash/gc.c") {
+        return home_rt + "/.leash/leash";
+    }
+    self: string = Path.resolve_exe(argv0);
+    if self.size > 0 {
+        exe_dir: string = Path.dirname(self);
+        cand1: string = exe_dir + "/../leash";
+        cand2: string = exe_dir + "/..";
+        cand3: string = exe_dir;
+        if xfile_exists(cand1 + "/gc.c") { return cand1; }
+        also xfile_exists(cand2 + "/gc.c") { return cand2; }
+        also xfile_exists(cand3 + "/gc.c") { return cand3; }
+    }
+    return "";
+}
+
 fnc cmd_install(args string[]) : int {
     // Convenience: `leash install <dir>` (or `leash install compiler`)
     // runs a global install from that project directory, so the compiler
@@ -723,10 +756,15 @@ fnc cmd_install(args string[]) : int {
         abs: string = xout("realpath -m " + d);
         if xis_dir(abs) && xfile_exists(abs + "/config.lshc") {
             show("Installing from ", abs, " ...");
-            self: string = xout("realpath " + args[0]);
-            rc: int = xcode("cd " + abs + " && " + self + " install");
+            self: string = Path.resolve_exe(args[0]);
+            if self.size == 0 {
+                show("error: cannot resolve the running executable ('", args[0], "').");
+                show("       Invoke it by path, e.g. ./leashc install <dir>, or put it on PATH.");
+                return 1;
+            }
+            rc: int = xrun("cd " + abs + " && " + self + " install");
             if rc == 0 {
-                show("Installed 'leash' and 'leashc' to ", leash_bin_dir());
+                show("Global install from ", abs, " complete (binaries in ", leash_bin_dir(), ")");
             }
             return rc;
         }
@@ -891,6 +929,8 @@ fnc bin_dir_on_path(bindir string, windows bool) : bool {
     }
     sep: char = ':';
     if windows { sep = ';'; }
+    home: string = xout("printenv HOME");
+    if home.size == 0 { home = xout("printenv USERPROFILE"); }
     cur: string = "";
     si: int = 0;
     while si <= pv.size {
@@ -898,6 +938,18 @@ fnc bin_dir_on_path(bindir string, windows bool) : bool {
         if si < pv.size { c = pv[si]; }
         if c == sep || si == pv.size {
             a: string = xstrip_ws(cur);
+            // Bash expands `~` when searching PATH but leaves it in the
+            // value itself; expand it here so a PATH entry like
+            // `~/.leash/bin` counts as the real directory.
+            if a.size > 0 && a[0] == '~' && home.size > 0 {
+                rest: string = "";
+                ai: int = 1;
+                while ai < a.size {
+                    rest = rest + a[ai];
+                    ai = ai + 1;
+                }
+                a = home + rest;
+            }
             while a.size > 0 && (a[a.size - 1] == '/' || a[a.size - 1] == '\\') {
                 a = xstrip_ws2(a, 0, a.size - 1);
             }
@@ -1031,6 +1083,60 @@ fnc cmd_install_global(args string[]) : int {
             show("Installed ", nm, " -> ", outpath);
         }
         ni = ni + 2;
+    }
+    // The binaries are useless without the runtime they compile against
+    // (leash/gc.c and friends) — an installed leashc outside a checkout
+    // used to die with "cannot find the Leash runtime". Mirror the
+    // driver's discovery, then copy the runtime (and the bundled stdlib)
+    // into ~/.leash, where the driver's argv[0]-relative lookup finds
+    // them (~/.leash/bin/../leash/gc.c).
+    rt: string = find_runtime_dir(args[0]);
+    if rt.size == 0 {
+        show("warning: could not locate the Leash runtime (leash/gc.c) to install alongside the binaries.");
+        show("         `leash run` will need a repository checkout nearby or LEASH_RUNTIME set.");
+    } else {
+        home_rt: string = xout("echo $HOME") + "/.leash/leash";
+        exec("mkdir -p " + home_rt, nil);
+        src_real: string = xout("realpath " + rt);
+        dst_real: string = xout("realpath " + home_rt);
+        if src_real.size > 0 && src_real == dst_real {
+            show("Leash runtime already installed -> ", home_rt);
+        } else if xcode("cp -r " + rt + "/. " + home_rt + "/") == 0 {
+            show("Installed the Leash runtime -> ", home_rt);
+        } else {
+            show("warning: could not copy the Leash runtime into ", home_rt);
+        }
+        // The runtime dir is <repo>/leash in a checkout; the bundled
+        // stdlib lives in its sibling installthis/. Merging it into
+        // ~/.leash/libs keeps `use http::http::*`-style imports working
+        // (and current) for installed toolchains.
+        root: string = "";
+        if rt == "leash" {
+            root = ".";
+        } else if rt.size > 6 && rt[rt.size - 6] == '/' {
+            tail: string = "";
+            ti: int = rt.size - 5;
+            while ti < rt.size {
+                tail = tail + rt[ti];
+                ti = ti + 1;
+            }
+            if tail == "leash" {
+                ti = 0;
+                while ti < rt.size - 6 {
+                    root = root + rt[ti];
+                    ti = ti + 1;
+                }
+            }
+        }
+        if root.size > 0 && xis_dir(root + "/installthis") {
+            libs: string = xout("echo $HOME") + "/.leash/libs";
+            exec("mkdir -p " + libs, nil);
+            if xcode("cp -r " + root + "/installthis/. " + libs + "/") == 0 {
+                show("Installed the standard library -> ", libs);
+            } else {
+                show("warning: could not copy the standard library into ", libs);
+            }
+        }
     }
     if !bin_dir_on_path(bindir, windows) {
         q: char = '"';

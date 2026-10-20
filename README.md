@@ -35,11 +35,14 @@ bin/leashc version
 # leash 1.6.0 (self-hosted)
 ```
 
-The bootstrap compiles `compiler/*.lsh` and installs the resulting native compiler at `bin/leashc`. Optionally put it on your `PATH`:
+The bootstrap compiles `compiler/*.lsh` and installs the resulting native compiler at `bin/leashc`. To install the toolchain globally — binaries into `~/.leash/bin`, plus the Leash runtime (`~/.leash/leash`) and the bundled standard library (`~/.leash/libs`) so `leash` / `leashc` work from any directory:
 
 ```bash
-cp bin/leashc ~/.local/bin/leash
+bin/leashc install compiler
+export PATH="$HOME/.leash/bin:$PATH"   # add to ~/.bashrc (use $HOME, not "~")
 ```
+
+A plain `cp bin/leashc <dir-on-PATH>` also works once the runtime is installed: the compiler looks for it next to the executable, in `~/.leash/leash`, or wherever `LEASH_RUNTIME` points.
 
 ### Run a program
 
