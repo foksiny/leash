@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v1.6.0 Release</div>
+        <div class="version">v1.6.1 Release</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -97,7 +97,7 @@ brew install git</code></pre>
 
 <h2>Install Leash</h2>
 
-<p>Leash compiles itself. The repository ships a checked-in bootstrap seed (<code>bootstrap/leash-1.6.0-target-*</code>) that compiles the current sources; that binary then compiles itself and the result is <code>bin/leashc</code>. No Python, no pip, no LLVM development libraries.</p>
+<p>Leash compiles itself. The repository ships a checked-in bootstrap seed (<code>bootstrap/leash-1.6.1-target-*</code>) that compiles the current sources; that binary then compiles itself and the result is <code>bin/leashc</code>. No Python, no pip, no LLVM development libraries.</p>
 
 <pre><code><span class="cm"># 1. Clone the repository</span>
 git clone https://github.com/foksiny/leash && cd leash
@@ -107,7 +107,7 @@ git clone https://github.com/foksiny/leash && cd leash
 
 <span class="cm"># 3. Verify</span>
 bin/leashc version
-<span class="cm"># leash 1.6.0 (self-hosted)</span></code></pre>
+<span class="cm"># leash 1.6.1 (self-hosted)</span></code></pre>
 
 <h3>Put <code>leash</code> on your PATH (global install)</h3>
 
@@ -135,7 +135,7 @@ Copy-Item bin\leashc.exe $env:USERPROFILE\bin\leash.exe</code></pre>
 <pre><code>leash install compiler
 export PATH="$HOME/.leash/bin:$PATH"</code></pre>
 
-<p>Afterwards, <code>leash version</code> (or <code>leashc version</code>) should print <code>leash 1.6.0 (self-hosted)</code> from any directory.</p>
+<p>Afterwards, <code>leash version</code> (or <code>leashc version</code>) should print <code>leash 1.6.1 (self-hosted)</code> from any directory.</p>
 
 <h3>Rebuild the compiler from source</h3>
 <pre><code>leash self-host   <span class="cm"># 3-stage bootstrap + fixed-point check, reinstalls bin/leashc</span></code></pre>

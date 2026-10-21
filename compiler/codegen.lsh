@@ -58,6 +58,7 @@ pub def CodeGen : class {
     pub current_func_ret: string;
     pub current_func_name: string;
     pub global_vars: hash<string, string>;
+    pub shared_var_names: hash<string, bool>;   // shared variables: name -> true
     pub main_file: string;
     pub defer_stack: vec<Stmt>;
     pub struct_field_inits: hash<string, vec<Expr>>;
@@ -866,12 +867,22 @@ pub def CodeGen : class {
                op == "++" || op == "--";
     }
 
+    // Slot name of a global in the emitted module. Shared variables get
+    // their own prefix so they can never collide with a program global
+    // of the same name (both live in the same file scope).
+    pub fnc global_slot(name string) : string {
+        if this.shared_var_names.isin(name) {
+            return "lsh_shared_" + name;
+        }
+        return name;
+    }
+
     // Atomic write to a `fusion` integer global (python parity): `x = x
     // +/- k` lowers to atomicrmw so concurrent counters never lose
     // updates; anything else is an atomic store. Caller guarantees an
     // integer global of atomic width.
     pub fnc gen_fusion_assign(s Stmt, name string, gv_lty string) : void {
-        ptr: string = "@g_" + name;
+        ptr: string = "@g_" + this.global_slot(name);
         al: int = this.fusion_align(gv_lty);
         is_uint_g: bool = false;
         if this.global_vars.isin(name) { is_uint_g = this.is_uint_type(this.global_vars[name]); }
@@ -986,7 +997,7 @@ pub def CodeGen : class {
         if t.kind == ExprKind.IDENT && !this.var_ptrs.isin(t.sval) && this.global_vars.isin(t.sval) {
             gt: string = this.global_vars[t.sval];
             glty: string = this.llvm_type(gt);
-            gptr: string = "@g_" + t.sval;
+            gptr: string = "@g_" + this.global_slot(t.sval);
             if this.fusion_int_width(t.sval) > 0 {
                 rmw: string = "add";
                 if !is_inc { rmw = "sub"; }
@@ -1285,7 +1296,7 @@ pub def CodeGen : class {
             // Global unions: the @g_ cell itself is the address.
             gu_ut: string = this.strip_ref(this.global_vars[base.sval]);
             if this.tc.unions.isin(gu_ut) {
-                return "@g_" + base.sval;
+                return "@g_" + this.global_slot(base.sval);
             }
         }
         if base.kind == ExprKind.MEMBER && base.sval == "cur" && base.left != null && base.left.kind == ExprKind.IDENT && this.var_ptrs.isin(base.left.sval) {
@@ -1294,7 +1305,7 @@ pub def CodeGen : class {
         if base.kind == ExprKind.MEMBER && base.sval == "cur" && base.left != null && base.left.kind == ExprKind.IDENT && this.global_vars.isin(base.left.sval) {
             gu_ut2: string = this.strip_ref(this.global_vars[base.left.sval]);
             if this.tc.unions.isin(gu_ut2) {
-                return "@g_" + base.left.sval;
+                return "@g_" + this.global_slot(base.left.sval);
             }
         }
         return "";
@@ -2302,6 +2313,9 @@ pub def CodeGen : class {
             if this.tc.globals.isin(e.sval) {
                 return this.tc.globals[e.sval];
             }
+            if this.tc.shared_vars.isin(e.sval) {
+                return this.tc.shared_vars[e.sval];
+            }
             if this.tc.funcs.isin(e.sval) {
                 return this.tc.funcs[e.sval];
             }
@@ -3012,9 +3026,9 @@ pub def CodeGen : class {
                 gv_lty: string = this.llvm_type(gv_t);
                 r: string = this.new_reg();
                 if this.fusion_int_width(e.sval) > 0 {
-                    this.emit("  " + r + " = load atomic " + gv_lty + ", " + gv_lty + "* @g_" + e.sval + " seq_cst, align " + tostring(this.fusion_align(gv_lty)));
+                    this.emit("  " + r + " = load atomic " + gv_lty + ", " + gv_lty + "* @g_" + this.global_slot(e.sval) + " seq_cst, align " + tostring(this.fusion_align(gv_lty)));
                 } else {
-                    this.emit("  " + r + " = load " + gv_lty + ", " + gv_lty + "* @g_" + e.sval);
+                    this.emit("  " + r + " = load " + gv_lty + ", " + gv_lty + "* @g_" + this.global_slot(e.sval));
                 }
                 return r;
             }
@@ -5941,15 +5955,15 @@ pub def CodeGen : class {
                     gv_t: string = this.global_vars[name];
                     gv_lty: string = this.llvm_type(gv_t);
                     if s.op == "=" {
-                        this.emit("  store " + gv_lty + " " + val + ", " + gv_lty + "* @g_" + name);
+                        this.emit("  store " + gv_lty + " " + val + ", " + gv_lty + "* @g_" + this.global_slot(name));
                         return;
                     }
                     if this.is_compound_op(s.op) {
                         cval: string = this.coerce_store_val(s.value, val, gv_lty, this.strip_ref(this.get_expr_type(s.target)));
-                        this.emit_assign_compound("@g_" + name, gv_lty, s.op, cval);
+                        this.emit_assign_compound("@g_" + this.global_slot(name), gv_lty, s.op, cval);
                         return;
                     }
-                    this.emit("  store " + gv_lty + " " + val + ", " + gv_lty + "* @g_" + name);
+                    this.emit("  store " + gv_lty + " " + val + ", " + gv_lty + "* @g_" + this.global_slot(name));
                     return;
                 }
                 if this.var_ptrs.isin(name) {
@@ -7087,6 +7101,12 @@ pub def CodeGen : class {
             this.global_vars.push(g.name, g.typ);
             if g.is_fusion { this.fusion_globals.push(g.name, true); }
         }
+        // Shared variables are program-wide storage too: register them
+        // before the function bodies are emitted.
+        foreach _, sv in<vector> this.tc.shared_var_list {
+            this.global_vars.push(sv.name, sv.typ);
+            this.shared_var_names.push(sv.name, true);
+        }
 
         // Record struct/class field default initializers (for Name {} literals)
         foreach _, sd in<vector> prog.structs {
@@ -7336,6 +7356,12 @@ pub def CodeGen : class {
             this.emit("@g_" + g.name + " = global " + this.llvm_type(g.typ) + " zeroinitializer");
         }
 
+        // Shared variables (`fnc f(...) | x: int`): program-wide storage,
+        // only reachable from the functions that declare them.
+        foreach _, sv in<vector> this.tc.shared_var_list {
+            this.emit("@g_" + this.global_slot(sv.name) + " = global " + this.llvm_type(sv.typ) + " zeroinitializer");
+        }
+
         // Emit static class field globals
         foreach _, c in<vector> prog.classes {
             if this.tc.generic_classes.isin(c.name) { continue; }
@@ -7417,6 +7443,13 @@ pub def CodeGen : class {
                     this.emit("  call void @leash_gc_register_scan_region(i8* bitcast (" + this.llvm_type(g.typ) + "* @g_" + g.name + " to i8*), i64 " + tostring(gsz) + ")");
                 }
             }
+            // Shared variables hold pointers just like globals.
+            foreach _, sv in<vector> this.tc.shared_var_list {
+                ssz2: int = this.gc_scan_size(sv.typ);
+                if ssz2 > 0 {
+                    this.emit("  call void @leash_gc_register_scan_region(i8* bitcast (" + this.llvm_type(sv.typ) + "* @g_" + this.global_slot(sv.name) + " to i8*), i64 " + tostring(ssz2) + ")");
+                }
+            }
             foreach _, c in<vector> prog.classes {
                 if this.tc.generic_classes.isin(c.name) { continue; }
                 foreach _, fd in<vector> c.fields {
@@ -7460,6 +7493,32 @@ pub def CodeGen : class {
                     } else {
                         this.emit("  store " + g_lty + " " + ginit + ", " + g_lty + "* @g_" + g.name);
                     }
+                }
+            }
+
+            // Initialize shared variables. A vec/hash/string shared
+            // variable needs the same non-zero default a local
+            // declaration gets (an empty container / empty string).
+            foreach _, sv in<vector> this.tc.shared_var_list {
+                if this.is_vec_type(sv.typ) {
+                    svt2: string = this.vec_inner_type(sv.typ);
+                    svesz2: int = this.vec_elem_bytes(svt2);
+                    svsc2: int = 0;
+                    if this.vec_elem_scan(svt2) { svsc2 = 1; }
+                    svv2: string = this.new_reg();
+                    this.emit("  " + svv2 + " = call i8* @leash_sh_vec_new(i64 " + tostring(svesz2) + ", i64 " + tostring(svsc2) + ")");
+                    this.af_track(svv2);
+                    this.emit("  store i8* " + svv2 + ", i8** @g_" + this.global_slot(sv.name));
+                } also this.is_hash_type(sv.typ) {
+                    svh2: string = this.new_reg();
+                    this.emit("  " + svh2 + " = call i8* @leash_sh_hash_new()");
+                    this.af_track(svh2);
+                    this.emit("  store i8* " + svh2 + ", i8** @g_" + this.global_slot(sv.name));
+                } also sv.typ == "string" {
+                    svsl2: string = this.get_str_constant("");
+                    svgep2: string = this.new_reg();
+                    this.emit("  " + svgep2 + " = getelementptr inbounds [1 x i8], [1 x i8]* " + svsl2 + ", i64 0, i64 0");
+                    this.emit("  store i8* " + svgep2 + ", i8** @g_" + this.global_slot(sv.name));
                 }
             }
 

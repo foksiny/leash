@@ -4,7 +4,7 @@
 
 # Leash Programming Language
 
-**Version 1.6.0** — Leash compiles itself.
+**Version 1.6.1** — Leash compiles itself.
 
 Leash is a strongly-typed, modern compiled programming language built on LLVM. It features an intuitive syntax and native performance with a built-in garbage collector, package manager, and cross-platform support.
 
@@ -16,7 +16,7 @@ The compiler shipped as `leash`/`leashc` is **written in Leash** and builds itse
 
 - `leashc` (alias `leash`) — the **self-hosted compiler**, the whole toolchain natively: `compile`, `run` (file or project), `check`, `dump`, `init`, `build`, `install`, `update`, `pkg` (the package manager), `self-host` (3-stage bootstrap + fixed-point check), and `dbg` (the interactive source-level debugger).
 
-Output parity with the original reference compiler is enforced by a frozen corpus: **88/88 example programs compile and run with identical output**.
+Output parity with the original reference compiler is enforced by a frozen corpus: **89/89 example programs compile and run with identical output**.
 
 ## Quick Start
 
@@ -32,7 +32,7 @@ Output parity with the original reference compiler is enforced by a frozen corpu
 git clone https://github.com/foksiny/leash && cd leash
 ./scripts/bootstrap.sh     # seeds from bootstrap/, builds bin/leashc (Python-free)
 bin/leashc version
-# leash 1.6.0 (self-hosted)
+# leash 1.6.1 (self-hosted)
 ```
 
 The bootstrap compiles `compiler/*.lsh` and installs the resulting native compiler at `bin/leashc`. To install the toolchain globally — binaries into `~/.leash/bin`, plus the Leash runtime (`~/.leash/leash`) and the bundled standard library (`~/.leash/libs`) so `leash` / `leashc` work from any directory:
@@ -74,12 +74,13 @@ bin/leashc self-host   # 3-stage bootstrap + fixed-point check, installs bin/lea
 
 ## Key Features
 
-- **Self-hosted compiler** — the language's own compiler is written in the language, with a verified bootstrap fixed point and 88/88 output parity against the reference implementation
+- **Self-hosted compiler** — the language's own compiler is written in the language, with a verified bootstrap fixed point and 89/89 output parity against the reference implementation
 - **Strongly typed** with full type inference, generics (`class<T>`, multi-type `[int, float, ...]` parameters), operator overloading (`opdef`) and explicit bit-width integers/floats (`int<128>`, `uint<512>`, …)
 - **LLVM-powered** compilation with optimization levels O0-O4, Os, Oz (O4 = O3 pipeline + aggressive inlining)
 - **Precise garbage collection** — pointer-free vector buffers are never scanned (no false pins from integer payloads); unboxed inline element storage with reference semantics
 - **Package manager** (`leash pkg`) with fully self-service publishing — registry updates are validated and merged by a bot, no human review; install from the index or any git URL; **reproducible project builds** with `leash.lock`
 - **Concurrency model** with workers, `shared` and `fusion` variables — plus native **`async fnc`/`await`** returning `future<T>`
+- **Shared variables** — a function can declare program-wide storage in its signature (`fnc f() : void | result: int`), and only the functions naming it may touch it; the same storage is shared by every function that declares it
 - **Cross-platform** compilation for Linux (x86-64, x86, ARM64), Windows, and macOS — all targets built by the native compiler (`--target win64`, `--target linux-arm`, …), with `wine`/`qemu` execution for cross binaries
 - **100+ standard-library packages** — vectors, matrices, hash tables, file I/O, string/text tools, math, crypto, SQL, HTTP, games, AI, testing helpers…
 - **Native HTTP/HTTPS client** (`http`) and **multiplexed keep-alive HTTP/1.1 server** (`httpserver`) — full web stack with no external dependencies
@@ -102,7 +103,7 @@ bin/leashc self-host   # 3-stage bootstrap + fixed-point check, installs bin/lea
 
 ## Known Limitations
 
-Leash 1.6.0 is a complete, self-hosted toolchain with no Python in the build or run path. The items below are the honest, currently-known limits of the platform &mdash; each is intentional and stable for 1.x.
+Leash 1.6.1 is a complete, self-hosted toolchain with no Python in the build or run path. The items below are the honest, currently-known limits of the platform &mdash; each is intentional and stable for 1.x.
 
 | Limitation | Severity | Comment |
 |------------|----------|---------|

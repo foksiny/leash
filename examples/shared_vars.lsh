@@ -1,0 +1,15 @@
+fnc add(a int, b int) : void | result: int { // makes "result" a shared variable. Multiple shared variables can be separated using commas (e.g. x: type, y: type, ...)
+    result = a + b;
+}
+
+fnc gresult() : int | result: int { // "result" can be accessed by this function too.
+    return result;
+}
+
+fnc main {
+    add(10, 20);
+    show(gresult());
+
+    add(gresult(), 20);
+    show(gresult());
+}

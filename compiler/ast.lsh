@@ -285,6 +285,16 @@ pub def FuncParam : class {
     }
 }
 
+pub def SharedVarDecl : class {
+    pub name: string;
+    pub typ: string;
+    pub is_imut: bool;
+
+    static pub fnc make(name string, typ string, is_imut bool) : SharedVarDecl {
+        return SharedVarDecl { name: name, typ: typ, is_imut: is_imut };
+    }
+}
+
 pub def FuncDecl : class {
     pub name: string;
     pub owner: string;          // struct/class this function is bound to (`-> Type`)
@@ -301,9 +311,11 @@ pub def FuncDecl : class {
     pub is_external: bool;   // @from declaration: declare, never define
     pub is_imut: bool;        // `imut fnc` class method: cannot be overridden
     pub opdef_type: string;  // opdef target type: `this` inside the body
+    pub shared_vars: vec<SharedVarDecl>;  // `| name: Type` shared storage
 
     static pub fnc make(name string, params vec<FuncParam>, ret string, body vec<Stmt>, is_stat bool, is_p bool) : FuncDecl {
-        return FuncDecl { name: name, owner: "", params: params, ret_type: ret, body: body, is_static: is_stat, is_pub: is_p, is_unsafe: false, is_nogc: false, is_inline: false, is_async: false, is_worker: false, is_external: false, is_imut: false, opdef_type: "" };
+        no_shared: vec<SharedVarDecl>;
+        return FuncDecl { name: name, owner: "", params: params, ret_type: ret, body: body, is_static: is_stat, is_pub: is_p, is_unsafe: false, is_nogc: false, is_inline: false, is_async: false, is_worker: false, is_external: false, is_imut: false, opdef_type: "", shared_vars: no_shared };
     }
 }
 

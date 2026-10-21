@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v1.6.0 Release</div>
+        <div class="version">v1.6.1 Release</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -51,7 +51,7 @@
 
 <p>Since the 1.0 release, the compiler you install as <code>leash</code> is written in Leash itself. The sources live in <code>compiler/*.lsh</code>: <code>tokens.lsh</code>, <code>ast.lsh</code>, <code>lexer.lsh</code>, <code>parser.lsh</code>, <code>typechecker.lsh</code>, <code>optimize.lsh</code>, <code>codegen.lsh</code>, <code>driver.lsh</code>, and <code>main.lsh</code>. It emits LLVM IR text and links against the same Leash runtime/GC (<code>leash/gc.c</code>) through <code>clang</code>.</p>
 
-<p>The self-hosted compiler is a <strong>1:1 replica of the original Python reference compiler</strong> on the whole example corpus &mdash; <strong>88/88 programs compile and run with identical output</strong> &mdash; and it implements the <strong>entire toolchain natively</strong>: <code>compile</code>, <code>run</code> (file and project modes), <code>check</code>, <code>dump</code>, <code>init</code>, <code>build</code>, <code>install</code>, <code>update</code>, <code>pkg</code>, <code>self-host</code>, and the interactive <code>dbg</code> debugger. The Python reference compiler has been retired; the self-hosted compiler is the only toolchain and the repository contains no Python in the build or run path.</p>
+<p>The self-hosted compiler is a <strong>1:1 replica of the original Python reference compiler</strong> on the whole example corpus &mdash; <strong>89/89 programs compile and run with identical output</strong> &mdash; and it implements the <strong>entire toolchain natively</strong>: <code>compile</code>, <code>run</code> (file and project modes), <code>check</code>, <code>dump</code>, <code>init</code>, <code>build</code>, <code>install</code>, <code>update</code>, <code>pkg</code>, <code>self-host</code>, and the interactive <code>dbg</code> debugger. The Python reference compiler has been retired; the self-hosted compiler is the only toolchain and the repository contains no Python in the build or run path.</p>
 
 <h2>Bootstrap Pipeline</h2>
 
@@ -94,7 +94,7 @@ leash self-host
 <p>The self-hosted frontend covers the full language: primitives, pointers, references, arrays, slices, <code>vec<T></code>, <code>matrix<T></code>, <code>hash<K,V></code>, structs, classes (instance + static methods and fields, vtables, inheritance), enums, unions, generics (<code>class<T></code>, <code>def T : template</code>, multi-type <code>[int, float, ...]</code> parameters with monomorphization), <code>opdef</code> operator overloading, <code>error</code>/<code>throw</code>, big integers (<code>int<N></code>/<code>uint<N></code> up to 512 bits), <code>async</code>/<code>await</code> futures, the File API, lambdas, tuples, macros, and the string-interpolated <code>show</code> family (including buffered <code>showb</code>).</p>
 
 <ul>
-    <li><code>scripts/ir_diff.py</code> &mdash; the parity harness: runs every example under both compilers and compares outputs (<strong>88/88</strong> exact match, 0 mismatches, 0 compile failures)</li>
+    <li><code>scripts/ir_diff.py</code> &mdash; the parity harness: runs every example under both compilers and compares outputs (<strong>89/89</strong> exact match, 0 mismatches, 0 compile failures)</li>
     <li><code>scripts/bootstrap.sh</code> / <code>leash self-host</code> &mdash; the 3-stage bootstrap with a hard fixed-point check</li>
     <li><code>tests/test_self_hosted.py</code> &mdash; the compiler test suite (<code>python3 -m unittest tests.test_self_hosted</code>)</li>
 </ul>

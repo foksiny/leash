@@ -5,6 +5,37 @@ All notable changes to the Leash compiler are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.1] - 2026-10-21
+
+### Added
+- **Shared variables.** A function can declare shared variables in its
+  signature, after the return type and before the body:
+  `fnc add(a int, b int) : void | result: int { ... }`. A shared
+  variable is one piece of program-wide storage with a declared type,
+  and only the functions that name it in their signature may read or
+  write it — two functions declaring the same name share the same
+  storage, which is how a helper hands a result back without threading
+  it through a return value. Several shared variables are separated by
+  commas (`| x: int, y: string`); they start zero-initialized (a
+  `string` starts as `""`, a `vec`/`hash` as an empty container), and
+  they work identically on every target: the native backends emit them
+  as program globals (with their own mangled slot, so they can never
+  collide with a global of the same name) and the JVM backend as static
+  fields of the main class. Pointer-bearing shared variables are
+  registered as GC scan regions like any other global. Touching a
+  shared variable from a function that does not declare it, declaring
+  the same name with two different types, reusing the name of a program
+  global, an unknown type, or an `imut` shared variable are compile
+  errors. New example: `examples/shared_vars.lsh` (also part of the
+  output-parity corpus).
+
+### Changed
+- Version bumped to 1.6.1; the cross-target bootstrap seeds are now
+  `bootstrap/leash-1.6.1-target-*` (`x86_64`, `x86`, `arm`, `win64`,
+  `java`).
+- The output-parity corpus grew to 89 programs (the new shared-variables
+  example joined it).
+
 ## [1.6.0] - 2026-10-18
 
 ### Removed

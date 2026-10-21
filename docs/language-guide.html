@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v1.6.0 Release</div>
+        <div class="version">v1.6.1 Release</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -378,6 +378,26 @@ result: <span class="kw">vec</span>&lt;<span class="kw">int</span>&gt; = vec1 + 
 <pre><code>a: <span class="kw">int</span> = 10;                    <span class="cm">// public (default)</span>
 <span class="kw">pub</span> b: <span class="kw">string</span> = <span class="str">"hello"</span>;         <span class="cm">// explicitly public</span>
 <span class="kw">priv</span> secret: <span class="kw">int</span> = 42;          <span class="cm">// module-private</span></code></pre>
+
+<h2>Shared Variables</h2>
+<p>A function can declare <em>shared variables</em> in its signature, after the return type and before the body. A shared variable is one piece of program-wide storage with a declared type, and only the functions that name it in their signature may read or write it. Two functions that declare the same name share the same storage &mdash; that is how a helper hands a result back to its caller without threading it through a return value.</p>
+
+<pre><code><span class="kw">fnc</span> add(a <span class="kw">int</span>, b <span class="kw">int</span>) : <span class="kw">void</span> | result: <span class="kw">int</span> {  <span class="cm">// declares the shared variable "result"</span>
+    result = a + b;
+}
+
+<span class="kw">fnc</span> gresult() : <span class="kw">int</span> | result: <span class="kw">int</span> {      <span class="cm">// the same shared variable</span>
+    <span class="kw">return</span> result;
+}
+
+<span class="kw">fnc</span> main {
+    add(10, 20);
+    show(gresult());
+}</code></pre>
+
+<p>Several shared variables are separated by commas: <code>| x: int, y: string</code>. They start out zero-initialized (a <code>string</code> starts as <code>""</code>, a <code>vec</code>/<code>hash</code> as an empty container). The declaration is the only way in: touching a shared variable from a function that does not declare it is a compile error, and so are two different types for the same name, a name that is already a global variable, and an unknown type. A shared variable cannot be <code>imut</code> &mdash; every function that declares it may write it.</p>
+
+<p>Shared variables are plain storage, not synchronized: unlike the <code>shared</code>/<code>fusion</code> worker globals (see <a href="concurrency.html">Concurrency</a>), they carry no atomicity guarantees. Use them for passing values between functions, not for coordinating threads.</p>
 
 <h2>Imports &amp; Aliases (<code>use</code> / <code>alias</code>)</h2>
 <p>Leash organizes reusable code into modules (<code>.lsh</code> files). The <code>use</code> statement imports public definitions from another module. By default you select items with <code>::</code> or import everything with <code>::*</code>. The <code>alias</code> keyword gives the imported module (or a single item) a local name, so you can qualify accesses as <code>alias.item</code> without polluting the global namespace.</p>

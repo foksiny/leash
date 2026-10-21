@@ -318,7 +318,7 @@ def _selfhosted_compiler():
     if rc != 0:
         _COMPILER_CACHE["error"] = "compiler repo clone failed"
         return None
-    seed = os.path.join(checkout, "bootstrap", "leash-1.6.0-target-x86_64")
+    seed = os.path.join(checkout, "bootstrap", "leash-1.6.1-target-x86_64")
     if not os.path.exists(seed):
         _COMPILER_CACHE["error"] = "bootstrap seed missing"
         return None

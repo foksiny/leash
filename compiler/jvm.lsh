@@ -2601,7 +2601,7 @@ pub def JvmGen : class {
                 this.fusion_get(name, gt, gd);
                 return;
             }
-            idx: int = this.cur_cp.fieldref(this.main_class, "g_" + name, gd);
+            idx: int = this.cur_cp.fieldref(this.main_class, "g_" + this.cg.global_slot(name), gd);
             this.cur_method.op_field(JOp.GETSTATIC, idx, this.slots_of(gd));
             return;
         }
@@ -3679,7 +3679,7 @@ pub def JvmGen : class {
                 return;
             }
             // Plain global: load, dup, incr, store.
-            idx: int = this.cur_cp.fieldref(this.main_class, "g_" + t.sval, gd);
+            idx: int = this.cur_cp.fieldref(this.main_class, "g_" + this.cg.global_slot(t.sval), gd);
             this.cur_method.op_field(JOp.GETSTATIC, idx, this.slots_of(gd));
             if gd == "J" || gd == "D" {
                 this.cur_method.op(JOp.DUP2, 2);
@@ -4530,6 +4530,18 @@ pub def JvmGen : class {
                 cls.add_field(JAcc.PRIVATE + JAcc.STATIC, "g_" + g.name, gd);
             }
         }
+        // Shared variables (`fnc f(...) | x: int`): program-wide storage
+        // held in static fields of the main class.
+        foreach _, sv in<vector> this.tc.shared_var_list {
+            this.cg.global_vars.push(sv.name, sv.typ);
+            this.cg.shared_var_names.push(sv.name, true);
+            svd: string = this.jdesc(sv.typ);
+            if svd.size == 0 {
+                this.jvm_unsupported("shared variable '" + sv.name + "' of type '" + sv.typ + "'");
+                continue;
+            }
+            cls.add_field(JAcc.PRIVATE + JAcc.STATIC, "g_" + this.cg.global_slot(sv.name), svd);
+        }
         // Enum variant-name tables (for .name lookups).
         foreach _, e in<vector> prog.enums {
             cls.add_field(JAcc.PRIVATE + JAcc.STATIC, "enum_" + e.name + "_names", "[Ljava/lang/String;");
@@ -4760,6 +4772,15 @@ pub def JvmGen : class {
             }
             fi2: int = this.cur_cp.fieldref(this.main_class, "g_" + g.name, gd);
             this.cur_method.op_field(JOp.PUTSTATIC, fi2, 0 - this.slots_of(gd));
+        }
+        // Shared variables: the same defaults a local declaration gets
+        // (empty containers, empty string, zero for scalars).
+        foreach _, sv in<vector> this.tc.shared_var_list {
+            svd2: string = this.jdesc(sv.typ);
+            if svd2.size == 0 { continue; }
+            this.jvm_default_for(sv.typ);
+            sfi: int = this.cur_cp.fieldref(this.main_class, "g_" + this.cg.global_slot(sv.name), svd2);
+            this.cur_method.op_field(JOp.PUTSTATIC, sfi, 0 - this.slots_of(svd2));
         }
         // Static field initializers (class/struct statics; same phase).
         foreach _, c in<vector> prog.classes {
@@ -8195,7 +8216,7 @@ pub def JvmGen : class {
                 return;
             }
             if this.cg.global_vars.isin(bn) {
-                gidx: int = this.cur_cp.fieldref(this.main_class, "g_" + bn, "[Ljava/lang/Object;");
+                gidx: int = this.cur_cp.fieldref(this.main_class, "g_" + this.cg.global_slot(bn), "[Ljava/lang/Object;");
                 this.cur_method.op_field(JOp.PUTSTATIC, gidx, -1);
                 return;
             }
@@ -10038,7 +10059,7 @@ pub def JvmGen : class {
     }
 
     pub fnc emit_putstatic(name string, gd string) : void {
-        idx: int = this.cur_cp.fieldref(this.main_class, "g_" + name, gd);
+        idx: int = this.cur_cp.fieldref(this.main_class, "g_" + this.cg.global_slot(name), gd);
         this.cur_method.op_field(JOp.PUTSTATIC, idx, 0 - this.slots_of(gd));
     }
 
@@ -10232,7 +10253,7 @@ pub def JvmGen : class {
     pub fnc fusion_ref(name string, gd string) : void {
         cls: string = "java/util/concurrent/atomic/AtomicInteger";
         if gd == "J" { cls = "java/util/concurrent/atomic/AtomicLong"; }
-        idx: int = this.cur_cp.fieldref(this.main_class, "g_" + name, "L" + cls + ";");
+        idx: int = this.cur_cp.fieldref(this.main_class, "g_" + this.cg.global_slot(name), "L" + cls + ";");
         this.cur_method.op_field(JOp.GETSTATIC, idx, 1);
     }
 
@@ -11120,7 +11141,7 @@ pub def JvmGen : class {
             this.cur_method.op(JOp.POP, -1);
             return;
         }
-        idx: int = this.cur_cp.fieldref(this.main_class, "g_" + name, gd);
+        idx: int = this.cur_cp.fieldref(this.main_class, "g_" + this.cg.global_slot(name), gd);
         this.cur_method.op_field(JOp.GETSTATIC, idx, this.slots_of(gd));
         if gd == "J" {
             this.long_const(0, 1);
@@ -11153,7 +11174,7 @@ pub def JvmGen : class {
             this.gen_fusion_assign(s, name, gt, gd);
             return;
         }
-        idx: int = this.cur_cp.fieldref(this.main_class, "g_" + name, gd);
+        idx: int = this.cur_cp.fieldref(this.main_class, "g_" + this.cg.global_slot(name), gd);
         this.cur_method.op_field(JOp.GETSTATIC, idx, this.slots_of(gd));
         it: string = this.expr_type(s.value);
         this.gen_expr(s.value);

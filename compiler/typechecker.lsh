@@ -167,6 +167,9 @@ pub def TypeChecker : class {
     pub worker_funcs: hash<string, bool>;          // `worker fnc` names
     pub async_funcs: hash<string, bool>;            // `async fnc` names
     pub in_unsafe_func: bool;                      // inside an `unsafe fnc` (pointer math gate)
+    pub shared_vars: hash<string, string>;          // shared variables: name -> type
+    pub shared_var_list: vec<SharedVarDecl>;       // shared variables, deduped (program order)
+    pub cur_shared: hash<string, string>;           // shared vars visible in the current function
 
     static pub fnc make() : TypeChecker {
         tc: TypeChecker = TypeChecker { current_func_ret: "void", works_error: "", fatal_idx: -1, current_func_name: "<global>", in_unsafe_func: false, propagated_checks_enabled: true };
@@ -174,8 +177,44 @@ pub def TypeChecker : class {
         tc.shared_globals = empty_shared;
         empty_writers: hash<string, string>;
         tc.shared_writers = empty_writers;
+        empty_shared_vars: hash<string, string>;
+        tc.shared_vars = empty_shared_vars;
+        empty_cur_shared: hash<string, string>;
+        tc.cur_shared = empty_cur_shared;
+        no_shared_list: vec<SharedVarDecl>;
+        tc.shared_var_list = no_shared_list;
         tc.init_builtins();
         return tc;
+    }
+
+    // Register the shared variables a function declares. The same name in
+    // two functions means ONE piece of shared storage, so the types must
+    // agree; a name that collides with a program global is rejected too
+    // (the two would be indistinguishable inside the declaring function).
+    pub fnc register_shared_vars(f FuncDecl) : void {
+        foreach _, sv in<vector> f.shared_vars {
+            if sv.is_imut {
+                this.errors.pushb("Shared variable '" + sv.name + "' cannot be declared `imut`: every function that declares it may write it.");
+                continue;
+            }
+            sv_t: string = this.resolve_type_alias(sv.typ);
+            if sv_t.size > 0 && sv_t != "void" && !this.is_multi_type(sv_t) && !this.is_known_type(sv_t) {
+                this.errors.pushb("Shared variable '" + sv.name + "' has unknown type '" + sv.typ + "'");
+                continue;
+            }
+            if this.globals.isin(sv.name) {
+                this.errors.pushb("Shared variable '" + sv.name + "' conflicts with the global variable of the same name.");
+                continue;
+            }
+            if this.shared_vars.isin(sv.name) {
+                if this.shared_vars[sv.name] != sv_t {
+                    this.errors.pushb("Shared variable '" + sv.name + "' is declared with conflicting types ('" + this.shared_vars[sv.name] + "' and '" + sv_t + "').");
+                }
+                continue;
+            }
+            this.shared_vars.push(sv.name, sv_t);
+            this.shared_var_list.pushb(SharedVarDecl.make(sv.name, sv_t, false));
+        }
     }
 
     // Register one C stub signature (Python _register_c_stubs parity).
@@ -613,6 +652,15 @@ pub def TypeChecker : class {
         foreach _, st in<vector> body { this.collect_modified_names_stmt(st); }
     }
 
+    // Shared variables visible inside the function being checked.
+    pub fnc enter_shared_scope(f FuncDecl) : void {
+        cs: hash<string, string>;
+        this.cur_shared = cs;
+        foreach _, sv in<vector> f.shared_vars {
+            this.cur_shared.push(sv.name, this.resolve_type_alias(sv.typ));
+        }
+    }
+
     pub fnc lookup_var(name string) : string {
         // Search local scopes from innermost to outermost
         i: int = this.scopes.size - 1;
@@ -622,6 +670,11 @@ pub def TypeChecker : class {
                 return s[name];
             }
             i = i - 1;
+        }
+
+        // Shared variables this function declares (`| name: Type`).
+        if this.cur_shared.isin(name) {
+            return this.cur_shared[name];
         }
 
         // Search globals
@@ -1812,7 +1865,13 @@ pub def TypeChecker : class {
             // not a silent int fallback (works blocks keep their own
             // runtime-error path). `_` is the wildcard/discard name.
             if !this.in_works && e.sval != "_" && e.sval != "this" {
-                this.errors.pushb("Undefined variable: '" + e.sval + "'");
+                // A shared variable is program-wide storage, but only the
+                // functions that declare it may touch it.
+                if this.shared_vars.isin(e.sval) && !this.cur_shared.isin(e.sval) {
+                    this.errors.pushb("Shared variable '" + e.sval + "' is not accessible here: declare it in the function signature (| " + e.sval + ": " + this.shared_vars[e.sval] + ").");
+                } else {
+                    this.errors.pushb("Undefined variable: '" + e.sval + "'");
+                }
             }
             return "int"; // fallback
         }
@@ -4663,6 +4722,23 @@ pub def TypeChecker : class {
             }
         }
 
+        // Pass 1b: Register shared variables (`fnc f(...) | x: int`).
+        // The storage is program-wide; each function sees only the names
+        // it declares itself.
+        foreach _, f in<vector> prog.funcs {
+            this.register_shared_vars(f);
+        }
+        foreach _, s in<vector> prog.structs {
+            foreach _, m in<vector> s.methods {
+                this.register_shared_vars(m);
+            }
+        }
+        foreach _, c in<vector> prog.classes {
+            foreach _, m in<vector> c.methods {
+                this.register_shared_vars(m);
+            }
+        }
+
         // Pass 2: Register function signatures
         foreach _, f in<vector> prog.funcs {
             if this.derive_generic_params(f) { continue; }
@@ -4723,6 +4799,7 @@ pub def TypeChecker : class {
             fkey2: string = f.name;
             if f.owner.size > 0 { fkey2 = f.owner + "_" + f.name; }
             this.current_func_name = fkey2;
+            this.enter_shared_scope(f);
             this.enter_scope();
 
             // Register 'this' for struct-attached functions (`-> Type`):
@@ -4799,6 +4876,7 @@ pub def TypeChecker : class {
                 this.current_func_ret = this.resolve_type_alias(m.ret_type);
                 this.in_unsafe_func = m.is_unsafe;
                 this.current_func_name = c.name + "_" + m.name;
+                this.enter_shared_scope(m);
                 this.enter_scope();
                 // Always add 'this', even for static methods — python
                 // parity: class-level access (`this.staticField`) inside

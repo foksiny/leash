@@ -2693,6 +2693,30 @@ pub def Parser : class {
             f_owner = this.parse_type();
         }
 
+        // Shared variables: `fnc f(...) : T | x: int, y: int { ... }`.
+        // The clause is recognized by `|` IDENT `:` — the pipe-body form
+        // (`|> expr;`) starts with a call or another expression, never a
+        // `name: type` pair.
+        shared_vars: vec<SharedVarDecl>;
+        if this.check(Tok.PIPE) && this.peek(1).kind == Tok.IDENT && this.peek(2).kind == Tok.COLON {
+            this.pos = this.pos + 1;
+            loop {
+                sv_name: Token = this.consume(Tok.IDENT, "expected shared variable name");
+                this.consume(Tok.COLON, "expected ':' after shared variable name");
+                // `imut` is captured (not silently dropped) so the
+                // typechecker can reject it: shared storage is writable
+                // from every function that declares it.
+                sv_imut: bool = false;
+                if this.current().val == "imut" {
+                    sv_imut = true;
+                    this.pos = this.pos + 1;
+                }
+                sv_type: string = this.parse_type();
+                shared_vars.pushb(SharedVarDecl.make(sv_name.val, sv_type, sv_imut));
+                if !this.match_tok(Tok.COMMA) { stop; }
+            }
+        }
+
         body: vec<Stmt>;
         if this.check(Tok.PIPE) {
             this.pos = this.pos + 1;
@@ -2706,6 +2730,7 @@ pub def Parser : class {
         }
         fd: FuncDecl = FuncDecl.make(name_tok.val, params, ret_type, body, is_static, is_pub);
         fd.owner = f_owner;
+        fd.shared_vars = shared_vars;
         fd.is_unsafe = m_unsafe;
         fd.is_nogc = m_nogc;
         fd.is_inline = m_inline;
