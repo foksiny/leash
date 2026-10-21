@@ -92,7 +92,11 @@
     </div>
     <div class="feature-card">
         <h3>Concurrency</h3>
-        <p>Worker threads, <code>shared</code>/<code>fusion</code> variables, and native <code>async</code>/<code>await</code> with <code>future<T></code>.</p>
+        <p>Worker threads, <code>shared</code>/<code>fusion</code> variables, and native <code>async</code>/<code>await</code> with <code>future&lt;T&gt;</code>.</p>
+    </div>
+    <div class="feature-card">
+        <h3>Shared Variables</h3>
+        <p>A function can declare program-wide storage in its signature (<code>fnc f() : void | result: int</code>); only the functions that declare it may touch it, and every one of them sees the same storage. Distinct from the <code>shared</code>/<code>fusion</code> worker globals, which are module-wide and carry the thread-safety rules.</p>
     </div>
     <div class="feature-card">
         <h3>Rich Standard Library</h3>

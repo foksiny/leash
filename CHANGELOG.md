@@ -28,6 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   global, an unknown type, or an `imut` shared variable are compile
   errors. New example: `examples/shared_vars.lsh` (also part of the
   output-parity corpus).
+  Function shared variables are *not* the concurrency globals: a
+  top-level `shared` global is module-wide and enforces a one-writer
+  rule for worker threads, a `fusion` global is atomic, while a
+  function shared variable is scoped to the functions that declare it
+  and carries no thread-safety rules. The language guide and the
+  concurrency page now contrast the two.
 
 ### Changed
 - Version bumped to 1.6.1; the cross-target bootstrap seeds are now

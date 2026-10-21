@@ -399,6 +399,21 @@ result: <span class="kw">vec</span>&lt;<span class="kw">int</span>&gt; = vec1 + 
 
 <p>Shared variables are plain storage, not synchronized: unlike the <code>shared</code>/<code>fusion</code> worker globals (see <a href="concurrency.html">Concurrency</a>), they carry no atomicity guarantees. Use them for passing values between functions, not for coordinating threads.</p>
 
+<h3>Shared variables vs. <code>shared</code> / <code>fusion</code> globals</h3>
+<p>Leash has two different kinds of program-wide storage, and they solve different problems. A top-level <a href="concurrency.html"><code>shared</code> global</a> is a module-wide variable for <em>thread</em> communication; a function shared variable is a <em>scoped hand-off</em> between functions.</p>
+
+<table>
+    <tr><th>Property</th><th>Top-level <code>shared</code> global</th><th>Function shared variable</th></tr>
+    <tr><td>Declared</td><td>at the top level of a module</td><td>in a function signature, after the return type</td></tr>
+    <tr><td>Visible to</td><td>every function in the module (public by default)</td><td>only the functions that declare it</td></tr>
+    <tr><td>Who may write</td><td>exactly one function &mdash; a second writer is a compile error</td><td>any function that declares it</td></tr>
+    <tr><td>Atomicity</td><td>none; use <code>fusion</code> for atomic access</td><td>none &mdash; plain storage</td></tr>
+    <tr><td>Initializer</td><td>yes, with <code>=</code></td><td>none &mdash; zero-initialized (<code>""</code> for a string, an empty container for a <code>vec</code>/<code>hash</code>)</td></tr>
+    <tr><td>Typical use</td><td>worker to worker communication</td><td>handing a result back from a helper</td></tr>
+</table>
+
+<p>Both are program-wide storage under the hood; what differs is who can see them and what the compiler enforces. The one-writer rule of a <code>shared</code> global and the atomicity of a <code>fusion</code> global exist because worker threads race on them. A function shared variable carries no such rules, because it is meant for ordinary single-threaded code &mdash; a helper writes it, its caller reads it.</p>
+
 <h2>Imports &amp; Aliases (<code>use</code> / <code>alias</code>)</h2>
 <p>Leash organizes reusable code into modules (<code>.lsh</code> files). The <code>use</code> statement imports public definitions from another module. By default you select items with <code>::</code> or import everything with <code>::*</code>. The <code>alias</code> keyword gives the imported module (or a single item) a local name, so you can qualify accesses as <code>alias.item</code> without polluting the global namespace.</p>
 

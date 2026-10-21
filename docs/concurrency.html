@@ -65,6 +65,8 @@
     <tr><td>Atomicity</td><td>No guarantees &mdash; readers may see stale values</td></tr>
 </table>
 
+<p><strong>Not the same thing as a function shared variable.</strong> The <code>shared</code> keyword declares a module-wide variable that every function in the module can see &mdash; it exists for worker communication, and the one-writer rule keeps concurrent access safe. Leash also has <em>function shared variables</em>, declared in a function signature (<code>fnc f() : void | result: int</code>): those are program-wide storage too, but only the functions that declare them may touch them, and they carry no thread-safety rules at all. See <a href="language-guide.html#shared-variables">Shared Variables</a> in the language guide for the full comparison.</p>
+
 <h2>Fusion Variables (<code>fusion</code>)</h2>
 
 <p>A <code>fusion</code> variable allows <strong>multiple threads</strong> to both read and write concurrently. Scalar integer <code>fusion</code> variables compile to atomic (sequentially consistent) loads and stores, and the counter idiom <code>counter = counter + n</code> lowers to a single atomic read-modify-write, so concurrent updates never lose increments. This makes <code>fusion</code> the right choice for counters, flags, and coordination variables that many threads need to share and update. Sub-byte values (such as <code>bool</code>) and composite values (arrays, vectors, structs) do not have atomic forms and keep plain access.</p>
