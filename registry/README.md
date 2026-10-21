@@ -10,12 +10,12 @@ this repo only holds the index.
 Anyone can publish a package **without any human review**:
 
 ```bash
-leashed init mylib
+leash pkg init mylib
 cd mylib
-leashed publish
+leash pkg publish
 ```
 
-`leashed publish` pushes your library to your own GitHub repo, then opens a
+`leash pkg publish` pushes your library to your own GitHub repo, then opens a
 pull request against `index.json`. A bot (this repo's `Validate registry
 changes` workflow) checks the PR automatically and **merges it within a
 minute** if every rule passes. No maintainer, no waiting on people.
@@ -28,20 +28,20 @@ minute** if every rule passes. No maintainer, no waiting on people.
 | Existing entries can only be updated by their original owner | No package hijacking |
 | Repo URL must live under `https://github.com/<publisher>/...` | Index entries point at your own repos |
 | Version must be valid semver and strictly greater than the last | Reproducible upgrades |
-| All previously published versions stay in the entry | Old versions remain installable (`leashed install name@1.2.3`) |
+| All previously published versions stay in the entry | Old versions remain installable (`leash pkg install name@1.2.3`) |
 | Package repo must contain a correct `library/` layout and compile | Broken packages never reach users |
 | Entries cannot be deleted via PRs | Registry stability |
 
 If a check fails, the bot comments on the PR with the exact reason — fix it
-and re-run `leashed publish`.
+and re-run `leash pkg publish`.
 
 ## Installing without the registry
 
 The registry is optional. Anyone can install straight from any Git URL:
 
 ```bash
-leashed install https://github.com/someone/somelib.git
-leashed install someone/somelib        # shorthand for github.com
+leash pkg install https://github.com/someone/somelib.git
+leash pkg install someone/somelib        # shorthand for github.com
 ```
 
 ## One-time setup checklist (registry maintainers)

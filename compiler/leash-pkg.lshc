@@ -1,6 +1,15 @@
 # Leash package configuration for the self-hosted compiler.
+#
+# The `version` below is the version of THIS PACKAGE — the "leash"
+# compiler itself, published through `leash pkg publish`. It tracks the
+# compiler release (1.5.0 -> 1.5.1 -> 1.6.0 -> 1.6.1), because that is
+# what the registry indexes and what `leash pkg install leash` resolves.
+#
+# It is NOT the version of the package manager: `leash pkg` itself
+# carries its own protocol version (0.5.0, see pkg_version() in
+# compiler/leashed.lsh) and is versioned independently of the compiler.
 name: "leash"
-version: "1.6.0"
+version: "1.6.1"
 author: "foksiny"
 description: "The Leash self-hosted compiler (LLVM native + JVM targets)"
 main: "main.lsh"

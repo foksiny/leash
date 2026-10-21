@@ -41,6 +41,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
   `java`).
 - The output-parity corpus grew to 89 programs (the new shared-variables
   example joined it).
+- **The VS Code extension version now tracks the Leash version** (1.6.1).
+  It had drifted: `package.json` said 1.0.0, `package-lock.json` said
+  0.23.9, and the extension README pointed at `leash-0.23.9.vsix`. All
+  three now carry 1.6.1, and a new test (`tests/test_version_sync.py`)
+  fails the build if any version string in the repository drifts from
+  the compiler's.
+- The package manager's messages are prefixed `[leash pkg]` instead of
+  `[leashed]`, matching the command users actually type.
+
+### Documentation
+- The docs were audited for inconsistencies and corrected: the CLI
+  reference was missing `leash pkg`, `leash self-host`, `leash version`
+  and `leash help`; the bootstrap pipeline still credited Python with
+  building stage 1 (a checked-in seed does that now); the index and the
+  self-hosted page repeated the retired-Python story; the README called
+  the `httpserver` HTTP/1.1-only while the server also speaks HTTP/2;
+  the README's prerequisites table omitted Git; the corpus' provenance
+  is now stated honestly (entries added after the Python reference was
+  retired come from the current compiler); the `registry/README.md`
+  still instructed users to run the removed `leashed` command; and the
+  language guide now cross-links global variables, shared variables and
+  the concurrency globals in both directions.
 
 ## [1.6.0] - 2026-10-18
 

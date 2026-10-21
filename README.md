@@ -16,7 +16,7 @@ The compiler shipped as `leash`/`leashc` is **written in Leash** and builds itse
 
 - `leashc` (alias `leash`) — the **self-hosted compiler**, the whole toolchain natively: `compile`, `run` (file or project), `check`, `dump`, `init`, `build`, `install`, `update`, `pkg` (the package manager), `self-host` (3-stage bootstrap + fixed-point check), and `dbg` (the interactive source-level debugger).
 
-Output parity with the original reference compiler is enforced by a frozen corpus: **89/89 example programs compile and run with identical output**.
+Output parity is enforced by a frozen corpus: **89/89 example programs compile and run with identical output** (the corpus was recorded from the original reference compiler; entries added after it was retired are recorded from the current self-hosted compiler).
 
 ## Quick Start
 
@@ -25,6 +25,7 @@ Output parity with the original reference compiler is enforced by a frozen corpu
 | Dependency | Version |
 |------------|---------|
 | **C compiler** (`clang`/`gcc`) | any recent (links the compiled programs) |
+| **Git** | any recent (only for `leash pkg publish`/`install` and `leash update`) |
 
 ### Install
 
@@ -83,7 +84,7 @@ bin/leashc self-host   # 3-stage bootstrap + fixed-point check, installs bin/lea
 - **Shared variables** — a function can declare program-wide storage in its signature (`fnc f() : void | result: int`), and only the functions naming it may touch it; the same storage is shared by every function that declares it. Distinct from the `shared`/`fusion` worker globals, which are module-wide and carry the one-writer/atomic rules for threads
 - **Cross-platform** compilation for Linux (x86-64, x86, ARM64), Windows, and macOS — all targets built by the native compiler (`--target win64`, `--target linux-arm`, …), with `wine`/`qemu` execution for cross binaries
 - **100+ standard-library packages** — vectors, matrices, hash tables, file I/O, string/text tools, math, crypto, SQL, HTTP, games, AI, testing helpers…
-- **Native HTTP/HTTPS client** (`http`) and **multiplexed keep-alive HTTP/1.1 server** (`httpserver`) — full web stack with no external dependencies
+- **Native HTTP/HTTPS client** (`http`) and **multiplexed keep-alive server** (`httpserver`) speaking HTTP/1.1 and HTTP/2 — full web stack with no external dependencies
 - **Native source-level debugger** (`leash dbg`) — step/breakpoint debugging without GDB/LLDB, breakpoints from the CLI (`-b <line>`) or interactively
 - **FFI** via `@from` directive for calling C/C++/Rust libraries (including Leash-language function-pointer callbacks)
 

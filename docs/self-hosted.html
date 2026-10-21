@@ -51,13 +51,13 @@
 
 <p>Since the 1.0 release, the compiler you install as <code>leash</code> is written in Leash itself. The sources live in <code>compiler/*.lsh</code>: <code>tokens.lsh</code>, <code>ast.lsh</code>, <code>lexer.lsh</code>, <code>parser.lsh</code>, <code>typechecker.lsh</code>, <code>optimize.lsh</code>, <code>codegen.lsh</code>, <code>driver.lsh</code>, and <code>main.lsh</code>. It emits LLVM IR text and links against the same Leash runtime/GC (<code>leash/gc.c</code>) through <code>clang</code>.</p>
 
-<p>The self-hosted compiler is a <strong>1:1 replica of the original Python reference compiler</strong> on the whole example corpus &mdash; <strong>89/89 programs compile and run with identical output</strong> &mdash; and it implements the <strong>entire toolchain natively</strong>: <code>compile</code>, <code>run</code> (file and project modes), <code>check</code>, <code>dump</code>, <code>init</code>, <code>build</code>, <code>install</code>, <code>update</code>, <code>pkg</code>, <code>self-host</code>, and the interactive <code>dbg</code> debugger. The Python reference compiler has been retired; the self-hosted compiler is the only toolchain and the repository contains no Python in the build or run path.</p>
+<p>The self-hosted compiler is a <strong>1:1 replica of the original Python reference compiler</strong> on the whole example corpus &mdash; <strong>89/89 programs compile and run with identical output</strong> (the corpus was recorded from the original reference compiler; entries added after it was retired are recorded from the current self-hosted compiler) &mdash; and it implements the <strong>entire toolchain natively</strong>: <code>compile</code>, <code>run</code> (file and project modes), <code>check</code>, <code>dump</code>, <code>init</code>, <code>build</code>, <code>install</code>, <code>update</code>, <code>pkg</code>, <code>self-host</code>, and the interactive <code>dbg</code> debugger. The Python reference compiler has been retired; the self-hosted compiler is the only toolchain and the repository contains no Python in the build or run path.</p>
 
 <h2>Bootstrap Pipeline</h2>
 
 <table>
     <tr><th>Stage</th><th>Action</th></tr>
-    <tr><td>Stage 0</td><td>Python compiler builds <code>compiler/main.lsh</code> into <code>bin/leashc_stage1</code></td></tr>
+    <tr><td>Stage 0</td><td>The checked-in seed binary (<code>bootstrap/leash-&lt;version&gt;-target-*</code>) builds <code>compiler/main.lsh</code> into <code>bin/leashc_stage1</code> &mdash; no Python involved</td></tr>
     <tr><td>Stage 1</td><td><code>leashc_stage1</code> compiles <code>compiler/main.lsh</code> into <code>bin/leashc_stage2</code></td></tr>
     <tr><td>Stage 2</td><td><code>leashc_stage2</code> compiles <code>compiler/main.lsh</code> into <code>bin/leashc_stage3</code></td></tr>
     <tr><td>Fixed point</td><td>Stage 2 IR and Stage 3 IR must be textually identical (modulo comments/whitespace)</td></tr>

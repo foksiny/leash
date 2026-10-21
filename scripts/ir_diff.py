@@ -3,7 +3,8 @@
 
 Primary metric: runtime output parity with the frozen reference corpus
 (tests/expected/*.out, recorded from the original Python compiler and
-kept as the ground truth). Secondary: side-by-side IR dumps for debugging
+kept as the ground truth; entries added after that compiler was retired
+are recorded from the current self-hosted compiler). Secondary: side-by-side IR dumps for debugging
 (the Python reference IR is shown only when the Python toolchain is still
 installed).
 
