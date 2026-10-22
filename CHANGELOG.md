@@ -50,6 +50,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - The package manager's messages are prefixed `[leash pkg]` instead of
   `[leashed]`, matching the command users actually type.
 
+### Removed
+- The `runp` command. It had been a deprecated alias for `run` without
+  a file since project mode arrived; it is now gone. `leash runp` prints
+  an error pointing at `leash run`, and the `--help` note says the
+  command has been removed rather than deprecated.
+
 ### Documentation
 - The docs were audited for inconsistencies and corrected: the CLI
   reference was missing `leash pkg`, `leash self-host`, `leash version`

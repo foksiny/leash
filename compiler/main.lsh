@@ -286,7 +286,7 @@ fnc print_usage() : void {
     show("  --version / -v                   Print version information");
     show("  --help / -h                      Show this help, or 'leash help <command>' for details");
     show("");
-    show("Note: 'runp' is deprecated -- use 'leash run' without a file to run the current project.");
+    show("Note: 'runp' has been removed -- use 'leash run' without a file to run the current project.");
     show("Note: --autofree (-af) tracks heap allocations and frees them at function exit (no GC).");
 }
 
@@ -1711,8 +1711,8 @@ fnc main(args string[]) : int {
     }
 
     if cmd == "runp" {
-        show("warning: 'runp' is deprecated; use 'leash run' without a file instead");
-        return cmd_run(args);
+        show("error: the 'runp' command has been removed; use 'leash run' without a file instead");
+        return 1;
     }
 
     if cmd == "init" {
