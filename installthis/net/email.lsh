@@ -5,7 +5,7 @@
 
 pub def Email : class {
     static pub fnc is_valid(s string) : bool {
-        n: int = s.size;
+        n: int = s.__bytesize;
         if n < 5 {
             return false;
         }

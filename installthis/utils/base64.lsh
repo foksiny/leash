@@ -39,7 +39,7 @@ pub def Base64 : class {
 
     static pub fnc encode(s string) : string {
         out: string;
-        n: int = s.size;
+        n: int = s.__bytesize;
         i: int = 0;
         while i + 2 < n {
             b0: int = toint(int, s[i]);

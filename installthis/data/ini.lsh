@@ -13,12 +13,12 @@ pub def Ini : class {
         vs: vec<string>;
         out: Ini = Ini { keys: ks, vals: vs };
         section: string = "";
-        n: int = text.size;
+        n: int = text.__bytesize;
         i: int = 0;
         while i < n {
             le: int = Ini.find_nl(text, i);
             line: string = Ini.trim(Ini.slice(text, i, le));
-            if line.size == 0 {
+            if line.__bytesize == 0 {
                 i = le + 1;
                 continue;
             }
@@ -26,18 +26,18 @@ pub def Ini : class {
                 i = le + 1;
                 continue;
             }
-            if line[0] == '[' && line[line.size - 1] == ']' {
-                section = Ini.trim(Ini.slice(line, 1, line.size - 1));
+            if line[0] == '[' && line[line.__bytesize - 1] == ']' {
+                section = Ini.trim(Ini.slice(line, 1, line.__bytesize - 1));
                 i = le + 1;
                 continue;
             }
             eq: int = Ini.find_eq(line);
             if eq > 0 {
                 k: string = Ini.trim(Ini.slice(line, 0, eq));
-                v: string = Ini.trim(Ini.slice(line, eq + 1, line.size));
-                if k.size > 0 {
+                v: string = Ini.trim(Ini.slice(line, eq + 1, line.__bytesize));
+                if k.__bytesize > 0 {
                     full: string = k;
-                    if section.size > 0 {
+                    if section.__bytesize > 0 {
                         full = section + "." + k;
                     }
                     out.keys.pushb(full);
@@ -52,7 +52,7 @@ pub def Ini : class {
     // "section.key" -> value (""), or "key" when there is no section.
     pub fnc get(section string, key string) : string {
         name: string = key;
-        if section.size > 0 {
+        if section.__bytesize > 0 {
             name = section + "." + key;
         }
         for i: int = 0; i < this.keys.size; i = i + 1 {
@@ -65,7 +65,7 @@ pub def Ini : class {
 
     pub fnc get_i32(section string, key string) : int {
         s: string = this.get(section, key);
-        if s.size == 0 {
+        if s.__bytesize == 0 {
             return 0;
         }
         v: int = 0;
@@ -75,7 +75,7 @@ pub def Ini : class {
             neg = true;
             start = 1;
         }
-        for i: int = start; i < s.size; i = i + 1 {
+        for i: int = start; i < s.__bytesize; i = i + 1 {
             c: char = s[i];
             if c < '0' || c > '9' {
                 stop;
@@ -90,7 +90,7 @@ pub def Ini : class {
 
     pub fnc has(section string, key string) : bool {
         name: string = key;
-        if section.size > 0 {
+        if section.__bytesize > 0 {
             name = section + "." + key;
         }
         for i: int = 0; i < this.keys.size; i = i + 1 {
@@ -106,16 +106,16 @@ pub def Ini : class {
     }
 
     static priv fnc find_nl(s string, from int) : int {
-        for i: int = from; i < s.size; i = i + 1 {
+        for i: int = from; i < s.__bytesize; i = i + 1 {
             if s[i] == '\n' {
                 return i;
             }
         }
-        return s.size;
+        return s.__bytesize;
     }
 
     static priv fnc find_eq(s string) : int {
-        for i: int = 0; i < s.size; i = i + 1 {
+        for i: int = 0; i < s.__bytesize; i = i + 1 {
             if s[i] == '=' {
                 return i;
             }
@@ -125,7 +125,7 @@ pub def Ini : class {
 
     static priv fnc slice(s string, from int, to int) : string {
         out: string = "";
-        for i: int = from; i < to && i < s.size; i = i + 1 {
+        for i: int = from; i < to && i < s.__bytesize; i = i + 1 {
             out = out + s[i];
         }
         return out;
@@ -134,7 +134,7 @@ pub def Ini : class {
     // trim leading and trailing ' ' and '\t'
     static priv fnc trim(s string) : string {
         start: int = 0;
-        end: int = s.size;
+        end: int = s.__bytesize;
         while start < end && (s[start] == ' ' || s[start] == '\t' || s[start] == '\r') {
             start = start + 1;
         }

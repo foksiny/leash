@@ -20,7 +20,7 @@ pub def Uuid : class {
     }
 
     static pub fnc format(hex string) : string {
-        if hex.size != 32 {
+        if hex.__bytesize != 32 {
             return "";
         }
         out: string;
@@ -37,7 +37,7 @@ pub def Uuid : class {
     }
 
     static pub fnc valid(s string) : bool {
-        if s.size != 36 {
+        if s.__bytesize != 36 {
             return false;
         }
         for i: int = 0; i < 36; i = i + 1 {

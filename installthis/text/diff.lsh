@@ -104,7 +104,7 @@ pub def Diff : class {
         cur: string;
         foreach _, c in<string> s {
             if c == ' ' || c == '\t' || c == '\n' {
-                if cur.size > 0 {
+                if cur.__bytesize > 0 {
                     toks.pushb(cur);
                     cur = "";
                 }
@@ -112,7 +112,7 @@ pub def Diff : class {
                 cur = cur + c;
             }
         }
-        if cur.size > 0 {
+        if cur.__bytesize > 0 {
             toks.pushb(cur);
         }
         return toks;

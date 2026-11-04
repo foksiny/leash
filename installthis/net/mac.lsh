@@ -5,7 +5,7 @@
 
 pub def Mac : class {
     static pub fnc is_valid(s string) : bool {
-        n: int = s.size;
+        n: int = s.__bytesize;
         if n != 17 && n != 14 {
             return false;
         }
@@ -43,7 +43,7 @@ pub def Mac : class {
         }
         out: string = "";
         k: int = 0;
-        for i: int = 0; i < s.size; i = i + 1 {
+        for i: int = 0; i < s.__bytesize; i = i + 1 {
             ch: char = s[i];
             if ch == ':' || ch == '.' {
                 continue;

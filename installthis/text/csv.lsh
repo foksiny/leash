@@ -4,7 +4,7 @@ pub def Csv : class {
         cur: string;
         in_quotes: bool = false;
         i: int = 0;
-        n: int = line.size;
+        n: int = line.__bytesize;
         while i < n {
             c: char = line[i];
             if in_quotes {
@@ -40,7 +40,7 @@ pub def Csv : class {
         field: string;
         in_quotes: bool = false;
         i: int = 0;
-        n: int = text.size;
+        n: int = text.__bytesize;
         while i < n {
             c: char = text[i];
             if in_quotes {
@@ -79,7 +79,7 @@ pub def Csv : class {
             }
             i = i + 1;
         }
-        if field.size > 0 || cur.size > 0 {
+        if field.__bytesize > 0 || cur.size > 0 {
             cur.pushb(field);
             rows.pushb(cur);
         }
@@ -89,7 +89,7 @@ pub def Csv : class {
     static priv fnc drop_last_char(s string) : string {
         out: string;
         foreach i, c in<string> s {
-            if i < s.size - 1 {
+            if i < s.__bytesize - 1 {
                 out = out + c;
             }
         }

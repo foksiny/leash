@@ -7,7 +7,7 @@ pub def Hexdump : class {
     // "00000000  68 65 6c 6c 6f                                      |hello|"
     static pub fnc of(s string) : string {
         v: vec<char>;
-        for i: int = 0; i < s.size; i = i + 1 {
+        for i: int = 0; i < s.__bytesize; i = i + 1 {
             v.pushb(s[i]);
         }
         return Hexdump.of_bytes(v);

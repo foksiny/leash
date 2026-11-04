@@ -3346,6 +3346,22 @@ char* leash_sh_vec_join(void* vec_ptr, const char* sep) {
     return out;
 }
 
+/* Number of Unicode code points in a UTF-8 encoded string: this is what
+ * `string.size` reports. Every byte that is not a UTF-8 continuation byte
+ * (10xxxxxx) starts a code point, so a valid UTF-8 string counts one per
+ * character. Bytes that are not part of a well-formed sequence are counted
+ * as one code point each (the JVM backend decodes them the same way). */
+int64_t leash_utf8_len(const char* s) {
+    if (!s) return 0;
+    const unsigned char* p = (const unsigned char*)s;
+    int64_t n = 0;
+    while (*p) {
+        if ((*p & 0xC0) != 0x80) n++;
+        p++;
+    }
+    return n;
+}
+
 char* leash_sh_str_sub(const char* a, const char* b) {
     if (!a) return NULL;
     size_t alen = strlen(a);

@@ -311,6 +311,26 @@ class TestJvmTarget(unittest.TestCase):
             '    foreach _, c in<string> s {\n        show(c);\n    }\n'
             '}\n')
 
+    def test_string_size_counts_code_points(self):
+        # .size is code points on both backends; .__bytesize is the UTF-8
+        # byte count and byte indexing/iteration still walk bytes.
+        self._parity(
+            'fnc main() : void {\n'
+            '    e: string = "é";\n'
+            '    euro: string = "€";\n'
+            '    emoji: string = "😀";\n'
+            '    mixed: string = "héllo wörld";\n'
+            '    show(e.size, ":", e.__bytesize);\n'
+            '    show(euro.size, ":", euro.__bytesize);\n'
+            '    show(emoji.size, ":", emoji.__bytesize);\n'
+            '    show(mixed.size, ":", mixed.__bytesize);\n'
+            '    show(e.size(), ":", e.__bytesize());\n'
+            '    n: int = 0;\n'
+            '    foreach _, c in<string> e { _ = _ + 1 - 1; n = n + 1; }\n'
+            '    show(n);\n'
+            '    show(e[0] == (char)0xC3, ":", e[1] == (char)0xA9);\n'
+            '}\n')
+
     # ---- runtime errors --------------------------------------------------
 
     def test_div_by_zero_runtime(self):

@@ -7,8 +7,8 @@
 pub def Distance : class {
     // Plain Levenshtein distance (insert/delete/substitute cost 1).
     static pub fnc edit(a string, b string) : int {
-        na: int = a.size;
-        nb: int = b.size;
+        na: int = a.__bytesize;
+        nb: int = b.__bytesize;
         cur: vec<int>;
         for j: int = 0; j <= nb; j = j + 1 {
             cur.pushb(j);
@@ -44,9 +44,9 @@ pub def Distance : class {
 
     // 0.0 (nothing alike) .. 1.0 (identical) similarity, 1 - dist/maxlen.
     static pub fnc similarity(a string, b string) : float {
-        max: int = a.size;
-        if b.size > max {
-            max = b.size;
+        max: int = a.__bytesize;
+        if b.__bytesize > max {
+            max = b.__bytesize;
         }
         if max == 0 {
             return 1.0;

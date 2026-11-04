@@ -50,8 +50,8 @@ pub def FileUtil : class {
                 cur = cur + c;
             }
         }
-        if cur.size > 0 || (text.size > 0 && text[text.size - 1] == '\n') {
-            if cur.size > 0 {
+        if cur.__bytesize > 0 || (text.__bytesize > 0 && text[text.__bytesize - 1] == '\n') {
+            if cur.__bytesize > 0 {
                 lines.pushb(FileUtil.strip_cr(cur));
             }
         }
@@ -59,7 +59,7 @@ pub def FileUtil : class {
     }
 
     static priv fnc strip_cr(s string) : string {
-        n: int = s.size;
+        n: int = s.__bytesize;
         if n > 0 && s[n - 1] == '\r' {
             out: string;
             for i: int = 0; i < n - 1; i = i + 1 {
@@ -89,7 +89,7 @@ pub def FileUtil : class {
 
     static pub fnc copy(src string, dst string) : int {
         text: string = FileUtil.read_text(src);
-        if text.size == 0 && FileUtil.exists(src) == false {
+        if text.__bytesize == 0 && FileUtil.exists(src) == false {
             return 0 - 1;
         }
         return FileUtil.write_text(dst, text);
@@ -111,7 +111,7 @@ pub def FileUtil : class {
             return 0 - 1;
         }
         text: string = FileUtil.read_text(path);
-        return toint(int<64>, text.size);
+        return toint(int<64>, text.__bytesize);
     }
 
     static pub fnc touch(path string) : int {

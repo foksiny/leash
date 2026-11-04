@@ -198,7 +198,7 @@ pub def TypeChecker : class {
                 continue;
             }
             sv_t: string = this.resolve_type_alias(sv.typ);
-            if sv_t.size > 0 && sv_t != "void" && !this.is_multi_type(sv_t) && !this.is_known_type(sv_t) {
+            if sv_t.__bytesize > 0 && sv_t != "void" && !this.is_multi_type(sv_t) && !this.is_known_type(sv_t) {
                 this.errors.pushb("Shared variable '" + sv.name + "' has unknown type '" + sv.typ + "'");
                 continue;
             }
@@ -223,19 +223,19 @@ pub def TypeChecker : class {
         this.funcs.push(name, ret);
         ps: vec<string>;
         ns: vec<string>;
-        if packed.size > 0 {
+        if packed.__bytesize > 0 {
             cur: string = "";
             pi: int = 0;
-            while pi <= packed.size {
-                at_end: bool = pi == packed.size;
+            while pi <= packed.__bytesize {
+                at_end: bool = pi == packed.__bytesize;
                 c: char = ';';
                 if !at_end { c = packed[pi]; }
                 if at_end || c == ';' {
                     sp: int = 0;
-                    while sp < cur.size && cur[sp] != ' ' { sp = sp + 1; }
-                    if sp > 0 && sp + 1 <= cur.size - 1 {
+                    while sp < cur.__bytesize && cur[sp] != ' ' { sp = sp + 1; }
+                    if sp > 0 && sp + 1 <= cur.__bytesize - 1 {
                         ps.pushb(this.str_slice(cur, 0, sp));
-                        ns.pushb(this.str_slice(cur, sp + 1, cur.size));
+                        ns.pushb(this.str_slice(cur, sp + 1, cur.__bytesize));
                     }
                     cur = "";
                 } else {
@@ -455,13 +455,13 @@ pub def TypeChecker : class {
         // INT literal whose sval keeps the minus.
         neg: bool = false;
         si: int = 0;
-        if s.size > 0 && (s[0] == '-' || s[0] == '+') {
+        if s.__bytesize > 0 && (s[0] == '-' || s[0] == '+') {
             if s[0] == '-' { neg = true; }
             si = 1;
         }
         v: int<64> = 0;
         i: int = si;
-        while i < s.size {
+        while i < s.__bytesize {
             if s[i] < '0' || s[i] > '9' { return; }
             d: int = s[i] - '0';
             if v > 922337203685477580 { return; }
@@ -480,7 +480,7 @@ pub def TypeChecker : class {
         this.fold_ok = false;
         if e == null { return; }
         if e.kind == ExprKind.INT {
-            if e.sval.size > 0 {
+            if e.sval.__bytesize > 0 {
                 // *2147483648*-style raw literal: parse the text; values
                 // beyond int<64> refuse to fold (python keeps those as
                 // text too — they must not wrap silently).
@@ -529,7 +529,7 @@ pub def TypeChecker : class {
         this.fold_ok = false;
         if e == null { return; }
         if e.kind == ExprKind.INT {
-            if e.sval.size > 0 {
+            if e.sval.__bytesize > 0 {
                 this.parse_digits_safe(e.sval, w);
                 return;
             }
@@ -537,7 +537,7 @@ pub def TypeChecker : class {
             this.fold_ok = true;
             return;
         }
-        if e.kind == ExprKind.IDENT && e.sval.size > 0 {
+        if e.kind == ExprKind.IDENT && e.sval.__bytesize > 0 {
             i: int = this.const_lnames.size - 1;
             while i >= 0 {
                 if this.const_lnames.get(i) == e.sval {
@@ -559,7 +559,7 @@ pub def TypeChecker : class {
     // (python _constant_propagation parity). Called from VAR_DECL
     // checking when the initializer is a foldable integer expression.
     pub fnc record_const_candidate(name string, typ string, e Expr) : void {
-        if name.size == 0 || e == null { return; }
+        if name.__bytesize == 0 || e == null { return; }
         if this.const_modified.isin(name) { return; }
         bt: string = this.strip_imut(this.resolve_type_alias(typ));
         if !this.is_sized_int_type_name(bt) { return; }
@@ -573,11 +573,11 @@ pub def TypeChecker : class {
 
     // Bit width of an int/uint type spelling (0 for non-int types).
     pub fnc int_bits_of_name(t string) : int {
-        if t.size > 5 && t[0] == 'i' && t[1] == 'n' && t[2] == 't' && t[3] == '<' && t[t.size - 1] == '>' {
-            return this.parse_small_int(this.str_slice(t, 4, t.size - 1));
+        if t.__bytesize > 5 && t[0] == 'i' && t[1] == 'n' && t[2] == 't' && t[3] == '<' && t[t.__bytesize - 1] == '>' {
+            return this.parse_small_int(this.str_slice(t, 4, t.__bytesize - 1));
         }
-        if t.size > 6 && t[0] == 'u' && t[1] == 'i' && t[2] == 'n' && t[3] == 't' && t[4] == '<' && t[t.size - 1] == '>' {
-            return this.parse_small_int(this.str_slice(t, 5, t.size - 1));
+        if t.__bytesize > 6 && t[0] == 'u' && t[1] == 'i' && t[2] == 'n' && t[3] == 't' && t[4] == '<' && t[t.__bytesize - 1] == '>' {
+            return this.parse_small_int(this.str_slice(t, 5, t.__bytesize - 1));
         }
         if t == "int" || t == "uint" { return 32; }
         return 0;
@@ -715,24 +715,24 @@ pub def TypeChecker : class {
         if e == null { return ""; }
         if e.kind == ExprKind.UNARY && e.op == "&" {
             root: string = this.root_identifier(e.left);
-            if root.size > 0 && this.is_local_var(root) { return root; }
+            if root.__bytesize > 0 && this.is_local_var(root) { return root; }
             return "";
         }
         if e.kind == ExprKind.TERNARY {
             a: string = this.frame_escape_in(e.left);
-            if a.size > 0 { return a; }
+            if a.__bytesize > 0 { return a; }
             return this.frame_escape_in(e.right);
         }
         if e.kind == ExprKind.BINOP {
             a: string = this.frame_escape_in(e.left);
-            if a.size > 0 { return a; }
+            if a.__bytesize > 0 { return a; }
             return this.frame_escape_in(e.right);
         }
         // Multi-value return: return e1, e2, ...; (parser wraps in a tuple)
         if e.kind == ExprKind.ARRAY_LIT && e.sval == "__tuple__" {
             foreach _, v in<vector> e.args {
                 a: string = this.frame_escape_in(v);
-                if a.size > 0 { return a; }
+                if a.__bytesize > 0 { return a; }
             }
         }
         return "";
@@ -768,13 +768,13 @@ pub def TypeChecker : class {
     pub fnc parse_small_int(s string) : int {
         out: int = 0;
         pi: int = 0;
-        while pi < s.size {
+        while pi < s.__bytesize {
             d: int = this.char_digit(s[pi]);
             if d < 0 { return -1; }
             out = out * 10 + d;
             pi = pi + 1;
         }
-        if s.size == 0 { return -1; }
+        if s.__bytesize == 0 { return -1; }
         return out;
     }
 
@@ -783,7 +783,7 @@ pub def TypeChecker : class {
     // never wrap (a bare `int` wraps at 32 bits in some builds). Widths
     // where a bound would overflow int<64> (>= 63) are skipped.
     pub fnc check_int_literal_fits(e Expr, tt string) : void {
-        if e == null || tt.size == 0 { return; }
+        if e == null || tt.__bytesize == 0 { return; }
         neg: bool = false;
         v: Expr = e;
         while v != null && v.kind == ExprKind.UNARY && (v.op == "-" || v.op == "+") {
@@ -801,10 +801,10 @@ pub def TypeChecker : class {
         } also t == "uint" {
             bits = 32;
             signed = false;
-        } also t.size > 5 && t[0] == 'i' && t[1] == 'n' && t[2] == 't' && t[3] == '<' && t[t.size - 1] == '>' {
-            bits = this.parse_small_int(this.str_slice(t, 4, t.size - 1));
-        } also t.size > 6 && t[0] == 'u' && t[1] == 'i' && t[2] == 'n' && t[3] == 't' && t[4] == '<' && t[t.size - 1] == '>' {
-            bits = this.parse_small_int(this.str_slice(t, 5, t.size - 1));
+        } also t.__bytesize > 5 && t[0] == 'i' && t[1] == 'n' && t[2] == 't' && t[3] == '<' && t[t.__bytesize - 1] == '>' {
+            bits = this.parse_small_int(this.str_slice(t, 4, t.__bytesize - 1));
+        } also t.__bytesize > 6 && t[0] == 'u' && t[1] == 'i' && t[2] == 'n' && t[3] == 't' && t[4] == '<' && t[t.__bytesize - 1] == '>' {
+            bits = this.parse_small_int(this.str_slice(t, 5, t.__bytesize - 1));
             signed = false;
         } else {
             return;
@@ -831,12 +831,12 @@ pub def TypeChecker : class {
 
     pub fnc str_less(a string, b string) : bool {
         i: int = 0;
-        while i < a.size && i < b.size {
+        while i < a.__bytesize && i < b.__bytesize {
             if a[i] < b[i] { return true; }
             if a[i] > b[i] { return false; }
             i = i + 1;
         }
-        return a.size < b.size;
+        return a.__bytesize < b.__bytesize;
     }
 
     pub fnc sort_strs(v vec<string>) : void {
@@ -872,10 +872,10 @@ pub def TypeChecker : class {
     // compiler auto-addresses at the call site) — Python _types_compatible
     // grants the same leniency.
     pub fnc ref_arg_compatible(at string, expected string) : bool {
-        if expected.size > 0 && expected[0] == '&' {
-            inner: string = this.str_slice(expected, 1, expected.size);
-            if at.size > 0 && at[0] == '&' {
-                return this.types_compatible(this.str_slice(at, 1, at.size), inner);
+        if expected.__bytesize > 0 && expected[0] == '&' {
+            inner: string = this.str_slice(expected, 1, expected.__bytesize);
+            if at.__bytesize > 0 && at[0] == '&' {
+                return this.types_compatible(this.str_slice(at, 1, at.__bytesize), inner);
             }
             if at == "*" + inner { return true; }
             return this.types_compatible(at, inner);
@@ -886,18 +886,18 @@ pub def TypeChecker : class {
     // Display form of a type for diagnostics: Python prints fnc types
     // with " : " before the return type ("fnc() : void").
     pub fnc disp_type(t string) : string {
-        if t.size > 4 && t[0] == 'f' && t[1] == 'n' && t[2] == 'c' && t[3] == '(' {
+        if t.__bytesize > 4 && t[0] == 'f' && t[1] == 'n' && t[2] == 'c' && t[3] == '(' {
             ci: int = 4;
             depth: int = 0;
-            while ci < t.size {
+            while ci < t.__bytesize {
                 c: char = t[ci];
                 if c == '(' { depth = depth + 1; }
                 if c == ')' {
                     if depth == 0 {
-                        if ci + 1 < t.size && t[ci + 1] == ':' {
+                        if ci + 1 < t.__bytesize && t[ci + 1] == ':' {
                             ri: int = ci + 2;
-                            while ri < t.size && (t[ri] == ' ' || t[ri] == '\t') { ri = ri + 1; }
-                            return this.str_slice(t, 0, ci + 1) + " : " + this.str_slice(t, ri, t.size);
+                            while ri < t.__bytesize && (t[ri] == ' ' || t[ri] == '\t') { ri = ri + 1; }
+                            return this.str_slice(t, 0, ci + 1) + " : " + this.str_slice(t, ri, t.__bytesize);
                         }
                         stop;
                     }
@@ -980,14 +980,14 @@ pub def TypeChecker : class {
         ai2: int = 0;
         while ai2 < pos_args.size && ai2 < params.size {
             at: string = this.infer_expr(pos_args.get(ai2));
-            if at.size > 0 && !this.ref_arg_compatible(this.strip_imut(at), this.strip_imut(params.get(ai2))) {
+            if at.__bytesize > 0 && !this.ref_arg_compatible(this.strip_imut(at), this.strip_imut(params.get(ai2))) {
                 this.errors.pushb("Argument " + tostring(ai2 + 1) + " of '" + fname + "' expects '" + this.strip_imut(params.get(ai2)) + "' but got '" + this.strip_imut(at) + "'.");
             }
             this.check_int_literal_fits(pos_args.get(ai2), params.get(ai2));
             // A read-only borrowed array handed to a mutable `&T` parameter
             pa: Expr = pos_args.get(ai2);
             pt_i: string = params.get(ai2);
-            if pt_i.size > 0 && pt_i[0] == '&' && pa != null && pa.kind == ExprKind.IDENT
+            if pt_i.__bytesize > 0 && pt_i[0] == '&' && pa != null && pa.kind == ExprKind.IDENT
                && this.is_readonly_borrow(pa.sval) {
                 this.errors.pushb("Argument " + tostring(ai2 + 1) + " of '" + fname + "' requires a mutable borrow ('&'), but '" + pa.sval + "' was borrowed read-only.");
             }
@@ -1000,7 +1000,7 @@ pub def TypeChecker : class {
             kidx2: int = this.sig_index_of(pnames, kw_names[ki2]);
             if kidx2 >= 0 && kidx2 < params.size {
                 kat: string = this.infer_expr(kw_vals.get(ki2));
-                if kat.size > 0 && !this.ref_arg_compatible(this.strip_imut(kat), this.strip_imut(params.get(kidx2))) {
+                if kat.__bytesize > 0 && !this.ref_arg_compatible(this.strip_imut(kat), this.strip_imut(params.get(kidx2))) {
                     this.errors.pushb("Argument '" + kw_names[ki2] + "' of '" + fname + "' expects '" + this.strip_imut(params.get(kidx2)) + "' but got '" + this.strip_imut(kat) + "'.");
                 }
                 this.check_int_literal_fits(kw_vals[ki2], params[kidx2]);
@@ -1011,23 +1011,23 @@ pub def TypeChecker : class {
 
     // Type of a vec<T> / matrix<T> element type.
     pub fnc vec_inner_of(t string) : string {
-        if t.size > 8 && t[0] == 'm' && t[1] == 'a' && t[2] == 't' && t[3] == 'r'
+        if t.__bytesize > 8 && t[0] == 'm' && t[1] == 'a' && t[2] == 't' && t[3] == 'r'
            && t[4] == 'i' && t[5] == 'x' && t[6] == '<' {
-            return this.str_slice(t, 7, t.size - 1);
+            return this.str_slice(t, 7, t.__bytesize - 1);
         }
-        if t.size > 5 && t[0] == 'v' && t[1] == 'e' && t[2] == 'c' && t[3] == '<' {
-            return this.str_slice(t, 4, t.size - 1);
+        if t.__bytesize > 5 && t[0] == 'v' && t[1] == 'e' && t[2] == 'c' && t[3] == '<' {
+            return this.str_slice(t, 4, t.__bytesize - 1);
         }
         return "";
     }
 
     pub fnc is_array_type(t string) : bool {
         tt: string = this.strip_imut(t);
-        if tt.size == 0 { return false; }
-        if tt[tt.size - 1] != ']' { return false; }
+        if tt.__bytesize == 0 { return false; }
+        if tt[tt.__bytesize - 1] != ']' { return false; }
         has_bracket: bool = false;
         ai: int = 0;
-        while ai < tt.size {
+        while ai < tt.__bytesize {
             if tt[ai] == '[' { has_bracket = true; }
             ai = ai + 1;
         }
@@ -1036,10 +1036,10 @@ pub def TypeChecker : class {
 
     // Key type of hash<K, V>.
     pub fnc hash_key_of(t string) : string {
-        if t.size > 6 && t[0] == 'h' && t[1] == 'a' && t[2] == 's' && t[3] == 'h' && t[4] == '<' {
+        if t.__bytesize > 6 && t[0] == 'h' && t[1] == 'a' && t[2] == 's' && t[3] == 'h' && t[4] == '<' {
             depth: int = 0;
             i: int = 5;
-            while i < t.size - 1 {
+            while i < t.__bytesize - 1 {
                 c: char = t[i];
                 if c == ',' && depth == 0 {
                     return this.trim_ty(this.str_slice(t, 5, i));
@@ -1054,13 +1054,13 @@ pub def TypeChecker : class {
 
     // Value type of hash<K, V>.
     pub fnc hash_value_of(t string) : string {
-        if t.size > 6 && t[0] == 'h' && t[1] == 'a' && t[2] == 's' && t[3] == 'h' && t[4] == '<' {
+        if t.__bytesize > 6 && t[0] == 'h' && t[1] == 'a' && t[2] == 's' && t[3] == 'h' && t[4] == '<' {
             depth: int = 0;
             i: int = 5;
-            while i < t.size - 1 {
+            while i < t.__bytesize - 1 {
                 c: char = t[i];
                 if c == ',' && depth == 0 {
-                    rest: string = this.trim_ty(this.str_slice(t, i + 1, t.size - 1));
+                    rest: string = this.trim_ty(this.str_slice(t, i + 1, t.__bytesize - 1));
                     return rest;
                 }
                 if c == '<' { depth = depth + 1; }
@@ -1082,7 +1082,7 @@ pub def TypeChecker : class {
                 return "char[]";
             }
             at: string = this.infer_expr(e.args.get(0));
-            if at.size > 0 && at != "string" && at != "char[]" {
+            if at.__bytesize > 0 && at != "string" && at != "char[]" {
                 this.errors.pushb("Argument 1 of 'cstr' must be 'string', got '" + at + "'");
             }
             return "char[]";
@@ -1093,7 +1093,7 @@ pub def TypeChecker : class {
                 return "string";
             }
             at: string = this.infer_expr(e.args.get(0));
-            if at.size > 0 && at != "char[]" && at != "string" {
+            if at.__bytesize > 0 && at != "char[]" && at != "string" {
                 this.errors.pushb("Argument 1 of 'lstr' must be 'char[]', got '" + at + "'");
             }
             return "string";
@@ -1104,7 +1104,7 @@ pub def TypeChecker : class {
             }
             if e.args.size == 1 {
                 at: string = this.infer_expr(e.args.get(0));
-                if at.size > 0 && at != "string" {
+                if at.__bytesize > 0 && at != "string" {
                     this.errors.pushb("Argument 1 of 'get' must be 'string', got '" + at + "'");
                 }
             }
@@ -1129,10 +1129,10 @@ pub def TypeChecker : class {
             }
             at1: string = this.infer_expr(e.args.get(0));
             at2: string = this.infer_expr(e.args.get(1));
-            if at1.size > 0 && !this.is_int_family(at1) {
+            if at1.__bytesize > 0 && !this.is_int_family(at1) {
                 this.errors.pushb("Argument 1 of 'rand' must be an integer type, got '" + at1 + "'");
             }
-            if at2.size > 0 && !this.is_int_family(at2) {
+            if at2.__bytesize > 0 && !this.is_int_family(at2) {
                 this.errors.pushb("Argument 2 of 'rand' must be an integer type, got '" + at2 + "'");
             }
             return "int";
@@ -1144,10 +1144,10 @@ pub def TypeChecker : class {
             }
             at1: string = this.infer_expr(e.args.get(0));
             at2: string = this.infer_expr(e.args.get(1));
-            if at1.size > 0 && !this.is_numeric_type(at1) {
+            if at1.__bytesize > 0 && !this.is_numeric_type(at1) {
                 this.errors.pushb("Argument 1 of 'randf' must be a numeric type, got '" + at1 + "'");
             }
-            if at2.size > 0 && !this.is_numeric_type(at2) {
+            if at2.__bytesize > 0 && !this.is_numeric_type(at2) {
                 this.errors.pushb("Argument 2 of 'randf' must be a numeric type, got '" + at2 + "'");
             }
             return "float";
@@ -1158,7 +1158,7 @@ pub def TypeChecker : class {
                 return "void";
             }
             at: string = this.infer_expr(e.args.get(0));
-            if at.size > 0 && !this.is_int_family(at) {
+            if at.__bytesize > 0 && !this.is_int_family(at) {
                 this.errors.pushb("Argument 1 of 'seed' must be an integer type, got '" + at + "'");
             }
             return "void";
@@ -1169,7 +1169,7 @@ pub def TypeChecker : class {
             }
             foreach ai, arg in<vector> e.args {
                 at: string = this.infer_expr(arg);
-                if at.size > 0 && at != "string" {
+                if at.__bytesize > 0 && at != "string" {
                     this.errors.pushb("Argument " + tostring(ai + 1) + " of 'choose' must be 'string', got '" + at + "'");
                 }
             }
@@ -1181,7 +1181,7 @@ pub def TypeChecker : class {
                 return "void";
             }
             at: string = this.infer_expr(e.args.get(0));
-            if at.size > 0 && !this.is_numeric_type(at) {
+            if at.__bytesize > 0 && !this.is_numeric_type(at) {
                 this.errors.pushb("Argument 1 of 'wait' must be a numeric type, got '" + at + "'");
             }
             return "void";
@@ -1192,12 +1192,12 @@ pub def TypeChecker : class {
                 return "string";
             }
             at1: string = this.infer_expr(e.args.get(0));
-            if at1.size > 0 && at1 != "string" {
+            if at1.__bytesize > 0 && at1 != "string" {
                 this.errors.pushb("Argument 1 of 'exec' must be 'string', got '" + at1 + "'");
             }
             if e.args.size == 2 {
                 at2: string = this.infer_expr(e.args.get(1));
-                if at2.size > 0 && at2 != "string" && at2 != "nil" {
+                if at2.__bytesize > 0 && at2 != "string" && at2 != "nil" {
                     this.errors.pushb("Argument 2 of 'exec' must be 'string' or 'nil', got '" + at2 + "'");
                 }
             }
@@ -1221,7 +1221,7 @@ pub def TypeChecker : class {
                 return "void";
             }
             at: string = this.infer_expr(e.args.get(0));
-            if at.size > 0 && !this.is_int_family(at) {
+            if at.__bytesize > 0 && !this.is_int_family(at) {
                 this.errors.pushb("Argument 1 of 'exit' must be an integer type, got '" + at + "'");
             }
             return "void";
@@ -1238,7 +1238,7 @@ pub def TypeChecker : class {
                 return "string";
             }
             at: string = this.infer_expr(e.args.get(0));
-            if at.size > 0 && at != "string" {
+            if at.__bytesize > 0 && at != "string" {
                 this.errors.pushb("Argument 1 of 'normescape' must be 'string', got '" + at + "'");
             }
             return "string";
@@ -1290,7 +1290,7 @@ pub def TypeChecker : class {
         while ai < e.args.size {
             pt: string = this.file_method_param(e.sval, ai);
             at: string = this.infer_expr(e.args.get(ai));
-            if pt.size > 0 && at.size > 0 && !this.types_compatible(this.strip_imut(at), pt) {
+            if pt.__bytesize > 0 && at.__bytesize > 0 && !this.types_compatible(this.strip_imut(at), pt) {
                 this.errors.pushb("Argument " + tostring(ai + 1) + " of method '" + e.sval + "' expects '" + pt + "' but got '" + this.strip_imut(at) + "'");
             }
             ai = ai + 1;
@@ -1312,7 +1312,7 @@ pub def TypeChecker : class {
                     this.errors.pushb("Vector method '" + m + "' expects 1 argument, got " + tostring(e.args.size));
                 } else {
                     at: string = this.infer_expr(e.args.get(0));
-                    if at.size > 0 && !this.types_compatible(at, inner) {
+                    if at.__bytesize > 0 && !this.types_compatible(at, inner) {
                         this.errors.pushb("Vector method '" + m + "' expects argument of type '" + inner + "' but got '" + at + "'");
                     }
                 }
@@ -1347,7 +1347,7 @@ pub def TypeChecker : class {
                     this.errors.pushb("Vector method '" + m + "' expects 2 arguments, got " + tostring(e.args.size));
                 } else {
                     vt: string = this.infer_expr(e.args.get(1));
-                    if vt.size > 0 && !this.types_compatible(vt, inner) {
+                    if vt.__bytesize > 0 && !this.types_compatible(vt, inner) {
                         this.errors.pushb("Vector method '" + m + "' expects second argument of type '" + inner + "' but got '" + vt + "'");
                     }
                 }
@@ -1376,7 +1376,7 @@ pub def TypeChecker : class {
                     this.errors.pushb("Vector method '" + m + "' expects 1 argument, got " + tostring(e.args.size));
                 } else {
                     at: string = this.infer_expr(e.args.get(0));
-                    if at.size > 0 && !this.types_compatible(at, inner + "[]") && !this.types_compatible(at, "*" + inner) {
+                    if at.__bytesize > 0 && !this.types_compatible(at, inner + "[]") && !this.types_compatible(at, "*" + inner) {
                         this.errors.pushb("Vector method '" + m + "' expects argument of type '" + inner + "[]' or '*" + inner + "', but got '" + at + "'");
                     }
                 }
@@ -1387,7 +1387,7 @@ pub def TypeChecker : class {
                     this.errors.pushb("Vector method '" + m + "' expects 1 argument, got " + tostring(e.args.size));
                 } else {
                     at: string = this.infer_expr(e.args.get(0));
-                    if at.size > 0 && !this.types_compatible(at, "vec<" + inner + ">") {
+                    if at.__bytesize > 0 && !this.types_compatible(at, "vec<" + inner + ">") {
                         this.errors.pushb("Vector method '" + m + "' expects argument of type 'vec<" + inner + ">', but got '" + at + "'");
                     }
                 }
@@ -1398,7 +1398,7 @@ pub def TypeChecker : class {
                     this.errors.pushb("Vector method '" + m + "' expects 2 arguments, got " + tostring(e.args.size));
                 } else {
                     at: string = this.infer_expr(e.args.get(1));
-                    if at.size > 0 && !this.types_compatible(at, "vec<" + inner + ">") {
+                    if at.__bytesize > 0 && !this.types_compatible(at, "vec<" + inner + ">") {
                         this.errors.pushb("Vector method '" + m + "' expects argument of type 'vec<" + inner + ">', but got '" + at + "'");
                     }
                 }
@@ -1421,7 +1421,7 @@ pub def TypeChecker : class {
             if m == "pushb" || m == "pushf" {
                 if e.args.size == 1 {
                     at: string = this.infer_expr(e.args.get(0));
-                    if at.size > 0 && !this.types_compatible(at, inner) {
+                    if at.__bytesize > 0 && !this.types_compatible(at, inner) {
                         this.errors.pushb("Matrix method '" + m + "' expects argument of type '" + inner + "' but got '" + at + "'");
                     }
                 } else {
@@ -1455,7 +1455,7 @@ pub def TypeChecker : class {
                 } else {
                     foreach ai, arg in<vector> e.args {
                         at: string = this.infer_expr(arg);
-                        if at.size > 0 && !this.types_compatible(at, "int") {
+                        if at.__bytesize > 0 && !this.types_compatible(at, "int") {
                             this.errors.pushb("Matrix method '" + m + "' expects argument " + tostring(ai + 1) + " of type 'int' (index) but got '" + at + "'");
                         }
                     }
@@ -1467,7 +1467,7 @@ pub def TypeChecker : class {
                     this.errors.pushb("Matrix method '" + m + "' expects at least 2 arguments, got " + tostring(e.args.size));
                 } else {
                     vt: string = this.infer_expr(e.args.get(e.args.size - 1));
-                    if vt.size > 0 && !this.types_compatible(vt, inner) {
+                    if vt.__bytesize > 0 && !this.types_compatible(vt, inner) {
                         this.errors.pushb("Matrix method '" + m + "' expects last argument of type '" + inner + "' but got '" + vt + "'");
                     }
                 }
@@ -1485,7 +1485,7 @@ pub def TypeChecker : class {
                 } else {
                     foreach ai, arg in<vector> e.args {
                         at: string = this.infer_expr(arg);
-                        if at.size > 0 && !this.types_compatible(at, "int") {
+                        if at.__bytesize > 0 && !this.types_compatible(at, "int") {
                             this.errors.pushb("Matrix method '" + m + "' expects argument " + tostring(ai + 1) + " of type 'int' (index) but got '" + at + "'");
                         }
                     }
@@ -1497,7 +1497,7 @@ pub def TypeChecker : class {
                     this.errors.pushb("Matrix method '" + m + "' expects 1 argument, got " + tostring(e.args.size));
                 } else {
                     at: string = this.infer_expr(e.args.get(0));
-                    if at.size > 0 && !this.types_compatible(at, inner) {
+                    if at.__bytesize > 0 && !this.types_compatible(at, inner) {
                         this.errors.pushb("Matrix method '" + m + "' expects argument of type '" + inner + "' but got '" + at + "'");
                     }
                 }
@@ -1519,7 +1519,7 @@ pub def TypeChecker : class {
         }
 
         if base == "string" {
-            if e.sval == "size" { return "int"; }
+            if e.sval == "size" || e.sval == "__bytesize" { return "int"; }
             if e.sval == "replace" {
                 if e.args.size != 2 {
                     this.errors.pushb(".replace() requires exactly 2 arguments (old, new)");
@@ -1564,7 +1564,7 @@ pub def TypeChecker : class {
                     this.errors.pushb("Hash method '" + m + "' expects 1 argument, got " + tostring(e.args.size));
                 } else {
                     at: string = this.infer_expr(e.args.get(0));
-                    if at.size > 0 && !this.types_compatible(at, val_t) {
+                    if at.__bytesize > 0 && !this.types_compatible(at, val_t) {
                         this.errors.pushb("Hash method '" + m + "' expects argument of type '" + val_t + "' but got '" + at + "'");
                     }
                 }
@@ -1587,11 +1587,11 @@ pub def TypeChecker : class {
                     this.errors.pushb("Hash method '" + m + "' expects 2 arguments, got " + tostring(e.args.size));
                 } else {
                     at1: string = this.infer_expr(e.args.get(0));
-                    if at1.size > 0 && !this.types_compatible(at1, key_t) {
+                    if at1.__bytesize > 0 && !this.types_compatible(at1, key_t) {
                         this.errors.pushb("Hash method '" + m + "' expects first argument of type '" + key_t + "' but got '" + at1 + "'");
                     }
                     at2: string = this.infer_expr(e.args.get(1));
-                    if at2.size > 0 && !this.types_compatible(at2, val_t) {
+                    if at2.__bytesize > 0 && !this.types_compatible(at2, val_t) {
                         this.errors.pushb("Hash method '" + m + "' expects second argument of type '" + val_t + "' but got '" + at2 + "'");
                     }
                 }
@@ -1608,7 +1608,7 @@ pub def TypeChecker : class {
     pub fnc tuple_elem_type(tup string, idx int) : string {
         inner: string = "";
         ii: int = 1;
-        while ii < tup.size - 1 {
+        while ii < tup.__bytesize - 1 {
             inner = inner + tup[ii];
             ii = ii + 1;
         }
@@ -1616,7 +1616,7 @@ pub def TypeChecker : class {
         cur: string = "";
         ei: int = 0;
         pi: int = 0;
-        while pi < inner.size {
+        while pi < inner.__bytesize {
             pch: char = inner[pi];
             if pch == '<' || pch == '(' { depth = depth + 1; }
             if pch == '>' || pch == ')' { depth = depth - 1; }
@@ -1635,8 +1635,8 @@ pub def TypeChecker : class {
 
     pub fnc trim_type_str(s string) : string {
         a: int = 0;
-        b: int = s.size - 1;
-        while a < s.size && s[a] == ' ' { a = a + 1; }
+        b: int = s.__bytesize - 1;
+        while a < s.__bytesize && s[a] == ' ' { a = a + 1; }
         while b >= a && s[b] == ' ' { b = b - 1; }
         out: string = "";
         while a <= b {
@@ -1658,13 +1658,13 @@ pub def TypeChecker : class {
     }
 
     pub fnc is_fnc_type(t string) : bool {
-        return t.size > 4 && t[0] == 'f' && t[1] == 'n' && t[2] == 'c' && t[3] == '(';
+        return t.__bytesize > 4 && t[0] == 'f' && t[1] == 'n' && t[2] == 'c' && t[3] == '(';
     }
 
     pub fnc trim_ty(s string) : string {
         a: int = 0;
-        b: int = s.size - 1;
-        while a < s.size && (s[a] == ' ' || s[a] == '\t') { a = a + 1; }
+        b: int = s.__bytesize - 1;
+        while a < s.__bytesize && (s[a] == ' ' || s[a] == '\t') { a = a + 1; }
         while b >= a && (s[b] == ' ' || s[b] == '\t') { b = b - 1; }
         out: string = "";
         while a <= b { out = out + s[a]; a = a + 1; }
@@ -1677,7 +1677,7 @@ pub def TypeChecker : class {
         depth: int = 0;
         pi: int = 4;
         close_i: int = -1;
-        while pi < t.size {
+        while pi < t.__bytesize {
             c: char = t[pi];
             if c == '(' { depth = depth + 1; }
             also c == ')' {
@@ -1689,13 +1689,13 @@ pub def TypeChecker : class {
         if close_i < 0 { res.pushb("int"); return res; }
         ret: string = "int";
         rp: int = close_i + 1;
-        while rp < t.size && (t[rp] == ' ' || t[rp] == '\t') { rp = rp + 1; }
-        if rp < t.size && t[rp] == ':' {
+        while rp < t.__bytesize && (t[rp] == ' ' || t[rp] == '\t') { rp = rp + 1; }
+        if rp < t.__bytesize && t[rp] == ':' {
             ret = "";
             qi: int = rp + 1;
-            while qi < t.size { ret = ret + t[qi]; qi = qi + 1; }
+            while qi < t.__bytesize { ret = ret + t[qi]; qi = qi + 1; }
             ret = this.trim_ty(ret);
-            if ret.size == 0 { ret = "int"; }
+            if ret.__bytesize == 0 { ret = "int"; }
         }
         res.pushb(ret);
         if close_i > 4 {
@@ -1732,10 +1732,10 @@ pub def TypeChecker : class {
     }
 
     pub fnc strip_ref(t string) : string {
-        if t.size > 1 && t[0] == '&' {
+        if t.__bytesize > 1 && t[0] == '&' {
             out: string = "";
             i: int = 1;
-            while i < t.size {
+            while i < t.__bytesize {
                 out = out + t[i];
                 i = i + 1;
             }
@@ -1784,11 +1784,11 @@ pub def TypeChecker : class {
 
     // Infer type of an expression
     pub fnc strip_future(t string) : string {
-        if t.size > 8 && t[0] == 'f' && t[1] == 'u' && t[2] == 't' && t[3] == 'u'
-           && t[4] == 'r' && t[5] == 'e' && t[6] == '<' && t[t.size - 1] == '>' {
+        if t.__bytesize > 8 && t[0] == 'f' && t[1] == 'u' && t[2] == 't' && t[3] == 'u'
+           && t[4] == 'r' && t[5] == 'e' && t[6] == '<' && t[t.__bytesize - 1] == '>' {
             out: string = "";
             i: int = 7;
-            while i < t.size - 1 {
+            while i < t.__bytesize - 1 {
                 out = out + t[i];
                 i = i + 1;
             }
@@ -1824,7 +1824,7 @@ pub def TypeChecker : class {
         if e.kind == ExprKind.NIL { return "nil"; }
 
         if e.kind == ExprKind.IDENT {
-            if this.in_works && this.works_error.size == 0 && !this.lookup_var_fresh(e.sval) && !this.funcs.isin(e.sval) && !this.enum_consts.isin(e.sval) && !this.globals.isin(e.sval) {
+            if this.in_works && this.works_error.__bytesize == 0 && !this.lookup_var_fresh(e.sval) && !this.funcs.isin(e.sval) && !this.enum_consts.isin(e.sval) && !this.globals.isin(e.sval) {
                 this.works_error = "Undefined variable: '" + e.sval + "'";
             }
             if (e.sval == "self" || e.sval == "self::Class" || e.sval == "self::Parent") && !this.lookup_var_fresh("self") {
@@ -1840,14 +1840,14 @@ pub def TypeChecker : class {
             if this.enum_consts.isin(e.sval) {
                 prefix: string = "";
                 pi: int = 0;
-                while pi < e.sval.size {
+                while pi < e.sval.__bytesize {
                     if e.sval[pi] == ':' { return prefix; }
                     prefix = prefix + e.sval[pi];
                     pi = pi + 1;
                 }
             }
             t: string = this.lookup_var(e.sval);
-            if t.size > 0 {
+            if t.__bytesize > 0 {
                 // Use-after-free (python parity): reading a name poisoned
                 // by `del` — directly or through an alias — is an error.
                 if this.alias_in(e.sval) {
@@ -1897,7 +1897,7 @@ pub def TypeChecker : class {
             // generic) `_opdef_<base>_<op>` function with both operands.
             obl: string = this.base_of(this.strip_ref(lt_full));
             obr: string = this.base_of(this.strip_ref(rt_full));
-            if obl.size > 0 && obl == obr {
+            if obl.__bytesize > 0 && obl == obr {
                 okey: string = "_opdef_" + obl + "_" + this.op_word(e.op);
                 if !this.funcs.isin(okey) && this.generic_funcs.isin(okey) {
                     ocargs: vec<Expr>;
@@ -1923,20 +1923,20 @@ pub def TypeChecker : class {
             // Containment: value <> collection — strings, vectors, arrays
             if e.op == "<>" {
                 rh_t2: string = this.strip_ref(rt_full);
-                rh_ok2: bool = rh_t2 == "string" || this.is_vec_type2(rh_t2) || (rh_t2.size > 2 && rh_t2[rh_t2.size - 1] == ']');
+                rh_ok2: bool = rh_t2 == "string" || this.is_vec_type2(rh_t2) || (rh_t2.__bytesize > 2 && rh_t2[rh_t2.__bytesize - 1] == ']');
                 if !rh_ok2 {
                     this.errors.pushb("Operator '<>' is only supported for array types, got '" + rh_t2 + "'");
                 } else {
                     // Arrays also require the left operand to match the
                     // element type (python parity).
-                    if rh_t2.size > 2 && rh_t2[rh_t2.size - 1] == ']' && !this.is_vec_type2(rh_t2) {
+                    if rh_t2.__bytesize > 2 && rh_t2[rh_t2.__bytesize - 1] == ']' && !this.is_vec_type2(rh_t2) {
                         arr_inner: string = "";
                         ai2: int = 0;
-                        while ai2 < rh_t2.size && rh_t2[ai2] != '[' {
+                        while ai2 < rh_t2.__bytesize && rh_t2[ai2] != '[' {
                             arr_inner = arr_inner + rh_t2[ai2];
                             ai2 = ai2 + 1;
                         }
-                        if arr_inner.size > 0 && !this.types_compatible(lt_full, arr_inner) {
+                        if arr_inner.__bytesize > 0 && !this.types_compatible(lt_full, arr_inner) {
                             this.errors.pushb("Operator '<>' expects left operand of type '" + arr_inner + "' but got '" + lt_full + "'");
                         }
                     }
@@ -1965,9 +1965,9 @@ pub def TypeChecker : class {
                 lb2: string = this.base_of(this.strip_ref(lt_full));
                 rb2: string = this.base_of(this.strip_ref(rt_full));
                 l_str: bool = lb2 == "string" &&
-                    (this.is_numeric_base(rb2) || (rt_full.size >= 5 && this.str_slice(rt_full, 0, 5) == "char["));
+                    (this.is_numeric_base(rb2) || (rt_full.__bytesize >= 5 && this.str_slice(rt_full, 0, 5) == "char["));
                 r_str: bool = rb2 == "string" &&
-                    (this.is_numeric_base(lb2) || (lt_full.size >= 5 && this.str_slice(lt_full, 0, 5) == "char["));
+                    (this.is_numeric_base(lb2) || (lt_full.__bytesize >= 5 && this.str_slice(lt_full, 0, 5) == "char["));
                 if l_str || r_str { return "string"; }
             }
             // For +, -, *, /, % the result follows the numeric promotion:
@@ -2023,7 +2023,7 @@ pub def TypeChecker : class {
                                 // Unsigned types have no INT_MIN (python
                                 // only checks the signed div path).
                                 usign_chk: string = this.strip_imut(this.strip_ref(this.resolve_type_alias(lt_full)));
-                                if !(usign_chk.size > 4 && usign_chk[0] == 'u') {
+                                if !(usign_chk.__bytesize > 4 && usign_chk[0] == 'u') {
                                     this.errors.pushb("Signed division overflow (INT_MIN / -1) detected statically.");
                                     this.fatal_idx = this.errors.size - 1;
                                     return "int";
@@ -2055,11 +2055,11 @@ pub def TypeChecker : class {
                     // base_of strips `uint<128>` to `uint`, which would cap
                     // every sized int at the bare 32-bit default.
                     lt_full_s: string = this.strip_imut(this.strip_ref(this.resolve_type_alias(lt_full)));
-                    if lt_full_s.size > 5 && lt_full_s[0] == 'i' && lt_full_s[1] == 'n' && lt_full_s[2] == 't' && lt_full_s[3] == '<' && lt_full_s[lt_full_s.size - 1] == '>' {
-                        bits = this.parse_small_int(this.str_slice(lt_full_s, 4, lt_full_s.size - 1));
+                    if lt_full_s.__bytesize > 5 && lt_full_s[0] == 'i' && lt_full_s[1] == 'n' && lt_full_s[2] == 't' && lt_full_s[3] == '<' && lt_full_s[lt_full_s.__bytesize - 1] == '>' {
+                        bits = this.parse_small_int(this.str_slice(lt_full_s, 4, lt_full_s.__bytesize - 1));
                     }
-                    if lt_full_s.size > 6 && lt_full_s[0] == 'u' && lt_full_s[1] == 'i' && lt_full_s[2] == 'n' && lt_full_s[3] == 't' && lt_full_s[4] == '<' && lt_full_s[lt_full_s.size - 1] == '>' {
-                        bits = this.parse_small_int(this.str_slice(lt_full_s, 5, lt_full_s.size - 1));
+                    if lt_full_s.__bytesize > 6 && lt_full_s[0] == 'u' && lt_full_s[1] == 'i' && lt_full_s[2] == 'n' && lt_full_s[3] == 't' && lt_full_s[4] == '<' && lt_full_s[lt_full_s.__bytesize - 1] == '>' {
+                        bits = this.parse_small_int(this.str_slice(lt_full_s, 5, lt_full_s.__bytesize - 1));
                     }
                     if bits == 0 {
                         if lt_full_s == "int" || lt_full_s == "uint" { bits = 32; }
@@ -2105,7 +2105,7 @@ pub def TypeChecker : class {
                     // `File` is a builtin class in the reference (registered
                     // in class_types) — the self-hosted keeps it special, so
                     // allow it explicitly for null tests.
-                    if (other_base.size > 1 && other_base[0] == '*')
+                    if (other_base.__bytesize > 1 && other_base[0] == '*')
                        || other_t == "File" || this.classes.isin(other_t) {
                         return "bool";
                     }
@@ -2115,8 +2115,8 @@ pub def TypeChecker : class {
                 return "bool";
             }
             // Element-wise matrix arithmetic (python parity).
-            lt_is_mat: bool = lt_full.size > 7 && lt_full[0] == 'm' && lt_full[1] == 'a' && lt_full[2] == 't' && lt_full[3] == 'r' && lt_full[4] == 'i' && lt_full[5] == 'x' && lt_full[6] == '<';
-            rt_is_mat: bool = rt_full.size > 7 && rt_full[0] == 'm' && rt_full[1] == 'a' && rt_full[2] == 't' && rt_full[3] == 'r' && rt_full[4] == 'i' && rt_full[5] == 'x' && rt_full[6] == '<';
+            lt_is_mat: bool = lt_full.__bytesize > 7 && lt_full[0] == 'm' && lt_full[1] == 'a' && lt_full[2] == 't' && lt_full[3] == 'r' && lt_full[4] == 'i' && lt_full[5] == 'x' && lt_full[6] == '<';
+            rt_is_mat: bool = rt_full.__bytesize > 7 && rt_full[0] == 'm' && rt_full[1] == 'a' && rt_full[2] == 't' && rt_full[3] == 'r' && rt_full[4] == 'i' && rt_full[5] == 'x' && rt_full[6] == '<';
             if lt_is_mat && rt_is_mat {
                 if e.op == "+" || e.op == "-" || e.op == "*" || e.op == "/" {
                     if !this.types_compatible(lt_full, rt_full) {
@@ -2175,13 +2175,13 @@ pub def TypeChecker : class {
             // requires an `unsafe fnc` (safe `&` references are exempt).
             ltb3: string = this.base_of(lt_full);
             rtb3: string = this.base_of(rt_full);
-            if ltb3.size > 1 && (ltb3[0] == '*' || ltb3[0] == '&') && rtb3 == "int" {
+            if ltb3.__bytesize > 1 && (ltb3[0] == '*' || ltb3[0] == '&') && rtb3 == "int" {
                 if ltb3[0] == '*' && !this.in_unsafe_func {
                     this.errors.pushb("Pointer arithmetic on '" + lt_full + "' requires an `unsafe fnc`.");
                 }
                 return lt_full;
             }
-            if ltb3 == "int" && rtb3.size > 1 && (rtb3[0] == '*' || rtb3[0] == '&') {
+            if ltb3 == "int" && rtb3.__bytesize > 1 && (rtb3[0] == '*' || rtb3[0] == '&') {
                 if rtb3[0] == '*' && !this.in_unsafe_func {
                     this.errors.pushb("Pointer arithmetic on '" + rt_full + "' requires an `unsafe fnc`.");
                 }
@@ -2192,13 +2192,13 @@ pub def TypeChecker : class {
             // codegen and die with internal LLVM errors — reject instead.
             // Both-numeric pairs keep the left type (the promotion block
             // above only returns for the widening combos).
-            if lt_full.size > 0 && rt_full.size > 0
+            if lt_full.__bytesize > 0 && rt_full.__bytesize > 0
                && !this.is_type_param(ltb3) && !this.is_type_param(rtb3)
                && !this.mentions_discard(e, 0)
                && !(this.is_numeric_base(lt_full) && this.is_numeric_base(rt_full)) {
                 this.errors.pushb("Cannot use operator '" + e.op + "' between '" + lt_full + "' and '" + rt_full + "'.");
             }
-            if lt.size > 0 { return lt; }
+            if lt.__bytesize > 0 { return lt; }
             return "int";
         }
 
@@ -2228,11 +2228,11 @@ pub def TypeChecker : class {
             }
             if e.op == "*" {
                 pt: string = this.infer_expr(e.left);
-                if pt.size > 1 && pt[0] == '*' {
+                if pt.__bytesize > 1 && pt[0] == '*' {
                     // strip leading '*'
                     out: string = "";
                     si: int = 1;
-                    while si < pt.size {
+                    while si < pt.__bytesize {
                         out = out + pt[si];
                         si = si + 1;
                     }
@@ -2265,7 +2265,7 @@ pub def TypeChecker : class {
                     fpai: int = 0;
                     while fpai < fp_params.size {
                         fpat: string = this.infer_expr(e.args.get(fpai));
-                        if fpat.size > 0 && !this.ref_arg_compatible(this.strip_imut(fpat), this.strip_imut(fp_params[fpai])) {
+                        if fpat.__bytesize > 0 && !this.ref_arg_compatible(this.strip_imut(fpat), this.strip_imut(fp_params[fpai])) {
                             this.errors.pushb("Argument " + tostring(fpai + 1) + " of function pointer expects '" + this.strip_imut(fp_params[fpai]) + "' but got '" + this.strip_imut(fpat) + "'.");
                         }
                         fpai = fpai + 1;
@@ -2283,7 +2283,7 @@ pub def TypeChecker : class {
             // (Python checks them in this order too, so a user function
             // shadowing one of these names loses, on both compilers)
             sb: string = this.special_builtin_call(e);
-            if sb.size > 0 { return sb; }
+            if sb.__bytesize > 0 { return sb; }
             if this.funcs.isin(e.sval) {
                 this.check_call_args(e.sval, e);
                 return this.funcs[e.sval];
@@ -2329,7 +2329,7 @@ pub def TypeChecker : class {
                     ai_c: int = 0;
                     while ai_c < actual_c && ai_c < total_p {
                         at_c: string = this.infer_expr(e.args.get(ai_c));
-                        if at_c.size > 0 && !this.ref_arg_compatible(this.strip_imut(at_c), this.strip_imut(cparams.get(ai_c))) {
+                        if at_c.__bytesize > 0 && !this.ref_arg_compatible(this.strip_imut(at_c), this.strip_imut(cparams.get(ai_c))) {
                             this.errors.pushb("Argument " + tostring(ai_c + 1) + " of constructor has type '" + at_c + "', but expected '" + cparams.get(ai_c) + "'");
                         }
                         ai_c = ai_c + 1;
@@ -2356,7 +2356,7 @@ pub def TypeChecker : class {
             if e.sval == "bytestofloat" { return "float"; }
             if e.sval == "__tupget" {
                 tup_t: string = this.infer_expr(e.args.get(0));
-                if tup_t.size > 1 && tup_t[0] == '(' {
+                if tup_t.__bytesize > 1 && tup_t[0] == '(' {
                     return this.tuple_elem_type(tup_t, e.args.get(1).ival);
                 }
             }
@@ -2394,7 +2394,7 @@ pub def TypeChecker : class {
             // Container built-in methods (vec / matrix / hash / string /
             // array) with arity + type checks (Python _check_method_call)
             cmc: string = this.container_method_check(e, obj_type);
-            if cmc.size > 0 { return cmc; }
+            if cmc.__bytesize > 0 { return cmc; }
 
             // Generic STATIC class methods: instantiate for the concrete
             // types and rewrite the call (VecMath<int>.sum -> VecMath_sum_int)
@@ -2445,7 +2445,7 @@ pub def TypeChecker : class {
                     while mai < mparams.size {
                         if !skip_types {
                             mat: string = this.infer_expr(e.args.get(mai));
-                            if mat.size > 0 && !this.ref_arg_compatible(this.strip_imut(mat), this.strip_imut(mparams[mai])) {
+                            if mat.__bytesize > 0 && !this.ref_arg_compatible(this.strip_imut(mat), this.strip_imut(mparams[mai])) {
                                 this.errors.pushb("Argument " + tostring(mai + 1) + " of method '" + e.sval + "' expects '" + this.strip_imut(mparams[mai]) + "' but got '" + this.strip_imut(mat) + "'");
                             }
                         }
@@ -2453,7 +2453,7 @@ pub def TypeChecker : class {
                     }
                 }
                 mret: string = ci.get_method_ret(e.sval);
-                if mret.size > 0 { return mret; }
+                if mret.__bytesize > 0 { return mret; }
                 return "void";
             }
             // Struct methods (`fnc ... -> StructType`): resolved through
@@ -2470,7 +2470,7 @@ pub def TypeChecker : class {
                             smi: int = 0;
                             while smi < mps.size {
                                 smat: string = this.infer_expr(e.args.get(smi));
-                                if smat.size > 0 && !this.ref_arg_compatible(this.strip_imut(smat), this.strip_imut(mps[smi])) {
+                                if smat.__bytesize > 0 && !this.ref_arg_compatible(this.strip_imut(smat), this.strip_imut(mps[smi])) {
                                     this.errors.pushb("Argument " + tostring(smi + 1) + " of struct method '" + e.sval + "' expects '" + this.strip_imut(mps[smi]) + "' but got '" + this.strip_imut(smat) + "'");
                                 }
                                 smi = smi + 1;
@@ -2483,7 +2483,7 @@ pub def TypeChecker : class {
             // opdef extension methods: `recv.method(args)` becomes a plain
             // call of `_opdef_<base>_<method>` with the receiver first.
             oobj: string = this.base_of(obj_type);
-            if oobj.size > 0 {
+            if oobj.__bytesize > 0 {
                 omname: string = e.sval;
                 mkey2: string = "_opdef_" + oobj + "_" + e.sval;
                 if !this.funcs.isin(mkey2) && this.generic_funcs.isin(mkey2) {
@@ -2522,7 +2522,7 @@ pub def TypeChecker : class {
                 this.errors.pushb("Invalid l-value: CreateExpr");
                 return "int";
             }
-            if e.sval == "size" { return "int"; }
+            if e.sval == "size" || e.sval == "__bytesize" { return "int"; }
             mem_obj_t: string = this.strip_ref(this.infer_expr(e.left));
             if e.sval == "name" && this.enums.isin(mem_obj_t) { return "string"; }
             obj_type: string = this.strip_ref(this.infer_expr(e.left));
@@ -2534,7 +2534,7 @@ pub def TypeChecker : class {
                 // paths ("w.u") resolve through the member chain.
                 if !this.in_unsafe_func && e.left != null {
                     pkey: string = this.member_path(e.left);
-                    if pkey.size > 0 {
+                    if pkey.__bytesize > 0 {
                         act_v: string = "";
                         u_ty: string = "";
                         if this.union_active.isin(pkey) {
@@ -2546,7 +2546,7 @@ pub def TypeChecker : class {
                                 u_ty = this.global_union_active_ty[pkey];
                             }
                         }
-                        if act_v.size > 0 && u_ty == obj_type && act_v != e.sval {
+                        if act_v.__bytesize > 0 && u_ty == obj_type && act_v != e.sval {
                             this.errors.pushb("Reading union '" + obj_type + "' variant '" + e.sval + "' when '" + act_v + "' is active is type-punning and unsafe outside an `unsafe` function");
                         }
                     }
@@ -2556,7 +2556,7 @@ pub def TypeChecker : class {
             if this.structs.isin(obj_type) {
                 st: StructInfo = this.structs[obj_type];
                 sft: string = st.get_field_type(e.sval);
-                if sft.size > 0 { return sft; }
+                if sft.__bytesize > 0 { return sft; }
                 // Static struct fields live in the flat static_fields map.
                 if this.static_fields.isin(obj_type + "_" + e.sval) {
                     return this.static_fields[obj_type + "_" + e.sval];
@@ -2566,7 +2566,7 @@ pub def TypeChecker : class {
             if this.classes.isin(obj_type) {
                 cl: ClassInfo = this.classes[obj_type];
                 cft: string = cl.get_field_type(e.sval);
-                if cft.size > 0 { return cft; }
+                if cft.__bytesize > 0 { return cft; }
                 // Static fields live in the flat static_fields map
                 // (`Class_field`) — the instance layout misses them, so
                 // `this.staticField` inside (static) methods resolves here.
@@ -2578,7 +2578,7 @@ pub def TypeChecker : class {
             // Unknown member on a primitive/builtin value type (Python parity).
             mem_base: string = this.base_of(mem_obj_t);
             if mem_base == "int" || mem_base == "uint" || mem_base == "char" || mem_base == "bool" || mem_base == "float" || mem_base == "string" ||
-               (mem_obj_t.size > 2 && mem_obj_t[mem_obj_t.size - 1] == ']') {
+               (mem_obj_t.__bytesize > 2 && mem_obj_t[mem_obj_t.__bytesize - 1] == ']') {
                 this.errors.pushb("Type '" + mem_obj_t + "' has no member named '" + e.sval + "'");
             }
             return "int";
@@ -2591,14 +2591,14 @@ pub def TypeChecker : class {
             // strips one char for the follow-up diagnostic, exactly like
             // python's _check_pointer_member_access.
             praw: string = this.infer_expr(e.left);
-            if !(praw.size > 1 && (praw[0] == '*' || praw[0] == '&')) {
+            if !(praw.__bytesize > 1 && (praw[0] == '*' || praw[0] == '&')) {
                 this.errors.pushb("Cannot use '->' on non-pointer type '" + praw + "'");
-                this.errors.pushb("Type '" + this.str_slice(praw, 1, praw.size) + "' is not a struct or class");
+                this.errors.pushb("Type '" + this.str_slice(praw, 1, praw.__bytesize) + "' is not a struct or class");
                 return "int";
             }
             pobj: string = this.strip_ref(praw);
-            if pobj.size > 1 && pobj[0] == '*' {
-                pobj = this.str_slice(pobj, 1, pobj.size);
+            if pobj.__bytesize > 1 && pobj[0] == '*' {
+                pobj = this.str_slice(pobj, 1, pobj.__bytesize);
             }
             if this.unions.isin(pobj) {
                 if e.sval == "cur" { return pobj; }
@@ -2620,38 +2620,38 @@ pub def TypeChecker : class {
             idx_t2: string = "";
             if e.right != null { idx_t2 = this.infer_expr(e.right); }
             // Arrays and strings require an integer index (python parity).
-            if (arr_t == "string" || (arr_t.size > 2 && arr_t[arr_t.size - 1] == ']'))
-               && idx_t2.size > 0 && !this.is_int_family(idx_t2) {
+            if (arr_t == "string" || (arr_t.__bytesize > 2 && arr_t[arr_t.__bytesize - 1] == ']'))
+               && idx_t2.__bytesize > 0 && !this.is_int_family(idx_t2) {
                 this.errors.pushb("Array/string index must be an integer, but got '" + idx_t2 + "'");
             }
             if arr_t == "string" { return "char"; }
             // vec<T> -> T
-            if (arr_t.size > 5 && arr_t[0] == 'v' && arr_t[1] == 'e' && arr_t[2] == 'c' && arr_t[3] == '<')
-               || (arr_t.size > 7 && arr_t[0] == 'm' && arr_t[1] == 'a' && arr_t[2] == 't') {
+            if (arr_t.__bytesize > 5 && arr_t[0] == 'v' && arr_t[1] == 'e' && arr_t[2] == 'c' && arr_t[3] == '<')
+               || (arr_t.__bytesize > 7 && arr_t[0] == 'm' && arr_t[1] == 'a' && arr_t[2] == 't') {
                 inner: string = "";
                 i2: int = 4;
-                if arr_t.size > 7 && arr_t[0] == 'm' { i2 = 7; }
-                while i2 < arr_t.size - 1 {
+                if arr_t.__bytesize > 7 && arr_t[0] == 'm' { i2 = 7; }
+                while i2 < arr_t.__bytesize - 1 {
                     inner = inner + arr_t[i2];
                     i2 = i2 + 1;
                 }
                 return inner;
             }
             // hash<K, V> -> V
-            if arr_t.size > 6 && arr_t[0] == 'h' && arr_t[1] == 'a' && arr_t[2] == 's' && arr_t[3] == 'h' && arr_t[4] == '<' {
+            if arr_t.__bytesize > 6 && arr_t[0] == 'h' && arr_t[1] == 'a' && arr_t[2] == 's' && arr_t[3] == 'h' && arr_t[4] == '<' {
                 depth: int = 0;
                 val: string = "";
                 found: bool = false;
                 i3: int = 5;
-                while i3 < arr_t.size - 1 && !found {
+                while i3 < arr_t.__bytesize - 1 && !found {
                     ch: char = arr_t[i3];
                     if ch == ',' && depth == 0 {
                         found = true;
                         i3 = i3 + 1;
-                        while i3 < arr_t.size - 1 && arr_t[i3] == ' ' {
+                        while i3 < arr_t.__bytesize - 1 && arr_t[i3] == ' ' {
                             i3 = i3 + 1;
                         }
-                        while i3 < arr_t.size - 1 {
+                        while i3 < arr_t.__bytesize - 1 {
                             c2: char = arr_t[i3];
                             val = val + c2;
                             i3 = i3 + 1;
@@ -2666,19 +2666,19 @@ pub def TypeChecker : class {
             // Static array bounds check (python parity): a literal index
             // beyond [-(N), N-1] can never land in bounds (negative
             // indices wrap from the end, so -1..-N stay valid).
-            if arr_t.size > 2 && arr_t[arr_t.size - 1] == ']' {
+            if arr_t.__bytesize > 2 && arr_t[arr_t.__bytesize - 1] == ']' {
                 sbo: int = 0;
-                while sbo < arr_t.size && arr_t[sbo] != '[' { sbo = sbo + 1; }
-                if sbo + 1 < arr_t.size && arr_t[sbo + 1] != ']' {
+                while sbo < arr_t.__bytesize && arr_t[sbo] != '[' { sbo = sbo + 1; }
+                if sbo + 1 < arr_t.__bytesize && arr_t[sbo + 1] != ']' {
                     ssz_s: string = "";
                     ssi: int = sbo + 1;
-                    while ssi < arr_t.size && arr_t[ssi] != ']' {
+                    while ssi < arr_t.__bytesize && arr_t[ssi] != ']' {
                         ssz_s = ssz_s + arr_t[ssi];
                         ssi = ssi + 1;
                     }
-                    ssz_ok: bool = ssz_s.size > 0;
+                    ssz_ok: bool = ssz_s.__bytesize > 0;
                     ssd: int = 0;
-                    while ssd < ssz_s.size {
+                    while ssd < ssz_s.__bytesize {
                         if ssz_s[ssd] < '0' || ssz_s[ssd] > '9' { ssz_ok = false; }
                         ssd = ssd + 1;
                     }
@@ -2705,10 +2705,10 @@ pub def TypeChecker : class {
                 }
             }
             // T[] -> T
-            if arr_t.size > 2 && arr_t[arr_t.size - 1] == ']' {
+            if arr_t.__bytesize > 2 && arr_t[arr_t.__bytesize - 1] == ']' {
                 base_t: string = "";
                 bi: int = 0;
-                while bi < arr_t.size && arr_t[bi] != '[' {
+                while bi < arr_t.__bytesize && arr_t[bi] != '[' {
                     base_t = base_t + arr_t[bi];
                     bi = bi + 1;
                 }
@@ -2741,7 +2741,7 @@ pub def TypeChecker : class {
                     } else {
                         if e.left.kind == ExprKind.IDENT {
                             src_t: string = this.strip_imut(this.lookup_var(e.left.sval));
-                            if src_t.size > 0 && (src_t[0] == '*' || src_t[0] == '&') { src_ptr = true; }
+                            if src_t.__bytesize > 0 && (src_t[0] == '*' || src_t[0] == '&') { src_ptr = true; }
                         }
                     }
                     if src_ptr {
@@ -2793,7 +2793,7 @@ pub def TypeChecker : class {
                         s_expected: string = this.resolve_type_alias(sinfo.field_types.get(sfti));
                         s_actual: string = this.infer_expr(e.args.get(sfi));
                         this.check_int_literal_fits(e.args.get(sfi), s_expected);
-                        if s_actual.size > 0 && !this.types_compatible(s_actual, s_expected) {
+                        if s_actual.__bytesize > 0 && !this.types_compatible(s_actual, s_expected) {
                             this.errors.pushb("Struct '" + e.sval + "' field '" + skey + "' expects '" + this.disp_type(s_expected) + "' but got '" + this.disp_type(s_actual) + "'.");
                         }
                     }
@@ -2816,7 +2816,7 @@ pub def TypeChecker : class {
                     ei3: int = 1;
                     while ei3 < e.args.size {
                         elem_t: string = this.infer_expr(e.args.get(ei3));
-                        if first_et.size > 0 && elem_t.size > 0
+                        if first_et.__bytesize > 0 && elem_t.__bytesize > 0
                            && !this.types_compatible(elem_t, first_et) {
                             this.errors.pushb("Array contains mixed types: '" + first_et + "' and '" + elem_t + "'.");
                         }
@@ -2840,7 +2840,7 @@ pub def TypeChecker : class {
             s.var_type = var_t;
             // Unknown type names (int32, Bogus, ...) are rejected, not
             // silently compiled to a fallback (Python E003 parity).
-            if var_t.size > 0 && !s.is_infer && !this.is_known_type(var_t) {
+            if var_t.__bytesize > 0 && !s.is_infer && !this.is_known_type(var_t) {
                 this.errors.pushb("Variable '" + s.name + "' declared with unknown type '" + var_t + "'");
                 this.define_var(s.name, var_t);
                 // Python keeps checking the initializer after E003 (its
@@ -2858,24 +2858,24 @@ pub def TypeChecker : class {
             // paired with an initializer. Larger values crashed IR emission;
             // non-positive sizes crashed array construction; runtime-sized
             // arrays without an initializer crashed the compiler.
-            if var_t.size > 2 && var_t[var_t.size - 1] == ']' {
+            if var_t.__bytesize > 2 && var_t[var_t.__bytesize - 1] == ']' {
                 ob_i: int = 0;
-                while ob_i < var_t.size && var_t[ob_i] != '[' { ob_i = ob_i + 1; }
-                if ob_i + 1 < var_t.size && var_t[ob_i + 1] != ']' {
+                while ob_i < var_t.__bytesize && var_t[ob_i] != '[' { ob_i = ob_i + 1; }
+                if ob_i + 1 < var_t.__bytesize && var_t[ob_i + 1] != ']' {
                     inner_sz: string = "";
                     is_i: int = ob_i + 1;
-                    while is_i < var_t.size && var_t[is_i] != ']' {
+                    while is_i < var_t.__bytesize && var_t[is_i] != ']' {
                         inner_sz = inner_sz + var_t[is_i];
                         is_i = is_i + 1;
                     }
-                    sz_const: bool = inner_sz.size > 0;
+                    sz_const: bool = inner_sz.__bytesize > 0;
                     sz_neg: bool = false;
                     sz_di: int = 0;
-                    if inner_sz.size > 0 && (inner_sz[0] == '-' || inner_sz[0] == '+') {
+                    if inner_sz.__bytesize > 0 && (inner_sz[0] == '-' || inner_sz[0] == '+') {
                         if inner_sz[0] == '-' { sz_neg = true; }
                         sz_di = 1;
                     }
-                    while sz_di < inner_sz.size {
+                    while sz_di < inner_sz.__bytesize {
                         if inner_sz[sz_di] < '0' || inner_sz[sz_di] > '9' { sz_const = false; }
                         sz_di = sz_di + 1;
                     }
@@ -2885,8 +2885,8 @@ pub def TypeChecker : class {
                         } else {
                             // int is 32-bit in this compiler: compare the
                             // digit string instead of parsing huge values.
-                            sz_big: bool = inner_sz.size > 10;
-                            if inner_sz.size == 10 && this.str_less("2147483647", inner_sz) { sz_big = true; }
+                            sz_big: bool = inner_sz.__bytesize > 10;
+                            if inner_sz.__bytesize == 10 && this.str_less("2147483647", inner_sz) { sz_big = true; }
                             if sz_big {
                                 this.errors.pushb("Array size " + inner_sz + " for '" + s.name + "' is too large (maximum 2147483647).");
                             }
@@ -2898,19 +2898,19 @@ pub def TypeChecker : class {
                     }
                 }
             }
-            if s.is_infer || var_t.size == 0 {
+            if s.is_infer || var_t.__bytesize == 0 {
                 var_t = this.infer_expr(s.value);
                 s.var_type = var_t;
             } also s.value != null {
                 gc_base: string = this.generic_class_base(var_t);
-                if gc_base.size > 0 {
+                if gc_base.__bytesize > 0 {
                     // `x: Tpl<A, B>` — instantiate and rewrite `Tpl.new()`
                     gc_lt: int = 0;
-                    while gc_lt < var_t.size {
+                    while gc_lt < var_t.__bytesize {
                         if var_t[gc_lt] == '<' { stop; }
                         gc_lt = gc_lt + 1;
                     }
-                    gc_args: vec<string> = this.split_commas(this.str_slice(var_t, gc_lt + 1, var_t.size - 1));
+                    gc_args: vec<string> = this.split_commas(this.str_slice(var_t, gc_lt + 1, var_t.__bytesize - 1));
                     gc_mangled: string = this.instantiate_generic_class(gc_base, gc_args);
                     var_t = gc_mangled;
                     s.var_type = var_t;
@@ -2950,7 +2950,7 @@ pub def TypeChecker : class {
             }
             // C2: a literal initializer must fit the declared type's
             // sign/width (Python LEASH-E015 parity)
-            if s.value != null && var_t.size > 0 {
+            if s.value != null && var_t.__bytesize > 0 {
                 this.check_int_literal_fits(s.value, var_t);
             }
             if s.is_imut { this.imut_vars.push(s.name, true); }
@@ -2968,7 +2968,7 @@ pub def TypeChecker : class {
                 this.union_active_ty.push(s.name, u_res2);
                 if s.value != null {
                     uv2: string = this.find_union_variant(u_res2, s.value);
-                    if uv2.size > 0 { this.union_active.push(s.name, uv2); }
+                    if uv2.__bytesize > 0 { this.union_active.push(s.name, uv2); }
                 }
             }
             if s.value != null && s.value.kind == ExprKind.STRUCT_INIT {
@@ -2988,7 +2988,7 @@ pub def TypeChecker : class {
                             if this.unions.isin(sft2) {
                                 this.union_active_ty.push(s.name + "." + sfname, sft2);
                                 sfv: string = this.find_union_variant(sft2, s.value.args.get(sfi2));
-                                if sfv.size > 0 { this.union_active.push(s.name + "." + sfname, sfv); }
+                                if sfv.__bytesize > 0 { this.union_active.push(s.name + "." + sfname, sfv); }
                             }
                         }
                         sfi2 = sfi2 + 1;
@@ -3016,7 +3016,7 @@ pub def TypeChecker : class {
             // only bare reassignment of the name itself was rejected before).
             if s.target.kind == ExprKind.INDEX || s.target.kind == ExprKind.MEMBER {
                 mut_root: string = this.root_identifier(s.target);
-                if mut_root.size > 0 {
+                if mut_root.__bytesize > 0 {
                     if this.readonly_borrows.isin(mut_root) {
                         this.errors.pushb("Cannot mutate '" + mut_root + "': array parameters are read-only borrows.");
                     }
@@ -3034,10 +3034,10 @@ pub def TypeChecker : class {
             } else {
                 sh_root = this.root_identifier(s.target);
             }
-            if sh_root.size > 0 && this.shared_globals.isin(sh_root) && !this.lookup_var_fresh(sh_root) {
+            if sh_root.__bytesize > 0 && this.shared_globals.isin(sh_root) && !this.lookup_var_fresh(sh_root) {
                 prev_writer: string = "";
                 if this.shared_writers.isin(sh_root) { prev_writer = this.shared_writers[sh_root]; }
-                if prev_writer.size > 0 && prev_writer != this.current_func_name {
+                if prev_writer.__bytesize > 0 && prev_writer != this.current_func_name {
                     this.errors.pushb("shared variable '" + sh_root + "' is written by both '" + prev_writer + "' and '" + this.current_func_name + "'. `shared` allows exactly ONE writer with any number of readers. Use a `fusion` variable (atomic) if several workers must write it, or give each worker its own variable.");
                 } else {
                     this.shared_writers.push(sh_root, this.current_func_name);
@@ -3049,16 +3049,16 @@ pub def TypeChecker : class {
             // Plain `u = x` refreshes the variant from the value.
             if s.target != null && s.target.kind == ExprKind.MEMBER {
                 wpath: string = this.member_path(s.target);
-                if wpath.size > 0 {
+                if wpath.__bytesize > 0 {
                     dot_i: int = 0;
                     di2: int = 0;
-                    while di2 < wpath.size {
+                    while di2 < wpath.__bytesize {
                         if wpath[di2] == '.' { dot_i = di2; }
                         di2 = di2 + 1;
                     }
-                    if dot_i > 0 && dot_i + 1 < wpath.size {
+                    if dot_i > 0 && dot_i + 1 < wpath.__bytesize {
                         ukey: string = this.str_slice(wpath, 0, dot_i);
-                        uvar: string = this.str_slice(wpath, dot_i + 1, wpath.size);
+                        uvar: string = this.str_slice(wpath, dot_i + 1, wpath.__bytesize);
                         ukey_ty: string = "";
                         ukey_act: string = "";
                         u_is_local: bool = false;
@@ -3072,7 +3072,7 @@ pub def TypeChecker : class {
                                 if this.global_union_active.isin(ukey) { ukey_act = this.global_union_active[ukey]; }
                             }
                         }
-                        if ukey_ty.size > 0 {
+                        if ukey_ty.__bytesize > 0 {
                             vnames: vec<string> = this.union_names[ukey_ty];
                             v_ok: bool = false;
                             vi: int = 0;
@@ -3081,7 +3081,7 @@ pub def TypeChecker : class {
                                 vi = vi + 1;
                             }
                             if v_ok {
-                                if ukey_act.size > 0 && ukey_act != uvar && !this.in_unsafe_func {
+                                if ukey_act.__bytesize > 0 && ukey_act != uvar && !this.in_unsafe_func {
                                     this.errors.pushb("Changing union '" + ukey_ty + "' active variant from '" + ukey_act + "' to '" + uvar + "' is type-punning and unsafe outside an `unsafe` function");
                                 }
                                 if u_is_local {
@@ -3103,11 +3103,11 @@ pub def TypeChecker : class {
                     this.errors.pushb("'" + s.op + "' target must be a variable, field, or element that can be assigned to.");
                 }
             }
-            if this.fatal_idx < 0 && a_tt.size > 0 && a_tv.size > 0 && !this.types_compatible(a_tv, a_tt) {
+            if this.fatal_idx < 0 && a_tt.__bytesize > 0 && a_tv.__bytesize > 0 && !this.types_compatible(a_tv, a_tt) {
                 this.errors.pushb("Cannot assign a value of type '" + this.disp_type(a_tv) + "' to a variable of type '" + this.disp_type(a_tt) + "'.");
             }
             // C2: a literal RHS must fit the target variable's sign/width
-            if a_tt.size > 0 {
+            if a_tt.__bytesize > 0 {
                 this.check_int_literal_fits(s.value, a_tt);
             }
             return;
@@ -3119,7 +3119,7 @@ pub def TypeChecker : class {
                 // LEASH-E010: the address of a call-frame local escapes the
                 // function and would dangle once the frame is gone.
                 off: string = this.frame_escape_in(s.value);
-                if off.size > 0 {
+                if off.__bytesize > 0 {
                     this.errors.pushb("Cannot return the address of local '" + off + "': it lives on the current call frame and would dangle.");
                 }
             }
@@ -3153,7 +3153,7 @@ pub def TypeChecker : class {
                 spi: int = 0;
                 while spi < sp_params.size {
                     spat: string = this.infer_expr(s.args.get(spi));
-                    if spat.size > 0 && !this.ref_arg_compatible(this.strip_imut(spat), this.strip_imut(sp_params.get(spi))) {
+                    if spat.__bytesize > 0 && !this.ref_arg_compatible(this.strip_imut(spat), this.strip_imut(sp_params.get(spi))) {
                         this.errors.pushb("Argument " + tostring(spi + 1) + " of spawn '" + fname + "' expects '" + this.strip_imut(sp_params.get(spi)) + "', got '" + this.strip_imut(spat) + "'");
                     }
                     spi = spi + 1;
@@ -3316,7 +3316,7 @@ pub def TypeChecker : class {
                         return;
                     }
                     dt: string = this.strip_imut(this.resolve_type_alias(this.lookup_var(dname)));
-                    if dt.size > 0 && !this.classes.isin(dt) && dt[0] != '*' {
+                    if dt.__bytesize > 0 && !this.classes.isin(dt) && dt[0] != '*' {
                         this.errors.pushb("Cannot use 'del' on '" + dt + "': not a class instance");
                         return;
                     }
@@ -3350,7 +3350,7 @@ pub def TypeChecker : class {
     pub fnc str_slice(s string, a int, b int) : string {
         out: string = "";
         i: int = a;
-        while i < b && i < s.size {
+        while i < b && i < s.__bytesize {
             out = out + s[i];
             i = i + 1;
         }
@@ -3359,24 +3359,24 @@ pub def TypeChecker : class {
 
     pub fnc trim_ws(s string) : string {
         a: int = 0;
-        while a < s.size && s[a] == ' ' { a = a + 1; }
-        b: int = s.size;
+        while a < s.__bytesize && s[a] == ' ' { a = a + 1; }
+        b: int = s.__bytesize;
         while b > a && s[b - 1] == ' ' { b = b - 1; }
         return this.str_slice(s, a, b);
     }
 
     pub fnc strip_imut(t string) : string {
-        if t.size > 5 && t[0] == 'i' && t[1] == 'm' && t[2] == 'u' && t[3] == 't' && t[4] == ' ' {
-            return this.str_slice(t, 5, t.size);
+        if t.__bytesize > 5 && t[0] == 'i' && t[1] == 'm' && t[2] == 'u' && t[3] == 't' && t[4] == ' ' {
+            return this.str_slice(t, 5, t.__bytesize);
         }
         return t;
     }
 
     pub fnc is_multi_type(t string) : bool {
         tt: string = this.strip_imut(t);
-        if tt.size < 2 { return false; }
+        if tt.__bytesize < 2 { return false; }
         if tt[0] != '[' { return false; }
-        return tt[tt.size - 1] == ']';
+        return tt[tt.__bytesize - 1] == ']';
     }
 
     // Split on top-level commas (angle brackets and parens nest).
@@ -3386,7 +3386,7 @@ pub def TypeChecker : class {
         paren: int = 0;
         cur: string = "";
         i: int = 0;
-        while i < s.size {
+        while i < s.__bytesize {
             c: char = s[i];
             if c == '<' {
                 angle = angle + 1; cur = cur + c;
@@ -3409,7 +3409,7 @@ pub def TypeChecker : class {
             i = i + 1;
         }
         last: string = this.trim_ws(cur);
-        if last.size > 0 { res.pushb(last); }
+        if last.__bytesize > 0 { res.pushb(last); }
         return res;
     }
 
@@ -3419,12 +3419,12 @@ pub def TypeChecker : class {
             no_parts: vec<string>;
             return no_parts;
         }
-        return this.split_commas(this.str_slice(tt, 1, tt.size - 1));
+        return this.split_commas(this.str_slice(tt, 1, tt.__bytesize - 1));
     }
 
     // Substitute synthetic type parameters inside a (possibly composite) type.
     pub fnc substitute_type_params(t string, tmap hash<string, string>) : string {
-        if t.size == 0 { return t; }
+        if t.__bytesize == 0 { return t; }
         if tmap.isin(t) { return tmap[t]; }
         stripped: string = this.strip_imut(t);
         if stripped != t {
@@ -3439,18 +3439,18 @@ pub def TypeChecker : class {
             }
             return out + "]";
         }
-        if t.size > 1 && t[0] == '*' {
-            return "*" + this.substitute_type_params(this.str_slice(t, 1, t.size), tmap);
+        if t.__bytesize > 1 && t[0] == '*' {
+            return "*" + this.substitute_type_params(this.str_slice(t, 1, t.__bytesize), tmap);
         }
-        if t.size > 1 && t[0] == '&' {
-            return "&" + this.substitute_type_params(this.str_slice(t, 1, t.size), tmap);
+        if t.__bytesize > 1 && t[0] == '&' {
+            return "&" + this.substitute_type_params(this.str_slice(t, 1, t.__bytesize), tmap);
         }
         // Generic / tuple containers: Base<...> and (a, b) share the same shape
         open_ch: char = '<';
         close_ch: char = '>';
         if t[0] == '(' { open_ch = '('; close_ch = ')'; }
-        if (t[0] == '<' || t[0] == '(') && t[t.size - 1] == close_ch {
-            inner: vec<string> = this.split_commas(this.str_slice(t, 1, t.size - 1));
+        if (t[0] == '<' || t[0] == '(') && t[t.__bytesize - 1] == close_ch {
+            inner: vec<string> = this.split_commas(this.str_slice(t, 1, t.__bytesize - 1));
             out2: string = "" + open_ch;
             foreach i2, part2 in<vector> inner {
                 if i2 > 0 { out2 = out2 + ", "; }
@@ -3460,13 +3460,13 @@ pub def TypeChecker : class {
         }
         lt: int = -1;
         li: int = 0;
-        while li < t.size {
+        while li < t.__bytesize {
             if t[li] == '<' { lt = li; stop; }
             li = li + 1;
         }
-        if lt > 0 && t[t.size - 1] == '>' {
+        if lt > 0 && t[t.__bytesize - 1] == '>' {
             base: string = this.str_slice(t, 0, lt);
-            inner2: vec<string> = this.split_commas(this.str_slice(t, lt + 1, t.size - 1));
+            inner2: vec<string> = this.split_commas(this.str_slice(t, lt + 1, t.__bytesize - 1));
             out3: string = base + "<";
             foreach i3, part3 in<vector> inner2 {
                 if i3 > 0 { out3 = out3 + ", "; }
@@ -3475,8 +3475,8 @@ pub def TypeChecker : class {
             return out3 + ">";
         }
         // Array suffix: T[] / K[] — substitute the base, re-suffix
-        if t.size > 2 && t[t.size - 1] == ']' && t[t.size - 2] == '[' {
-            return this.substitute_type_params(this.str_slice(t, 0, t.size - 2), tmap) + "[]";
+        if t.__bytesize > 2 && t[t.__bytesize - 1] == ']' && t[t.__bytesize - 2] == '[' {
+            return this.substitute_type_params(this.str_slice(t, 0, t.__bytesize - 2), tmap) + "[]";
         }
         return t;
     }
@@ -3486,7 +3486,7 @@ pub def TypeChecker : class {
         foreach _, a in<vector> targs {
             piece: string = "";
             i: int = 0;
-            while i < a.size {
+            while i < a.__bytesize {
                 c: char = a[i];
                 if c == '<' || c == '>' || c == ',' { piece = piece + '_'; }
                 also c == ' ' { }
@@ -3504,7 +3504,7 @@ pub def TypeChecker : class {
     // out-params would mutate a private copy — the caller would never see
     // the result. Locals and fields are addressable and safe to mutate.
     pub fnc derive_generic_params(f FuncDecl) : bool {
-        if f.owner.size > 0 { return false; }
+        if f.owner.__bytesize > 0 { return false; }
         has_mt: bool = this.is_multi_type(f.ret_type);
         foreach _, p in<vector> f.params {
             if this.is_multi_type(p.typ) { has_mt = true; }
@@ -3569,7 +3569,7 @@ pub def TypeChecker : class {
     pub fnc template_names_in(t string) : vec<string> {
         res: vec<string>;
         tt: string = this.strip_imut(t);
-        if tt.size == 0 { return res; }
+        if tt.__bytesize == 0 { return res; }
         if this.template_types.isin(tt) {
             if !this.name_in_vec(res, tt) { res.pushb(tt); }
             return res;
@@ -3584,18 +3584,18 @@ pub def TypeChecker : class {
             }
             return res;
         }
-        if tt.size > 1 && (tt[0] == '*' || tt[0] == '&') {
-            return this.template_names_in(this.str_slice(tt, 1, tt.size));
+        if tt.__bytesize > 1 && (tt[0] == '*' || tt[0] == '&') {
+            return this.template_names_in(this.str_slice(tt, 1, tt.__bytesize));
         }
-        if tt.size > 3 && tt[tt.size - 1] == '>' {
+        if tt.__bytesize > 3 && tt[tt.__bytesize - 1] == '>' {
             lt3: int = -1;
             li3: int = 0;
-            while li3 < tt.size {
+            while li3 < tt.__bytesize {
                 if tt[li3] == '<' { lt3 = li3; stop; }
                 li3 = li3 + 1;
             }
             if lt3 > 0 {
-                inner: vec<string> = this.split_commas(this.str_slice(tt, lt3 + 1, tt.size - 1));
+                inner: vec<string> = this.split_commas(this.str_slice(tt, lt3 + 1, tt.__bytesize - 1));
                 foreach _, part2 in<vector> inner {
                     sub2: vec<string> = this.template_names_in(part2);
                     foreach _, s3 in<vector> sub2 {
@@ -3611,7 +3611,7 @@ pub def TypeChecker : class {
     // contains one inside vec<...>/matrix<...>/hash<...>/[...]/Base<...>.
     pub fnc uses_template_type(t string) : bool {
         tt: string = this.strip_imut(t);
-        if tt.size == 0 { return false; }
+        if tt.__bytesize == 0 { return false; }
         if this.template_types.isin(tt) { return true; }
         if this.is_multi_type(tt) {
             parts: vec<string> = this.parse_multi_type(tt);
@@ -3620,18 +3620,18 @@ pub def TypeChecker : class {
             }
             return false;
         }
-        if tt.size > 1 && (tt[0] == '*' || tt[0] == '&') {
-            return this.uses_template_type(this.str_slice(tt, 1, tt.size));
+        if tt.__bytesize > 1 && (tt[0] == '*' || tt[0] == '&') {
+            return this.uses_template_type(this.str_slice(tt, 1, tt.__bytesize));
         }
-        if tt.size > 3 && tt[tt.size - 1] == '>' {
+        if tt.__bytesize > 3 && tt[tt.__bytesize - 1] == '>' {
             lt2: int = -1;
             li2: int = 0;
-            while li2 < tt.size {
+            while li2 < tt.__bytesize {
                 if tt[li2] == '<' { lt2 = li2; stop; }
                 li2 = li2 + 1;
             }
             if lt2 > 0 {
-                inner: vec<string> = this.split_commas(this.str_slice(tt, lt2 + 1, tt.size - 1));
+                inner: vec<string> = this.split_commas(this.str_slice(tt, lt2 + 1, tt.__bytesize - 1));
                 foreach _, part2 in<vector> inner {
                     if this.uses_template_type(part2) { return true; }
                 }
@@ -3690,10 +3690,10 @@ pub def TypeChecker : class {
     // return the template base name, else "".
     pub fnc generic_class_base(t string) : string {
         tt: string = this.strip_imut(t);
-        if tt.size < 3 { return ""; }
-        if tt[tt.size - 1] != '>' { return ""; }
+        if tt.__bytesize < 3 { return ""; }
+        if tt[tt.__bytesize - 1] != '>' { return ""; }
         bi: int = 0;
-        while bi < tt.size {
+        while bi < tt.__bytesize {
             if tt[bi] == '<' {
                 base: string = this.str_slice(tt, 0, bi);
                 if this.generic_classes.isin(base) { return base; }
@@ -3791,7 +3791,7 @@ pub def TypeChecker : class {
         res: vec<string>;
         pt: string = this.strip_imut(pattern);
         at: string = this.strip_imut(actual);
-        if pt.size == 0 || at.size == 0 { return res; }
+        if pt.__bytesize == 0 || at.__bytesize == 0 { return res; }
         is_tp: bool = false;
         foreach _, tp in<vector> tparams {
             if tp == pt { is_tp = true; }
@@ -3812,28 +3812,28 @@ pub def TypeChecker : class {
             }
             return res;
         }
-        if pt.size > 1 && at.size > 1 && (pt[0] == '*' || pt[0] == '&') && (at[0] == '*' || at[0] == '&') {
-            return this.match_templates(this.str_slice(pt, 1, pt.size), this.str_slice(at, 1, at.size), tparams);
+        if pt.__bytesize > 1 && at.__bytesize > 1 && (pt[0] == '*' || pt[0] == '&') && (at[0] == '*' || at[0] == '&') {
+            return this.match_templates(this.str_slice(pt, 1, pt.__bytesize), this.str_slice(at, 1, at.__bytesize), tparams);
         }
         // Base<...> containers: recurse when the base names agree
         plt: int = -1;
         pi2: int = 0;
-        while pi2 < pt.size {
+        while pi2 < pt.__bytesize {
             if pt[pi2] == '<' { plt = pi2; stop; }
             pi2 = pi2 + 1;
         }
         alt: int = -1;
         ai3: int = 0;
-        while ai3 < at.size {
+        while ai3 < at.__bytesize {
             if at[ai3] == '<' { alt = ai3; stop; }
             ai3 = ai3 + 1;
         }
-        if plt > 0 && alt > 0 && pt[pt.size - 1] == '>' && at[at.size - 1] == '>' {
+        if plt > 0 && alt > 0 && pt[pt.__bytesize - 1] == '>' && at[at.__bytesize - 1] == '>' {
             pbase: string = this.str_slice(pt, 0, plt);
             abase: string = this.str_slice(at, 0, alt);
             if pbase == abase {
-                pin: vec<string> = this.split_commas(this.str_slice(pt, plt + 1, pt.size - 1));
-                ain: vec<string> = this.split_commas(this.str_slice(at, alt + 1, at.size - 1));
+                pin: vec<string> = this.split_commas(this.str_slice(pt, plt + 1, pt.__bytesize - 1));
+                ain: vec<string> = this.split_commas(this.str_slice(at, alt + 1, at.__bytesize - 1));
                 if pin.size == ain.size {
                     foreach gi, pp2 in<vector> pin {
                         sub2: vec<string> = this.match_templates(pp2, ain.get(gi), tparams);
@@ -3848,9 +3848,9 @@ pub def TypeChecker : class {
     // Base type of a possibly-generic type name: `vec<int>` -> `vec`.
     pub fnc base_of(t string) : string {
         tt: string = this.strip_imut(t);
-        if tt.size == 0 { return ""; }
+        if tt.__bytesize == 0 { return ""; }
         bi: int = 0;
-        while bi < tt.size {
+        while bi < tt.__bytesize {
             if tt[bi] == '<' { return this.str_slice(tt, 0, bi); }
             bi = bi + 1;
         }
@@ -3861,7 +3861,7 @@ pub def TypeChecker : class {
     // Mirrors Python _is_type_param. Concrete declared types are never
     // type params.
     pub fnc is_type_param(t string) : bool {
-        if t.size == 0 { return false; }
+        if t.__bytesize == 0 { return false; }
         if this.structs.isin(t) { return false; }
         if this.classes.isin(t) { return false; }
         if this.unions.isin(t) { return false; }
@@ -3869,14 +3869,14 @@ pub def TypeChecker : class {
         if this.prog_aliases.isin(t) { return false; }
         if t[0] == '_' { return true; }
         // single uppercase letter (or letter + digit)
-        if t.size == 1 && t[0] >= 'A' && t[0] <= 'Z' { return true; }
-        if t.size == 2 && t[0] >= 'A' && t[0] <= 'Z' && t[1] >= '0' && t[1] <= '9' { return true; }
-        if t.size >= 2 && t[0] == 'T' {
-            rest: string = this.str_slice(t, 1, t.size);
-            if rest.size <= 2 {
+        if t.__bytesize == 1 && t[0] >= 'A' && t[0] <= 'Z' { return true; }
+        if t.__bytesize == 2 && t[0] >= 'A' && t[0] <= 'Z' && t[1] >= '0' && t[1] <= '9' { return true; }
+        if t.__bytesize >= 2 && t[0] == 'T' {
+            rest: string = this.str_slice(t, 1, t.__bytesize);
+            if rest.__bytesize <= 2 {
                 all_digit: bool = true;
                 ri: int = 0;
-                while ri < rest.size {
+                while ri < rest.__bytesize {
                     if rest[ri] < '0' || rest[ri] > '9' { all_digit = false; }
                     ri = ri + 1;
                 }
@@ -3907,7 +3907,7 @@ pub def TypeChecker : class {
             ai4: int = 0;
             while ai4 < mps.size {
                 at4: string = this.infer_expr(call_args.get(ai4 + 1));
-                if at4.size > 0 && !this.types_compatible(at4, this.strip_imut(mps[ai4])) {
+                if at4.__bytesize > 0 && !this.types_compatible(at4, this.strip_imut(mps[ai4])) {
                     this.errors.pushb("Argument " + tostring(ai4 + 1) + " of struct method '" + mname + "' expects '" + this.strip_imut(mps[ai4]) + "' but got '" + this.disp_type(at4) + "'");
                 }
                 ai4 = ai4 + 1;
@@ -3920,7 +3920,7 @@ pub def TypeChecker : class {
             bi4: int = 0;
             while bi4 < mps.size {
                 bt4: string = this.infer_expr(call_args.get(bi4));
-                if bt4.size > 0 && !this.types_compatible(bt4, this.strip_imut(mps[bi4])) {
+                if bt4.__bytesize > 0 && !this.types_compatible(bt4, this.strip_imut(mps[bi4])) {
                     this.errors.pushb("Argument " + tostring(bi4 + 1) + " of struct method '" + mname + "' expects '" + this.strip_imut(mps[bi4]) + "' but got '" + this.disp_type(bt4) + "'");
                 }
                 bi4 = bi4 + 1;
@@ -3988,7 +3988,7 @@ pub def TypeChecker : class {
     pub fnc find_union_variant(ut string, val Expr) : string {
         if val == null || !this.unions.isin(ut) { return ""; }
         vt: string = this.strip_imut(this.strip_ref(this.resolve_type_alias(this.infer_expr(val))));
-        if vt.size == 0 { return ""; }
+        if vt.__bytesize == 0 { return ""; }
         names: vec<string> = this.union_names[ut];
         types: vec<string> = this.union_types[ut];
         i: int = 0;
@@ -4007,7 +4007,7 @@ pub def TypeChecker : class {
         if e.kind == ExprKind.IDENT { return e.sval; }
         if e.kind == ExprKind.MEMBER {
             base: string = this.member_path(e.left);
-            if base.size > 0 { return base + "." + e.sval; }
+            if base.__bytesize > 0 { return base + "." + e.sval; }
         }
         return "";
     }
@@ -4235,9 +4235,9 @@ pub def TypeChecker : class {
     }
 
     static pub fnc str_starts_with(s string, pre string) : bool {
-        if s.size < pre.size { return false; }
+        if s.__bytesize < pre.__bytesize { return false; }
         i: int = 0;
-        while i < pre.size {
+        while i < pre.__bytesize {
             if s[i] != pre[i] { return false; }
             i = i + 1;
         }
@@ -4273,15 +4273,15 @@ pub def TypeChecker : class {
             if p.is_imut { this.imut_vars.push(p.name, true); }
             this.define_var(p.name, this.resolve_type_alias(p.typ));
             pbt2: string = this.strip_imut(p.typ);
-            if p.typ.size > 0 && p.typ[0] != '&' && this.is_array_type(pbt2)
-               && !(pbt2.size > 4 && pbt2[0] == 'v' && pbt2[1] == 'e' && pbt2[2] == 'c' && pbt2[3] == '<') {
+            if p.typ.__bytesize > 0 && p.typ[0] != '&' && this.is_array_type(pbt2)
+               && !(pbt2.__bytesize > 4 && pbt2[0] == 'v' && pbt2[1] == 'e' && pbt2[2] == 'c' && pbt2[3] == '<') {
                 this.readonly_borrows.pushb(p.name);
             }
         }
         foreach _, stmt in<vector> f.body {
             this.check_statement(stmt);
         }
-        if f.ret_type.size > 0 {
+        if f.ret_type.__bytesize > 0 {
             fret_bare3: string = this.strip_imut(this.resolve_type_alias(f.ret_type));
             if fret_bare3 != "void" && !this.stmt_list_returns(f.body) {
                 this.errors.pushb("Function '" + f.name + "' might not return a value on all paths.");
@@ -4383,7 +4383,7 @@ pub def TypeChecker : class {
 
     pub fnc types_compatible(src string, dst string) : bool {
         if src == dst { return true; }
-        if src.size == 0 || dst.size == 0 { return true; }
+        if src.__bytesize == 0 || dst.__bytesize == 0 { return true; }
         if src == "nil" { return true; }
         if dst == "void" { return true; }
         // A union variable accepts any variant-compatible value (the
@@ -4393,49 +4393,49 @@ pub def TypeChecker : class {
         if src == "char" && dst == "string" { return true; }
         // A generic-class value is compatible with its instantiation
         // (python: dst.startswith(src + "_") for mangled clones)
-        if this.inst_classes.isin(dst) && dst.size > src.size && this.str_slice(dst, 0, src.size) == src {
+        if this.inst_classes.isin(dst) && dst.__bytesize > src.__bytesize && this.str_slice(dst, 0, src.__bytesize) == src {
             return true;
         }
         // Numeric types (incl. sized variants) are broadly compatible with
         // each other — Python: int/uint/float/char/bool all interassign.
         if this.is_numeric_base(src) && this.is_numeric_base(dst) { return true; }
         // Pointers: *X -> *Y compares the pointee types (Python recursion)
-        if src.size > 1 && dst.size > 1 && src[0] == '*' && dst[0] == '*' {
-            return this.types_compatible(this.str_slice(src, 1, src.size), this.str_slice(dst, 1, dst.size));
+        if src.__bytesize > 1 && dst.__bytesize > 1 && src[0] == '*' && dst[0] == '*' {
+            return this.types_compatible(this.str_slice(src, 1, src.__bytesize), this.str_slice(dst, 1, dst.__bytesize));
         }
         // string <-> *char
-        if src == "string" && dst.size > 1 && dst[0] == '*' { return true; }
-        if dst == "string" && src.size > 1 && src[0] == '*' { return true; }
+        if src == "string" && dst.__bytesize > 1 && dst[0] == '*' { return true; }
+        if dst == "string" && src.__bytesize > 1 && src[0] == '*' { return true; }
         // arrays: int[N] <-> int[] when the bases match
-        if src.size > 2 && src[src.size - 1] == ']' && dst.size > 2 && dst[dst.size - 1] == ']' {
+        if src.__bytesize > 2 && src[src.__bytesize - 1] == ']' && dst.__bytesize > 2 && dst[dst.__bytesize - 1] == ']' {
             sbase: string = "";
             sbi: int = 0;
-            while sbi < src.size && src[sbi] != '[' {
+            while sbi < src.__bytesize && src[sbi] != '[' {
                 sbase = sbase + src[sbi];
                 sbi = sbi + 1;
             }
             dbase: string = "";
             dbi: int = 0;
-            while dbi < dst.size && dst[dbi] != '[' {
+            while dbi < dst.__bytesize && dst[dbi] != '[' {
                 dbase = dbase + dst[dbi];
                 dbi = dbi + 1;
             }
-            if sbase == dbase && sbase.size > 0 { return true; }
+            if sbase == dbase && sbase.__bytesize > 0 { return true; }
             // Sized numeric spellings reduce to their bare base
             // (int<64>[10] <-> int[] — python _base_type parity).
-            if sbase.size > 0 && this.is_numeric_base(sbase) && this.is_numeric_base(dbase) { return true; }
+            if sbase.__bytesize > 0 && this.is_numeric_base(sbase) && this.is_numeric_base(dbase) { return true; }
         }
         // slices: T[] -> vec<T>, *T, T[]
-        if src.size > 2 && src[src.size - 1] == ']' {
+        if src.__bytesize > 2 && src[src.__bytesize - 1] == ']' {
             base: string = "";
             bi: int = 0;
-            while bi < src.size && src[bi] != '[' {
+            while bi < src.__bytesize && src[bi] != '[' {
                 base = base + src[bi];
                 bi = bi + 1;
             }
             if this.is_vec_type2(dst) && this.vec_inner_type2(dst) == base { return true; }
-            if dst.size > 7 && dst[0] == 'm' && dst[1] == 'a' && dst[2] == 't' && dst[3] == 'r' && dst[4] == 'i' && dst[5] == 'x' && dst[6] == '<' && dst[dst.size - 1] == '>' {
-                if this.str_slice(dst, 7, dst.size - 1) == base { return true; }
+            if dst.__bytesize > 7 && dst[0] == 'm' && dst[1] == 'a' && dst[2] == 't' && dst[3] == 'r' && dst[4] == 'i' && dst[5] == 'x' && dst[6] == '<' && dst[dst.__bytesize - 1] == '>' {
+                if this.str_slice(dst, 7, dst.__bytesize - 1) == base { return true; }
             }
             if dst == "*" + base { return true; }
         }
@@ -4447,7 +4447,7 @@ pub def TypeChecker : class {
                 if cur == dst { return true; }
                 if !this.classes.isin(cur) { return false; }
                 par: string = this.classes[cur].parent;
-                if par.size == 0 { return false; }
+                if par.__bytesize == 0 { return false; }
                 cur = par;
                 hops = hops + 1;
             }
@@ -4462,14 +4462,14 @@ pub def TypeChecker : class {
             return false;
         }
         // generic class template -> any of its instantiations
-        if this.generic_classes.isin(src) && dst.size > src.size {
+        if this.generic_classes.isin(src) && dst.__bytesize > src.__bytesize {
             pref_ok: bool = true;
             pi: int = 0;
-            while pi < src.size {
+            while pi < src.__bytesize {
                 if dst[pi] != src[pi] { pref_ok = false; stop; }
                 pi = pi + 1;
             }
-            if pref_ok && (dst[src.size] == '_' || dst[src.size] == '<') { return true; }
+            if pref_ok && (dst[src.__bytesize] == '_' || dst[src.__bytesize] == '<') { return true; }
         }
         return false;
     }
@@ -4481,88 +4481,88 @@ pub def TypeChecker : class {
 
     pub fnc is_float_family(t string) : bool {
         if t == "float" { return true; }
-        return t.size > 6 && t[0] == 'f' && t[1] == 'l' && t[2] == 'o' && t[3] == 'a' && t[4] == 't' && t[5] == '<';
+        return t.__bytesize > 6 && t[0] == 'f' && t[1] == 'l' && t[2] == 'o' && t[3] == 'a' && t[4] == 't' && t[5] == '<';
     }
 
     // Known type names (Python E003 parity): unknown types like `int32`
     // are rejected instead of silently compiling to a fallback.
     pub fnc is_known_type(t string) : bool {
-        if t.size == 0 { return true; }
+        if t.__bytesize == 0 { return true; }
         tt: string = this.strip_imut(t);
         tt = this.resolve_type_alias(tt);
         if tt == "int" || tt == "uint" || tt == "float" || tt == "char" || tt == "bool" || tt == "string" || tt == "void" { return true; }
         // FFI conventions: macro-typed constants and pointer<T> spellings
         if tt == "macro" { return true; }
-        if tt.size > 9 && tt[0] == 'p' && tt[1] == 'o' && tt[2] == 'i' && tt[3] == 'n' && tt[4] == 't' && tt[5] == 'e' && tt[6] == 'r' && tt[7] == '<' && tt[tt.size - 1] == '>' {
+        if tt.__bytesize > 9 && tt[0] == 'p' && tt[1] == 'o' && tt[2] == 'i' && tt[3] == 'n' && tt[4] == 't' && tt[5] == 'e' && tt[6] == 'r' && tt[7] == '<' && tt[tt.__bytesize - 1] == '>' {
             return true;
         }
         if this.is_sized_int_type2(tt) { return true; }
-        if this.is_float_family(tt) && tt.size > 6 { return true; }
+        if this.is_float_family(tt) && tt.__bytesize > 6 { return true; }
         if this.is_vec_type2(tt) { return this.is_known_type(this.vec_inner_type2(tt)); }
-        if tt.size > 7 && tt[0] == 'm' && tt[1] == 'a' && tt[2] == 't' && tt[3] == 'r' && tt[4] == 'i' && tt[5] == 'x' && tt[6] == '<' && tt[tt.size - 1] == '>' {
-            return this.is_known_type(this.str_slice(tt, 7, tt.size - 1));
+        if tt.__bytesize > 7 && tt[0] == 'm' && tt[1] == 'a' && tt[2] == 't' && tt[3] == 'r' && tt[4] == 'i' && tt[5] == 'x' && tt[6] == '<' && tt[tt.__bytesize - 1] == '>' {
+            return this.is_known_type(this.str_slice(tt, 7, tt.__bytesize - 1));
         }
-        if tt.size > 6 && tt[0] == 'h' && tt[1] == 'a' && tt[2] == 's' && tt[3] == 'h' && tt[4] == '<' && tt[tt.size - 1] == '>' {
-            parts: vec<string> = this.split_commas(this.str_slice(tt, 5, tt.size - 1));
+        if tt.__bytesize > 6 && tt[0] == 'h' && tt[1] == 'a' && tt[2] == 's' && tt[3] == 'h' && tt[4] == '<' && tt[tt.__bytesize - 1] == '>' {
+            parts: vec<string> = this.split_commas(this.str_slice(tt, 5, tt.__bytesize - 1));
             foreach _, part in<vector> parts {
                 if !this.is_known_type(part) { return false; }
             }
             return true;
         }
-        if tt.size > 1 && (tt[0] == '*' || tt[0] == '&') {
-            return this.is_known_type(this.str_slice(tt, 1, tt.size));
+        if tt.__bytesize > 1 && (tt[0] == '*' || tt[0] == '&') {
+            return this.is_known_type(this.str_slice(tt, 1, tt.__bytesize));
         }
-        if tt.size > 8 && tt[0] == 'f' && tt[1] == 'u' && tt[2] == 't' && tt[3] == 'u' && tt[4] == 'r' && tt[5] == 'e' && tt[6] == '<' {
-            return this.is_known_type(this.str_slice(tt, 7, tt.size - 1));
+        if tt.__bytesize > 8 && tt[0] == 'f' && tt[1] == 'u' && tt[2] == 't' && tt[3] == 'u' && tt[4] == 'r' && tt[5] == 'e' && tt[6] == '<' {
+            return this.is_known_type(this.str_slice(tt, 7, tt.__bytesize - 1));
         }
         if this.is_fnc_type(tt) { return true; }
         if tt == "File" { return true; }
         if this.template_types.isin(tt) { return true; }
         // generic-class instantiation: Hash<string, int> -> known
-        if tt.size > 3 && tt[tt.size - 1] == '>' {
+        if tt.__bytesize > 3 && tt[tt.__bytesize - 1] == '>' {
             gbase: string = "";
             gi2: int = 0;
-            while gi2 < tt.size {
+            while gi2 < tt.__bytesize {
                 if tt[gi2] == '<' { gbase = this.str_slice(tt, 0, gi2); stop; }
                 gi2 = gi2 + 1;
             }
             if this.generic_classes.isin(gbase) { return true; }
         }
         // array suffixes: T[] and T[N]
-        if tt.size > 2 && tt[tt.size - 1] == ']' {
+        if tt.__bytesize > 2 && tt[tt.__bytesize - 1] == ']' {
             abase: string = "";
             abi2: int = 0;
-            while abi2 < tt.size && tt[abi2] != '[' {
+            while abi2 < tt.__bytesize && tt[abi2] != '[' {
                 abase = abase + tt[abi2];
                 abi2 = abi2 + 1;
             }
-            if abase.size > 0 { return this.is_known_type(abase); }
+            if abase.__bytesize > 0 { return this.is_known_type(abase); }
         }
         if this.structs.isin(tt) || this.classes.isin(tt) || this.enums.isin(tt) || this.unions.isin(tt) { return true; }
         if this.generic_classes.isin(tt) { return true; }
         // tuple types (a, b)
-        if tt.size >= 2 && tt[0] == '(' && tt[tt.size - 1] == ')' { return true; }
+        if tt.__bytesize >= 2 && tt[0] == '(' && tt[tt.__bytesize - 1] == ')' { return true; }
         return false;
     }
 
     pub fnc is_sized_int_type2(t string) : bool {
-        if t.size < 6 { return false; }
-        if t[t.size - 1] != '>' { return false; }
+        if t.__bytesize < 6 { return false; }
+        if t[t.__bytesize - 1] != '>' { return false; }
         if t[0] == 'i' && t[1] == 'n' && t[2] == 't' && t[3] == '<' { return true; }
         if t[0] == 'u' && t[1] == 'i' && t[2] == 'n' && t[3] == 't' && t[4] == '<' { return true; }
         return false;
     }
 
     pub fnc vec_inner_type2(t string) : string {
-        if t.size > 4 && t[0] == 'v' && t[1] == 'e' && t[2] == 'c' && t[3] == '<' {
-            return this.str_slice(t, 4, t.size - 1);
+        if t.__bytesize > 4 && t[0] == 'v' && t[1] == 'e' && t[2] == 'c' && t[3] == '<' {
+            return this.str_slice(t, 4, t.__bytesize - 1);
         }
         return t;
     }
 
     pub fnc is_vec_type2(t string) : bool {
-        if t.size < 6 { return false; }
-        return t[t.size - 1] == '>' && t[0] == 'v' && t[1] == 'e' && t[2] == 'c' && t[3] == '<';
+        if t.__bytesize < 6 { return false; }
+        return t[t.__bytesize - 1] == '>' && t[0] == 'v' && t[1] == 'e' && t[2] == 'c' && t[3] == '<';
     }
 
     // Resolve a type through the post-import alias table, then apply the
@@ -4645,7 +4645,7 @@ pub def TypeChecker : class {
         // Inheritance: prepend parent instance fields to each child's layout
         foreach _, c in<vector> prog.classes {
             c_info: ClassInfo = this.classes[c.name];
-            if c.parent.size > 0 && this.classes.isin(c.parent) {
+            if c.parent.__bytesize > 0 && this.classes.isin(c.parent) {
                 p_info: ClassInfo = this.classes[c.parent];
                 nn: vec<string>;
                 nt: vec<string>;
@@ -4657,7 +4657,7 @@ pub def TypeChecker : class {
                 c_info.field_types = nt;
             }
             // Virtual slot order: parent's non-static slots first, then own new
-            if c.parent.size > 0 && this.classes.isin(c.parent) {
+            if c.parent.__bytesize > 0 && this.classes.isin(c.parent) {
                 p_ord: vec<string> = this.classes[c.parent].method_order;
                 foreach _, pm in<vector> p_ord { c_info.method_order.pushb(pm); }
             }
@@ -4679,7 +4679,7 @@ pub def TypeChecker : class {
                 variant_names.pushb(v.name);
                 this.enum_consts.push(e.name + "::" + v.name, v.val);
                 if v.has_str { this.enum_str_consts.push(e.name + "::" + v.name, v.str_val); }
-                if v.typ.size > 0 { this.enum_member_types.push(e.name + "::" + v.name, v.typ); }
+                if v.typ.__bytesize > 0 { this.enum_member_types.push(e.name + "::" + v.name, v.typ); }
             }
             this.enum_names.push(e.name, variant_names);
             this.enum_counts.push(e.name, variant_names.size);
@@ -4714,7 +4714,7 @@ pub def TypeChecker : class {
                 }
                 if g_lit {
                     gvv: string = this.find_union_variant(g_ur, g.init_val);
-                    if gvv.size > 0 {
+                    if gvv.__bytesize > 0 {
                         this.global_union_active.push(g.name, gvv);
                         this.global_union_active_ty.push(g.name, g_ur);
                     }
@@ -4744,7 +4744,7 @@ pub def TypeChecker : class {
             if this.derive_generic_params(f) { continue; }
             // Unknown param/return types (Python M4 parity)
             ret_bare: string = this.strip_imut(f.ret_type);
-            if f.ret_type.size > 0 && ret_bare != "void" && !this.is_multi_type(f.ret_type) && !this.is_known_type(ret_bare) {
+            if f.ret_type.__bytesize > 0 && ret_bare != "void" && !this.is_multi_type(f.ret_type) && !this.is_known_type(ret_bare) {
                 this.errors.pushb("Function '" + f.name + "': return type '" + f.ret_type + "' is unknown");
             }
             foreach _, p in<vector> f.params {
@@ -4754,7 +4754,7 @@ pub def TypeChecker : class {
                 }
             }
             fkey: string = f.name;
-            if f.owner.size > 0 { fkey = f.owner + "_" + f.name; }
+            if f.owner.__bytesize > 0 { fkey = f.owner + "_" + f.name; }
             f_ret: string = this.resolve_type_alias(f.ret_type);
             if f.is_async { f_ret = "future<" + f.ret_type + ">"; }
             this.funcs.push(fkey, f_ret);
@@ -4797,7 +4797,7 @@ pub def TypeChecker : class {
             this.current_func_ret = this.resolve_type_alias(f.ret_type);
             this.in_unsafe_func = f.is_unsafe;
             fkey2: string = f.name;
-            if f.owner.size > 0 { fkey2 = f.owner + "_" + f.name; }
+            if f.owner.__bytesize > 0 { fkey2 = f.owner + "_" + f.name; }
             this.current_func_name = fkey2;
             this.enter_shared_scope(f);
             this.enter_scope();
@@ -4805,12 +4805,12 @@ pub def TypeChecker : class {
             // Register 'this' for struct-attached functions (`-> Type`):
             // the receiver is the struct instance (python parity — without
             // this, `this.field` inside a struct fnc inferred as int).
-            if f.owner.size > 0 && this.structs.isin(f.owner) {
+            if f.owner.__bytesize > 0 && this.structs.isin(f.owner) {
                 this.define_var("this", f.owner);
             }
             // Inside an opdef body, `this` is the receiver instance
             // (python current_opdef_type parity).
-            if f.opdef_type.size > 0 {
+            if f.opdef_type.__bytesize > 0 {
                 this.define_var("this", f.opdef_type);
             }
 
@@ -4840,14 +4840,14 @@ pub def TypeChecker : class {
                     pd_bare: string = this.strip_imut(this.resolve_type_alias(p.typ));
                     if !this.is_type_param(pd_bare) && !this.is_multi_type(p.typ) {
                         pd_t: string = this.infer_expr(p.default_val);
-                        if pd_t.size > 0 && pd_t != "nil" && !this.types_compatible(pd_t, pd_bare) {
+                        if pd_t.__bytesize > 0 && pd_t != "nil" && !this.types_compatible(pd_t, pd_bare) {
                             this.errors.pushb("Default value for parameter '" + p.name + "' has type '" + this.disp_type(pd_t) + "', but the parameter is declared '" + p.typ + "'.");
                         }
                     }
                 }
                 pbt: string = this.strip_imut(p.typ);
-                if p.typ.size > 0 && p.typ[0] != '&' && this.is_array_type(pbt)
-                   && !(pbt.size > 4 && pbt[0] == 'v' && pbt[1] == 'e' && pbt[2] == 'c' && pbt[3] == '<') {
+                if p.typ.__bytesize > 0 && p.typ[0] != '&' && this.is_array_type(pbt)
+                   && !(pbt.__bytesize > 4 && pbt[0] == 'v' && pbt[1] == 'e' && pbt[2] == 'c' && pbt[3] == '<') {
                     this.readonly_borrows.pushb(p.name);
                 }
             }
@@ -4859,7 +4859,7 @@ pub def TypeChecker : class {
 
             // Non-void functions must return on all paths (python parity).
             // External @from declarations have no body — exempt.
-            if f.ret_type.size > 0 && !f.is_external {
+            if f.ret_type.__bytesize > 0 && !f.is_external {
                 fret_bare: string = this.strip_imut(this.resolve_type_alias(f.ret_type));
                 if fret_bare != "void" && !this.stmt_list_returns(f.body) {
                     this.errors.pushb("Function '" + f.name + "' might not return a value on all paths.");
@@ -4903,7 +4903,7 @@ pub def TypeChecker : class {
                         md_bare: string = this.strip_imut(this.resolve_type_alias(p.typ));
                         if !this.is_type_param(md_bare) && !this.is_multi_type(p.typ) {
                             md_t: string = this.infer_expr(p.default_val);
-                            if md_t.size > 0 && md_t != "nil" && !this.types_compatible(md_t, md_bare) {
+                            if md_t.__bytesize > 0 && md_t != "nil" && !this.types_compatible(md_t, md_bare) {
                                 this.errors.pushb("Default value for parameter '" + p.name + "' has type '" + this.disp_type(md_t) + "', but the parameter is declared '" + p.typ + "'.");
                             }
                         }
@@ -4913,7 +4913,7 @@ pub def TypeChecker : class {
                     this.check_statement(stmt);
                 }
                 // Non-void methods must return on all paths (python parity).
-                if m.ret_type.size > 0 {
+                if m.ret_type.__bytesize > 0 {
                     mret_bare2: string = this.strip_imut(this.resolve_type_alias(m.ret_type));
                     if mret_bare2 != "void" && !this.stmt_list_returns(m.body) {
                         this.errors.pushb("Function '" + c.name + "_" + m.name + "' might not return a value on all paths.");
@@ -4946,7 +4946,7 @@ pub def TypeChecker : class {
         if this.inst_nodes.size > 0 {
             new_funcs: vec<FuncDecl>;
             foreach _, f in<vector> prog.funcs {
-                if f.owner.size == 0 && this.generic_funcs.isin(f.name) {
+                if f.owner.__bytesize == 0 && this.generic_funcs.isin(f.name) {
                     // top-level generic template: never emitted
                 } else {
                     new_funcs.pushb(f);

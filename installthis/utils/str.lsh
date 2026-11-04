@@ -6,7 +6,7 @@ pub def Str : class {
         foreach _, c in<string> str {
             _ = _ + 1 - 1;
             if c == deli {
-                if word.size > 0 {
+                if word.__bytesize > 0 {
                     out.pushb(word);
                     word = " " - " ";
                 }
@@ -15,7 +15,7 @@ pub def Str : class {
             }
         }
 
-        if word.size > 0 {
+        if word.__bytesize > 0 {
             out.pushb(word);
         }
         return out;
@@ -34,7 +34,7 @@ pub def Str : class {
         foreach _, c in<string> str {
             _ = _ + 1 - 1;
             if delis_c.isin(c) {
-                if word.size > 0 {
+                if word.__bytesize > 0 {
                     out.pushb(word);
                     word = " " - " ";
                 }
@@ -43,14 +43,14 @@ pub def Str : class {
             }
         }
 
-        if word.size > 0 {
+        if word.__bytesize > 0 {
             out.pushb(word);
         }
         return out;
     }
 
     static pub fnc starts(a string, b string) : bool {
-        if a.size < b.size {
+        if a.__bytesize < b.__bytesize {
             return false;
         }
 
@@ -64,12 +64,12 @@ pub def Str : class {
     }
 
     static pub fnc ends(a string, b string) : bool {
-        if a.size < b.size {
+        if a.__bytesize < b.__bytesize {
             return false;
         }
 
         foreach i, c in<string> b {
-            if c != a[a.size - b.size + i] {
+            if c != a[a.__bytesize - b.__bytesize + i] {
                 return false;
             }
         }
@@ -105,8 +105,8 @@ pub def Str : class {
 
     static pub fnc reversed(str string) : string {
         out: string;
-        for i: int = 0; i < str.size; i = i + 1 {
-            out = out + str[str.size - i - 1];
+        for i: int = 0; i < str.__bytesize; i = i + 1 {
+            out = out + str[str.__bytesize - i - 1];
         }
         return out;
     }
@@ -114,7 +114,7 @@ pub def Str : class {
     static pub fnc digit(txt string) : bool {
         result: bool = false;
         
-        if txt.size == 0 {
+        if txt.__bytesize == 0 {
             return result;
         }
 
@@ -133,7 +133,7 @@ pub def Str : class {
     static pub fnc alpha(txt string) : bool {
         result: bool = false;
         
-        if txt.size == 0 {
+        if txt.__bytesize == 0 {
             return result;
         }
 
@@ -152,7 +152,7 @@ pub def Str : class {
     static pub fnc alnum(txt string) : bool {
         result: bool = false;
         
-        if txt.size == 0 {
+        if txt.__bytesize == 0 {
             return result;
         }
 
@@ -171,7 +171,7 @@ pub def Str : class {
     static pub fnc ident(txt string) : bool {
         result: bool = false;
         
-        if txt.size == 0 {
+        if txt.__bytesize == 0 {
             return result;
         }
 

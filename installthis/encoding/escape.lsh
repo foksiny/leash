@@ -33,7 +33,7 @@ pub def Escape : class {
     static pub fnc unjson(s string) : string {
         out: string = "";
         i: int = 0;
-        n: int = s.size;
+        n: int = s.__bytesize;
         while i < n {
             c: char = s[i];
             if c == '\\' && i + 1 < n {

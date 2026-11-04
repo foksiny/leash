@@ -33,7 +33,7 @@ pub def Roman : class {
     static pub fnc from_roman(s string) : int {
         out: int = 0;
         i: int = 0;
-        n: int = s.size;
+        n: int = s.__bytesize;
         while i < n {
             v: int = Roman.val(s[i]);
             if v == 0 {

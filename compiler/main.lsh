@@ -8,14 +8,14 @@ use leashed::*;
 // Single source of truth for the release version. Bump discipline:
 // README, docs badges, CHANGELOG.
 fnc leash_version() : string {
-    return "1.6.1";
+    return "1.6.2";
 }
 
 // Prefix test (no stdlib dependency this early in main.lsh).
 fnc starts_with(s string, prefix string) : bool {
-    if prefix.size > s.size { return false; }
+    if prefix.__bytesize > s.__bytesize { return false; }
     i: int = 0;
-    while i < prefix.size {
+    while i < prefix.__bytesize {
         if s[i] != prefix[i] { return false; }
         i = i + 1;
     }
@@ -27,7 +27,7 @@ fnc xout(cmd string) : string {
     out: string = exec(cmd, "wait");
     trimmed: string = "";
     i: int = 0;
-    while i < out.size && out[i] != '\n' {
+    while i < out.__bytesize && out[i] != '\n' {
         trimmed = trimmed + out[i];
         i = i + 1;
     }
@@ -40,11 +40,11 @@ fnc xcode(cmd string) : int {
     v: int = 0;
     i: int = 0;
     neg: bool = false;
-    if out.size > 0 && out[0] == '-' {
+    if out.__bytesize > 0 && out[0] == '-' {
         neg = true;
         i = 1;
     }
-    while i < out.size && out[i] >= '0' && out[i] <= '9' {
+    while i < out.__bytesize && out[i] >= '0' && out[i] <= '9' {
         v = v * 10 + (out[i] - '0');
         i = i + 1;
     }
@@ -91,14 +91,14 @@ fnc xwrite_text(path string, content string) : bool {
 
 fnc xcopy_text(src string, dst string) : bool {
     c: string = xread_text(src);
-    if c.size == 0 { return false; }
+    if c.__bytesize == 0 { return false; }
     return xwrite_text(dst, c);
 }
 
 fnc xstrip_ws(s string) : string {
     a: int = 0;
-    while a < s.size && (s[a] == ' ' || s[a] == '\t' || s[a] == '\r') { a = a + 1; }
-    b: int = s.size;
+    while a < s.__bytesize && (s[a] == ' ' || s[a] == '\t' || s[a] == '\r') { a = a + 1; }
+    b: int = s.__bytesize;
     while b > a && (s[b - 1] == ' ' || s[b - 1] == '\t' || s[b - 1] == '\r') { b = b - 1; }
     out: string = "";
     i: int = a;
@@ -110,8 +110,8 @@ fnc xstrip_ws(s string) : string {
 }
 
 fnc xstrip_quotes(s string) : string {
-    if s.size >= 2 && s[0] == '"' && s[s.size - 1] == '"' {
-        return xstrip_ws2(s, 1, s.size - 1);
+    if s.__bytesize >= 2 && s[0] == '"' && s[s.__bytesize - 1] == '"' {
+        return xstrip_ws2(s, 1, s.__bytesize - 1);
     }
     return s;
 }
@@ -131,10 +131,10 @@ fnc xstrip_ws2(s string, a int, b int) : string {
 // Conservative containment for config.lshc values: no absolute paths and
 // no ".." segments (mirrors the Python toolchain's project-sandbox rules).
 fnc xpath_contained(p string) : bool {
-    if p.size > 0 && p[0] == '/' { return false; }
+    if p.__bytesize > 0 && p[0] == '/' { return false; }
     i: int = 0;
-    while i < p.size {
-        if p[i] == '.' && i + 1 < p.size && p[i + 1] == '.' { return false; }
+    while i < p.__bytesize {
+        if p[i] == '.' && i + 1 < p.__bytesize && p[i + 1] == '.' { return false; }
         i = i + 1;
     }
     return true;
@@ -148,47 +148,47 @@ fnc xpath_contained(p string) : bool {
 fnc parse_lshc(path string) : hash<string, string> {
     res: hash<string, string>;
     content: string = xread_text(path);
-    if content.size == 0 { return res; }
+    if content.__bytesize == 0 { return res; }
     line: string = "";
     i: int = 0;
-    while i <= content.size {
-        if i == content.size || content[i] == '\n' {
+    while i <= content.__bytesize {
+        if i == content.__bytesize || content[i] == '\n' {
             ln: string = xstrip_ws(line);
             line = "";
-            if ln.size > 0 && ln[0] != '#' {
+            if ln.__bytesize > 0 && ln[0] != '#' {
                 // cut a trailing comment (" #...")
                 ci: int = 0;
-                cut: int = ln.size;
-                while ci + 1 < ln.size {
+                cut: int = ln.__bytesize;
+                while ci + 1 < ln.__bytesize {
                     if ln[ci] == ' ' && ln[ci + 1] == '#' { cut = ci; stop; }
                     ci = ci + 1;
                 }
                 ln = xstrip_ws2(ln, 0, cut);
                 ci = 0;
-                while ci < ln.size {
+                while ci < ln.__bytesize {
                     if ln[ci] == ':' { stop; }
                     ci = ci + 1;
                 }
-                if ci > 0 && ci + 1 < ln.size {
+                if ci > 0 && ci + 1 < ln.__bytesize {
                     key: string = xstrip_ws2(ln, 0, ci);
-                    val: string = xstrip_ws2(ln, ci + 1, ln.size);
-                    if key.size > 0 && val.size > 0 {
+                    val: string = xstrip_ws2(ln, ci + 1, ln.__bytesize);
+                    if key.__bytesize > 0 && val.__bytesize > 0 {
                         if val[0] == '{' {
                             // dict value: collect keys ("clibs: {m: 1.0}")
                             keys: string = "";
                             di: int = 1;
                             part: string = "";
-                            while di < val.size {
+                            while di < val.__bytesize {
                                 c2: char = val[di];
                                 if c2 == ',' || c2 == '}' {
                                     ki: int = 0;
-                                    while ki < part.size {
+                                    while ki < part.__bytesize {
                                         if part[ki] == ':' { stop; }
                                         ki = ki + 1;
                                     }
                                     k2: string = xstrip_ws2(part, 0, ki);
-                                    if k2.size > 0 {
-                                        if keys.size > 0 { keys = keys + ","; }
+                                    if k2.__bytesize > 0 {
+                                        if keys.__bytesize > 0 { keys = keys + ","; }
                                         keys = keys + k2;
                                     }
                                     part = "";
@@ -230,11 +230,11 @@ fnc xrun(cmd string) : int {
     v: int = 0;
     i: int = 0;
     neg: bool = false;
-    if out.size > 0 && out[0] == '-' {
+    if out.__bytesize > 0 && out[0] == '-' {
         neg = true;
         i = 1;
     }
-    while i < out.size && out[i] >= '0' && out[i] <= '9' {
+    while i < out.__bytesize && out[i] >= '0' && out[i] <= '9' {
         v = v * 10 + (out[i] - '0');
         i = i + 1;
     }
@@ -395,7 +395,7 @@ fnc cmd_init(args string[]) : int {
     abs: string = xout("realpath -m " + dir);
     if xis_dir(abs) {
         first: string = xout("find " + abs + " -mindepth 1 -maxdepth 1 -print -quit");
-        if first.size > 0 {
+        if first.__bytesize > 0 {
             show("error: Directory '", abs, "' is not empty");
             return 1;
         }
@@ -440,7 +440,7 @@ fnc cmd_build(args string[]) : int {
     if project_config_and_main() != 0 { return 1; }
     cfg: hash<string, string> = parse_lshc("config.lshc");
 
-    if !cfg.isin("main") || cfg["main"].size == 0 {
+    if !cfg.isin("main") || cfg["main"].__bytesize == 0 {
         show("error: 'main' not set in config.lshc");
         return 1;
     }
@@ -455,15 +455,15 @@ fnc cmd_build(args string[]) : int {
     }
 
     opt_level: string = "2";
-    if cfg.isin("opt_level") && cfg["opt_level"].size > 0 {
+    if cfg.isin("opt_level") && cfg["opt_level"].__bytesize > 0 {
         opt_level = cfg["opt_level"];
         if opt_level[0] == 'O' {
-            opt_level = xstrip_ws2(opt_level, 1, opt_level.size);
+            opt_level = xstrip_ws2(opt_level, 1, opt_level.__bytesize);
         }
     }
 
     extra_dirs: vec<string>;
-    if cfg.isin("imports") && cfg["imports"].size > 0 {
+    if cfg.isin("imports") && cfg["imports"].__bytesize > 0 {
         imp: string = cfg["imports"];
         if !xpath_contained(imp) {
             show("error: 'imports' in config.lshc must stay inside the project directory (got '", imp, "')");
@@ -484,14 +484,14 @@ fnc cmd_build(args string[]) : int {
     }
 
     extra_libs: vec<string>;
-    if cfg.isin("clibs_keys") && cfg["clibs_keys"].size > 0 {
+    if cfg.isin("clibs_keys") && cfg["clibs_keys"].__bytesize > 0 {
         clibs: string = cfg["clibs_keys"];
         li: int = 0;
         part: string = "";
-        while li <= clibs.size {
-            if li == clibs.size || clibs[li] == ',' {
+        while li <= clibs.__bytesize {
+            if li == clibs.__bytesize || clibs[li] == ',' {
                 lib: string = xstrip_ws(part);
-                if lib.size > 0 { extra_libs.pushb(lib); }
+                if lib.__bytesize > 0 { extra_libs.pushb(lib); }
                 part = "";
             } else {
                 part = part + clibs[li];
@@ -501,7 +501,7 @@ fnc cmd_build(args string[]) : int {
     }
 
     out_base: string = Path.basename(xout("realpath ."));
-    if cfg.isin("out_name") && cfg["out_name"].size > 0 {
+    if cfg.isin("out_name") && cfg["out_name"].__bytesize > 0 {
         out_base = cfg["out_name"];
     }
     if !xpath_contained(out_base) {
@@ -549,7 +549,7 @@ fnc cmd_run(args string[]) : int {
             ri = ri + 2;
             continue;
         }
-        if args[ri].size > 0 && args[ri][0] == '-' {
+        if args[ri].__bytesize > 0 && args[ri][0] == '-' {
             ri = ri + 1;
             continue;
         }
@@ -568,7 +568,7 @@ fnc cmd_run(args string[]) : int {
     prog_args: string = "";
     pi: int = sep_idx + 1;
     while pi < args.size {
-        if prog_args.size > 0 { prog_args = prog_args + " "; }
+        if prog_args.__bytesize > 0 { prog_args = prog_args + " "; }
         prog_args = prog_args + args[pi];
         pi = pi + 1;
     }
@@ -601,8 +601,8 @@ fnc cmd_run(args string[]) : int {
             oi = oi + 2;
             continue;
         }
-        if a.size > 2 && a[0] == '-' && a[1] == 'O' {
-            opt_level = xstrip_ws2(a, 2, a.size);
+        if a.__bytesize > 2 && a[0] == '-' && a[1] == 'O' {
+            opt_level = xstrip_ws2(a, 2, a.__bytesize);
             oi = oi + 1;
             continue;
         }
@@ -614,11 +614,11 @@ fnc cmd_run(args string[]) : int {
         oi = oi + 1;
     }
 
-    if operand.size == 0 {
+    if operand.__bytesize == 0 {
         // project mode: build config.lshc's main to a temp binary and run it
         if project_config_and_main() != 0 { return 1; }
         cfg: hash<string, string> = parse_lshc("config.lshc");
-        if !cfg.isin("main") || cfg["main"].size == 0 {
+        if !cfg.isin("main") || cfg["main"].__bytesize == 0 {
             show("error: 'main' not set in config.lshc");
             return 1;
         }
@@ -627,23 +627,23 @@ fnc cmd_run(args string[]) : int {
             show("error: Main file '", main_rel, "' not found");
             return 1;
         }
-        if cfg.isin("imports") && cfg["imports"].size > 0 && xis_dir(cfg["imports"]) {
+        if cfg.isin("imports") && cfg["imports"].__bytesize > 0 && xis_dir(cfg["imports"]) {
             extra_dirs.pushb(xout("realpath " + cfg["imports"]));
         }
         p_opt: string = "2";
-        if cfg.isin("opt_level") && cfg["opt_level"].size > 0 {
+        if cfg.isin("opt_level") && cfg["opt_level"].__bytesize > 0 {
             p_opt = cfg["opt_level"];
-            if p_opt[0] == 'O' { p_opt = xstrip_ws2(p_opt, 1, p_opt.size); }
+            if p_opt[0] == 'O' { p_opt = xstrip_ws2(p_opt, 1, p_opt.__bytesize); }
         }
         extra_libs: vec<string>;
-        if cfg.isin("clibs_keys") && cfg["clibs_keys"].size > 0 {
+        if cfg.isin("clibs_keys") && cfg["clibs_keys"].__bytesize > 0 {
             clibs: string = cfg["clibs_keys"];
             li: int = 0;
             part: string = "";
-            while li <= clibs.size {
-                if li == clibs.size || clibs[li] == ',' {
+            while li <= clibs.__bytesize {
+                if li == clibs.__bytesize || clibs[li] == ',' {
                     lib: string = xstrip_ws(part);
-                    if lib.size > 0 { extra_libs.pushb(lib); }
+                    if lib.__bytesize > 0 { extra_libs.pushb(lib); }
                     part = "";
                 } else {
                     part = part + clibs[li];
@@ -721,16 +721,16 @@ fnc find_runtime_dir(argv0 string) : string {
     if xfile_exists("../leash/gc.c") { return "../leash"; }
     if xfile_exists("../gc.c") { return ".."; }
     rt_env: string = xout("printenv LEASH_RUNTIME");
-    if rt_env.size > 0 && xfile_exists(rt_env + "/gc.c") { return rt_env; }
+    if rt_env.__bytesize > 0 && xfile_exists(rt_env + "/gc.c") { return rt_env; }
     // Standard install root: a binary copied to an arbitrary PATH
     // directory still finds the runtime ~/.leash/leash.
     home_rt: string = xout("printenv HOME");
-    if home_rt.size == 0 { home_rt = xout("printenv USERPROFILE"); }
-    if home_rt.size > 0 && xfile_exists(home_rt + "/.leash/leash/gc.c") {
+    if home_rt.__bytesize == 0 { home_rt = xout("printenv USERPROFILE"); }
+    if home_rt.__bytesize > 0 && xfile_exists(home_rt + "/.leash/leash/gc.c") {
         return home_rt + "/.leash/leash";
     }
     self: string = Path.resolve_exe(argv0);
-    if self.size > 0 {
+    if self.__bytesize > 0 {
         exe_dir: string = Path.dirname(self);
         cand1: string = exe_dir + "/../leash";
         cand2: string = exe_dir + "/..";
@@ -750,14 +750,14 @@ fnc cmd_install(args string[]) : int {
         d: string = args[2];
         if d == "compiler" {
             root: string = find_repo_root(Path.dirname(xout("realpath " + args[0])));
-            if root.size == 0 && xfile_exists("compiler/main.lsh") { root = xout("realpath ."); }
-            if root.size > 0 { d = root + "/compiler"; }
+            if root.__bytesize == 0 && xfile_exists("compiler/main.lsh") { root = xout("realpath ."); }
+            if root.__bytesize > 0 { d = root + "/compiler"; }
         }
         abs: string = xout("realpath -m " + d);
         if xis_dir(abs) && xfile_exists(abs + "/config.lshc") {
             show("Installing from ", abs, " ...");
             self: string = Path.resolve_exe(args[0]);
-            if self.size == 0 {
+            if self.__bytesize == 0 {
                 show("error: cannot resolve the running executable ('", args[0], "').");
                 show("       Invoke it by path, e.g. ./leashc install <dir>, or put it on PATH.");
                 return 1;
@@ -826,17 +826,17 @@ fnc host_is_windows() : bool {
 
 fnc leash_bin_dir() : string {
     home: string = xout("echo $HOME");
-    if home.size == 0 { return ""; }
+    if home.__bytesize == 0 { return ""; }
     return home + "/.leash/bin";
 }
 
 // Binary entry names double as file names: no dots, slashes or spaces.
 fnc valid_bin_name(n string) : bool {
-    if n.size == 0 { return false; }
+    if n.__bytesize == 0 { return false; }
     c0: char = n[0];
     if !((c0 >= 'a' && c0 <= 'z') || (c0 >= 'A' && c0 <= 'Z') || c0 == '_') { return false; }
     i: int = 1;
-    while i < n.size {
+    while i < n.__bytesize {
         c: char = n[i];
         if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-') { return false; }
         i = i + 1;
@@ -847,7 +847,7 @@ fnc valid_bin_name(n string) : bool {
 fnc str_lower_ascii(s string) : string {
     out: string = "";
     i: int = 0;
-    while i < s.size {
+    while i < s.__bytesize {
         ch: char = s[i];
         if ch >= 'A' && ch <= 'Z' { ch = (char)(ch + 32); }
         out = out + ch;
@@ -862,8 +862,8 @@ fnc str_lower_ascii(s string) : string {
 fnc parse_global_install(raw string) : vec<string> {
     out: vec<string>;
     s: string = xstrip_ws(raw);
-    if s.size < 2 || s[0] != '{' { return out; }
-    end: int = s.size - 1;
+    if s.__bytesize < 2 || s[0] != '{' { return out; }
+    end: int = s.__bytesize - 1;
     while end > 0 && s[end] != '}' { end = end - 1; }
     if end <= 1 { return out; }
     parts: vec<string>;
@@ -884,23 +884,23 @@ fnc parse_global_install(raw string) : vec<string> {
     parts.pushb(part);
     foreach _, p in<vector> parts {
         pp: string = xstrip_ws(p);
-        if pp.size == 0 { continue; }
+        if pp.__bytesize == 0 { continue; }
         // split on the first ':' outside quotes
         ci: int = 0;
         q2: bool = false;
-        while ci < pp.size {
+        while ci < pp.__bytesize {
             cc: char = pp[ci];
             if cc == '"' { q2 = !q2; }
             also cc == ':' && !q2 { stop; }
             ci = ci + 1;
         }
-        if ci >= pp.size {
+        if ci >= pp.__bytesize {
             show("warning: skipping malformed global_install entry '", pp, "' (expected name: src)");
             continue;
         }
         nm: string = xstrip_quotes(xstrip_ws2(pp, 0, ci));
-        src: string = xstrip_quotes(xstrip_ws2(pp, ci + 1, pp.size));
-        if nm.size == 0 || src.size == 0 {
+        src: string = xstrip_quotes(xstrip_ws2(pp, ci + 1, pp.__bytesize));
+        if nm.__bytesize == 0 || src.__bytesize == 0 {
             show("warning: skipping malformed global_install entry '", pp, "' (expected name: src)");
             continue;
         }
@@ -921,7 +921,7 @@ fnc bin_dir_on_path(bindir string, windows bool) : bool {
         pv2: string = xout("echo %PATH%");
         has_dollar: bool = false;
         pi: int = 0;
-        while pi < pv.size {
+        while pi < pv.__bytesize {
             if pv[pi] == '$' { has_dollar = true; }
             pi = pi + 1;
         }
@@ -930,32 +930,32 @@ fnc bin_dir_on_path(bindir string, windows bool) : bool {
     sep: char = ':';
     if windows { sep = ';'; }
     home: string = xout("printenv HOME");
-    if home.size == 0 { home = xout("printenv USERPROFILE"); }
+    if home.__bytesize == 0 { home = xout("printenv USERPROFILE"); }
     cur: string = "";
     si: int = 0;
-    while si <= pv.size {
+    while si <= pv.__bytesize {
         c: char = ';';
-        if si < pv.size { c = pv[si]; }
-        if c == sep || si == pv.size {
+        if si < pv.__bytesize { c = pv[si]; }
+        if c == sep || si == pv.__bytesize {
             a: string = xstrip_ws(cur);
             // Bash expands `~` when searching PATH but leaves it in the
             // value itself; expand it here so a PATH entry like
             // `~/.leash/bin` counts as the real directory.
-            if a.size > 0 && a[0] == '~' && home.size > 0 {
+            if a.__bytesize > 0 && a[0] == '~' && home.__bytesize > 0 {
                 rest: string = "";
                 ai: int = 1;
-                while ai < a.size {
+                while ai < a.__bytesize {
                     rest = rest + a[ai];
                     ai = ai + 1;
                 }
                 a = home + rest;
             }
-            while a.size > 0 && (a[a.size - 1] == '/' || a[a.size - 1] == '\\') {
-                a = xstrip_ws2(a, 0, a.size - 1);
+            while a.__bytesize > 0 && (a[a.__bytesize - 1] == '/' || a[a.__bytesize - 1] == '\\') {
+                a = xstrip_ws2(a, 0, a.__bytesize - 1);
             }
             b: string = bindir;
-            while b.size > 0 && (b[b.size - 1] == '/' || b[b.size - 1] == '\\') {
-                b = xstrip_ws2(b, 0, b.size - 1);
+            while b.__bytesize > 0 && (b[b.__bytesize - 1] == '/' || b[b.__bytesize - 1] == '\\') {
+                b = xstrip_ws2(b, 0, b.__bytesize - 1);
             }
             if windows {
                 if str_lower_ascii(a) == str_lower_ascii(b) { return true; }
@@ -976,7 +976,7 @@ fnc bin_dir_on_path(bindir string, windows bool) : bool {
 fnc cmd_install_global(args string[]) : int {
     if project_config_and_main() != 0 { return 1; }
     cfg: hash<string, string> = parse_lshc("config.lshc");
-    if !cfg.isin("global_install") || xstrip_ws(cfg["global_install"]).size == 0 {
+    if !cfg.isin("global_install") || xstrip_ws(cfg["global_install"]).__bytesize == 0 {
         show("error: no 'global_install' in config.lshc (single-line {name: src/main.lsh, ...})");
         return 1;
     }
@@ -987,7 +987,7 @@ fnc cmd_install_global(args string[]) : int {
     }
     ai0: int = 2;
     while ai0 < args.size {
-        if args[ai0].size > 0 && args[ai0][0] == '-' {
+        if args[ai0].__bytesize > 0 && args[ai0][0] == '-' {
             show("info: ignoring unknown option '", args[ai0], "'");
         }
         ai0 = ai0 + 1;
@@ -1015,21 +1015,21 @@ fnc cmd_install_global(args string[]) : int {
     sfx: string = "";
     if windows { sfx = ".exe"; }
     bindir: string = leash_bin_dir();
-    if bindir.size == 0 {
+    if bindir.__bytesize == 0 {
         show("error: cannot determine home directory (HOME is not set)");
         return 1;
     }
     exec("mkdir -p " + bindir, nil);
     // Project build settings mirror `build`.
     opt_level: string = "2";
-    if cfg.isin("opt_level") && cfg["opt_level"].size > 0 {
+    if cfg.isin("opt_level") && cfg["opt_level"].__bytesize > 0 {
         opt_level = cfg["opt_level"];
         if opt_level[0] == 'O' {
-            opt_level = xstrip_ws2(opt_level, 1, opt_level.size);
+            opt_level = xstrip_ws2(opt_level, 1, opt_level.__bytesize);
         }
     }
     extra_dirs: vec<string>;
-    if cfg.isin("imports") && cfg["imports"].size > 0 {
+    if cfg.isin("imports") && cfg["imports"].__bytesize > 0 {
         imp: string = cfg["imports"];
         if !xpath_contained(imp) {
             show("error: 'imports' in config.lshc must stay inside the project directory (got '", imp, "')");
@@ -1040,14 +1040,14 @@ fnc cmd_install_global(args string[]) : int {
         }
     }
     extra_libs: vec<string>;
-    if cfg.isin("clibs_keys") && cfg["clibs_keys"].size > 0 {
+    if cfg.isin("clibs_keys") && cfg["clibs_keys"].__bytesize > 0 {
         clibs: string = cfg["clibs_keys"];
         li: int = 0;
         part: string = "";
-        while li <= clibs.size {
-            if li == clibs.size || clibs[li] == ',' {
+        while li <= clibs.__bytesize {
+            if li == clibs.__bytesize || clibs[li] == ',' {
                 lib: string = xstrip_ws(part);
-                if lib.size > 0 { extra_libs.pushb(lib); }
+                if lib.__bytesize > 0 { extra_libs.pushb(lib); }
                 part = "";
             } else {
                 part = part + clibs[li];
@@ -1091,7 +1091,7 @@ fnc cmd_install_global(args string[]) : int {
     // into ~/.leash, where the driver's argv[0]-relative lookup finds
     // them (~/.leash/bin/../leash/gc.c).
     rt: string = find_runtime_dir(args[0]);
-    if rt.size == 0 {
+    if rt.__bytesize == 0 {
         show("warning: could not locate the Leash runtime (leash/gc.c) to install alongside the binaries.");
         show("         `leash run` will need a repository checkout nearby or LEASH_RUNTIME set.");
     } else {
@@ -1099,7 +1099,7 @@ fnc cmd_install_global(args string[]) : int {
         exec("mkdir -p " + home_rt, nil);
         src_real: string = xout("realpath " + rt);
         dst_real: string = xout("realpath " + home_rt);
-        if src_real.size > 0 && src_real == dst_real {
+        if src_real.__bytesize > 0 && src_real == dst_real {
             show("Leash runtime already installed -> ", home_rt);
         } else if xcode("cp -r " + rt + "/. " + home_rt + "/") == 0 {
             show("Installed the Leash runtime -> ", home_rt);
@@ -1113,22 +1113,22 @@ fnc cmd_install_global(args string[]) : int {
         root: string = "";
         if rt == "leash" {
             root = ".";
-        } else if rt.size > 6 && rt[rt.size - 6] == '/' {
+        } else if rt.__bytesize > 6 && rt[rt.__bytesize - 6] == '/' {
             tail: string = "";
-            ti: int = rt.size - 5;
-            while ti < rt.size {
+            ti: int = rt.__bytesize - 5;
+            while ti < rt.__bytesize {
                 tail = tail + rt[ti];
                 ti = ti + 1;
             }
             if tail == "leash" {
                 ti = 0;
-                while ti < rt.size - 6 {
+                while ti < rt.__bytesize - 6 {
                     root = root + rt[ti];
                     ti = ti + 1;
                 }
             }
         }
-        if root.size > 0 && xis_dir(root + "/installthis") {
+        if root.__bytesize > 0 && xis_dir(root + "/installthis") {
             libs: string = xout("echo $HOME") + "/.leash/libs";
             exec("mkdir -p " + libs, nil);
             if xcode("cp -r " + root + "/installthis/. " + libs + "/") == 0 {
@@ -1161,7 +1161,7 @@ fnc cmd_rm(args string[]) : int {
     ai: int = 2;
     while ai < args.size {
         a: string = args[ai];
-        if a.size > 0 && a[0] == '-' {
+        if a.__bytesize > 0 && a[0] == '-' {
             show("info: ignoring unknown option '", a, "'");
             ai = ai + 1;
             continue;
@@ -1169,8 +1169,8 @@ fnc cmd_rm(args string[]) : int {
         // A trailing .exe is convenience, not part of the name.
         n: string = a;
         ln: string = str_lower_ascii(n);
-        if ln.size > 4 && ln[ln.size - 4] == '.' && ln[ln.size - 3] == 'e' && ln[ln.size - 2] == 'x' && ln[ln.size - 1] == 'e' {
-            n = xstrip_ws2(n, 0, n.size - 4);
+        if ln.__bytesize > 4 && ln[ln.__bytesize - 4] == '.' && ln[ln.__bytesize - 3] == 'e' && ln[ln.__bytesize - 2] == 'x' && ln[ln.__bytesize - 1] == 'e' {
+            n = xstrip_ws2(n, 0, n.__bytesize - 4);
         }
         if !valid_bin_name(n) {
             show("error: invalid binary name '", a, "'");
@@ -1184,7 +1184,7 @@ fnc cmd_rm(args string[]) : int {
         return 1;
     }
     bindir: string = leash_bin_dir();
-    if bindir.size == 0 {
+    if bindir.__bytesize == 0 {
         show("error: cannot determine home directory (HOME is not set)");
         return 1;
     }
@@ -1216,7 +1216,7 @@ fnc cmd_rm(args string[]) : int {
     }
     ans: string = get("Remove these file(s)? [Y/n] ");
     norm: string = str_lower_ascii(xstrip_ws(ans));
-    if norm.size != 0 && norm != "y" && norm != "yes" {
+    if norm.__bytesize != 0 && norm != "y" && norm != "yes" {
         show("Cancelled.");
         return 0;
     }
@@ -1247,7 +1247,7 @@ fnc find_git_root(start_dir string) : string {
         }
         if cand == "/" || cand == "." { return ""; }
         cand = xout("realpath " + cand + "/..");
-        if cand.size == 0 { return ""; }
+        if cand.__bytesize == 0 { return ""; }
         hops = hops + 1;
     }
     return "";
@@ -1260,16 +1260,16 @@ fnc cmd_update(args string[]) : int {
     latest: string = xout("curl -s -m 10 https://api.github.com/repos/foksiny/leash/releases/latest");
     tag: string = "";
     ti: int = 0;
-    while ti + 9 < latest.size {
+    while ti + 9 < latest.__bytesize {
         if latest[ti] == '"' && latest[ti + 1] == 't' && latest[ti + 2] == 'a' && latest[ti + 3] == 'g' &&
            latest[ti + 4] == '_' && latest[ti + 5] == 'n' && latest[ti + 6] == 'a' && latest[ti + 7] == 'm' &&
            latest[ti + 8] == 'e' && latest[ti + 9] == '"' {
             // find "value"
             vi: int = ti + 10;
-            while vi < latest.size && latest[vi] != '"' { vi = vi + 1; }
+            while vi < latest.__bytesize && latest[vi] != '"' { vi = vi + 1; }
             vi = vi + 1;
             vstart: int = vi;
-            while vi < latest.size && latest[vi] != '"' { vi = vi + 1; }
+            while vi < latest.__bytesize && latest[vi] != '"' { vi = vi + 1; }
             if vi > vstart {
                 tag = xstrip_ws2(latest, vstart, vi);
             }
@@ -1277,7 +1277,7 @@ fnc cmd_update(args string[]) : int {
         }
         ti = ti + 1;
     }
-    if tag.size > 0 {
+    if tag.__bytesize > 0 {
         show("Latest remote version: ", tag);
     } else {
         show("Could not fetch latest version from GitHub");
@@ -1286,15 +1286,15 @@ fnc cmd_update(args string[]) : int {
     show("");
     show("Pulling latest changes from GitHub...");
     root: string = find_git_root(Path.dirname(xout("realpath " + args[0])));
-    if root.size == 0 && xis_dir(".git") { root = xout("realpath ."); }
-    if root.size == 0 {
+    if root.__bytesize == 0 && xis_dir(".git") { root = xout("realpath ."); }
+    if root.__bytesize == 0 {
         show("error: Leash is not installed from a git checkout; cannot self-update via git pull.");
         return 1;
     }
     // Never pull attacker code: the origin must be the Leash repository
     // (same rule as the Python toolchain), and merges are off-limits.
     origin: string = xout("git -C " + root + " remote get-url origin");
-    oi: int = origin.size;
+    oi: int = origin.__bytesize;
     while oi > 0 {
         oc: char = origin[oi - 1];
         if oc != ' ' && oc != '\t' && oc != '\r' && oc != '\n' { stop; }
@@ -1306,7 +1306,7 @@ fnc cmd_update(args string[]) : int {
         origin_trimmed = origin_trimmed + origin[tri];
         tri = tri + 1;
     }
-    if origin_trimmed.size == 0 {
+    if origin_trimmed.__bytesize == 0 {
         show("error: refusing to self-update: no 'origin' remote found.");
         return 1;
     }
@@ -1322,7 +1322,7 @@ fnc cmd_update(args string[]) : int {
         return pull_rc;
     }
     after: string = xout("git -C " + root + " rev-parse HEAD");
-    if after.size > 0 && after == before {
+    if after.__bytesize > 0 && after == before {
         show("Already up to date.");
         return 0;
     }
@@ -1346,7 +1346,7 @@ fnc find_repo_root(start_dir string) : string {
         }
         if cand == "/" || cand == "." { return ""; }
         cand = xout("realpath " + cand + "/..");
-        if cand.size == 0 { return ""; }
+        if cand.__bytesize == 0 { return ""; }
         hops = hops + 1;
     }
     return "";
@@ -1354,8 +1354,8 @@ fnc find_repo_root(start_dir string) : string {
 
 fnc cmd_self_host(args string[]) : int {
     root: string = find_repo_root(Path.dirname(xout("realpath " + args[0])));
-    if root.size == 0 && xfile_exists("compiler/main.lsh") { root = xout("realpath ."); }
-    if root.size == 0 {
+    if root.__bytesize == 0 && xfile_exists("compiler/main.lsh") { root = xout("realpath ."); }
+    if root.__bytesize == 0 {
         show("error: self-host needs a repository checkout (compiler/main.lsh not found)");
         return 1;
     }
@@ -1364,9 +1364,9 @@ fnc cmd_self_host(args string[]) : int {
     // Python-free stage 0: seed from the installed self-hosted binary, or
     // from the checked-in bootstrap compiler when bin/leashc is missing.
     seed: string = root + "/bin/leashc";
-    if !xfile_exists(seed) { seed = root + "/bootstrap/leash-1.6.1-target-x86_64"; }
+    if !xfile_exists(seed) { seed = root + "/bootstrap/leash-1.6.2-target-x86_64"; }
     if !xfile_exists(seed) {
-        show("error: no seed compiler found (need bin/leashc or bootstrap/leash-1.6.1-target-x86_64)");
+        show("error: no seed compiler found (need bin/leashc or bootstrap/leash-1.6.2-target-x86_64)");
         return 1;
     }
     show("[self-host] Stage 0: seeding bin/leashc_stage1 from ", seed);
@@ -1426,7 +1426,7 @@ fnc cmd_dbg(args string[]) : int {
     prog_args: string = "";
     pi: int = sep_idx + 1;
     while pi < args.size {
-        if prog_args.size > 0 { prog_args = prog_args + " "; }
+        if prog_args.__bytesize > 0 { prog_args = prog_args + " "; }
         prog_args = prog_args + args[pi];
         pi = pi + 1;
     }
@@ -1435,7 +1435,7 @@ fnc cmd_dbg(args string[]) : int {
     while i < sep_idx {
         a: string = args[i];
         if (a == "-b" || a == "--break") && i + 1 < sep_idx {
-            if breaks.size > 0 { breaks = breaks + ","; }
+            if breaks.__bytesize > 0 { breaks = breaks + ","; }
             breaks = breaks + args[i + 1];
             i = i + 2;
             continue;
@@ -1450,8 +1450,8 @@ fnc cmd_dbg(args string[]) : int {
             i = i + 2;
             continue;
         }
-        if a.size > 2 && a[0] == '-' && a[1] == 'O' {
-            opt_level = xstrip_ws2(a, 2, a.size);
+        if a.__bytesize > 2 && a[0] == '-' && a[1] == 'O' {
+            opt_level = xstrip_ws2(a, 2, a.__bytesize);
             i = i + 1;
             continue;
         }
@@ -1460,22 +1460,22 @@ fnc cmd_dbg(args string[]) : int {
             i = i + 2;
             continue;
         }
-        if a.size > 0 && a[0] != '-' && target_file.size == 0 {
+        if a.__bytesize > 0 && a[0] != '-' && target_file.__bytesize == 0 {
             target_file = a;
         }
         i = i + 1;
     }
 
-    if target_file.size == 0 {
+    if target_file.__bytesize == 0 {
         // project mode: the main file from config.lshc
         if project_config_and_main() != 0 { return 1; }
         cfg: hash<string, string> = parse_lshc("config.lshc");
-        if !cfg.isin("main") || cfg["main"].size == 0 {
+        if !cfg.isin("main") || cfg["main"].__bytesize == 0 {
             show("error: 'main' not set in config.lshc");
             return 1;
         }
         target_file = cfg["main"];
-        if cfg.isin("imports") && cfg["imports"].size > 0 && xis_dir(cfg["imports"]) {
+        if cfg.isin("imports") && cfg["imports"].__bytesize > 0 && xis_dir(cfg["imports"]) {
             extra_dirs.pushb(xout("realpath " + cfg["imports"]));
         }
     }
@@ -1508,7 +1508,7 @@ fnc cmd_dbg(args string[]) : int {
     show("--- Debug session for '", Path.basename(abs), "' (leash dbg) ---");
     show("    commands: s/next, c/continue, b <line>, d <line>, l/list, q/quit");
     dbg_cmd: string = env + " ./" + tmp;
-    if prog_args.size > 0 {
+    if prog_args.__bytesize > 0 {
         dbg_cmd = dbg_cmd + " " + prog_args;
     }
     rc2: int = xrun(dbg_cmd);
@@ -1547,7 +1547,7 @@ fnc main(args string[]) : int {
         return 0;
     }
 
-    is_sh: bool = cmd.size > 4 && cmd[cmd.size - 4] == '.' && cmd[cmd.size - 3] == 'l' && cmd[cmd.size - 2] == 's' && cmd[cmd.size - 1] == 'h';
+    is_sh: bool = cmd.__bytesize > 4 && cmd[cmd.__bytesize - 4] == '.' && cmd[cmd.__bytesize - 3] == 'l' && cmd[cmd.__bytesize - 2] == 's' && cmd[cmd.__bytesize - 1] == 'h';
 
     if cmd == "compile" || cmd == "dump" || cmd == "check" || is_sh {
         in_idx: int = 2;
@@ -1638,10 +1638,10 @@ fnc main(args string[]) : int {
                     continue;
                 }
             }
-            if arg.size > 2 && arg[0] == '-' && arg[1] == 'l' {
+            if arg.__bytesize > 2 && arg[0] == '-' && arg[1] == 'l' {
                 lib: string = "";
                 bi: int = 2;
-                while bi < arg.size {
+                while bi < arg.__bytesize {
                     lib = lib + arg[bi];
                     bi = bi + 1;
                 }
@@ -1689,7 +1689,7 @@ fnc main(args string[]) : int {
                 i = i + 1;
                 continue;
             }
-            if arg.size > 0 && arg[0] == '-' {
+            if arg.__bytesize > 0 && arg[0] == '-' {
                 show("info: ignoring unknown option '", arg, "'");
                 i = i + 1;
                 continue;

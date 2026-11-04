@@ -4,7 +4,7 @@
 
 # Leash Programming Language
 
-**Version 1.6.1** — Leash compiles itself.
+**Version 1.6.2** — Leash compiles itself.
 
 Leash is a strongly-typed, modern compiled programming language built on LLVM. It features an intuitive syntax and native performance with a built-in garbage collector, package manager, and cross-platform support.
 
@@ -33,7 +33,7 @@ Output parity is enforced by a frozen corpus: **89/89 example programs compile a
 git clone https://github.com/foksiny/leash && cd leash
 ./scripts/bootstrap.sh     # seeds from bootstrap/, builds bin/leashc (Python-free)
 bin/leashc version
-# leash 1.6.1 (self-hosted)
+# leash 1.6.2 (self-hosted)
 ```
 
 The bootstrap compiles `compiler/*.lsh` and installs the resulting native compiler at `bin/leashc`. To install the toolchain globally — binaries into `~/.leash/bin`, plus the Leash runtime (`~/.leash/leash`) and the bundled standard library (`~/.leash/libs`) so `leash` / `leashc` work from any directory:
@@ -104,7 +104,7 @@ bin/leashc self-host   # 3-stage bootstrap + fixed-point check, installs bin/lea
 
 ## Known Limitations
 
-Leash 1.6.1 is a complete, self-hosted toolchain with no Python in the build or run path. The items below are the honest, currently-known limits of the platform &mdash; each is intentional and stable for 1.x.
+Leash 1.6.2 is a complete, self-hosted toolchain with no Python in the build or run path. The items below are the honest, currently-known limits of the platform &mdash; each is intentional and stable for 1.x.
 
 | Limitation | Severity | Comment |
 |------------|----------|---------|

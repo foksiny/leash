@@ -12,7 +12,7 @@ pub def Path : class {
     static pub fnc sh_out(cmd string) : string {
         out: string = exec(cmd, "wait");
         i: int = 0;
-        while i < out.size && out[i] != '\n' {
+        while i < out.__bytesize && out[i] != '\n' {
             i = i + 1;
         }
         trimmed: string = "";
@@ -40,12 +40,12 @@ pub def Path : class {
     // on a PATH containing `~/.leash/bin` even though the user's bash
     // finds the binary. Leading `~` in a PATH entry is expanded via HOME.
     static pub fnc resolve_exe(name string) : string {
-        if name.size == 0 {
+        if name.__bytesize == 0 {
             return "";
         }
         has_slash: bool = false;
         i: int = 0;
-        while i < name.size {
+        while i < name.__bytesize {
             if name[i] == '/' || name[i] == '\\' {
                 has_slash = true;
             }
@@ -53,7 +53,7 @@ pub def Path : class {
         }
         if has_slash {
             real: string = Path.sh_out("readlink -f " + name);
-            if real.size == 0 {
+            if real.__bytesize == 0 {
                 real = name;
             }
             if Path.exists(real) {
@@ -63,25 +63,25 @@ pub def Path : class {
         }
         pv: string = Path.sh_out("printenv PATH");
         home: string = Path.sh_out("printenv HOME");
-        if home.size == 0 {
+        if home.__bytesize == 0 {
             home = Path.sh_out("printenv USERPROFILE");
         }
         cur: string = "";
         i = 0;
-        while i <= pv.size {
+        while i <= pv.__bytesize {
             c: char = ':';
-            if i < pv.size {
+            if i < pv.__bytesize {
                 c = pv[i];
             }
-            if c == ':' || c == ';' || i == pv.size {
+            if c == ':' || c == ';' || i == pv.__bytesize {
                 entry: string = cur;
                 cur = "";
-                if entry.size > 0 {
+                if entry.__bytesize > 0 {
                     exp: string = entry;
-                    if exp[0] == '~' && home.size > 0 {
+                    if exp[0] == '~' && home.__bytesize > 0 {
                         rest: string = "";
                         j: int = 1;
-                        while j < exp.size {
+                        while j < exp.__bytesize {
                             rest = rest + exp[j];
                             j = j + 1;
                         }
@@ -90,7 +90,7 @@ pub def Path : class {
                     cand: string = exp + "/" + name;
                     if Path.exists(cand) {
                         real: string = Path.sh_out("readlink -f " + cand);
-                        if real.size == 0 {
+                        if real.__bytesize == 0 {
                             real = cand;
                         }
                         return real;
@@ -138,7 +138,7 @@ pub def Path : class {
         }
         out: string = "";
         idx: int = last_slash + 1;
-        while idx < p.size {
+        while idx < p.__bytesize {
             out = out + p[idx];
             idx = idx + 1;
         }
@@ -146,10 +146,10 @@ pub def Path : class {
     }
 
     static pub fnc strip_ext(p string) : string {
-        if p.size > 4 && p[p.size - 4] == '.' && p[p.size - 3] == 'l' && p[p.size - 2] == 's' && p[p.size - 1] == 'h' {
+        if p.__bytesize > 4 && p[p.__bytesize - 4] == '.' && p[p.__bytesize - 3] == 'l' && p[p.__bytesize - 2] == 's' && p[p.__bytesize - 1] == 'h' {
             out: string = "";
             idx: int = 0;
-            while idx < p.size - 4 {
+            while idx < p.__bytesize - 4 {
                 out = out + p[idx];
                 idx = idx + 1;
             }
@@ -189,7 +189,7 @@ pub def CompilerDriver : class {
     pub fnc str_slice(s string, a int, b int) : string {
         out: string = "";
         i: int = a;
-        while i < b && i < s.size {
+        while i < b && i < s.__bytesize {
             out = out + s[i];
             i = i + 1;
         }
@@ -200,7 +200,7 @@ pub def CompilerDriver : class {
         out: string = exec("echo $HOME", "wait");
         trimmed: string = "";
         ti: int = 0;
-        while ti < out.size && out[ti] != '\n' {
+        while ti < out.__bytesize && out[ti] != '\n' {
             trimmed = trimmed + out[ti];
             ti = ti + 1;
         }
@@ -211,11 +211,11 @@ pub def CompilerDriver : class {
         out: string = exec("realpath -m " + p, "wait");
         trimmed: string = "";
         ti: int = 0;
-        while ti < out.size && out[ti] != '\n' {
+        while ti < out.__bytesize && out[ti] != '\n' {
             trimmed = trimmed + out[ti];
             ti = ti + 1;
         }
-        if trimmed.size == 0 { return p; }
+        if trimmed.__bytesize == 0 { return p; }
         return trimmed;
     }
 
@@ -226,11 +226,11 @@ pub def CompilerDriver : class {
         cur_seg: string = "";
 
         i: int = 0;
-        while i < mod_path.size {
+        while i < mod_path.__bytesize {
             c: char = mod_path[i];
-            if c == ':' && i + 1 < mod_path.size && mod_path[i + 1] == ':' {
+            if c == ':' && i + 1 < mod_path.__bytesize && mod_path[i + 1] == ':' {
                 if cur_seg != "*" {
-                    if rel_path.size > 0 { rel_path = rel_path + "/"; }
+                    if rel_path.__bytesize > 0 { rel_path = rel_path + "/"; }
                     rel_path = rel_path + cur_seg;
                     last_seg = cur_seg;
                 }
@@ -241,8 +241,8 @@ pub def CompilerDriver : class {
             cur_seg = cur_seg + c;
             i = i + 1;
         }
-        if cur_seg != "*" && cur_seg.size > 0 {
-            if rel_path.size > 0 { rel_path = rel_path + "/"; }
+        if cur_seg != "*" && cur_seg.__bytesize > 0 {
+            if rel_path.__bytesize > 0 { rel_path = rel_path + "/"; }
             rel_path = rel_path + cur_seg;
             last_seg = cur_seg;
         }
@@ -272,7 +272,7 @@ pub def CompilerDriver : class {
         // direct paths first, then a recursive walk matching the module
         // name at any depth.
         home: string = this.home_dir();
-        if home.size > 0 {
+        if home.__bytesize > 0 {
             libs: string = home + "/.leash/libs";
             pg1: string = libs + "/" + rel_path + ".lsh";
             fg1: File = File.open(pg1, "r");
@@ -282,18 +282,18 @@ pub def CompilerDriver : class {
             fg2: File = File.open(pg2, "r");
             if fg2 != null { fg2.close(); return pg2; }
 
-            if last_seg.size > 0 {
+            if last_seg.__bytesize > 0 {
                 f_out: string = exec("find " + libs + " -type f -name '" + last_seg + ".lsh' 2>/dev/null", "wait");
                 f_count: int = 0;
                 f_first: string = "";
                 foi: int = 0;
-                while foi < f_out.size {
+                while foi < f_out.__bytesize {
                     f_ln: string = "";
-                    while foi < f_out.size && f_out[foi] != '\n' {
+                    while foi < f_out.__bytesize && f_out[foi] != '\n' {
                         f_ln = f_ln + f_out[foi];
                         foi = foi + 1;
                     }
-                    if f_ln.size > 0 {
+                    if f_ln.__bytesize > 0 {
                         f_count = f_count + 1;
                         if f_count == 1 { f_first = f_ln; }
                     }
@@ -315,8 +315,8 @@ pub def CompilerDriver : class {
 
     // Module path without a trailing `::*` wildcard, for diagnostics.
     pub fnc strip_wildcard(mod_path string) : string {
-        if mod_path.size > 3 && mod_path[mod_path.size - 1] == '*' && mod_path[mod_path.size - 2] == ':' && mod_path[mod_path.size - 3] == ':' {
-            return this.str_slice(mod_path, 0, mod_path.size - 3);
+        if mod_path.__bytesize > 3 && mod_path[mod_path.__bytesize - 1] == '*' && mod_path[mod_path.__bytesize - 2] == ':' && mod_path[mod_path.__bytesize - 3] == ':' {
+            return this.str_slice(mod_path, 0, mod_path.__bytesize - 3);
         }
         return mod_path;
     }
@@ -327,17 +327,17 @@ pub def CompilerDriver : class {
     pub fnc valid_module_path(imp string) : bool {
         seg: string = "";
         vi: int = 0;
-        while vi <= imp.size {
-            at_end: bool = vi == imp.size;
+        while vi <= imp.__bytesize {
+            at_end: bool = vi == imp.__bytesize;
             c: char = ':';
             if !at_end { c = imp[vi]; }
             // The `::*` wildcard tail is consumed by the parser's item
             // section (python strips it from the path): skip it here.
-            if c == ':' && vi + 1 < imp.size && imp[vi + 1] == '*' {
+            if c == ':' && vi + 1 < imp.__bytesize && imp[vi + 1] == '*' {
                 vi = vi + 2;
                 continue;
             }
-            if at_end || (c == ':' && vi + 1 < imp.size && imp[vi + 1] == ':') {
+            if at_end || (c == ':' && vi + 1 < imp.__bytesize && imp[vi + 1] == ':') {
                 // A bare "*" — the wildcard item (the parser consumes it
                 // as the item section's wildcard): valid, skip it.
                 if seg == "*" {
@@ -346,11 +346,11 @@ pub def CompilerDriver : class {
                     vi = vi + 1;
                     continue;
                 }
-                if seg.size == 0 { return false; }
+                if seg.__bytesize == 0 { return false; }
                 if seg == "." || seg == ".." { return false; }
                 if seg[0] >= '0' && seg[0] <= '9' { return false; }
                 si2: int = 0;
-                while si2 < seg.size {
+                while si2 < seg.__bytesize {
                     sc: char = seg[si2];
                     okc: bool = (sc >= 'a' && sc <= 'z') || (sc >= 'A' && sc <= 'Z') || (sc >= '0' && sc <= '9') || sc == '_';
                     if !okc { return false; }
@@ -378,7 +378,7 @@ pub def CompilerDriver : class {
                 return;
             }
             mod_file: string = this.find_module_file(imp, base_dir);
-            if mod_file.size == 0 {
+            if mod_file.__bytesize == 0 {
                 // The not-found/ambiguous message was printed by the
                 // resolver; the import failure is fatal (python raises)
                 this.imports_fatal = true;
@@ -394,7 +394,7 @@ pub def CompilerDriver : class {
             mod_lex: Lexer = Lexer.make(mod_code);
             mod_toks: vec<Token> = mod_lex.tokenize();
             if mod_lex.errs > 0 {
-                if mod_lex.err_msg.size > 0 {
+                if mod_lex.err_msg.__bytesize > 0 {
                     this.print_parse_error(mod_lex.err_msg, "", this.realpath_str(mod_file), mod_lex.err_line, mod_lex.err_col);
                 }
                 this.imports_fatal = true;
@@ -435,11 +435,11 @@ pub def CompilerDriver : class {
             foreach _, e in<vector> mod_prog.enums { prog.enums.pushb(e); }
             foreach _, u in<vector> mod_prog.unions { prog.unions.pushb(u); }
             foreach _, g in<vector> mod_prog.globals {
-                if alias_for_this.size > 0 { g.name = alias_for_this + "_" + g.name; }
+                if alias_for_this.__bytesize > 0 { g.name = alias_for_this + "_" + g.name; }
                 prog.globals.pushb(g);
             }
             foreach _, f in<vector> mod_prog.funcs {
-                if alias_for_this.size > 0 { f.name = alias_for_this + "_" + f.name; }
+                if alias_for_this.__bytesize > 0 { f.name = alias_for_this + "_" + f.name; }
                 prog.funcs.pushb(f);
             }
             // Macro definitions ride along too: the post-import
@@ -470,11 +470,11 @@ pub def CompilerDriver : class {
     pub fnc read_source_line(path string, line_no int) : string {
         if line_no < 1 { return ""; }
         content: string = this.read_file_string(path);
-        if content.size == 0 { return ""; }
+        if content.__bytesize == 0 { return ""; }
         cur: int = 1;
         start: int = 0;
         i: int = 0;
-        while i < content.size {
+        while i < content.__bytesize {
             if content[i] == '\n' {
                 if cur == line_no {
                     out: string = "";
@@ -490,7 +490,7 @@ pub def CompilerDriver : class {
         if cur == line_no {
             out: string = "";
             k: int = start;
-            while k < content.size { out = out + content[k]; k = k + 1; }
+            while k < content.__bytesize { out = out + content[k]; k = k + 1; }
             return out;
         }
         return "";
@@ -513,7 +513,7 @@ pub def CompilerDriver : class {
         show("  --> ", disp, ":", line_no, ":", col);
         pad: string = this.diag_pad(line_no);
         src_line: string = this.read_source_line(disp, line_no);
-        if src_line.size > 0 {
+        if src_line.__bytesize > 0 {
             show(pad, "|");
             show(line_no, " | ", src_line);
             cpad: string = "";
@@ -522,7 +522,7 @@ pub def CompilerDriver : class {
             show(pad, "| ", cpad, "^");
             show(pad, "|");
         }
-        if tip.size > 0 {
+        if tip.__bytesize > 0 {
             show(pad, "= tip: ", tip);
         }
     }
@@ -538,7 +538,7 @@ pub def CompilerDriver : class {
         show("  --> ", disp, ":", line_no, ":", pcol);
         pad: string = this.diag_pad(line_no);
         src_line: string = this.read_source_line(disp, line_no);
-        if src_line.size > 0 {
+        if src_line.__bytesize > 0 {
             show(pad, "|");
             show(line_no, " | ", src_line);
             cpad: string = "";
@@ -547,7 +547,7 @@ pub def CompilerDriver : class {
             show(pad, "| ", cpad, "^");
             show(pad, "|");
         }
-        if tip.size > 0 {
+        if tip.__bytesize > 0 {
             show(pad, "= tip: ", tip);
         }
     }
@@ -557,7 +557,7 @@ pub def CompilerDriver : class {
         show("  --> ", src, ":", line_no, ":", col, " [W_SECURITY]");
         pad: string = this.diag_pad(line_no);
         src_line: string = this.read_source_line(src, line_no);
-        if src_line.size > 0 {
+        if src_line.__bytesize > 0 {
             show(pad, "|");
             show(line_no, " | ", src_line);
             cpad: string = "";
@@ -566,7 +566,7 @@ pub def CompilerDriver : class {
             show(pad, "| ", cpad, "^");
             show(pad, "|");
         }
-        if tip.size > 0 {
+        if tip.__bytesize > 0 {
             show(pad, "= tip: ", tip);
         }
     }
@@ -598,16 +598,16 @@ pub def CompilerDriver : class {
 
             // Path sanity: relative, no '~', no '..' segments
             bad: bool = false;
-            if lib.size > 0 && (lib[0] == '/' || lib[0] == '~') { bad = true; }
+            if lib.__bytesize > 0 && (lib[0] == '/' || lib[0] == '~') { bad = true; }
             norm: string = "";
             bi: int = 0;
-            while bi < lib.size {
+            while bi < lib.__bytesize {
                 if lib[bi] == '\\' { norm = norm + "/"; } else { norm = norm + lib[bi]; }
                 bi = bi + 1;
             }
             seg: string = "";
             si: int = 0;
-            while si < norm.size {
+            while si < norm.__bytesize {
                 if norm[si] == '/' {
                     if seg == ".." { bad = true; }
                     seg = "";
@@ -619,11 +619,11 @@ pub def CompilerDriver : class {
             if seg == ".." { bad = true; }
 
             base_dir: string = Path.dirname(main_file);
-            if src.size > 0 { base_dir = Path.dirname(src); }
+            if src.__bytesize > 0 { base_dir = Path.dirname(src); }
             real_base: string = this.realpath_str(base_dir);
             // Diagnostics on the main file show the path as the user gave it
             disp: string = src;
-            if disp.size == 0 || disp == main_file { disp = input_file; }
+            if disp.__bytesize == 0 || disp == main_file { disp = input_file; }
 
             if bad {
                 this.print_sec_error(
@@ -643,21 +643,21 @@ pub def CompilerDriver : class {
                 cand: string = lib;
                 if ci > 0 { cand = lib + exts[ci - 1]; }
                 cand_path: string = cand;
-                if cand_path.size > 0 && cand_path[0] != '/' {
+                if cand_path.__bytesize > 0 && cand_path[0] != '/' {
                     cand_path = base_dir + "/" + cand_path;
                 }
                 if this.file_exists(cand_path) {
                     real_cand: string = this.realpath_str(cand_path);
                     if real_cand != real_base {
                         inside: bool = false;
-                        if real_cand.size > real_base.size {
+                        if real_cand.__bytesize > real_base.__bytesize {
                             pref_ok: bool = true;
                             ki: int = 0;
-                            while ki < real_base.size {
+                            while ki < real_base.__bytesize {
                                 if real_cand[ki] != real_base[ki] { pref_ok = false; }
                                 ki = ki + 1;
                             }
-                            if pref_ok && real_cand[real_base.size] == '/' { inside = true; }
+                            if pref_ok && real_cand[real_base.__bytesize] == '/' { inside = true; }
                         }
                         if !inside { escaped = true; }
                     }
@@ -679,7 +679,7 @@ pub def CompilerDriver : class {
             // there; the backend lowers them to bundled Java shims), so
             // the "links a native library" warning would be noise.
             if target_name == "jvm" { }
-            also src.size > 0 && src != main_file && !this.treat_from_safe {
+            also src.__bytesize > 0 && src != main_file && !this.treat_from_safe {
                 this.print_sec_warning(
                     "Security: imported module '" + Path.basename(src) + "' links native library '" + lib + "' into this build via @from — native libraries from dependencies run with your program's full privileges",
                     "Confirm the dependency is expected to ship a native library, or review/build it from source.",
@@ -699,7 +699,7 @@ pub def CompilerDriver : class {
     pub fnc fnv_str(s string) : int {
         h: int = -2128831035;
         i: int = 0;
-        while i < s.size {
+        while i < s.__bytesize {
             h = this.fnv_char(h, s[i]);
             i = i + 1;
         }
@@ -710,7 +710,7 @@ pub def CompilerDriver : class {
         h: int = -2128831035;
         foreach _, ln in<vector> lines {
             i: int = 0;
-            while i < ln.size {
+            while i < ln.__bytesize {
                 h = this.fnv_char(h, ln[i]);
                 i = i + 1;
             }
@@ -732,10 +732,10 @@ pub def CompilerDriver : class {
     // clang's `-o` truncate whatever the link points at, so a cloned repo
     // could clobber files outside it (python _safe_write_bytes parity).
     pub fnc refuse_symlink_output(p string) : bool {
-        if p.size == 0 { return false; }
+        if p.__bytesize == 0 { return false; }
         q: string = "'";
         qi: int = 0;
-        while qi < p.size {
+        while qi < p.__bytesize {
             if p[qi] == '\'' {
                 q = q + "'\\''";
             } else {
@@ -745,7 +745,7 @@ pub def CompilerDriver : class {
         }
         q = q + "'";
         hit: string = exec("test -L " + q + " && echo 1", "wait");
-        if hit.size > 0 {
+        if hit.__bytesize > 0 {
             show("error: refusing to write '", p, "': it is a symlink");
             return true;
         }
@@ -763,7 +763,7 @@ pub def CompilerDriver : class {
         }
         trimmed: string = "";
         i: int = 0;
-        while i < ec.size && ec[i] != '\n' {
+        while i < ec.__bytesize && ec[i] != '\n' {
             trimmed = trimmed + ec[i];
             i = i + 1;
         }
@@ -774,7 +774,7 @@ pub def CompilerDriver : class {
         out: string = exec(cmd, "wait");
         trimmed: string = "";
         i: int = 0;
-        while i < out.size && out[i] != '\n' {
+        while i < out.__bytesize && out[i] != '\n' {
             trimmed = trimmed + out[i];
             i = i + 1;
         }
@@ -785,14 +785,14 @@ pub def CompilerDriver : class {
     // win64 off-Windows, qemu-aarch64 for ARM64 off-ARM, hard error for
     // macOS. Returns the validated prefix, or "" on failure after printing.
     pub fnc cross_run_prefix(target_name string) : string {
-        if target_name.size == 0 || target_name == "linux64" || target_name == "linux32" {
+        if target_name.__bytesize == 0 || target_name == "linux64" || target_name == "linux32" {
             return "";
         }
         if target_name == "linux-arm" {
             if this.exec_out("uname -m") == "aarch64" {
                 return "";
             }
-            if this.exec_out("command -v qemu-aarch64").size == 0 {
+            if this.exec_out("command -v qemu-aarch64").__bytesize == 0 {
                 show("error: Cannot run linux-arm binary on a non-ARM host. Install qemu-user (qemu-aarch64) to execute ARM64 binaries.");
                 return "";
             }
@@ -802,7 +802,7 @@ pub def CompilerDriver : class {
             if this.exec_out("uname -m") != "x86_64" {
                 return "wine ";
             }
-            if this.exec_out("command -v wine").size == 0 {
+            if this.exec_out("command -v wine").__bytesize == 0 {
                 show("error: Cannot run win64 binary on non-Windows without wine");
                 return "";
             }
@@ -818,7 +818,7 @@ pub def CompilerDriver : class {
     pub fnc compile_file(input_file string, output_file string, emit_llvm bool, run_mode bool, run_args string, opt_level string, check_mode bool, extra_libs vec<string>, verbose bool, warn_err bool, debug_instrument bool, target_name string, no_gc bool, static_link bool, output_type string, autofree bool) : int {
         if verbose { show("[verbose] reading ", input_file); }
         source: string = this.read_file_string(input_file);
-        if source.size == 0 {
+        if source.__bytesize == 0 {
             if verbose { show("[verbose] empty or unreadable source — aborting"); }
             return 1;
         }
@@ -826,13 +826,13 @@ pub def CompilerDriver : class {
         base_dir: string = Path.dirname(input_file);
 
         // Lex
-        if verbose { show("[verbose] lexing (", tostring(source.size), " bytes)"); }
+        if verbose { show("[verbose] lexing (", tostring(source.__bytesize), " bytes)"); }
         lexer: Lexer = Lexer.make(source);
         tokens: vec<Token> = lexer.tokenize();
         if lexer.errs > 0 {
             // Fatal lex errors stop the compile before parsing (python's
             // lexer raises on the first one); render it with its location.
-            if lexer.err_msg.size > 0 {
+            if lexer.err_msg.__bytesize > 0 {
                 this.print_parse_error(lexer.err_msg, "", this.realpath_str(input_file), lexer.err_line, lexer.err_col);
             }
             return 1;
@@ -935,16 +935,16 @@ pub def CompilerDriver : class {
         if verbose { show("[verbose] generating LLVM IR"); }
         cg: CodeGen = CodeGen.make(tc);
         abs_file: string = exec("realpath " + input_file, "wait");
-        if abs_file.size > 0 {
+        if abs_file.__bytesize > 0 {
             trimmed: string = "";
             ai: int = 0;
-            while ai < abs_file.size && abs_file[ai] != '\n' {
+            while ai < abs_file.__bytesize && abs_file[ai] != '\n' {
                 trimmed = trimmed + abs_file[ai];
                 ai = ai + 1;
             }
-            if trimmed.size > 0 { cg.main_file = trimmed; }
+            if trimmed.__bytesize > 0 { cg.main_file = trimmed; }
         }
-        if cg.main_file.size == 0 {
+        if cg.main_file.__bytesize == 0 {
             cg.main_file = input_file;
         }
         cg.debug_instrument = debug_instrument;
@@ -960,7 +960,7 @@ pub def CompilerDriver : class {
         }
 
         out_bin: string = output_file;
-        if out_bin.size == 0 {
+        if out_bin.__bytesize == 0 {
             out_bin = Path.strip_ext(input_file);
         }
         if output_type != "" && output_type != "dynamic" && output_type != "static" {
@@ -981,11 +981,11 @@ pub def CompilerDriver : class {
                 if output_type == "static" { ext = ".a"; }
             }
             has_ext: bool = false;
-            if out_bin.size >= ext.size {
+            if out_bin.__bytesize >= ext.__bytesize {
                 tail_ok: bool = true;
                 ei: int = 0;
-                while ei < ext.size {
-                    if out_bin[out_bin.size - ext.size + ei] != ext[ei] { tail_ok = false; }
+                while ei < ext.__bytesize {
+                    if out_bin[out_bin.__bytesize - ext.__bytesize + ei] != ext[ei] { tail_ok = false; }
                     ei = ei + 1;
                 }
                 has_ext = tail_ok;
@@ -1038,10 +1038,10 @@ pub def CompilerDriver : class {
         nl_i: int = 0;
         foreach _, nlib in<vector> prog.native_libs {
             resolved: string = nlib;
-            if nlib.size > 0 && nlib[0] != '/' && nl_i < prog.native_lib_files.size {
+            if nlib.__bytesize > 0 && nlib[0] != '/' && nl_i < prog.native_lib_files.size {
                 nlib_dir: string = Path.dirname(prog.native_lib_files[nl_i]);
                 dot_i: int = -1;
-                di: int = nlib.size - 1;
+                di: int = nlib.__bytesize - 1;
                 while di >= 0 {
                     if nlib[di] == '.' { dot_i = di; stop; }
                     di = di - 1;
@@ -1060,9 +1060,9 @@ pub def CompilerDriver : class {
                     resolved = nlib_dir + "/" + nlib;
                 }
             }
-            if resolved.size > 3 && (resolved[resolved.size - 3] == '.' && resolved[resolved.size - 2] == 's' && resolved[resolved.size - 1] == 'o') {
+            if resolved.__bytesize > 3 && (resolved[resolved.__bytesize - 3] == '.' && resolved[resolved.__bytesize - 2] == 's' && resolved[resolved.__bytesize - 1] == 'o') {
                 lib_flags = lib_flags + " " + resolved;
-            } also resolved.size > 2 && resolved[resolved.size - 2] == '.' && resolved[resolved.size - 1] == 'a' {
+            } also resolved.__bytesize > 2 && resolved[resolved.__bytesize - 2] == '.' && resolved[resolved.__bytesize - 1] == 'a' {
                 lib_flags = lib_flags + " " + resolved;
             } else {
                 lib_flags = lib_flags + " -l" + resolved;
@@ -1109,14 +1109,14 @@ pub def CompilerDriver : class {
             rt_extra = rt_extra + " -DNO_GC";
         }
         if static_link {
-            if target_name.size > 0 && target_name != "linux64" && target_name != "linux32" {
+            if target_name.__bytesize > 0 && target_name != "linux64" && target_name != "linux32" {
                 show("error: --static is supported for linux64/linux32 only");
                 return 1;
             }
-            if this.exec_out("command -v musl-clang").size > 0 {
+            if this.exec_out("command -v musl-clang").__bytesize > 0 {
                 cc_bin = "musl-clang";
                 cc_flags = cc_flags + " -static";
-            } also this.exec_out("command -v musl-gcc").size > 0 {
+            } also this.exec_out("command -v musl-gcc").__bytesize > 0 {
                 cc_bin = "musl-gcc";
                 cc_flags = cc_flags + " -static";
             } else {
@@ -1126,9 +1126,9 @@ pub def CompilerDriver : class {
 
         // Windows output naming: out.exe (Python parity). Libraries
         // keep their own suffix (.dll/.lib from above, never .exe).
-        if is_win && out_bin.size > 4 && output_type != "dynamic" && output_type != "static" {
+        if is_win && out_bin.__bytesize > 4 && output_type != "dynamic" && output_type != "static" {
             win_sfx: bool = true;
-            wi: int = out_bin.size - 4;
+            wi: int = out_bin.__bytesize - 4;
             if out_bin[wi] == '.' && out_bin[wi + 1] == 'e' && out_bin[wi + 2] == 'x' && out_bin[wi + 3] == 'e' { win_sfx = false; }
             if win_sfx { out_bin = out_bin + ".exe"; }
         }
@@ -1165,7 +1165,7 @@ pub def CompilerDriver : class {
 
         home_dir: string = this.exec_out("echo $HOME");
         cache_dir: string = home_dir + "/.leash/shcache";
-        if home_dir.size > 0 {
+        if home_dir.__bytesize > 0 {
             exec("mkdir -p " + cache_dir, nil);
         }
 
@@ -1178,7 +1178,7 @@ pub def CompilerDriver : class {
         gc_path: string = "leash/gc.c";
         if !this.file_exists(gc_path) {
             rt_env: string = this.exec_out("printenv LEASH_RUNTIME");
-            if rt_env.size > 0 {
+            if rt_env.__bytesize > 0 {
                 env_cand: string = rt_env + "/gc.c";
                 if this.file_exists(env_cand) { gc_path = env_cand; }
             }
@@ -1187,17 +1187,17 @@ pub def CompilerDriver : class {
         // arbitrary PATH directory still finds the runtime ~/.leash/leash.
         if !this.file_exists(gc_path) {
             home_rt: string = this.exec_out("printenv HOME");
-            if home_rt.size == 0 {
+            if home_rt.__bytesize == 0 {
                 home_rt = this.exec_out("printenv USERPROFILE");
             }
-            if home_rt.size > 0 {
+            if home_rt.__bytesize > 0 {
                 home_cand: string = home_rt + "/.leash/leash/gc.c";
                 if this.file_exists(home_cand) { gc_path = home_cand; }
             }
         }
-        if !this.file_exists(gc_path) && this.self_path.size > 0 {
+        if !this.file_exists(gc_path) && this.self_path.__bytesize > 0 {
             abs_exe: string = Path.resolve_exe(this.self_path);
-            if abs_exe.size > 0 {
+            if abs_exe.__bytesize > 0 {
                 exe_dir: string = Path.dirname(abs_exe);
                 // dev build:  <repo>/bin/leashc         -> <repo>/leash/gc.c
                 // pip build:  <pkg>/leash/native/leashc  -> <pkg>/leash/gc.c
@@ -1218,7 +1218,7 @@ pub def CompilerDriver : class {
         // Runtime stubs live next to gc.c
         dir_part: string = "";
         di: int = 0;
-        while di < gc_path.size - 4 {
+        while di < gc_path.__bytesize - 4 {
             dir_part = dir_part + gc_path[di];
             di = di + 1;
         }
@@ -1230,7 +1230,7 @@ pub def CompilerDriver : class {
             stubs_path = "";
         }
 
-        use_cache: bool = home_dir.size > 0 && this.file_exists(cache_dir);
+        use_cache: bool = home_dir.__bytesize > 0 && this.file_exists(cache_dir);
 
         obj_path: string = "";
         runtime_objs: string = "";
@@ -1266,7 +1266,7 @@ pub def CompilerDriver : class {
             }
             runtime_objs = rt_gc;
 
-            if stubs_path.size > 0 {
+            if stubs_path.__bytesize > 0 {
                 stubs_tag: string = this.exec_out("stat -c '%s_%Y' " + stubs_path) + "|O2|fsections|" + cc_flags + "|" + rt_extra;
                 rt_stubs: string = cache_dir + "/rt" + tostring(this.fnv_str(stubs_tag)) + "_stubs.o";
                 if !this.file_exists(rt_stubs) {
@@ -1351,7 +1351,7 @@ pub def CompilerDriver : class {
                     cold_rt: string = "";
                     if target_name == "win64" {
                         cold_rt = gc_path;
-                        if stubs_path.size > 0 {
+                        if stubs_path.__bytesize > 0 {
                             cold_rt = cold_rt + " " + stubs_path;
                         }
                     }
@@ -1375,7 +1375,7 @@ pub def CompilerDriver : class {
                 return 0;
             }
             rt_files_cold: string = gc_path;
-            if stubs_path.size > 0 {
+            if stubs_path.__bytesize > 0 {
                 rt_files_cold = rt_files_cold + " " + stubs_path;
             }
             rsp_cold: string = "/tmp/leashc_" + Path.basename(out_bin) + ".rsp";
@@ -1401,10 +1401,10 @@ pub def CompilerDriver : class {
                     return 1;
                 }
                 run_cmd: string = out_bin;
-                if xpre.size == 0 && run_cmd.size > 0 && run_cmd[0] != '/' && run_cmd[0] != '.' {
+                if xpre.__bytesize == 0 && run_cmd.__bytesize > 0 && run_cmd[0] != '/' && run_cmd[0] != '.' {
                     run_cmd = "./" + run_cmd;
                 }
-                if run_args.size > 0 {
+                if run_args.__bytesize > 0 {
                     run_cmd = run_cmd + " " + run_args;
                 }
                 show("--- Executed at ", this.exec_out("date '+%Y-%m-%d %H:%M:%S'"), " ---");
@@ -1412,11 +1412,11 @@ pub def CompilerDriver : class {
                 rv0: int = 0;
                 p0: int = 0;
                 neg0: bool = false;
-                if rc_out0.size > 0 && rc_out0[0] == '-' {
+                if rc_out0.__bytesize > 0 && rc_out0[0] == '-' {
                     neg0 = true;
                     p0 = 1;
                 }
-                while p0 < rc_out0.size && rc_out0[p0] >= '0' && rc_out0[p0] <= '9' {
+                while p0 < rc_out0.__bytesize && rc_out0[p0] >= '0' && rc_out0[p0] <= '9' {
                     rv0 = rv0 * 10 + (rc_out0[p0] - '0');
                     p0 = p0 + 1;
                 }
@@ -1494,10 +1494,10 @@ pub def CompilerDriver : class {
                 return 1;
             }
             run_cmd: string = out_bin;
-            if xpre.size == 0 && run_cmd.size > 0 && run_cmd[0] != '/' && run_cmd[0] != '.' {
+            if xpre.__bytesize == 0 && run_cmd.__bytesize > 0 && run_cmd[0] != '/' && run_cmd[0] != '.' {
                 run_cmd = "./" + run_cmd;
             }
-            if run_args.size > 0 {
+            if run_args.__bytesize > 0 {
                 run_cmd = run_cmd + " " + run_args;
             }
             show("--- Executed at ", this.exec_out("date '+%Y-%m-%d %H:%M:%S'"), " ---");
@@ -1505,11 +1505,11 @@ pub def CompilerDriver : class {
             rv: int = 0;
             ri2: int = 0;
             rneg: bool = false;
-            if rc_out.size > 0 && rc_out[0] == '-' {
+            if rc_out.__bytesize > 0 && rc_out[0] == '-' {
                 rneg = true;
                 ri2 = 1;
             }
-            while ri2 < rc_out.size && rc_out[ri2] >= '0' && rc_out[ri2] <= '9' {
+            while ri2 < rc_out.__bytesize && rc_out[ri2] >= '0' && rc_out[ri2] <= '9' {
                 rv = rv * 10 + (rc_out[ri2] - '0');
                 ri2 = ri2 + 1;
             }
@@ -1532,11 +1532,11 @@ pub def CompilerDriver : class {
             return 1;
         }
         out_path: string = output_file;
-        if out_path.size == 0 {
+        if out_path.__bytesize == 0 {
             out_path = Path.strip_ext(input_file);
         }
         cls_name: string = this.jvm_class_name(Path.basename(out_path));
-        if cls_name.size == 0 { cls_name = "Main"; }
+        if cls_name.__bytesize == 0 { cls_name = "Main"; }
         dir: string = Path.dirname(out_path);
         class_path: string = dir + "/" + cls_name + ".class";
         cls: JvmClass = JvmClass.make(cls_name, "java/lang/Object");
@@ -1580,7 +1580,7 @@ pub def CompilerDriver : class {
         // to the output so `java -cp <dir>` resolves everything.
         if jg.used_shims.size > 0 {
             jvm_rt: string = this.find_jvm_runtime_dir();
-            if jvm_rt.size == 0 {
+            if jvm_rt.__bytesize == 0 {
                 show("error: cannot find the Leash JVM runtime (leash/jvm/)");
                 show("       run from the repository root, or install the leash package");
                 return 1;
@@ -1594,14 +1594,14 @@ pub def CompilerDriver : class {
             show("[leash] Compiled ", input_file, " -> ", class_path);
         }
         if run_mode {
-            if this.exec_out("command -v java").size == 0 {
+            if this.exec_out("command -v java").__bytesize == 0 {
                 show("error: 'java' not found on PATH (needed to run --target jvm programs)");
                 return 1;
             }
             absdir: string = this.realpath_str(dir);
-            if absdir.size == 0 { absdir = dir; }
+            if absdir.__bytesize == 0 { absdir = dir; }
             run_cmd: string = "java -cp " + absdir + " " + cls_name;
-            if run_args.size > 0 {
+            if run_args.__bytesize > 0 {
                 run_cmd = run_cmd + " " + run_args;
             }
             show("--- Executed at ", this.exec_out("date '+%Y-%m-%d %H:%M:%S'"), " ---");
@@ -1609,11 +1609,11 @@ pub def CompilerDriver : class {
             rv: int = 0;
             ri2: int = 0;
             rneg: bool = false;
-            if rc_out.size > 0 && rc_out[0] == '-' {
+            if rc_out.__bytesize > 0 && rc_out[0] == '-' {
                 rneg = true;
                 ri2 = 1;
             }
-            while ri2 < rc_out.size && rc_out[ri2] >= '0' && rc_out[ri2] <= '9' {
+            while ri2 < rc_out.__bytesize && rc_out[ri2] >= '0' && rc_out[ri2] <= '9' {
                 rv = rv * 10 + (rc_out[ri2] - '0');
                 ri2 = ri2 + 1;
             }
@@ -1631,21 +1631,21 @@ pub def CompilerDriver : class {
             return "leash/jvm";
         }
         rt_env: string = this.exec_out("printenv LEASH_RUNTIME");
-        if rt_env.size > 0 && this.file_exists(rt_env + "/jvm/LeashHttp.class") {
+        if rt_env.__bytesize > 0 && this.file_exists(rt_env + "/jvm/LeashHttp.class") {
             return rt_env + "/jvm";
         }
         // Standard install root (`leash install` puts the shims in
         // ~/.leash/leash/jvm).
         home_rt: string = this.exec_out("printenv HOME");
-        if home_rt.size == 0 {
+        if home_rt.__bytesize == 0 {
             home_rt = this.exec_out("printenv USERPROFILE");
         }
-        if home_rt.size > 0 && this.file_exists(home_rt + "/.leash/leash/jvm/LeashHttp.class") {
+        if home_rt.__bytesize > 0 && this.file_exists(home_rt + "/.leash/leash/jvm/LeashHttp.class") {
             return home_rt + "/.leash/leash/jvm";
         }
-        if this.self_path.size > 0 {
+        if this.self_path.__bytesize > 0 {
             abs_exe: string = Path.resolve_exe(this.self_path);
-            if abs_exe.size > 0 {
+            if abs_exe.__bytesize > 0 {
                 exe_dir: string = Path.dirname(abs_exe);
                 cand1: string = exe_dir + "/../leash/jvm";
                 cand2: string = exe_dir + "/../jvm";
@@ -1660,10 +1660,10 @@ pub def CompilerDriver : class {
 
     // Sanitize an output basename into a valid Java class name.
     pub fnc jvm_class_name(base string) : string {
-        if base.size > 6 && base[base.size - 6] == '.' && base[base.size - 5] == 'c' && base[base.size - 4] == 'l' && base[base.size - 3] == 'a' && base[base.size - 2] == 's' && base[base.size - 1] == 's' {
+        if base.__bytesize > 6 && base[base.__bytesize - 6] == '.' && base[base.__bytesize - 5] == 'c' && base[base.__bytesize - 4] == 'l' && base[base.__bytesize - 3] == 'a' && base[base.__bytesize - 2] == 's' && base[base.__bytesize - 1] == 's' {
             trimmed: string = "";
             ti: int = 0;
-            while ti < base.size - 6 {
+            while ti < base.__bytesize - 6 {
                 trimmed = trimmed + base[ti];
                 ti = ti + 1;
             }
@@ -1671,7 +1671,7 @@ pub def CompilerDriver : class {
         }
         out: string = "";
         i: int = 0;
-        while i < base.size {
+        while i < base.__bytesize {
             c: char = base[i];
             ok: bool = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c == '$';
             if i > 0 && c >= '0' && c <= '9' { ok = true; }
@@ -1682,7 +1682,7 @@ pub def CompilerDriver : class {
             }
             i = i + 1;
         }
-        if out.size > 0 && out[0] >= '0' && out[0] <= '9' {
+        if out.__bytesize > 0 && out[0] >= '0' && out[0] <= '9' {
             out = "_" + out;
         }
         return out;

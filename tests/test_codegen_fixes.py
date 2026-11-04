@@ -79,6 +79,44 @@ class TestExecOutput(_CompileRunBase):
         self.assertIn("B=%d" % len(expected), out)
 
 
+class TestStringSizeUnicode(_CompileRunBase):
+    """`string.size` counts code points; `.__bytesize` counts UTF-8 bytes."""
+
+    def test_size_counts_code_points_bytesize_counts_bytes(self):
+        out = self._compile_and_run(
+            'fnc main() : void {\n'
+            '    e: string = "é";\n'
+            '    euro: string = "€";\n'
+            '    emoji: string = "😀";\n'
+            '    mixed: string = "héllo wörld";\n'
+            '    show(e.size, ":", e.__bytesize);\n'
+            '    show(euro.size, ":", euro.__bytesize);\n'
+            '    show(emoji.size, ":", emoji.__bytesize);\n'
+            '    show(mixed.size, ":", mixed.__bytesize);\n'
+            '    show(e.size(), ":", e.__bytesize());\n'
+            '    show("".size, ":", "".__bytesize);\n'
+            '}\n'
+        )
+        self.assertEqual(
+            out.split("\n")[:6],
+            ["1:2", "1:3", "1:4", "11:13", "1:2", "0:0"],
+        )
+
+    def test_byte_indexing_still_walks_bytes(self):
+        out = self._compile_and_run(
+            'fnc main() : void {\n'
+            '    e: string = "é";\n'
+            '    n: int = 0;\n'
+            '    foreach _, c in<string> e { _ = _ + 1 - 1; n = n + 1; }\n'
+            '    show(n == e.__bytesize);\n'
+            '    show(e[0] == (char)0xC3);\n'
+            '    show(e[1] == (char)0xA9);\n'
+            '}\n'
+        )
+        self.assertIn("true", out)
+        self.assertEqual(out.split("\n")[:3], ["true", "true", "true"])
+
+
 class TestFileReplace(_CompileRunBase):
     def test_empty_old_is_noop_and_empty_new_deletes(self):
         with tempfile.TemporaryDirectory() as td:

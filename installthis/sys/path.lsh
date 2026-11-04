@@ -4,20 +4,20 @@ pub def Path : class {
     }
 
     static pub fnc join(a string, b string) : string {
-        if b.size > 0 && b[0] == '/' {
+        if b.__bytesize > 0 && b[0] == '/' {
             return b;
         }
-        if a.size == 0 {
+        if a.__bytesize == 0 {
             return b;
         }
-        if a[a.size - 1] == '/' {
+        if a[a.__bytesize - 1] == '/' {
             return a + b;
         }
         return a + "/" + b;
     }
 
     static pub fnc base_name(p string) : string {
-        end: int = p.size;
+        end: int = p.__bytesize;
         while end > 0 && p[end - 1] == '/' {
             end = end - 1;
         }
@@ -32,7 +32,7 @@ pub def Path : class {
     }
 
     static pub fnc dir_name(p string) : string {
-        end: int = p.size;
+        end: int = p.__bytesize;
         while end > 0 && p[end - 1] == '/' {
             end = end - 1;
         }
@@ -61,7 +61,7 @@ pub def Path : class {
         if dot <= 0 {
             return "";
         }
-        return Path.slice(base, dot, base.size);
+        return Path.slice(base, dot, base.__bytesize);
     }
 
     static pub fnc stem(p string) : string {
@@ -80,7 +80,7 @@ pub def Path : class {
     }
 
     static pub fnc is_absolute(p string) : bool {
-        return p.size > 0 && p[0] == '/';
+        return p.__bytesize > 0 && p[0] == '/';
     }
 
     static pub fnc normalize(p string) : string {
@@ -89,7 +89,7 @@ pub def Path : class {
         absolute: bool = Path.is_absolute(p);
         foreach _, c in<string> p {
             if c == '/' {
-                if cur.size > 0 {
+                if cur.__bytesize > 0 {
                     parts.pushb(cur);
                     cur = "";
                 }
@@ -97,7 +97,7 @@ pub def Path : class {
                 cur = cur + c;
             }
         }
-        if cur.size > 0 {
+        if cur.__bytesize > 0 {
             parts.pushb(cur);
         }
 
@@ -131,7 +131,7 @@ pub def Path : class {
             }
             oi = oi + 1;
         }
-        if res.size == 0 {
+        if res.__bytesize == 0 {
             return ".";
         }
         return res;
@@ -140,10 +140,10 @@ pub def Path : class {
 
     static pub fnc split_ext(p string) : (string, string) {
         e: string = Path.ext(p);
-        if e.size == 0 {
+        if e.__bytesize == 0 {
             return p, "";
         }
-        return Path.slice(p, 0, p.size - e.size), e;
+        return Path.slice(p, 0, p.__bytesize - e.__bytesize), e;
     }
 
     static priv fnc slice(s string, from int, to int) : string {

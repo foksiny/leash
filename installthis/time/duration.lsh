@@ -25,10 +25,10 @@ pub def Duration : class {
         if m > 0 {
             out = out + tostring(m) + "m ";
         }
-        if s > 0 || out.size == 0 {
+        if s > 0 || out.__bytesize == 0 {
             out = out + tostring(s) + "s";
         }
-        if out.size > 0 && out[out.size - 1] == ' ' {
+        if out.__bytesize > 0 && out[out.__bytesize - 1] == ' ' {
             out = Duration.trim_end(out);
         }
         return out;
@@ -47,7 +47,7 @@ pub def Duration : class {
     }
 
     static priv fnc trim_end(s string) : string {
-        n: int = s.size;
+        n: int = s.__bytesize;
         while n > 0 && s[n - 1] == ' ' {
             n = n - 1;
         }

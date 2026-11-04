@@ -5,6 +5,42 @@ All notable changes to the Leash compiler are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.6.2] - 2026-11-03
+
+### Changed
+- **`string.size` now counts Unicode code points, not UTF-8 bytes.**
+  `"é".size` is `1`, `"€".size` is `1`, `"😀".size` is `1`, and
+  `"héllo wörld".size` is `11`. Leash strings are stored as UTF-8 byte
+  sequences, so `.size` used to return the encoded byte length (2, 3, 4
+  and 13 for those examples): fine for byte-wise algorithms, wrong for
+  every user-visible length. Indexing (`s[i]`) and
+  `foreach ... in<string>` still walk bytes, exactly as before.
+- A new member, `.__bytesize`, returns the UTF-8 byte length. It is the
+  internal byte-oriented counterpart of `.size`: the compiler, the
+  native runtime and the bundled standard library use it wherever a byte
+  count or offset is required (lexing, slicing, hashing, files, buffers,
+  scanners), so their behaviour is unchanged. `.size` is now the
+  code-point count on every target; the JVM backend implements the same
+  rule with a generated `__utf8_size` helper over the byte-per-char
+  strings it emits.
+- `string.size()` (the method form) now returns the same `int` as the
+  property form. It previously emitted an `i64` where the backend
+  expected `i32` and failed at the LLVM stage.
+- The standard library keeps its old behaviour wherever it manipulates
+  bytes, so `installthis/` now calls `.__bytesize` in ~300 places
+  (lexing, slicing, hashing, files, buffers, scanners). Three helpers
+  deliberately measure *content* rather than bytes and keep `.size`, so
+  they now count code points: `utils::pad::Pad` (column padding),
+  `misc::table::Table` (column widths), and `text::count::Count.chars`.
+- Version bumped to 1.6.2; the cross-target bootstrap seeds are now
+  `bootstrap/leash-1.6.2-target-*` (`x86_64`, `x86`, `arm`, `win64`,
+  `java`).
+
+### Documentation
+- The language guide documents the new `.size` semantics and
+  `.__bytesize`, and the stdlib docs note that `Utf.length` matches
+  `.size` for well-formed UTF-8.
+
 ## [1.6.1] - 2026-10-21
 
 ### Added

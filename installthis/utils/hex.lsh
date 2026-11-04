@@ -33,7 +33,7 @@ pub def Hex : class {
     }
 
     static pub fnc valid(s string) : bool {
-        if s.size == 0 {
+        if s.__bytesize == 0 {
             return false;
         }
         foreach _, c in<string> s {
@@ -67,10 +67,10 @@ pub def Hex : class {
 
     static pub fnc to_bytes(s string) : vec<char> {
         out: vec<char>;
-        if s.size % 2 != 0 {
+        if s.__bytesize % 2 != 0 {
             return out;
         }
-        for i: int = 0; i < s.size; i = i + 2 {
+        for i: int = 0; i < s.__bytesize; i = i + 2 {
             hi: int = Hex.val(s[i]);
             lo: int = Hex.val(s[i + 1]);
             if hi < 0 || lo < 0 {
@@ -108,14 +108,14 @@ pub def Hex : class {
 
     static pub fnc from_int_pad(n int<64>, width int) : string {
         out: string = Hex.from_int(n);
-        while out.size < width {
+        while out.__bytesize < width {
             out = "0" + out;
         }
         return out;
     }
 
     static pub fnc to_int(s string) : int<64> {
-        if s.size == 0 {
+        if s.__bytesize == 0 {
             return -1;
         }
         neg: bool = false;
@@ -124,14 +124,14 @@ pub def Hex : class {
             neg = true;
             start = 1;
         }
-        if s.size - start >= 2 && s[start] == '0' && (s[start + 1] == 'x' || s[start + 1] == 'X') {
+        if s.__bytesize - start >= 2 && s[start] == '0' && (s[start + 1] == 'x' || s[start + 1] == 'X') {
             start = start + 2;
         }
-        if start >= s.size {
+        if start >= s.__bytesize {
             return -1;
         }
         n: int<64> = 0;
-        for i: int = start; i < s.size; i = i + 1 {
+        for i: int = start; i < s.__bytesize; i = i + 1 {
             d: int = Hex.val(s[i]);
             if d < 0 {
                 return -1;

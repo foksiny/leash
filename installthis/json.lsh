@@ -205,7 +205,7 @@ pub def JsonValue : class {
         if dot < 0 {
             return s;
         }
-        last: int<64> = s.size - 1;
+        last: int<64> = s.__bytesize - 1;
         while last > dot && s[last] == '0' {
             last = last - 1;
         }
@@ -312,7 +312,7 @@ pub def JsonParser : class {
     err: string;
 
     pub fnc skip_ws() : void {
-        while this.pos < this.text.size {
+        while this.pos < this.text.__bytesize {
             c: char = this.text[this.pos];
             if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
                 this.pos = this.pos + 1;
@@ -323,14 +323,14 @@ pub def JsonParser : class {
     }
 
     pub fnc peek() : char {
-        if this.pos < this.text.size {
+        if this.pos < this.text.__bytesize {
             return this.text[this.pos];
         }
         return '\0';
     }
 
     pub fnc peek_n(n int) : char {
-        if this.pos + n < this.text.size {
+        if this.pos + n < this.text.__bytesize {
             return this.text[this.pos + n];
         }
         return '\0';
@@ -347,18 +347,18 @@ pub def JsonParser : class {
 
     pub fnc expect(word string) : bool {
         w: int = 0;
-        while w < word.size {
-            if this.pos + w >= this.text.size || this.text[this.pos + w] != word[w] {
+        while w < word.__bytesize {
+            if this.pos + w >= this.text.__bytesize || this.text[this.pos + w] != word[w] {
                 return false;
             }
             w = w + 1;
         }
-        this.pos = this.pos + word.size;
+        this.pos = this.pos + word.__bytesize;
         return true;
     }
 
     pub fnc parse_value() : JsonValue {
-        if this.pos >= this.text.size {
+        if this.pos >= this.text.__bytesize {
             return JsonValue { ok: false, err: "json: unexpected end of input" };
         }
         c: char = this.text[this.pos];
@@ -405,14 +405,14 @@ pub def JsonParser : class {
     pub fnc parse_object() : JsonValue {
         this.pos = this.pos + 1;
         this.skip_ws();
-        if this.pos < this.text.size && this.text[this.pos] == '}' {
+        if this.pos < this.text.__bytesize && this.text[this.pos] == '}' {
             this.pos = this.pos + 1;
             return JsonValue { typ: JsonType::JOBJECT, ok: true };
         }
         obj: hash<string, JsonValue>;
-        while this.pos < this.text.size {
+        while this.pos < this.text.__bytesize {
             this.skip_ws();
-            if this.pos >= this.text.size || this.text[this.pos] != '"' {
+            if this.pos >= this.text.__bytesize || this.text[this.pos] != '"' {
                 return JsonValue { ok: false, err: "json: expected string key in object" };
             }
             key: string = this.parse_string();
@@ -420,7 +420,7 @@ pub def JsonParser : class {
                 return JsonValue { ok: false, err: this.err };
             }
             this.skip_ws();
-            if this.pos >= this.text.size || this.text[this.pos] != ':' {
+            if this.pos >= this.text.__bytesize || this.text[this.pos] != ':' {
                 return JsonValue { ok: false, err: "json: expected ':' after object key" };
             }
             this.pos = this.pos + 1;
@@ -431,9 +431,9 @@ pub def JsonParser : class {
             }
             obj.push(key, v);
             this.skip_ws();
-            if this.pos < this.text.size && this.text[this.pos] == ',' {
+            if this.pos < this.text.__bytesize && this.text[this.pos] == ',' {
                 this.pos = this.pos + 1;
-            } also this.pos < this.text.size && this.text[this.pos] == '}' {
+            } also this.pos < this.text.__bytesize && this.text[this.pos] == '}' {
                 this.pos = this.pos + 1;
                 return JsonValue { typ: JsonType::JOBJECT, obj: obj, ok: true };
             } else {
@@ -446,12 +446,12 @@ pub def JsonParser : class {
     pub fnc parse_array() : JsonValue {
         this.pos = this.pos + 1;
         this.skip_ws();
-        if this.pos < this.text.size && this.text[this.pos] == ']' {
+        if this.pos < this.text.__bytesize && this.text[this.pos] == ']' {
             this.pos = this.pos + 1;
             return JsonValue { typ: JsonType::JARRAY, ok: true };
         }
         arr: vec<JsonValue>;
-        while this.pos < this.text.size {
+        while this.pos < this.text.__bytesize {
             this.skip_ws();
             v: JsonValue = this.parse_value();
             if v.ok == false {
@@ -459,9 +459,9 @@ pub def JsonParser : class {
             }
             arr.pushb(v);
             this.skip_ws();
-            if this.pos < this.text.size && this.text[this.pos] == ',' {
+            if this.pos < this.text.__bytesize && this.text[this.pos] == ',' {
                 this.pos = this.pos + 1;
-            } also this.pos < this.text.size && this.text[this.pos] == ']' {
+            } also this.pos < this.text.__bytesize && this.text[this.pos] == ']' {
                 this.pos = this.pos + 1;
                 return JsonValue { typ: JsonType::JARRAY, arr: arr, ok: true };
             } else {
@@ -474,7 +474,7 @@ pub def JsonParser : class {
     pub fnc parse_string() : string {
         this.pos = this.pos + 1;
         out: string;
-        while this.pos < this.text.size {
+        while this.pos < this.text.__bytesize {
             c: char = this.text[this.pos];
             if c == '"' {
                 this.pos = this.pos + 1;
@@ -486,7 +486,7 @@ pub def JsonParser : class {
                 continue;
             }
             this.pos = this.pos + 1;
-            if this.pos >= this.text.size {
+            if this.pos >= this.text.__bytesize {
                 this.fail("json: unterminated string");
                 return out;
             }
@@ -517,7 +517,7 @@ pub def JsonParser : class {
                 this.pos = this.pos + 1;
             } also e == 'u' {
                 this.pos = this.pos + 1;
-                if this.pos + 4 > this.text.size {
+                if this.pos + 4 > this.text.__bytesize {
                     this.fail("json: truncated \\u escape");
                     return out;
                 }
@@ -534,7 +534,7 @@ pub def JsonParser : class {
                 if cp >= 0xD800 && cp <= 0xDBFF {
                     if this.peek() == '\\' && this.peek_n(1) == 'u' {
                         this.pos = this.pos + 2;
-                        if this.pos + 4 > this.text.size {
+                        if this.pos + 4 > this.text.__bytesize {
                             this.fail("json: truncated \\u surrogate pair");
                             return out;
                         }
@@ -649,7 +649,7 @@ pub def Json : class {
             return v;
         }
         p.skip_ws();
-        if p.pos < text.size {
+        if p.pos < text.__bytesize {
             return JsonValue { ok: false, err: "json: trailing characters after top-level value" };
         }
         return v;

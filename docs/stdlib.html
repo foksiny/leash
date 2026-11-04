@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v1.6.1 Release</div>
+        <div class="version">v1.6.2 Release</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -294,7 +294,7 @@ obj.<span class="fn">set</span>(<span class="str">"count"</span>, JsonValue { ty
     <tr><td><code>Utf.encode(cp)</code></td><td>Encode a code point as UTF-8 (<code>string</code>); returns <code>""</code> for surrogates, negatives, or values above U+10FFFF</td></tr>
     <tr><td><code>Utf.decode_at(s, i)</code></td><td>Decode one code point at index <code>i</code>, returning a <code>UtfDecoded</code></td></tr>
     <tr><td><code>Utf.valid(s)</code></td><td><code>bool</code> &mdash; is <code>s</code> well-formed UTF-8?</td></tr>
-    <tr><td><code>Utf.length(s)</code></td><td>Number of code points; <code>-1</code> if <code>s</code> is invalid UTF-8</td></tr>
+    <tr><td><code>Utf.length(s)</code></td><td>Number of code points; <code>-1</code> if <code>s</code> is invalid UTF-8 (for well-formed input this equals <code>s.size</code>)</td></tr>
     <tr><td><code>Utf.codepoints(s)</code></td><td><code>vec&lt;int&lt;64&gt;&gt;</code> of all code points; empty if invalid</td></tr>
     <tr><td><code>Utf.from_codepoints(cps)</code></td><td>Encode a <code>vec&lt;int&lt;64&gt;&gt;</code> back into a string</td></tr>
     <tr><td><code>Utf.is_ascii(s)</code></td><td><code>bool</code> &mdash; does <code>s</code> contain only bytes &le; 0x7F?</td></tr>

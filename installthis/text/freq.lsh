@@ -13,7 +13,7 @@ pub def Freq : class {
         ws: vec<string>;
         cs: vec<int>;
         out: Freq = Freq { words: ws, counts: cs };
-        n: int = text.size;
+        n: int = text.__bytesize;
         i: int = 0;
         while i < n {
             while i < n && !Freq.is_word_ch(text[i]) {

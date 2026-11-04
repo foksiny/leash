@@ -8,7 +8,7 @@ pub def Markdown : class {
         para_open: bool = false;
 
         foreach _, line in<vector> lines {
-            if line.size >= 3 && Markdown.starts_triple(line) {
+            if line.__bytesize >= 3 && Markdown.starts_triple(line) {
                 if in_code {
                     out = out + "</code></pre>\n";
                     in_code = false;
@@ -24,7 +24,7 @@ pub def Markdown : class {
             }
 
             t: string = Markdown.trim_left(line);
-            if t.size == 0 {
+            if t.__bytesize == 0 {
                 if list_open {
                     out = out + "</ul>\n";
                     list_open = false;
@@ -85,7 +85,7 @@ pub def Markdown : class {
                 continue;
             }
 
-            if t.size > 1 && t[0] == '>' {
+            if t.__bytesize > 1 && t[0] == '>' {
                 qbody: string = Markdown.drop(t, 1);
                 out = out + "<blockquote>" + Markdown.render_inline(qbody) + "</blockquote>\n";
                 continue;
@@ -125,7 +125,7 @@ pub def Markdown : class {
                 cur = cur + c;
             }
         }
-        if cur.size > 0 || lines.size == 0 {
+        if cur.__bytesize > 0 || lines.size == 0 {
             lines.pushb(cur);
         }
         return lines;
@@ -148,7 +148,7 @@ pub def Markdown : class {
     }
 
     static priv fnc starts_triple(line string) : bool {
-        if line.size < 3 {
+        if line.__bytesize < 3 {
             return false;
         }
         return line[0] == '`' && line[1] == '`' && line[2] == '`';
@@ -156,20 +156,20 @@ pub def Markdown : class {
 
     static pub fnc heading_level(t string) : int {
         lvl: int = 0;
-        while lvl < t.size && t[lvl] == '#' {
+        while lvl < t.__bytesize && t[lvl] == '#' {
             lvl = lvl + 1;
         }
         if lvl == 0 || lvl > 6 {
             return 0;
         }
-        if lvl < t.size && t[lvl] == ' ' {
+        if lvl < t.__bytesize && t[lvl] == ' ' {
             return lvl;
         }
         return 0;
     }
 
     static priv fnc is_ul_item(t string) : bool {
-        return t.size >= 2 && t[0] == '-' && t[1] == ' ';
+        return t.__bytesize >= 2 && t[0] == '-' && t[1] == ' ';
     }
 
     static priv fnc is_ol_item(t string) : bool {
@@ -178,7 +178,7 @@ pub def Markdown : class {
             if c >= '0' && c <= '9' {
                 digits = digits + 1;
             } else {
-                if c == '.' && digits > 0 && i + 1 < t.size && t[i + 1] == ' ' {
+                if c == '.' && digits > 0 && i + 1 < t.__bytesize && t[i + 1] == ' ' {
                     return true;
                 }
                 return false;
@@ -199,7 +199,7 @@ pub def Markdown : class {
     static priv fnc replace_code_spans(s string) : string {
         out: string;
         i: int = 0;
-        n: int = s.size;
+        n: int = s.__bytesize;
         while i < n {
             if s[i] == '`' {
                 close: int = -1;
@@ -227,7 +227,7 @@ pub def Markdown : class {
     static priv fnc replace_links(s string) : string {
         out: string;
         i: int = 0;
-        n: int = s.size;
+        n: int = s.__bytesize;
         while i < n {
             if s[i] == '[' {
                 rb: int = -1;
@@ -269,17 +269,17 @@ pub def Markdown : class {
     static priv fnc replace_delim(s string, delim string, tag string) : string {
         out: string;
         i: int = 0;
-        n: int = s.size;
+        n: int = s.__bytesize;
         open: bool = false;
         while i < n {
-            if i + delim.size <= n && Markdown.slice(s, i, i + delim.size) == delim {
+            if i + delim.__bytesize <= n && Markdown.slice(s, i, i + delim.__bytesize) == delim {
                 if open {
                     out = out + "</" + tag + ">";
                 } else {
                     out = out + "<" + tag + ">";
                 }
                 open = open == false;
-                i = i + delim.size;
+                i = i + delim.__bytesize;
                 continue;
             }
             out = out + s[i];
@@ -301,14 +301,14 @@ pub def Markdown : class {
 
     static pub fnc trim_left(s string) : string {
         i: int = 0;
-        while i < s.size && (s[i] == ' ' || s[i] == '\t') {
+        while i < s.__bytesize && (s[i] == ' ' || s[i] == '\t') {
             i = i + 1;
         }
-        return Markdown.slice(s, i, s.size);
+        return Markdown.slice(s, i, s.__bytesize);
     }
 
     static pub fnc trim_right(s string) : string {
-        e: int = s.size;
+        e: int = s.__bytesize;
         while e > 0 && (s[e - 1] == ' ' || s[e - 1] == '\t') {
             e = e - 1;
         }
@@ -316,6 +316,6 @@ pub def Markdown : class {
     }
 
     static pub fnc drop(s string, count int) : string {
-        return Markdown.slice(s, count, s.size);
+        return Markdown.slice(s, count, s.__bytesize);
     }
 };

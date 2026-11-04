@@ -9,7 +9,7 @@ pub def Ip : class {
     static pub fnc is_valid(s string) : bool {
         n: int = 0;
         i: int = 0;
-        sz: int = s.size;
+        sz: int = s.__bytesize;
         count: int = 0;
         while true {
             if n >= 4 {
@@ -45,7 +45,7 @@ pub def Ip : class {
     // dotted-quad -> 32-bit int (0 on invalid input).
     static pub fnc to_int(s string) : uint<32> {
         parts: vec<int>;
-        n: int = s.size;
+        n: int = s.__bytesize;
         i: int = 0;
         while i < n {
             j: int = i;
@@ -83,7 +83,7 @@ pub def Ip : class {
     // True when `ip` is inside cidr "a.b.c.d/prefix".
     static pub fnc in_cidr(ip string, cidr string) : bool {
         slash: int = -1;
-        for i: int = 0; i < cidr.size; i = i + 1 {
+        for i: int = 0; i < cidr.__bytesize; i = i + 1 {
             if cidr[i] == '/' {
                 slash = i;
                 stop;
@@ -93,8 +93,8 @@ pub def Ip : class {
             return false;
         }
         base: string = Ip.slice(cidr, 0, slash);
-        prefix_str: string = Ip.slice(cidr, slash + 1, cidr.size);
-        if prefix_str.size == 0 {
+        prefix_str: string = Ip.slice(cidr, slash + 1, cidr.__bytesize);
+        if prefix_str.__bytesize == 0 {
             return false;
         }
         prefix: int = 0;
@@ -124,7 +124,7 @@ pub def Ip : class {
 
     static priv fnc slice(s string, start int, end int) : string {
         out: string = "";
-        for i: int = start; i < end && i < s.size; i = i + 1 {
+        for i: int = start; i < end && i < s.__bytesize; i = i + 1 {
             out = out + s[i];
         }
         return out;

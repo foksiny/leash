@@ -198,7 +198,7 @@ pub def HttpServer : class {
         fresh_keys: vec<string>;
         fresh_vals: vec<string>;
         out: HttpQuery = HttpQuery { keys: fresh_keys, vals: fresh_vals };
-        n: int = q.size;
+        n: int = q.__bytesize;
         p: int = 0;
         while p < n {
             amp: int = HttpServer.find_ch(q, p, '&');
@@ -220,10 +220,10 @@ pub def HttpServer : class {
 
     // True when `req_path` starts with `prefix`.
     static pub fnc path_matches(req_path string, prefix string) : bool {
-        if req_path.size < prefix.size {
+        if req_path.__bytesize < prefix.__bytesize {
             return false;
         }
-        for i: int = 0; i < prefix.size; i = i + 1 {
+        for i: int = 0; i < prefix.__bytesize; i = i + 1 {
             if req_path[i] != prefix[i] {
                 return false;
             }
@@ -244,7 +244,7 @@ pub def HttpServer : class {
     }
 
     static priv fnc find_ch(s string, start int, c char) : int {
-        for i: int = start; i < s.size; i = i + 1 {
+        for i: int = start; i < s.__bytesize; i = i + 1 {
             if s[i] == c {
                 return i;
             }

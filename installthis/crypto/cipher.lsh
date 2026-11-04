@@ -1,12 +1,12 @@
 pub def Cipher : class {
     static pub fnc xor_enc(data string, key string) : string {
-        if key.size == 0 {
+        if key.__bytesize == 0 {
             return data;
         }
         out: string;
         i: int = 0;
         foreach _, c in<string> data {
-            k: char = key[i % key.size];
+            k: char = key[i % key.__bytesize];
             v: int = (toint(int, c) & 255) ^ (toint(int, k) & 255);
             out = out + (char)v;
             i = i + 1;
@@ -30,7 +30,7 @@ pub def Cipher : class {
     static pub fnc xor_from_hex(hex string, key string) : string {
         bytes: vec<char>;
         i: int = 0;
-        while i + 1 < hex.size {
+        while i + 1 < hex.__bytesize {
             hi: int = Cipher.hexval(hex[i]);
             lo: int = Cipher.hexval(hex[i + 1]);
             if hi < 0 || lo < 0 {
@@ -97,13 +97,13 @@ pub def Cipher : class {
     }
 
     static priv fnc vigenere_mode(text string, key string, dec bool) : string {
-        if key.size == 0 {
+        if key.__bytesize == 0 {
             return text;
         }
         out: string;
         ki: int = 0;
         foreach _, c in<string> text {
-            k: char = key[ki % key.size];
+            k: char = key[ki % key.__bytesize];
             if (k < 'a' || k > 'z') && (k < 'A' || k > 'Z') {
                 ki = ki + 1;
                 out = out + c;

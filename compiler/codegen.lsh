@@ -124,7 +124,7 @@ pub def CodeGen : class {
         elty: string = this.llvm_type(this.get_expr_type(e));
         if elty == "i64" { return val; }
         r: string = this.new_reg();
-        if elty == "i32" || elty.size == 0 {
+        if elty == "i32" || elty.__bytesize == 0 {
             this.emit("  " + r + " = sext i32 " + val + " to i64");
             return r;
         }
@@ -161,8 +161,8 @@ pub def CodeGen : class {
     // dropped (leaked), mirroring the reference.
     pub fnc af_track(val string) : void {
         if !this.autofree { return; }
-        if this.af_arr.size == 0 { return; }
-        if val.size == 0 || val[0] != '%' { return; }
+        if this.af_arr.__bytesize == 0 { return; }
+        if val.__bytesize == 0 || val[0] != '%' { return; }
         t_do: string = this.new_label("af_track_do");
         t_skip: string = this.new_label("af_track_skip");
         c: string = this.new_reg();
@@ -187,7 +187,7 @@ pub def CodeGen : class {
     // receives live memory — python's `_mark_as_return_value` intent.
     pub fnc af_cleanup(spared string) : void {
         if !this.autofree { return; }
-        if this.af_arr.size == 0 { return; }
+        if this.af_arr.__bytesize == 0 { return; }
         if this.af_emitted { return; }
         this.af_emitted = true;
         l_loop: string = this.new_label("af_loop");
@@ -210,7 +210,7 @@ pub def CodeGen : class {
         ptr: string = this.new_reg();
         this.emit("  " + ptr + " = load i8*, i8** " + slot + ", align 8");
         keep: string = this.new_reg();
-        if spared.size > 0 {
+        if spared.__bytesize > 0 {
             this.emit("  " + keep + " = icmp eq i8* " + ptr + ", " + spared);
         } else {
             this.emit("  " + keep + " = icmp eq i8* " + ptr + ", null");
@@ -225,8 +225,8 @@ pub def CodeGen : class {
     // i8* view of a returned pointer value for the cleanup skip test
     // ("" for non-pointers — nothing to keep alive).
     pub fnc af_skip_reg(val string, lret string) : string {
-        if lret.size == 0 { return ""; }
-        if lret[lret.size - 1] != '*' { return ""; }
+        if lret.__bytesize == 0 { return ""; }
+        if lret[lret.__bytesize - 1] != '*' { return ""; }
         if lret == "i8*" { return val; }
         r: string = this.new_reg();
         this.emit("  " + r + " = bitcast " + lret + " " + val + " to i8*");
@@ -302,7 +302,7 @@ pub def CodeGen : class {
         // dst_t carries the leash type; plain `int` defaults to signed)
         if this.is_float_lty(vlty) && this.is_int_lty(lty) {
             r3: string = this.new_reg();
-            if dst_t.size > 0 && this.is_uint_type(dst_t) {
+            if dst_t.__bytesize > 0 && this.is_uint_type(dst_t) {
                 this.emit("  " + r3 + " = fptoui " + vlty + " " + val + " to " + lty);
             } else {
                 this.emit("  " + r3 + " = fptosi " + vlty + " " + val + " to " + lty);
@@ -353,12 +353,12 @@ pub def CodeGen : class {
             this.emit("  " + r + " = icmp ne i8 " + v + ", 0");
             return r;
         }
-        if typ == "string" || this.is_vec_type(typ) || typ == "fnc" || (typ.size >= 3 && typ[0] == 'f' && typ[1] == 'n' && typ[2] == 'c') {
+        if typ == "string" || this.is_vec_type(typ) || typ == "fnc" || (typ.__bytesize >= 3 && typ[0] == 'f' && typ[1] == 'n' && typ[2] == 'c') {
             r: string = this.new_reg();
             this.emit("  " + r + " = icmp ne i8* " + v + ", null");
             return r;
         }
-        if typ.size > 1 && typ[0] == '*' {
+        if typ.__bytesize > 1 && typ[0] == '*' {
             r: string = this.new_reg();
             this.emit("  " + r + " = icmp ne " + this.llvm_type(typ) + " " + v + ", null");
             return r;
@@ -399,23 +399,23 @@ pub def CodeGen : class {
     }
 
     pub fnc get_str_len(s string) : int {
-        return s.size + 1;
+        return s.__bytesize + 1;
     }
 
     pub fnc is_vec_type(typ string) : bool {
-        if typ.size > 4 && typ[0] == 'v' && typ[1] == 'e' && typ[2] == 'c' && typ[3] == '<' { return true; }
-        if typ.size > 7 && typ[0] == 'm' && typ[1] == 'a' && typ[2] == 't' && typ[3] == 'r'
+        if typ.__bytesize > 4 && typ[0] == 'v' && typ[1] == 'e' && typ[2] == 'c' && typ[3] == '<' { return true; }
+        if typ.__bytesize > 7 && typ[0] == 'm' && typ[1] == 'a' && typ[2] == 't' && typ[3] == 'r'
            && typ[4] == 'i' && typ[5] == 'x' && typ[6] == '<' { return true; }
         return false;
     }
 
     pub fnc box_inner_start(typ string) : int {
-        if typ.size > 7 && typ[0] == 'm' { return 7; }
+        if typ.__bytesize > 7 && typ[0] == 'm' { return 7; }
         return 4;
     }
 
     pub fnc is_hash_type(typ string) : bool {
-        return typ.size > 5 && typ[0] == 'h' && typ[1] == 'a' && typ[2] == 's' && typ[3] == 'h' && typ[4] == '<';
+        return typ.__bytesize > 5 && typ[0] == 'h' && typ[1] == 'a' && typ[2] == 's' && typ[3] == 'h' && typ[4] == '<';
     }
 
     // --- Inline vector access ------------------------------------------------
@@ -487,10 +487,10 @@ pub def CodeGen : class {
     // elements are stored as 8-byte references).
     pub fnc vec_elem_bytes(inner string) : int {
         lty: string = this.llvm_type(inner);
-        if lty.size > 1 && lty[lty.size - 1] == '*' { return 8; }
+        if lty.__bytesize > 1 && lty[lty.__bytesize - 1] == '*' { return 8; }
         // Union elements are boxed aggregates ({ i64 tag, payload }) — the
         // cell must hold the full boxed size or strides corrupt cells.
-        if lty.size > 7 && lty[0] == '%' && this.str_slice2(lty, 0, 7) == "%union." {
+        if lty.__bytesize > 7 && lty[0] == '%' && this.str_slice2(lty, 0, 7) == "%union." {
             uesz: int = this.abi_size_of(inner);
             if uesz > 0 { return uesz; }
         }
@@ -509,17 +509,17 @@ pub def CodeGen : class {
 
     pub fnc vec_inner_type(typ string) : string {
         st: int = this.box_inner_start(typ);
-        if typ.size <= st + 1 { return "int"; }
+        if typ.__bytesize <= st + 1 { return "int"; }
         inner: string = "";
         i: int = st;
-        while i < typ.size - 1 {
+        while i < typ.__bytesize - 1 {
             inner = inner + typ[i];
             i = i + 1;
         }
         // Opdef bodies keep the container placeholder in their local
         // declarations; the concrete inner type comes from the (already
         // substituted) parameters.
-        if (inner == "__T_OPDEF__" || inner == "thisop.typ") && this.opdef_inner.size > 0 {
+        if (inner == "__T_OPDEF__" || inner == "thisop.typ") && this.opdef_inner.__bytesize > 0 {
             return this.opdef_inner;
         }
         ti3: int = 0;
@@ -534,18 +534,18 @@ pub def CodeGen : class {
     }
 
     pub fnc hash_val_type(typ string) : string {
-        if typ.size <= 7 { return "int"; }
+        if typ.__bytesize <= 7 { return "int"; }
         depth: int = 0;
         i: int = 5;
-        while i < typ.size {
+        while i < typ.__bytesize {
             c: char = typ[i];
             if c == '<' { depth = depth + 1; }
             also c == '>' { depth = depth - 1; }
             also c == ',' && depth == 0 {
                 i = i + 1;
-                while i < typ.size && typ[i] == ' ' { i = i + 1; }
+                while i < typ.__bytesize && typ[i] == ' ' { i = i + 1; }
                 val_t: string = "";
-                while i < typ.size - 1 {
+                while i < typ.__bytesize - 1 {
                     val_t = val_t + typ[i];
                     i = i + 1;
                 }
@@ -558,11 +558,11 @@ pub def CodeGen : class {
 
     // hash<K,V> key type
     pub fnc hash_key_type(typ string) : string {
-        if typ.size <= 7 { return "int"; }
+        if typ.__bytesize <= 7 { return "int"; }
         depth: int = 1;
         i: int = 5;
         key_t: string = "";
-        while i < typ.size {
+        while i < typ.__bytesize {
             c: char = typ[i];
             if c == '<' { depth = depth + 1; }
             also c == '>' { depth = depth - 1; }
@@ -621,7 +621,7 @@ pub def CodeGen : class {
         this.emit("  " + nreg + " = extractvalue " + lty + " " + val + ", 0");
         base: string = "";
         bi: int = 0;
-        while bi < slice_typ.size && slice_typ[bi] != '[' {
+        while bi < slice_typ.__bytesize && slice_typ[bi] != '[' {
             base = base + slice_typ[bi];
             bi = bi + 1;
         }
@@ -645,7 +645,7 @@ pub def CodeGen : class {
     }
 
     pub fnc is_slice_like(typ string) : bool {
-        return typ.size > 2 && typ[typ.size - 1] == ']';
+        return typ.__bytesize > 2 && typ[typ.__bytesize - 1] == ']';
     }
 
     // Element-wise slice conversion for fixed-array / slice stores whose
@@ -764,14 +764,14 @@ pub def CodeGen : class {
     // Conservative byte size for GC scan-region registration (-1: scalar)
     pub fnc gc_scan_size(typ string) : int {
         lt: string = this.llvm_type(typ);
-        if lt.size > 1 && lt[lt.size - 1] == '*' { return 8; }
-        if typ.size > 1 && typ[typ.size - 1] == ']' { return 16; }
-        if typ.size > 1 && typ[0] == '(' {
+        if lt.__bytesize > 1 && lt[lt.__bytesize - 1] == '*' { return 8; }
+        if typ.__bytesize > 1 && typ[typ.__bytesize - 1] == ']' { return 16; }
+        if typ.__bytesize > 1 && typ[0] == '(' {
             // tuple: count top-level elements, 8 bytes each (conservative)
             depth: int = 0;
             n: int = 1;
             ti: int = 1;
-            while ti < typ.size - 1 {
+            while ti < typ.__bytesize - 1 {
                 ch: char = typ[ti];
                 if ch == '(' || ch == '<' { depth = depth + 1; }
                 if ch == ')' || ch == '>' { depth = depth - 1; }
@@ -801,7 +801,7 @@ pub def CodeGen : class {
         lty: string = this.llvm_type(typ);
         pty: string = "";
         pi: int = 0;
-        while pi < lty.size - 1 {
+        while pi < lty.__bytesize - 1 {
             pty = pty + lty[pi];
             pi = pi + 1;
         }
@@ -815,7 +815,7 @@ pub def CodeGen : class {
         this.emit("  " + cp + " = bitcast i8* " + cp8 + " to " + lty);
         si: StructInfo = this.tc.structs[typ];
         foreach fi, ft in<vector> si.field_types {
-            if ft.size == 0 || ft[0] == '&' { continue; }
+            if ft.__bytesize == 0 || ft[0] == '&' { continue; }
             if this.tc.structs.isin(ft) {
                 flty: string = this.llvm_type(ft);
                 fg: string = this.new_reg();
@@ -950,7 +950,7 @@ pub def CodeGen : class {
     // sext/zext by the operand's own signedness). Literals embed as-is.
     pub fnc fusion_cast_operand(e Expr, val string, gv_lty string) : string {
         if e == null { return val; }
-        if val.size > 0 && val[0] != '%' { return val; }
+        if val.__bytesize > 0 && val[0] != '%' { return val; }
         et: string = this.get_expr_type(e);
         elty: string = this.llvm_type(et);
         if elty == gv_lty { return val; }
@@ -977,7 +977,7 @@ pub def CodeGen : class {
             cell: string = this.var_ptrs[t.sval];
             vtyp: string = this.var_types[t.sval];
             // Scalar refs assign through to the referenced cell.
-            while vtyp.size > 1 && vtyp[0] == '&' {
+            while vtyp.__bytesize > 1 && vtyp[0] == '&' {
                 inner: string = this.strip_ref(vtyp);
                 if this.tc.structs.isin(inner) || this.tc.classes.isin(inner) { stop; }
                 nplty: string = this.llvm_type(vtyp);
@@ -1066,14 +1066,14 @@ pub def CodeGen : class {
 
     // Clone struct-typed values on copy boundaries; everything else passes through.
     pub fnc maybe_clone_value(val string, typ string) : string {
-        if typ.size == 0 || typ[0] == '&' { return val; }
+        if typ.__bytesize == 0 || typ[0] == '&' { return val; }
         if !this.tc.structs.isin(typ) { return val; }
         return this.clone_struct_val(val, typ);
     }
 
     // Slice value stored into a raw pointer target: keep only the data pointer
     pub fnc coerce_slice_ptr(val string, rhs_t string, tgt_t string) : string {
-        if tgt_t.size > 1 && (tgt_t[0] == '*' || tgt_t[0] == '&') && rhs_t.size > 2 && rhs_t[rhs_t.size - 1] == ']' {
+        if tgt_t.__bytesize > 1 && (tgt_t[0] == '*' || tgt_t[0] == '&') && rhs_t.__bytesize > 2 && rhs_t[rhs_t.__bytesize - 1] == ']' {
             r: string = this.new_reg();
             this.emit("  " + r + " = extractvalue " + this.llvm_type(rhs_t) + " " + val + ", 1");
             return r;
@@ -1187,10 +1187,10 @@ pub def CodeGen : class {
     }
 
     pub fnc strip_ref(t string) : string {
-        if t.size > 1 && t[0] == '&' {
+        if t.__bytesize > 1 && t[0] == '&' {
             out: string = "";
             i: int = 1;
-            while i < t.size {
+            while i < t.__bytesize {
                 out = out + t[i];
                 i = i + 1;
             }
@@ -1214,7 +1214,7 @@ pub def CodeGen : class {
     }
 
     pub fnc is_ptr_lty(lty string) : bool {
-        return lty.size > 0 && lty[lty.size - 1] == '*';
+        return lty.__bytesize > 0 && lty[lty.__bytesize - 1] == '*';
     }
 
     pub fnc lty_bytes(lty string) : int {
@@ -1335,7 +1335,7 @@ pub def CodeGen : class {
     pub fnc shift_range_check(amt string, amt_lty string, width int, amt_expr Expr) : void {
         if this.cur_func_unsafe { return; }
         if amt_expr != null && amt_expr.kind == ExprKind.INT { return; }
-        if amt.size == 0 || amt[0] != '%' { return; }
+        if amt.__bytesize == 0 || amt[0] != '%' { return; }
         ok_l: string = this.new_label("sh_ok");
         fail_l: string = this.new_label("sh_fail");
         lo: string = this.new_reg();
@@ -1546,7 +1546,7 @@ pub def CodeGen : class {
             this.emit(bm + ":");
         } also this.is_int_lty(vty) {
             iv: string = val;
-            wide_lit: bool = (val.size >= 10 && val[0] != '%' && val[0] != '@');
+            wide_lit: bool = (val.__bytesize >= 10 && val[0] != '%' && val[0] != '@');
             if vty != "i64" && !wide_lit {
                 iv = this.new_reg();
                 if this.lty_rank(vty) < 64 {
@@ -1563,7 +1563,7 @@ pub def CodeGen : class {
 
     pub fnc gen_union_show(arg Expr, uname string) : void {
         ptr: string = this.union_ptr_of(arg);
-        if ptr.size == 0 {
+        if ptr.__bytesize == 0 {
             this.gen_expr(arg);
             return;
         }
@@ -1628,7 +1628,7 @@ pub def CodeGen : class {
         // Python materializes the method result into a temporary slot and
         // reads from that pointer; mirror that so the load path works
         // unchanged.
-        if ptr.size == 0 && e.left != null {
+        if ptr.__bytesize == 0 && e.left != null {
             mub_t: string = this.strip_ref(this.get_expr_type(e.left));
             if this.tc.unions.isin(mub_t) {
                 mu_val: string = this.gen_expr(e.left);
@@ -1638,7 +1638,7 @@ pub def CodeGen : class {
                 ptr = mu_tmp;
             }
         }
-        if ptr.size == 0 { return "0"; }
+        if ptr.__bytesize == 0 { return "0"; }
         uty: string = "%union." + obj_t;
         datap: string = this.new_reg();
         this.emit("  " + datap + " = getelementptr inbounds " + uty + ", " + uty + "* " + ptr + ", i32 0, i32 1");
@@ -1669,8 +1669,8 @@ pub def CodeGen : class {
 
     pub fnc assign_union_member(s Stmt, ub_t string, val string) : void {
         ptr: string = this.union_ptr_of(s.target);
-        if ptr.size == 0 && s.target != null { ptr = this.union_ptr_of(s.target.left); }
-        if ptr.size == 0 { return; }
+        if ptr.__bytesize == 0 && s.target != null { ptr = this.union_ptr_of(s.target.left); }
+        if ptr.__bytesize == 0 { return; }
         idx: int = this.tc.union_variant_index(ub_t, s.target.sval);
         if idx < 0 { return; }
         uty: string = "%union." + ub_t;
@@ -1691,7 +1691,7 @@ pub def CodeGen : class {
     pub fnc parse_int_str(t string) : int {
         v: int = 0;
         i: int = 0;
-        while i < t.size {
+        while i < t.__bytesize {
             c: char = t[i];
             if c < '0' || c > '9' { return 0; }
             v = v * 10 + (c - '0');
@@ -1703,9 +1703,9 @@ pub def CodeGen : class {
     // Digits only, with an optional leading '-' (a raw LLVM-safe constant).
     pub fnc is_plain_decimal_lit(sv string) : bool {
         si: int = 0;
-        if sv.size > 0 && sv[0] == '-' { si = 1; }
-        if si >= sv.size { return false; }
-        while si < sv.size {
+        if sv.__bytesize > 0 && sv[0] == '-' { si = 1; }
+        if si >= sv.__bytesize { return false; }
+        while si < sv.__bytesize {
             if sv[si] < '0' || sv[si] > '9' { return false; }
             si = si + 1;
         }
@@ -1714,13 +1714,13 @@ pub def CodeGen : class {
 
     pub fnc is_uint_type(t string) : bool {
         if t == "uint" { return true; }
-        return t.size > 5 && t[0] == 'u' && t[1] == 'i' && t[2] == 'n' && t[3] == 't' && t[4] == '<';
+        return t.__bytesize > 5 && t[0] == 'u' && t[1] == 'i' && t[2] == 'n' && t[3] == 't' && t[4] == '<';
     }
 
     // int<N> or uint<N> (N > 0)?
     pub fnc is_sized_int_type(t string) : bool {
-        if t.size < 6 { return false; }
-        if t[t.size - 1] != '>' { return false; }
+        if t.__bytesize < 6 { return false; }
+        if t[t.__bytesize - 1] != '>' { return false; }
         if t[0] == 'i' && t[1] == 'n' && t[2] == 't' && t[3] == '<' { return true; }
         if t[0] == 'u' && t[1] == 'i' && t[2] == 'n' && t[3] == 't' && t[4] == '<' { return true; }
         return false;
@@ -1728,9 +1728,9 @@ pub def CodeGen : class {
 
     pub fnc sized_int_width(t string) : int {
         if t[0] == 'u' {
-            return this.parse_int_str(this.str_slice2(t, 5, t.size - 1));
+            return this.parse_int_str(this.str_slice2(t, 5, t.__bytesize - 1));
         }
-        return this.parse_int_str(this.str_slice2(t, 4, t.size - 1));
+        return this.parse_int_str(this.str_slice2(t, 4, t.__bytesize - 1));
     }
 
     pub fnc sized_int_is_signed(t string) : bool {
@@ -1739,20 +1739,20 @@ pub def CodeGen : class {
 
     // Bit width of an llvm integer type ("i128" -> 128); 0 if not int-like.
     pub fnc lty_width(l string) : int {
-        if l.size < 2 { return 0; }
+        if l.__bytesize < 2 { return 0; }
         if l[0] != 'i' { return 0; }
         wi: int = 1;
-        while wi < l.size {
+        while wi < l.__bytesize {
             if l[wi] < '0' || l[wi] > '9' { return 0; }
             wi = wi + 1;
         }
-        return this.parse_int_str(this.str_slice2(l, 1, l.size));
+        return this.parse_int_str(this.str_slice2(l, 1, l.__bytesize));
     }
 
     pub fnc str_slice2(s string, a int, b int) : string {
         out: string = "";
         i: int = a;
-        while i < b && i < s.size {
+        while i < b && i < s.__bytesize {
             out = out + s[i];
             i = i + 1;
         }
@@ -1824,10 +1824,10 @@ pub def CodeGen : class {
     }
 
     pub fnc llvm_type(typ string) : string {
-        if typ.size > 1 && typ[0] == '&' {
+        if typ.__bytesize > 1 && typ[0] == '&' {
             inner: string = "";
             i: int = 1;
-            while i < typ.size {
+            while i < typ.__bytesize {
                 inner = inner + typ[i];
                 i = i + 1;
             }
@@ -1875,11 +1875,11 @@ pub def CodeGen : class {
         if typ == "void" { return "void"; }
         if typ == "nil" { return "i8*"; }
 
-        if typ.size > 0 && typ[0] == '*' {
+        if typ.__bytesize > 0 && typ[0] == '*' {
             // pointer: *T -> llvm_type(T)*
             inner: string = "";
             si: int = 1;
-            while si < typ.size {
+            while si < typ.__bytesize {
                 inner = inner + typ[si];
                 si = si + 1;
             }
@@ -1889,11 +1889,11 @@ pub def CodeGen : class {
             return this.llvm_type(inner) + "*";
         }
 
-        if typ.size > 2 && typ[typ.size - 1] == ']' {
+        if typ.__bytesize > 2 && typ[typ.__bytesize - 1] == ']' {
             // slice: { i64, T* }
             base: string = "";
             bi: int = 0;
-            while bi < typ.size && typ[bi] != '[' {
+            while bi < typ.__bytesize && typ[bi] != '[' {
                 base = base + typ[bi];
                 bi = bi + 1;
             }
@@ -1901,10 +1901,10 @@ pub def CodeGen : class {
         }
 
         // Tuple type: (T1, T2, ...) -> { t1, t2, ... }
-        if typ.size > 1 && typ[0] == '(' && typ[typ.size - 1] == ')' {
+        if typ.__bytesize > 1 && typ[0] == '(' && typ[typ.__bytesize - 1] == ')' {
             inner: string = "";
             ii: int = 1;
-            while ii < typ.size - 1 {
+            while ii < typ.__bytesize - 1 {
                 inner = inner + typ[ii];
                 ii = ii + 1;
             }
@@ -1913,7 +1913,7 @@ pub def CodeGen : class {
             cur: string = "";
             pi: int = 0;
             first_part: bool = true;
-            while pi < inner.size {
+            while pi < inner.__bytesize {
                 pch: char = inner[pi];
                 if pch == '<' || pch == '(' { depth = depth + 1; }
                 if pch == '>' || pch == ')' { depth = depth - 1; }
@@ -1927,17 +1927,17 @@ pub def CodeGen : class {
                 }
                 pi = pi + 1;
             }
-            if cur.size > 0 {
+            if cur.__bytesize > 0 {
                 if !first_part { parts = parts + ", "; }
                 parts = parts + this.llvm_type(this.trim_type_str(cur));
             }
-            if parts.size == 0 { parts = "i64"; }
+            if parts.__bytesize == 0 { parts = "i64"; }
             return "{ " + parts + " }";
         }
 
         // vec<T>, hash<K,V>, File -> opaque pointer (i8*)
         if typ == "File" { return "i8*"; }
-        if typ.size > 8 && typ[0] == 'f' && typ[1] == 'u' && typ[2] == 't' && typ[3] == 'u'
+        if typ.__bytesize > 8 && typ[0] == 'f' && typ[1] == 'u' && typ[2] == 't' && typ[3] == 'u'
            && typ[4] == 'r' && typ[5] == 'e' && typ[6] == '<' { return "i8*"; }
         if this.is_vec_type(typ) { return "i8*"; }
         if this.is_hash_type(typ) { return "i8*"; }
@@ -1959,7 +1959,7 @@ pub def CodeGen : class {
             return "i32";
         }
 
-        if (typ == "__T_OPDEF__" || typ == "thisop.typ") && this.opdef_inner.size > 0 {
+        if (typ == "__T_OPDEF__" || typ == "thisop.typ") && this.opdef_inner.__bytesize > 0 {
             return this.llvm_type(this.opdef_inner);
         }
 
@@ -1980,7 +1980,7 @@ pub def CodeGen : class {
     pub fnc tuple_elem_type(tup string, idx int) : string {
         inner: string = "";
         ii: int = 1;
-        while ii < tup.size - 1 {
+        while ii < tup.__bytesize - 1 {
             inner = inner + tup[ii];
             ii = ii + 1;
         }
@@ -1988,7 +1988,7 @@ pub def CodeGen : class {
         cur: string = "";
         ei: int = 0;
         pi: int = 0;
-        while pi < inner.size {
+        while pi < inner.__bytesize {
             pch: char = inner[pi];
             if pch == '<' || pch == '(' { depth = depth + 1; }
             if pch == '>' || pch == ')' { depth = depth - 1; }
@@ -2007,8 +2007,8 @@ pub def CodeGen : class {
 
     pub fnc trim_type_str(s string) : string {
         a: int = 0;
-        b: int = s.size - 1;
-        while a < s.size && s[a] == ' ' { a = a + 1; }
+        b: int = s.__bytesize - 1;
+        while a < s.__bytesize && s[a] == ' ' { a = a + 1; }
         while b >= a && s[b] == ' ' { b = b - 1; }
         out: string = "";
         while a <= b {
@@ -2048,18 +2048,18 @@ pub def CodeGen : class {
     // Returns -1 when the spec is not a plain "[N x iB]" array.
     pub fnc union_payload_bytes(tt string) : int {
         mt: string = this.union_payload_type(tt);
-        if mt.size < 6 || mt[0] != '[' { return -1; }
+        if mt.__bytesize < 6 || mt[0] != '[' { return -1; }
         n_s: string = "";
         b_s: string = "";
         i: int = 1;
-        while i < mt.size && mt[i] != ' ' {
+        while i < mt.__bytesize && mt[i] != ' ' {
             n_s = n_s + mt[i];
             i = i + 1;
         }
-        if i + 4 >= mt.size { return -1; }
+        if i + 4 >= mt.__bytesize { return -1; }
         if mt[i + 1] != 'x' || mt[i + 2] != ' ' || mt[i + 3] != 'i' { return -1; }
         i = i + 4;
-        while i < mt.size && mt[i] != ']' {
+        while i < mt.__bytesize && mt[i] != ']' {
             b_s = b_s + mt[i];
             i = i + 1;
         }
@@ -2071,18 +2071,18 @@ pub def CodeGen : class {
 
     pub fnc union_payload_align(tt string) : int {
         mt: string = this.union_payload_type(tt);
-        if mt.size < 6 || mt[0] != '[' { return -1; }
+        if mt.__bytesize < 6 || mt[0] != '[' { return -1; }
         n_s2: string = "";
         b_s2: string = "";
         i2: int = 1;
-        while i2 < mt.size && mt[i2] != ' ' {
+        while i2 < mt.__bytesize && mt[i2] != ' ' {
             n_s2 = n_s2 + mt[i2];
             i2 = i2 + 1;
         }
-        if i2 + 4 >= mt.size { return -1; }
+        if i2 + 4 >= mt.__bytesize { return -1; }
         if mt[i2 + 1] != 'x' || mt[i2 + 2] != ' ' || mt[i2 + 3] != 'i' { return -1; }
         i2 = i2 + 4;
-        while i2 < mt.size && mt[i2] != ']' {
+        while i2 < mt.__bytesize && mt[i2] != ']' {
             b_s2 = b_s2 + mt[i2];
             i2 = i2 + 1;
         }
@@ -2094,7 +2094,7 @@ pub def CodeGen : class {
 
     pub fnc abi_size_of(t string) : int {
         tt: string = this.tc.strip_imut(this.tc.resolve_type_alias(t));
-        if tt.size == 0 { return 0; }
+        if tt.__bytesize == 0 { return 0; }
         if tt == "int" || tt == "uint" { return 4; }
         if tt == "char" { return 1; }
         if tt == "bool" { return 1; }
@@ -2119,24 +2119,24 @@ pub def CodeGen : class {
         if this.is_sized_int_type(tt) { return (this.sized_int_width(tt) + 7) / 8; }
         if tt[0] == '*' || tt[0] == '&' { return 8; }
         if this.is_vec_type(tt) { return 8; }
-        if tt.size > 6 && tt[0] == 'h' && tt[1] == 'a' && tt[2] == 's' && tt[3] == 'h' && tt[4] == '<' { return 8; }
-        if tt.size > 7 && tt[0] == 'm' && tt[1] == 'a' && tt[2] == 't' && tt[3] == 'r' && tt[4] == 'i' && tt[5] == 'x' && tt[6] == '<' { return 8; }
-        if tt.size > 8 && tt[0] == 'f' && tt[1] == 'u' && tt[2] == 't' && tt[3] == 'u' && tt[4] == 'r' && tt[5] == 'e' && tt[6] == '<' { return 8; }
+        if tt.__bytesize > 6 && tt[0] == 'h' && tt[1] == 'a' && tt[2] == 's' && tt[3] == 'h' && tt[4] == '<' { return 8; }
+        if tt.__bytesize > 7 && tt[0] == 'm' && tt[1] == 'a' && tt[2] == 't' && tt[3] == 'r' && tt[4] == 'i' && tt[5] == 'x' && tt[6] == '<' { return 8; }
+        if tt.__bytesize > 8 && tt[0] == 'f' && tt[1] == 'u' && tt[2] == 't' && tt[3] == 'u' && tt[4] == 'r' && tt[5] == 'e' && tt[6] == '<' { return 8; }
         // arrays: T[N] -> N * sizeof(T); T[] is a pointer-ish slice
-        if tt.size > 2 && tt[tt.size - 1] == ']' {
+        if tt.__bytesize > 2 && tt[tt.__bytesize - 1] == ']' {
             ob: int = 0;
-            while ob < tt.size && tt[ob] != '[' { ob = ob + 1; }
-            if ob == 0 || ob + 1 >= tt.size { return 8; }
+            while ob < tt.__bytesize && tt[ob] != '[' { ob = ob + 1; }
+            if ob == 0 || ob + 1 >= tt.__bytesize { return 8; }
             base: string = this.str_slice2(tt, 0, ob);
             cnt_s: string = "";
             ci: int = ob + 1;
-            while ci < tt.size && tt[ci] != ']' {
+            while ci < tt.__bytesize && tt[ci] != ']' {
                 cnt_s = cnt_s + tt[ci];
                 ci = ci + 1;
             }
             cd: int = 0;
-            ok_c: bool = cnt_s.size > 0;
-            while cd < cnt_s.size {
+            ok_c: bool = cnt_s.__bytesize > 0;
+            while cd < cnt_s.__bytesize {
                 if cnt_s[cd] < '0' || cnt_s[cd] > '9' { ok_c = false; }
                 cd = cd + 1;
             }
@@ -2179,7 +2179,7 @@ pub def CodeGen : class {
     // Natural alignment of a type (python _get_abi_align parity).
     pub fnc type_align_of(t string) : int {
         tt: string = this.tc.strip_imut(this.tc.resolve_type_alias(t));
-        if tt.size == 0 { return 1; }
+        if tt.__bytesize == 0 { return 1; }
         if tt == "char" || tt == "bool" { return 1; }
         if tt == "int" || tt == "uint" { return 4; }
         if tt == "float" || tt == "double" { return 8; }
@@ -2189,9 +2189,9 @@ pub def CodeGen : class {
             if ua > 8 { return ua; }
             return 8;
         }
-        if tt.size > 2 && tt[tt.size - 1] == ']' {
+        if tt.__bytesize > 2 && tt[tt.__bytesize - 1] == ']' {
             ob2: int = 0;
-            while ob2 < tt.size && tt[ob2] != '[' { ob2 = ob2 + 1; }
+            while ob2 < tt.__bytesize && tt[ob2] != '[' { ob2 = ob2 + 1; }
             if ob2 == 0 { return 8; }
             return this.type_align_of(this.str_slice2(tt, 0, ob2));
         }
@@ -2258,7 +2258,7 @@ pub def CodeGen : class {
     pub fnc parse_small_int_cs(s string) : int {
         v: int = 0;
         i: int = 0;
-        while i < s.size {
+        while i < s.__bytesize {
             if s[i] < '0' || s[i] > '9' { return v; }
             v = v * 10 + (s[i] - '0');
             i = i + 1;
@@ -2299,7 +2299,7 @@ pub def CodeGen : class {
             if this.tc.enum_consts.isin(e.sval) {
                 prefix: string = "";
                 pi: int = 0;
-                while pi < e.sval.size {
+                while pi < e.sval.__bytesize {
                     if e.sval[pi] == ':' {
                         return prefix;
                     }
@@ -2342,11 +2342,11 @@ pub def CodeGen : class {
             lt: string = this.get_expr_type(e.left);
             rt: string = this.get_expr_type(e.right);
             // Scalar refs evaluate to their underlying value in arithmetic
-            if lt.size > 1 && lt[0] == '&' {
+            if lt.__bytesize > 1 && lt[0] == '&' {
                 lst: string = this.strip_ref(lt);
                 if !this.tc.structs.isin(lst) && !this.tc.classes.isin(lst) { lt = lst; }
             }
-            if rt.size > 1 && rt[0] == '&' {
+            if rt.__bytesize > 1 && rt[0] == '&' {
                 rst: string = this.strip_ref(rt);
                 if !this.tc.structs.isin(rst) && !this.tc.classes.isin(rst) { rt = rst; }
             }
@@ -2397,10 +2397,10 @@ pub def CodeGen : class {
             }
             if e.op == "*" {
                 pt: string = this.get_expr_type(e.left);
-                if pt.size > 0 && pt[0] == '*' {
+                if pt.__bytesize > 0 && pt[0] == '*' {
                     res: string = "";
                     pi: int = 1;
-                    while pi < pt.size {
+                    while pi < pt.__bytesize {
                         res = res + pt[pi];
                         pi = pi + 1;
                     }
@@ -2481,15 +2481,15 @@ pub def CodeGen : class {
                 mret: string = cl.get_method_ret(e.sval);
                 mwalk: string = obj_t;
                 mg: int = 0;
-                while mret.size == 0 && mg < 16 {
+                while mret.__bytesize == 0 && mg < 16 {
                     if !this.tc.classes.isin(mwalk) { stop; }
                     mp: string = this.tc.classes[mwalk].parent;
-                    if mp.size == 0 || !this.tc.classes.isin(mp) { stop; }
+                    if mp.__bytesize == 0 || !this.tc.classes.isin(mp) { stop; }
                     mwalk = mp;
                     mret = this.tc.classes[mwalk].get_method_ret(e.sval);
                     mg = mg + 1;
                 }
-                if mret.size > 0 { return mret; }
+                if mret.__bytesize > 0 { return mret; }
             }
 
             // Fallback: check funcs table with mangled name
@@ -2501,7 +2501,7 @@ pub def CodeGen : class {
             if e.sval == "replace" { return "string"; }
             if e.sval == "pushb" || e.sval == "push" || e.sval == "write" || e.sval == "close" { return "void"; }
             if e.sval == "read" { return "string"; }
-            if e.sval == "size" { return "int"; }
+            if e.sval == "size" || e.sval == "__bytesize" { return "int"; }
             if e.sval == "isin" { return "bool"; }
 
             // vec<T>.get / vec<T>.popb -> T
@@ -2524,10 +2524,10 @@ pub def CodeGen : class {
         }
 
         if e.kind == ExprKind.MEMBER {
-            if e.sval == "size" { return "int"; }
+            if e.sval == "size" || e.sval == "__bytesize" { return "int"; }
             name_obj_t: string = this.strip_ref(this.get_expr_type(e.left));
             if e.sval == "name" && this.tc.enums.isin(name_obj_t) { return "string"; }
-            if e.left.kind == ExprKind.IDENT && e.left.sval == "this" && this.current_class_name.size > 0 && this.tc.static_fields.isin(this.current_class_name + "_" + e.sval) {
+            if e.left.kind == ExprKind.IDENT && e.left.sval == "this" && this.current_class_name.__bytesize > 0 && this.tc.static_fields.isin(this.current_class_name + "_" + e.sval) {
                 return this.tc.static_fields[this.current_class_name + "_" + e.sval];
             }
             if e.left.kind == ExprKind.IDENT && this.tc.static_fields.isin(e.left.sval + "_" + e.sval) {
@@ -2552,13 +2552,13 @@ pub def CodeGen : class {
         // p->field : raw pointer member (strip one pointer level)
         if e.kind == ExprKind.POINTER_MEMBER {
             base: string = this.get_expr_type(e.left);
-            if base.size > 1 && (base[0] == '*' || base[0] == '&') {
+            if base.__bytesize > 1 && (base[0] == '*' || base[0] == '&') {
                 base = this.strip_ref(base);
                 // strip_ref only handles '&'; also strip a leading '*'
-                if base.size > 1 && base[0] == '*' {
+                if base.__bytesize > 1 && base[0] == '*' {
                     b2: string = "";
                     bi: int = 1;
-                    while bi < base.size { b2 = b2 + base[bi]; bi = bi + 1; }
+                    while bi < base.__bytesize { b2 = b2 + base[bi]; bi = bi + 1; }
                     base = b2;
                 }
             }
@@ -2584,10 +2584,10 @@ pub def CodeGen : class {
             if this.is_hash_type(arr_t) {
                 return this.hash_val_type(arr_t);
             }
-            if arr_t.size > 2 && arr_t[arr_t.size - 1] == ']' {
+            if arr_t.__bytesize > 2 && arr_t[arr_t.__bytesize - 1] == ']' {
                 base_t: string = "";
                 bi: int = 0;
-                while bi < arr_t.size && arr_t[bi] != '[' {
+                while bi < arr_t.__bytesize && arr_t[bi] != '[' {
                     base_t = base_t + arr_t[bi];
                     bi = bi + 1;
                 }
@@ -2687,9 +2687,9 @@ pub def CodeGen : class {
     }
 
     pub fnc tp_has_prefix(sv string, pre string) : bool {
-        if sv.size < pre.size { return false; }
+        if sv.__bytesize < pre.__bytesize { return false; }
         pi: int = 0;
-        while pi < pre.size {
+        while pi < pre.__bytesize {
             if sv[pi] != pre[pi] { return false; }
             pi = pi + 1;
         }
@@ -2699,7 +2699,7 @@ pub def CodeGen : class {
     // Loose type equality used by `expr is Type` (mirrors python's _types_match)
     pub fnc is_type_match(lt string, rt string) : bool {
         if lt == rt { return true; }
-        if lt.size == 0 || rt.size == 0 { return false; }
+        if lt.__bytesize == 0 || rt.__bytesize == 0 { return false; }
         if (lt == "int" && this.tp_has_prefix(rt, "int")) || (this.tp_has_prefix(lt, "int") && rt == "int") { return true; }
         if (lt == "uint" && this.tp_has_prefix(rt, "uint")) || (this.tp_has_prefix(lt, "uint") && rt == "uint") { return true; }
         if (lt == "float" && this.tp_has_prefix(rt, "float")) || (this.tp_has_prefix(lt, "float") && rt == "float") { return true; }
@@ -2710,7 +2710,7 @@ pub def CodeGen : class {
     pub fnc slice_base_type(t string) : string {
         base: string = "";
         bi: int = 0;
-        while bi < t.size && t[bi] != '[' {
+        while bi < t.__bytesize && t[bi] != '[' {
             base = base + t[bi];
             bi = bi + 1;
         }
@@ -2745,7 +2745,7 @@ pub def CodeGen : class {
         rlty: string = this.llvm_type(rt);
 
         // Slices / fixed arrays: { len, ptr } — compare length + bytes
-        if llty.size > 1 && llty[0] == '{' && rlty.size > 1 && rlty[0] == '{' {
+        if llty.__bytesize > 1 && llty[0] == '{' && rlty.__bytesize > 1 && rlty[0] == '{' {
             lv2: string = this.gen_expr(l);
             rv2: string = this.gen_expr(r);
             la: string = this.new_reg();
@@ -2801,7 +2801,7 @@ pub def CodeGen : class {
             this.emit("  " + fr + " = fcmp oeq double " + lv4 + ", " + rv4 + "");
             return fr;
         }
-        if llty.size > 1 && llty[0] == 'i' && rlty.size > 1 && rlty[0] == 'i' {
+        if llty.__bytesize > 1 && llty[0] == 'i' && rlty.__bytesize > 1 && rlty[0] == 'i' {
             ir_: string = this.new_reg();
             this.emit("  " + ir_ + " = icmp eq " + llty + " " + lv4 + ", " + rlty + " " + rv4 + "");
             return ir_;
@@ -2816,7 +2816,7 @@ pub def CodeGen : class {
         field: int = 0;
         cur: string = "";
         i: int = 1;
-        while i < st.size - 1 {
+        while i < st.__bytesize - 1 {
             c: char = st[i];
             if c == '{' || c == '(' { depth = depth + 1; }
             if c == '}' || c == ')' { depth = depth - 1; }
@@ -2834,11 +2834,11 @@ pub def CodeGen : class {
     }
 
     pub fnc strip_future(t string) : string {
-        if t.size > 8 && t[0] == 'f' && t[1] == 'u' && t[2] == 't' && t[3] == 'u'
-           && t[4] == 'r' && t[5] == 'e' && t[6] == '<' && t[t.size - 1] == '>' {
+        if t.__bytesize > 8 && t[0] == 'f' && t[1] == 'u' && t[2] == 't' && t[3] == 'u'
+           && t[4] == 'r' && t[5] == 'e' && t[6] == '<' && t[t.__bytesize - 1] == '>' {
             out: string = "";
             i: int = 7;
-            while i < t.size - 1 {
+            while i < t.__bytesize - 1 {
                 out = out + t[i];
                 i = i + 1;
             }
@@ -2869,28 +2869,28 @@ pub def CodeGen : class {
             // Raw literal text is kept for arbitrary-width constants; LLVM
             // accepts decimal constants of any width in the .ll text.
             // Non-decimal forms (0x.., 0b..) keep the parsed i64 value.
-            if e.sval.size > 0 && this.is_plain_decimal_lit(e.sval) { return e.sval; }
+            if e.sval.__bytesize > 0 && this.is_plain_decimal_lit(e.sval) { return e.sval; }
             return tostring(e.ival);
         }
 
         if e.kind == ExprKind.FLOAT {
-            if e.sval.size > 0 {
+            if e.sval.__bytesize > 0 {
                 lit: string = e.sval;
                 // LLVM float literals require digits on both sides of '.'
                 if lit[0] == '.' { lit = "0" + lit; }
-                if lit[lit.size - 1] == '.' { lit = lit + "0"; }
+                if lit[lit.__bytesize - 1] == '.' { lit = lit + "0"; }
                 // Scientific notation needs a '.' before the exponent:
                 // `1e-15` parses as hex in LLVM, `1.0e-15` does not.
                 has_dot: bool = false;
                 sci_i: int = -1;
                 li: int = 0;
-                while li < lit.size {
+                while li < lit.__bytesize {
                     if lit[li] == '.' { has_dot = true; }
                     also (lit[li] == 'e' || lit[li] == 'E') && sci_i < 0 { sci_i = li; }
                     li = li + 1;
                 }
                 if sci_i > 0 && !has_dot {
-                    lit = this.str_slice2(lit, 0, sci_i) + ".0" + this.str_slice2(lit, sci_i, lit.size);
+                    lit = this.str_slice2(lit, 0, sci_i) + ".0" + this.str_slice2(lit, sci_i, lit.__bytesize);
                 }
                 return lit;
             }
@@ -2925,12 +2925,12 @@ pub def CodeGen : class {
                     base_only: string = "";
                     last_slash: int = -1;
                     mi: int = 0;
-                    while mi < this.main_file.size {
+                    while mi < this.main_file.__bytesize {
                         if this.main_file[mi] == '/' { last_slash = mi; }
                         mi = mi + 1;
                     }
                     mi = last_slash + 1;
-                    while mi < this.main_file.size {
+                    while mi < this.main_file.__bytesize {
                         base_only = base_only + this.main_file[mi];
                         mi = mi + 1;
                     }
@@ -2945,27 +2945,27 @@ pub def CodeGen : class {
             if e.sval == "self" && !this.var_ptrs.isin("self") {
                 self_name: string = this.current_func_name;
                 // Inside an error definition `self` is the error's own name
-                if self_name.size > 7 && self_name[0] == '_' && self_name[1] == 'e' && self_name[2] == 'r'
+                if self_name.__bytesize > 7 && self_name[0] == '_' && self_name[1] == 'e' && self_name[2] == 'r'
                    && self_name[3] == 'r' && self_name[4] == 'o' && self_name[5] == 'r' && self_name[6] == '_' {
                     err_only: string = "";
                     ei: int = 7;
-                    while ei < self_name.size {
+                    while ei < self_name.__bytesize {
                         err_only = err_only + self_name[ei];
                         ei = ei + 1;
                     }
                     self_name = err_only;
                 }
-                if this.current_class_name.size > 0 && self_name.size > this.current_class_name.size + 1 && self_name[this.current_class_name.size] == '_' {
+                if this.current_class_name.__bytesize > 0 && self_name.__bytesize > this.current_class_name.__bytesize + 1 && self_name[this.current_class_name.__bytesize] == '_' {
                     sn_guard: int = 0;
                     sn_ok: bool = true;
-                    while sn_guard < this.current_class_name.size {
+                    while sn_guard < this.current_class_name.__bytesize {
                         if self_name[sn_guard] != this.current_class_name[sn_guard] { sn_ok = false; stop; }
                         sn_guard = sn_guard + 1;
                     }
                     if sn_ok {
                         stripped: string = "";
-                        si2: int = this.current_class_name.size + 1;
-                        while si2 < self_name.size {
+                        si2: int = this.current_class_name.__bytesize + 1;
+                        while si2 < self_name.__bytesize {
                             stripped = stripped + self_name[si2];
                             si2 = si2 + 1;
                         }
@@ -3010,7 +3010,7 @@ pub def CodeGen : class {
                 r: string = this.new_reg();
                 this.emit("  " + r + " = load " + lty + ", " + lty + "* " + ptr);
                 // Scalar refs unwrap to the referenced value (python parity)
-                while vtype.size > 1 && vtype[0] == '&' {
+                while vtype.__bytesize > 1 && vtype[0] == '&' {
                     inner: string = this.strip_ref(vtype);
                     if this.tc.structs.isin(inner) || this.tc.classes.isin(inner) { stop; }
                     ilty: string = this.llvm_type(inner);
@@ -3093,11 +3093,11 @@ pub def CodeGen : class {
             rt: string = this.get_expr_type(e.right);
 
             // Scalar refs evaluate to their underlying value in arithmetic
-            if lt.size > 1 && lt[0] == '&' {
+            if lt.__bytesize > 1 && lt[0] == '&' {
                 lst: string = this.strip_ref(lt);
                 if !this.tc.structs.isin(lst) && !this.tc.classes.isin(lst) { lt = lst; }
             }
-            if rt.size > 1 && rt[0] == '&' {
+            if rt.__bytesize > 1 && rt[0] == '&' {
                 rst: string = this.strip_ref(rt);
                 if !this.tc.structs.isin(rst) && !this.tc.classes.isin(rst) { rt = rst; }
             }
@@ -3124,10 +3124,10 @@ pub def CodeGen : class {
 
             // Pointer arithmetic: *T +/- int (leash '*'-typed operands)
             if e.op == "+" || e.op == "-" {
-                l_is_ptr: bool = lt.size > 1 && lt[0] == '*';
-                r_is_ptr: bool = rt.size > 1 && rt[0] == '*';
-                l_is_int: bool = lt == "int" || (lt.size > 4 && lt[0] == 'i' && lt[1] == 'n' && lt[2] == 't' && lt[3] == '<');
-                r_is_int: bool = rt == "int" || (rt.size > 4 && rt[0] == 'i' && rt[1] == 'n' && rt[2] == 't' && rt[3] == '<');
+                l_is_ptr: bool = lt.__bytesize > 1 && lt[0] == '*';
+                r_is_ptr: bool = rt.__bytesize > 1 && rt[0] == '*';
+                l_is_int: bool = lt == "int" || (lt.__bytesize > 4 && lt[0] == 'i' && lt[1] == 'n' && lt[2] == 't' && lt[3] == '<');
+                r_is_int: bool = rt == "int" || (rt.__bytesize > 4 && rt[0] == 'i' && rt[1] == 'n' && rt[2] == 't' && rt[3] == '<');
                 if l_is_ptr && r_is_int {
                     l_val: string = this.gen_expr(e.left);
                     r_val: string = this.gen_expr(e.right);
@@ -3137,7 +3137,7 @@ pub def CodeGen : class {
                     r_val = this.i32_to_rt_i64(e.right, r_val);
                     elem: string = "";
                     ei: int = 1;
-                    while ei < lt.size { elem = elem + lt[ei]; ei = ei + 1; }
+                    while ei < lt.__bytesize { elem = elem + lt[ei]; ei = ei + 1; }
                     elty: string = this.llvm_type(elem);
                     gep_r: string = this.new_reg();
                     idx_s: string = r_val;
@@ -3155,7 +3155,7 @@ pub def CodeGen : class {
                     l_val2 = this.i32_to_rt_i64(e.left, l_val2);
                     elem2: string = "";
                     ei2: int = 1;
-                    while ei2 < rt.size { elem2 = elem2 + rt[ei2]; ei2 = ei2 + 1; }
+                    while ei2 < rt.__bytesize { elem2 = elem2 + rt[ei2]; ei2 = ei2 + 1; }
                     elty2: string = this.llvm_type(elem2);
                     gep_r2: string = this.new_reg();
                     this.emit("  " + gep_r2 + " = getelementptr " + elty2 + ", " + elty2 + "* " + r_val2 + ", i64 " + l_val2);
@@ -3266,7 +3266,7 @@ pub def CodeGen : class {
                     li_mode: int = 0;
                     if li_t == "string" { li_mode = 1; }
                     this.emit("  " + res + " = call i64 @leash_sh_vec_isin(i8* " + rh_val + ", i8* " + li_sc8 + ", i64 " + tostring(li_mode) + ")");
-                } also rh_t.size > 2 && rh_t[rh_t.size - 1] == ']' {
+                } also rh_t.__bytesize > 2 && rh_t[rh_t.__bytesize - 1] == ']' {
                     rh_lty: string = this.llvm_type(rh_t);
                     arr_len: string = this.new_reg();
                     this.emit("  " + arr_len + " = extractvalue " + rh_lty + " " + rh_val + ", 0");
@@ -3274,7 +3274,7 @@ pub def CodeGen : class {
                     this.emit("  " + arr_ptr + " = extractvalue " + rh_lty + " " + rh_val + ", 1");
                     base_t: string = "";
                     bi2: int = 0;
-                    while bi2 < rh_t.size && rh_t[bi2] != '[' {
+                    while bi2 < rh_t.__bytesize && rh_t[bi2] != '[' {
                         base_t = base_t + rh_t[bi2];
                         bi2 = bi2 + 1;
                     }
@@ -3332,7 +3332,7 @@ pub def CodeGen : class {
                         if l_lty2 == "i8" || l_lty2 == "i1" {
                             l_pass = this.new_reg();
                             this.emit("  " + l_pass + " = zext " + l_lty2 + " " + l_val + " to i64");
-                        } also l_lty2.size > 1 && l_lty2[l_lty2.size - 1] == '*' {
+                        } also l_lty2.__bytesize > 1 && l_lty2[l_lty2.__bytesize - 1] == '*' {
                             l_pass = this.new_reg();
                             this.emit("  " + l_pass + " = ptrtoint " + l_lty2 + " " + l_val + " to i64");
                         }
@@ -3451,7 +3451,7 @@ pub def CodeGen : class {
                 if lt != "nil" { other_t = lt; }
                 other_lty: string = this.llvm_type(other_t);
                 nil_word: string = "0";
-                if other_lty.size > 0 && other_lty[other_lty.size - 1] == '*' { nil_word = "null"; }
+                if other_lty.__bytesize > 0 && other_lty[other_lty.__bytesize - 1] == '*' { nil_word = "null"; }
                 if lt == "nil" {
                     l_val = nil_word;
                     lty = other_lty;
@@ -3468,7 +3468,7 @@ pub def CodeGen : class {
             // i64: extend the register operand up, the literal embeds at
             // full width (see get_expr_type's matching int<64> result).
             if (this.is_wide_int_lit(e.left) || this.is_wide_int_lit(e.right)) && lty == "i32" && rlty == "i32" {
-                if l_val.size > 0 && l_val[0] == '%' {
+                if l_val.__bytesize > 0 && l_val[0] == '%' {
                     wl_r: string = this.new_reg();
                     if this.is_uint_type(lt) {
                         this.emit("  " + wl_r + " = zext i32 " + l_val + " to i64");
@@ -3477,7 +3477,7 @@ pub def CodeGen : class {
                     }
                     l_val = wl_r;
                 }
-                if r_val.size > 0 && r_val[0] == '%' {
+                if r_val.__bytesize > 0 && r_val[0] == '%' {
                     wl_r2: string = this.new_reg();
                     if this.is_uint_type(rt) {
                         this.emit("  " + wl_r2 + " = zext i32 " + r_val + " to i64");
@@ -3490,8 +3490,8 @@ pub def CodeGen : class {
                 rlty = "i64";
             }
             if this.is_int_lty(lty) && this.is_int_lty(rlty) && lty != rlty {
-                r_is_lit: bool = r_val.size > 0 && r_val[0] != '%';
-                l_is_lit: bool = l_val.size > 0 && l_val[0] != '%';
+                r_is_lit: bool = r_val.__bytesize > 0 && r_val[0] != '%';
+                l_is_lit: bool = l_val.__bytesize > 0 && l_val[0] != '%';
                 if this.lty_width(lty) > this.lty_width(rlty) {
                     if !r_is_lit {
                         ext_r: string = this.new_reg();
@@ -3573,7 +3573,7 @@ pub def CodeGen : class {
                 aw_box: string = this.new_reg();
                 this.emit("  " + aw_box + " = call i8* @leash_future_await(i8* " + u_val + ")");
                 aw_t: string = this.strip_future(this.get_expr_type(e.left));
-                if aw_t == "void" || aw_t.size == 0 { return ""; }
+                if aw_t == "void" || aw_t.__bytesize == 0 { return ""; }
                 aw_lty: string = this.llvm_type(aw_t);
                 aw_p: string = this.new_reg();
                 this.emit("  " + aw_p + " = bitcast i8* " + aw_box + " to " + aw_lty + "*");
@@ -3849,7 +3849,7 @@ pub def CodeGen : class {
                 sc_target: string = "";
                 if e.args.get(0).kind == ExprKind.STRING { sc_target = e.args.get(0).sval; }
                 also e.args.get(0).kind == ExprKind.IDENT { sc_target = e.args.get(0).sval; }
-                if sc_target.size > 0 {
+                if sc_target.__bytesize > 0 {
                     sc_ce: Expr = Expr.make_cast(sc_target, e.args.get(1));
                     return this.gen_expr(sc_ce);
                 }
@@ -4076,7 +4076,7 @@ pub def CodeGen : class {
                 // tostring returns non-int/float args as-is; a
                 // pointer<char> already IS a C string pointer)
                 al_lty: string = this.llvm_type(atyp);
-                if al_lty.size > 0 && al_lty[al_lty.size - 1] == '*' {
+                if al_lty.__bytesize > 0 && al_lty[al_lty.__bytesize - 1] == '*' {
                     return aval;
                 }
                 // Fallback: treat as int
@@ -4136,7 +4136,7 @@ pub def CodeGen : class {
                         alty: string = this.llvm_type(atyp);
                         if ai2 < cmps.size {
                             ptw: string = cmps.get(ai2);
-                            if ptw.size > 0 && ptw[0] != '&' {
+                            if ptw.__bytesize > 0 && ptw[0] != '&' {
                                 pltyw: string = this.llvm_type(ptw);
                                 if this.is_int_lty(alty) && this.is_int_lty(pltyw) && alty != pltyw {
                                     aval = this.coerce_store_val(arg, aval, pltyw, ptw);
@@ -4157,7 +4157,7 @@ pub def CodeGen : class {
                             dlty: string = this.llvm_type(dtyp);
                             if ai2 < cmps.size {
                                 ptw2: string = cmps.get(ai2);
-                                if ptw2.size > 0 && ptw2[0] != '&' {
+                                if ptw2.__bytesize > 0 && ptw2[0] != '&' {
                                     pltyw2: string = this.llvm_type(ptw2);
                                     if this.is_int_lty(dlty) && this.is_int_lty(pltyw2) && dlty != pltyw2 {
                                         dval = this.coerce_store_val(dd, dval, pltyw2, ptw2);
@@ -4210,10 +4210,10 @@ pub def CodeGen : class {
                 if e.sval == "bytestoint" {
                     // Width must be compile-time known: parse literal byte count
                     c_w: int = 64;
-                    c_lit_ok: bool = c_size.size > 0;
+                    c_lit_ok: bool = c_size.__bytesize > 0;
                     c_lit: int = 0;
                     c_li: int = 0;
-                    while c_li < c_size.size {
+                    while c_li < c_size.__bytesize {
                         c_ch: char = c_size[c_li];
                         if c_ch < '0' || c_ch > '9' { c_lit_ok = false; stop; }
                         c_lit = c_lit * 10 + (c_ch - '0');
@@ -4297,7 +4297,7 @@ pub def CodeGen : class {
                     fparamsS: vec<string> = this.tc.func_params[e.sval];
                     if i < fparamsS.size {
                         ptS: string = fparamsS.get(i);
-                        if this.is_vec_type(ptS) && atyp.size > 1 && atyp[0] != '&' && atyp[atyp.size - 1] == ']' {
+                        if this.is_vec_type(ptS) && atyp.__bytesize > 1 && atyp[0] != '&' && atyp[atyp.__bytesize - 1] == ']' {
                             aval = this.slice_to_vec(aval, atyp, this.vec_inner_type(ptS), true);
                             atyp = ptS;
                             alty = this.llvm_type(ptS);
@@ -4319,13 +4319,13 @@ pub def CodeGen : class {
                     fparams: vec<string> = this.tc.func_params[e.sval];
                     if i < fparams.size {
                         pt: string = fparams.get(i);
-                        if pt.size > 1 && pt[0] == '&' {
+                        if pt.__bytesize > 1 && pt[0] == '&' {
                             at_st: string = this.strip_ref(atyp);
-                            at_is_ptr: bool = atyp.size > 1 && atyp[0] == '*';
+                            at_is_ptr: bool = atyp.__bytesize > 1 && atyp[0] == '*';
                             at_is_struct: bool = this.tc.structs.isin(at_st) || this.tc.classes.isin(at_st);
                             if !at_is_ptr && !at_is_struct {
                                 if arg.kind == ExprKind.IDENT && this.var_ptrs.isin(arg.sval) {
-                                    if atyp.size > 1 && atyp[0] == '&' {
+                                    if atyp.__bytesize > 1 && atyp[0] == '&' {
                                         c_lty: string = this.llvm_type(atyp);
                                         cr: string = this.new_reg();
                                         this.emit("  " + cr + " = load " + c_lty + ", " + c_lty + "* " + this.var_ptrs[arg.sval]);
@@ -4340,7 +4340,7 @@ pub def CodeGen : class {
                     }
                 }
                 if arg.kind == ExprKind.NIL {
-                    if alty.size > 0 && alty[alty.size - 1] == '*' {
+                    if alty.__bytesize > 0 && alty[alty.__bytesize - 1] == '*' {
                         aval = "null";
                     } else {
                         aval = "0";
@@ -4353,7 +4353,7 @@ pub def CodeGen : class {
                     fparamsW: vec<string> = this.tc.func_params[e.sval];
                     if i < fparamsW.size {
                         ptW: string = fparamsW.get(i);
-                        if ptW.size > 0 && ptW[0] != '&' {
+                        if ptW.__bytesize > 0 && ptW[0] != '&' {
                             pltyW: string = this.llvm_type(ptW);
                             if this.is_int_lty(alty) && this.is_int_lty(pltyW) && alty != pltyW {
                                 aval = this.coerce_store_val(arg, aval, pltyW, ptW);
@@ -4425,8 +4425,13 @@ pub def CodeGen : class {
             if obj_t == "string" {
                 if e.sval == "size" {
                     res: string = this.new_reg();
+                    this.emit("  " + res + " = call i64 @leash_utf8_len(i8* " + obj_val + ")");
+                    return this.rt_i64_to_i32(res);
+                }
+                if e.sval == "__bytesize" {
+                    res: string = this.new_reg();
                     this.emit("  " + res + " = call i64 @strlen(i8* " + obj_val + ")");
-                    return res;
+                    return this.rt_i64_to_i32(res);
                 }
                 if e.sval == "replace" {
                     from_val: string = this.gen_expr(e.args.get(0));
@@ -4779,7 +4784,7 @@ pub def CodeGen : class {
                                 is_el = this.new_reg();
                                 this.emit("  " + is_el + " = icmp eq " + is_lt + " " + is_av4 + ", " + is_bv4);
                             }
-                            if is_and.size == 0 {
+                            if is_and.__bytesize == 0 {
                                 is_and = is_el;
                             } else {
                                 is_an2: string = this.new_reg();
@@ -4788,7 +4793,7 @@ pub def CodeGen : class {
                             }
                             is_fi = is_fi + 1;
                         }
-                        if is_and.size == 0 { is_and = "1"; }
+                        if is_and.__bytesize == 0 { is_and = "1"; }
                         this.emit("  br i1 " + is_and + ", label %" + is_found + ", label %" + is_bump);
                         this.emit(is_bump + ":");
                         is_ni: string = this.new_reg();
@@ -4833,7 +4838,7 @@ pub def CodeGen : class {
                     this.emit("  " + sl_ptr + " = extractvalue " + sl_lty + " " + slice_val + ", 1");
                     sbase: string = "";
                     sb: int = 0;
-                    while sb < slice_t.size && slice_t[sb] != '[' {
+                    while sb < slice_t.__bytesize && slice_t[sb] != '[' {
                         sbase = sbase + slice_t[sb];
                         sb = sb + 1;
                     }
@@ -5006,7 +5011,7 @@ pub def CodeGen : class {
             while this.tc.classes.isin(m_owner) && m_g < 16 {
                 if this.tc.classes[m_owner].has_method(e.sval) { stop; }
                 mp: string = this.tc.classes[m_owner].parent;
-                if mp.size == 0 || !this.tc.classes.isin(mp) { stop; }
+                if mp.__bytesize == 0 || !this.tc.classes.isin(mp) { stop; }
                 m_owner = mp;
                 m_g = m_g + 1;
             }
@@ -5034,7 +5039,7 @@ pub def CodeGen : class {
                         mpsS: vec<string> = mciS.method_params[e.sval];
                         if ai < mpsS.size {
                             ptS2: string = mpsS.get(ai);
-                            if this.is_vec_type(ptS2) && atyp.size > 1 && atyp[0] != '&' && atyp[atyp.size - 1] == ']' {
+                            if this.is_vec_type(ptS2) && atyp.__bytesize > 1 && atyp[0] != '&' && atyp[atyp.__bytesize - 1] == ']' {
                                 aval = this.slice_to_vec(aval, atyp, this.vec_inner_type(ptS2), true);
                                 atyp = ptS2;
                                 alty = this.llvm_type(ptS2);
@@ -5056,7 +5061,7 @@ pub def CodeGen : class {
                     fparamsW: vec<string> = this.tc.func_params[mname];
                     if ai < fparamsW.size {
                         ptW: string = fparamsW.get(ai);
-                        if ptW.size > 0 && ptW[0] != '&' {
+                        if ptW.__bytesize > 0 && ptW[0] != '&' {
                             pltyW: string = this.llvm_type(ptW);
                             if this.is_int_lty(alty) && this.is_int_lty(pltyW) && alty != pltyW {
                                 aval = this.coerce_store_val(arg, aval, pltyW, ptW);
@@ -5071,7 +5076,7 @@ pub def CodeGen : class {
                         mpsW: vec<string> = mciW.method_params[e.sval];
                         if ai < mpsW.size {
                             ptW2: string = mpsW.get(ai);
-                            if ptW2.size > 0 && ptW2[0] != '&' {
+                            if ptW2.__bytesize > 0 && ptW2[0] != '&' {
                                 pltyW2: string = this.llvm_type(ptW2);
                                 if this.is_int_lty(alty) && this.is_int_lty(pltyW2) && alty != pltyW2 {
                                     aval = this.coerce_store_val(arg, aval, pltyW2, ptW2);
@@ -5081,7 +5086,7 @@ pub def CodeGen : class {
                         }
                     }
                 }
-                if arg_strs.size > 0 { arg_strs = arg_strs + ", "; }
+                if arg_strs.__bytesize > 0 { arg_strs = arg_strs + ", "; }
                 arg_strs = arg_strs + alty + " " + aval;
                 ai = ai + 1;
             }
@@ -5161,7 +5166,7 @@ pub def CodeGen : class {
             }
 
             // this.static_field (static fields accessed via `this`)
-            if e.left.kind == ExprKind.IDENT && e.left.sval == "this" && this.current_class_name.size > 0 && this.tc.static_fields.isin(this.current_class_name + "_" + e.sval) {
+            if e.left.kind == ExprKind.IDENT && e.left.sval == "this" && this.current_class_name.__bytesize > 0 && this.tc.static_fields.isin(this.current_class_name + "_" + e.sval) {
                 sf_t: string = this.tc.static_fields[this.current_class_name + "_" + e.sval];
                 sf_val: string = this.new_reg();
                 this.emit("  " + sf_val + " = load " + this.llvm_type(sf_t) + ", " + this.llvm_type(sf_t) + "* @" + this.current_class_name + "_static_" + e.sval);
@@ -5187,6 +5192,12 @@ pub def CodeGen : class {
 
             if e.sval == "size" && obj_t == "string" {
                 res: string = this.new_reg();
+                this.emit("  " + res + " = call i64 @leash_utf8_len(i8* " + obj_val + ")");
+                return this.rt_i64_to_i32(res);
+            }
+
+            if e.sval == "__bytesize" && obj_t == "string" {
+                res: string = this.new_reg();
                 this.emit("  " + res + " = call i64 @strlen(i8* " + obj_val + ")");
                 return this.rt_i64_to_i32(res);
             }
@@ -5201,7 +5212,7 @@ pub def CodeGen : class {
                 return this.rt_i64_to_i32(res);
             }
 
-            if e.sval == "size" && obj_t.size > 2 && obj_t[obj_t.size - 1] == ']' {
+            if e.sval == "size" && obj_t.__bytesize > 2 && obj_t[obj_t.__bytesize - 1] == ']' {
                 res: string = this.new_reg();
                 lty: string = this.llvm_type(obj_t);
                 this.emit("  " + res + " = extractvalue " + lty + " " + obj_val + ", 0");
@@ -5248,13 +5259,13 @@ pub def CodeGen : class {
         if e.kind == ExprKind.POINTER_MEMBER {
             ptr_val: string = this.gen_expr(e.left);
             base: string = this.get_expr_type(e.left);
-            if base.size > 1 && base[0] == '&' {
+            if base.__bytesize > 1 && base[0] == '&' {
                 base = this.strip_ref(base);
             }
-            if base.size > 1 && base[0] == '*' {
+            if base.__bytesize > 1 && base[0] == '*' {
                 b2: string = "";
                 bi2: int = 1;
-                while bi2 < base.size { b2 = b2 + base[bi2]; bi2 = bi2 + 1; }
+                while bi2 < base.__bytesize { b2 = b2 + base[bi2]; bi2 = bi2 + 1; }
                 base = b2;
             }
             if this.tc.structs.isin(base) {
@@ -5332,10 +5343,10 @@ pub def CodeGen : class {
                 return this.unbox_from_i8ptr(raw, val_t);
             }
 
-            if arr_t.size > 2 && arr_t[arr_t.size - 1] == ']' {
+            if arr_t.__bytesize > 2 && arr_t[arr_t.__bytesize - 1] == ']' {
                 base_t: string = "";
                 bi: int = 0;
-                while bi < arr_t.size && arr_t[bi] != '[' {
+                while bi < arr_t.__bytesize && arr_t[bi] != '[' {
                     base_t = base_t + arr_t[bi];
                     bi = bi + 1;
                 }
@@ -5414,7 +5425,7 @@ pub def CodeGen : class {
                 return res;
             }
 
-            if this.is_vec_type(to_t) && from_t.size > 1 && from_t[from_t.size - 1] == ']' {
+            if this.is_vec_type(to_t) && from_t.__bytesize > 1 && from_t[from_t.__bytesize - 1] == ']' {
                 return this.slice_to_vec(val, from_t, this.vec_inner_type(to_t), true);
             }
 
@@ -5426,11 +5437,11 @@ pub def CodeGen : class {
             sname: string = e.sval;
             // Inside an instantiated generic class, `Tpl { ... }` refers to
             // the concrete instantiation (e.g. `Hash {}` in `Hash_string_int`).
-            if this.tc.generic_classes.isin(sname) && this.current_class_name.size > sname.size
-               && this.current_class_name[sname.size] == '_' {
+            if this.tc.generic_classes.isin(sname) && this.current_class_name.__bytesize > sname.__bytesize
+               && this.current_class_name[sname.__bytesize] == '_' {
                 cc_ok: bool = true;
                 cc_i: int = 0;
-                while cc_i < sname.size {
+                while cc_i < sname.__bytesize {
                     if this.current_class_name[cc_i] != sname[cc_i] { cc_ok = false; stop; }
                     cc_i = cc_i + 1;
                 }
@@ -5519,7 +5530,7 @@ pub def CodeGen : class {
                     also lftyp == "i1" { this.emit("  store i1 0, i1* " + gep_r); }
                     also lftyp == "i8" { this.emit("  store i8 0, i8* " + gep_r); }
                     also lftyp[0] == '{' { this.emit("  store " + lftyp + " zeroinitializer, " + lftyp + "* " + gep_r); }
-                    also lftyp.size > 7 && lftyp[0] == '%' && this.str_slice2(lftyp, 0, 7) == "%union." { this.emit("  store " + lftyp + " zeroinitializer, " + lftyp + "* " + gep_r); }
+                    also lftyp.__bytesize > 7 && lftyp[0] == '%' && this.str_slice2(lftyp, 0, 7) == "%union." { this.emit("  store " + lftyp + " zeroinitializer, " + lftyp + "* " + gep_r); }
                     also this.is_int_lty(lftyp) { this.emit("  store " + lftyp + " 0, " + lftyp + "* " + gep_r); }
                     else { this.emit("  store " + lftyp + " null, " + lftyp + "* " + gep_r); }
                 }
@@ -5538,7 +5549,7 @@ pub def CodeGen : class {
                     gep_r: string = this.new_reg();
                     this.emit("  " + gep_r + " = getelementptr inbounds " + type_prefix + sname + ", " + type_prefix + sname + "* " + s_ptr + ", i32 0, i32 " + tostring(f_off + f_idx));
                     ftyp: string = all_field_types.get(f_idx);
-                    if this.is_vec_type(ftyp) && fval_rhst.size > 1 && fval_rhst[fval_rhst.size - 1] == ']' {
+                    if this.is_vec_type(ftyp) && fval_rhst.__bytesize > 1 && fval_rhst[fval_rhst.__bytesize - 1] == ']' {
                         fval = this.slice_to_vec(fval, fval_rhst, this.vec_inner_type(ftyp), false);
                     } else {
                         fval = this.adapt_slice(fval, fval_rhst, ftyp);
@@ -5636,7 +5647,7 @@ pub def CodeGen : class {
     // Append one showb argument to the runtime output buffer.
     pub fnc gen_showb_arg(arg Expr) : void {
         batyp: string = this.get_expr_type(arg);
-        if batyp.size > 1 && batyp[0] == '&' {
+        if batyp.__bytesize > 1 && batyp[0] == '&' {
             bau: string = this.strip_ref(batyp);
             if !this.tc.structs.isin(bau) && !this.tc.classes.isin(bau) { batyp = bau; }
         }
@@ -5707,7 +5718,7 @@ pub def CodeGen : class {
 
         if s.kind == StmtKind.VAR_DECL {
             vtyp: string = s.var_type;
-            if vtyp.size == 0 && s.value != null {
+            if vtyp.__bytesize == 0 && s.value != null {
                 // Bodies shared from generic templates are never type-checked
                 // (checking would bake template types into the shared AST);
                 // infer the concrete type here instead.
@@ -5725,7 +5736,7 @@ pub def CodeGen : class {
                     this.union_auto_store(ptr, vtyp, val, rhs_t);
                     return;
                 }
-                if this.is_vec_type(vtyp) && rhs_t.size > 1 && rhs_t[rhs_t.size - 1] == ']' {
+                if this.is_vec_type(vtyp) && rhs_t.__bytesize > 1 && rhs_t[rhs_t.__bytesize - 1] == ']' {
                     val = this.slice_to_vec(val, rhs_t, this.vec_inner_type(vtyp), true);
                 }
                 val = this.adapt_slice(val, rhs_t, vtyp);
@@ -5852,8 +5863,8 @@ pub def CodeGen : class {
                             also clft2 == "double" { this.emit("  store double 0.0, double* " + cgep2); }
                             also clft2 == "i1" { this.emit("  store i1 0, i1* " + cgep2); }
                             also clft2 == "i8" { this.emit("  store i8 0, i8* " + cgep2); }
-                            also clft2.size > 0 && clft2[0] == '{' { this.emit("  store " + clft2 + " zeroinitializer, " + clft2 + "* " + cgep2); }
-                            also clft2.size > 7 && clft2[0] == '%' && this.str_slice2(clft2, 0, 7) == "%union." { this.emit("  store " + clft2 + " zeroinitializer, " + clft2 + "* " + cgep2); }
+                            also clft2.__bytesize > 0 && clft2[0] == '{' { this.emit("  store " + clft2 + " zeroinitializer, " + clft2 + "* " + cgep2); }
+                            also clft2.__bytesize > 7 && clft2[0] == '%' && this.str_slice2(clft2, 0, 7) == "%union." { this.emit("  store " + clft2 + " zeroinitializer, " + clft2 + "* " + cgep2); }
                             also this.is_int_lty(clft2) { this.emit("  store " + clft2 + " 0, " + clft2 + "* " + cgep2); }
                             else { this.emit("  store " + clft2 + " null, " + clft2 + "* " + cgep2); }
                         }
@@ -5882,9 +5893,9 @@ pub def CodeGen : class {
                     } else {
                         this.emit("  store " + lty + " null, " + lty + "* " + ptr);
                     }
-                } also lty.size > 0 && lty[lty.size - 1] == '*' {
+                } also lty.__bytesize > 0 && lty[lty.__bytesize - 1] == '*' {
                     this.emit("  store " + lty + " null, " + lty + "* " + ptr);
-                } also lty.size > 0 && lty[0] == '{' {
+                } also lty.__bytesize > 0 && lty[0] == '{' {
                     this.emit("  store " + lty + " zeroinitializer, " + lty + "* " + ptr);
                     // Python parity: a default struct value gets empty
                     // containers for its vec/hash fields (python's inline
@@ -5913,7 +5924,7 @@ pub def CodeGen : class {
                             }
                         }
                     }
-                } also lty.size > 7 && lty[0] == '%' && this.str_slice2(lty, 0, 7) == "%union." {
+                } also lty.__bytesize > 7 && lty[0] == '%' && this.str_slice2(lty, 0, 7) == "%union." {
                     this.emit("  store " + lty + " zeroinitializer, " + lty + "* " + ptr);
                 }
             }
@@ -5940,7 +5951,7 @@ pub def CodeGen : class {
                 }
                 if this.is_vec_type(tt) {
                     avt: string = this.get_expr_type(s.value);
-                    if avt.size > 1 && avt[avt.size - 1] == ']' {
+                    if avt.__bytesize > 1 && avt[avt.__bytesize - 1] == ']' {
                         val = this.slice_to_vec(val, avt, this.vec_inner_type(tt), true);
                     }
                 } else {
@@ -5974,7 +5985,7 @@ pub def CodeGen : class {
                         return;
                     }
                     // Scalar refs assign through to the referenced cell
-                    while vtyp.size > 1 && vtyp[0] == '&' {
+                    while vtyp.__bytesize > 1 && vtyp[0] == '&' {
                         inner: string = this.strip_ref(vtyp);
                         if this.tc.structs.isin(inner) || this.tc.classes.isin(inner) { stop; }
                         nplty: string = this.llvm_type(vtyp);
@@ -5998,10 +6009,10 @@ pub def CodeGen : class {
                 // Deref store: *p = v
                 d_ptr: string = this.gen_expr(s.target.left);
                 d_typ: string = this.get_expr_type(s.target.left);
-                if d_typ.size > 1 && d_typ[0] == '*' {
+                if d_typ.__bytesize > 1 && d_typ[0] == '*' {
                     d_in: string = "";
                     d_i: int = 1;
-                    while d_i < d_typ.size { d_in = d_in + d_typ[d_i]; d_i = d_i + 1; }
+                    while d_i < d_typ.__bytesize { d_in = d_in + d_typ[d_i]; d_i = d_i + 1; }
                     d_typ = d_in;
                 }
                 d_lty: string = this.llvm_type(d_typ);
@@ -6016,13 +6027,13 @@ pub def CodeGen : class {
                 // p->field = v : gep through the raw pointer, then store
                 pp_ptr: string = this.gen_expr(s.target.left);
                 pp_base: string = this.get_expr_type(s.target.left);
-                if pp_base.size > 1 && pp_base[0] == '&' {
+                if pp_base.__bytesize > 1 && pp_base[0] == '&' {
                     pp_base = this.strip_ref(pp_base);
                 }
-                if pp_base.size > 1 && pp_base[0] == '*' {
+                if pp_base.__bytesize > 1 && pp_base[0] == '*' {
                     pp_b2: string = "";
                     pp_i: int = 1;
-                    while pp_i < pp_base.size { pp_b2 = pp_b2 + pp_base[pp_i]; pp_i = pp_i + 1; }
+                    while pp_i < pp_base.__bytesize { pp_b2 = pp_b2 + pp_base[pp_i]; pp_i = pp_i + 1; }
                     pp_base = pp_b2;
                 }
                 pp_fidx: int = -1;
@@ -6078,12 +6089,12 @@ pub def CodeGen : class {
                     if s.target.left.sval != "this" && this.tc.static_fields.isin(s.target.left.sval + "_" + s.target.sval) {
                         sf_key = s.target.left.sval + "_" + s.target.sval;
                         sf_global = s.target.left.sval + "_static_" + s.target.sval;
-                    } also s.target.left.sval == "this" && this.current_class_name.size > 0 && this.tc.static_fields.isin(this.current_class_name + "_" + s.target.sval) {
+                    } also s.target.left.sval == "this" && this.current_class_name.__bytesize > 0 && this.tc.static_fields.isin(this.current_class_name + "_" + s.target.sval) {
                         sf_key = this.current_class_name + "_" + s.target.sval;
                         sf_global = this.current_class_name + "_static_" + s.target.sval;
                     }
                 }
-                if sf_key.size > 0 {
+                if sf_key.__bytesize > 0 {
                     sf_t: string = this.tc.static_fields[sf_key];
                     sf_lty: string = this.llvm_type(sf_t);
                     sf_ptr: string = "@" + sf_global;
@@ -6253,7 +6264,7 @@ pub def CodeGen : class {
         if s.kind == StmtKind.RETURN {
             if s.value != null {
                 // Multi-value return: build the tuple aggregate inline
-                if s.value.kind == ExprKind.ARRAY_LIT && s.value.sval == "__tuple__" && this.current_func_ret.size > 1 && this.current_func_ret[0] == '(' {
+                if s.value.kind == ExprKind.ARRAY_LIT && s.value.sval == "__tuple__" && this.current_func_ret.__bytesize > 1 && this.current_func_ret[0] == '(' {
                     lret: string = this.llvm_type(this.current_func_ret);
                     agg: string = lret + " undef";
                     ti: int = 0;
@@ -6274,7 +6285,7 @@ pub def CodeGen : class {
                 } else {
                     val: string = this.gen_expr(s.value);
                     ret_rhst: string = this.get_expr_type(s.value);
-                    if this.is_vec_type(this.current_func_ret) && ret_rhst.size > 1 && ret_rhst[ret_rhst.size - 1] == ']' {
+                    if this.is_vec_type(this.current_func_ret) && ret_rhst.__bytesize > 1 && ret_rhst[ret_rhst.__bytesize - 1] == ']' {
                         val = this.slice_to_vec(val, ret_rhst, this.vec_inner_type(this.current_func_ret), true);
                     } else {
                         val = this.adapt_slice(val, ret_rhst, this.current_func_ret);
@@ -6303,9 +6314,9 @@ pub def CodeGen : class {
                         }
                         if lret == "double" { val = "0.0"; }
                         also lret == "i1" { val = "false"; }
-                        also lret.size > 1 && lret[lret.size - 1] == '*' { val = "null"; }
-                        also lret.size > 1 && lret[0] == '{' { val = "zeroinitializer"; }
-                        also lret != "void" && lret.size > 0 { val = "0"; }
+                        also lret.__bytesize > 1 && lret[lret.__bytesize - 1] == '*' { val = "null"; }
+                        also lret.__bytesize > 1 && lret[0] == '{' { val = "zeroinitializer"; }
+                        also lret != "void" && lret.__bytesize > 0 { val = "0"; }
                     }
                     di: int = this.defer_stack.size - 1;
                     while di >= 0 {
@@ -6551,12 +6562,12 @@ pub def CodeGen : class {
             foreach _, arg in<vector> s.args {
                 atyp: string = this.get_expr_type(arg);
                 // Scalar refs print as their underlying value (python parity)
-                if atyp.size > 1 && atyp[0] == '&' {
+                if atyp.__bytesize > 1 && atyp[0] == '&' {
                     at_u: string = this.strip_ref(atyp);
                     if !this.tc.structs.isin(at_u) && !this.tc.classes.isin(at_u) { atyp = at_u; }
                 }
                 // Sized aliases print as their base kind (float<64> -> float)
-                if atyp.size > 6 && atyp[0] == 'f' && atyp[1] == 'l' && atyp[2] == 'o' && atyp[3] == 'a' && atyp[4] == 't' && atyp[5] == '<' {
+                if atyp.__bytesize > 6 && atyp[0] == 'f' && atyp[1] == 'l' && atyp[2] == 'o' && atyp[3] == 'a' && atyp[4] == 't' && atyp[5] == '<' {
                     atyp = "float";
                 }
                 if this.tc.unions.isin(atyp) {
@@ -6577,14 +6588,14 @@ pub def CodeGen : class {
                     this.emit("  call i32 (i8*, ...) @printf(i8* getelementptr inbounds ([5 x i8], [5 x i8]* @.fmt_u, i64 0, i64 0), i64 " + uz2 + ")");
                 } also atyp == "float" {
                     this.emit("  call i32 (i8*, ...) @printf(i8* getelementptr inbounds ([3 x i8], [3 x i8]* @.fmt_f, i64 0, i64 0), double " + aval + ")");
-                } also atyp.size > 1 && (atyp[0] == '*' || atyp[0] == '&') {
+                } also atyp.__bytesize > 1 && (atyp[0] == '*' || atyp[0] == '&') {
                     // Pointers: *char prints as a C string; everything else %p
                     p_inner: string = "";
                     if atyp[0] == '&' {
                         p_inner = this.strip_ref(atyp);
                     } else {
                         pi3: int = 1;
-                        while pi3 < atyp.size { p_inner = p_inner + atyp[pi3]; pi3 = pi3 + 1; }
+                        while pi3 < atyp.__bytesize { p_inner = p_inner + atyp[pi3]; pi3 = pi3 + 1; }
                     }
                     if p_inner == "char" && atyp[0] == '*' {
                         this.emit("  call i32 (i8*, ...) @printf(i8* getelementptr inbounds ([3 x i8], [3 x i8]* @.fmt_s, i64 0, i64 0), i8* " + aval + ")");
@@ -6592,7 +6603,7 @@ pub def CodeGen : class {
                         p_lty: string = this.llvm_type(atyp);
                         this.emit("  call i32 (i8*, ...) @printf(i8* getelementptr inbounds ([3 x i8], [3 x i8]* @.fmt_p, i64 0, i64 0), " + p_lty + " " + aval + ")");
                     }
-                } also atyp.size > 1 && atyp[atyp.size - 1] == ']' {
+                } also atyp.__bytesize > 1 && atyp[atyp.__bytesize - 1] == ']' {
                     sl_lty: string = this.llvm_type(atyp);
                     sl_len: string = this.new_reg();
                     this.emit("  " + sl_len + " = extractvalue " + sl_lty + " " + aval + ", 0");
@@ -6664,7 +6675,7 @@ pub def CodeGen : class {
                     clshow: ClassInfo = this.tc.classes[atyp];
                     clbase: string = "";
                     cb_i: int = 0;
-                    while cb_i < atyp.size {
+                    while cb_i < atyp.__bytesize {
                         if atyp[cb_i] == '<' { stop; }
                         clbase = clbase + atyp[cb_i];
                         cb_i = cb_i + 1;
@@ -6705,17 +6716,17 @@ pub def CodeGen : class {
                 // a newline and has no '%', printf otherwise).
                 if s.show_end == "\n" {
                     this.emit("  call i32 (i8*, ...) @printf(i8* getelementptr inbounds ([2 x i8], [2 x i8]* @.fmt_nl, i64 0, i64 0))");
-                } also s.show_end.size > 0 {
+                } also s.show_end.__bytesize > 0 {
                     has_pct: bool = false;
                     ei: int = 0;
-                    while ei < s.show_end.size {
+                    while ei < s.show_end.__bytesize {
                         if s.show_end[ei] == '%' { has_pct = true; }
                         ei = ei + 1;
                     }
-                    if !has_pct && s.show_end[s.show_end.size - 1] == '\n' {
+                    if !has_pct && s.show_end[s.show_end.__bytesize - 1] == '\n' {
                         trimmed: string = "";
                         ti: int = 0;
-                        while ti < s.show_end.size - 1 {
+                        while ti < s.show_end.__bytesize - 1 {
                             trimmed = trimmed + s.show_end[ti];
                             ti = ti + 1;
                         }
@@ -6778,7 +6789,7 @@ pub def CodeGen : class {
         }
 
         if s.kind == StmtKind.WORKS {
-            if this.tc.works_error.size > 0 {
+            if this.tc.works_error.__bytesize > 0 {
                 // run the otherwise handler with the captured message
                 this.emit("  %" + s.name + ".ptr = alloca i8*, align 8");
                 err_decl: Stmt = Stmt.make_var_decl(s.name, "string", false, false, Expr.make_string(this.tc.works_error));
@@ -6864,7 +6875,7 @@ pub def CodeGen : class {
     }
 
     pub fnc is_lambda_name(n string) : bool {
-        if n.size < 8 { return false; }
+        if n.__bytesize < 8 { return false; }
         if n[0] != 'l' { return false; }
         if n[1] != 'a' { return false; }
         if n[2] != 'm' { return false; }
@@ -6880,13 +6891,13 @@ pub def CodeGen : class {
     // body (inline when the runtime refuses a spawn) and completes it.
     pub fnc gen_async_wrapper(f FuncDecl) : void {
         fn_name: string = f.name;
-        if f.owner.size > 0 { fn_name = f.owner + "_" + f.name; }
+        if f.owner.__bytesize > 0 { fn_name = f.owner + "_" + f.name; }
         param_sigs: string = "";
         arg_strs: string = "";
         foreach _, p in<vector> f.params {
-            if param_sigs.size > 0 { param_sigs = param_sigs + ", "; }
+            if param_sigs.__bytesize > 0 { param_sigs = param_sigs + ", "; }
             param_sigs = param_sigs + this.llvm_type(p.typ) + " %p_" + p.name;
-            if arg_strs.size > 0 { arg_strs = arg_strs + ", "; }
+            if arg_strs.__bytesize > 0 { arg_strs = arg_strs + ", "; }
             arg_strs = arg_strs + this.llvm_type(p.typ) + " %p_" + p.name;
         }
         body: string = fn_name + "__async_body";
@@ -6929,7 +6940,7 @@ pub def CodeGen : class {
         empty_defers: vec<Stmt>;
         this.defer_stack = empty_defers;
         fn_name: string = f.name;
-        has_this: bool = f.owner.size > 0;
+        has_this: bool = f.owner.__bytesize > 0;
         if has_this { fn_name = f.owner + "_" + f.name; }
         this.current_func_name = fn_name;
         if this.is_lambda_name(fn_name) { this.current_func_name = "<lambda>"; }
@@ -6941,20 +6952,20 @@ pub def CodeGen : class {
         this.opdef_inner = "";
         empty_tn: vec<string>;
         this.cur_tmap_names = empty_tn;
-        if f.owner.size > 0 && this.tc.inst_tmaps.isin(f.owner) {
+        if f.owner.__bytesize > 0 && this.tc.inst_tmaps.isin(f.owner) {
             this.cur_tmap_names = this.tc.inst_tmaps[f.owner];
         }
-        if fn_name.size > 7 && fn_name[0] == '_' && fn_name[1] == 'o' && fn_name[2] == 'p'
+        if fn_name.__bytesize > 7 && fn_name[0] == '_' && fn_name[1] == 'o' && fn_name[2] == 'p'
            && fn_name[3] == 'd' && fn_name[4] == 'e' && fn_name[5] == 'f' && fn_name[6] == '_' {
             foreach _, op in<vector> f.params {
                 opt: string = op.typ;
-                if opt.size > 5 && opt[0] == 'v' && opt[1] == 'e' && opt[2] == 'c' && opt[3] == '<' {
+                if opt.__bytesize > 5 && opt[0] == 'v' && opt[1] == 'e' && opt[2] == 'c' && opt[3] == '<' {
                     this.opdef_inner = this.vec_inner_type(opt);
                 }
-                if opt.size > 8 && opt[0] == 'm' && opt[1] == 'a' && opt[2] == 't' && opt[3] == 'r' && opt[4] == 'i' && opt[5] == 'x' && opt[6] == '<' {
+                if opt.__bytesize > 8 && opt[0] == 'm' && opt[1] == 'a' && opt[2] == 't' && opt[3] == 'r' && opt[4] == 'i' && opt[5] == 'x' && opt[6] == '<' {
                     this.opdef_inner = this.vec_inner_type(opt);
                 }
-                if opt.size > 6 && opt[0] == 'h' && opt[1] == 'a' && opt[2] == 's' && opt[3] == 'h' && opt[4] == '<' {
+                if opt.__bytesize > 6 && opt[0] == 'h' && opt[1] == 'a' && opt[2] == 's' && opt[3] == 'h' && opt[4] == '<' {
                     this.opdef_inner = this.hash_val_type(opt);
                 }
             }
@@ -6977,7 +6988,7 @@ pub def CodeGen : class {
         } else {
             if has_this { param_sigs = this.llvm_type(f.owner) + "* %p_this"; }
             foreach i, p in<vector> f.params {
-                if param_sigs.size > 0 { param_sigs = param_sigs + ", "; }
+                if param_sigs.__bytesize > 0 { param_sigs = param_sigs + ", "; }
                 param_sigs = param_sigs + this.llvm_type(p.typ) + " %p_" + p.name;
             }
         }
@@ -7056,7 +7067,7 @@ pub def CodeGen : class {
         locals: vec<Stmt> = this.collect_local_vars(f.body, local_param_names);
         foreach _, loc in<vector> locals {
             loc_t: string = loc.var_type;
-            if loc_t.size == 0 && loc.value != null {
+            if loc_t.__bytesize == 0 && loc.value != null {
                 loc_t = this.get_expr_type(loc.value);
             }
             lty: string = this.llvm_type(loc_t);
@@ -7143,7 +7154,7 @@ pub def CodeGen : class {
                     msig = msig + "%class." + c.name + "*";
                 }
                 foreach _, p in<vector> m.params {
-                    if msig[msig.size - 1] != '(' { msig = msig + ", "; }
+                    if msig[msig.__bytesize - 1] != '(' { msig = msig + ", "; }
                     msig = msig + this.llvm_type(p.typ);
                 }
                 msig = msig + ")*";
@@ -7223,7 +7234,7 @@ pub def CodeGen : class {
                     param_sigs = "%class." + c.name + "* %p_this";
                 }
                 foreach i, p in<vector> m.params {
-                    if param_sigs.size > 0 { param_sigs = param_sigs + ", "; }
+                    if param_sigs.__bytesize > 0 { param_sigs = param_sigs + ", "; }
                     param_sigs = param_sigs + this.llvm_type(p.typ) + " %p_" + p.name;
                 }
 
@@ -7263,7 +7274,7 @@ pub def CodeGen : class {
                 locals: vec<Stmt> = this.collect_local_vars(m.body, method_param_names);
                 foreach _, loc in<vector> locals {
                     mloc_t: string = loc.var_type;
-                    if mloc_t.size == 0 && loc.value != null {
+                    if mloc_t.__bytesize == 0 && loc.value != null {
                         mloc_t = this.get_expr_type(loc.value);
                     }
                     lty: string = this.llvm_type(mloc_t);
@@ -7306,7 +7317,7 @@ pub def CodeGen : class {
         main_has_args: bool = false;
         main_ret_int: bool = false;
         foreach _, f in<vector> prog.funcs {
-            if f.name == "main" && f.owner.size == 0 {
+            if f.name == "main" && f.owner.__bytesize == 0 {
                 has_main = true;
                 if f.params.size == 1 {
                     p0: FuncParam = f.params.get(0);
@@ -7394,7 +7405,7 @@ pub def CodeGen : class {
                         while this.tc.classes.isin(vowner) && vog < 16 {
                             if this.tc.classes[vowner].has_method(vmname) { stop; }
                             vop: string = this.tc.classes[vowner].parent;
-                            if vop.size == 0 || !this.tc.classes.isin(vop) { stop; }
+                            if vop.__bytesize == 0 || !this.tc.classes.isin(vop) { stop; }
                             vowner = vop;
                             vog = vog + 1;
                         }
@@ -7480,7 +7491,7 @@ pub def CodeGen : class {
                 if g.init_val != null {
                     ginit: string = this.gen_expr(g.init_val);
                     g_rhst: string = this.get_expr_type(g.init_val);
-                    if this.is_vec_type(g.typ) && g_rhst.size > 1 && g_rhst[g_rhst.size - 1] == ']' {
+                    if this.is_vec_type(g.typ) && g_rhst.__bytesize > 1 && g_rhst[g_rhst.__bytesize - 1] == ']' {
                         ginit = this.slice_to_vec(ginit, g_rhst, this.vec_inner_type(g.typ), true);
                     } else {
                         ginit = this.adapt_slice(ginit, g_rhst, g.typ);
@@ -7529,7 +7540,7 @@ pub def CodeGen : class {
                     if fd.is_static && fd.init != null {
                         init_val: string = this.gen_expr(fd.init);
                         fd_rhst: string = this.get_expr_type(fd.init);
-                        if this.is_vec_type(fd.typ) && fd_rhst.size > 1 && fd_rhst[fd_rhst.size - 1] == ']' {
+                        if this.is_vec_type(fd.typ) && fd_rhst.__bytesize > 1 && fd_rhst[fd_rhst.__bytesize - 1] == ']' {
                             init_val = this.slice_to_vec(init_val, fd_rhst, this.vec_inner_type(fd.typ), true);
                         } else {
                             init_val = this.adapt_slice(init_val, fd_rhst, fd.typ);
@@ -7543,7 +7554,7 @@ pub def CodeGen : class {
                     if fd.is_static && fd.init != null {
                         init_val: string = this.gen_expr(fd.init);
                         fd_rhst: string = this.get_expr_type(fd.init);
-                        if this.is_vec_type(fd.typ) && fd_rhst.size > 1 && fd_rhst[fd_rhst.size - 1] == ']' {
+                        if this.is_vec_type(fd.typ) && fd_rhst.__bytesize > 1 && fd_rhst[fd_rhst.__bytesize - 1] == ']' {
                             init_val = this.slice_to_vec(init_val, fd_rhst, this.vec_inner_type(fd.typ), true);
                         } else {
                             init_val = this.adapt_slice(init_val, fd_rhst, fd.typ);
@@ -7635,7 +7646,7 @@ pub def CodeGen : class {
                 if g.init_val != null {
                     ginit: string = this.gen_expr(g.init_val);
                     g_rhst: string = this.get_expr_type(g.init_val);
-                    if this.is_vec_type(g.typ) && g_rhst.size > 1 && g_rhst[g_rhst.size - 1] == ']' {
+                    if this.is_vec_type(g.typ) && g_rhst.__bytesize > 1 && g_rhst[g_rhst.__bytesize - 1] == ']' {
                         ginit = this.slice_to_vec(ginit, g_rhst, this.vec_inner_type(g.typ), true);
                     } else {
                         ginit = this.adapt_slice(ginit, g_rhst, g.typ);
@@ -7650,7 +7661,7 @@ pub def CodeGen : class {
                     if fd.is_static && fd.init != null {
                         init_val: string = this.gen_expr(fd.init);
                         fd_rhst: string = this.get_expr_type(fd.init);
-                        if this.is_vec_type(fd.typ) && fd_rhst.size > 1 && fd_rhst[fd_rhst.size - 1] == ']' {
+                        if this.is_vec_type(fd.typ) && fd_rhst.__bytesize > 1 && fd_rhst[fd_rhst.__bytesize - 1] == ']' {
                             init_val = this.slice_to_vec(init_val, fd_rhst, this.vec_inner_type(fd.typ), true);
                         } else {
                             init_val = this.adapt_slice(init_val, fd_rhst, fd.typ);
@@ -7664,7 +7675,7 @@ pub def CodeGen : class {
                     if fd.is_static && fd.init != null {
                         init_val: string = this.gen_expr(fd.init);
                         fd_rhst: string = this.get_expr_type(fd.init);
-                        if this.is_vec_type(fd.typ) && fd_rhst.size > 1 && fd_rhst[fd_rhst.size - 1] == ']' {
+                        if this.is_vec_type(fd.typ) && fd_rhst.__bytesize > 1 && fd_rhst[fd_rhst.__bytesize - 1] == ']' {
                             init_val = this.slice_to_vec(init_val, fd_rhst, this.vec_inner_type(fd.typ), true);
                         } else {
                             init_val = this.adapt_slice(init_val, fd_rhst, fd.typ);
@@ -7723,6 +7734,7 @@ pub def CodeGen : class {
                     "declare i8* @memmove(i8*, i8*, i64)\n" +
                     "declare void @free(i8*)\n" +
                     "declare i64 @strlen(i8*)\n" +
+                    "declare i64 @leash_utf8_len(i8*)\n" +
                     "declare i64 @atoll(i8*)\n" +
                     "declare double @atof(i8*)\n" +
                     "declare i8* @strcpy(i8*, i8*)\n" +
@@ -7949,24 +7961,24 @@ pub def CodeGen : class {
         filtered_hdr: vec<string>;
         foreach _, hl in<vector> header_lines {
             skip_hl: bool = false;
-            if hl.size > 9 && hl[0] == 'd' && hl[1] == 'e' && hl[2] == 'c' && hl[3] == 'l' && hl[4] == 'a' && hl[5] == 'r' && hl[6] == 'e' && hl[7] == ' ' && hl[hl.size - 1] == '\n' {
+            if hl.__bytesize > 9 && hl[0] == 'd' && hl[1] == 'e' && hl[2] == 'c' && hl[3] == 'l' && hl[4] == 'a' && hl[5] == 'r' && hl[6] == 'e' && hl[7] == ' ' && hl[hl.__bytesize - 1] == '\n' {
                 nl_cnt: int = 0;
                 fh_i: int = 0;
-                while fh_i < hl.size {
+                while fh_i < hl.__bytesize {
                     if hl[fh_i] == '\n' { nl_cnt = nl_cnt + 1; }
                     fh_i = fh_i + 1;
                 }
                 if nl_cnt == 1 {
                     at_i: int = -1;
                     hi2: int = 0;
-                    while hi2 < hl.size {
+                    while hi2 < hl.__bytesize {
                         if hl[hi2] == '@' { at_i = hi2; stop; }
                         hi2 = hi2 + 1;
                     }
                     if at_i >= 0 {
                         nm: string = "";
                         ni: int = at_i + 1;
-                        while ni < hl.size {
+                        while ni < hl.__bytesize {
                             ch2: char = hl[ni];
                             if ch2 == '(' || ch2 == ' ' || ch2 == '\n' { stop; }
                             nm = nm + ch2;

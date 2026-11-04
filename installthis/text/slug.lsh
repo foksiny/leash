@@ -21,14 +21,14 @@ pub def Slug : class {
                 out = out + lc;
                 prev_sep = false;
             } else {
-                if !prev_sep && out.size > 0 {
+                if !prev_sep && out.__bytesize > 0 {
                     out = out + sep;
                     prev_sep = true;
                 }
             }
         }
         // trim a trailing separator
-        n: int = out.size;
+        n: int = out.__bytesize;
         if n > 0 && out[n - 1] == sep {
             r: string = "";
             for i: int = 0; i < n - 1; i = i + 1 {
@@ -41,10 +41,10 @@ pub def Slug : class {
 
     // True when `s` is already a valid slug.
     static pub fnc is_slug(s string) : bool {
-        if s.size == 0 {
+        if s.__bytesize == 0 {
             return false;
         }
-        for i: int = 0; i < s.size; i = i + 1 {
+        for i: int = 0; i < s.__bytesize; i = i + 1 {
             c: char = s[i];
             ok: bool = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
             if !ok && c != '-' {
