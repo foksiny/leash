@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [1.6.2] - 2026-11-03
 
-### Changed
+### Fixed
 - **`string.size` now counts Unicode code points, not UTF-8 bytes.**
   `"é".size` is `1`, `"€".size` is `1`, `"😀".size` is `1`, and
   `"héllo wörld".size` is `11`. Leash strings are stored as UTF-8 byte
