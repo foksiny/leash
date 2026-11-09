@@ -1,0 +1,13 @@
+fnc main() {
+    total: int = 0;
+    for i: int = 0; i < 100000; i = i + 1 {
+        tmp: vec<int>;
+        for k: int = 0; k < 8; k = k + 1 {
+            tmp.pushb(i + k);
+        }
+        round: int = tmp.get(0) + tmp.get(7);
+        tag: string = "k" + tostring(i % 89);
+        total = total + round % 1000 + tag.bsize;
+    }
+    show("alloc_churn total=", total);
+}

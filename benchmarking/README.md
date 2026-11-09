@@ -6,7 +6,15 @@ also have `.c` and `.py`). Run with:
 ```bash
 python3 scripts/benchmark.py --langs leash c cpp rust --runs 5 \
     --json benchmarking/results_memory.json
+# arena builds instead of GC:
+LEASH_BENCH_ARENA=1 python3 scripts/benchmark.py --langs leash --runs 5
 ```
+
+Every run and every compile is capped at `LEASH_MEM_CAP_MB` MiB
+(default 1024) — exceeding the cap kills the child (systemd cgroup
+when it enforces, else a `/proc` VmRSS watchdog) and marks the cell
+ERR instead of hanging the suite. The same guard runs the whole
+test suite: `python3 scripts/mem_guard.py -- pytest tests/ -q`.
 
 Tables: **compile time** (single shot), **run time** (median of N runs),
 **peak RSS** (max over runs, via GNU `time -v`), **binary size**.
@@ -33,6 +41,12 @@ from `results_memory.json` (lean runtime, primes as `vec<char>`).
 | `hash_lookup` 20k | `h.push` | `unordered_map<string,int>` | `HashMap<String,i64>` | Unavoidable per-key allocs |
 | `string_concat` 20k | `append` | `std::string` | `String` | All growing, no reserve (intentional) |
 | `primes` 1M | `vec<char>` (1 B/bool) | `vector<bool>` (1 bit/bool) | `vec![bool]` (1 B/bool) | Leash matches C `char*`; C++ packs bits |
+| `string_reverse` 100k | `append` | `std::string` no reserve | `String` no reserve | Both grow; Leash can `append_char` |
+| `sort_string` 5k | `pushb` + string quicksort | `sort` (introsort) | `sort` (pdqsort) | Payload is heap strings; sorters differ |
+| `vec_sort_float` 20k | manual quicksort | manual quicksort | manual quicksort | Hand-rolled same pivot logic |
+| `matrix_transpose` 256 | `pushb` | sized vectors | `vec!` | Transpose copy |
+| `alloc_churn_loop` 100k | quick `vec<int>` + `tostring` per iteration | `vector<int>` + `to_string` | `Vec<i64>` + `format!` | Deliberately churn-y |
+| `struct_pack` 5k | manual quicksort, `vec<Node>` | manual quicksort, `vector<Node>` | manual quicksort, `Vec<Node>` | Field offsets exercised under mutation |
 
 `std::vector` is 24 bytes (`start/finish/cap`, libstdc++) and
 `LeashVec` is 32 bytes (`data/size/cap` + `i32 elem_size` + `i8 scan`).

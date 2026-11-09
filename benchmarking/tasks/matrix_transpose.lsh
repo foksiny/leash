@@ -1,0 +1,18 @@
+fnc main() {
+    n: int = 256;
+    a: vec<int>;
+    for i: int = 0; i < n * n; i = i + 1 {
+        a.pushb((i % 23) + 1);
+    }
+    b: vec<int>;
+    for j: int = 0; j < n; j = j + 1 {
+        for i: int = 0; i < n; i = i + 1 {
+            b.pushb(a.get(i * n + j));
+        }
+    }
+    total: int<64> = 0;
+    for k: int = 0; k < b.size; k = k + 1 {
+        total = total + (int<64>)b.get(k) * (k % 97 + 1);
+    }
+    show("matrix_transpose n=", n, " total=", total);
+}

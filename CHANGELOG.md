@@ -5,6 +5,40 @@ All notable changes to the Leash compiler are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.3] - 2026-11-09
+
+### Fixed
+- **Arena: stores of frame-local allocations into owned aggregates.**
+  A struct clone allocated inside a helper frame and stored into a
+  param-passed vec (e.g. a recursive quicksort swap) used to dangle
+  once the helper returned. Struct clones are now rooted
+  (`leash_gc_malloc_rooted` in arena mode) so any stored clone
+  outlives every store target; the loop analysis also treats any
+  fresh allocation stored into an outer heap object as outer
+  mutation (read-only calls with scalar args stay eligible). This
+  was corrupting `vec<Node>` quicksort under `--arena` while GC
+  (mark-sweep) was unaffected.
+- **Test-run safety: memory caps in the benchmark harness.**
+  `scripts/benchmark.py` now caps every *run and compile* at
+  `LEASH_MEM_CAP_MB` MiB (default 1024; `--mem-cap`; env
+  `LEASH_MEM_CAP_MB`), enforced via systemd cgroup when it actually
+  kills (verified on-host — plain scope creation without enforcement
+  falls back to a `/proc` VmRSS watchdog with SIGKILL). Exceeding
+  runs record `memory cap exceeded` and mark the cell ERR so a
+  runaway can no longer eat the host. `scripts/mem_guard.py` applies
+  the same watchdog to whole-suite invocations
+  (`python3 scripts/mem_guard.py -- pytest tests/ -q`; guarded full
+  suite peaks at 488 MB).
+
+### Added
+- Six new benchmarks (`benchmarking/tasks/`, Leash + C++ + Rust each):
+  `string_reverse` (100k char build + reverse), `sort_string`
+  (5k random strings, LCG-seeded), `vec_sort_float` (20k manual
+  quicksort), `matrix_transpose` (256² strided copy), `alloc_churn_loop`
+  (100k× `vec<T>` + `tostring` churn), and `struct_pack` (5k `Node`
+  quicksort with hand-rolled rank computation). Arena output matches
+  GC on all six (struct_pack after the clone fix).
+
 ## [1.8.2] - 2026-11-09
 
 ### Changed

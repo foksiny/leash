@@ -47,6 +47,28 @@ LEASH_CMD = _find_leash_cmd()
 
 # ── build helpers (return (exe_path, compile_seconds)) ──────────────
 
+def _capped_run(argv, timeout=120, cwd=None):
+    """subprocess.run capped at LEASH_MEM_CAP_MB (watchdog backend).
+
+    Raises TimeoutExpired / RuntimeError("memory cap...") on exceed so
+    run_benchmark records the failure instead of hanging the suite.
+    """
+    capped = _with_mem_cap(argv)
+    # NOTE: _with_mem_cap resolves the env cap each call; keep cwd=None
+    # (benchmark builds already run with cwd=ROOT below).
+    if capped is None:
+        return subprocess.run(argv, capture_output=True, text=True,
+                              timeout=timeout, cwd=cwd)
+    out, err, rc, _rss = capped
+    class _R:
+        pass
+    r = _R()
+    r.stdout, r.stderr, r.returncode = out, err, rc
+    if "memory cap" in (err or ""):
+        raise RuntimeError(f"memory cap exceeded: {err.strip()[:120]}")
+    return r
+
+
 def _build_leash(task_path, opt_level, build_dir):
     stem = task_path.stem
     exe = build_dir / f"leash_{stem}_O{opt_level}.exe"
@@ -54,10 +76,7 @@ def _build_leash(task_path, opt_level, build_dir):
     cmd = [*LEASH_CMD, "compile", str(task_path), f"-O{opt_level}", "to", str(exe)]
     if os.environ.get("LEASH_BENCH_ARENA"):
         cmd.append("--arena")
-    result = subprocess.run(
-        cmd,
-        capture_output=True, text=True, timeout=120, cwd=ROOT,
-    )
+    result = _capped_run(cmd, timeout=120, cwd=ROOT)
     elapsed = time.perf_counter() - t0
     if result.returncode != 0:
         raise RuntimeError(f"Leash compile failed:\n{result.stderr}")
@@ -68,9 +87,9 @@ def _build_c(task_path, opt_level, build_dir):
     stem = task_path.stem
     exe = build_dir / f"c_{stem}_O{opt_level}.exe"
     t0 = time.perf_counter()
-    result = subprocess.run(
+    result = _capped_run(
         [LANG_CC, f"-O{opt_level}", "-o", str(exe), str(task_path), "-lm"],
-        capture_output=True, text=True, timeout=120,
+        timeout=120,
     )
     elapsed = time.perf_counter() - t0
     if result.returncode != 0:
@@ -82,9 +101,9 @@ def _build_cpp(task_path, opt_level, build_dir):
     stem = task_path.stem
     exe = build_dir / f"cpp_{stem}_O{opt_level}.exe"
     t0 = time.perf_counter()
-    result = subprocess.run(
+    result = _capped_run(
         [LANG_CXX, f"-O{opt_level}", "-o", str(exe), str(task_path), "-lm"],
-        capture_output=True, text=True, timeout=120,
+        timeout=120,
     )
     elapsed = time.perf_counter() - t0
     if result.returncode != 0:
@@ -97,9 +116,9 @@ def _build_rust(task_path, opt_level, build_dir):
     exe = build_dir / f"rust_{stem}_O{opt_level}.exe"
     rust_opt = f"opt-level={opt_level}" if opt_level else "opt-level=0"
     t0 = time.perf_counter()
-    result = subprocess.run(
+    result = _capped_run(
         [LANG_RUST, "-C", rust_opt, "-o", str(exe), str(task_path)],
-        capture_output=True, text=True, timeout=120,
+        timeout=120,
     )
     elapsed = time.perf_counter() - t0
     if result.returncode != 0:
@@ -131,13 +150,30 @@ def _run_exe(exe_path):
     is the true child peak. Falls back to ``os.wait4`` (with the caveat
     above) and to plain ``subprocess.run`` on Windows / when ``time``
     is missing.
+
+    Memory cap: when ``systemd-run`` is available the child runs in a
+    cgroup scope with ``MemoryMax`` (kernel kills on exceed); otherwise
+    a watcher thread polls ``/proc/<pid>/status`` and kills on
+    exceed. Cap (MiB) comes from ``--mem-cap`` / ``LEASH_MEM_CAP_MB``
+    (default 1024). A capped run reports ``rc = -9`` with
+    ``memory cap`` in stderr so the table shows ERR, never a pass.
     """
     exe = str(exe_path)
-    # Preferred: /usr/bin/time -v (correct child RSS on Linux/BSD)
+    # Prefer /usr/bin/time -v (correct child RSS on Linux/BSD)
     gnu_time = shutil.which("time")  # /usr/bin/time on Linux
     # `shutil.which("time")` may find a shell keyword; prefer /usr/bin/time
     if os.path.exists("/usr/bin/time"):
         gnu_time = "/usr/bin/time"
+    argv = ([gnu_time, "-v", exe] if gnu_time else [exe])
+    capped = _with_mem_cap(argv)
+    if capped is not None:
+        out, err2, rc, rss_kb = capped
+        if err2:
+            err_lines = err2.splitlines()
+            if any("memory cap" in L.lower() for L in err_lines):
+                err2 = "memory cap: " + err2
+        return out, err2, rc, rss_kb
+    # No cap helper available: plain run.
     if gnu_time:
         result = subprocess.run([gnu_time, "-v", exe], capture_output=True, text=True, timeout=120)
         rss_kb = None
@@ -177,6 +213,124 @@ def _run_exe(exe_path):
         out = fo.read().decode("utf-8", errors="replace")
         err = fe.read().decode("utf-8", errors="replace")
     return out, err, proc.returncode, _rss_kb(usage)
+
+
+# ── memory cap (systemd cgroup, else /proc polling) ───────────────────
+_MEM_CAP_MB_DEFAULT = 1024
+_mem_cap_mb_cache = None
+_has_systemd = None
+
+
+def _mem_cap_mb():
+    global _mem_cap_mb_cache
+    if _mem_cap_mb_cache is None:
+        try:
+            _mem_cap_mb_cache = int(os.environ.get("LEASH_MEM_CAP_MB", _MEM_CAP_MB_DEFAULT))
+        except ValueError:
+            _mem_cap_mb_cache = _MEM_CAP_MB_DEFAULT
+    return _mem_cap_mb_cache
+
+
+def _have_systemd():
+    """True only if a transient scope's MemoryMax actually kills."""
+    global _has_systemd
+    if _has_systemd is None:
+        _has_systemd = shutil.which("systemd-run") is not None
+        if _has_systemd:
+            try:
+                # Probe: a 250 MiB allocation inside a 50 MiB scope must
+                # fail. Creating the scope is not enough — some hosts
+                # silently accept MemoryMax without enforcing it.
+                r = subprocess.run(
+                    ["systemd-run", "--user", "--scope",
+                     "-p", "MemoryMax=50M",
+                     "--", "/bin/bash", "-c",
+                     "python3 -c 'a=bytearray(250_000_000); print(1)'"],
+                    capture_output=True, text=True, timeout=30)
+                _has_systemd = r.returncode != 0
+            except Exception:
+                _has_systemd = False
+    return _has_systemd
+
+
+def _with_mem_cap(argv):
+    """Run argv under a memory cap. Returns None if only the poll fallback applies."""
+    cap_mb = _mem_cap_mb()
+    if cap_mb <= 0:
+        return None  # cap disabled
+    if _have_systemd():
+        # Kernel-enforced: systemd kills the scope on MemoryMax exceed.
+        r = subprocess.run(
+            ["systemd-run", "--user", "--scope", "-p", f"MemoryMax={cap_mb}M",
+             "--"] + argv,
+            capture_output=True, text=True, timeout=120)
+        rss_kb = None
+        for line in r.stderr.splitlines():
+            if "Maximum resident set size" in line:
+                try:
+                    rss_kb = int(line.rsplit(":", 1)[-1].strip().split()[0])
+                except Exception:
+                    pass
+        killed = (r.returncode == 137
+                  or "out of memory" in (r.stderr + r.stdout).lower()
+                  or "memory cgroup" in (r.stderr + r.stdout).lower())
+        if killed:
+            return r.stdout, "memory cap: exceeded " + str(cap_mb) + "MiB", -9, rss_kb
+        return r.stdout, r.stderr, r.returncode, rss_kb
+    else:
+        return _run_poll(argv, cap_mb << 20)
+
+
+def _run_poll(argv, cap_bytes):
+    """Watchdog: poll /proc VmRSS, kill on exceed. Returns ((out,err,rc,rss) or None)."""
+    import threading
+
+    proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    exceeded = []
+
+    def watch():
+        try:
+            while proc.poll() is None:
+                try:
+                    with open(f"/proc/{proc.pid}/status") as fh:
+                        vmrss_kb = 0
+                        for line in fh:
+                            if line.startswith("VmRSS:"):
+                                vmrss_kb = int(line.split()[1])
+                                break
+                except (FileNotFoundError, PermissionError):
+                    return
+                if vmrss_kb and (vmrss_kb << 10) > cap_bytes:
+                    exceeded.append(True)
+                    try:
+                        os.kill(proc.pid, 9)
+                    except ProcessLookupError:
+                        pass
+                    return
+                time.sleep(0.02)
+        except Exception:
+            return
+
+    t = threading.Thread(target=watch, daemon=True)
+    t.start()
+    try:
+        out, err = proc.communicate(timeout=120)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        out, err = proc.communicate()
+        exceeded.append(True)
+    out = out.decode("utf-8", errors="replace") if isinstance(out, bytes) else ""
+    err = err.decode("utf-8", errors="replace") if isinstance(err, bytes) else ""
+    rss_kb = None
+    for line in err.splitlines():
+        if "Maximum resident set size" in line:
+            try:
+                rss_kb = int(line.rsplit(":", 1)[-1].strip().split()[0])
+            except Exception:
+                pass
+    if exceeded:
+        return out, "memory cap: exceeded " + str(cap_bytes >> 20) + "MiB poll watchdog", -9, rss_kb
+    return out, err, proc.returncode, rss_kb
 
 
 # ── language registry ──────────────────────────────────────────────
@@ -269,6 +423,7 @@ def run_benchmark(task_name, lang_key, opt_level, runs=5):
     # ── run step ────────────────────────────────────────────────
     run_times = []
     rss_values = []
+    capped_failures = 0
     stdout = ""
     for _ in range(runs):
         try:
@@ -280,11 +435,16 @@ def run_benchmark(task_name, lang_key, opt_level, runs=5):
             elapsed = time.perf_counter() - t0
             out, err, rc = res[0], res[1], res[2]
             rss = res[3] if len(res) > 3 else None
+            capped = err and "memory cap" in err
             if rc == 0:
                 run_times.append(elapsed)
                 if rss is not None:
                     rss_values.append(rss)
                 stdout = out
+            elif capped:
+                run_times.append(None)
+                stdout = err
+                capped_failures += 1
             else:
                 run_times.append(None)
                 stdout = err
@@ -293,6 +453,8 @@ def run_benchmark(task_name, lang_key, opt_level, runs=5):
 
     valid = [t for t in run_times if t is not None]
     if not valid:
+        if capped_failures:
+            return {"error": "memory cap exceeded (" + str(capped_failures) + " runs capped)", "compile": None, "run": None}
         return {"error": "all runs failed or timed out", "compile": None, "run": None}
 
     return {
@@ -400,9 +562,14 @@ def main():
                         help="Languages to benchmark")
     parser.add_argument("--runs", type=int, default=5,
                         help="Number of runs per (task, lang, opt) combination")
+    parser.add_argument("--mem-cap", type=int, default=None,
+                        help="Per-run memory cap in MiB (default 1024; env LEASH_MEM_CAP_MB). "
+                             "Exceeding it kills the run (systemd cgroup, else /proc poll).")
     parser.add_argument("--json", type=str, default=None,
                         help="Save results as JSON to this file")
     args = parser.parse_args()
+    if args.mem_cap is not None:
+        globals()["_mem_cap_mb_cache"] = args.mem_cap
 
     # resolve tasks
     if args.tasks:

@@ -3897,7 +3897,15 @@ void* leash_sh_vec_from_parts(void* data, int64_t size, int64_t elem_size, int64
 /* Value-semantics copy for struct-typed params/assignments (python parity). */
 void* leash_sh_clone_obj(void* p, int64_t n) {
     if (!p || n <= 0) return p;
+#if defined(LEASH_ARENA)
+    /* Struct clones may be stored into caller-owned aggregates (e.g.
+     * swapped into a param-passed vec) where no caller frame is known.
+     * Root them: cloned instances outlive any scope they're stored
+     * into, at the cost of program-lifetime retention. */
+    void* q = leash_gc_malloc_rooted((size_t)n);
+#else
     void* q = leash_gc_malloc((size_t)n);
+#endif
     if (!q) return p;
     memcpy(q, p, (size_t)n);
     return q;

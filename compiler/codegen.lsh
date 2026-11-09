@@ -1042,10 +1042,25 @@ pub def CodeGen : class {
                     }
                 }
             }
+            // Any store of a freshly allocated value into an outer heap
+            // object escapes the iteration (e.g. `v.set(j, tmp)` where
+            // `tmp` was cloned this iteration). Read-only calls with
+            // scalar args stay eligible.
+            if e.left != null {
+                root2: string = this.ar_expr_root(e.left);
+                if root2.bsize > 0 && !inner.isin(root2) {
+                    rt2: string = this.ar_var_type(root2);
+                    if rt2.bsize > 0 && this.ar_is_heap_type(rt2) {
+                        foreach _, a in<vector> e.args {
+                            if this.ar_expr_alloc(a) { return true; }
+                        }
+                    }
+                }
+            }
             // Recurse into arguments and receiver for nested calls.
             if e.left != null && this.ar_expr_outer_mutate(e.left, inner) { return true; }
-            foreach _, a in<vector> e.args {
-                if this.ar_expr_outer_mutate(a, inner) { return true; }
+            foreach _, a2 in<vector> e.args {
+                if this.ar_expr_outer_mutate(a2, inner) { return true; }
             }
             return false;
         }

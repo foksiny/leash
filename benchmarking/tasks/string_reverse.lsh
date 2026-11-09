@@ -1,0 +1,25 @@
+fnc main() {
+    n: int = 100000;
+    s: string = "";
+    for i: int = 0; i < n; i = i + 1 {
+        c: char = (char)((i * 13 + 7) % 26 + 97);
+        s = s + c;
+    }
+    rev: string = "";
+    j: int = n - 1;
+    while j >= 0 {
+        rev = rev + s[j];
+        j = j - 1;
+    }
+    total: int<64> = 0;
+    k: int = 0;
+    while k < rev.bsize {
+        total = total + (int<64>)rev[k];
+        k = k + 1;
+    }
+    head: string = "";
+    head = head + rev[0] + rev[1] + rev[2];
+    tail: string = "";
+    tail = tail + rev[n - 3] + rev[n - 2] + rev[n - 1];
+    show(rev.bsize, " ", total, " ", head, " ", tail);
+}

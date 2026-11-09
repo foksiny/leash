@@ -9,7 +9,7 @@
 # carries its own protocol version (0.5.0, see pkg_version() in
 # compiler/leashed.lsh) and is versioned independently of the compiler.
 name: "leash"
-version: "1.8.2"
+version: "1.8.3"
 author: "foksiny"
 description: "The Leash self-hosted compiler (LLVM native + JVM targets)"
 main: "main.lsh"

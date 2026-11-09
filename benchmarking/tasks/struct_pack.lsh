@@ -1,0 +1,43 @@
+def Node : struct {
+    key: int;
+    val: int;
+}
+
+fnc make(i int) : Node {
+    return Node { key: i % 97, val: (i * 31) % 1009 };
+}
+
+fnc quicksort(v vec<Node>, lo int, hi int) : void {
+    if lo >= hi { return; }
+    pivot: Node = v.get(lo + (hi - lo) / 2);
+    i: int = lo;
+    j: int = hi;
+    while i <= j {
+        while v.get(i).key < pivot.key { i = i + 1; }
+        while v.get(j).key > pivot.key { j = j - 1; }
+        if i <= j {
+            tmp: Node = v.get(i);
+            v.set(i, v.get(j));
+            v.set(j, tmp);
+            i = i + 1;
+            j = j - 1;
+        }
+    }
+    if lo < j { quicksort(v, lo, j); }
+    if i < hi { quicksort(v, i, hi); }
+}
+
+fnc main() {
+    n: int = 5000;
+    v: vec<Node>;
+    for i: int = 0; i < n; i = i + 1 {
+        v.pushb(make(i));
+    }
+    quicksort(v, 0, v.size - 1);
+    total: int<64> = 0;
+    for i: int = 0; i < v.size; i = i + 1 {
+        nd: Node = v.get(i);
+        total = total + nd.val * (i + 1);
+    }
+    show("struct_pack n=", n, " total=", total);
+}
