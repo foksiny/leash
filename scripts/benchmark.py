@@ -51,8 +51,11 @@ def _build_leash(task_path, opt_level, build_dir):
     stem = task_path.stem
     exe = build_dir / f"leash_{stem}_O{opt_level}.exe"
     t0 = time.perf_counter()
+    cmd = [*LEASH_CMD, "compile", str(task_path), f"-O{opt_level}", "to", str(exe)]
+    if os.environ.get("LEASH_BENCH_ARENA"):
+        cmd.append("--arena")
     result = subprocess.run(
-        [*LEASH_CMD, "compile", str(task_path), f"-O{opt_level}", "to", str(exe)],
+        cmd,
         capture_output=True, text=True, timeout=120, cwd=ROOT,
     )
     elapsed = time.perf_counter() - t0

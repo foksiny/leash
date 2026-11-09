@@ -5,6 +5,29 @@ All notable changes to the Leash compiler are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.2] - 2026-11-09
+
+### Changed
+- **Arena loops that allocate nothing skip frames entirely.** Loop
+  instrumentation now requires three conditions: the loop actually
+  allocates (a loop that allocates nothing must not pay per-iteration
+  reset costs), no outer survivors point into its temporaries, and
+  the proven allocation sites are narrowed to growth methods
+  (`push`/`pushb`/`extend`/`insert`) so read-only `get`/`set`/`size`
+  no longer disqualify. Allocation-free loops (scalar matrix and
+  sieve loops) now run at GC speed or better: `primes` 15 ms → 6 ms
+  (beats GC 9 ms), `matrix_mul` 12 ms → 4 ms (beats GC 4 ms),
+  `sort_int` unchanged. `benchmarks` can now also measure arena
+  builds via `scripts/benchmark.py` with `LEASH_BENCH_ARENA=1`.
+- **`tostring(int)` inside self-append chains is fused.**
+  `s = s + "x" + tostring(i) + "-"` no longer allocates a temporary
+  per `tostring` call; the decimal lands in the accumulator via
+  `leash_str_append_int` (this fixes an i32→i64 widening mismatch in
+  the existing int-append path). String accumulation growth
+  additionally extends in place when the buffer is the bump tip, so
+  `string_concat` ends at 2.9 MB (GC 2.5 MB, Rust 2.2 MB) at GC-beating
+  speed.
+
 ## [1.8.1] - 2026-11-09
 
 ### Changed

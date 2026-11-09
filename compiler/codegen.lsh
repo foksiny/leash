@@ -851,7 +851,11 @@ pub def CodeGen : class {
             if e.kind == ExprKind.METHOD_CALL && e.left != null {
                 rt: string = this.ar_expr_root(e.left);
                 if rt.bsize > 0 && this.ar_is_heap_type(this.ar_var_type(rt)) {
-                    return true;
+                    m: string = e.sval;
+                    // Growth methods allocate; reads/writes/sort do not.
+                    if m == "push" || m == "pushb" || m == "pushf" || m == "insert" || m == "inserta" || m == "insertv" || m == "extend" || m == "extendv" {
+                        return true;
+                    }
                 }
             }
             if this.ar_is_heap_type(this.get_expr_type(e)) {
@@ -890,17 +894,27 @@ pub def CodeGen : class {
     }
 
     // --- arena loop checkpoints ------------------------------------------
-    // A loop is eligible for a per-iteration arena reset only when no
-    // value that must outlive the iteration can point into the loop's
-    // temporaries: no stores of heap values to variables/globals
-    // declared outside the loop, no mutations of outer heap aggregates
-    // (vec/hash growth), no defers. Returns/defer-free etc. are handled
-    // by the escape path. Ineligible loops keep per-function lifetime
-    // (correct, just more retained memory until the function exits).
-    pub fnc ar_loop_ok(body vec<Stmt>) : bool {
+    // A loop is eligible for a per-iteration arena reset only when it
+    // actually allocates (a loop that allocates nothing must not pay for
+    // enter/reset/exit frames) AND no value that must outlive the
+    // iteration can point into this iteration's temporaries: no stores
+    // of heap values to variables/globals declared outside the loop,
+    // no mutations of outer heap aggregates (vec/hash growth), no
+    // defers. Returns/defer-free etc. are handled by the escape path.
+    // Ineligible loops keep per-function lifetime (correct, just more
+    // retained memory until the function exits).
+    pub fnc ar_loop_allocates(s Stmt) : bool {
+        if s.cond != null && this.ar_expr_alloc(s.cond) { return true; }
+        if s.for_init != null && this.ar_stmts_alloc(this.one_stmt_vec(s.for_init)) { return true; }
+        if s.for_step != null && this.ar_stmts_alloc(this.one_stmt_vec(s.for_step)) { return true; }
+        return this.ar_stmts_alloc(s.body);
+    }
+
+    pub fnc ar_loop_ok(s Stmt) : bool {
         inner: hash<string, bool>;
-        this.ar_collect_inner(body, inner);
-        return !this.ar_scan_outer(body, inner);
+        this.ar_collect_inner(s.body, inner);
+        if this.ar_scan_outer(s.body, inner) { return false; }
+        return this.ar_loop_allocates(s);
     }
 
     // Collect every name declared anywhere inside a loop body
@@ -1059,7 +1073,7 @@ pub def CodeGen : class {
             this.ar_loop_handles.pushb("");
             return "";
         }
-        if !this.ar_loop_ok(s.body) {
+        if !this.ar_loop_ok(s) {
             this.ar_loop_handles.pushb("");
             return "";
         }
@@ -6955,6 +6969,18 @@ pub def CodeGen : class {
                         sa_types: vec<string>;
                         foreach _, sa_piece in<vector> sa_rev {
                             sa_pt: string = this.strip_ref(this.get_expr_type(sa_piece));
+                            // tostring(int) is fused too: the decimal
+                            // lands in the accumulator without a heap
+                            // temp (this is the string_concat hotspot).
+                            if sa_piece.kind == ExprKind.CALL && sa_piece.sval == "tostring" && sa_piece.args.size == 1 {
+                                at2: string = this.strip_ref(this.get_expr_type(sa_piece.args.get(0)));
+                                if at2 == "int" || at2 == "uint" {
+                                    sa_pt = "int";
+                                    sa_piece = sa_piece.args.get(0);
+                                    // Fall through to the int fast path
+                                    // below using the unwrapped argument.
+                                }
+                            }
                             // Fast path: int / char pieces are appended via
                             // leash_str_append_int / _char (no heap alloc).
                             if sa_pt == "int" || sa_pt == "uint" || this.is_sized_int_type(sa_pt) {
@@ -6964,6 +6990,10 @@ pub def CodeGen : class {
                                     sa_w: string = this.new_reg();
                                     this.emit("  " + sa_w + " = zext i32 " + sa_iv + " to i64");
                                     sa_iv = sa_w;
+                                } also sa_pt == "int" {
+                                    sa_w2: string = this.new_reg();
+                                    this.emit("  " + sa_w2 + " = sext i32 " + sa_iv + " to i64");
+                                    sa_iv = sa_w2;
                                 } also sa_pt != "int" && !this.is_sized_int_type(sa_pt) {
                                     sa_w2: string = this.new_reg();
                                     this.emit("  " + sa_w2 + " = sext i32 " + sa_iv + " to i64");

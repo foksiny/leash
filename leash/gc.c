@@ -623,6 +623,28 @@ char* leash_str_append(char* s, const char* piece) {
             *(uint64_t*)(void*)(s - 8) = (uint64_t)tot;
             return s;
         }
+        /* Growth past cap: try to extend this string buffer in place
+         * when it is still the bump tip (the accumulator loop case,
+         * where each iteration would otherwise abandon a large copy).
+         * Old total lives at s-16; the allocation ends at s-16+total. */
+        size_t old_total = *(uint64_t*)(void*)(s - 16);
+        size_t new_cap = tot < 64 ? 64 : tot + (tot >> 2);
+        size_t new_total = 16 + new_cap + 1;
+        new_total = (new_total + 7) & ~(size_t)7;
+        arena_stack* st = &leasharena_tls_ar;
+        char* old_end = (s - 16) + old_total;
+        if (old_total >= 17 && old_end == st->cur) {
+            size_t want = new_total - old_total;
+            if ((size_t)(st->end - st->cur) >= want) {
+                *(uint64_t*)(void*)(s - 16) = (uint64_t)new_total;
+                *(uint64_t*)(void*)(s - 8) = (uint64_t)tot;
+                st->cur += want;
+                st->bytes += want;
+                if (pl) memcpy(s + sl, piece, pl);
+                s[tot] = '\0';
+                return s;
+            }
+        }
     }
     char* out = (char*)leash_gc_alloc_string_cap(tot, tot < 64 ? 64 : tot + (tot >> 2));
     if (sl) memcpy(out, s, sl);
