@@ -9,8 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ### Added
 - **`.bsize` as the canonical UTF-8 byte-length member.** `.__bytesize` is
-  kept as a deprecated alias; `s.bsize` (property) and `s.bsize()`
-  (method) return the same byte count on both native and JVM targets.
+  kept as a **silent** deprecated alias; `s.bsize` (property) and
+  `s.bsize()` (method) return the same byte count on both native and
+  JVM targets. **No deprecation warning is emitted** — `__bytesize`
+  parses, type-checks and compiles exactly like `bsize`, so
+  `--warnings-as-errors`/`warn_err` builds are unaffected. (The word
+  “deprecated” in prose means “prefer the new spelling”, not “will
+  warn”.)
 - **4 new layout-stress benchmarks** (`vec_stress`, `string_concat`,
   `hash_lookup`, `matrix_mul`) in `benchmarking/tasks/` with Leash,
   C++ and Rust versions, runnable via `scripts/benchmark.py`.
@@ -33,6 +38,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     and new compilers keep identical field offsets (bootstrap-safe).
     Full 24B packing (i32 size/cap) is staged for a follow-up
     two-stage bootstrap.
+    **ABI note:** this is a layout change. Field offsets 0/8/16
+    (`data`/`size`/`cap`) are unchanged, but `sizeof` is 32 not 40 and
+    `elem_size`/`scan` are no longer `i64` — C/FFI code that embeds
+    `LeashVec` by value, reads `elem_size` as `i64`, or mixes objects
+    across runtime versions must rebuild against the 1.7.0 `gc.c`.
+    `LeashVec` is otherwise opaque (`gc.h` does not export the
+    struct; vector access goes through `leash_sh_vec_*`), so normal
+    Leash + `@from` code that only holds `i8*` handles is unaffected.
   - The standard library (`installthis/`) now uses canonical
     `.bsize`; the compiler and docs reference both names.
 - **Minimum peak RSS (lean runtime).** Measured peak resident memory
@@ -52,13 +65,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
     `+50%` (large) (was `2×` everywhere). Large probes: 10M-int vec
     130 MB → **77 MB** (beats Rust 80 MB), 200k-entry hash
     45 MB → **28 MB**, 7 MB string 17.9 MB → **16.4 MB**.
-  - Leash beats C++ on 8 of 9 heap tasks and wins `mem_copy` outright;
+  - Leash beats C++ on 7 of 9 heap tasks (ties `vec_stress` and
+    `primes` after the `reserve()` fairness fix below) and wins
+    `mem_copy` outright;
     Rust stays leanest on most tasks but ships 4.3 MB binaries vs
-    ~22 KB for Leash/C/C++. See `benchmarking/results_memory.json`.
+    ~22 KB for Leash/C/C++. See `benchmarking/README.md` (methods,
+    per-task fairness table, O1-vs-O2 investigation) and
+    `benchmarking/results_memory.json` (regenerable, git-ignored).
 - **O4 is `-O1` + LTO/native, not an O3 pipeline.** The driver now
   emits `-O1 -march=native -mtune=native -flto (-inline-threshold=125)`
   for native targets; `-O2/-O3` were slower than `-O1` for Leash
   (fib 255 ms at O1 vs 336 ms at O2). Docs and README updated to match.
+  **Investigation (see `benchmarking/README.md`):** Leash IR has no
+  `nuw`/`nsw`/`fast` (LLVM adds `nsw` itself); the fib gap reproduces
+  in pure C (`gcc` O1 458→O2 160 ms, `clang` O1 245→O2 285 ms) and in
+  Rust (also LLVM), so it is a Clang-vs-GCC optimizer property that
+  Leash cannot fix by IR tweaks (`nounwind` neutral, `-fno-inline`
+  recovers ⅓). O2 *wins* elsewhere (`hash_lookup` -19%).
 - Version bumped to 1.7.0; the cross-target bootstrap seeds are now
   `bootstrap/leash-1.7.0-target-*` (`x86_64`, `x86`, `arm`, `win64`,
   `java`).
@@ -81,6 +104,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - `benchmarking/tasks/primes.lsh` used `vec<int>` (4B/bool, 10 MB)
   where C/Rust use 1B/bool; switched to `vec<char>` (3.6 MB, same
   output 78498).
+- **Benchmark fairness: `vec_stress` C++/Rust now reserve once.**
+  `benchmarking/tasks/vec_stress.cpp` used a naive `push_back` loop
+  (geometric growth to 262k, 4.2 MB) while `mem_copy`/`sort_int` used
+  `reserve()`; it now uses `v.reserve(200000)` and the Rust twin
+  `Vec::with_capacity(200000)`, matching the other vector tasks.
+  C++ peak RSS drops 4.2 → 3.91 MB, tying Leash (3.95 MB) instead
+  of losing; the earlier “beats C++ 8 of 9” headline is corrected to
+  “7 of 9, plus 2 ties”. All `.lsh`/`.cpp`/`.rs` sources were already
+  checked in (auditable); `benchmarking/README.md` now documents
+  methods, toolchain, growth policies and the header analysis
+  (`LeashVec` 32B vs `std::vector` 24B is noise on 100 KB+ payloads).
 
 ## [1.6.2] - 2026-11-03
 

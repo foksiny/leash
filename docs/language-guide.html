@@ -598,7 +598,7 @@ Leash is awesome!"""</span>;</code></pre>
     <tr><th>Method</th><th>Description</th></tr>
     <tr><td><code>.replace(old, new)</code></td><td>Replace first occurrence of <code>old</code> with <code>new</code></td></tr>
     <tr><td><code>.size</code></td><td>Return the length of the string in Unicode code points (property)</td></tr>
-    <tr><td><code>.bsize</code> / <code>.__bytesize</code></td><td>Return the UTF-8 byte length (property; <code>.__bytesize</code> is a deprecated alias &mdash; use <code>.bsize</code>)</td></tr>
+    <tr><td><code>.bsize</code> / <code>.__bytesize</code></td><td>Return the UTF-8 byte length (property; <code>.__bytesize</code> is a silent deprecated alias &mdash; use <code>.bsize</code>; no warning is emitted, so <code>--warnings-as-errors</code> builds are unaffected)</td></tr>
 </table>
 
 <p><code>.size</code> counts Unicode code points, not bytes: <code>"é".size</code> is <code>1</code>, <code>"😀".size</code> is <code>1</code>, and <code>"héllo".size</code> is <code>5</code>, even though the UTF-8 encoding is longer. Strings are stored as UTF-8 byte sequences, and byte-level operations keep working on bytes: <code>s[i]</code> and <code>foreach ... in&lt;string&gt;</code> advance one byte at a time. Code that mixes <code>.size</code> with indexing should use <code>.bsize</code> when it needs the encoded length; <code>Utf.length</code> validates UTF-8 and returns the code-point count.</p>

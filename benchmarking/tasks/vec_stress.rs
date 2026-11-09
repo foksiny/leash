@@ -1,6 +1,6 @@
 fn main() {
-    let mut v: Vec<i64> = Vec::new();
     let n: i64 = 200000;
+    let mut v: Vec<i64> = Vec::with_capacity(200000);
     for i in 0..n {
         v.push((i * 131 + 12345 + (i % 97)) % 1000003);
     }

@@ -2,8 +2,9 @@
 #include <vector>
 
 int main() {
-    std::vector<int> v;
     int n = 200000;
+    std::vector<int> v;
+    v.reserve(n);
     for (int i = 0; i < n; i++) {
         v.push_back((int)(((long long)i * 131 + 12345 + (i % 97)) % 1000003));
     }
