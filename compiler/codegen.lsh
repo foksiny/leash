@@ -62,6 +62,7 @@ pub def CodeGen : class {
     pub loop_exit_stack: vec<string>;
     pub var_ptrs: hash<string, string>;
     pub var_types: hash<string, string>;
+    pub ar_alias_src: hash<string, string>;   // arena: var -> get()-source root for store skipping
     pub tc: TypeChecker;
     pub current_func_ret: string;
     pub current_func_name: string;
@@ -391,9 +392,197 @@ pub def CodeGen : class {
         this.current_block_terminated = false;
     }
 
+    // Root-copy a heap value stored into a container when the target
+    // is outer (param/global/shared) — but skip when the target is
+    // function-local: those die together with the value's frame, so
+    // binding it to the root arena would waste memory proportionally
+    // to the workload (the alloc-stress regression this causes is
+    // decisive). Struct/class values are the exception: they deep-root
+    // whenever the stored value was freshly constructed, because the
+    // escape path blob-copies bodies shallow and fields dangle (T17).
+    pub fnc ar_root_for_container(e Expr, target_expr Expr, inner_t string) : bool {
+        tt: string = this.strip_ref(inner_t);
+        if this.tc.structs.isin(tt) || this.tc.classes.isin(tt) || this.tc.unions.isin(tt) {
+            return this.ar_store_escape(e);
+        }
+        // Swap-style store of an element read from the same aggregate
+        // (`v.set(i, v.get(j))`): the contents are owned by the same
+        // container, so copies would always be redundant.
+        if e != null && e.kind == ExprKind.METHOD_CALL && e.sval == "get" && e.left != null {
+            lhs: string = this.ar_expr_root(target_expr);
+            rhs: string = this.ar_expr_root(e.left);
+            if lhs.bsize > 0 && lhs == rhs { return false; }
+        }
+        // Local var whose last assignment (this block) came directly from
+        // the same aggregate's get/pop: same ownership argument.
+        if e != null && e.kind == ExprKind.IDENT {
+            lhs2: string = this.ar_expr_root(target_expr);
+            if lhs2.bsize > 0 && this.ar_alias_src.isin(e.sval) {
+                al: string = this.ar_alias_src[e.sval];
+                if al.bsize > 4 && this.str_slice2(al, 0, 4) == "get:" && this.str_slice2(al, 4, al.bsize) == lhs2 { return false; }
+                if al.bsize > 4 && this.str_slice2(al, 0, 4) == "pop:" && this.str_slice2(al, 4, al.bsize) == lhs2 { return false; }
+            }
+        }
+        if this.ar_is_outer_var(this.ar_expr_root(target_expr)) { return true; }
+        return false;
+    }
+
     // Whether the Leash type routinely references arena-owned heap memory
     // (needs an escape when returned). Raw `*T` unsafe pointers and
     // scalars are caller's responsibility (documented escape rule).
+    // Root-copy a freshly allocated heap value that is about to be stored
+    // into a heap aggregate (vec/hash). Sweetness: the callee's string
+    // bytes would otherwise die with the frame, leaving the aggregate
+    // (owned by the caller) with a dangling pointer. Read-only sources
+    // (existing elements, params, globals, literals) are live at least
+    // as long as the heap here, so they are not re-allocated.
+    pub fnc ar_is_outer_var(nm string) : bool {
+        if nm.bsize == 0 { return false; }
+        if this.global_vars.isin(nm) || this.shared_var_names.isin(nm) { return true; }
+        cur: string = this.current_func_name;
+        if cur.bsize > 0 && this.tc.func_param_names.isin(cur) {
+            pnames: vec<string> = this.tc.func_param_names[cur];
+            foreach _, pn in<vector> pnames {
+                if pn == nm { return true; }
+            }
+        }
+        return false;
+    }
+
+    pub fnc ar_alias_clear() : void {
+        fresh: hash<string, string>;
+        this.ar_alias_src = fresh;
+    }
+
+    pub fnc ar_store_escape(e Expr) : bool {
+        if e == null { return false; }
+        if e.kind == ExprKind.IDENT || e.kind == ExprKind.STRING || e.kind == ExprKind.INT
+           || e.kind == ExprKind.FLOAT || e.kind == ExprKind.CHAR || e.kind == ExprKind.BOOL
+           || e.kind == ExprKind.NIL { return false; }
+        if e.kind == ExprKind.MEMBER || e.kind == ExprKind.INDEX || e.kind == ExprKind.POINTER_MEMBER {
+            return false;
+        }
+        if e.kind == ExprKind.METHOD_CALL {
+            m: string = e.sval;
+            if m == "get" || m == "popb" || m == "popf" || m == "remove" || m == "keys" || m == "values" || m == "push" || m == "pushb" || m == "pushf" || m == "set" || m == "insert" || m == "inserta" || m == "insertv" || m == "extend" || m == "extendv" {
+                return false;
+            }
+            return this.ar_is_heap_type(this.get_expr_type(e));
+        }
+        return this.ar_expr_alloc(e);
+    }
+
+    pub fnc ar_root_blob_size(typ string) : string {
+        sz: string = this.llvm_type(typ);
+        pty: string = "";
+        pi: int = 0;
+        while pi < sz.bsize - 1 { pty = pty + sz[pi]; pi = pi + 1; }
+        g: string = this.new_reg();
+        this.emit("  " + g + " = getelementptr " + pty + ", " + sz + " null, i32 1");
+        szv: string = this.new_reg();
+        this.emit("  " + szv + " = ptrtoint " + sz + " " + g + " to i64");
+        return szv;
+    }
+
+    pub fnc ar_root_value(aval string, elt string) : string {
+        if !this.arena { return aval; }
+        tt: string = this.strip_ref(elt);
+        if !this.ar_is_heap_type(tt) { return aval; }
+        slot: string = this.new_reg();
+        this.emit("  " + slot + " = alloca i8*, align 8");
+        this.emit("  store i8* " + aval + ", i8** " + slot);
+        if tt == "string" {
+            this.emit("  call void @leasharena_root_copy_string(i8** " + slot + ")");
+        } also this.is_vec_type(tt) {
+            this.emit("  call void @leasharena_root_copy_vec(i8** " + slot + ")");
+        } also tt.bsize > 5 && tt[0] == 'h' && tt[1] == 'a' && tt[2] == 's' && tt[3] == 'h' && tt[4] == '<' {
+            this.emit("  call void @leasharena_root_copy_hash(i8** " + slot + ")");
+        } also this.tc.structs.isin(tt) || this.tc.classes.isin(tt) {
+            // Struct/class: shallow body into the root arena first, then
+            // deep-root every heap field of the COPY (recursively for
+            // nested structs) so field strings/vecs/hashes don't dangle.
+            this.emit("  call void @leasharena_root_copy_blob(i8** " + slot + ", i64 " + this.ar_root_blob_size(tt) + ")");
+            nvl: string = this.new_reg();
+            this.emit("  " + nvl + " = load i8*, i8** " + slot);
+            this.ar_root_deep_fields(nvl, tt);
+        } else {
+            this.emit("  call void @leasharena_root_copy_blob(i8** " + slot + ", i64 " + this.ar_root_blob_size(tt) + ")");
+        }
+        nv: string = this.new_reg();
+        this.emit("  " + nv + " = load i8*, i8** " + slot);
+        return nv;
+    }
+
+    // Deep-root every heap field of a rooted struct/class instance.
+    // `inst` is an i8* pointing at the (already copied) instance body.
+    pub fnc ar_root_deep_fields(inst string, tt string) : void {
+        if this.tc.structs.isin(tt) {
+            si: StructInfo = this.tc.structs[tt];
+            szr: string = this.llvm_type(tt);
+            pty: string = "";
+            pq: int = 0;
+            while pq < szr.bsize - 1 { pty = pty + szr[pq]; pq = pq + 1; }
+            iptr: string = this.new_reg();
+            this.emit("  " + iptr + " = bitcast i8* " + inst + " to " + szr);
+            fi: int = 0;
+            while fi < si.field_types.size {
+                ft: string = si.field_types.get(fi);
+                if this.ar_is_heap_type(ft) {
+                    fsl: string = this.new_reg();
+                    this.emit("  " + fsl + " = getelementptr inbounds " + pty + ", " + szr + " " + iptr + ", i32 0, i32 " + tostring(fi));
+                    fcv: string = this.new_reg();
+                    this.emit("  " + fcv + " = bitcast " + this.llvm_type(ft) + "* " + fsl + " to i8**");
+                    ftt: string = this.strip_ref(ft);
+                    if ftt == "string" {
+                        this.emit("  call void @leasharena_root_copy_string(i8** " + fcv + ")");
+                    } also this.is_vec_type(ftt) {
+                        this.emit("  call void @leasharena_root_copy_vec(i8** " + fcv + ")");
+                    } also ftt.bsize > 5 && ftt[0] == 'h' && ftt[1] == 'a' && ftt[2] == 's' && ftt[3] == 'h' && ftt[4] == '<' {
+                        this.emit("  call void @leasharena_root_copy_hash(i8** " + fcv + ")");
+                    } also this.tc.structs.isin(ftt) || this.tc.classes.isin(ftt) {
+                        this.emit("  call void @leasharena_root_copy_blob(i8** " + fcv + ", i64 " + this.ar_root_blob_size(ftt) + ")");
+                        fidx: string = this.new_reg();
+                        this.emit("  " + fidx + " = load i8*, i8** " + fcv);
+                        this.ar_root_deep_fields(fidx, ftt);
+                    }
+                }
+                fi = fi + 1;
+            }
+        } also this.tc.classes.isin(tt) {
+            ci: ClassInfo = this.tc.classes[tt];
+            szr2: string = this.llvm_type(tt);
+            pty2: string = "";
+            pq2: int = 0;
+            while pq2 < szr2.bsize - 1 { pty2 = pty2 + szr2[pq2]; pq2 = pq2 + 1; }
+            iptr2: string = this.new_reg();
+            this.emit("  " + iptr2 + " = bitcast i8* " + inst + " to " + szr2);
+            cfi: int = 0;
+            while cfi < ci.field_types.size {
+                cft: string = ci.field_types.get(cfi);
+                if this.ar_is_heap_type(cft) {
+                    cfsl: string = this.new_reg();
+                    this.emit("  " + cfsl + " = getelementptr inbounds " + pty2 + ", " + szr2 + " " + iptr2 + ", i32 0, i32 " + tostring(cfi + 1));
+                    cfcv: string = this.new_reg();
+                    this.emit("  " + cfcv + " = bitcast " + this.llvm_type(cft) + "* " + cfsl + " to i8**");
+                    cftt: string = this.strip_ref(cft);
+                    if cftt == "string" {
+                        this.emit("  call void @leasharena_root_copy_string(i8** " + cfcv + ")");
+                    } also this.is_vec_type(cftt) {
+                        this.emit("  call void @leasharena_root_copy_vec(i8** " + cfcv + ")");
+                    } also cftt.bsize > 5 && cftt[0] == 'h' && cftt[1] == 'a' && cftt[2] == 's' && cftt[3] == 'h' && cftt[4] == '<' {
+                        this.emit("  call void @leasharena_root_copy_hash(i8** " + cfcv + ")");
+                    } also this.tc.structs.isin(cftt) || this.tc.classes.isin(cftt) {
+                        this.emit("  call void @leasharena_root_copy_blob(i8** " + cfcv + ", i64 " + this.ar_root_blob_size(cftt) + ")");
+                        cfdd: string = this.new_reg();
+                        this.emit("  " + cfdd + " = load i8*, i8** " + cfcv);
+                        this.ar_root_deep_fields(cfdd, cftt);
+                    }
+                }
+                cfi = cfi + 1;
+            }
+        }
+    }
+
     pub fnc ar_is_heap_type(t string) : bool {
         if t.bsize == 0 { return false; }
         tt: string = this.strip_ref(t);
@@ -579,6 +768,15 @@ pub def CodeGen : class {
                     gsv: string = this.new_reg();
                     this.emit("  " + gsv + " = ptrtoint " + gsz + " " + gsg + " to i64");
                     this.emit("  call void @leasharena_commit_blob(i8** " + gcs + ", i8* " + gst + ", i64 " + gsv + ")");
+                    // Heap fields of the nested instance still alias the
+                    // dying frame (only the body was blob-copied). Deep-root
+                    // them NOW, before later commits reuse that memory.
+                    gnp: string = this.new_reg();
+                    this.emit("  " + gnp + " = load i8*, i8** " + gcs);
+                    gnst: string = this.strip_ref(ftypes2.get(gci));
+                    if this.tc.structs.isin(gnst) || this.tc.classes.isin(gnst) {
+                        this.ar_root_deep_fields(gnp, gnst);
+                    }
                 }
                 gci = gci + 1;
             }
@@ -5476,6 +5674,7 @@ pub def CodeGen : class {
 
                 if e.sval == "pushb" {
                     aval: string = this.gen_expr(e.args.get(0));
+                    if this.arena && this.ar_root_for_container(e.args.get(0), e.left, inner_t) { aval = this.ar_root_value(aval, inner_t); }
                     this.emit_share(aval, inner_t);
                     pv_size: string = this.vec_field(obj_val, 1);
                     pv_cap: string = this.vec_field(obj_val, 2);
@@ -5490,7 +5689,11 @@ pub def CodeGen : class {
                     this.current_block_terminated = false;
                     pv_next: string = this.new_reg();
                     this.emit("  " + pv_next + " = add i64 " + pv_size + ", 1");
-                    this.emit("  call void @leash_sh_vec_reserve(i8* " + obj_val + ", i64 " + pv_next + ")");
+                    if this.arena && this.ar_is_outer_var(this.ar_expr_root(e.left)) {
+                        this.emit("  call void @leash_sh_vec_reserve_rooted(i8* " + obj_val + ", i64 " + pv_next + ")");
+                    } else {
+                        this.emit("  call void @leash_sh_vec_reserve(i8* " + obj_val + ", i64 " + pv_next + ")");
+                    }
                     pv_dg: string = this.vec_field(obj_val, 0);
                     pv_epg: string = this.new_reg();
                     this.emit("  " + pv_epg + " = bitcast i8* " + pv_dg + " to " + elt_lty + "*");
@@ -5518,6 +5721,7 @@ pub def CodeGen : class {
                 // elements one slot right (memmove), store at [0].
                 if e.sval == "pushf" {
                     aval: string = this.gen_expr(e.args.get(0));
+                    if this.arena && this.ar_root_for_container(e.args.get(0), e.left, inner_t) { aval = this.ar_root_value(aval, inner_t); }
                     this.emit_share(aval, inner_t);
                     pf_size: string = this.vec_field(obj_val, 1);
                     pf_cap: string = this.vec_field(obj_val, 2);
@@ -5533,7 +5737,11 @@ pub def CodeGen : class {
                     this.current_block_terminated = false;
                     pf_next: string = this.new_reg();
                     this.emit("  " + pf_next + " = add i64 " + pf_size + ", 1");
-                    this.emit("  call void @leash_sh_vec_reserve(i8* " + obj_val + ", i64 " + pf_next + ")");
+                    if this.arena && this.ar_is_outer_var(this.ar_expr_root(e.left)) {
+                        this.emit("  call void @leash_sh_vec_reserve_rooted(i8* " + obj_val + ", i64 " + pf_next + ")");
+                    } else {
+                        this.emit("  call void @leash_sh_vec_reserve(i8* " + obj_val + ", i64 " + pf_next + ")");
+                    }
                     pf_dg: string = this.vec_field(obj_val, 0);
                     pf_dstg: string = this.new_reg();
                     this.emit("  " + pf_dstg + " = getelementptr inbounds i8, i8* " + pf_dg + ", i64 " + tostring(pf_esz));
@@ -5661,6 +5869,7 @@ pub def CodeGen : class {
                     this.emit(iv_good + ":");
                     this.current_block_terminated = false;
                     iv_val: string = this.gen_expr(e.args.get(1));
+                    if this.arena && this.ar_root_for_container(e.args.get(1), e.left, inner_t) { iv_val = this.ar_root_value(iv_val, inner_t); }
                     this.emit_share(iv_val, inner_t);
                     iv_cap: string = this.vec_field(obj_val, 2);
                     iv_full: string = this.new_reg();
@@ -5673,7 +5882,11 @@ pub def CodeGen : class {
                     this.current_block_terminated = false;
                     iv_next: string = this.new_reg();
                     this.emit("  " + iv_next + " = add i64 " + iv_size + ", 1");
-                    this.emit("  call void @leash_sh_vec_reserve(i8* " + obj_val + ", i64 " + iv_next + ")");
+                    if this.arena && this.ar_is_outer_var(this.ar_expr_root(e.left)) {
+                        this.emit("  call void @leash_sh_vec_reserve_rooted(i8* " + obj_val + ", i64 " + iv_next + ")");
+                    } else {
+                        this.emit("  call void @leash_sh_vec_reserve(i8* " + obj_val + ", i64 " + iv_next + ")");
+                    }
                     this.emit("  br label %" + iv_fast);
                     this.emit(iv_fast + ":");
                     this.current_block_terminated = false;
@@ -5706,6 +5919,7 @@ pub def CodeGen : class {
                 if e.sval == "set" {
                     idx_val: string = this.i32_to_rt_i64(e.args.get(0), this.gen_expr(e.args.get(0)));
                     aval: string = this.gen_expr(e.args.get(1));
+                    if this.arena && this.ar_root_for_container(e.args.get(1), e.left, inner_t) { aval = this.ar_root_value(aval, inner_t); }
                     this.emit_share(aval, inner_t);
                     sv_size: string = this.vec_field(obj_val, 1);
                     sv_i: string = this.vec_check_index(idx_val, sv_size, "Runtime error: Vector index out of bounds in set().\n");
@@ -5882,12 +6096,14 @@ pub def CodeGen : class {
                 }
                 if e.sval == "extendv" {
                     other_val: string = this.gen_expr(e.args.get(0));
+                    if this.arena && this.ar_root_for_container(e.args.get(0), e.left, this.vec_inner_type(obj_t)) { other_val = this.ar_root_value(other_val, this.vec_inner_type(obj_t)); }
                     this.emit("  call void @leash_sh_vec_insertv(i8* " + obj_val + ", i64 999999999, i8* " + other_val + ")");
                     return "";
                 }
                 if e.sval == "insertv" {
                     idx_val: string = this.gen_expr(e.args.get(0));
                     other_val: string = this.gen_expr(e.args.get(1));
+                    if this.arena && this.ar_root_for_container(e.args.get(1), e.left, this.vec_inner_type(obj_t)) { other_val = this.ar_root_value(other_val, this.vec_inner_type(obj_t)); }
                     this.emit("  call void @leash_sh_vec_insertv(i8* " + obj_val + ", i64 " + idx_val + ", i8* " + other_val + ")");
                     return "";
                 }
@@ -5902,6 +6118,7 @@ pub def CodeGen : class {
                     key_val = this.hash_key_arg(key_val, this.hash_key_type(obj_t));
                     aval: string = this.gen_expr(e.args.get(1));
                     boxed: string = this.box_to_i8ptr(aval, val_t);
+                    if this.arena && this.ar_is_heap_type(val_t) && this.ar_is_outer_var(this.ar_expr_root(e.left)) { boxed = this.ar_root_value(boxed, val_t); }
                     this.emit_share(boxed, val_t);
                     this.emit("  call void @leash_sh_hash_push(i8* " + obj_val + ", i8* " + key_val + ", i8* " + boxed + ")");
                     return "";
@@ -7122,6 +7339,16 @@ pub def CodeGen : class {
                     } // end sa_cur
                 } // end sa_ptr
             } // end s.op fast path
+            if s.target.kind == ExprKind.IDENT && s.target.sval.bsize > 0 {
+                nm: string = s.target.sval;
+                if s.value != null && s.value.kind == ExprKind.METHOD_CALL && s.value.sval == "get" && s.value.left != null {
+                    this.ar_alias_src.push(nm, "get:" + this.ar_expr_root(s.value.left));
+                } also s.value != null && s.value.kind == ExprKind.METHOD_CALL && (s.value.sval == "popb" || s.value.sval == "popf") && s.value.left != null {
+                    this.ar_alias_src.push(nm, "pop:" + this.ar_expr_root(s.value.left));
+                } else {
+                    this.ar_alias_src.push(nm, "");
+                }
+            }
             val: string = this.gen_expr(s.value);
             if s.op == "=" && s.target.kind == ExprKind.IDENT {
                 tn: string = s.target.sval;
@@ -7706,6 +7933,7 @@ pub def CodeGen : class {
             // Then block
             this.emit(l_then + ":");
             this.current_block_terminated = false;
+            this.ar_alias_clear();
             foreach _, st in<vector> s.then_block { this.gen_statement(st); }
             if !this.current_block_terminated {
                 this.emit("  br label %" + l_merge);
@@ -7715,6 +7943,7 @@ pub def CodeGen : class {
             if has_else {
                 this.emit(l_else + ":");
                 this.current_block_terminated = false;
+                this.ar_alias_clear();
                 foreach _, se in<vector> s.else_block { this.gen_statement(se); }
                 if !this.current_block_terminated {
                     this.emit("  br label %" + l_merge);
@@ -7723,6 +7952,7 @@ pub def CodeGen : class {
 
             this.emit(l_merge + ":");
             this.current_block_terminated = false;
+            this.ar_alias_clear();
             return;
         }
 
@@ -8262,11 +8492,14 @@ pub def CodeGen : class {
     pub fnc gen_function(f FuncDecl) : void {
         old_fn_var_ptrs: hash<string, string> = this.var_ptrs;
         old_fn_var_types: hash<string, string> = this.var_types;
+        old_fn_alias: hash<string, string> = this.ar_alias_src;
         old_fn_unsafe: bool = this.cur_func_unsafe;
         fresh_fn_ptrs: hash<string, string>;
         fresh_fn_types: hash<string, string>;
+        fresh_fn_alias: hash<string, string>;
         this.var_ptrs = fresh_fn_ptrs;
         this.var_types = fresh_fn_types;
+        this.ar_alias_src = fresh_fn_alias;
         is_worker_fn: bool = f.is_worker;
         this.current_func_ret = f.ret_type;
         if is_worker_fn { this.current_func_ret = "*char"; }
@@ -8445,6 +8678,7 @@ pub def CodeGen : class {
         this.ar_frameless = false;
         this.var_ptrs = old_fn_var_ptrs;
         this.var_types = old_fn_var_types;
+        this.ar_alias_src = old_fn_alias;
         this.cur_func_unsafe = old_fn_unsafe;
     }
 
@@ -9115,6 +9349,7 @@ pub def CodeGen : class {
                     "declare void @leash_sh_vec_get(i8*, i64, i8*)\n" +
                     "declare void @leash_sh_vec_set(i8*, i64, i8*)\n" +
                     "declare void @leash_sh_vec_reserve(i8*, i64)\n" +
+                    "declare void @leash_sh_vec_reserve_rooted(i8*, i64)\n" +
                     "declare void @leash_sh_vec_remove(i8*, i64, i8*)\n" +
                     "declare i8* @leash_bigint_to_str(i8*, i64, i64)\n" +
                     "declare i64 @leash_bigint_parse(i8*, i64, i64, i8*)\n" +

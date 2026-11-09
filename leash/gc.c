@@ -208,7 +208,7 @@ static void arena_ensure_stack(arena_stack* st) {
 /* Bump a `need`-byte raw region. `align` is the payload alignment;
  * the (possibly padded) total is returned via *out_total so arena
  * strings can recover `cap`. */
-static char* arena_raw(arena_stack* st, size_t need, size_t align, size_t* out_total) {
+static char* arena_raw_ex(arena_stack* st, size_t need, size_t align, size_t* out_total, int zero) {
     if (leasharena_tls_arena_dead) {
         fprintf(stderr, "Leash arena: allocation after shutdown\n");
         abort();
@@ -234,7 +234,7 @@ static char* arena_raw(arena_stack* st, size_t need, size_t align, size_t* out_t
              * bump can share it and it stays reclaimable as a whole. */
             if (fresh && st->head && st->head->sole) st->cur = st->end;
             if (out_total) *out_total = total;
-            memset(payload, 0, need);
+            if (zero) memset(payload, 0, need);
             return payload;
         }
         size_t want = need + head_room + 2 * align + 8;
@@ -243,15 +243,33 @@ static char* arena_raw(arena_stack* st, size_t need, size_t align, size_t* out_t
     }
 }
 
-/* Bump-allocate a `need`-byte payload (zero-filled) and store `need`
- * in the 8-byte header at ptr-8. Returns the payload pointer. */
-static void* arena_alloc(arena_stack* st, size_t need, size_t align) {
+static char* arena_raw(arena_stack* st, size_t need, size_t align, size_t* out_total) {
+    return arena_raw_ex(st, need, align, out_total, 1);
+}
+
+static void* arena_alloc_ex(arena_stack* st, size_t need, size_t align, int zero) {
     if (need == 0) return NULL;
     size_t total = 0;
-    char* payload = arena_raw(st, need, align, &total);
+    char* payload = arena_raw_ex(st, need, align, &total, zero);
     *(uint64_t*)(void*)(payload - 8) = (uint64_t)need;
     st->bytes += need;
     return (void*)payload;
+}
+
+/* Bump-allocate a `need`-byte payload (zero-filled) and store `need`
+ * in the 8-byte header at ptr-8. Returns the payload pointer. */
+static void* arena_alloc(arena_stack* st, size_t need, size_t align) {
+    return arena_alloc_ex(st, need, align, 1);
+}
+
+/* Same, but skips the payload zero-fill. Only valid when the caller
+ * is guaranteed to initialize every byte it may read (string bodies
+ * are memcpy'd + NUL-terminated, hash nodes are fully assigned,
+ * clone payloads are memcpy'd, vec bodies are element-by-element
+ * until first read). Bucket arrays and any structure read before
+ * written must stay on the zero path. */
+static void* arena_alloc_nz(arena_stack* st, size_t need, size_t align) {
+    return arena_alloc_ex(st, need, align, 0);
 }
 
 static void* arena_root_alloc(arena_stack* st, size_t need, size_t align) {
@@ -378,6 +396,12 @@ void leash_gc_shutdown(void) {
 
 void* leash_gc_malloc(size_t size) {
     return arena_alloc(&leasharena_tls_ar, size, ARENA_ALIGN);
+}
+
+/* Hot allocation: the payload contents do not need a zero-fill
+ * (see arena_alloc_nz for the safety contract). */
+void* leash_gc_malloc_nz(size_t size) {
+    return arena_alloc_nz(&leasharena_tls_ar, size, ARENA_ALIGN);
 }
 
 void* leash_gc_malloc_ex(size_t size, unsigned int flags) {
@@ -538,8 +562,10 @@ void* leash_gc_alloc_string_cap_in(arena_stack* st, size_t len, size_t cap) {
     if (total < len) abort();
     size_t pad = (8 - (total & 7)) & 7;
     total += pad;
-    /* Raw bump of `total` bytes; payload starts 8 bytes before data state is
-     * established. arena_raw(memsets the whole region to zero). */
+    /* Raw bump of `total` bytes; the caller fully initializes every
+     * byte it may read (headers, data bytes, the NUL terminator), so
+     * the zero path (memset) is unnecessary here — skip it on the hot
+     * string-construction path. */
     size_t raw_total = 0;
     arena_ensure_stack(st);
     if (leasharena_tls_arena_dead) {
@@ -548,7 +574,7 @@ void* leash_gc_alloc_string_cap_in(arena_stack* st, size_t len, size_t cap) {
     }
     /* Allocate via arena_raw with need = total - 8 (generic size sense
      * after its own 8-byte header would over-count; call raw directly). */
-    char* payload = arena_raw(st, total - 8, ARENA_ALIGN, &raw_total);
+    char* payload = arena_raw_ex(st, total - 8, ARENA_ALIGN, &raw_total, 0);
     /* payload is the string data area? No: arena_raw returns payload
      * past its 8-byte header. We want base+16 as data. Back out: base is
      * payload-8. Data is base+16 = payload+8. */
@@ -744,7 +770,7 @@ char* leash_str_concat_int(const char* s, int64_t v, int is_uint) {
 }
 
 void* leash_gc_alloc_vector_data(size_t elem_size, size_t capacity) {
-    return arena_alloc(&leasharena_tls_ar, elem_size * capacity, ARENA_ALIGN);
+    return arena_alloc_nz(&leasharena_tls_ar, elem_size * capacity, ARENA_ALIGN);
 }
 
 void leash_gc_thread_spawned(void) {}
@@ -771,6 +797,13 @@ void* leash_gc_malloc(size_t size) {
     void* p = malloc(size);
     if (!p) { fprintf(stderr, "Leash: Out of memory!\n"); abort(); }
     memset(p, 0, size);
+    return p;
+}
+
+void* leash_gc_malloc_nz(size_t size) {
+    if (size == 0) return NULL;
+    void* p = malloc(size);
+    if (!p) { fprintf(stderr, "Leash: Out of memory!\n"); abort(); }
     return p;
 }
 
@@ -1558,6 +1591,10 @@ void* leash_gc_malloc_ex(size_t size, unsigned int flags); /* must stay non-stat
    symbol the generated LLVM code links against. */
 
 void* leash_gc_malloc(size_t size) {
+    return leash_gc_malloc_ex(size, 0);
+}
+
+void* leash_gc_malloc_nz(size_t size) {
     return leash_gc_malloc_ex(size, 0);
 }
 
@@ -3954,6 +3991,31 @@ void leash_sh_vec_reserve(void* vec_ptr, int64_t need) {
     leash_sh_vec_ensure(vec_ptr, need);
 }
 
+/* Rooted reserve for vecs owned outside the current frame (parameters):
+ * the growth buffer must outlive the callee that grows it, so it comes
+ * from the root arena (never freed). The superseded buffer is the
+ * caller's business; frame-level ones die on pop elsewhere. */
+void leash_sh_vec_reserve_rooted(void* vec_ptr, int64_t need) {
+    LeashVec* v = (LeashVec*)vec_ptr;
+    if (!v || v->cap >= need) return;
+    int64_t nc = v->cap ? v->cap : 8;
+    while (nc < need) nc *= 2;
+    if (!v->data || v->cap == 0) {
+        v->data = lv_alloc_data(nc, v->elem_size, v->scan);
+        v->cap = nc;
+        return;
+    }
+    void* nd = leash_gc_malloc_rooted((size_t)nc * (size_t)v->elem_size);
+    if (!nd) {
+        leash_sh_vec_ensure(vec_ptr, need);
+        return;
+    }
+    size_t ncopy = (size_t)v->size * (size_t)v->elem_size;
+    if (ncopy) memcpy(nd, v->data, ncopy);
+    v->data = nd;
+    v->cap = nc;
+}
+
 void* leash_sh_vec_from_parts(void* data, int64_t size, int64_t elem_size, int64_t scan) {
     LeashVec* v = (LeashVec*)leash_gc_malloc(sizeof(LeashVec));
     v->elem_size = elem_size > 0 ? elem_size : 8;
@@ -4104,7 +4166,7 @@ void leash_sh_hash_push(void* hash_ptr, const char* key, void* val) {
     }
     /* Single allocation for node + key payload (key bytes follow struct). */
     size_t alloc_sz = sizeof(LeashHashNode) + klen + 1;
-    LeashHashNode* node = (LeashHashNode*)leash_gc_malloc(alloc_sz);
+    LeashHashNode* node = (LeashHashNode*)leash_gc_malloc_nz(alloc_sz);
     node->key = (char*)((char*)node + sizeof(LeashHashNode));
     memcpy(node->key, key, klen);
     node->key[klen] = '\0';
