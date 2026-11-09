@@ -8,6 +8,9 @@ pub def CodeGen : class {
                         // library with its own main cannot link its consumer)
     pub autofree: bool;   // --autofree: track heap allocations per function
                           // and free them at function exit (no GC)
+    pub arena: bool;      // --arena (experimental): scoped bump arena —
+                          // enter/exit per function, loop checkpoints,
+                          // return escapes (no GC, no borrow checker)
     pub has_entry: bool;  // an entry point exists (top-level or class
                           // static main): executables require one, libraries
                           // must not gain one
@@ -41,6 +44,11 @@ pub def CodeGen : class {
     pub af_arr: string;   // tracking array alloca reg ("" when inactive)
     pub af_cnt: string;   // tracking counter alloca reg
     pub af_emitted: bool;   // cleanup already emitted for this function
+    pub ar_loop_depth: int;   // instrumented loop frames above the current
+                              // function's arena frame (arena mode only)
+    pub ar_loop_handles: vec<string>;  // per-depth i64 alloca slot regs
+    pub ar_frameless: bool;   // current function proved allocation-free:
+                              // ar_init/ar_cleanup emit nothing
     pub opdef_inner: string;     // concrete inner type of the opdef container being compiled
     pub cur_tmap_names: vec<string>;   // instantiated-class params (flat name,type pairs)
     pub lines: vec<string>;
@@ -83,6 +91,9 @@ pub def CodeGen : class {
             debug_instrument: false,
             is_lib: false,
             autofree: false,
+            arena: false,
+            ar_loop_depth: 0,
+            ar_frameless: false,
             has_entry: false,
             af_arr: "",
             af_cnt: "",
@@ -221,6 +232,864 @@ pub def CodeGen : class {
         this.emit("  br label %" + l_loop);
         this.emit(l_exit + ":");
     }
+
+    // --- arena: scope enter/exit + return escapes -----------------------
+    // Generated code pushes a bump-arena frame on entry and pops it on
+    // exit. Unlike autofree's per-allocation free loop, the pop is
+    // O(blocks): the bump is rewound and the blocks above the checkpoint
+    // are freed wholesale. Returned heap values are copied into the
+    // caller's frame via the leasharena_escape_* helpers (spare spared
+    // registers only point at temporaries; the helpers copy them out).
+    pub fnc ar_init() : void {
+        if !this.arena { return; }
+        if this.ar_frameless { return; }
+        this.ar_emit_enter();
+        this.ar_loop_depth = 0;
+        empty_h: vec<string>;
+        this.ar_loop_handles = empty_h;
+    }
+
+    pub fnc ar_reset() : void {
+        this.ar_loop_depth = 0;
+        empty_h2: vec<string>;
+        this.ar_loop_handles = empty_h2;
+    }
+
+    // Inline arena enter (fast path): push the current bump state onto
+    // the checkpoint stack without a runtime call when the stack has
+    // room. Falls back to leasharena_enter_slow() only on growth.
+    pub fnc ar_emit_enter() : void {
+        entry_lbl: string = this.new_label("ar_enter");
+        fast_lbl: string = this.new_label("ar_enter_fast");
+        slow_lbl: string = this.new_label("ar_enter_slow");
+        done_lbl: string = this.new_label("ar_enter_done");
+        this.emit("  br label %" + entry_lbl);
+        this.current_block_terminated = true;
+        this.emit(entry_lbl + ":");
+        p_len: string = this.new_reg();
+        this.emit("  " + p_len + " = getelementptr inbounds %struct.arena_stack, %struct.arena_stack* @leasharena_tls_ar, i32 0, i32 4");
+        v_len: string = this.new_reg();
+        this.emit("  " + v_len + " = load i64, i64* " + p_len);
+        p_cap: string = this.new_reg();
+        this.emit("  " + p_cap + " = getelementptr inbounds %struct.arena_stack, %struct.arena_stack* @leasharena_tls_ar, i32 0, i32 5");
+        v_cap: string = this.new_reg();
+        this.emit("  " + v_cap + " = load i64, i64* " + p_cap);
+        has_room: string = this.new_reg();
+        this.emit("  " + has_room + " = icmp ult i64 " + v_len + ", " + v_cap);
+        this.emit("  br i1 " + has_room + ", label %" + fast_lbl + ", label %" + slow_lbl);
+        this.emit(fast_lbl + ":");
+        p_cps: string = this.new_reg();
+        this.emit("  " + p_cps + " = getelementptr inbounds %struct.arena_stack, %struct.arena_stack* @leasharena_tls_ar, i32 0, i32 3");
+        v_cps: string = this.new_reg();
+        this.emit("  " + v_cps + " = load i8*, i8** " + p_cps);
+        v_cps_bc: string = this.new_reg();
+        this.emit("  " + v_cps_bc + " = bitcast i8* " + v_cps + " to %struct.arena_cp*");
+        v_slot: string = this.new_reg();
+        this.emit("  " + v_slot + " = getelementptr inbounds %struct.arena_cp, %struct.arena_cp* " + v_cps_bc + ", i64 " + v_len);
+        v_b0: string = this.new_reg();
+        this.emit("  " + v_b0 + " = getelementptr inbounds %struct.arena_cp, %struct.arena_cp* " + v_slot + ", i32 0, i32 0");
+        p_head: string = this.new_reg();
+        this.emit("  " + p_head + " = getelementptr inbounds %struct.arena_stack, %struct.arena_stack* @leasharena_tls_ar, i32 0, i32 0");
+        v_head: string = this.new_reg();
+        this.emit("  " + v_head + " = load i8*, i8** " + p_head);
+        this.emit("  store i8* " + v_head + ", i8** " + v_b0);
+        v_b1: string = this.new_reg();
+        this.emit("  " + v_b1 + " = getelementptr inbounds %struct.arena_cp, %struct.arena_cp* " + v_slot + ", i32 0, i32 1");
+        p_cur: string = this.new_reg();
+        this.emit("  " + p_cur + " = getelementptr inbounds %struct.arena_stack, %struct.arena_stack* @leasharena_tls_ar, i32 0, i32 1");
+        v_cur: string = this.new_reg();
+        this.emit("  " + v_cur + " = load i8*, i8** " + p_cur);
+        this.emit("  store i8* " + v_cur + ", i8** " + v_b1);
+        v_b2: string = this.new_reg();
+        this.emit("  " + v_b2 + " = getelementptr inbounds %struct.arena_cp, %struct.arena_cp* " + v_slot + ", i32 0, i32 2");
+        p_end: string = this.new_reg();
+        this.emit("  " + p_end + " = getelementptr inbounds %struct.arena_stack, %struct.arena_stack* @leasharena_tls_ar, i32 0, i32 2");
+        v_end: string = this.new_reg();
+        this.emit("  " + v_end + " = load i8*, i8** " + p_end);
+        this.emit("  store i8* " + v_end + ", i8** " + v_b2);
+        v_b3: string = this.new_reg();
+        this.emit("  " + v_b3 + " = getelementptr inbounds %struct.arena_cp, %struct.arena_cp* " + v_slot + ", i32 0, i32 3");
+        p_bytes: string = this.new_reg();
+        this.emit("  " + p_bytes + " = getelementptr inbounds %struct.arena_stack, %struct.arena_stack* @leasharena_tls_ar, i32 0, i32 6");
+        v_bytes: string = this.new_reg();
+        this.emit("  " + v_bytes + " = load i64, i64* " + p_bytes);
+        this.emit("  store i64 " + v_bytes + ", i64* " + v_b3);
+        v_len1: string = this.new_reg();
+        this.emit("  " + v_len1 + " = add i64 " + v_len + ", 1");
+        this.emit("  store i64 " + v_len1 + ", i64* " + p_len);
+        this.emit("  br label %" + done_lbl);
+        this.emit(slow_lbl + ":");
+        this.emit("  call void @leasharena_enter_slow()");
+        this.emit("  br label %" + done_lbl);
+        this.emit(done_lbl + ":");
+        this.current_block_terminated = false;
+    }
+
+    // Inline arena pop (single-frame, fast path when no new blocks
+    // were created). Falls back to leasharena_exit_slow().
+    pub fnc ar_emit_pop_once() : void {
+        pop_chk_lbl: string = this.new_label("ar_pop");
+        fast_lbl2: string = this.new_label("ar_pop_fast");
+        slow_lbl2: string = this.new_label("ar_pop_slow");
+        done_lbl2: string = this.new_label("ar_pop_done");
+        this.emit("  br label %" + pop_chk_lbl);
+        this.current_block_terminated = true;
+        this.emit(pop_chk_lbl + ":");
+        p_len2: string = this.new_reg();
+        this.emit("  " + p_len2 + " = getelementptr inbounds %struct.arena_stack, %struct.arena_stack* @leasharena_tls_ar, i32 0, i32 4");
+        v_len2: string = this.new_reg();
+        this.emit("  " + v_len2 + " = load i64, i64* " + p_len2);
+        v_newlen: string = this.new_reg();
+        this.emit("  " + v_newlen + " = sub i64 " + v_len2 + ", 1");
+        p_cps2: string = this.new_reg();
+        this.emit("  " + p_cps2 + " = getelementptr inbounds %struct.arena_stack, %struct.arena_stack* @leasharena_tls_ar, i32 0, i32 3");
+        v_cps2: string = this.new_reg();
+        this.emit("  " + v_cps2 + " = load i8*, i8** " + p_cps2);
+        v_cps2_bc: string = this.new_reg();
+        this.emit("  " + v_cps2_bc + " = bitcast i8* " + v_cps2 + " to %struct.arena_cp*");
+        v_cp: string = this.new_reg();
+        this.emit("  " + v_cp + " = getelementptr inbounds %struct.arena_cp, %struct.arena_cp* " + v_cps2_bc + ", i64 " + v_newlen);
+        cp_b0: string = this.new_reg();
+        this.emit("  " + cp_b0 + " = getelementptr inbounds %struct.arena_cp, %struct.arena_cp* " + v_cp + ", i32 0, i32 0");
+        cp_block: string = this.new_reg();
+        this.emit("  " + cp_block + " = load i8*, i8** " + cp_b0);
+        p_head2: string = this.new_reg();
+        this.emit("  " + p_head2 + " = getelementptr inbounds %struct.arena_stack, %struct.arena_stack* @leasharena_tls_ar, i32 0, i32 0");
+        cur_head: string = this.new_reg();
+        this.emit("  " + cur_head + " = load i8*, i8** " + p_head2);
+        same_blk: string = this.new_reg();
+        this.emit("  " + same_blk + " = icmp eq i8* " + cur_head + ", " + cp_block);
+        this.emit("  br i1 " + same_blk + ", label %" + fast_lbl2 + ", label %" + slow_lbl2);
+        this.emit(fast_lbl2 + ":");
+        cp_b1: string = this.new_reg();
+        this.emit("  " + cp_b1 + " = getelementptr inbounds %struct.arena_cp, %struct.arena_cp* " + v_cp + ", i32 0, i32 1");
+        cp_off: string = this.new_reg();
+        this.emit("  " + cp_off + " = load i8*, i8** " + cp_b1);
+        cp_b2: string = this.new_reg();
+        this.emit("  " + cp_b2 + " = getelementptr inbounds %struct.arena_cp, %struct.arena_cp* " + v_cp + ", i32 0, i32 2");
+        cp_end: string = this.new_reg();
+        this.emit("  " + cp_end + " = load i8*, i8** " + cp_b2);
+        cp_b3: string = this.new_reg();
+        this.emit("  " + cp_b3 + " = getelementptr inbounds %struct.arena_cp, %struct.arena_cp* " + v_cp + ", i32 0, i32 3");
+        cp_bytes2: string = this.new_reg();
+        this.emit("  " + cp_bytes2 + " = load i64, i64* " + cp_b3);
+        p_cur2: string = this.new_reg();
+        this.emit("  " + p_cur2 + " = getelementptr inbounds %struct.arena_stack, %struct.arena_stack* @leasharena_tls_ar, i32 0, i32 1");
+        this.emit("  store i8* " + cp_off + ", i8** " + p_cur2);
+        p_end2: string = this.new_reg();
+        this.emit("  " + p_end2 + " = getelementptr inbounds %struct.arena_stack, %struct.arena_stack* @leasharena_tls_ar, i32 0, i32 2");
+        this.emit("  store i8* " + cp_end + ", i8** " + p_end2);
+        p_bytes2: string = this.new_reg();
+        this.emit("  " + p_bytes2 + " = getelementptr inbounds %struct.arena_stack, %struct.arena_stack* @leasharena_tls_ar, i32 0, i32 6");
+        this.emit("  store i64 " + cp_bytes2 + ", i64* " + p_bytes2);
+        this.emit("  store i64 " + v_newlen + ", i64* " + p_len2);
+        this.emit("  br label %" + done_lbl2);
+        this.emit(slow_lbl2 + ":");
+        this.emit("  call void @leasharena_exit_slow()");
+        this.emit("  br label %" + done_lbl2);
+        this.emit(done_lbl2 + ":");
+        this.current_block_terminated = false;
+    }
+
+    // Whether the Leash type routinely references arena-owned heap memory
+    // (needs an escape when returned). Raw `*T` unsafe pointers and
+    // scalars are caller's responsibility (documented escape rule).
+    pub fnc ar_is_heap_type(t string) : bool {
+        if t.bsize == 0 { return false; }
+        tt: string = this.strip_ref(t);
+        if tt == "string" { return true; }
+        if this.is_vec_type(tt) { return true; }
+        if tt.bsize > 5 && tt[0] == 'h' && tt[1] == 'a' && tt[2] == 's' && tt[3] == 'h' && tt[4] == '<' { return true; }
+        if tt.bsize > 2 && tt[tt.bsize - 1] == ']' { return true; }
+        if tt.bsize > 1 && tt[0] == '(' && tt[tt.bsize - 1] == ')' { return true; }
+        if this.tc.structs.isin(tt) { return true; }
+        if this.tc.classes.isin(tt) { return true; }
+        if this.tc.unions.isin(tt) { return true; }
+        return false;
+    }
+
+    // Escape a spared returned value into the caller's frame. Returns
+    // the value register to `ret` (escapes change the pointer, unlike
+    // autofree's spare). `val` is the i8* view for pointer returns; for
+    // tuple/slice aggregates call ar_cleanup_agg instead.
+    pub fnc ar_cleanup(spared string, ret_typ string) : string {
+        if !this.arena { return spared; }
+        if this.ar_frameless { return spared; }
+        nf: int = this.ar_loop_depth + 1;
+        if spared.bsize == 0 || spared == "null" || (spared.bsize > 0 && spared[0] == '@') {
+            if nf == 1 { this.ar_emit_pop_once(); }
+            else { this.emit("  call void @leasharena_exit_n(i64 " + tostring(nf) + ")"); }
+            return spared;
+        }
+        if !this.ar_is_heap_type(ret_typ) {
+            if nf == 1 { this.ar_emit_pop_once(); }
+            else { this.emit("  call void @leasharena_exit_n(i64 " + tostring(nf) + ")"); }
+            return spared;
+        }
+        slot: string = this.new_reg();
+        this.emit("  " + slot + " = alloca i8*, align 8");
+        this.emit("  store i8* " + spared + ", i8** " + slot + ", align 8");
+        tt2: string = this.strip_ref(ret_typ);
+        if tt2 == "string" {
+            this.emit("  call void @leasharena_escape_string(i8** " + slot + ", i64 " + tostring(nf) + ")");
+        } also this.is_vec_type(tt2) {
+            this.emit("  call void @leasharena_escape_vec(i8** " + slot + ", i64 " + tostring(nf) + ")");
+        } also tt2.bsize > 5 && tt2[0] == 'h' && tt2[1] == 'a' && tt2[2] == 's' && tt2[3] == 'h' && tt2[4] == '<' {
+            this.emit("  call void @leasharena_escape_hash(i8** " + slot + ", i64 " + tostring(nf) + ")");
+        } also this.tc.structs.isin(tt2) || this.tc.classes.isin(tt2) {
+            // Struct/class return: stage the instance body AND every
+            // heap-typed field, pop once, then commit them into the
+            // caller's copy. Shallow seal would leave field pointers
+            // pointing at the dying scope (documented escape rule for
+            // unions only; structs/classes get the deep copy).
+            szr: string = this.llvm_type(ret_typ);
+            pty: string = "";
+            pi: int = 0;
+            while pi < szr.bsize - 1 { pty = pty + szr[pi]; pi = pi + 1; }
+            szg: string = this.new_reg();
+            this.emit("  " + szg + " = getelementptr " + pty + ", " + szr + " null, i32 1");
+            szv: string = this.new_reg();
+            this.emit("  " + szv + " = ptrtoint " + szr + " " + szg + " to i64");
+            sptr: string = this.new_reg();
+            this.emit("  " + sptr + " = bitcast i8* " + spared + " to " + szr);
+            stage_obj: string = this.new_reg();
+            this.emit("  " + stage_obj + " = call i8* @leasharena_stage_blob(i8* " + spared + ", i64 " + szv + ")");
+            // Stage each heap field from the dying instance.
+            fslots: vec<string>;
+            fstages: vec<string>;
+            ftypes2: vec<string>;
+            fidxs: vec<string>;
+            if this.tc.structs.isin(tt2) {
+                si: StructInfo = this.tc.structs[tt2];
+                fi: int = 0;
+                while fi < si.field_types.size {
+                    ft: string = si.field_types.get(fi);
+                    if this.ar_is_heap_type(ft) {
+                        fp: string = this.new_reg();
+                        this.emit("  " + fp + " = getelementptr inbounds " + pty + ", " + szr + " " + sptr + ", i32 0, i32 " + tostring(fi));
+                        felty: string = this.llvm_type(ft);
+                        fval: string = this.new_reg();
+                        this.emit("  " + fval + " = load " + felty + ", " + felty + "* " + fp);
+                        fiv: string = this.new_reg();
+                        if felty == "i8*" { fiv = fval; }
+                        else { this.emit("  " + fiv + " = bitcast " + felty + " " + fval + " to i8*"); }
+                        fslot: string = this.new_reg();
+                        this.emit("  " + fslot + " = alloca i8*, align 8");
+                        fstage: string = this.new_reg();
+                        ftt: string = this.strip_ref(ft);
+                        if ftt == "string" {
+                            this.emit("  " + fstage + " = call i8* @leasharena_stage_string(i8* " + fiv + ")");
+                        } also this.is_vec_type(ftt) {
+                            this.emit("  " + fstage + " = call i8* @leasharena_stage_vec(i8* " + fiv + ")");
+                        } also ftt.bsize > 5 && ftt[0] == 'h' && ftt[1] == 'a' && ftt[2] == 's' && ftt[3] == 'h' && ftt[4] == '<' {
+                            this.emit("  " + fstage + " = call i8* @leasharena_stage_hash(i8* " + fiv + ")");
+                        } else {
+                            // nested struct/class field: static-size blob.
+                            fsz: string = this.llvm_type(ft);
+                            fpty: string = "";
+                            fpi: int = 0;
+                            while fpi < fsz.bsize - 1 { fpty = fpty + fsz[fpi]; fpi = fpi + 1; }
+                            fsg: string = this.new_reg();
+                            this.emit("  " + fsg + " = getelementptr " + fpty + ", " + fsz + " null, i32 1");
+                            fsv: string = this.new_reg();
+                            this.emit("  " + fsv + " = ptrtoint " + fsz + " " + fsg + " to i64");
+                            this.emit("  " + fstage + " = call i8* @leasharena_stage_blob(i8* " + fiv + ", i64 " + fsv + ")");
+                        }
+                        this.emit("  store i8* " + fstage + ", i8** " + fslot);
+                        fslots.pushb(fslot);
+                        fstages.pushb(fstage);
+                        ftypes2.pushb(ft);
+                        fidxs.pushb(tostring(fi));
+                    }
+                    fi = fi + 1;
+                }
+            } also this.tc.classes.isin(tt2) {
+                // Field 0 of a class is the vtable (rodata, never
+                // arena-owned): only user fields at index+1 escape.
+                ci: ClassInfo = this.tc.classes[tt2];
+                cfi: int = 0;
+                while cfi < ci.field_types.size {
+                    cft: string = ci.field_types.get(cfi);
+                    if this.ar_is_heap_type(cft) {
+                        cfp: string = this.new_reg();
+                        this.emit("  " + cfp + " = getelementptr inbounds " + pty + ", " + szr + " " + sptr + ", i32 0, i32 " + tostring(cfi + 1));
+                        cfelty: string = this.llvm_type(cft);
+                        cfval: string = this.new_reg();
+                        this.emit("  " + cfval + " = load " + cfelty + ", " + cfelty + "* " + cfp);
+                        cfiv: string = this.new_reg();
+                        if cfelty == "i8*" { cfiv = cfval; }
+                        else { this.emit("  " + cfiv + " = bitcast " + cfelty + " " + cfval + " to i8*"); }
+                        cfslot: string = this.new_reg();
+                        this.emit("  " + cfslot + " = alloca i8*, align 8");
+                        cfstage: string = this.new_reg();
+                        cftt: string = this.strip_ref(cft);
+                        if cftt == "string" {
+                            this.emit("  " + cfstage + " = call i8* @leasharena_stage_string(i8* " + cfiv + ")");
+                        } also this.is_vec_type(cftt) {
+                            this.emit("  " + cfstage + " = call i8* @leasharena_stage_vec(i8* " + cfiv + ")");
+                        } also cftt.bsize > 5 && cftt[0] == 'h' && cftt[1] == 'a' && cftt[2] == 's' && cftt[3] == 'h' && cftt[4] == '<' {
+                            this.emit("  " + cfstage + " = call i8* @leasharena_stage_hash(i8* " + cfiv + ")");
+                        } else {
+                            cfsz: string = this.llvm_type(cft);
+                            cfpty: string = "";
+                            cfpi: int = 0;
+                            while cfpi < cfsz.bsize - 1 { cfpty = cfpty + cfsz[cfpi]; cfpi = cfpi + 1; }
+                            cfsg: string = this.new_reg();
+                            this.emit("  " + cfsg + " = getelementptr " + cfpty + ", " + cfsz + " null, i32 1");
+                            cfsv: string = this.new_reg();
+                            this.emit("  " + cfsv + " = ptrtoint " + cfsz + " " + cfsg + " to i64");
+                            this.emit("  " + cfstage + " = call i8* @leasharena_stage_blob(i8* " + cfiv + ", i64 " + cfsv + ")");
+                        }
+                        this.emit("  store i8* " + cfstage + ", i8** " + cfslot);
+                        fslots.pushb(cfslot);
+                        fstages.pushb(cfstage);
+                        ftypes2.pushb(cft);
+                        fidxs.pushb(tostring(cfi + 1));
+                    }
+                    cfi = cfi + 1;
+                }
+            }
+            // Single pop, then commit the instance + every field.
+            this.emit("  call void @leasharena_exit_n(i64 " + tostring(nf) + ")");
+            this.emit("  call void @leasharena_commit_blob(i8** " + slot + ", i8* " + stage_obj + ", i64 " + szv + ")");
+            nnp: string = this.new_reg();
+            this.emit("  " + nnp + " = load i8*, i8** " + slot);
+            gci: int = 0;
+            while gci < fslots.size {
+                gfp: string = this.new_reg();
+                this.emit("  " + gfp + " = getelementptr inbounds " + pty + ", " + szr + " " + nnp + ", i32 0, i32 " + fidxs.get(gci));
+                gfelty: string = this.llvm_type(ftypes2.get(gci));
+                gcs: string = this.new_reg();
+                this.emit("  " + gcs + " = bitcast " + gfelty + "* " + gfp + " to i8**");
+                gst: string = fstages.get(gci);
+                gtt: string = this.strip_ref(ftypes2.get(gci));
+                if gtt == "string" {
+                    this.emit("  call void @leasharena_commit_string(i8** " + gcs + ", i8* " + gst + ")");
+                } also this.is_vec_type(gtt) {
+                    this.emit("  call void @leasharena_commit_vec(i8** " + gcs + ", i8* " + gst + ")");
+                } also gtt.bsize > 5 && gtt[0] == 'h' && gtt[1] == 'a' && gtt[2] == 's' && gtt[3] == 'h' && gtt[4] == '<' {
+                    this.emit("  call void @leasharena_commit_hash(i8** " + gcs + ", i8* " + gst + ")");
+                } else {
+                    gsz: string = this.llvm_type(ftypes2.get(gci));
+                    gpty: string = "";
+                    gpi: int = 0;
+                    while gpi < gsz.bsize - 1 { gpty = gpty + gsz[gpi]; gpi = gpi + 1; }
+                    gsg: string = this.new_reg();
+                    this.emit("  " + gsg + " = getelementptr " + gpty + ", " + gsz + " null, i32 1");
+                    gsv: string = this.new_reg();
+                    this.emit("  " + gsv + " = ptrtoint " + gsz + " " + gsg + " to i64");
+                    this.emit("  call void @leasharena_commit_blob(i8** " + gcs + ", i8* " + gst + ", i64 " + gsv + ")");
+                }
+                gci = gci + 1;
+            }
+        } else {
+            // union pointer: static-size blob copy (payload shallow).
+            szr: string = this.llvm_type(ret_typ);
+            pty: string = "";
+            pi: int = 0;
+            while pi < szr.bsize - 1 { pty = pty + szr[pi]; pi = pi + 1; }
+            szg: string = this.new_reg();
+            this.emit("  " + szg + " = getelementptr " + pty + ", " + szr + " null, i32 1");
+            szv: string = this.new_reg();
+            this.emit("  " + szv + " = ptrtoint " + szr + " " + szg + " to i64");
+            this.emit("  call void @leasharena_escape_blob(i8** " + slot + ", i64 " + szv + ", i64 " + tostring(nf) + ")");
+        }
+        out: string = this.new_reg();
+        this.emit("  " + out + " = load i8*, i8** " + slot + ", align 8");
+        return out;
+    }
+
+    // Escape a slice ({len, ptr}) return: the backing buffer is copied
+    // into the caller's frame; the aggregate itself is stack memory.
+    pub fnc ar_cleanup_slice(agg_val string, agg_lret string, ret_typ string) : string {
+        if this.ar_frameless { return agg_val; }
+        nf2: int = this.ar_loop_depth + 1;
+        slot2: string = this.new_reg();
+        this.emit("  " + slot2 + " = alloca " + agg_lret + ", align 8");
+        this.emit("  store " + agg_lret + " " + agg_val + ", " + agg_lret + "* " + slot2);
+        esz2: string = this.ar_slice_elem_size(ret_typ);
+        this.emit("  call void @leasharena_escape_slice(i8* " + slot2 + ", i64 " + esz2 + ", i64 " + tostring(nf2) + ")");
+        out2: string = this.new_reg();
+        this.emit("  " + out2 + " = load " + agg_lret + ", " + agg_lret + "* " + slot2);
+        return out2;
+    }
+
+    // Byte width of a slice element type as a codegen-time i64 literal.
+    pub fnc ar_slice_elem_size(ret_typ string) : string {
+        base: string = "";
+        bi: int = 0;
+        while bi < ret_typ.bsize && ret_typ[bi] != '[' {
+            base = base + ret_typ[bi];
+            bi = bi + 1;
+        }
+        base = this.strip_ref(base);
+        if base == "char" || base == "bool" { return "1"; }
+        if base == "string" { return "8"; }
+        if base == "float" || base == "double" { return "8"; }
+        if base == "float<32>" { return "4"; }
+        if this.is_sized_int_type(base) { return tostring((this.sized_int_width(base)) / 8); }
+        if base == "int" || base == "uint" { return "4"; }
+        if base == "void" { return "1"; }
+        // Composite elements: size of the pointed-to type via the
+        // getelementptr trick (emitted at the call site).
+        lty: string = this.llvm_type(base) + "*";
+        pty: string = this.llvm_type(base);
+        szg: string = this.new_reg();
+        this.emit("  " + szg + " = getelementptr " + pty + ", " + lty + " null, i32 1");
+        szv: string = this.new_reg();
+        this.emit("  " + szv + " = ptrtoint " + lty + " " + szg + " to i64");
+        return szv;
+    }
+
+
+    // Escape a tuple aggregate return. All heap components are staged
+    // to malloc BEFORE the single pop (otherwise the first pop frees
+    // the later components), then committed into the caller's frame.
+    pub fnc ar_cleanup_tuple_agg(agg_val string, agg_lret string, ret_typ string) : string {
+        if this.ar_frameless { return agg_val; }
+        nf2: int = this.ar_loop_depth + 1;
+        slot2: string = this.new_reg();
+        this.emit("  " + slot2 + " = alloca " + agg_lret + ", align 8");
+        this.emit("  store " + agg_lret + " " + agg_val + ", " + agg_lret + "* " + slot2);
+        // Stage every heap component: comp_i slot + stage_i i8* slot.
+        cslots: vec<string>;
+        stages: vec<string>;
+        etypes: vec<string>;
+        ti2: int = 0;
+        while ti2 < this.tuple_elem_count(ret_typ) {
+            et: string = this.tuple_elem_type(ret_typ, ti2);
+            if this.ar_is_heap_type(et) {
+                ei: string = this.new_reg();
+                this.emit("  " + ei + " = getelementptr inbounds " + agg_lret + ", " + agg_lret + "* " + slot2 + ", i32 0, i32 " + tostring(ti2));
+                elty: string = this.llvm_type(et);
+                cslot: string = this.new_reg();
+                this.emit("  " + cslot + " = bitcast " + elty + "* " + ei + " to i8**");
+                comp: string = this.new_reg();
+                this.emit("  " + comp + " = load i8*, i8** " + cslot);
+                tt3: string = this.strip_ref(et);
+                ssl: string = this.new_reg();
+                this.emit("  " + ssl + " = alloca i8*, align 8");
+                sslv: string = this.new_reg();
+                if tt3 == "string" {
+                    this.emit("  " + sslv + " = call i8* @leasharena_stage_string(i8* " + comp + ")");
+                } also this.is_vec_type(tt3) {
+                    this.emit("  " + sslv + " = call i8* @leasharena_stage_vec(i8* " + comp + ")");
+                } also tt3.bsize > 5 && tt3[0] == 'h' && tt3[1] == 'a' && tt3[2] == 's' && tt3[3] == 'h' && tt3[4] == '<' {
+                    this.emit("  " + sslv + " = call i8* @leasharena_stage_hash(i8* " + comp + ")");
+                } else {
+                    esz: string = this.llvm_type(et);
+                    epty: string = "";
+                    epi: int = 0;
+                    while epi < esz.bsize - 1 { epty = epty + esz[epi]; epi = epi + 1; }
+                    eszg: string = this.new_reg();
+                    this.emit("  " + eszg + " = getelementptr " + epty + ", " + esz + " null, i32 1");
+                    eszv: string = this.new_reg();
+                    this.emit("  " + eszv + " = ptrtoint " + esz + " " + eszg + " to i64");
+                    this.emit("  " + sslv + " = call i8* @leasharena_stage_blob(i8* " + comp + ", i64 " + eszv + ")");
+                }
+                this.emit("  store i8* " + sslv + ", i8** " + ssl + ", align 8");
+                cslots.pushb(cslot);
+                stages.pushb(ssl);
+                etypes.pushb(et);
+            }
+            ti2 = ti2 + 1;
+        }
+        this.emit("  call void @leasharena_exit_n(i64 " + tostring(nf2) + ")");
+        ci2: int = 0;
+        while ci2 < cslots.size {
+            ccs: string = this.new_reg();
+            this.emit("  " + ccs + " = load i8*, i8** " + stages.get(ci2) + ", align 8");
+            cet: string = this.strip_ref(etypes.get(ci2));
+            if cet == "string" {
+                this.emit("  call void @leasharena_commit_string(i8** " + cslots.get(ci2) + ", i8* " + ccs + ")");
+            } also this.is_vec_type(cet) {
+                this.emit("  call void @leasharena_commit_vec(i8** " + cslots.get(ci2) + ", i8* " + ccs + ")");
+            } also cet.bsize > 5 && cet[0] == 'h' && cet[1] == 'a' && cet[2] == 's' && cet[3] == 'h' && cet[4] == '<' {
+                this.emit("  call void @leasharena_commit_hash(i8** " + cslots.get(ci2) + ", i8* " + ccs + ")");
+            } else {
+                // blob sizes are recomputed at commit time from the
+                // type's static size (they are compile-time constants).
+                csz: string = this.llvm_type(etypes.get(ci2));
+                cpty: string = "";
+                cpi: int = 0;
+                while cpi < csz.bsize - 1 { cpty = cpty + csz[cpi]; cpi = cpi + 1; }
+                cszg: string = this.new_reg();
+                this.emit("  " + cszg + " = getelementptr " + cpty + ", " + csz + " null, i32 1");
+                cszv: string = this.new_reg();
+                this.emit("  " + cszv + " = ptrtoint " + csz + " " + cszg + " to i64");
+                this.emit("  call void @leasharena_commit_blob(i8** " + cslots.get(ci2) + ", i8* " + ccs + ", i64 " + cszv + ")");
+            }
+            ci2 = ci2 + 1;
+        }
+        out2: string = this.new_reg();
+        this.emit("  " + out2 + " = load " + agg_lret + ", " + agg_lret + "* " + slot2);
+        return out2;
+    }
+
+    // --- arena frame elision ---------------------------------------------
+    // Functions that provably allocate nothing (no heap-typed locals,
+    // no heap-producing operators, no calls returning heap values) skip
+    // framing entirely. This is memory-safe by construction: a
+    // callee's escape values land in the nearest enclosing frame, and
+    // frameless callers never allocate temporaries of their own, so
+    // skipping only saves the push/pop (e.g. fib_rec is bit-identical
+    // in cost to GC framing).
+    pub fnc ar_fn_skip(body vec<Stmt>, ret_typ string) : bool {
+        if !this.arena { return false; }
+        if this.ar_is_heap_type(ret_typ) { return false; }
+        // Raw-pointer returns need no escape: caller's responsibility,
+        // same as the documented escape rule.
+        return !this.ar_stmts_alloc(body);
+    }
+
+    pub fnc ar_stmts_alloc(body vec<Stmt>) : bool {
+        foreach _, s in<vector> body {
+            if s.kind == StmtKind.VAR_DECL {
+                vt: string = s.var_type;
+                if vt.bsize == 0 && s.value != null {
+                    vt = this.get_expr_type(s.value);
+                }
+                if vt.bsize > 0 && this.ar_is_heap_type(vt) {
+                    return true;
+                }
+                if s.is_infer && s.value != null && this.ar_expr_alloc(s.value) {
+                    return true;
+                }
+            } also s.kind == StmtKind.ASSIGN {
+                if s.value != null && this.ar_expr_alloc(s.value) {
+                    return true;
+                }
+                if s.op != "=" && s.target != null && s.target.kind == ExprKind.IDENT {
+                    if this.ar_is_heap_type(this.ar_var_type(s.target.sval)) {
+                        return true;
+                    }
+                }
+            } also s.kind == StmtKind.EXPR {
+                if s.value != null && this.ar_expr_alloc(s.value) {
+                    return true;
+                }
+            } also s.kind == StmtKind.SHOW {
+                foreach _, sa in<vector> s.args {
+                    if this.ar_expr_alloc(sa) {
+                        return true;
+                    }
+                }
+            } also s.kind == StmtKind.IF {
+                if this.ar_stmts_alloc(s.then_block) { return true; }
+                if this.ar_stmts_alloc(s.else_block) { return true; }
+            } also s.kind == StmtKind.WHILE || s.kind == StmtKind.LOOP || s.kind == StmtKind.BLOCK {
+                if this.ar_stmts_alloc(s.body) { return true; }
+            } also s.kind == StmtKind.FOR {
+                if s.for_init != null && this.ar_stmts_alloc(this.one_stmt_vec(s.for_init)) {
+                    return true;
+                }
+                if s.for_step != null && this.ar_stmts_alloc(this.one_stmt_vec(s.for_step)) {
+                    return true;
+                }
+                if this.ar_stmts_alloc(s.body) { return true; }
+            } also s.kind == StmtKind.FOREACH_STRUCT {
+                if this.ar_stmts_alloc(s.body) { return true; }
+            } also s.kind == StmtKind.WORKS {
+                if this.ar_stmts_alloc(s.body) { return true; }
+                if this.ar_stmts_alloc(s.else_block) { return true; }
+            } also s.kind == StmtKind.SWITCH {
+                foreach _, swc in<vector> s.switch_cases {
+                    if this.ar_stmts_alloc(swc.body) { return true; }
+                }
+                if this.ar_stmts_alloc(s.default_block) { return true; }
+            } also s.kind == StmtKind.DEFER {
+                if this.ar_stmts_alloc(s.body) { return true; }
+            } also s.kind == StmtKind.SPAWN {
+                foreach _, pa in<vector> s.args {
+                    if this.ar_expr_alloc(pa) {
+                        return true;
+                    }
+                }
+            } also s.kind == StmtKind.RETURN {
+                if s.value != null && this.ar_expr_alloc(s.value) {
+                    return true;
+                }
+            } also s.kind == StmtKind.THROW {
+                foreach _, ta in<vector> s.args {
+                    if this.ar_expr_alloc(ta) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    pub fnc one_stmt_vec(s Stmt) : vec<Stmt> {
+        v: vec<Stmt>;
+        v.pushb(s);
+        return v;
+    }
+
+    pub fnc ar_expr_alloc(e Expr) : bool {
+        if e == null { return false; }
+        if e.kind == ExprKind.STRING || e.kind == ExprKind.INT || e.kind == ExprKind.FLOAT
+           || e.kind == ExprKind.CHAR || e.kind == ExprKind.BOOL || e.kind == ExprKind.NIL
+           || e.kind == ExprKind.IDENT {
+            return false;
+        }
+        if e.kind == ExprKind.BINOP {
+            if this.ar_is_heap_type(this.get_expr_type(e.left)) || this.ar_is_heap_type(this.get_expr_type(e.right)) {
+                if e.op == "+" || e.op == "-" || e.op == "*" || e.op == "/" || e.op == "%" {
+                    return true;
+                }
+            }
+            if this.ar_expr_alloc(e.left) { return true; }
+            if this.ar_expr_alloc(e.right) { return true; }
+            return false;
+        }
+        if e.kind == ExprKind.UNARY {
+            if this.ar_expr_alloc(e.left) { return true; }
+            return false;
+        }
+        if e.kind == ExprKind.CALL || e.kind == ExprKind.METHOD_CALL {
+            if e.kind == ExprKind.METHOD_CALL && e.left != null {
+                rt: string = this.ar_expr_root(e.left);
+                if rt.bsize > 0 && this.ar_is_heap_type(this.ar_var_type(rt)) {
+                    return true;
+                }
+            }
+            if this.ar_is_heap_type(this.get_expr_type(e)) {
+                return true;
+            }
+            if e.left != null && this.ar_expr_alloc(e.left) { return true; }
+            foreach _, a in<vector> e.args {
+                if this.ar_expr_alloc(a) { return true; }
+            }
+            return false;
+        }
+        if e.kind == ExprKind.MEMBER || e.kind == ExprKind.INDEX || e.kind == ExprKind.POINTER_MEMBER {
+            if e.left != null && this.ar_expr_alloc(e.left) { return true; }
+            if e.right != null && this.ar_expr_alloc(e.right) { return true; }
+            return false;
+        }
+        if e.kind == ExprKind.CAST || e.kind == ExprKind.TERNARY {
+            if e.left != null && this.ar_expr_alloc(e.left) { return true; }
+            if e.right != null && this.ar_expr_alloc(e.right) { return true; }
+            if e.cond != null && this.ar_expr_alloc(e.cond) { return true; }
+            return false;
+        }
+        if e.kind == ExprKind.ARRAY_LIT {
+            if e.sval == "__tuple__" {
+                foreach _, ta2 in<vector> e.args {
+                    if this.ar_expr_alloc(ta2) { return true; }
+                }
+                return false;
+            }
+            return true;
+        }
+        if e.kind == ExprKind.STRUCT_INIT {
+            return true;
+        }
+        return false;
+    }
+
+    // --- arena loop checkpoints ------------------------------------------
+    // A loop is eligible for a per-iteration arena reset only when no
+    // value that must outlive the iteration can point into the loop's
+    // temporaries: no stores of heap values to variables/globals
+    // declared outside the loop, no mutations of outer heap aggregates
+    // (vec/hash growth), no defers. Returns/defer-free etc. are handled
+    // by the escape path. Ineligible loops keep per-function lifetime
+    // (correct, just more retained memory until the function exits).
+    pub fnc ar_loop_ok(body vec<Stmt>) : bool {
+        inner: hash<string, bool>;
+        this.ar_collect_inner(body, inner);
+        return !this.ar_scan_outer(body, inner);
+    }
+
+    // Collect every name declared anywhere inside a loop body
+    // (locals are inner; everything else is an outer survivor).
+    pub fnc ar_collect_inner(body vec<Stmt>, inner hash<string, bool>) : void {
+        foreach _, s in<vector> body {
+            if s.kind == StmtKind.VAR_DECL {
+                inner.push(s.name, true);
+            } also s.kind == StmtKind.IF {
+                this.ar_collect_inner(s.then_block, inner);
+                this.ar_collect_inner(s.else_block, inner);
+            } also s.kind == StmtKind.WHILE || s.kind == StmtKind.LOOP || s.kind == StmtKind.BLOCK {
+                this.ar_collect_inner(s.body, inner);
+            } also s.kind == StmtKind.FOR {
+                if s.for_init != null && s.for_init.kind == StmtKind.VAR_DECL {
+                    inner.push(s.for_init.name, true);
+                }
+                if s.for_step != null && s.for_step.kind == StmtKind.VAR_DECL {
+                    inner.push(s.for_step.name, true);
+                }
+                this.ar_collect_inner(s.body, inner);
+            } also s.kind == StmtKind.FOREACH_STRUCT {
+                inner.push(s.name, true);
+                inner.push(s.var_type, true);
+                this.ar_collect_inner(s.body, inner);
+            } also s.kind == StmtKind.WORKS {
+                this.ar_collect_inner(s.body, inner);
+                this.ar_collect_inner(s.else_block, inner);
+            } also s.kind == StmtKind.SWITCH {
+                foreach _, swc in<vector> s.switch_cases {
+                    this.ar_collect_inner(swc.body, inner);
+                }
+                this.ar_collect_inner(s.default_block, inner);
+            }
+        }
+    }
+
+    // True when re-entering the loop can point at dead temporaries:
+    // a heap store to an outer variable, a store through any heap
+    // object, an allocating mutation of an outer vec/hash, or a defer.
+    pub fnc ar_scan_outer(body vec<Stmt>, inner hash<string, bool>) : bool {
+        foreach _, s in<vector> body {
+            if s.kind == StmtKind.ASSIGN {
+                if s.target != null && this.ar_target_outer(s.target, inner) {
+                    return true;
+                }
+                if this.ar_expr_outer_mutate(s.value, inner) {
+                    return true;
+                }
+            } also s.kind == StmtKind.EXPR {
+                if s.value != null && this.ar_expr_outer_mutate(s.value, inner) {
+                    return true;
+                }
+                if s.value != null && s.value.op == "++" || s.value != null && s.value.op == "--" {
+                    if s.value.left != null && s.value.left.kind == ExprKind.IDENT {
+                        nm: string = s.value.left.sval;
+                        if !inner.isin(nm) && this.ar_is_heap_type(this.ar_var_type(nm)) {
+                            return true;
+                        }
+                    }
+                }
+            } also s.kind == StmtKind.DEFER {
+                return true;
+            } also s.kind == StmtKind.IF {
+                if this.ar_scan_outer(s.then_block, inner) { return true; }
+                if this.ar_scan_outer(s.else_block, inner) { return true; }
+            } also s.kind == StmtKind.WHILE || s.kind == StmtKind.LOOP || s.kind == StmtKind.BLOCK {
+                if this.ar_scan_outer(s.body, inner) { return true; }
+            } also s.kind == StmtKind.FOR {
+                if s.for_step != null && s.for_step.kind == StmtKind.ASSIGN {
+                    if s.for_step.target != null && this.ar_target_outer(s.for_step.target, inner) {
+                        return true;
+                    }
+                }
+                if this.ar_scan_outer(s.body, inner) { return true; }
+            } also s.kind == StmtKind.FOREACH_STRUCT {
+                if this.ar_scan_outer(s.body, inner) { return true; }
+            } also s.kind == StmtKind.WORKS {
+                if this.ar_scan_outer(s.body, inner) { return true; }
+                if this.ar_scan_outer(s.else_block, inner) { return true; }
+            } also s.kind == StmtKind.SWITCH {
+                foreach _, swc in<vector> s.switch_cases {
+                    if this.ar_scan_outer(swc.body, inner) { return true; }
+                }
+                if this.ar_scan_outer(s.default_block, inner) { return true; }
+            }
+        }
+        return false;
+    }
+
+    pub fnc ar_var_type(nm string) : string {
+        if this.var_types.isin(nm) { return this.var_types[nm]; }
+        if this.global_vars.isin(nm) { return this.global_vars[nm]; }
+        return "";
+    }
+
+    pub fnc ar_target_outer(t Expr, inner hash<string, bool>) : bool {
+        if t.kind == ExprKind.IDENT {
+            if inner.isin(t.sval) { return false; }
+            vt: string = this.ar_var_type(t.sval);
+            if vt.bsize == 0 { return false; }
+            // Globals/shared retain whatever is stored into them.
+            if this.global_vars.isin(t.sval) || this.shared_var_names.isin(t.sval) {
+                return this.ar_is_heap_type(vt);
+            }
+            return this.ar_is_heap_type(vt);
+        }
+        // MEMBER / INDEX / POINTER_MEMBER: a store through an object
+        // could retain a temporary in a pre-loop aggregate.
+        return true;
+    }
+
+    pub fnc ar_expr_outer_mutate(e Expr, inner hash<string, bool>) : bool {
+        if e == null { return false; }
+        if e.kind == ExprKind.METHOD_CALL {
+            // METHOD_CALL: left receiver, sval method name.
+            m: string = e.sval;
+            is_grow: bool = m == "push" || m == "pushb" || m == "pushf" || m == "insert" || m == "inserta" || m == "insertv" || m == "extend" || m == "extendv";
+            if is_grow && e.left != null {
+                root: string = this.ar_expr_root(e.left);
+                if root.bsize > 0 && !inner.isin(root) {
+                    rt: string = this.ar_var_type(root);
+                    if rt.bsize > 0 && this.ar_is_heap_type(rt) {
+                        return true;
+                    }
+                }
+            }
+            // Recurse into arguments and receiver for nested calls.
+            if e.left != null && this.ar_expr_outer_mutate(e.left, inner) { return true; }
+            foreach _, a in<vector> e.args {
+                if this.ar_expr_outer_mutate(a, inner) { return true; }
+            }
+            return false;
+        }
+        // Recurse into sub-expressions.
+        if e.left != null && this.ar_expr_outer_mutate(e.left, inner) { return true; }
+        if e.right != null && this.ar_expr_outer_mutate(e.right, inner) { return true; }
+        if e.cond != null && this.ar_expr_outer_mutate(e.cond, inner) { return true; }
+        foreach _, a2 in<vector> e.args {
+            if this.ar_expr_outer_mutate(a2, inner) { return true; }
+        }
+        return false;
+    }
+
+    pub fnc ar_expr_root(e Expr) : string {
+        if e.kind == ExprKind.IDENT { return e.sval; }
+        if e.left != null { return this.ar_expr_root(e.left); }
+        return "";
+    }
+
+    // Emit a loop-frame enter; returns the i64 alloca slot holding the
+    // frame index ("" when the loop is not instrumented).
+    pub fnc ar_loop_enter(s Stmt) : string {
+        if !this.arena { return ""; }
+        if !this.ar_loop_ok(s.body) {
+            this.ar_loop_handles.pushb("");
+            return "";
+        }
+        slot: string = this.new_reg();
+        this.emit("  " + slot + " = alloca i64, align 8");
+        hv: string = this.new_reg();
+        this.emit("  " + hv + " = call i64 @leasharena_loop_enter()");
+        this.emit("  store i64 " + hv + ", i64* " + slot + ", align 8");
+        // Handle slots are pushed only for instrumented loops; keep a
+        // parallel registry per depth for SKIP/STOP targeting.
+        outer_h: string = "";
+        if this.ar_loop_handles.size > 0 {
+            outer_h = this.ar_loop_handles.get(this.ar_loop_handles.size - 1);
+        }
+        this.ar_loop_handles.pushb(slot);
+        this.ar_loop_depth = this.ar_loop_depth + 1;
+        return slot;
+    }
+
+    // Emit the back-edge reset for the loop in slot ("" = no-op).
+    pub fnc ar_loop_reset(slot string) : void {
+        if slot.bsize == 0 { return; }
+        hv2: string = this.new_reg();
+        this.emit("  " + hv2 + " = load i64, i64* " + slot + ", align 8");
+        this.emit("  call void @leasharena_loop_reset(i64 " + hv2 + ")");
+    }
+
+    // The innermost instrumented handle, or "" if none.
+    pub fnc ar_top_handle() : string {
+        if this.ar_loop_handles.size == 0 { return ""; }
+        return this.ar_loop_handles.get(this.ar_loop_handles.size - 1);
+    }
+
+
 
     // i8* view of a returned pointer value for the cleanup skip test
     // ("" for non-pointers — nothing to keep alive).
@@ -2051,6 +2920,26 @@ pub def CodeGen : class {
         }
         if ei == idx { return this.trim_type_str(cur); }
         return "int";
+    }
+
+    pub fnc tuple_elem_count(tup string) : int {
+        innerc: string = "";
+        ci: int = 1;
+        while ci < tup.bsize - 1 {
+            innerc = innerc + tup[ci];
+            ci = ci + 1;
+        }
+        n: int = 1;
+        depthc: int = 0;
+        ci2: int = 0;
+        while ci2 < innerc.bsize {
+            pch2: char = innerc[ci2];
+            if pch2 == '<' || pch2 == '(' { depthc = depthc + 1; }
+            if pch2 == '>' || pch2 == ')' { depthc = depthc - 1; }
+            if pch2 == ',' && depthc == 0 { n = n + 1; }
+            ci2 = ci2 + 1;
+        }
+        return n;
     }
 
     pub fnc trim_type_str(s string) : string {
@@ -6464,12 +7353,14 @@ pub def CodeGen : class {
                 if s.value.kind == ExprKind.ARRAY_LIT && s.value.sval == "__tuple__" && this.current_func_ret.bsize > 1 && this.current_func_ret[0] == '(' {
                     lret: string = this.llvm_type(this.current_func_ret);
                     agg: string = lret + " undef";
+                    agg_val: string = "";
                     ti: int = 0;
                     while ti < s.value.args.size {
                         tval: string = this.gen_expr(s.value.args.get(ti));
                         treg: string = this.new_reg();
                         this.emit("  " + treg + " = insertvalue " + agg + ", " + this.llvm_type(this.tuple_elem_type(this.current_func_ret, ti)) + " " + tval + ", " + tostring(ti));
                         agg = lret + " " + treg;
+                        agg_val = treg;
                         ti = ti + 1;
                     }
                     dmi: int = this.defer_stack.size - 1;
@@ -6477,8 +7368,13 @@ pub def CodeGen : class {
                         this.gen_statement(this.defer_stack.get(dmi));
                         dmi = dmi - 1;
                     }
-                    this.af_cleanup("");
-                    this.emit("  ret " + agg);
+                    if this.arena {
+                        agg_out: string = this.ar_cleanup_tuple_agg(agg_val, lret, this.current_func_ret);
+                        this.emit("  ret " + lret + " " + agg_out);
+                    } else {
+                        this.af_cleanup("");
+                        this.emit("  ret " + agg);
+                    }
                 } else {
                     val: string = this.gen_expr(s.value);
                     ret_rhst: string = this.get_expr_type(s.value);
@@ -6504,7 +7400,11 @@ pub def CodeGen : class {
                                 this.gen_statement(this.defer_stack.get(dvi2));
                                 dvi2 = dvi2 - 1;
                             }
-                            this.af_cleanup("");
+                            if this.arena {
+                                this.ar_cleanup("", this.current_func_ret);
+                            } else {
+                                this.af_cleanup("");
+                            }
                             this.emit("  ret void");
                             this.current_block_terminated = true;
                             return;
@@ -6520,7 +7420,31 @@ pub def CodeGen : class {
                         this.gen_statement(this.defer_stack.get(di));
                         di = di - 1;
                     }
-                    this.af_cleanup(this.af_skip_reg(val, lret));
+                    if this.arena {
+                        if s.value.kind == ExprKind.NIL {
+                            this.ar_cleanup("", this.current_func_ret);
+                        } else if this.current_func_ret.bsize > 2 && this.current_func_ret[this.current_func_ret.bsize - 1] == ']' {
+                            val = this.ar_cleanup_slice(val, lret, this.current_func_ret);
+                        } else {
+                            spared_r: string = this.af_skip_reg(val, lret);
+                            if spared_r.bsize == 0 {
+                                this.ar_cleanup("", this.current_func_ret);
+                            } else {
+                                esc_r: string = this.ar_cleanup(spared_r, this.current_func_ret);
+                                if esc_r != spared_r {
+                                    if lret.bsize > 1 && lret[lret.bsize - 1] == '*' && lret != "i8*" {
+                                        bc_r: string = this.new_reg();
+                                        this.emit("  " + bc_r + " = bitcast i8* " + esc_r + " to " + lret);
+                                        val = bc_r;
+                                    } else {
+                                        val = esc_r;
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        this.af_cleanup(this.af_skip_reg(val, lret));
+                    }
                     this.emit("  ret " + lret + " " + val);
                 }
             } else {
@@ -6529,7 +7453,11 @@ pub def CodeGen : class {
                     this.gen_statement(this.defer_stack.get(dvi));
                     dvi = dvi - 1;
                 }
-                this.af_cleanup("");
+                if this.arena {
+                    this.ar_cleanup("", this.current_func_ret);
+                } else {
+                    this.af_cleanup("");
+                }
                 this.emit("  ret void");
             }
             this.current_block_terminated = true;
@@ -6558,7 +7486,13 @@ pub def CodeGen : class {
                 spn_szr: string = this.new_reg();
                 this.emit("  " + spn_szr + " = ptrtoint " + spn_struct + "* " + spn_szg + " to i64");
                 spn_mem: string = this.new_reg();
-                this.emit("  " + spn_mem + " = call i8* @leash_gc_malloc(i64 " + spn_szr + ")");
+                if this.arena {
+                    // Spawn blocks outlive the spawner's frame (workers
+                    // read them after the call returns): root arena.
+                    this.emit("  " + spn_mem + " = call i8* @leash_gc_malloc_rooted(i64 " + spn_szr + ")");
+                } else {
+                    this.emit("  " + spn_mem + " = call i8* @leash_gc_malloc(i64 " + spn_szr + ")");
+                }
                 spn_bc: string = this.new_reg();
                 this.emit("  " + spn_bc + " = bitcast i8* " + spn_mem + " to " + spn_struct + "*");
                 spn_j: int = 0;
@@ -6566,6 +7500,52 @@ pub def CodeGen : class {
                     spn_av: string = this.gen_expr(s.args.get(spn_j));
                     spn_at2: string = this.get_expr_type(s.args.get(spn_j));
                     spn_lty2: string = this.llvm_type(spn_at2);
+                    if this.arena && this.ar_is_heap_type(spn_at2) {
+                        // Slices carry their backing pointer inside the
+                        // aggregate: copy it into the root arena in
+                        // place, then pack the updated aggregate.
+                        spn_tt0: string = this.strip_ref(spn_at2);
+                        if spn_tt0.bsize > 2 && spn_tt0[spn_tt0.bsize - 1] == ']' {
+                            spn_aggs: string = this.new_reg();
+                            this.emit("  " + spn_aggs + " = alloca " + spn_lty2 + ", align 8");
+                            this.emit("  store " + spn_lty2 + " " + spn_av + ", " + spn_lty2 + "* " + spn_aggs);
+                            spn_es2: string = this.ar_slice_elem_size(spn_at2);
+                            this.emit("  call void @leasharena_root_copy_slice(i8* " + spn_aggs + ", i64 " + spn_es2 + ")");
+                            spn_av = this.new_reg();
+                            this.emit("  " + spn_av + " = load " + spn_lty2 + ", " + spn_lty2 + "* " + spn_aggs);
+                        } else {
+                        spn_slot: string = this.new_reg();
+                        this.emit("  " + spn_slot + " = alloca i8*, align 8");
+                        spn_iv: string = this.new_reg();
+                        if spn_lty2 == "i8*" { spn_iv = spn_av; }
+                        else { this.emit("  " + spn_iv + " = bitcast " + spn_lty2 + " " + spn_av + " to i8*"); }
+                        this.emit("  store i8* " + spn_iv + ", i8** " + spn_slot + ", align 8");
+                        spn_tt: string = this.strip_ref(spn_at2);
+                        if spn_tt == "string" {
+                            this.emit("  call void @leasharena_root_copy_string(i8** " + spn_slot + ")");
+                        } also this.is_vec_type(spn_tt) {
+                            this.emit("  call void @leasharena_root_copy_vec(i8** " + spn_slot + ")");
+                        } also spn_tt.bsize > 5 && spn_tt[0] == 'h' && spn_tt[1] == 'a' && spn_tt[2] == 's' && spn_tt[3] == 'h' && spn_tt[4] == '<' {
+                            this.emit("  call void @leasharena_root_copy_hash(i8** " + spn_slot + ")");
+                        } else {
+                            // struct/class/union pointer: static-size copy.
+                            spn_szr2: string = this.new_reg();
+                            this.emit("  " + spn_szr2 + " = getelementptr " + spn_lty2 + " null, i32 1");
+                            spn_szr2b: string = this.new_reg();
+                            this.emit("  " + spn_szr2b + " = ptrtoint " + spn_lty2 + " " + spn_szr2 + " to i64");
+                            this.emit("  call void @leasharena_root_copy_blob(i8** " + spn_slot + ", i64 " + spn_szr2b + ")");
+                        }
+                        spn_out2: string = this.new_reg();
+                        this.emit("  " + spn_out2 + " = load i8*, i8** " + spn_slot + ", align 8");
+                        if spn_lty2 != "i8*" {
+                            spn_out3: string = this.new_reg();
+                            this.emit("  " + spn_out3 + " = bitcast i8* " + spn_out2 + " to " + spn_lty2);
+                            spn_av = spn_out3;
+                        } else {
+                            spn_av = spn_out2;
+                        }
+                        }
+                    }
                     spn_gep: string = this.new_reg();
                     this.emit("  " + spn_gep + " = getelementptr inbounds " + spn_struct + ", " + spn_struct + "* " + spn_bc + ", i32 0, i32 " + tostring(spn_j));
                     this.emit("  store " + spn_lty2 + " " + spn_av + ", " + spn_lty2 + "* " + spn_gep);
@@ -6645,6 +7625,7 @@ pub def CodeGen : class {
             l_head: string = this.new_label("b_while_head");
             l_body: string = this.new_label("b_while_body");
             l_exit: string = this.new_label("b_while_exit");
+            ar_slot: string = this.ar_loop_enter(s);
 
             this.emit("  br label %" + l_head);
             this.emit(l_head + ":");
@@ -6659,13 +7640,28 @@ pub def CodeGen : class {
             this.current_block_terminated = false;
             foreach _, sb in<vector> s.body { this.gen_statement(sb); }
             if !this.current_block_terminated {
+                this.ar_loop_reset(ar_slot);
                 this.emit("  br label %" + l_head);
             }
 
             this.loop_head_stack.popb();
             this.loop_exit_stack.popb();
+            // ar_loop_handles is popped for every loop (the enter always
+            // pushed, possibly ""); the runtime exit only fires for
+            // instrumented slots.
+            if this.arena {
+                this.ar_loop_handles.popb();
+            }
+            if ar_slot.bsize > 0 {
+                this.ar_loop_depth = this.ar_loop_depth - 1;
+            }
 
             this.emit(l_exit + ":");
+            if ar_slot.bsize > 0 {
+                hv3: string = this.new_reg();
+                this.emit("  " + hv3 + " = load i64, i64* " + ar_slot + ", align 8");
+                this.emit("  call void @leasharena_loop_exit(i64 " + hv3 + ")");
+            }
             this.current_block_terminated = false;
             return;
         }
@@ -6675,6 +7671,7 @@ pub def CodeGen : class {
             l_head: string = this.new_label("b_for_head");
             l_body: string = this.new_label("b_for_body");
             l_exit: string = this.new_label("b_for_exit");
+            ar_slot2: string = this.ar_loop_enter(s);
 
             this.emit("  br label %" + l_head);
             this.emit(l_head + ":");
@@ -6692,13 +7689,25 @@ pub def CodeGen : class {
             foreach _, sb in<vector> s.body { this.gen_statement(sb); }
             if s.for_step != null { this.gen_statement(s.for_step); }
             if !this.current_block_terminated {
+                this.ar_loop_reset(ar_slot2);
                 this.emit("  br label %" + l_head);
             }
 
             this.loop_head_stack.popb();
             this.loop_exit_stack.popb();
+            if this.arena {
+                this.ar_loop_handles.popb();
+            }
+            if ar_slot2.bsize > 0 {
+                this.ar_loop_depth = this.ar_loop_depth - 1;
+            }
 
             this.emit(l_exit + ":");
+            if ar_slot2.bsize > 0 {
+                hv4: string = this.new_reg();
+                this.emit("  " + hv4 + " = load i64, i64* " + ar_slot2 + ", align 8");
+                this.emit("  call void @leasharena_loop_exit(i64 " + hv4 + ")");
+            }
             this.current_block_terminated = false;
             return;
         }
@@ -6706,6 +7715,7 @@ pub def CodeGen : class {
         if s.kind == StmtKind.LOOP {
             l_head: string = this.new_label("b_loop_head");
             l_exit: string = this.new_label("b_loop_exit");
+            ar_slot3: string = this.ar_loop_enter(s);
 
             this.emit("  br label %" + l_head);
             this.emit(l_head + ":");
@@ -6716,13 +7726,25 @@ pub def CodeGen : class {
 
             foreach _, sb in<vector> s.body { this.gen_statement(sb); }
             if !this.current_block_terminated {
+                this.ar_loop_reset(ar_slot3);
                 this.emit("  br label %" + l_head);
             }
 
             this.loop_head_stack.popb();
             this.loop_exit_stack.popb();
+            if this.arena {
+                this.ar_loop_handles.popb();
+            }
+            if ar_slot3.bsize > 0 {
+                this.ar_loop_depth = this.ar_loop_depth - 1;
+            }
 
             this.emit(l_exit + ":");
+            if ar_slot3.bsize > 0 {
+                hv5: string = this.new_reg();
+                this.emit("  " + hv5 + " = load i64, i64* " + ar_slot3 + ", align 8");
+                this.emit("  call void @leasharena_loop_exit(i64 " + hv5 + ")");
+            }
             this.current_block_terminated = false;
             return;
         }
@@ -6739,6 +7761,10 @@ pub def CodeGen : class {
         if s.kind == StmtKind.SKIP {
             if this.loop_head_stack.size > 0 {
                 head_lbl: string = this.loop_head_stack.get(this.loop_head_stack.size - 1);
+                if this.ar_loop_handles.size > 0 {
+                    top_h: string = this.ar_loop_handles.get(this.ar_loop_handles.size - 1);
+                    this.ar_loop_reset(top_h);
+                }
                 this.emit("  br label %" + head_lbl);
                 this.current_block_terminated = true;
             }
@@ -7112,7 +8138,13 @@ pub def CodeGen : class {
             aw_sz: int = this.llvm_val_bytes(aw_lret);
             if aw_sz <= 0 { aw_sz = 8; }
             aw_box: string = this.new_reg();
-            this.emit("  " + aw_box + " = call i8* @leash_gc_malloc(i64 " + tostring(aw_sz) + ")");
+            // The box outlives the wrapper frame (the caller awaits by
+            // pointer after this function returns): root it.
+            if this.arena {
+                this.emit("  " + aw_box + " = call i8* @leash_gc_malloc_rooted(i64 " + tostring(aw_sz) + ")");
+            } else {
+                this.emit("  " + aw_box + " = call i8* @leash_gc_malloc(i64 " + tostring(aw_sz) + ")");
+            }
             aw_bp: string = this.new_reg();
             this.emit("  " + aw_bp + " = bitcast i8* " + aw_box + " to " + aw_lret + "*");
             this.emit("  store " + aw_lret + " " + aw_call + ", " + aw_lret + "* " + aw_bp);
@@ -7199,6 +8231,8 @@ pub def CodeGen : class {
         this.emit("entry:");
         this.current_block_terminated = false;
         this.af_init();
+        this.ar_frameless = this.ar_fn_skip(f.body, this.current_func_ret);
+        this.ar_init();
 
         // `this` for functions bound to a struct/class via `-> Type`
         if has_this {
@@ -7286,7 +8320,11 @@ pub def CodeGen : class {
                 this.gen_statement(this.defer_stack.get(dti));
                 dti = dti - 1;
             }
-            this.af_cleanup("");
+            if this.arena {
+                this.ar_cleanup("", this.current_func_ret);
+            } else {
+                this.af_cleanup("");
+            }
             if lret == "void" {
                 this.emit("  ret void");
             } also lret == "i64" || lret == "i32" || lret == "i1" || lret == "i8" {
@@ -7298,6 +8336,8 @@ pub def CodeGen : class {
 
         this.emit("}\n");
         this.af_reset();
+        this.ar_reset();
+        this.ar_frameless = false;
         this.var_ptrs = old_fn_var_ptrs;
         this.var_types = old_fn_var_types;
         this.cur_func_unsafe = old_fn_unsafe;
@@ -7439,6 +8479,8 @@ pub def CodeGen : class {
                 this.emit("entry:");
                 this.current_block_terminated = false;
                 this.af_init();
+                this.ar_frameless = this.ar_fn_skip(m.body, m.ret_type);
+                this.ar_init();
 
                 // Alloca for 'this' if instance method
                 if !m.is_static {
@@ -7492,7 +8534,11 @@ pub def CodeGen : class {
                         this.gen_statement(this.defer_stack.get(mdti));
                         mdti = mdti - 1;
                     }
-                    this.af_cleanup("");
+                    if this.arena {
+                        this.ar_cleanup("", this.current_func_ret);
+                    } else {
+                        this.af_cleanup("");
+                    }
                     if lret == "void" {
                         this.emit("  ret void");
                     } also lret == "i64" || lret == "i32" || lret == "i1" || lret == "i8" {
@@ -7503,6 +8549,8 @@ pub def CodeGen : class {
                 }
                 this.emit("}\n");
                 this.af_reset();
+                this.ar_reset();
+                this.ar_frameless = false;
 
                 this.var_ptrs = old_var_ptrs;
                 this.var_types = old_var_types;
@@ -8035,6 +9083,36 @@ pub def CodeGen : class {
                     "declare void @leash_future_complete(i8*, i8*)\n" +
                     "declare i8* @leash_future_await(i8*)\n" +
                     "declare i32 @leash_future_is_done(i8*)\n" +
+                    "declare i8* @leash_gc_malloc_rooted(i64)\n" +
+                    "%struct.arena_stack = type { " + "i8*, i8*, i8*, i8*, i64, i64, i64" + " }\n" +
+                    "%struct.arena_cp = type { " + "i8*, i8*, i8*, i64" + " }\n" +
+                    "@leasharena_tls_ar = external thread_local global %struct.arena_stack, align 8\n" +
+                    "declare void @leasharena_enter_slow()\n" +
+                    "declare void @leasharena_exit_slow()\n" +
+                    "declare void @leasharena_enter()\n" +
+                    "declare void @leasharena_exit_n(i64)\n" +
+                    "declare void @leasharena_escape_string(i8**, i64)\n" +
+                    "declare void @leasharena_escape_vec(i8**, i64)\n" +
+                    "declare void @leasharena_escape_hash(i8**, i64)\n" +
+                    "declare void @leasharena_escape_blob(i8**, i64, i64)\n" +
+                    "declare void @leasharena_escape_slice(i8*, i64, i64)\n" +
+                    "declare i8* @leasharena_stage_string(i8*)\n" +
+                    "declare void @leasharena_commit_string(i8**, i8*)\n" +
+                    "declare i8* @leasharena_stage_vec(i8*)\n" +
+                    "declare void @leasharena_commit_vec(i8**, i8*)\n" +
+                    "declare i8* @leasharena_stage_hash(i8*)\n" +
+                    "declare void @leasharena_commit_hash(i8**, i8*)\n" +
+                    "declare i8* @leasharena_stage_blob(i8*, i64)\n" +
+                    "declare void @leasharena_commit_blob(i8**, i8*, i64)\n" +
+                    "declare void @leasharena_root_copy_string(i8**)\n" +
+                    "declare void @leasharena_root_copy_vec(i8**)\n" +
+                    "declare void @leasharena_root_copy_hash(i8**)\n" +
+                    "declare void @leasharena_root_copy_blob(i8**, i64)\n" +
+                    "declare void @leasharena_root_copy_slice(i8*, i64)\n" +
+                    "declare i64 @leasharena_loop_enter()\n" +
+                    "declare void @leasharena_loop_reset(i64)\n" +
+                    "declare void @leasharena_loop_exit(i64)\n" +
+                    "declare void @leasharena_loop_reset_slow(i64)\n" +
                     "declare i8* @leash_sh_exec(i8*, i8*)\n" +
                     "declare i8* @fgets(i8*, i32, i8*)\n" +
                     "declare void @exit(i64)\n" +

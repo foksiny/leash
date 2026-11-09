@@ -4,7 +4,7 @@
 
 # Leash Programming Language
 
-**Version 1.7.0** — Leash compiles itself.
+**Version 1.8.0** — Leash compiles itself.
 
 Leash is a strongly-typed, modern compiled programming language built on LLVM. It features an intuitive syntax and native performance with a built-in garbage collector, package manager, and cross-platform support.
 
@@ -33,7 +33,7 @@ Output parity is enforced by a frozen corpus: **89/89 example programs compile a
 git clone https://github.com/foksiny/leash && cd leash
 ./scripts/bootstrap.sh     # seeds from bootstrap/, builds bin/leashc (Python-free)
 bin/leashc version
-# leash 1.7.0 (self-hosted)
+# leash 1.8.0 (self-hosted)
 ```
 
 The bootstrap compiles `compiler/*.lsh` and installs the resulting native compiler at `bin/leashc`. To install the toolchain globally — binaries into `~/.leash/bin`, plus the Leash runtime (`~/.leash/leash`) and the bundled standard library (`~/.leash/libs`) so `leash` / `leashc` work from any directory:
@@ -79,6 +79,7 @@ bin/leashc self-host   # 3-stage bootstrap + fixed-point check, installs bin/lea
 - **Strongly typed** with full type inference, generics (`class<T>`, multi-type `[int, float, ...]` parameters), operator overloading (`opdef`) and explicit bit-width integers/floats (`int<128>`, `uint<512>`, …)
 - **LLVM-powered** compilation with optimization levels O0-O4, Os, Oz (O4 = `-O1` + LTO/native tuning; `-O2/-O3` are slower than `-O1` for Leash)
 - **Precise, lean garbage collection** — pointer-free vector buffers are never scanned (no false pins from integer payloads); unboxed inline element storage with reference semantics; peak resident memory stays near `2× live + 256 KB` (16 KB slabs, adaptive hash, exact string caps) with ~22 KB binaries
+- **Experimental `--arena` memory layout** — scoped bump arena (thread-local blocks, whole-scope release, no GC, no borrow checker) selectable per program with `leash compile <file> --arena`; plain C pointers, deterministic lifetimes, and C-ABI-friendly storage (planned default in a future release)
 - **Package manager** (`leash pkg`) with fully self-service publishing — registry updates are validated and merged by a bot, no human review; install from the index or any git URL; **reproducible project builds** with `leash.lock`
 - **Concurrency model** with workers, `shared` and `fusion` variables — plus native **`async fnc`/`await`** returning `future<T>`
 - **Shared variables** — a function can declare program-wide storage in its signature (`fnc f() : void | result: int`), and only the functions naming it may touch it; the same storage is shared by every function that declares it. Distinct from the `shared`/`fusion` worker globals, which are module-wide and carry the one-writer/atomic rules for threads
@@ -104,7 +105,7 @@ bin/leashc self-host   # 3-stage bootstrap + fixed-point check, installs bin/lea
 
 ## Known Limitations
 
-Leash 1.7.0 is a complete, self-hosted toolchain with no Python in the build or run path. The items below are the honest, currently-known limits of the platform &mdash; each is intentional and stable for 1.x.
+Leash 1.8.0 is a complete, self-hosted toolchain with no Python in the build or run path. The items below are the honest, currently-known limits of the platform &mdash; each is intentional and stable for 1.x.
 
 | Limitation | Severity | Comment |
 |------------|----------|---------|

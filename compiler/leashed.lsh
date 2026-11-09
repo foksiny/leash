@@ -2035,7 +2035,7 @@ fnc pkg_install_global_tools(dest_root string, tools PkgJson) : void {
         driver: CompilerDriver = CompilerDriver.make();
         driver.add_import_dir(dest_root);
         empty_libs: vec<string>;
-        if driver.compile_file(src_abs, out, false, false, "", "2", false, empty_libs, false, false, false, "", false, false, "", false) != 0 {
+        if driver.compile_file(src_abs, out, false, false, "", "2", false, empty_libs, false, false, false, "", false, false, "", false, false) != 0 {
             show("error: failed to build global command '" + tname + "'");
             i = i + 1;
             continue;
@@ -3020,7 +3020,7 @@ fnc pkg_leash_check(path string, import_dirs vec<string>) : int {
     driver: CompilerDriver = CompilerDriver.make();
     foreach _, d in<vector> import_dirs { driver.add_import_dir(d); }
     empty_libs: vec<string>;
-    return driver.compile_file(path, "", false, false, "", "0", true, empty_libs, false, false, false, "", false, false, "", false);
+    return driver.compile_file(path, "", false, false, "", "0", true, empty_libs, false, false, false, "", false, false, "", false, false);
 }
 
 // Compile one file to a static library in-process.
@@ -3028,7 +3028,7 @@ fnc pkg_leash_compile_static(path string, output_stem string, import_dirs vec<st
     driver: CompilerDriver = CompilerDriver.make();
     foreach _, d in<vector> import_dirs { driver.add_import_dir(d); }
     empty_libs: vec<string>;
-    return driver.compile_file(path, output_stem, false, false, "", "2", false, empty_libs, false, false, false, "", false, false, "static", false);
+    return driver.compile_file(path, output_stem, false, false, "", "2", false, empty_libs, false, false, false, "", false, false, "static", false, false);
 }
 
 // Pretty JSON object writer (indent 2, sorted keys) for manifests.

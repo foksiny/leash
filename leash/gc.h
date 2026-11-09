@@ -1,16 +1,14 @@
 /**
  * Leash Custom Garbage Collector - Header
  *
- * Slab-based, non-moving, conservative mark-and-sweep collector.
- * Small objects live in per-size-class slab allocators with 16-byte
- * headers; large objects are individually malloc'd. A page directory
- * gives O(1) candidate-pointer -> object lookup. Roots are: an explicit
- * object-root array (futures, spawn arg blocks), registered scan regions
- * (pointer-bearing globals, emitted by codegen), and a conservative
- * scan of the main thread's stack. Automatic collection triggers when
- * bytes-since-last-collection exceeds max(threshold, 2x live bytes),
- * gated on quiescence (no active workers, no in-flight parallel ops,
- * no foreign threads).
+ * Default: slab-based, non-moving, conservative mark-and-sweep
+ * collector (16-byte cells, page directory, scanned stack + globals,
+ * auto-collection gated on quiescence).
+ *
+ * Optional arena mode (-DLEASH_ARENA, --arena): a scoped bump arena —
+ * thread-local blocks bump-allocated, freed wholesale on scope exit.
+ * No scanning, no intrusive headers beyond an 8-byte size word, no
+ * locks. See `leasharena_*` below and docs/advanced.html.
  */
 
 #ifndef LEASH_GC_H
@@ -75,6 +73,7 @@ int   leash_future_is_done(void* fut);
 /* ===== String/Vector/Matrix Helpers ===== */
 void* leash_gc_alloc_string(size_t len);
 void* leash_gc_alloc_string_cap(size_t len, size_t cap);
+void* leasharena_root_alloc_string_cap(size_t len, size_t cap);
 void* leash_gc_alloc_vector_data(size_t elem_size, size_t capacity);
 int64_t leash_str_bsize(const char* s);
 void leash_str_share(const char* s);
@@ -138,6 +137,64 @@ void leash_gc_print_stats(void);
 
 /* ===== Debugging ===== */
 void leash_gc_verify(void);
+
+/* ===== Scoped arena (experimental, -DLEASH_ARENA / --arena) =====
+ * Thread-local bump allocator. Generated code pushes a frame on
+ * function entry (`leasharena_enter`) and pops it on exit
+ * (`leasharena_exit`), freeing everything since the checkpoint at
+ * once. There is no per-object free, no scanning and no lock.
+ * Pointers are plain C pointers valid until the frame that allocated
+ * them exits; code that must outlive that frame escapes via the
+ * `leasharena_escape_*` helpers (copy into the caller's frame) or
+ * `leasharena_root_alloc` (program-lifetime arena, for C-ABI / FFI
+ * data that must stay valid across calls). */
+void leasharena_enter(void);
+void leasharena_exit(void);
+/* Slow paths for inline fast paths in generated code (stack
+ * growth / block release). The fast paths handle the common
+ * no-new-blocks case entirely in IR. */
+void leasharena_enter_slow(void);
+void leasharena_exit_slow(void);
+void leasharena_exit_n(int64_t nframes);
+/* Copy a heap value about to be returned out of nframes scopes into
+ * the caller's frame. slot points at the generated-code holding the
+ * pointer (updated in place); nframes = loop frames + 1. */
+void leasharena_escape_string(void** slot, int64_t nframes);
+void leasharena_escape_vec(void** slot, int64_t nframes);
+void leasharena_escape_hash(void** slot, int64_t nframes);
+void leasharena_escape_blob(void** slot, int64_t size, int64_t nframes);
+void leasharena_escape_slice(void* agg, int64_t elem_size, int64_t nframes);
+/* Tuple returns (2+ heap components) cannot use the single-call
+ * escape helpers: the first helper pops the scopes, which would free
+ * the remaining components before they are staged. Tuple code
+ * stages every component to malloc first, pops once, then commits. */
+void* leasharena_stage_string(void* s);
+void leasharena_commit_string(void** slot, void* stage);
+void* leasharena_stage_vec(void* vec);
+void leasharena_commit_vec(void** slot, void* stage);
+void* leasharena_stage_hash(void* hash);
+void leasharena_commit_hash(void** slot, void* stage);
+void* leasharena_stage_blob(void* ptr, int64_t size);
+void leasharena_commit_blob(void** slot, void* stage, int64_t size);
+/* Root copies for spawn args: same shapes, allocated in the
+ * program-lifetime arena instead of the caller's frame. No pop. */
+void leasharena_root_copy_string(void** slot);
+void leasharena_root_copy_vec(void** slot);
+void leasharena_root_copy_hash(void** slot);
+void leasharena_root_copy_blob(void** slot, int64_t size);
+void leasharena_root_copy_slice(void* agg, int64_t elem_size);
+/* Loop checkpoints for the per-iteration reset path. enter returns
+ * the frame index (stable across balanced inner functions); reset
+ * frees temporaries since entry and keeps the frame for the next
+ * iteration; exit pops it. */
+int64_t leasharena_loop_enter(void);
+void leasharena_loop_reset(int64_t frame);
+void leasharena_loop_reset_slow(int64_t frame);
+void leasharena_loop_exit(int64_t frame);
+/* Program-lifetime allocation: never freed by scope exits. Use for
+ * C-ABI / FFI data, futures, and globals that must stay valid. */
+void* leasharena_root_alloc(size_t size);
+void* leasharena_root_alloc_aligned(size_t size, size_t alignment);
 
 /* ===== Flag Constants ===== */
 #define LEASH_GC_FLAG_MARKED 0x01

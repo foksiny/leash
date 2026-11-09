@@ -815,7 +815,7 @@ pub def CompilerDriver : class {
         return "";
     }
 
-    pub fnc compile_file(input_file string, output_file string, emit_llvm bool, run_mode bool, run_args string, opt_level string, check_mode bool, extra_libs vec<string>, verbose bool, warn_err bool, debug_instrument bool, target_name string, no_gc bool, static_link bool, output_type string, autofree bool) : int {
+    pub fnc compile_file(input_file string, output_file string, emit_llvm bool, run_mode bool, run_args string, opt_level string, check_mode bool, extra_libs vec<string>, verbose bool, warn_err bool, debug_instrument bool, target_name string, no_gc bool, static_link bool, output_type string, autofree bool, arena bool) : int {
         if verbose { show("[verbose] reading ", input_file); }
         source: string = this.read_file_string(input_file);
         if source.bsize == 0 {
@@ -928,7 +928,22 @@ pub def CompilerDriver : class {
 
         // JVM bytecode backend (no clang, no GC runtime, no linking).
         if target_name == "jvm" {
+                if arena {
+                    show("error: --arena is experimental and native-only (the JVM target always uses the JVM GC)");
+                    return 1;
+                }
+                if no_gc || autofree {
+                    show("error: --no-garbage-collector / --autofree are native-only (the JVM target always uses the JVM GC)");
+                    return 1;
+                }
                 return this.compile_jvm(input_file, output_file, prog, tc, run_mode, run_args, verbose, output_type, emit_llvm);
+        }
+
+        // Memory mode exclusivity: GC (default), --no-gc, --autofree
+        // and --arena are four backends; picking two is a build error.
+        if arena && (no_gc || autofree) {
+            show("error: memory modes are exclusive -- use only one of --no-garbage-collector, --autofree, --arena (GC is the default)");
+            return 1;
         }
 
         // Codegen
@@ -949,6 +964,7 @@ pub def CompilerDriver : class {
         }
         cg.debug_instrument = debug_instrument;
         cg.autofree = autofree;
+        cg.arena = arena;
         // Library outputs omit the @main wrapper (a consumer linking its
         // own main would otherwise get a duplicate symbol).
         cg.is_lib = output_type == "dynamic" || output_type == "static";
@@ -1107,6 +1123,15 @@ pub def CompilerDriver : class {
         } also target_name == "macos-arm" {
             cc_flags = "--target=aarch64-apple-darwin";
             is_macos = true;
+        }
+        if arena {
+            // Scoped bump-arena backend (experimental): thread-local
+            // blocks bump-allocated, freed wholesale on scope exit.
+            // Generated code pushes a frame on entry, pops on exit,
+            // and copies returned heap values into the caller's
+            // frame; spawn arg blocks and future boxes go to the
+            // program-lifetime root arena.
+            rt_extra = rt_extra + " -DLEASH_ARENA";
         }
         if no_gc || autofree {
             // Stub runtime: plain malloc/free behind the same API.

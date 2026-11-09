@@ -5,6 +5,53 @@ All notable changes to the Leash compiler are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.0] - 2026-11-09
+
+### Added
+- **Experimental `--arena` memory layout (native-only).** A scoped
+  bump arena selectable with `leash compile <file> --arena` (or
+  `arena: true` in project config). GC remains the default; arena is
+  the opt-in second backend (`-DLEASH_ARENA` runtime), planned as the
+  default in a future release. There is no GC, no borrow checker, and
+  no per-object free:
+  - Thread-local 32 KB blocks bump-allocated (align + bump + memset),
+    pushed on function entry and restored on exit — release is
+    O(blocks), not per allocation. The exit for the common
+    no-new-blocks case and the entry push are emitted inline in the IR
+    (no runtime call); only stack growth and block release take the
+    slow paths, so recursion-heavy code pays ~nothing for framing.
+  - Allocation-free functions (no heap-typed locals, no heap-producing
+    operations; e.g. `fib_rec`) are proven at codegen time and skip
+    framing entirely — `fib(40)` runs at GC parity (0.30 s).
+  - Loop checkpoints give the same property per iteration: a loop
+    whose body stores no heap value outside itself and mutates no
+    outer vec/hash frees its temporaries at the back edge instead of
+    at function exit. Loops with surviving values fall back to
+    function lifetime (still correct).
+  - Escape rule, no borrow checker: a value that must survive its
+    allocating frame is copied, not tracked. Returned strings, vecs,
+    hashes, structs/classes (shallow body plus a deep copy of every
+    heap-typed field), slices and multi-heap tuples stage to malloc,
+    pop to the caller's frame, then commit there. `spawn` argument
+    blocks and future boxes go to the program-lifetime root arena, so
+    workers read persistent copies. Raw `*T` pointers and union
+    payloads are caller-owned, same as under `--autofree`'s aggregate
+    limitation — see `docs/advanced.html`.
+  - C ABI: pointers are plain bump memory with no collector metadata
+    (strings keep the O(1) `bsize` prefix) and no stop-the-world
+    pauses; `to-dynamic`/`to-static` libraries link the same runtime
+    and persistent data should use the root arena declared in
+    `leash/gc.h` (`leasharena_root_alloc`, `leasharena_escape_*`).
+  - Measured on `benchmarking/tasks/` (O2, peak RSS, GC → arena):
+    `allocstress` 2.5 MB/0.05 s → **1.9 MB/0.03 s**, `fib` parity,
+    `hash_lookup` 4.7 → 4.6 MB, `vec_stress` 3.9 → 3.9 MB; growth-
+    heavy `mem_copy` (1M `i32`, 9.7 → 14.0 MB) and `string_concat`
+    (2.4 → 3.3 MB) retain superseded growth buffers until scope exit
+    (GC collects them) — the bump allocator's inherent cost. Vectors
+    grow by doubling (plus tip-extension), so growth copying is
+    cheaper; a second trial reran the full suite unchanged.
+    356 tests pass (342 + 14 new `tests/test_arena.py` parity cases).
+
 ## [1.7.0] - 2026-11-08
 
 ### Added

@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v1.7.0 Release</div>
+        <div class="version">v1.8.0 Release</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -227,18 +227,22 @@ leash compile program.lsh -vb</code></pre>
 
 <h2>Memory Management Modes</h2>
 
-<p>Leash ships three memory management modes, selectable at compile time. The default uses the built-in mark-and-sweep garbage collector; the other two produce GC-free binaries.</p>
+<p>Leash ships four memory management modes, selectable at compile time (only one per program). The default uses the built-in mark-and-sweep garbage collector; <code>--arena</code> is the experimental scoped bump-arena backend (native-only, planned as the default in a future release); the other two produce GC-free binaries.</p>
 
 <table>
     <tr><th>Mode</th><th>Flag</th><th>Allocator</th><th>Reclamation</th></tr>
     <tr><td>Garbage Collected</td><td><em>(default)</em></td><td><code>leash_gc_malloc</code></td><td>Slab allocation; mark-and-sweep auto-triggered at threshold</td></tr>
+    <tr><td>Scoped Arena (experimental)</td><td><code>--arena</code> (or <code>arena: true</code> in project config)</td><td>Thread-local bump blocks</td><td>Whole-scope release at function exit; loop checkpoints; return copies; root arena for persistent/C-ABI data</td></tr>
     <tr><td>No GC (raw)</td><td><code>--no-garbage-collector</code> / <code>-ngc</code></td><td>C <code>malloc</code></td><td>Manual <code>free()</code> only</td></tr>
     <tr><td><strong>Auto-Free</strong></td><td><code>--autofree</code> / <code>-af</code></td><td>C <code>malloc</code></td><td>Automatic <code>free()</code> at function exit</td></tr>
 </table>
 
 <pre><code>leash compile myprogram.lsh              <span class="cm"># GC mode (default)</span>
 leash compile myprogram.lsh -ngc        <span class="cm"># GC-free, manual free()</span>
-leash compile myprogram.lsh -af         <span class="cm"># GC-free, auto free()</span></code></pre>
+leash compile myprogram.lsh -af         <span class="cm"># GC-free, auto free()</span>
+leash compile myprogram.lsh --arena     <span class="cm"># scoped bump arena (experimental)</span></code></pre>
+
+<p><code>--arena</code> replaces slabs and scanning with per-thread 32 KB bump blocks: allocations are align + bump + memset; leaving a function (or an instrumented loop) rewinds the bump and frees the blocks above its checkpoint, so release is O(blocks) with no per-object free, no lock and no barrier. There is no GC and no borrow checker: a pointer is valid until its allocating frame exits. Code that must outlive that frame escapes by copy &mdash; returned strings, vecs, hashes, structs/classes (deep over heap-typed fields), slices and multi-heap tuples are copied into the caller&rsquo;s frame at the return site, <code>spawn</code> argument blocks and future boxes go to the program-lifetime root arena, and allocation-free functions (e.g. scalar recursion) provably skip framing altogether, running at GC parity. Storing a callee temporary into a caller-owned aggregate (heap field, global, slice backing), raw <code>*T</code> pointers and union payloads are caller-owned, exactly like <code>--autofree</code>&rsquo;s aggregate-escape limitation; in this scope, growth that outlives its loop iteration retains superseded buffers until the scope resets (GC collects them), visible on growth-heavy kernels such as <code>mem_copy</code> (9.7 &rarr; 14.0 MB) while churn kernels such as <code>allocstress</code> get leaner (2.5 &rarr; 1.9 MB). The JVM target rejects <code>--arena</code>. The API (<code>leasharena_enter/exit</code>, <code>leasharena_escape_*</code>, <code>leasharena_root_alloc</code>) is declared in <code>leash/gc.h</code> for C-ABI / <code>to-dynamic</code> consumers.</p>
 
 <p><code>--autofree</code> (<code>-af</code>) tracks every heap allocation the compiler emits and inserts <code>free()</code> calls automatically when the allocating function returns &mdash; no GC and no manual memory management. Allocations that are returned to the caller are excluded automatically, so returned strings, vectors, and class instances remain valid. The GC runtime is linked in stub mode (thin <code>malloc</code>/<code>free</code> wrappers), keeping binaries small and deterministic. This is especially useful when compiling libraries (<code>to-dynamic</code> / <code>to-static</code>) for use from non-GC languages.</p>
 

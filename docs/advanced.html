@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v1.7.0 Release</div>
+        <div class="version">v1.8.0 Release</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -150,6 +150,14 @@ autofree: true</code></pre>
 </ul>
 
 <div class="callout callout-info"><code>--autofree</code> is stricter than <code>-ngc</code>: it not only disables the GC but also <em>frees everything for you</em>. Use it whenever you want GC-free semantics without manual memory management.</div>
+
+<h3>Scoped Arena (<code>--arena</code>, experimental)</h3>
+
+<p>Since 1.8.0 Leash also ships a <strong>scoped bump arena</strong> backend (native-only, opt-in per program). Thread-local 32&nbsp;KB blocks are bump-allocated; leaving a function (or an instrumented loop) rewinds the bump and frees the blocks above its checkpoint &mdash; release is O(blocks) with no per-object free, no scan and no lock. There is no GC and no borrow checker: a pointer lives until its allocating frame exits, and code that must outlive that frame escapes by copy &mdash; returned strings/vecs/hashes/structs/slices/multi-heap tuples are copied into the caller&rsquo;s frame at the return site, <code>spawn</code> argument blocks and future boxes go to the program-lifetime root arena, and allocation-free functions skip framing entirely. Storing a callee temporary into a caller-owned aggregate (heap field, global, slice backing), raw <code>*T</code> pointers and union payloads remain caller-owned, exactly like <code>--autofree</code>&rsquo;s aggregate-escape limitation. The arena keeps growth copies until the scope resets (GC collects them), so growth-heavy kernels use more heap while churn kernels get leaner. Enable it with <code>leash compile myprogram.lsh --arena</code> or <code>arena: true</code> in <code>config.lshc</code>:</p>
+
+<pre><code>leash run myprogram.lsh --arena
+leash compile myprogram.lsh --arena
+arena: true</code></pre>
 
 <div class="callout callout-info">Since 1.2.0 the self-hosted compiler implements <code>--autofree</code> and the <code>to-dynamic</code>/<code>to-static</code> library outputs natively — no Python fallback for either. C consumers of Leash libraries call <code>leash_init()</code> once before any other library function; in <code>--autofree</code> builds returned values are excluded from the automatic <code>free()</code>, so they stay valid for the caller.</div>
 
