@@ -574,6 +574,19 @@ void* leash_gc_alloc_string(size_t len) { return leash_gc_alloc_string_cap(len, 
 static int arena_str_info(const char* s, size_t* out_len, size_t* out_cap) {
     if (!s || (uintptr_t)s < 16) return 0;
     const char* base = s - 16;
+    /* Hot path: most strings live in the newest TLS block. Those pointer
+     * checks are strictly cheaper than walking both arena block lists. */
+    arena_stack* tls = &leasharena_tls_ar;
+    if (tls->head && base >= tls->head->base && base < tls->head->base + tls->head->cap) {
+        uint64_t total = *(uint64_t*)(void*)(s - 16);
+        uint64_t len = *(uint64_t*)(void*)(s - 8) & ((1ULL << 63) - 1);
+        if (total >= 17 && len <= (total - 17) && s[len] == '\0') {
+            if (out_len) *out_len = (size_t)len;
+            if (out_cap) *out_cap = (size_t)(total - 17);
+            return 1;
+        }
+        return 0;
+    }
     /* String base must be inside one of our arenas. */
     if (arena_owns(&leasharena_tls_ar, base) || arena_owns(&tls_root, base)) {
         uint64_t total = *(const uint64_t*)(void*)(s - 16);
@@ -599,24 +612,20 @@ void leash_str_share(const char* s) {
     (void)s;
 }
 
-char* leash_str_append(char* s, const char* piece) {
-    if (!s) {
-        size_t plen = (size_t)leash_str_bsize(piece);
-        size_t cap = plen < 32 ? 32 : plen + (plen >> 2);
-        char* out = (char*)leash_gc_alloc_string_cap(plen, cap);
-        if (plen) memcpy(out, piece ? piece : "", plen);
-        out[plen] = '\0';
-        return out;
-    }
-    if (!piece) return s;
-    int64_t sl_i = leash_str_bsize(s);
-    int64_t pl_i = leash_str_bsize(piece);
-    if (sl_i < 0) sl_i = 0;
-    if (pl_i < 0) pl_i = 0;
-    size_t sl = (size_t)sl_i, pl = (size_t)pl_i;
-    size_t tot = sl + pl;
+/* Core append with the piece length already known: avoids two
+ * arena_str_info block walks (one for s, one per piece bsize) that the
+ * generic wrapper performed on every append. Small edit but this is
+ * THE hot path (per-char/per-int loops), so one lookup total is kept. */
+char* leash_str_append_span(char* s, const char* piece, size_t pl) {
+    size_t sl = 0;
     size_t cur_cap = 0;
-    if (arena_str_info(s, NULL, &cur_cap)) {
+    size_t old_total = 0;
+    int tracked = arena_str_info(s, &sl, &cur_cap);
+    if (!tracked) {
+        sl = strlen(s ? s : "");
+    }
+    size_t tot = sl + pl;
+    if (tracked) {
         if (tot <= cur_cap) {
             if (pl) memcpy(s + sl, piece, pl);
             s[tot] = '\0';
@@ -627,7 +636,7 @@ char* leash_str_append(char* s, const char* piece) {
          * when it is still the bump tip (the accumulator loop case,
          * where each iteration would otherwise abandon a large copy).
          * Old total lives at s-16; the allocation ends at s-16+total. */
-        size_t old_total = *(uint64_t*)(void*)(s - 16);
+        old_total = *(uint64_t*)(void*)(s - 16);
         size_t new_cap = tot < 64 ? 64 : tot + (tot >> 2);
         size_t new_total = 16 + new_cap + 1;
         new_total = (new_total + 7) & ~(size_t)7;
@@ -650,13 +659,26 @@ char* leash_str_append(char* s, const char* piece) {
     if (sl) memcpy(out, s, sl);
     if (pl) memcpy(out + sl, piece, pl);
     out[tot] = '\0';
-    {
-        size_t old_total = 0;
-        if (arena_str_info(s, NULL, NULL)) old_total = *(uint64_t*)(void*)(s - 16);
-        /* arena_str_info hit => old alloc tracked total-8 bytes. */
+    if (tracked) {
+        /* old_total tracks the allocation size (total-8 bytes). */
         arena_try_free_solo(&leasharena_tls_ar, s, old_total > 8 ? old_total - 8 : 0);
     }
     return out;
+}
+
+char* leash_str_append(char* s, const char* piece) {
+    if (!s) {
+        size_t plen = (size_t)leash_str_bsize(piece);
+        size_t cap = plen < 32 ? 32 : plen + (plen >> 2);
+        char* out = (char*)leash_gc_alloc_string_cap(plen, cap);
+        if (plen) memcpy(out, piece ? piece : "", plen);
+        out[plen] = '\0';
+        return out;
+    }
+    if (!piece) return s;
+    int64_t pl_i = leash_str_bsize(piece);
+    if (pl_i < 0) pl_i = 0;
+    return leash_str_append_span(s, piece, (size_t)pl_i);
 }
 
 char* leash_str_concat_ex(const char* s1, const char* s2) {
@@ -673,13 +695,31 @@ char* leash_str_concat_ex(const char* s1, const char* s2) {
 }
 
 char* leash_str_append_int(char* s, int64_t v, int is_uint) {
-    char* num = is_uint ? leash_uint_to_str_fast((uint64_t)v) : leash_int_to_str_fast(v);
-    return leash_str_append(s, num);
+    /* Format on the stack and append by span: the piece length is known,
+     * so the generic append's arena_str_info walks on both operands are
+     * skipped entirely (one lookup total instead of three). */
+    char buf[32];
+    int n;
+    if (is_uint) n = snprintf(buf, sizeof(buf), "%llu", (unsigned long long)v);
+    else n = snprintf(buf, sizeof(buf), "%lld", (long long)v);
+    if (n < 0) n = 0;
+    if (n > 0 && !s) {
+        char* out = (char*)leash_gc_alloc_string_cap((size_t)n, (size_t)n < 32 ? 32 : (size_t)n + ((size_t)n >> 2));
+        memcpy(out, buf, (size_t)n);
+        out[n] = '\0';
+        return out;
+    }
+    return leash_str_append_span(s, buf, n > 0 ? (size_t)n : 0);
 }
 
 char* leash_str_append_char(char* s, char c) {
-    char buf[2]; buf[0] = c; buf[1] = '\0';
-    return leash_str_append(s, buf);
+    if (!s) {
+        char* out = (char*)leash_gc_alloc_string_cap(1, 32);
+        out[0] = c;
+        out[1] = '\0';
+        return out;
+    }
+    return leash_str_append_span(s, &c, 1);
 }
 
 char* leash_int_to_str_fast(int64_t v) {
@@ -697,8 +737,10 @@ char* leash_uint_to_str_fast(uint64_t v) {
 }
 
 char* leash_str_concat_int(const char* s, int64_t v, int is_uint) {
-    char* num = is_uint ? leash_uint_to_str_fast((uint64_t)v) : leash_int_to_str_fast(v);
-    return leash_str_concat_ex(s ? s : "", num);
+    char buf[32];
+    if (is_uint) snprintf(buf, sizeof(buf), "%llu", (unsigned long long)v);
+    else snprintf(buf, sizeof(buf), "%lld", (long long)v);
+    return leash_str_concat_ex(s ? s : "", buf);
 }
 
 void* leash_gc_alloc_vector_data(size_t elem_size, size_t capacity) {
@@ -797,8 +839,10 @@ char* leash_str_concat_ex(const char* s1, const char* s2) {
     return out;
 }
 char* leash_str_append_int(char* s, int64_t v, int is_uint) {
-    char* num = is_uint ? leash_uint_to_str_fast((uint64_t)v) : leash_int_to_str_fast(v);
-    return leash_str_append(s, num);
+    char buf[32];
+    if (is_uint) snprintf(buf, sizeof(buf), "%llu", (unsigned long long)v);
+    else snprintf(buf, sizeof(buf), "%lld", (long long)v);
+    return leash_str_append(s, buf);
 }
 char* leash_str_append_char(char* s, char c) {
     char buf[2]; buf[0] = c; buf[1] = '\0';
@@ -817,8 +861,10 @@ char* leash_uint_to_str_fast(uint64_t v) {
     return out;
 }
 char* leash_str_concat_int(const char* s, int64_t v, int is_uint) {
-    char* num = is_uint ? leash_uint_to_str_fast((uint64_t)v) : leash_int_to_str_fast(v);
-    return leash_str_concat_ex(s ? s : "", num);
+    char buf[32];
+    if (is_uint) snprintf(buf, sizeof(buf), "%llu", (unsigned long long)v);
+    else snprintf(buf, sizeof(buf), "%lld", (long long)v);
+    return leash_str_concat_ex(s ? s : "", buf);
 }
 /* NOTE: leash_sh_input is defined once in the shared region after the
  * NO_GC #endif (it uses leash_gc_alloc_string_cap, provided in both
@@ -2077,16 +2123,15 @@ char* leash_str_append(char* s, const char* piece) {
         return out;
     }
     if (!piece) return s;
-    int64_t sl = leash_str_bsize(s);
-    int64_t pl = leash_str_bsize(piece);
-    int64_t tot = sl + pl;
-    /* Try in-place if s is an exclusive GC string with spare cap. */
+    /* Single probe: derive sl and cap from the GC prefix instead of
+     * leash_str_bsize's probe + a second probe in the cap check below. */
     GC_LOCK();
     const char* payload = s - 8;
     struct gc_cell* c = NULL;
     if ((uintptr_t)s >= 8) {
         c = gc_find_object(payload);
     }
+    int64_t sl = 0;
     int can_inplace = 0;
     size_t cap = 0;
     if (c && (const char*)c + CELL_HDR == payload && c->size >= 9) {
@@ -2094,12 +2139,19 @@ char* leash_str_append(char* s, const char* piece) {
         uint64_t len = raw & STR_LEN_MASK;
         int shared = (int)(raw & STR_SHARED_BIT);
         cap = c->size - 9;
-        /* Validate len matches sl (defends legacy). */
-        if (len == (uint64_t)sl && !shared && len <= cap) {
-            can_inplace = 1;
+        /* Validate len with the NUL terminator (bsize's check). */
+        if (len <= cap && s[len] == '\0') {
+            sl = (int64_t)len;
+            if (!shared) can_inplace = 1;
+        } else {
+            sl = (int64_t)strlen(s);
         }
+    } else {
+        sl = (int64_t)strlen(s);
     }
     GC_UNLOCK();
+    int64_t pl = leash_str_bsize(piece);
+    int64_t tot = sl + pl;
     if (can_inplace && (size_t)tot <= cap) {
         /* In-place: no copy of prefix. */
         if (pl > 0) memcpy(s + sl, piece, (size_t)pl);
@@ -2183,10 +2235,34 @@ char* leash_str_append_int(char* s, int64_t v, int is_uint) {
 }
 
 char* leash_str_append_char(char* s, char c) {
-    char buf[2];
-    buf[0] = c;
-    buf[1] = '\0';
-    return leash_str_append(s, buf);
+    /* Fast path (hot per-char loop): probe the GC prefix once and append
+     * in place when the string is exclusive-owned with spare capacity.
+     * Avoids buf + double bsize + double probe of the generic append. */
+    if (s && (uintptr_t)s >= 8) {
+        const char* payload = s - 8;
+        GC_LOCK();
+        struct gc_cell* cell = gc_find_object(payload);
+        int ok = (cell && (const char*)cell + CELL_HDR == payload && cell->size >= 9);
+        uint64_t raw = ok ? *(const uint64_t*)payload : 0;
+        size_t cap = ok ? cell->size - 9 : 0;
+        GC_UNLOCK();
+        if (ok) {
+            uint64_t len = raw & STR_LEN_MASK;
+            int shared = (int)(raw & STR_SHARED_BIT);
+            if (!shared && len < cap && len <= (uint64_t)cap && s[len] == '\0') {
+                s[len] = c;
+                s[len + 1] = '\0';
+                *(uint64_t*)(void*)(s - 8) = (uint64_t)(len + 1);
+                return s;
+            }
+        }
+    }
+    {
+        char buf[2];
+        buf[0] = c;
+        buf[1] = '\0';
+        return leash_str_append(s, buf);
+    }
 }
 
 /* Fast decimal conversion, no snprintf. Allocates exact-cap string. */

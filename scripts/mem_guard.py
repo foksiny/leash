@@ -40,7 +40,7 @@ def vmrss_kb(pid):
             for line in fh:
                 if line.startswith("VmRSS:"):
                     return int(line.split()[1])
-    except (FileNotFoundError, PermissionError, IndexError, ValueError):
+    except (FileNotFoundError, PermissionError, ProcessLookupError, IndexError, ValueError):
         return None
     return None
 

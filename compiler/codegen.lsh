@@ -2729,6 +2729,49 @@ pub def CodeGen : class {
     // formats like its tostring path: sext/zext to i64 then print
     // signed/unsigned per the leash type; >64-bit widths go through
     // the bigint runtime. Returns the i8* string register.
+    pub fnc concat_str_int(e Expr, lt string, rt string) : string {
+        // `string + int`: gen both sides, widen the int to i64, and fuse
+        // into leash_str_concat_int (one heap allocation, stack formatting).
+        l_val: string = this.gen_expr(e.left);
+        r_val: string = this.gen_expr(e.right);
+        r64: string = this.concat_int_widen(e.right, r_val, rt);
+        res: string = this.new_reg();
+        iu: string = "0";
+        if rt == "uint" { iu = "1"; }
+        this.emit("  " + res + " = call i8* @leash_str_concat_int(i8* " + l_val + ", i64 " + r64 + ", i64 " + iu + ")");
+        this.af_track(res);
+        return res;
+    }
+
+    pub fnc concat_str_tostring(e Expr, arg Expr, atr string) : string {
+        // `string + tostring(int)`: gen the arg directly instead of
+        // materializing the number string through leash_int_to_str.
+        l_val: string = this.gen_expr(e.left);
+        r_val: string = this.gen_expr(arg);
+        r64: string = this.concat_int_widen(arg, r_val, atr);
+        res: string = this.new_reg();
+        iu: string = "0";
+        if atr == "uint" { iu = "1"; }
+        this.emit("  " + res + " = call i8* @leash_str_concat_int(i8* " + l_val + ", i64 " + r64 + ", i64 " + iu + ")");
+        this.af_track(res);
+        return res;
+    }
+
+    pub fnc concat_int_widen(e Expr, val string, typ string) : string {
+        // int: sign-extend i32->i64; uint: zero-extend (wide literals are
+        // already i64 in the register).
+        if this.is_wide_int_lit(e) { return val; }
+        elty: string = this.llvm_type(this.get_expr_type(e));
+        if elty == "i64" { return val; }
+        r: string = this.new_reg();
+        if typ == "uint" {
+            this.emit("  " + r + " = zext i32 " + val + " to i64");
+        } else {
+            this.emit("  " + r + " = sext i32 " + val + " to i64");
+        }
+        return r;
+    }
+
     pub fnc concat_int_to_str(e Expr, val string, typ string) : string {
         if this.is_sized_int_type(typ) {
             w: int = this.sized_int_width(typ);
@@ -4135,6 +4178,19 @@ pub def CodeGen : class {
 
             // String concatenation (also accepts char[] slices)
             if (lt == "string" || rt == "string" || lt == "char[]" || rt == "char[]") && e.op == "+" {
+                // Fast path: string + int (or string + tostring(int)) fuses
+                // into leash_str_concat_int (stack formatting, one heap alloc
+                // instead of two: no temp number-string) — the hash-key and
+                // tag-building hotspot ("key" + i, "k" + tostring(i % 89)).
+                if lt == "string" && (rt == "int" || rt == "uint") {
+                    return this.concat_str_int(e, lt, rt);
+                }
+                if lt == "string" && e.right.kind == ExprKind.CALL && e.right.sval == "tostring" && e.right.args.size == 1 {
+                    atr: string = this.strip_ref(this.get_expr_type(e.right.args.get(0)));
+                    if atr == "int" || atr == "uint" {
+                        return this.concat_str_tostring(e, e.right.args.get(0), atr);
+                    }
+                }
                 l_val: string = this.gen_expr(e.left);
                 r_val: string = this.gen_expr(e.right);
                 if lt == "char[]" {
