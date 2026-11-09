@@ -1056,7 +1056,7 @@ pub def JvmGen : class {
         if e != null && e.kind == ExprKind.IDENT && e.sval == "_" { return "int"; }
         if e != null && e.kind == ExprKind.MEMBER && e.left != null
            && e.left.kind == ExprKind.IDENT && e.left.sval == "this"
-           && this.current_class.__bytesize > 0 && this.tc.static_fields.isin(this.current_class + "_" + e.sval) {
+           && this.current_class.bsize > 0 && this.tc.static_fields.isin(this.current_class + "_" + e.sval) {
             return this.tc.static_fields[this.current_class + "_" + e.sval];
         }
         if e != null && e.kind == ExprKind.MEMBER && e.sval == "cur" && e.left != null {
@@ -1069,7 +1069,7 @@ pub def JvmGen : class {
         if e != null && e.kind == ExprKind.METHOD_CALL && e.left != null {
             lt: string = this.cg.get_expr_type(e.left);
             mt: string = this.mcall_type(lt, e.sval);
-            if mt.__bytesize > 0 { return mt; }
+            if mt.bsize > 0 { return mt; }
         }
         if e != null && e.kind == ExprKind.ARRAY_LIT && e.sval == "__tuple__" {
             ts: string = "(";
@@ -1089,7 +1089,7 @@ pub def JvmGen : class {
         }
         if e != null && e.kind == ExprKind.CALL {
             bt: string = this.builtin_type(e);
-            if bt.__bytesize > 0 { return bt; }
+            if bt.bsize > 0 { return bt; }
         }
         if e != null && e.kind == ExprKind.METHOD_CALL && e.left != null
            && e.left.kind == ExprKind.IDENT && e.left.sval == "File" {
@@ -1102,13 +1102,13 @@ pub def JvmGen : class {
             if lt2 == "File" {
                 if e.sval == "read" || e.sval == "readln" { return "string"; }
                 if e.sval == "readb" || e.sval == "readlnb" { return "char[]"; }
-                if e.sval == "size" || e.sval == "__bytesize" || e.sval == "isin" { return "int"; }
+                if e.sval == "size" || e.sval == "bsize" || e.sval == "__bytesize" || e.sval == "isin" { return "int"; }
                 if e.sval == "rewind" { return "void"; }
                 return "int";
             }
         }
         if e != null && e.kind == ExprKind.INT
-           && e.sval.__bytesize > 0 && this.is_plain_decimal(e.sval) && !this.lit_fits_i64(e.sval) {
+           && e.sval.bsize > 0 && this.is_plain_decimal(e.sval) && !this.lit_fits_i64(e.sval) {
             // Out-of-int64 decimal text rides as BigInteger (full
             // precision); downstream coercions narrow as needed.
             return "int<512>";
@@ -1157,9 +1157,9 @@ pub def JvmGen : class {
     }
 
     pub fnc fail(msg string) : void {
-        if msg.__bytesize >= 8 && msg[0] == 'v' && msg[1] == 'e' && msg[2] == 'r' && msg[3] == 'i' && msg[4] == 'f' && msg[5] == 'y' && msg[6] == ':' {
+        if msg.bsize >= 8 && msg[0] == 'v' && msg[1] == 'e' && msg[2] == 'r' && msg[3] == 'i' && msg[4] == 'f' && msg[5] == 'y' && msg[6] == ':' {
             ctx: string = this.current_func_name;
-            if ctx.__bytesize == 0 { ctx = this.current_helper_name; }
+            if ctx.bsize == 0 { ctx = this.current_helper_name; }
             this.errors.pushb("[" + ctx + "] " + msg);
             return;
         }
@@ -1182,13 +1182,13 @@ pub def JvmGen : class {
     // Inside an instantiated generic class, a bare template base name
     // refers to the current instantiation (native parity).
     pub fnc resolve_class_ref(name string) : string {
-        if this.tmap_owner.__bytesize == 0 { return name; }
+        if this.tmap_owner.bsize == 0 { return name; }
         if !this.tc.generic_classes.isin(name) { return name; }
         pre: string = name + "_";
-        if this.tmap_owner.__bytesize > pre.__bytesize {
+        if this.tmap_owner.bsize > pre.bsize {
             ok: bool = true;
             pi: int = 0;
-            while pi < pre.__bytesize {
+            while pi < pre.bsize {
                 if this.tmap_owner[pi] != pre[pi] { ok = false; }
                 pi = pi + 1;
             }
@@ -1200,7 +1200,7 @@ pub def JvmGen : class {
     // Substitute the current instantiation's type parameters (exact names
     // and one level of vec<> nesting).
     pub fnc resolve_tparam(typ string) : string {
-        if this.tmap_owner.__bytesize == 0 { return typ; }
+        if this.tmap_owner.bsize == 0 { return typ; }
         if !this.tc.inst_tmaps.isin(this.tmap_owner) { return typ; }
         tmap_flat: vec<string> = this.tc.inst_tmaps[this.tmap_owner];
         flat: vec<string> = tmap_flat;
@@ -1209,7 +1209,7 @@ pub def JvmGen : class {
             if flat.get(fi) == typ { return flat.get(fi + 1); }
             fi = fi + 2;
         }
-        if typ.__bytesize > 5 && typ[typ.__bytesize - 1] == '>' && typ[0] == 'v' && typ[1] == 'e' && typ[2] == 'c' && typ[3] == '<' {
+        if typ.bsize > 5 && typ[typ.bsize - 1] == '>' && typ[0] == 'v' && typ[1] == 'e' && typ[2] == 'c' && typ[3] == '<' {
             inner: string = this.vec_inner_type(typ);
             ri: string = this.resolve_tparam(inner);
             if ri != inner { return "vec<" + ri + ">"; }
@@ -1220,14 +1220,14 @@ pub def JvmGen : class {
     // int<64>/uint<64> -> J, floats -> D, string -> String,
     // vec -> ArrayList, hash -> HashMap. "" = unsupported.
     pub fnc jdesc(t string) : string {
-        if (t == "thisop.typ" || t == "__T_OPDEF__") && this.opdef_inner.__bytesize > 0 {
+        if (t == "thisop.typ" || t == "__T_OPDEF__") && this.opdef_inner.bsize > 0 {
             return this.jdesc(this.opdef_inner);
         }
         t = this.resolve_tparam(this.resolve_class_ref(t));
-        if t.__bytesize > 1 && t[0] == '&' {
+        if t.bsize > 1 && t[0] == '&' {
             inner: string = "";
             i: int = 1;
-            while i < t.__bytesize {
+            while i < t.bsize {
                 inner = inner + t[i];
                 i = i + 1;
             }
@@ -1254,15 +1254,15 @@ pub def JvmGen : class {
         // Opaque handles (sql's sqlite3*, generic void*): ride as plain
         // references; they are only passed around, never dereferenced.
         if t == "pointer<void>" || t == "void*" || t == "*void" { return "Ljava/lang/Object;"; }
-        if t.__bytesize > 8 && t[0] == 'f' && t[1] == 'u' && t[2] == 't' && t[3] == 'u' && t[4] == 'r' && t[5] == 'e' && t[6] == '<' { return "Ljava/util/concurrent/CompletableFuture;"; }
+        if t.bsize > 8 && t[0] == 'f' && t[1] == 'u' && t[2] == 't' && t[3] == 'u' && t[4] == 'r' && t[5] == 'e' && t[6] == '<' { return "Ljava/util/concurrent/CompletableFuture;"; }
         if t == "void" { return "V"; }
-        if t.__bytesize > 4 && t[0] == 'v' && t[1] == 'e' && t[2] == 'c' && t[3] == '<' { return "Ljava/util/ArrayList;"; }
-        if t.__bytesize > 5 && t[0] == 'h' && t[1] == 'a' && t[2] == 's' && t[3] == 'h' && t[4] == '<' { return "Ljava/util/HashMap;"; }
-        if t.__bytesize > 0 && t[0] == '*' { return "Ljava/lang/Object;"; }
-        if t.__bytesize > 2 && t[t.__bytesize - 1] == ']' {
+        if t.bsize > 4 && t[0] == 'v' && t[1] == 'e' && t[2] == 'c' && t[3] == '<' { return "Ljava/util/ArrayList;"; }
+        if t.bsize > 5 && t[0] == 'h' && t[1] == 'a' && t[2] == 's' && t[3] == 'h' && t[4] == '<' { return "Ljava/util/HashMap;"; }
+        if t.bsize > 0 && t[0] == '*' { return "Ljava/lang/Object;"; }
+        if t.bsize > 2 && t[t.bsize - 1] == ']' {
             base: string = "";
             bi: int = 0;
-            while bi < t.__bytesize && t[bi] != '[' {
+            while bi < t.bsize && t[bi] != '[' {
                 base = base + t[bi];
                 bi = bi + 1;
             }
@@ -1271,7 +1271,7 @@ pub def JvmGen : class {
             if base == "char" { return "[C"; }
             return "[" + this.jdesc(base);
         }
-        if t.__bytesize > 1 && t[0] == '(' { return "[Ljava/lang/Object;"; }
+        if t.bsize > 1 && t[0] == '(' { return "[Ljava/lang/Object;"; }
         if t == "File" { return "Ljava/io/RandomAccessFile;"; }
         if this.tc.enums.isin(t) { return "I"; }
         if this.tc.structs.isin(t) { return "L" + t + ";"; }
@@ -1283,7 +1283,7 @@ pub def JvmGen : class {
         // LshHttpHandler, other signatures get generated <Main>_LshFn<n>.
         if this.is_fnc_type(t) {
             nm: string = this.fn_iface(t);
-            if nm.__bytesize > 0 { return "L" + nm + ";"; }
+            if nm.bsize > 0 { return "L" + nm + ";"; }
         }
         return "";
     }
@@ -1299,7 +1299,7 @@ pub def JvmGen : class {
     pub fnc desc_piece_at(desc string, idx int) : string {
         i: int = 1;
         n: int = 0;
-        while i < desc.__bytesize && desc[i] != ')' {
+        while i < desc.bsize && desc[i] != ')' {
             c: char = desc[i];
             piece: string = "";
             if c == 'J' || c == 'D' {
@@ -1307,7 +1307,7 @@ pub def JvmGen : class {
                 i = i + 1;
             } also c == 'L' {
                 piece = "L";
-                while i < desc.__bytesize && desc[i] != ';' {
+                while i < desc.bsize && desc[i] != ';' {
                     piece = piece + desc[i];
                     i = i + 1;
                 }
@@ -1316,20 +1316,20 @@ pub def JvmGen : class {
             } also c == '[' {
                 piece = "[";
                 i = i + 1;
-                while i < desc.__bytesize && desc[i] == '[' {
+                while i < desc.bsize && desc[i] == '[' {
                     piece = piece + "[";
                     i = i + 1;
                 }
-                if i < desc.__bytesize && desc[i] == 'L' {
+                if i < desc.bsize && desc[i] == 'L' {
                     piece = piece + "L";
-                    while i < desc.__bytesize && desc[i] != ';' {
+                    while i < desc.bsize && desc[i] != ';' {
                         piece = piece + desc[i];
                         i = i + 1;
                     }
                     piece = piece + ";";
                     i = i + 1;
                 } else {
-                    if i < desc.__bytesize {
+                    if i < desc.bsize {
                         piece = piece + desc[i];
                         i = i + 1;
                     }
@@ -1347,11 +1347,11 @@ pub def JvmGen : class {
     // The return descriptor of "(...)ret".
     pub fnc ret_piece(desc string) : string {
         i: int = 0;
-        while i < desc.__bytesize && desc[i] != ')' { i = i + 1; }
-        if i >= desc.__bytesize { return ""; }
+        while i < desc.bsize && desc[i] != ')' { i = i + 1; }
+        if i >= desc.bsize { return ""; }
         i = i + 1;
         out: string = "";
-        while i < desc.__bytesize {
+        while i < desc.bsize {
             out = out + desc[i];
             i = i + 1;
         }
@@ -1362,15 +1362,15 @@ pub def JvmGen : class {
     pub fnc desc_param_count(desc string) : int {
         i: int = 1;
         n: int = 0;
-        while i < desc.__bytesize && desc[i] != ')' {
+        while i < desc.bsize && desc[i] != ')' {
             c: char = desc[i];
             if c == 'L' {
-                while i < desc.__bytesize && desc[i] != ';' { i = i + 1; }
+                while i < desc.bsize && desc[i] != ';' { i = i + 1; }
                 i = i + 1;
             } also c == '[' {
-                while i < desc.__bytesize && desc[i] == '[' { i = i + 1; }
-                if i < desc.__bytesize && desc[i] == 'L' {
-                    while i < desc.__bytesize && desc[i] != ';' { i = i + 1; }
+                while i < desc.bsize && desc[i] == '[' { i = i + 1; }
+                if i < desc.bsize && desc[i] == 'L' {
+                    while i < desc.bsize && desc[i] != ';' { i = i + 1; }
                 }
                 i = i + 1;
             } else {
@@ -1383,32 +1383,32 @@ pub def JvmGen : class {
 
     pub fnc is_uint_leash(t string) : bool {
         if t == "uint" { return true; }
-        return t.__bytesize > 5 && t[0] == 'u' && t[1] == 'i' && t[2] == 'n' && t[3] == 't' && t[4] == '<';
+        return t.bsize > 5 && t[0] == 'u' && t[1] == 'i' && t[2] == 'n' && t[3] == 't' && t[4] == '<';
     }
 
     pub fnc both_refs(ld string, rd string) : bool {
-        lok: bool = ld.__bytesize > 0 && (ld[0] == 'L' || ld[0] == '[');
-        rok: bool = rd.__bytesize > 0 && (rd[0] == 'L' || rd[0] == '[');
+        lok: bool = ld.bsize > 0 && (ld[0] == 'L' || ld[0] == '[');
+        rok: bool = rd.bsize > 0 && (rd[0] == 'L' || rd[0] == '[');
         return lok && rok;
     }
 
     pub fnc is_vec_leash(t string) : bool {
-        if t.__bytesize > 4 && t[0] == 'v' && t[1] == 'e' && t[2] == 'c' && t[3] == '<' { return true; }
+        if t.bsize > 4 && t[0] == 'v' && t[1] == 'e' && t[2] == 'c' && t[3] == '<' { return true; }
         return false;
     }
 
     pub fnc is_hash_leash(t string) : bool {
-        if t.__bytesize > 5 && t[0] == 'h' && t[1] == 'a' && t[2] == 's' && t[3] == 'h' && t[4] == '<' { return true; }
+        if t.bsize > 5 && t[0] == 'h' && t[1] == 'a' && t[2] == 's' && t[3] == 'h' && t[4] == '<' { return true; }
         return false;
     }
 
     // Element type of vec<T> (handles nesting via depth counting).
     pub fnc vec_inner_type(t string) : string {
         start: int = 4;
-        if t.__bytesize > 7 && t[0] == 'm' && t[1] == 'a' && t[2] == 't' && t[3] == 'r' && t[4] == 'i' && t[5] == 'x' && t[6] == '<' { start = 7; }
+        if t.bsize > 7 && t[0] == 'm' && t[1] == 'a' && t[2] == 't' && t[3] == 'r' && t[4] == 'i' && t[5] == 'x' && t[6] == '<' { start = 7; }
         depth: int = 0;
         i: int = start;
-        while i < t.__bytesize {
+        while i < t.bsize {
             c: char = t[i];
             if c == '<' { depth = depth + 1; }
             also c == '>' {
@@ -1430,8 +1430,8 @@ pub def JvmGen : class {
 
     pub fnc trim_type_str(s string) : string {
         a: int = 0;
-        b: int = s.__bytesize - 1;
-        while a < s.__bytesize && s[a] == ' ' { a = a + 1; }
+        b: int = s.bsize - 1;
+        while a < s.bsize && s[a] == ' ' { a = a + 1; }
         while b >= a && s[b] == ' ' { b = b - 1; }
         out: string = "";
         while a <= b {
@@ -1444,7 +1444,7 @@ pub def JvmGen : class {
     pub fnc tuple_elem(tup string, idx int) : string {
         inner: string = "";
         ii: int = 1;
-        while ii < tup.__bytesize - 1 {
+        while ii < tup.bsize - 1 {
             inner = inner + tup[ii];
             ii = ii + 1;
         }
@@ -1452,7 +1452,7 @@ pub def JvmGen : class {
         cur: string = "";
         ei: int = 0;
         pi: int = 0;
-        while pi < inner.__bytesize {
+        while pi < inner.bsize {
             pch: char = inner[pi];
             if pch == '<' || pch == '(' { depth = depth + 1; }
             if pch == '>' || pch == ')' { depth = depth - 1; }
@@ -1471,7 +1471,7 @@ pub def JvmGen : class {
 
     pub fnc is_float_leash(t string) : bool {
         if t == "float" || t == "double" || t == "float64" { return true; }
-        if t.__bytesize > 6 && t[0] == 'f' && t[1] == 'l' && t[2] == 'o' && t[3] == 'a' && t[4] == 't' && t[5] == '<' { return true; }
+        if t.bsize > 6 && t[0] == 'f' && t[1] == 'l' && t[2] == 'o' && t[3] == 'a' && t[4] == 't' && t[5] == '<' { return true; }
         return false;
     }
 
@@ -1656,11 +1656,11 @@ pub def JvmGen : class {
     pub fnc gen_showb_arg(arg Expr) : void {
         t: string = this.expr_type(arg);
         d: string = this.jdesc(t);
-        if d.__bytesize == 0 {
+        if d.bsize == 0 {
             this.jvm_unsupported("showb() of '" + t + "'");
             return;
         }
-        if t.__bytesize > 0 && t[0] == '(' {
+        if t.bsize > 0 && t[0] == '(' {
             this.jvm_unsupported("showb() of tuple '" + t + "'");
             return;
         }
@@ -1740,13 +1740,13 @@ pub def JvmGen : class {
     pub fnc gen_show_arg_buf(arg Expr, buffered bool) : void {
         t: string = this.expr_type(arg);
         d: string = this.jdesc(t);
-        if d.__bytesize == 0 {
+        if d.bsize == 0 {
             this.jvm_unsupported("show() of '" + t + "'");
             return;
         }
         // Native show(struct) fails in clang; surface a clean error.
         // Native show(tuple) is unsupported; surface a clean error.
-        if t.__bytesize > 0 && t[0] == '(' {
+        if t.bsize > 0 && t[0] == '(' {
             this.jvm_unsupported("show() of tuple '" + t + "'");
             return;
         }
@@ -1837,13 +1837,13 @@ pub def JvmGen : class {
     pub fnc base_name(p string) : string {
         i: int = 0;
         last: int = -1;
-        while i < p.__bytesize {
+        while i < p.bsize {
             if p[i] == '/' { last = i; }
             i = i + 1;
         }
         out: string = "";
         i = last + 1;
-        while i < p.__bytesize {
+        while i < p.bsize {
             out = out + p[i];
             i = i + 1;
         }
@@ -1987,16 +1987,16 @@ pub def JvmGen : class {
         if rt == "int" || rt == "uint" || rt == "char" { return 32; }
         if rt == "bool" { return 1; }
         if rt == "int64" || rt == "uint64" { return 64; }
-        if rt.__bytesize >= 6 && rt[rt.__bytesize - 1] == '>' {
-            is_int: bool = rt.__bytesize >= 6 && rt[0] == 'i' && rt[1] == 'n' && rt[2] == 't' && rt[3] == '<';
-            is_uint: bool = rt.__bytesize >= 7 && rt[0] == 'u' && rt[1] == 'i' && rt[2] == 'n' && rt[3] == 't' && rt[4] == '<';
+        if rt.bsize >= 6 && rt[rt.bsize - 1] == '>' {
+            is_int: bool = rt.bsize >= 6 && rt[0] == 'i' && rt[1] == 'n' && rt[2] == 't' && rt[3] == '<';
+            is_uint: bool = rt.bsize >= 7 && rt[0] == 'u' && rt[1] == 'i' && rt[2] == 'n' && rt[3] == 't' && rt[4] == '<';
             if is_int || is_uint {
                 start: int = 4;
                 if is_uint { start = 5; }
-                if start >= rt.__bytesize - 1 { return 0; }
+                if start >= rt.bsize - 1 { return 0; }
                 w: int = 0;
                 ki: int = start;
-                while ki < rt.__bytesize - 1 {
+                while ki < rt.bsize - 1 {
                     c: char = rt[ki];
                     if c < '0' || c > '9' { return 0; }
                     w = w * 10 + (c - '0');
@@ -2010,9 +2010,9 @@ pub def JvmGen : class {
 
     pub fnc is_plain_decimal(sv string) : bool {
         si: int = 0;
-        if sv.__bytesize > 0 && sv[0] == '-' { si = 1; }
-        if si >= sv.__bytesize { return false; }
-        while si < sv.__bytesize {
+        if sv.bsize > 0 && sv[0] == '-' { si = 1; }
+        if si >= sv.bsize { return false; }
+        while si < sv.bsize {
             if sv[si] < '0' || sv[si] > '9' { return false; }
             si = si + 1;
         }
@@ -2023,12 +2023,12 @@ pub def JvmGen : class {
     pub fnc lit_fits_i64(sv string) : bool {
         si: int = 0;
         neg: bool = false;
-        if sv.__bytesize > 0 && sv[0] == '-' {
+        if sv.bsize > 0 && sv[0] == '-' {
             neg = true;
             si = 1;
         }
-        while si < sv.__bytesize && sv[si] == '0' { si = si + 1; }
-        digits: int = sv.__bytesize - si;
+        while si < sv.bsize && sv[si] == '0' { si = si + 1; }
+        digits: int = sv.bsize - si;
         if digits < 19 { return true; }
         if digits > 19 { return false; }
         lim: string = "9223372036854775807";
@@ -2050,7 +2050,7 @@ pub def JvmGen : class {
 
     pub fnc is_bigint_signed(t string) : bool {
         rt: string = this.tc.resolve_type_alias(t);
-        if rt.__bytesize == 0 { return true; }
+        if rt.bsize == 0 { return true; }
         return rt[0] != 'u';
     }
 
@@ -2295,7 +2295,7 @@ pub def JvmGen : class {
         }
         fd: string = this.jdesc(from_t);
         td: string = this.jdesc(to_t);
-        if fd.__bytesize == 0 || td.__bytesize == 0 { return; }
+        if fd.bsize == 0 || td.bsize == 0 { return; }
         if fd == td { return; }
         if fd == "I" && td == "I" {
             return;
@@ -2365,7 +2365,7 @@ pub def JvmGen : class {
         if e.kind == ExprKind.INT {
             // Out-of-int64 decimal text becomes a BigInteger directly
             // (full precision for 128/256/512-bit targets).
-            if e.sval.__bytesize > 0 && this.is_plain_decimal(e.sval) && !this.lit_fits_i64(e.sval) {
+            if e.sval.bsize > 0 && this.is_plain_decimal(e.sval) && !this.lit_fits_i64(e.sval) {
                 this.ldc_string(e.sval);
                 this.bigint_from_string();
                 return;
@@ -2402,7 +2402,7 @@ pub def JvmGen : class {
             // embeds tostring(fval) there); C-printf spellings of
             // non-finite values differ from parseDouble's.
             lit: string = e.sval;
-            if lit.__bytesize == 0 { lit = tostring(e.fval); }
+            if lit.bsize == 0 { lit = tostring(e.fval); }
             if lit == "inf" || lit == "Inf" || lit == "INF" { lit = "Infinity"; }
             also lit == "-inf" || lit == "-Inf" || lit == "-INF" { lit = "-Infinity"; }
             also lit == "nan" || lit == "NaN" || lit == "NAN" { lit = "NaN"; }
@@ -2483,12 +2483,12 @@ pub def JvmGen : class {
                 // the GETFIELD (redundant when already exact).
                 this.emit_checkcast(plt);
                 ft: string = this.struct_field_type(plt, e.sval);
-                if ft.__bytesize == 0 {
+                if ft.bsize == 0 {
                     this.jvm_unsupported("field '" + e.sval + "' of '" + plt + "'");
                     return;
                 }
                 fd: string = this.jdesc(ft);
-                if fd.__bytesize == 0 {
+                if fd.bsize == 0 {
                     this.jvm_unsupported("field type '" + ft + "'");
                     return;
                 }
@@ -2512,27 +2512,27 @@ pub def JvmGen : class {
     // owner mangling); self::Class / self::Parent give class names.
     pub fnc self_name_now() : string {
         self_name: string = this.current_func_name;
-        if self_name.__bytesize > 7 && self_name[0] == '_' && self_name[1] == 'e' && self_name[2] == 'r'
+        if self_name.bsize > 7 && self_name[0] == '_' && self_name[1] == 'e' && self_name[2] == 'r'
            && self_name[3] == 'r' && self_name[4] == 'o' && self_name[5] == 'r' && self_name[6] == '_' {
             err_only: string = "";
             ei: int = 7;
-            while ei < self_name.__bytesize {
+            while ei < self_name.bsize {
                 err_only = err_only + self_name[ei];
                 ei = ei + 1;
             }
             self_name = err_only;
         }
-        if this.current_class.__bytesize > 0 && self_name.__bytesize > this.current_class.__bytesize + 1 && self_name[this.current_class.__bytesize] == '_' {
+        if this.current_class.bsize > 0 && self_name.bsize > this.current_class.bsize + 1 && self_name[this.current_class.bsize] == '_' {
             sn_guard: int = 0;
             sn_ok: bool = true;
-            while sn_guard < this.current_class.__bytesize {
+            while sn_guard < this.current_class.bsize {
                 if self_name[sn_guard] != this.current_class[sn_guard] { sn_ok = false; stop; }
                 sn_guard = sn_guard + 1;
             }
             if sn_ok {
                 stripped: string = "";
-                si2: int = this.current_class.__bytesize + 1;
-                while si2 < self_name.__bytesize {
+                si2: int = this.current_class.bsize + 1;
+                while si2 < self_name.bsize {
                     stripped = stripped + self_name[si2];
                     si2 = si2 + 1;
                 }
@@ -2593,7 +2593,7 @@ pub def JvmGen : class {
         if this.cg.global_vars.isin(name) {
             gt: string = this.cg.global_vars[name];
             gd: string = this.jdesc(gt);
-            if gd.__bytesize == 0 {
+            if gd.bsize == 0 {
                 this.jvm_unsupported("global '" + name + "' of type '" + gt + "'");
                 return;
             }
@@ -2616,13 +2616,13 @@ pub def JvmGen : class {
         if ld == rd { return ld; }
         if (ld == "I" || ld == "J") && (rd == "I" || rd == "J") {
             if ld == "J" {
-                if rv.__bytesize > 0 && rv[0] != '%' {
+                if rv.bsize > 0 && rv[0] != '%' {
                     return "J";
                 }
                 this.cur_method.op(JOp.I2L, 1);
                 return "J";
             }
-            if lv.__bytesize > 0 && lv[0] != '%' {
+            if lv.bsize > 0 && lv[0] != '%' {
                 return "I";
             }
             this.cur_method.op(JOp.I2L, 1);
@@ -2895,7 +2895,7 @@ pub def JvmGen : class {
             return;
         }
         // value <> array: element scan with per-lane equality.
-        if rd.__bytesize > 0 && rd[0] == '[' {
+        if rd.bsize > 0 && rd[0] == '[' {
             at3: string = this.expr_type(e.left);
             ad3: string = this.jdesc(at3);
             this.gen_expr(e.left);
@@ -3005,7 +3005,7 @@ pub def JvmGen : class {
         // Deep `is` for containers (arrays via Arrays.equals, vecs via
         // List.equals); scalars/strings fall through to the == paths.
         if e.op == "is" || e.op == "isnt" {
-            if ld.__bytesize > 0 && ld[0] == '[' && rd.__bytesize > 0 && rd[0] == '[' {
+            if ld.bsize > 0 && ld[0] == '[' && rd.bsize > 0 && rd[0] == '[' {
                 this.gen_expr(e.left);
                 this.gen_expr(e.right);
                 if ld == "[I" || ld == "[J" || ld == "[D" || ld == "[Z" || ld == "[C" || ld == "[B" || ld == "[S" {
@@ -3277,13 +3277,13 @@ pub def JvmGen : class {
             return;
         }
         // Containers compare deep via equals (native parity).
-        if (ld.__bytesize > 0 && ld[0] == '[') || ld == "Ljava/util/ArrayList;" || ld == "Ljava/util/HashMap;" {
+        if (ld.bsize > 0 && ld[0] == '[') || ld == "Ljava/util/ArrayList;" || ld == "Ljava/util/HashMap;" {
             this.gen_expr(e.left);
             this.gen_expr(e.right);
             eq_desc: string = "(Ljava/lang/Object;Ljava/lang/Object;)Z";
             eq_owner: string = "java/util/Objects";
             eq_name: string = "equals";
-            if ld.__bytesize > 0 && ld[0] == '[' {
+            if ld.bsize > 0 && ld[0] == '[' {
                 eq_owner = "java/util/Arrays";
                 eq_name = "equals";
                 eq_desc = "(" + ld + rd + ")Z";
@@ -3351,7 +3351,7 @@ pub def JvmGen : class {
             this.cur_method.mark(e_lbl);
             return;
         }
-        if (lt.__bytesize > 0 && lt[0] == '*') || (rt.__bytesize > 0 && rt[0] == '*') {
+        if (lt.bsize > 0 && lt[0] == '*') || (rt.bsize > 0 && rt[0] == '*') {
             this.gen_expr(e.left);
             this.gen_expr(e.right);
             if op2 == "==" {
@@ -3479,7 +3479,7 @@ pub def JvmGen : class {
             this.emit_checkcast("java/util/concurrent/CompletableFuture");
             this.emit_invoke(JOp.INVOKEVIRTUAL, "java/util/concurrent/CompletableFuture", "join", "()Ljava/lang/Object;");
             inner: string = this.future_inner_type(ot);
-            if inner == "void" || inner.__bytesize == 0 {
+            if inner == "void" || inner.bsize == 0 {
                 this.cur_method.op(JOp.POP, -1);
             } else {
                 this.unbox_to(inner);
@@ -3588,7 +3588,7 @@ pub def JvmGen : class {
                 }
                 sig = sig + ") : " + ret_t;
                 iface: string = this.fn_iface(sig);
-                if iface.__bytesize > 0 {
+                if iface.bsize > 0 {
                     idesc: string = this.fn_iface_desc(iface);
                     this.emit_fn_adapter(iface, fname, idesc);
                     return;
@@ -3773,15 +3773,15 @@ pub def JvmGen : class {
     // reads them; call sites pass references, which verify as Objects.
     pub fnc extern_piece(t string) : string {
         d: string = this.jdesc(t);
-        if d.__bytesize > 0 { return d; }
-        if t.__bytesize > 0 && t[0] == '*' { return "Ljava/lang/Object;"; }
-        if t.__bytesize > 8 && t[0] == 'p' && t[1] == 'o' && t[2] == 'i' && t[3] == 'n' && t[4] == 't' && t[5] == 'e' && t[6] == 'r' && t[7] == '<' {
+        if d.bsize > 0 { return d; }
+        if t.bsize > 0 && t[0] == '*' { return "Ljava/lang/Object;"; }
+        if t.bsize > 8 && t[0] == 'p' && t[1] == 'o' && t[2] == 'i' && t[3] == 'n' && t[4] == 't' && t[5] == 'e' && t[6] == 'r' && t[7] == '<' {
             return "Ljava/lang/Object;";
         }
         // First-class function values have no JVM lane; extern stubs and
         // skipped signatures carry them as Object (nothing on the JVM can
         // produce one, so the value never flows).
-        if t.__bytesize > 3 && t[0] == 'f' && t[1] == 'n' && t[2] == 'c' {
+        if t.bsize > 3 && t[0] == 'f' && t[1] == 'n' && t[2] == 'c' {
             return "Ljava/lang/Object;";
         }
         return "";
@@ -3798,14 +3798,14 @@ pub def JvmGen : class {
         if t == "pointer<void>" || t == "void*" || t == "*void" { return "Ljava/lang/Object;"; }
         if this.is_fnc_type(t) {
             nm: string = this.fn_iface(t);
-            if nm.__bytesize > 0 { return "L" + nm + ";"; }
+            if nm.bsize > 0 { return "L" + nm + ";"; }
         }
         d: string = this.jdesc(t);
-        if d.__bytesize > 0 && d != "Ljava/lang/Object;" { return d; }
-        if t.__bytesize > 7 && t[0] == 'p' && t[1] == 'o' && t[2] == 'i' && t[3] == 'n' && t[4] == 't' && t[5] == 'e' && t[6] == 'r' && t[7] == '<' {
+        if d.bsize > 0 && d != "Ljava/lang/Object;" { return d; }
+        if t.bsize > 7 && t[0] == 'p' && t[1] == 'o' && t[2] == 'i' && t[3] == 'n' && t[4] == 't' && t[5] == 'e' && t[6] == 'r' && t[7] == '<' {
             return "[Ljava/lang/Object;";
         }
-        if t.__bytesize > 0 && t[0] == '*' {
+        if t.bsize > 0 && t[0] == '*' {
             return "[Ljava/lang/Object;";
         }
         return "";
@@ -3816,8 +3816,8 @@ pub def JvmGen : class {
     // plain references.
     pub fnc is_pointer_param(t string) : bool {
         if t == "pointer<void>" || t == "void*" || t == "*void" { return false; }
-        if t.__bytesize > 7 && t[0] == 'p' && t[1] == 'o' && t[2] == 'i' && t[3] == 'n' && t[4] == 't' && t[5] == 'e' && t[6] == 'r' && t[7] == '<' { return true; }
-        if t.__bytesize > 0 && t[0] == '*' { return true; }
+        if t.bsize > 7 && t[0] == 'p' && t[1] == 'o' && t[2] == 'i' && t[3] == 'n' && t[4] == 't' && t[5] == 'e' && t[6] == 'r' && t[7] == '<' { return true; }
+        if t.bsize > 0 && t[0] == '*' { return true; }
         return false;
     }
 
@@ -3832,7 +3832,7 @@ pub def JvmGen : class {
     // alongside the program's own classes.
 
     pub fnc is_fnc_type(t string) : bool {
-        if t.__bytesize > 3 && t[0] == 'f' && t[1] == 'n' && t[2] == 'c' && t[3] == '(' { return true; }
+        if t.bsize > 3 && t[0] == 'f' && t[1] == 'n' && t[2] == 'c' && t[3] == '(' { return true; }
         return false;
     }
 
@@ -3844,7 +3844,7 @@ pub def JvmGen : class {
         i: int = 4; // skip "fnc("
         depth: int = 0;
         cur: string = "";
-        while i < t.__bytesize && !(depth == 0 && t[i] == ')') {
+        while i < t.bsize && !(depth == 0 && t[i] == ')') {
             c: char = t[i];
             if c == '(' || c == '<' || c == '[' { depth = depth + 1; }
             if (c == ')' || c == '>') && depth > 0 { depth = depth - 1; }
@@ -3856,13 +3856,13 @@ pub def JvmGen : class {
             }
             i = i + 1;
         }
-        if this.trim_ws(cur).__bytesize > 0 { parts.pushb(this.trim_ws(cur)); }
+        if this.trim_ws(cur).bsize > 0 { parts.pushb(this.trim_ws(cur)); }
         // Return type after ") : "
         ret: string = "";
-        while i < t.__bytesize && t[i] != ':' { i = i + 1; }
+        while i < t.bsize && t[i] != ':' { i = i + 1; }
         i = i + 1;
-        while i < t.__bytesize && t[i] == ' ' { i = i + 1; }
-        while i < t.__bytesize {
+        while i < t.bsize && t[i] == ' ' { i = i + 1; }
+        while i < t.bsize {
             ret = ret + t[i];
             i = i + 1;
         }
@@ -3872,7 +3872,7 @@ pub def JvmGen : class {
 
     pub fnc trim_ws(s string) : string {
         a: int = 0;
-        b: int = s.__bytesize;
+        b: int = s.bsize;
         while a < b && (s[a] == ' ' || s[a] == '\t') { a = a + 1; }
         while b > a && (s[b - 1] == ' ' || s[b - 1] == '\t') { b = b - 1; }
         out: string = "";
@@ -3890,7 +3890,7 @@ pub def JvmGen : class {
         pi: int = 0;
         while pi + 1 < parts.size {
             pd: string = this.jdesc(parts.get(pi));
-            if pd.__bytesize == 0 {
+            if pd.bsize == 0 {
                 // Unrepresentable parameter lanes ride boxed Objects so
                 // exotic function types still flow.
                 pd = "Ljava/lang/Object;";
@@ -3902,7 +3902,7 @@ pub def JvmGen : class {
         if parts.size > 0 {
             rd = this.jdesc(parts.get(parts.size - 1));
         }
-        if rd.__bytesize == 0 { rd = "Ljava/lang/Object;"; }
+        if rd.bsize == 0 { rd = "Ljava/lang/Object;"; }
         desc = desc + ")" + rd;
         return desc;
     }
@@ -3996,7 +3996,7 @@ pub def JvmGen : class {
             more: bool = true;
             while more && pi < this.desc_param_count(desc) {
                 pd: string = this.desc_piece_at(desc, pi);
-                if pd.__bytesize == 0 {
+                if pd.bsize == 0 {
                     more = false;
                 } else {
                     // The incoming arguments follow `this` — reserve each
@@ -4015,7 +4015,7 @@ pub def JvmGen : class {
                 iv.op(JOp.LRETURN, -2);
             } also rd == "D" {
                 iv.op(JOp.DRETURN, -2);
-            } also rd.__bytesize > 0 && (rd[0] == 'L' || rd[0] == '[') {
+            } also rd.bsize > 0 && (rd[0] == 'L' || rd[0] == '[') {
                 iv.op(JOp.ARETURN, -1);
             } else {
                 iv.op(JOp.IRETURN, -1);
@@ -4042,12 +4042,12 @@ pub def JvmGen : class {
         desc: string = "(";
         foreach _, p in<vector> f.params {
             pd: string = this.extern_piece(p.typ);
-            if pd.__bytesize == 0 { return ""; }
+            if pd.bsize == 0 { return ""; }
             desc = desc + pd;
         }
         desc = desc + ")";
         rd: string = this.jdesc(f.ret_type);
-        if rd.__bytesize == 0 { return ""; }
+        if rd.bsize == 0 { return ""; }
         desc = desc + rd;
         return desc;
     }
@@ -4056,12 +4056,12 @@ pub def JvmGen : class {
         desc: string = "(";
         foreach _, p in<vector> f.params {
             pd: string = this.jdesc(p.typ);
-            if pd.__bytesize == 0 { return ""; }
+            if pd.bsize == 0 { return ""; }
             desc = desc + pd;
         }
         desc = desc + ")";
         rd: string = this.jdesc(f.ret_type);
-        if rd.__bytesize == 0 { return ""; }
+        if rd.bsize == 0 { return ""; }
         desc = desc + rd;
         return desc;
     }
@@ -4076,7 +4076,7 @@ pub def JvmGen : class {
         start: int = 7;
         depth: int = 0;
         i: int = start;
-        while i < t.__bytesize {
+        while i < t.bsize {
             c: char = t[i];
             if c == '<' { depth = depth + 1; }
             also c == '>' {
@@ -4113,8 +4113,8 @@ pub def JvmGen : class {
 
     pub fnc prog_uses_async(prog Program) : bool {
         foreach _, f in<vector> prog.funcs {
-            if f.is_async && f.owner.__bytesize == 0 { return true; }
-            if f.is_worker && f.owner.__bytesize == 0 { return true; }
+            if f.is_async && f.owner.bsize == 0 { return true; }
+            if f.is_worker && f.owner.bsize == 0 { return true; }
         }
         return false;
     }
@@ -4270,13 +4270,13 @@ pub def JvmGen : class {
         pi: int = 0;
         while pi < f.params.size {
             pd: string = this.jdesc(f.params.get(pi).typ);
-            if pd.__bytesize == 0 { return ""; }
+            if pd.bsize == 0 { return ""; }
             desc = desc + pd;
             pi = pi + 1;
         }
         desc = desc + ")";
         rd: string = this.jdesc(f.ret_type);
-        if rd.__bytesize == 0 { return ""; }
+        if rd.bsize == 0 { return ""; }
         desc = desc + rd;
         return desc;
     }
@@ -4286,7 +4286,7 @@ pub def JvmGen : class {
         pi: int = 0;
         while pi < f.params.size {
             pd: string = this.jdesc(f.params.get(pi).typ);
-            if pd.__bytesize == 0 { return ""; }
+            if pd.bsize == 0 { return ""; }
             desc = desc + pd;
             pi = pi + 1;
         }
@@ -4297,7 +4297,7 @@ pub def JvmGen : class {
     pub fnc gen_function(f FuncDecl, cls JvmClass, rename string) : void {
         // Worker bodies emit as plain static methods; `spawn` runs them
         // on the shared pool through a Supplier task.
-        if f.is_async && rename.__bytesize == 0 {
+        if f.is_async && rename.bsize == 0 {
             this.jvm_unsupported("async function '" + f.name + "' (not supported on jvm)");
             return;
         }
@@ -4306,7 +4306,7 @@ pub def JvmGen : class {
             // exit). Importing a native module stays possible; calling
             // into it fails loudly instead of silently.
             desc: string = this.extern_desc(f);
-            if desc.__bytesize == 0 {
+            if desc.bsize == 0 {
                 this.jvm_unsupported("native (@from) function '" + f.name + "' (unrepresentable signature)");
                 return;
             }
@@ -4316,20 +4316,20 @@ pub def JvmGen : class {
             // Reserve argument slots (max_locals must cover them even
             // though the stub body never touches them).
             di: int = 1;
-            while di < desc.__bytesize && desc[di] != ')' {
+            while di < desc.bsize && desc[di] != ')' {
                 dc: char = desc[di];
                 if dc == 'J' || dc == 'D' {
                     m.alloc_local(2);
                     di = di + 1;
                 } also dc == 'L' {
                     m.alloc_local(1);
-                    while di < desc.__bytesize && desc[di] != ';' { di = di + 1; }
+                    while di < desc.bsize && desc[di] != ';' { di = di + 1; }
                     di = di + 1;
                 } also dc == '[' {
                     m.alloc_local(1);
-                    while di < desc.__bytesize && desc[di] == '[' { di = di + 1; }
-                    if di < desc.__bytesize && desc[di] == 'L' {
-                        while di < desc.__bytesize && desc[di] != ';' { di = di + 1; }
+                    while di < desc.bsize && desc[di] == '[' { di = di + 1; }
+                    if di < desc.bsize && desc[di] == 'L' {
+                        while di < desc.bsize && desc[di] != ';' { di = di + 1; }
                     }
                     di = di + 1;
                 } else {
@@ -4348,7 +4348,7 @@ pub def JvmGen : class {
                 m.op(JOp.LRETURN, -2);
             } also rd == "D" {
                 m.op(JOp.DRETURN, -2);
-            } also rd.__bytesize > 0 && rd[0] == 'L' {
+            } also rd.bsize > 0 && rd[0] == 'L' {
                 m.op(JOp.ARETURN, -1);
             } else {
                 m.op(JOp.IRETURN, -1);
@@ -4365,7 +4365,7 @@ pub def JvmGen : class {
         }
         // Owner-bound methods: instance (this in slot 0) unless the
         // class table marks them static.
-        is_method: bool = f.owner.__bytesize > 0;
+        is_method: bool = f.owner.bsize > 0;
         is_static: bool = true;
         if is_method {
             is_static = false;
@@ -4374,7 +4374,7 @@ pub def JvmGen : class {
             }
         }
         desc: string = this.method_desc(f);
-        if desc.__bytesize == 0 {
+        if desc.bsize == 0 {
             // No JVM lane for this signature (e.g. function-typed
             // parameters): skip the definition. Any call site still fails
             // loudly via method_sig ("signature of ..."), so nothing goes
@@ -4382,7 +4382,7 @@ pub def JvmGen : class {
             return;
         }
         mname: string = f.name;
-        if rename.__bytesize > 0 { mname = rename; }
+        if rename.bsize > 0 { mname = rename; }
         acc: int = JAcc.PUBLIC;
         if is_static { acc = acc + JAcc.STATIC; }
         m: JvmMethod = JvmMethod.make(cls.cp.utf8(mname), cls.cp.utf8(desc), acc);
@@ -4408,14 +4408,14 @@ pub def JvmGen : class {
         this.current_func_unsafe = f.is_unsafe;
         this.array_base_override = "";
         this.opdef_inner = "";
-        if f.name.__bytesize > 7 && f.name[0] == '_' && f.name[1] == 'o' && f.name[2] == 'p'
+        if f.name.bsize > 7 && f.name[0] == '_' && f.name[1] == 'o' && f.name[2] == 'p'
            && f.name[3] == 'd' && f.name[4] == 'e' && f.name[5] == 'f' && f.name[6] == '_' {
             foreach _, op in<vector> f.params {
                 opt: string = op.typ;
-                if opt.__bytesize > 5 && opt[0] == 'v' && opt[1] == 'e' && opt[2] == 'c' && opt[3] == '<' {
+                if opt.bsize > 5 && opt[0] == 'v' && opt[1] == 'e' && opt[2] == 'c' && opt[3] == '<' {
                     this.opdef_inner = this.vec_inner_type(opt);
                 }
-                also opt.__bytesize > 6 && opt[0] == 'h' && opt[1] == 'a' && opt[2] == 's' && opt[3] == 'h' && opt[4] == '<' {
+                also opt.bsize > 6 && opt[0] == 'h' && opt[1] == 'a' && opt[2] == 's' && opt[3] == 'h' && opt[4] == '<' {
                     this.opdef_inner = this.hash_val_type(opt);
                 }
             }
@@ -4466,7 +4466,7 @@ pub def JvmGen : class {
         // Extern (@from) functions emit runtime-throwing stubs so mixed
         // modules stay importable; calls fail loudly only when executed.
         foreach _, ef in<vector> prog.funcs {
-            if ef.is_external && ef.owner.__bytesize == 0 {
+            if ef.is_external && ef.owner.bsize == 0 {
                 this.extern_names.push(ef.name, true);
             }
         }
@@ -4514,7 +4514,7 @@ pub def JvmGen : class {
             this.cg.global_vars.push(g.name, g.typ);
             if g.is_fusion { this.fusion_names.push(g.name, true); }
             gd: string = this.jdesc(g.typ);
-            if gd.__bytesize == 0 {
+            if gd.bsize == 0 {
                 this.jvm_unsupported("global '" + g.name + "' of type '" + g.typ + "'");
                 continue;
             }
@@ -4536,7 +4536,7 @@ pub def JvmGen : class {
             this.cg.global_vars.push(sv.name, sv.typ);
             this.cg.shared_var_names.push(sv.name, true);
             svd: string = this.jdesc(sv.typ);
-            if svd.__bytesize == 0 {
+            if svd.bsize == 0 {
                 this.jvm_unsupported("shared variable '" + sv.name + "' of type '" + sv.typ + "'");
                 continue;
             }
@@ -4565,18 +4565,18 @@ pub def JvmGen : class {
                 continue;
             }
             sup: string = "java/lang/Object";
-            if c.parent.__bytesize > 0 { sup = c.parent; }
+            if c.parent.bsize > 0 { sup = c.parent; }
             this.emit_struct_shell(c.name, c.fields, sup);
         }
         // Owner-bound methods declared outside decls (fnc C.m style).
         foreach _, f in<vector> prog.funcs {
             if this.tc.generic_funcs.isin(f.name) { continue; }
-            if f.is_async && f.owner.__bytesize == 0 {
+            if f.is_async && f.owner.bsize == 0 {
                 this.gen_async_function(f, cls);
                 continue;
             }
-            if f.name == "main" && f.owner.__bytesize == 0 { continue; }
-            if f.owner.__bytesize > 0 {
+            if f.name == "main" && f.owner.bsize == 0 { continue; }
+            if f.owner.bsize > 0 {
                 if !this.klass_idx.isin(f.owner) {
                     this.jvm_unsupported("method '" + f.name + "' of unknown '" + f.owner + "'");
                     continue;
@@ -4618,7 +4618,7 @@ pub def JvmGen : class {
         kc: JvmClass = JvmClass.make(name, sup);
         foreach _, fd in<vector> fields {
             dd: string = this.jdesc(fd.typ);
-            if dd.__bytesize == 0 {
+            if dd.bsize == 0 {
                 this.jvm_unsupported("field '" + fd.name + "' of type '" + fd.typ + "'");
                 continue;
             }
@@ -4650,7 +4650,7 @@ pub def JvmGen : class {
                 }
                 fi: int = kc.cp.fieldref(name, fd.name, dd);
                 this.cur_method.op_field(JOp.PUTFIELD, fi, -2);
-            } also dd.__bytesize > 0 && dd[0] == '[' {
+            } also dd.bsize > 0 && dd[0] == '[' {
                 n: int = this.array_size_of(fd.typ);
                 if n >= 0 {
                     this.cur_method.op(JOp.ALOAD_0, 1);
@@ -4693,7 +4693,7 @@ pub def JvmGen : class {
         main_ret: string = "void";
         main_params: vec<string>;
         foreach _, f in<vector> prog.funcs {
-            if f.name == "main" && f.owner.__bytesize == 0 {
+            if f.name == "main" && f.owner.bsize == 0 {
                 has_main = true;
                 main_ret = f.ret_type;
                 foreach _, p in<vector> f.params {
@@ -4708,7 +4708,7 @@ pub def JvmGen : class {
         this.has_entry = true;
         // Re-emit the user main under a fixed name (descriptor freedom).
         foreach _, f in<vector> prog.funcs {
-            if f.name == "main" && f.owner.__bytesize == 0 {
+            if f.name == "main" && f.owner.bsize == 0 {
                 this.gen_function(f, cls, "__leash_user_main");
             }
         }
@@ -4731,7 +4731,7 @@ pub def JvmGen : class {
         // Global initializers.
         foreach _, g in<vector> prog.globals {
             gd: string = this.jdesc(g.typ);
-            if gd.__bytesize == 0 { continue; }
+            if gd.bsize == 0 { continue; }
             if g.is_fusion && (gd == "I" || gd == "J") {
                 acls: string = "java/util/concurrent/atomic/AtomicInteger";
                 adesc: string = "(I)V";
@@ -4777,7 +4777,7 @@ pub def JvmGen : class {
         // (empty containers, empty string, zero for scalars).
         foreach _, sv in<vector> this.tc.shared_var_list {
             svd2: string = this.jdesc(sv.typ);
-            if svd2.__bytesize == 0 { continue; }
+            if svd2.bsize == 0 { continue; }
             this.jvm_default_for(sv.typ);
             sfi: int = this.cur_cp.fieldref(this.main_class, "g_" + this.cg.global_slot(sv.name), svd2);
             this.cur_method.op_field(JOp.PUTSTATIC, sfi, 0 - this.slots_of(svd2));
@@ -4788,7 +4788,7 @@ pub def JvmGen : class {
             foreach _, fd in<vector> c.fields {
                 if !fd.is_static || fd.init == null { continue; }
                 sfd: string = this.jdesc(fd.typ);
-                if sfd.__bytesize == 0 { continue; }
+                if sfd.bsize == 0 { continue; }
                 it: string = this.expr_type(fd.init);
                 this.gen_expr(fd.init);
                 if !this.coerce_val(it, fd.typ) {
@@ -4803,7 +4803,7 @@ pub def JvmGen : class {
             foreach _, fd in<vector> st.fields {
                 if !fd.is_static || fd.init == null { continue; }
                 sfd: string = this.jdesc(fd.typ);
-                if sfd.__bytesize == 0 { continue; }
+                if sfd.bsize == 0 { continue; }
                 it: string = this.expr_type(fd.init);
                 this.gen_expr(fd.init);
                 if !this.coerce_val(it, fd.typ) {
@@ -4850,7 +4850,7 @@ pub def JvmGen : class {
         if wants_args { udesc = udesc + "[Ljava/lang/String;"; }
         udesc = udesc + ")";
         urd: string = this.jdesc(main_ret);
-        if urd.__bytesize == 0 {
+        if urd.bsize == 0 {
             this.jvm_unsupported("main() return type '" + main_ret + "'");
             return;
         }
@@ -5117,11 +5117,11 @@ pub def JvmGen : class {
             pt: string = "int";
             if ai < ptypes.size { pt = ptypes.get(ai); }
             pd: string = this.jdesc(pt);
-            if pd.__bytesize == 0 && is_ext {
+            if pd.bsize == 0 && is_ext {
                 // C pointer soup rides as Object in extern stubs/calls.
                 pd = this.extern_piece(pt);
             }
-            if pd.__bytesize == 0 {
+            if pd.bsize == 0 {
                 this.jvm_unsupported("parameter type '" + pt + "'");
                 return;
             }
@@ -5131,7 +5131,7 @@ pub def JvmGen : class {
         desc = desc + ")";
         ret_t: string = this.tc.funcs[fname];
         rd: string = this.jdesc(ret_t);
-        if rd.__bytesize == 0 {
+        if rd.bsize == 0 {
             this.jvm_unsupported("return type '" + ret_t + "'");
             return;
         }
@@ -5190,7 +5190,7 @@ pub def JvmGen : class {
         }
         desc: string = this.fnc_sig_desc(parts);
         iface: string = this.fn_iface(ftype);
-        if iface.__bytesize == 0 || desc.__bytesize == 0 {
+        if iface.bsize == 0 || desc.bsize == 0 {
             this.jvm_unsupported("function value '" + fname + "' of type '" + ftype + "'");
             return;
         }
@@ -5240,7 +5240,7 @@ pub def JvmGen : class {
             pt: string = "int";
             if ai < ptypes.size { pt = ptypes.get(ai); }
             pd: string = this.shim_piece(pt);
-            if pd.__bytesize == 0 {
+            if pd.bsize == 0 {
                 this.jvm_unsupported("native '" + fname + "' parameter type '" + pt + "' on jvm");
                 return;
             }
@@ -5249,7 +5249,7 @@ pub def JvmGen : class {
         }
         ret_t: string = this.tc.funcs[fname];
         rd: string = this.jdesc(ret_t);
-        if rd.__bytesize == 0 {
+        if rd.bsize == 0 {
             this.jvm_unsupported("native '" + fname + "' return type '" + ret_t + "' on jvm");
             return;
         }
@@ -5275,7 +5275,7 @@ pub def JvmGen : class {
                 lat: string = "";
                 if this.var_types.isin(name) { lat = this.var_types[name]; }
                 this.gen_expr(arg.left);
-                if lat.__bytesize > 0 { this.box_for(lat); }
+                if lat.bsize > 0 { this.box_for(lat); }
                 this.cur_method.op(JOp.AASTORE, -3);
                 this.cur_method.load_local("X", box);
                 out_boxes.pushb(box);
@@ -5306,7 +5306,7 @@ pub def JvmGen : class {
                 if this.var_types.isin(nme) { nt = this.var_types[nme]; }
                 nslot: int = 0;
                 if this.var_slots.isin(nme) { nslot = this.var_slots[nme]; }
-                if nt.__bytesize > 0 {
+                if nt.bsize > 0 {
                     this.unbox_to(nt);
                     this.cur_method.store_local(this.jdesc(nt), nslot);
                 } else {
@@ -5483,7 +5483,7 @@ pub def JvmGen : class {
         while i < n {
             at: string = this.expr_type(e.args.get(i + 1));
             ad: string = this.jdesc(at);
-            if ad.__bytesize == 0 {
+            if ad.bsize == 0 {
                 this.jvm_unsupported("printf() argument of type '" + at + "'");
                 return;
             }
@@ -6233,8 +6233,8 @@ pub def JvmGen : class {
 
     pub fnc is_sized_int(t string) : bool {
         if t == "int" || t == "uint" || t == "char" || t == "bool" { return true; }
-        if t.__bytesize > 4 && t[0] == 'i' && t[1] == 'n' && t[2] == 't' && t[3] == '<' { return true; }
-        if t.__bytesize > 5 && t[0] == 'u' && t[1] == 'i' && t[2] == 'n' && t[3] == 't' && t[4] == '<' { return true; }
+        if t.bsize > 4 && t[0] == 'i' && t[1] == 'n' && t[2] == 't' && t[3] == '<' { return true; }
+        if t.bsize > 5 && t[0] == 'u' && t[1] == 'i' && t[2] == 'n' && t[3] == 't' && t[4] == '<' { return true; }
         if t == "int64" || t == "uint64" { return true; }
         return false;
     }
@@ -6288,7 +6288,7 @@ pub def JvmGen : class {
         di: int = 0;
         while di < ptypes.size {
             pd: string = this.jdesc(ptypes.get(di));
-            if pd.__bytesize == 0 {
+            if pd.bsize == 0 {
                 this.jvm_unsupported("ctor parameter type '" + ptypes.get(di) + "'");
                 return;
             }
@@ -6343,7 +6343,7 @@ pub def JvmGen : class {
             fn: string = "";
             if ai < e.field_names.size { fn = e.field_names.get(ai); }
             ft: string = this.struct_field_type(cname, fn);
-            if ft.__bytesize == 0 {
+            if ft.bsize == 0 {
                 this.jvm_unsupported("field '" + fn + "' of '" + cname + "'");
                 return;
             }
@@ -6392,7 +6392,7 @@ pub def JvmGen : class {
                 }
                 ft: string = fts.get(st);
                 fd: string = this.jdesc(ft);
-                if fd.__bytesize == 0 {
+                if fd.bsize == 0 {
                     this.jvm_unsupported("struct copy field type '" + ft + "'");
                     return;
                 }
@@ -6411,19 +6411,19 @@ pub def JvmGen : class {
     // pointers to structs/classes (*Node): only true unsafe scalars
     // (*int address arithmetic, *char strings keep their own mapping).
     pub fnc deref_t(t string) : string {
-        if t.__bytesize > 1 && t[0] == '&' {
+        if t.bsize > 1 && t[0] == '&' {
             inner: string = "";
             di: int = 1;
-            while di < t.__bytesize {
+            while di < t.bsize {
                 inner = inner + t[di];
                 di = di + 1;
             }
             return inner;
         }
-        if t.__bytesize > 1 && t[0] == '*' {
+        if t.bsize > 1 && t[0] == '*' {
             pointee: string = "";
             pi: int = 1;
-            while pi < t.__bytesize {
+            while pi < t.bsize {
                 pointee = pointee + t[pi];
                 pi = pi + 1;
             }
@@ -6437,10 +6437,10 @@ pub def JvmGen : class {
     pub fnc struct_field_type(cname string, fn string) : string {
         cname = this.resolve_class_ref(cname);
         // Safe borrows (&T) ride as plain references on the JVM.
-        if cname.__bytesize > 1 && cname[0] == '&' {
+        if cname.bsize > 1 && cname[0] == '&' {
             inner: string = "";
             di: int = 1;
-            while di < cname.__bytesize {
+            while di < cname.bsize {
                 inner = inner + cname[di];
                 di = di + 1;
             }
@@ -6453,13 +6453,13 @@ pub def JvmGen : class {
         g: int = 0;
         while this.tc.classes.isin(owner) && g < 16 {
             ft: string = this.tc.classes[owner].get_field_type(fn);
-            if ft.__bytesize > 0 { return ft; }
+            if ft.bsize > 0 { return ft; }
             // Static fields live in a side table.
             if this.tc.static_fields.isin(owner + "_" + fn) {
                 return this.tc.static_fields[owner + "_" + fn];
             }
             p: string = this.tc.classes[owner].parent;
-            if p.__bytesize == 0 { stop; }
+            if p.bsize == 0 { stop; }
             owner = p;
             g = g + 1;
         }
@@ -6472,18 +6472,18 @@ pub def JvmGen : class {
     // float %.17g, bool "1"/"0", char code point, strings as-is).
 
     pub fnc hash_val_type(t string) : string {
-        if t.__bytesize <= 7 { return "int"; }
+        if t.bsize <= 7 { return "int"; }
         depth: int = 0;
         i: int = 5;
-        while i < t.__bytesize {
+        while i < t.bsize {
             c: char = t[i];
             if c == '<' { depth = depth + 1; }
             also c == '>' { depth = depth - 1; }
             also c == ',' && depth == 0 {
                 i = i + 1;
-                while i < t.__bytesize && t[i] == ' ' { i = i + 1; }
+                while i < t.bsize && t[i] == ' ' { i = i + 1; }
                 val_t: string = "";
-                while i < t.__bytesize - 1 {
+                while i < t.bsize - 1 {
                     val_t = val_t + t[i];
                     i = i + 1;
                 }
@@ -6495,11 +6495,11 @@ pub def JvmGen : class {
     }
 
     pub fnc hash_key_type(t string) : string {
-        if t.__bytesize <= 7 { return "int"; }
+        if t.bsize <= 7 { return "int"; }
         depth: int = 1;
         i: int = 5;
         key_t: string = "";
-        while i < t.__bytesize {
+        while i < t.bsize {
             c: char = t[i];
             if c == '<' { depth = depth + 1; }
             also c == '>' { depth = depth - 1; }
@@ -6516,7 +6516,7 @@ pub def JvmGen : class {
     pub fnc mcall_type(obj_t string, m string) : string {
         if obj_t == "string" {
             if m == "replace" { return "string"; }
-            if m == "size" || m == "__bytesize" { return "int"; }
+            if m == "size" || m == "bsize" || m == "__bytesize" { return "int"; }
             return "";
         }
         if this.is_vec_leash(obj_t) {
@@ -6619,14 +6619,14 @@ pub def JvmGen : class {
             this.emit_checkcast("java/util/HashMap");
             return;
         }
-        if d.__bytesize > 0 && d[0] == '[' {
+        if d.bsize > 0 && d[0] == '[' {
             this.emit_checkcast_ref(d);
             return;
         }
-        if d.__bytesize > 0 && d[0] == 'L' {
+        if d.bsize > 0 && d[0] == 'L' {
             cls: string = "";
             i: int = 1;
-            while i < d.__bytesize - 1 {
+            while i < d.bsize - 1 {
                 cls = cls + d[i];
                 i = i + 1;
             }
@@ -6645,7 +6645,7 @@ pub def JvmGen : class {
     pub fnc emit_checkcast_ref(desc string) : void {
         inner: string = "";
         i: int = 1;
-        while i < desc.__bytesize {
+        while i < desc.bsize {
             inner = inner + desc[i];
             i = i + 1;
         }
@@ -6725,7 +6725,7 @@ pub def JvmGen : class {
             if (this.tc.classes.isin(ln) || this.tc.structs.isin(ln)) && this.tc.static_fields.isin(ln + "_" + e.sval) {
                 ft: string = this.tc.static_fields[ln + "_" + e.sval];
                 fd: string = this.jdesc(ft);
-                if fd.__bytesize == 0 {
+                if fd.bsize == 0 {
                     this.jvm_unsupported("static field type '" + ft + "'");
                     return;
                 }
@@ -6737,10 +6737,10 @@ pub def JvmGen : class {
         // this.static_member: `this` in a STATIC method resolves to the
         // class for static access (native parity) — obj_t would be "int".
         if e.left != null && e.left.kind == ExprKind.IDENT && e.left.sval == "this"
-           && this.current_class.__bytesize > 0 && this.tc.static_fields.isin(this.current_class + "_" + e.sval) {
+           && this.current_class.bsize > 0 && this.tc.static_fields.isin(this.current_class + "_" + e.sval) {
             ft0: string = this.tc.static_fields[this.current_class + "_" + e.sval];
             fd0: string = this.jdesc(ft0);
-            if fd0.__bytesize == 0 {
+            if fd0.bsize == 0 {
                 this.jvm_unsupported("static field type '" + ft0 + "'");
                 return;
             }
@@ -6749,7 +6749,7 @@ pub def JvmGen : class {
             return;
         }
         obj_t: string = this.deref_t(this.expr_type(e.left));
-        if e.sval == "__bytesize" && obj_t == "string" {
+        if (e.sval == "bsize" || e.sval == "__bytesize") && obj_t == "string" {
             this.gen_expr(e.left);
             this.emit_invoke(JOp.INVOKEVIRTUAL, "java/lang/String", "length", "()I");
             return;
@@ -6788,7 +6788,7 @@ pub def JvmGen : class {
                 return;
             }
             od: string = this.jdesc(obj_t);
-            if od.__bytesize > 0 && od[0] == '[' {
+            if od.bsize > 0 && od[0] == '[' {
                 this.gen_expr(e.left);
                 this.cur_method.op(JOp.ARRAYLENGTH, 0);
                 return;
@@ -6810,10 +6810,10 @@ pub def JvmGen : class {
         }
         if this.tc.structs.isin(obj_t) || this.tc.classes.isin(obj_t) {
             // this.x where x is a static: static access (native parity).
-            if e.left != null && e.left.kind == ExprKind.IDENT && e.left.sval == "this" && this.current_class.__bytesize > 0 && this.tc.static_fields.isin(this.current_class + "_" + e.sval) {
+            if e.left != null && e.left.kind == ExprKind.IDENT && e.left.sval == "this" && this.current_class.bsize > 0 && this.tc.static_fields.isin(this.current_class + "_" + e.sval) {
                 ft: string = this.tc.static_fields[this.current_class + "_" + e.sval];
                 fd: string = this.jdesc(ft);
-                if fd.__bytesize == 0 {
+                if fd.bsize == 0 {
                     this.jvm_unsupported("static field type '" + ft + "'");
                     return;
                 }
@@ -6822,12 +6822,12 @@ pub def JvmGen : class {
                 return;
             }
             ft: string = this.struct_field_type(obj_t, e.sval);
-            if ft.__bytesize == 0 {
+            if ft.bsize == 0 {
                 this.jvm_unsupported("field '" + e.sval + "' of '" + obj_t + "'");
                 return;
             }
             fd: string = this.jdesc(ft);
-            if fd.__bytesize == 0 {
+            if fd.bsize == 0 {
                 this.jvm_unsupported("field type '" + ft + "'");
                 return;
             }
@@ -6954,10 +6954,10 @@ pub def JvmGen : class {
             return;
         }
         od: string = this.jdesc(coll_t);
-        if od.__bytesize > 0 && od[0] == '[' {
+        if od.bsize > 0 && od[0] == '[' {
             base: string = "";
             bi: int = 0;
-            while bi < coll_t.__bytesize && coll_t[bi] != '[' {
+            while bi < coll_t.bsize && coll_t[bi] != '[' {
                 base = base + coll_t[bi];
                 bi = bi + 1;
             }
@@ -6995,7 +6995,7 @@ pub def JvmGen : class {
                 this.emit_invoke(JOp.INVOKESTATIC, this.main_class, "__utf8_size", "(Ljava/lang/String;)I");
                 return;
             }
-            if e.sval == "__bytesize" {
+            if e.sval == "bsize" || e.sval == "__bytesize" {
                 if e.args.size != 0 {
                     this.jvm_unsupported("string." + e.sval + "() takes no arguments");
                     return;
@@ -7193,7 +7193,7 @@ pub def JvmGen : class {
             }
             st: string = this.expr_type(e.args.get(0));
             sd: string = this.jdesc(st);
-            if sd.__bytesize == 0 || sd[0] != '[' {
+            if sd.bsize == 0 || sd[0] != '[' {
                 this.jvm_unsupported("extend() needs an array argument, got '" + st + "'");
                 return;
             }
@@ -7218,7 +7218,7 @@ pub def JvmGen : class {
             this.cur_method.load_local("I", idx_slot);
             base: string = "";
             bi: int = 0;
-            while bi < st.__bytesize && st[bi] != '[' {
+            while bi < st.bsize && st[bi] != '[' {
                 base = base + st[bi];
                 bi = bi + 1;
             }
@@ -7390,7 +7390,7 @@ pub def JvmGen : class {
         while this.tc.classes.isin(o) && g < 16 {
             if this.tc.classes[o].has_method(m) { return o; }
             p: string = this.tc.classes[o].parent;
-            if p.__bytesize == 0 || !this.tc.classes.isin(p) { stop; }
+            if p.bsize == 0 || !this.tc.classes.isin(p) { stop; }
             o = p;
             g = g + 1;
         }
@@ -7403,13 +7403,13 @@ pub def JvmGen : class {
         if ci.method_params.isin(m) {
             foreach _, pt in<vector> ci.method_params[m] {
                 pd: string = this.jdesc(pt);
-                if pd.__bytesize == 0 { return ""; }
+                if pd.bsize == 0 { return ""; }
                 desc = desc + pd;
             }
         }
         ret: string = ci.get_method_ret(m);
         rd: string = this.jdesc(ret);
-        if rd.__bytesize == 0 { return ""; }
+        if rd.bsize == 0 { return ""; }
         desc = desc + ")" + rd;
         return desc;
     }
@@ -7418,13 +7418,13 @@ pub def JvmGen : class {
         m: string = e.sval;
         obj_t = this.resolve_class_ref(this.resolve_tparam(obj_t));
         def_owner: string = this.resolve_method(obj_t, m);
-        if def_owner.__bytesize == 0 {
+        if def_owner.bsize == 0 {
             this.jvm_unsupported("method '" + m + "' of '" + obj_t + "'");
             return;
         }
         is_static: bool = this.tc.classes[def_owner].is_method_static(m);
         desc: string = this.method_sig(def_owner, m);
-        if desc.__bytesize == 0 {
+        if desc.bsize == 0 {
             this.jvm_unsupported("signature of '" + m + "'");
             return;
         }
@@ -7807,7 +7807,7 @@ pub def JvmGen : class {
             return;
         }
         fd0: string = this.jdesc(from_t);
-        if fd0.__bytesize > 0 && fd0[0] == '[' && this.is_vec_leash(to_t) {
+        if fd0.bsize > 0 && fd0[0] == '[' && this.is_vec_leash(to_t) {
             this.gen_cast_array_to_vec(fd0, to_t);
             return;
         }
@@ -7955,11 +7955,11 @@ pub def JvmGen : class {
             ii = ii + 1;
         }
         sd: string = this.jdesc(src_t);
-        if sd.__bytesize > 0 {
+        if sd.bsize > 0 {
             ii = 0;
             while ii < names.size {
                 vd: string = this.jdesc(this.tc.union_variant_type(uname, ii));
-                if vd.__bytesize > 0 && vd == sd { return ii; }
+                if vd.bsize > 0 && vd == sd { return ii; }
                 ii = ii + 1;
             }
         }
@@ -8059,7 +8059,7 @@ pub def JvmGen : class {
             sd: string = this.jdesc(src_t);
             if sd == "J" || sd == "D" {
                 this.cur_method.op(JOp.POP2, -2);
-            } also sd.__bytesize > 0 {
+            } also sd.bsize > 0 {
                 this.cur_method.op(JOp.POP, -1);
             }
             this.cur_method.op(JOp.ACONST_NULL, 1);
@@ -8188,7 +8188,7 @@ pub def JvmGen : class {
         }
         this.union_unbox_payload(vt);
         if vd == "Ljava/lang/String;" { return; }
-        if vd.__bytesize > 0 && vd[0] == 'L' {
+        if vd.bsize > 0 && vd[0] == 'L' {
             // Arbitrary references: String.valueOf (native fails these
             // in clang anyway, so there is no text to match).
             this.emit_invoke(JOp.INVOKESTATIC, "java/lang/String", "valueOf", "(Ljava/lang/Object;)Ljava/lang/String;");
@@ -8243,7 +8243,7 @@ pub def JvmGen : class {
     pub fnc gen_cast_ref(from_t string, to_t string) : bool {
         fd: string = this.jdesc(from_t);
         td: string = this.jdesc(to_t);
-        if fd.__bytesize == 0 || td.__bytesize == 0 { return false; }
+        if fd.bsize == 0 || td.bsize == 0 { return false; }
         if fd == td { return true; }
         fref: bool = (fd[0] == 'L' || fd[0] == '[');
         tref: bool = (td[0] == 'L' || td[0] == '[');
@@ -8301,12 +8301,12 @@ pub def JvmGen : class {
         }
         lt: string = this.expr_type(e);
         base: string = "";
-        if this.array_base_override.__bytesize > 0 {
+        if this.array_base_override.bsize > 0 {
             base = this.array_base_override;
         } else {
             base = this.array_base_of(lt);
         }
-        if base.__bytesize == 0 { base = "int"; }
+        if base.bsize == 0 { base = "int"; }
         n: int = e.args.size;
         this.emit_new_array(base + "[0]", n);
         arr_slot: int = this.cur_method.alloc_local(1);
@@ -8338,7 +8338,7 @@ pub def JvmGen : class {
             return true;
         }
         fd: string = this.jdesc(from_t);
-        if fd.__bytesize > 0 && fd[0] == '[' && this.is_vec_leash(to_t) {
+        if fd.bsize > 0 && fd[0] == '[' && this.is_vec_leash(to_t) {
             inner: string = this.vec_inner_type(to_t);
             base: string = this.array_base_of(from_t);
             // Stack: [array]. Build the list around it.
@@ -8955,20 +8955,20 @@ pub def JvmGen : class {
         // and the verifier requires max_locals >= argument slots even
         // when the body never touches them.
         i: int = 1;
-        while i < desc.__bytesize && desc[i] != ')' {
+        while i < desc.bsize && desc[i] != ')' {
             c: char = desc[i];
             if c == 'J' || c == 'D' {
                 m.alloc_local(2);
                 i = i + 1;
             } also c == 'L' {
                 m.alloc_local(1);
-                while i < desc.__bytesize && desc[i] != ';' { i = i + 1; }
+                while i < desc.bsize && desc[i] != ';' { i = i + 1; }
                 i = i + 1;
             } also c == '[' {
                 m.alloc_local(1);
-                while i < desc.__bytesize && desc[i] == '[' { i = i + 1; }
-                if i < desc.__bytesize && desc[i] == 'L' {
-                    while i < desc.__bytesize && desc[i] != ';' { i = i + 1; }
+                while i < desc.bsize && desc[i] == '[' { i = i + 1; }
+                if i < desc.bsize && desc[i] == 'L' {
+                    while i < desc.bsize && desc[i] != ';' { i = i + 1; }
                 }
                 i = i + 1;
             } else {
@@ -10081,20 +10081,20 @@ pub def JvmGen : class {
         }
         pop: int = 0;
         i: int = 1;
-        while i < desc.__bytesize && desc[i] != ')' {
+        while i < desc.bsize && desc[i] != ')' {
             c: char = desc[i];
             if c == 'J' || c == 'D' {
                 pop = pop + 2;
                 i = i + 1;
             } also c == 'L' {
                 pop = pop + 1;
-                while i < desc.__bytesize && desc[i] != ';' { i = i + 1; }
+                while i < desc.bsize && desc[i] != ';' { i = i + 1; }
                 i = i + 1;
             } also c == '[' {
                 pop = pop + 1;
-                while i < desc.__bytesize && (desc[i] == '[') { i = i + 1; }
-                if i < desc.__bytesize && desc[i] == 'L' {
-                    while i < desc.__bytesize && desc[i] != ';' { i = i + 1; }
+                while i < desc.bsize && (desc[i] == '[') { i = i + 1; }
+                if i < desc.bsize && desc[i] == 'L' {
+                    while i < desc.bsize && desc[i] != ';' { i = i + 1; }
                 }
                 i = i + 1;
             } else {
@@ -10104,9 +10104,9 @@ pub def JvmGen : class {
         }
         push: int = 0;
         ri: int = 0;
-        while ri < desc.__bytesize && desc[ri] != ')' { ri = ri + 1; }
+        while ri < desc.bsize && desc[ri] != ')' { ri = ri + 1; }
         ri = ri + 1;
-        if ri < desc.__bytesize {
+        if ri < desc.bsize {
             rc: char = desc[ri];
             if rc == 'J' || rc == 'D' { push = 2; }
             also rc != 'V' { push = 1; }
@@ -10211,7 +10211,7 @@ pub def JvmGen : class {
             this.emit_new_map();
             return;
         }
-        if d.__bytesize > 0 && d[0] == '[' {
+        if d.bsize > 0 && d[0] == '[' {
             n: int = this.array_size_of(t);
             if n >= 0 {
                 this.emit_new_array(t, n);
@@ -10243,12 +10243,12 @@ pub def JvmGen : class {
     // Fixed-size array size from "T[N]" (-1 for slices/unknown).
     pub fnc array_size_of(t string) : int {
         i: int = 0;
-        while i < t.__bytesize && t[i] != '[' { i = i + 1; }
-        if i >= t.__bytesize - 1 { return -1; }
+        while i < t.bsize && t[i] != '[' { i = i + 1; }
+        if i >= t.bsize - 1 { return -1; }
         i = i + 1;
-        if i < t.__bytesize && t[i] == ']' { return -1; }
+        if i < t.bsize && t[i] == ']' { return -1; }
         n: int = 0;
-        while i < t.__bytesize && t[i] != ']' {
+        while i < t.bsize && t[i] != ']' {
             c: char = t[i];
             if c < '0' || c > '9' { return -1; }
             n = n * 10 + (c - '0');
@@ -10260,7 +10260,7 @@ pub def JvmGen : class {
     pub fnc array_base_of(t string) : string {
         base: string = "";
         i: int = 0;
-        while i < t.__bytesize && t[i] != '[' {
+        while i < t.bsize && t[i] != '[' {
             base = base + t[i];
             i = i + 1;
         }
@@ -10291,18 +10291,18 @@ pub def JvmGen : class {
             if bd == "Ljava/lang/String;" { elem = "java/lang/String"; }
             also bd == "Ljava/util/ArrayList;" { elem = "java/util/ArrayList"; }
             also bd == "Ljava/util/HashMap;" { elem = "java/util/HashMap"; }
-            also bd.__bytesize > 0 && bd[0] == '[' {
+            also bd.bsize > 0 && bd[0] == '[' {
                 inner: string = "";
                 k: int = 1;
-                while k < bd.__bytesize {
+                while k < bd.bsize {
                     inner = inner + bd[k];
                     k = k + 1;
                 }
                 elem = "[" + inner;
-            } also bd.__bytesize > 0 && bd[0] == 'L' {
+            } also bd.bsize > 0 && bd[0] == 'L' {
                 inner: string = "";
                 k: int = 1;
-                while k < bd.__bytesize - 1 {
+                while k < bd.bsize - 1 {
                     inner = inner + bd[k];
                     k = k + 1;
                 }
@@ -10341,19 +10341,19 @@ pub def JvmGen : class {
         if s == null { return; }
         if s.kind == StmtKind.VAR_DECL {
             vtyp: string = s.var_type;
-            if vtyp.__bytesize == 0 && s.value != null {
+            if vtyp.bsize == 0 && s.value != null {
                 // Inferred locals (multi-assign temps): use the init type.
                 vtyp = this.expr_type(s.value);
             }
             vd: string = this.jdesc(vtyp);
-            if vd.__bytesize == 0 {
+            if vd.bsize == 0 {
                 this.jvm_unsupported("variable of type '" + vtyp + "'");
                 return;
             }
             slot: int = this.cur_method.alloc_local(this.slots_of(vd));
             this.define_var(s.name, vtyp, slot);
             if s.value != null {
-                is_arrlit: bool = s.value.kind == ExprKind.ARRAY_LIT && vtyp.__bytesize >= 2 && vtyp[vtyp.__bytesize - 1] == ']';
+                is_arrlit: bool = s.value.kind == ExprKind.ARRAY_LIT && vtyp.bsize >= 2 && vtyp[vtyp.bsize - 1] == ']';
                 if is_arrlit {
                     this.array_base_override = this.array_base_of(vtyp);
                 }
@@ -10388,7 +10388,7 @@ pub def JvmGen : class {
             if !s.is_showb {
                 if s.show_end == "\n" {
                     this.emit_println();
-                } also s.show_end.__bytesize > 0 {
+                } also s.show_end.bsize > 0 {
                     this.emit_getstatic_out();
                     this.ldc_string(s.show_end);
                     this.emit_invoke(JOp.INVOKEVIRTUAL, "java/io/PrintStream", "print", "(Ljava/lang/String;)V");
@@ -10510,10 +10510,10 @@ pub def JvmGen : class {
             // (native parity; memory itself is GC-managed).
             if s.name == "__del__" && s.value != null {
                 del_t: string = this.expr_type(s.value);
-                if del_t.__bytesize > 0 && del_t[0] == '&' {
+                if del_t.bsize > 0 && del_t[0] == '&' {
                     inner: string = "";
                     di: int = 1;
-                    while di < del_t.__bytesize {
+                    while di < del_t.bsize {
                         inner = inner + del_t[di];
                         di = di + 1;
                     }
@@ -10559,7 +10559,7 @@ pub def JvmGen : class {
             return;
         }
         if s.kind == StmtKind.WORKS {
-            if this.tc.works_error.__bytesize > 0 {
+            if this.tc.works_error.bsize > 0 {
                 err_decl: Stmt = Stmt.make_var_decl(s.name, "string", false, false, Expr.make_string(this.tc.works_error));
                 this.gen_statement(err_decl);
                 this.tc.works_error = "";
@@ -10605,7 +10605,7 @@ pub def JvmGen : class {
         pi: int = 0;
         while pi < ptypes.size {
             pd: string = this.jdesc(ptypes.get(pi));
-            if pd.__bytesize == 0 {
+            if pd.bsize == 0 {
                 this.jvm_unsupported("spawn parameter type '" + ptypes.get(pi) + "'");
                 return;
             }
@@ -10613,7 +10613,7 @@ pub def JvmGen : class {
             pi = pi + 1;
         }
         rd: string = this.jdesc(ret);
-        if rd.__bytesize == 0 {
+        if rd.bsize == 0 {
             this.jvm_unsupported("spawn return type '" + ret + "'");
             return;
         }
@@ -10768,7 +10768,7 @@ pub def JvmGen : class {
             return;
         }
         od: string = this.jdesc(base);
-        if od.__bytesize > 0 && od[0] == '[' {
+        if od.bsize > 0 && od[0] == '[' {
             elem: string = this.array_base_of(base);
             if s.op != "=" {
                 this.jvm_unsupported("compound assignment on array elements");
@@ -10822,13 +10822,13 @@ pub def JvmGen : class {
                 static_owner = ln;
             }
         }
-        if static_owner.__bytesize == 0 && tgt.left != null && tgt.left.kind == ExprKind.IDENT && tgt.left.sval == "this" && this.current_class.__bytesize > 0 && this.tc.static_fields.isin(this.current_class + "_" + tgt.sval) {
+        if static_owner.bsize == 0 && tgt.left != null && tgt.left.kind == ExprKind.IDENT && tgt.left.sval == "this" && this.current_class.bsize > 0 && this.tc.static_fields.isin(this.current_class + "_" + tgt.sval) {
             static_owner = this.current_class;
         }
-        if static_owner.__bytesize > 0 {
+        if static_owner.bsize > 0 {
             ft: string = this.tc.static_fields[static_owner + "_" + tgt.sval];
             fd: string = this.jdesc(ft);
-            if fd.__bytesize == 0 {
+            if fd.bsize == 0 {
                 this.jvm_unsupported("static field type '" + ft + "'");
                 return;
             }
@@ -10853,12 +10853,12 @@ pub def JvmGen : class {
             return;
         }
         ft: string = this.struct_field_type(obj_t, tgt.sval);
-        if ft.__bytesize == 0 {
+        if ft.bsize == 0 {
             this.jvm_unsupported("field '" + tgt.sval + "' of '" + obj_t + "'");
             return;
         }
         fd: string = this.jdesc(ft);
-        if fd.__bytesize == 0 {
+        if fd.bsize == 0 {
             this.jvm_unsupported("field type '" + ft + "'");
             return;
         }
@@ -10978,7 +10978,7 @@ pub def JvmGen : class {
             t: string = "";
             if this.var_types.isin(name) { t = this.var_types[name]; }
             d: string = this.jdesc(t);
-            if d.__bytesize == 0 {
+            if d.bsize == 0 {
                 this.jvm_unsupported("variable '" + name + "' of type '" + t + "'");
                 return;
             }
@@ -11009,7 +11009,7 @@ pub def JvmGen : class {
         if this.cg.global_vars.isin(name) {
             gt: string = this.cg.global_vars[name];
             gd: string = this.jdesc(gt);
-            if gd.__bytesize == 0 {
+            if gd.bsize == 0 {
                 this.jvm_unsupported("global '" + name + "' of type '" + gt + "'");
                 return;
             }
@@ -11045,7 +11045,7 @@ pub def JvmGen : class {
             id: string = this.jdesc(it);
             if id == "J" || id == "D" {
                 this.cur_method.op(JOp.POP2, -2);
-            } also id.__bytesize > 0 {
+            } also id.bsize > 0 {
                 this.cur_method.op(JOp.POP, -1);
             }
             return;

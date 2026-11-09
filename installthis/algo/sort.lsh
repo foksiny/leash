@@ -1,8 +1,8 @@
 pub def Sort : class {
     static priv fnc scmp(a string, b string) : int {
-        n: int = a.__bytesize;
-        if b.__bytesize < n {
-            n = b.__bytesize;
+        n: int = a.bsize;
+        if b.bsize < n {
+            n = b.bsize;
         }
         for i: int = 0; i < n; i = i + 1 {
             if a[i] < b[i] {
@@ -12,10 +12,10 @@ pub def Sort : class {
                 return 1;
             }
         }
-        if a.__bytesize < b.__bytesize {
+        if a.bsize < b.bsize {
             return 0 - 1;
         }
-        if a.__bytesize > b.__bytesize {
+        if a.bsize > b.bsize {
             return 1;
         }
         return 0;

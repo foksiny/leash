@@ -12,14 +12,14 @@ pub def QueryString : class {
         ks: vec<string>;
         vs: vec<string>;
         out: QueryString = QueryString { keys: ks, vals: vs };
-        if q.__bytesize == 0 {
+        if q.bsize == 0 {
             return out;
         }
         start: int = 0;
         if q[0] == '?' {
             start = 1;
         }
-        n: int = q.__bytesize;
+        n: int = q.bsize;
         i: int = start;
         while i < n {
             amp: int = i;
@@ -38,7 +38,7 @@ pub def QueryString : class {
                 out.keys.pushb(QueryString.qs_decode(QueryString.slice(q, i, eq)));
                 out.vals.pushb(QueryString.qs_decode(QueryString.slice(q, eq + 1, amp)));
             } else {
-                if QueryString.slice(q, i, amp).__bytesize > 0 {
+                if QueryString.slice(q, i, amp).bsize > 0 {
                     out.keys.pushb(QueryString.qs_decode(aseg));
                     out.vals.pushb("");
                 }
@@ -74,7 +74,7 @@ pub def QueryString : class {
     static priv fnc qs_decode(s string) : string {
         out: string = "";
         i: int = 0;
-        n: int = s.__bytesize;
+        n: int = s.bsize;
         while i < n {
             c: char = s[i];
             if c == '+' {
@@ -115,7 +115,7 @@ pub def QueryString : class {
 
     static priv fnc slice(s string, from int, to int) : string {
         out: string = "";
-        for i: int = from; i < to && i < s.__bytesize; i = i + 1 {
+        for i: int = from; i < to && i < s.bsize; i = i + 1 {
             out = out + s[i];
         }
         return out;

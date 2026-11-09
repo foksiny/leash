@@ -29,8 +29,8 @@ pub def Args : class {
                 i = i + 1;
                 continue;
             }
-            if a.__bytesize >= 3 && a[0] == '-' && a[1] == '-' {
-                body: string = Args.slice(a, 2, a.__bytesize);
+            if a.bsize >= 3 && a[0] == '-' && a[1] == '-' {
+                body: string = Args.slice(a, 2, a.bsize);
                 eq: int = -1;
                 foreach k2, c in<string> body {
                     if c == '=' {
@@ -40,7 +40,7 @@ pub def Args : class {
                 }
                 if eq > 0 {
                     key: string = Args.slice(body, 0, eq);
-                    val: string = Args.slice(body, eq + 1, body.__bytesize);
+                    val: string = Args.slice(body, eq + 1, body.bsize);
                     out.opts.push(key, val);
                 } else {
                     nxt: int = i + 1;
@@ -54,8 +54,8 @@ pub def Args : class {
                 i = i + 1;
                 continue;
             }
-            if a.__bytesize >= 2 && a[0] == '-' && a[1] != '-' {
-                foreach _, c in<string> Args.slice(a, 1, a.__bytesize) {
+            if a.bsize >= 2 && a[0] == '-' && a[1] != '-' {
+                foreach _, c in<string> Args.slice(a, 1, a.bsize) {
                     out.flags.push("" + c, true);
                 }
                 i = i + 1;
@@ -68,7 +68,7 @@ pub def Args : class {
     }
 
     static priv fnc is_value(s string) : bool {
-        if s.__bytesize == 0 {
+        if s.bsize == 0 {
             return false;
         }
         return s[0] != '-';

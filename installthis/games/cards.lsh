@@ -49,7 +49,7 @@ pub def Cards : class {
 
     // True when `card` is an ace (any suit).
     static pub fnc is_ace(card string) : bool {
-        if card.__bytesize < 2 {
+        if card.bsize < 2 {
             return false;
         }
         return card[0] == 'A';
@@ -57,14 +57,14 @@ pub def Cards : class {
 
     // Numeric-ish rank value: A=1, J=11, Q=12, K=13.
     static pub fnc rank_value(card string) : int {
-        if card.__bytesize == 0 {
+        if card.bsize == 0 {
             return 0;
         }
         if card[0] == 'A' { return 1; }
         if card[0] == 'J' { return 11; }
         if card[0] == 'Q' { return 12; }
         if card[0] == 'K' { return 13; }
-        if card[0] == '1' && card.__bytesize >= 2 && card[1] == '0' { return 10; }
+        if card[0] == '1' && card.bsize >= 2 && card[1] == '0' { return 10; }
         if card[0] >= '2' && card[0] <= '9' {
             return toint(int, card[0]) - toint(int, '0');
         }
@@ -73,10 +73,10 @@ pub def Cards : class {
 
     static priv fnc split_last(card string) : string {
         out: string = "";
-        if card.__bytesize == 0 {
+        if card.bsize == 0 {
             return out;
         }
-        out = out + card[card.__bytesize - 1];
+        out = out + card[card.bsize - 1];
         return out;
     }
 };

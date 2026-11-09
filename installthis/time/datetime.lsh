@@ -156,7 +156,7 @@ pub def DateTime : class {
     }
 
     static pub fnc parse_date(s string) : int<64> {
-        if s.__bytesize < 10 {
+        if s.bsize < 10 {
             return 0 - 1;
         }
         y: int = DateTime.parse_int(s, 0, 4);
@@ -173,7 +173,7 @@ pub def DateTime : class {
 
     static pub fnc parse_datetime(s string) : int<64> {
         base: int<64> = DateTime.parse_date(s);
-        if base < 0 || s.__bytesize < 19 {
+        if base < 0 || s.bsize < 19 {
             return base;
         }
         hh: int = DateTime.parse_int(s, 11, 13);
@@ -215,7 +215,7 @@ pub def DateTime : class {
 
     static priv fnc pad4(v int) : string {
         out: string = tostring(v);
-        while out.__bytesize < 4 {
+        while out.bsize < 4 {
             out = "0" + out;
         }
         if v < 0 {
@@ -226,7 +226,7 @@ pub def DateTime : class {
 
     static priv fnc pad2(v int) : string {
         out: string = tostring(v);
-        if out.__bytesize < 2 {
+        if out.bsize < 2 {
             out = "0" + out;
         }
         return out;

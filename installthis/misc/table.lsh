@@ -68,7 +68,7 @@ pub def Table : class {
     }
 
     priv fnc count_cells(line string) : int {
-        if line.__bytesize == 0 {
+        if line.bsize == 0 {
             return 0;
         }
         n: int = 1;
@@ -84,7 +84,7 @@ pub def Table : class {
     priv fnc cell(line string, want int) : string {
         cur: int = 0;
         start: int = 0;
-        n: int = line.__bytesize;
+        n: int = line.bsize;
         for i: int = 0; i <= n; i = i + 1 {
             if i == n || line[i] == '\t' {
                 if cur == want {

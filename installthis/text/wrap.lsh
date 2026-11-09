@@ -13,7 +13,7 @@ pub def Wrap : class {
         out: string = "";
         col: int = 0;
         i: int = 0;
-        n: int = s.__bytesize;
+        n: int = s.bsize;
         while i < n {
             // next word
             while i < n && (s[i] == ' ' || s[i] == '\t') {
@@ -50,18 +50,18 @@ pub def Wrap : class {
                 }
                 j: int = 0;
                 take: int = width;
-                while j < ws.__bytesize {
+                while j < ws.bsize {
                     take = width;
-                    if j + take > ws.__bytesize {
-                        take = ws.__bytesize - j;
+                    if j + take > ws.bsize {
+                        take = ws.bsize - j;
                     }
                     out = out + Wrap.slice(ws, j, j + take);
-                    if j + take < ws.__bytesize {
+                    if j + take < ws.bsize {
                         out = out + '\n';
                     }
                     j = j + take;
                 }
-                col = ws.__bytesize - (j - (ws.__bytesize - take));
+                col = ws.bsize - (j - (ws.bsize - take));
                 col = take;
             } else {
                 if col == 0 {

@@ -252,7 +252,7 @@ pub def Sha256 : class {
 
         inner_hash: string = Sha256.digest_bytes(ipad);
         hi2: int = 0;
-        while hi2 + 1 < inner_hash.__bytesize {
+        while hi2 + 1 < inner_hash.bsize {
             h1v: int = Sha256.hexval(inner_hash[hi2]);
             h2v: int = Sha256.hexval(inner_hash[hi2 + 1]);
             opad.pushb((char)(h1v * 16 + h2v));

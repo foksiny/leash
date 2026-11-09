@@ -1,0 +1,12 @@
+fnc main() {
+    h: hash<string, int>;
+    n: int = 20000;
+    for i: int = 0; i < n; i = i + 1 {
+        h.push("key" + tostring(i), i * 3 + 1);
+    }
+    sum: int = 0;
+    for i: int = 0; i < n; i = i + 2 {
+        sum = sum + h["key" + tostring(i)];
+    }
+    show("hash_lookup n=", n, " sum=", sum, " size=", h.size);
+}

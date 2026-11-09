@@ -17,7 +17,7 @@ pub def Lexer : class {
     // source location (python raises on the first error and aborts).
     pub fnc fail(msg string, line_no int, col int) : void {
         this.errs = this.errs + 1;
-        if this.err_msg.__bytesize == 0 {
+        if this.err_msg.bsize == 0 {
             this.err_msg = msg;
             this.err_line = line_no;
             this.err_col = col;
@@ -139,7 +139,7 @@ pub def Lexer : class {
             digits = digits + this.advance();
             i = i + 1;
         }
-        if digits.__bytesize != width {
+        if digits.bsize != width {
             ws: string = "";
             ws = ws + what;
             ex: string = "";
@@ -170,7 +170,7 @@ pub def Lexer : class {
     }
 
     static pub fnc make(src string) : Lexer {
-        return Lexer { src: src, pos: 0, len: src.__bytesize, line: 1, col: 1, errs: 0, warns: 0, quiet: false, err_msg: "", err_line: 0, err_col: 0 };
+        return Lexer { src: src, pos: 0, len: src.bsize, line: 1, col: 1, errs: 0, warns: 0, quiet: false, err_msg: "", err_line: 0, err_col: 0 };
     }
 
     pub fnc peek() : char {
@@ -474,7 +474,7 @@ pub def Lexer : class {
         }
 
         // Plain decimal integer — reject ambiguous leading zeros (007)
-        if raw.__bytesize > 1 && raw[0] == '0' && Lexer.all_decimal(raw) {
+        if raw.bsize > 1 && raw[0] == '0' && Lexer.all_decimal(raw) {
             this.fail("Invalid numeric literal '" + raw + "': leading zeros are not allowed in decimal literals.", start_line, start_col);
         }
         return Token.make(Tok.INT, Lexer.strip_seps(raw), start_line, start_col);
@@ -520,7 +520,7 @@ pub def Lexer : class {
                     if esc == 'U' { w = 8; }
                     digs: string = this.scan_esc_digits(esc, w, start_line, start_col);
                     val = val + digs;
-                    if digs.__bytesize == w {
+                    if digs.bsize == w {
                         this.check_esc_cp(esc, w, Lexer.hex_str_val(digs), true, start_line, start_col);
                     }
                 }
@@ -583,7 +583,7 @@ pub def Lexer : class {
                     if e == 'U' { w = 8; }
                     digs: string = this.scan_esc_digits(e, w, start_line, start_col);
                     val = val + digs;
-                    if digs.__bytesize == w {
+                    if digs.bsize == w {
                         this.check_esc_cp(e, w, Lexer.hex_str_val(digs), true, start_line, start_col);
                     }
                 }
@@ -630,7 +630,7 @@ pub def Lexer : class {
                     if e == 'U' { w = 8; }
                     digs: string = this.scan_esc_digits(e, w, start_line, start_col);
                     raw = raw + digs;
-                    if digs.__bytesize == w {
+                    if digs.bsize == w {
                         this.check_esc_cp(e, w, Lexer.hex_str_val(digs), false, start_line, start_col);
                         count = count + 1;
                     } else {

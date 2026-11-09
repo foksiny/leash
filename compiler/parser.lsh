@@ -627,7 +627,7 @@ pub def Parser : class {
     pub fnc hex_cp_of(s string, start int, n int) : int {
         v: int = 0;
         i: int = 0;
-        while i < n && start + i < s.__bytesize {
+        while i < n && start + i < s.bsize {
             c: char = s[start + i];
             if c >= '0' && c <= '9' { v = v * 16 + (c - '0'); }
             also c >= 'a' && c <= 'f' { v = v * 16 + (c - 'a') + 10; }
@@ -658,9 +658,9 @@ pub def Parser : class {
     // Decode the (lexer-validated) raw character-literal text to its single
     // code point; 8-bit chars truncate like python's codegen.
     pub fnc decode_char_lit(s string) : char {
-        if s.__bytesize == 0 { return ' '; }
+        if s.bsize == 0 { return ' '; }
         if s[0] != '\\' { return s[0]; }
-        if s.__bytesize < 2 { return s[0]; }
+        if s.bsize < 2 { return s[0]; }
         e: char = s[1];
         if e == 'n' { return '\n'; }
         if e == 't' { return '\t'; }
@@ -685,9 +685,9 @@ pub def Parser : class {
     pub fnc unescape_str(s string) : string {
         out: string = "";
         i: int = 0;
-        while i < s.__bytesize {
+        while i < s.bsize {
             c: char = s[i];
-            if c == '\\' && i + 1 < s.__bytesize {
+            if c == '\\' && i + 1 < s.bsize {
                 esc: char = s[i + 1];
                 if esc == 'n' { out = out + '\n'; }
                 also esc == 't' { out = out + '\t'; }
@@ -742,7 +742,7 @@ pub def Parser : class {
         seen_open: bool = false;
         seen_close: bool = false;
         bi: int = 0;
-        while bi < s.__bytesize {
+        while bi < s.bsize {
             if s[bi] == '{' { seen_open = true; }
             if s[bi] == '}' { seen_close = true; }
             bi = bi + 1;
@@ -759,9 +759,9 @@ pub def Parser : class {
         result: Expr = null;
         lit: string = "";
         i: int = 0;
-        while i < s.__bytesize {
+        while i < s.bsize {
             c: char = s[i];
-            if c == '\\' && i + 1 < s.__bytesize {
+            if c == '\\' && i + 1 < s.bsize {
                 // Raw escape pairs from the lexer: the backslash escapes
                 // the next char, so a brace behind one is literal text
                 // (python parity)
@@ -776,9 +776,9 @@ pub def Parser : class {
                 j: int = i + 1;
                 expr_src: string = "";
                 closed: bool = false;
-                while j < s.__bytesize {
+                while j < s.bsize {
                     cj: char = s[j];
-                    if cj == '\\' && j + 1 < s.__bytesize {
+                    if cj == '\\' && j + 1 < s.bsize {
                         expr_src = expr_src + cj;
                         expr_src = expr_src + s[j + 1];
                         j = j + 2;
@@ -823,8 +823,8 @@ pub def Parser : class {
                             // python raises LeashError here and surfaces it.
                             stripped: string = "";
                             sa: int = 0;
-                            while sa < expr_src.__bytesize && (expr_src[sa] == ' ' || expr_src[sa] == '\t') { sa = sa + 1; }
-                            sb: int = expr_src.__bytesize;
+                            while sa < expr_src.bsize && (expr_src[sa] == ' ' || expr_src[sa] == '\t') { sa = sa + 1; }
+                            sb: int = expr_src.bsize;
                             while sb > sa && (expr_src[sb - 1] == ' ' || expr_src[sb - 1] == '\t') { sb = sb - 1; }
                             si: int = sa;
                             while si < sb {
@@ -840,7 +840,7 @@ pub def Parser : class {
                     }
                 }
                 if is_expr {
-                    if lit.__bytesize > 0 {
+                    if lit.bsize > 0 {
                         lnode: Expr = Expr.make_string(this.unescape_str(lit));
                         result = this.append_interp_part(result, lnode);
                         lit = "";
@@ -855,7 +855,7 @@ pub def Parser : class {
                     // Literal fallback (python parity): the `{...}` span
                     // stays text — unescape it itself, since `lit` holds
                     // raw pairs that get unescaped on flush.
-                    if lit.__bytesize > 0 {
+                    if lit.bsize > 0 {
                         result = this.append_interp_part(result, Expr.make_string(this.unescape_str(lit)));
                         lit = "";
                     }
@@ -868,7 +868,7 @@ pub def Parser : class {
             lit = lit + c;
             i = i + 1;
         }
-        if lit.__bytesize > 0 {
+        if lit.bsize > 0 {
             // The accumulated literal still holds raw escape pairs AND the
             // literal braces kept for fallbacks — unescape once at the end.
             lnode: Expr = Expr.make_string(this.unescape_str(lit));
@@ -882,7 +882,7 @@ pub def Parser : class {
 
     pub fnc has_nonspace(s string) : bool {
         hi: int = 0;
-        while hi < s.__bytesize {
+        while hi < s.bsize {
             if s[hi] != ' ' {
                 return true;
             }
@@ -936,29 +936,29 @@ pub def Parser : class {
         // Manual 64-bit accumulation: the C strtoll stub is typed as a
         // 32-bit int at the ABI boundary (python parity), which would
         // truncate every literal at 2^31.
-        if s.__bytesize > 2 && s[0] == '0' && (s[1] == 'b' || s[1] == 'B') {
+        if s.bsize > 2 && s[0] == '0' && (s[1] == 'b' || s[1] == 'B') {
             v: int<64> = 0;
             i: int = 2;
-            while i < s.__bytesize {
+            while i < s.bsize {
                 v = v * 2;
                 if s[i] == '1' { v = v + 1; }
                 i = i + 1;
             }
             return v;
         }
-        if s.__bytesize > 2 && s[0] == '0' && (s[1] == 'o' || s[1] == 'O') {
+        if s.bsize > 2 && s[0] == '0' && (s[1] == 'o' || s[1] == 'O') {
             ov: int<64> = 0;
             oi: int = 2;
-            while oi < s.__bytesize {
+            while oi < s.bsize {
                 ov = ov * 8 + (s[oi] - '0');
                 oi = oi + 1;
             }
             return ov;
         }
-        if s.__bytesize > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X') {
+        if s.bsize > 2 && s[0] == '0' && (s[1] == 'x' || s[1] == 'X') {
             hv: int<64> = 0;
             hi: int = 2;
-            while hi < s.__bytesize {
+            while hi < s.bsize {
                 c: char = s[hi];
                 d: int<64> = -1;
                 if c >= '0' && c <= '9' { d = this.char_digit_val(c); }
@@ -972,7 +972,7 @@ pub def Parser : class {
         }
         dv: int<64> = 0;
         di: int = 0;
-        while di < s.__bytesize {
+        while di < s.bsize {
             if s[di] >= '0' && s[di] <= '9' {
                 dv = dv * 10 + this.char_digit_val(s[di]);
             }
@@ -1036,7 +1036,7 @@ pub def Parser : class {
             fe: Expr = Expr.make_float(f_val);
             // Hex floats (0x1.8p1) are not valid LLVM literal text; the
             // codegen's value-rendering fallback handles those.
-            if !(tok.val.__bytesize > 1 && tok.val[0] == '0' && (tok.val[1] == 'x' || tok.val[1] == 'X')) {
+            if !(tok.val.bsize > 1 && tok.val[0] == '0' && (tok.val[1] == 'x' || tok.val[1] == 'X')) {
                 fe.sval = tok.val;
             }
             return fe;
@@ -1084,7 +1084,7 @@ pub def Parser : class {
             operand: Expr = this.parse_expression(Precedence.UNARY);
             // Fold `-<literal>` into a single negative literal so the raw
             // text survives for arbitrary-width constants.
-            if operand.kind == ExprKind.INT && operand.sval.__bytesize > 0 {
+            if operand.kind == ExprKind.INT && operand.sval.bsize > 0 {
                 ne: Expr = Expr.make_int(-operand.ival);
                 ne.sval = "-" + operand.sval;
                 return ne;
@@ -1259,7 +1259,7 @@ pub def Parser : class {
                 // `toint(int, x)` keeps the plain 2-arg cast handling.
                 tc_has_lt: bool = false;
                 tci: int = 0;
-                while tci < tc_ty.__bytesize {
+                while tci < tc_ty.bsize {
                     if tc_ty[tci] == '<' { tc_has_lt = true; stop; }
                     tci = tci + 1;
                 }
@@ -1390,7 +1390,7 @@ pub def Parser : class {
             if v == "int" || v == "uint" || v == "float" || v == "string" || v == "char" || v == "bool" || v == "void" || v == "vec" || v == "matrix" || v == "fnc" || v == "auto" { return true; }
             nx: Token = this.peek(1);
             if nx.kind == Tok.LT || nx.kind == Tok.LBRACKET { return true; }
-            if v.__bytesize > 0 && v[0] >= 'A' && v[0] <= 'Z' { return true; }
+            if v.bsize > 0 && v[0] >= 'A' && v[0] <= 'Z' { return true; }
             return false;
         }
         return false;
@@ -1401,7 +1401,7 @@ pub def Parser : class {
     pub fnc consume_member_name(msg string) : Token {
         tok: Token = this.current();
         ok: bool = tok.kind == Tok.IDENT;
-        if !ok && tok.val.__bytesize > 0 {
+        if !ok && tok.val.bsize > 0 {
             c: char = tok.val[0];
             if c >= 'a' && c <= 'z' { ok = true; }
             if c >= 'A' && c <= 'Z' { ok = true; }
@@ -1592,7 +1592,7 @@ pub def Parser : class {
     static pub fnc str_lower(s string) : string {
         out: string = "";
         i: int = 0;
-        while i < s.__bytesize {
+        while i < s.bsize {
             ch: char = s[i];
             if ch >= 'A' && ch <= 'Z' { ch = (char)(ch + 32); }
             out = out + ch;
@@ -1781,7 +1781,7 @@ pub def Parser : class {
             if this.match_tok(Tok.ASSIGN) {
                 init_val = this.parse_expression(Precedence.LOWEST);
             }
-            if rt_size.__bytesize > 0 && init_val == null {
+            if rt_size.bsize > 0 && init_val == null {
                 this.deferred_errors.pushb("Array '" + name_tok.val + "' has a non-constant size '" + rt_size + "' but no initializer.");
             }
             this.consume(Tok.SEMI, "expected ';' after variable declaration");
@@ -1935,13 +1935,13 @@ pub def Parser : class {
             // vars per loop node, so re-use never collides there).
             fe_ren: hash<string, string>;
             fresh_idx: string = idx_name;
-            if idx_name.__bytesize > 0 && idx_name != "_" {
+            if idx_name.bsize > 0 && idx_name != "_" {
                 fresh_idx = "__fev" + tostring(this.fe_counter) + "_" + idx_name;
                 fe_ren.push(idx_name, fresh_idx);
                 this.fe_counter = this.fe_counter + 1;
             }
             fresh_item: string = item_name;
-            if item_name.__bytesize > 0 && item_name != "_" {
+            if item_name.bsize > 0 && item_name != "_" {
                 fresh_item = "__fev" + tostring(this.fe_counter) + "_" + item_name;
                 fe_ren.push(item_name, fresh_item);
                 this.fe_counter = this.fe_counter + 1;
@@ -1952,7 +1952,7 @@ pub def Parser : class {
             body = ren_body;
 
             if is_struct_loop {
-                if idx_name.__bytesize == 0 || item_name.__bytesize == 0 {
+                if idx_name.bsize == 0 || item_name.bsize == 0 {
                     show("error: in<struct> foreach needs 'name, value' loop vars");
                     return Stmt.make_block(body);
                 }
@@ -2120,7 +2120,7 @@ pub def Parser : class {
         also this.match_tok(Tok.AMPEQ) { cs_op = "&"; }
         also this.match_tok(Tok.PIPEEQ) { cs_op = "|"; }
         also this.match_tok(Tok.CARETEQ) { cs_op = "^"; }
-        if cs_op.__bytesize > 0 {
+        if cs_op.bsize > 0 {
             // Compound assignment desugars to a full read-modify-write
             // (python parity): `x += y` becomes `x = x + y`, so string
             // concat / pointer arithmetic / matrix ops all apply.
@@ -2336,10 +2336,10 @@ pub def Parser : class {
 
         // Body:
         new_body: vec<Stmt>;
-        if idx_name.__bytesize > 0 && idx_name != "_" {
+        if idx_name.bsize > 0 && idx_name != "_" {
             new_body.pushb(Stmt.make_var_decl(idx_name, "int", false, false, Expr.make_ident(fe_idx)));
         }
-        if item_name.__bytesize > 0 && item_name != "_" {
+        if item_name.bsize > 0 && item_name != "_" {
             if is_string_loop {
                 item_val: Expr = Expr.make_index(coll_expr, Expr.make_ident(fe_idx));
                 new_body.pushb(Stmt.make_var_decl(item_name, "char", false, false, item_val));
@@ -2467,14 +2467,14 @@ pub def Parser : class {
     }
 
     pub fnc opdef_subst_type(t string, otarget string, tparams vec<string>) : string {
-        if t.__bytesize == 0 { return t; }
+        if t.bsize == 0 { return t; }
         if t == "thisop.typ" {
             if tparams.size > 0 { return tparams.get(0); }
             return t;
         }
         if t == otarget && tparams.size > 0 {
             joined: string = t;
-            if otarget.__bytesize > 0 {
+            if otarget.bsize > 0 {
                 joined = otarget + "<";
                 foreach ti, tp in<vector> tparams {
                     if ti > 0 { joined = joined + ", "; }
@@ -3357,7 +3357,7 @@ pub def Parser : class {
     pub fnc eval_const_cond(e Expr) : bool {
         if e == null { return false; }
         if e.kind == ExprKind.BOOL { return e.bval; }
-        if e.kind == ExprKind.STRING { return e.sval.__bytesize > 0; }
+        if e.kind == ExprKind.STRING { return e.sval.bsize > 0; }
         if e.kind == ExprKind.IDENT && (e.sval == "_PLATFORM" || e.sval == "_FILEPATH" || e.sval == "_FILENAME") { return true; }
         if e.kind == ExprKind.UNARY && e.op == "!" { return !this.eval_const_cond(e.left); }
         if e.kind == ExprKind.BINOP {

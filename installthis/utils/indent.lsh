@@ -31,7 +31,7 @@ pub def Indent : class {
     static pub fnc dedent(s string) : string {
         min: int = -1;
         i: int = 0;
-        n: int = s.__bytesize;
+        n: int = s.bsize;
         line_end: int = 0;
         while i < n {
             line_end = Indent.find_nl(s, i);
@@ -72,12 +72,12 @@ pub def Indent : class {
     }
 
     static priv fnc find_nl(s string, start int) : int {
-        for i: int = start; i < s.__bytesize; i = i + 1 {
+        for i: int = start; i < s.bsize; i = i + 1 {
             if s[i] == '\n' {
                 return i;
             }
         }
-        return s.__bytesize;
+        return s.bsize;
     }
 
     static priv fnc leading_ws(s string, start int, end int) : int {

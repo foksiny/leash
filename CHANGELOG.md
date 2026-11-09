@@ -5,6 +5,83 @@ All notable changes to the Leash compiler are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.7.0] - 2026-11-08
+
+### Added
+- **`.bsize` as the canonical UTF-8 byte-length member.** `.__bytesize` is
+  kept as a deprecated alias; `s.bsize` (property) and `s.bsize()`
+  (method) return the same byte count on both native and JVM targets.
+- **4 new layout-stress benchmarks** (`vec_stress`, `string_concat`,
+  `hash_lookup`, `matrix_mul`) in `benchmarking/tasks/` with Leash,
+  C++ and Rust versions, runnable via `scripts/benchmark.py`.
+- **Total: 12 cross-language benchmarks** once the four additional tasks
+  (`sort_int`, `string_search`, `mem_copy`, `fp_math`) are included,
+  plus the allocator-churn task `allocstress`. The harness now reports
+  compile time, median run time, **peak RSS** (max over runs) and
+  **binary size** per language/level.
+
+### Changed
+- **Memory layout optimizations (faster + smaller).**
+  - Strings now return byte length in O(1) via the GC cell header
+    (`leash_str_bsize`) instead of an O(n) `strlen` scan; the same
+    path speeds up `string.size` code-point counting (bounded scan)
+    and `string` concatenation lengths. Small strings stay in the
+    GC slab with per-size-class reuse and literal deduplication
+    (header-cached fat-string + slab SSO).
+  - `LeashVec` header shrunk from 40B to 32B (`i64 elem_size/scan` ->
+    `i32 elem_size` + `i8 scan`); `size/cap` stay `i64` so old
+    and new compilers keep identical field offsets (bootstrap-safe).
+    Full 24B packing (i32 size/cap) is staged for a follow-up
+    two-stage bootstrap.
+  - The standard library (`installthis/`) now uses canonical
+    `.bsize`; the compiler and docs reference both names.
+- **Minimum peak RSS (lean runtime).** Measured peak resident memory
+  (macOS/Linux `ru_maxrss` via GNU `time -v`, 5-run max) across the 12
+  tasks vs C, C++ and Rust is now near `2× live + 256 KB` by design:
+  - GC auto-collect threshold `max(2 MB, 2× live)` → `live + 256 KB`
+    (`INITIAL_THRESHOLD`), slabs 64 KB → 16 KB (one live cell pins at
+    most 16 KB), and the RSS probe uses a separate counter so it never
+    resets GC accounting. On `allocstress` peak RSS drops from
+    **57.9 MB to 2.6 MB**; `mem_copy` (1M ints) drops from 14.0 MB to
+    **9.6 MB** (now leaner than C++ 10.9 MB and Rust 17.1 MB);
+    `hash_lookup` (20k) from 5.7 MB to **4.8 MB** (beats C++ 4.9 MB);
+    `primes` (1M) from 10.0 MB to **3.6 MB** (ties C++).
+  - Hash tables start at 64 buckets (was 8192) and grow at 75% load;
+    strings use exact concat caps and `2×` (small) / `+25%` (large)
+    append growth (was `+50%`/`2×`); vectors grow `2×` (small) /
+    `+50%` (large) (was `2×` everywhere). Large probes: 10M-int vec
+    130 MB → **77 MB** (beats Rust 80 MB), 200k-entry hash
+    45 MB → **28 MB**, 7 MB string 17.9 MB → **16.4 MB**.
+  - Leash beats C++ on 8 of 9 heap tasks and wins `mem_copy` outright;
+    Rust stays leanest on most tasks but ships 4.3 MB binaries vs
+    ~22 KB for Leash/C/C++. See `benchmarking/results_memory.json`.
+- **O4 is `-O1` + LTO/native, not an O3 pipeline.** The driver now
+  emits `-O1 -march=native -mtune=native -flto (-inline-threshold=125)`
+  for native targets; `-O2/-O3` were slower than `-O1` for Leash
+  (fib 255 ms at O1 vs 336 ms at O2). Docs and README updated to match.
+- Version bumped to 1.7.0; the cross-target bootstrap seeds are now
+  `bootstrap/leash-1.7.0-target-*` (`x86_64`, `x86`, `arm`, `win64`,
+  `java`).
+
+### Fixed
+- **Benchmark RSS was measuring Python, not the benchmark.** `os.wait4`
+  reports the forked child's high-water mark, which includes the
+  ~13 MB interpreter image before `exec`; every task read ~14.5 MB.
+  `scripts/benchmark.py` now measures peak RSS with GNU `time -v`
+  (tiny C parent) and records binary sizes. Old `results_*.json` RSS
+  columns are invalid; run times stand.
+- **`--autofree` / `--no-gc` (`NO_GC` stub) duplicated
+  `leash_sh_input` and freed interior pointers.** The stub defined it
+  twice (stub + shared region), a hard redefinition error; and stub
+  strings gained the 8-byte GC prefix while autofree still `free()`d
+  the data pointer (interior free → segfault in `tostring`/string
+  loops). The stub now returns plain `malloc` bases with no prefix and
+  every shared prefix store goes through `LEASH_STR_SET_PREFIX`
+  (no-op in stub mode). `pytest tests/` 342 passed.
+- `benchmarking/tasks/primes.lsh` used `vec<int>` (4B/bool, 10 MB)
+  where C/Rust use 1B/bool; switched to `vec<char>` (3.6 MB, same
+  output 78498).
+
 ## [1.6.2] - 2026-11-03
 
 ### Fixed

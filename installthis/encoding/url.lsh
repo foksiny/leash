@@ -42,7 +42,7 @@ pub def Url : class {
     static pub fnc decode(s string) : string {
         out: string;
         i: int = 0;
-        n: int = s.__bytesize;
+        n: int = s.bsize;
         while i < n {
             c: char = s[i];
             if c == '%' && i + 2 < n {
@@ -97,7 +97,7 @@ pub def Url : class {
                 cur = cur + c;
             }
         }
-        if cur.__bytesize > 0 {
+        if cur.bsize > 0 {
             pairs.pushb(cur);
         }
         flat: vec<string>;
@@ -115,7 +115,7 @@ pub def Url : class {
                 flat.pushb("");
             } else {
                 key: string = Url.slice(pair, 0, eq);
-                val: string = Url.slice(pair, eq + 1, pair.__bytesize);
+                val: string = Url.slice(pair, eq + 1, pair.bsize);
                 flat.pushb(Url.decode(key));
                 flat.pushb(Url.decode(val));
             }
@@ -141,7 +141,7 @@ pub def Url : class {
         ss: int = Url.find(url, "://");
         if ss >= 0 {
             scheme = Url.slice(url, 0, ss);
-            rest = Url.slice(url, ss + 3, url.__bytesize);
+            rest = Url.slice(url, ss + 3, url.bsize);
         }
         host: string = "";
         pathq: string = "";
@@ -156,21 +156,21 @@ pub def Url : class {
             host = rest;
         } else {
             host = Url.slice(rest, 0, slash);
-            pathq = Url.slice(rest, slash, rest.__bytesize);
+            pathq = Url.slice(rest, slash, rest.bsize);
         }
         path: string = pathq;
         query: string = "";
         qm: int = Url.find(pathq, "?");
         if qm >= 0 {
             path = Url.slice(pathq, 0, qm);
-            query = Url.slice(pathq, qm + 1, pathq.__bytesize);
+            query = Url.slice(pathq, qm + 1, pathq.bsize);
         }
         return scheme, host, path, query;
     }
 
     static priv fnc find(s string, needle string) : int {
-        n: int = s.__bytesize;
-        m: int = needle.__bytesize;
+        n: int = s.bsize;
+        m: int = needle.bsize;
         if m == 0 || m > n {
             return 0 - 1;
         }

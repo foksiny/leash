@@ -1,0 +1,24 @@
+fnc main() {
+    n: int = 128;
+    a: vec<int>;
+    b: vec<int>;
+    for i: int = 0; i < n * n; i = i + 1 {
+        a.pushb((i % 17) + 1);
+        b.pushb(((i * 7) % 13) + 1);
+    }
+    c: vec<int>;
+    for i: int = 0; i < n; i = i + 1 {
+        for j: int = 0; j < n; j = j + 1 {
+            sum: int = 0;
+            for k: int = 0; k < n; k = k + 1 {
+                sum = sum + a.get(i * n + k) * b.get(k * n + j);
+            }
+            c.pushb(sum);
+        }
+    }
+    total: int = 0;
+    for i: int = 0; i < c.size; i = i + 1 {
+        total = total + c.get(i) % 1009;
+    }
+    show("matrix_mul n=", n, " total=", total);
+}

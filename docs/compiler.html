@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v1.6.2 Release</div>
+        <div class="version">v1.7.0 Release</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -252,7 +252,7 @@ leash compile myprogram.lsh -af         <span class="cm"># GC-free, auto free()<
     <tr><td><code>-O1</code></td><td>Basic</td><td>Instruction combining, DCE, CFG simplification</td></tr>
     <tr><td><code>-O2</code></td><td>Standard</td><td>SROA, jump threading, reassociation, loop simplification</td></tr>
     <tr><td><code>-O3</code></td><td>Aggressive</td><td>Loop unrolling, vectorization, inlining, IPSCCP, argument promotion</td></tr>
-    <tr><td><code>-O4</code></td><td>Maximum</td><td>Tail recursion opt, aggressive inlining, dual-pass pipeline</td></tr>
+    <tr><td><code>-O4</code></td><td>Maximum</td><td><code>-O1</code> + LTO + <code>-march=native</code> (native targets); <code>-O2/-O3</code> are slower than <code>-O1</code> for Leash</td></tr>
     <tr><td><code>-Os</code></td><td>Size</td><td>O2 + global DCE + extra CFG simplification</td></tr>
     <tr><td><code>-Oz</code></td><td>Minimum size</td><td>Additional size reductions</td></tr>
 </table>

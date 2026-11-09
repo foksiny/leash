@@ -1,0 +1,7 @@
+fnc main() {
+    s: string = "";
+    for i: int = 0; i < 20000; i = i + 1 {
+        s = s + "x" + tostring(i) + "-";
+    }
+    show("string_concat bsize=", s.bsize, " size=", s.size);
+}

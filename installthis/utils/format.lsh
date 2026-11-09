@@ -26,7 +26,7 @@ pub def Format : class {
         }
         fs: string = tostring(frac_i);
         // zero-pad the fractional part
-        for i: int = fs.__bytesize; i < places; i = i + 1 {
+        for i: int = fs.bsize; i < places; i = i + 1 {
             fs = "0" + fs;
         }
         if neg && (whole > 0 || frac_i > 0) {
@@ -49,7 +49,7 @@ pub def Format : class {
         digits: string = tostring(v);
         out: string = "";
         k: int = 0;
-        for i: int = digits.__bytesize; i > 0; i = i - 1 {
+        for i: int = digits.bsize; i > 0; i = i - 1 {
             out = digits[i - 1] + out;
             k = k + 1;
             if k == 3 && i - 1 > 0 {

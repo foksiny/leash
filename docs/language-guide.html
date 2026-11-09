@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v1.6.2 Release</div>
+        <div class="version">v1.7.0 Release</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -598,10 +598,10 @@ Leash is awesome!"""</span>;</code></pre>
     <tr><th>Method</th><th>Description</th></tr>
     <tr><td><code>.replace(old, new)</code></td><td>Replace first occurrence of <code>old</code> with <code>new</code></td></tr>
     <tr><td><code>.size</code></td><td>Return the length of the string in Unicode code points (property)</td></tr>
-    <tr><td><code>.__bytesize</code></td><td>Return the UTF-8 byte length (property; internal &mdash; used by the compiler and the stdlib wherever a byte count or offset is needed)</td></tr>
+    <tr><td><code>.bsize</code> / <code>.__bytesize</code></td><td>Return the UTF-8 byte length (property; <code>.__bytesize</code> is a deprecated alias &mdash; use <code>.bsize</code>)</td></tr>
 </table>
 
-<p><code>.size</code> counts Unicode code points, not bytes: <code>"é".size</code> is <code>1</code>, <code>"😀".size</code> is <code>1</code>, and <code>"héllo".size</code> is <code>5</code>, even though the UTF-8 encoding is longer. Strings are stored as UTF-8 byte sequences, and byte-level operations keep working on bytes: <code>s[i]</code> and <code>foreach ... in&lt;string&gt;</code> advance one byte at a time. Code that mixes <code>.size</code> with indexing should use <code>.__bytesize</code> when it needs the encoded length; <code>Utf.length</code> validates UTF-8 and returns the code-point count.</p>
+<p><code>.size</code> counts Unicode code points, not bytes: <code>"é".size</code> is <code>1</code>, <code>"😀".size</code> is <code>1</code>, and <code>"héllo".size</code> is <code>5</code>, even though the UTF-8 encoding is longer. Strings are stored as UTF-8 byte sequences, and byte-level operations keep working on bytes: <code>s[i]</code> and <code>foreach ... in&lt;string&gt;</code> advance one byte at a time. Code that mixes <code>.size</code> with indexing should use <code>.bsize</code> when it needs the encoded length; <code>Utf.length</code> validates UTF-8 and returns the code-point count.</p>
 
 <h3><code>cstr()</code> / <code>lstr()</code> &amp; Char Arrays</h3>
 <p>Leash natively supports both managed <code>string</code> types and lower-level <code>char[]</code> slices. <code>cstr()</code> converts a string to a <code>char[]</code>, <code>lstr()</code> converts back to a managed string.</p>
@@ -646,8 +646,8 @@ len: <span class="kw">int</span> = a.size;
 <pre><code>n: <span class="kw">int</span> = 5;
 arr1: <span class="kw">int</span>[n] = {1, 2, 3, 4, 5};
 
-<span class="cm">// Using member access (.__bytesize is the UTF-8 byte length)</span>
-chars: <span class="kw">char</span>[str.__bytesize] = <span class="fn">cstr</span>(str);
+<span class="cm">// Using member access (.bsize is the UTF-8 byte length)</span>
+chars: <span class="kw">char</span>[str.bsize] = <span class="fn">cstr</span>(str);
 
 <span class="cm">// Using math expressions</span>
 arr2: <span class="kw">int</span>[x + y + 1] = {1, 2, 3, 4, 5, 6};</code></pre>
@@ -1230,7 +1230,7 @@ code: <span class="kw">string</span> = <span class="fn">exec</span>(<span class=
 <p>Short like Rust's <code>fn</code>, read like "function", and deliberately distinct from <code>def</code>: functions are declared with <code>fnc</code>, types with <code>def</code> &mdash; a declaration's kind is the first word you read.</p>
 
 <h3><code>.size</code> is a property; <code>.size()</code> is a method</h3>
-<p>Strings and vectors expose <code>.size</code> as a property &mdash; for a vector it is a direct read of the header's size field, no call. For a string it is the number of Unicode code points; the UTF-8 byte length is <code>.__bytesize</code>. Matrices accept both <code>.size</code> and <code>.size()</code>. The rule: if the value is a field, it reads like one.</p>
+<p>Strings and vectors expose <code>.size</code> as a property &mdash; for a vector it is a direct read of the header's size field, no call. For a string it is the number of Unicode code points; the UTF-8 byte length is <code>.bsize</code> (alias <code>.__bytesize</code>). Matrices accept both <code>.size</code> and <code>.size()</code>. The rule: if the value is a field, it reads like one.</p>
 
 </main>
 

@@ -4,15 +4,15 @@ pub def Glob : class {
     }
 
     static priv fnc match_at(p string, pi int, t string, ti int) : bool {
-        while pi < p.__bytesize {
+        while pi < p.bsize {
             pc: char = p[pi];
             if pc == '*' {
-                if pi + 1 < p.__bytesize && p[pi + 1] == '*' {
-                    if pi + 2 >= p.__bytesize {
+                if pi + 1 < p.bsize && p[pi + 1] == '*' {
+                    if pi + 2 >= p.bsize {
                         return true;
                     }
                     k: int = ti;
-                    while k <= t.__bytesize {
+                    while k <= t.bsize {
                         if Glob.match_at(p, pi + 2, t, k) {
                             return true;
                         }
@@ -21,15 +21,15 @@ pub def Glob : class {
                     return false;
                 }
                 np: int = pi + 1;
-                while np < p.__bytesize && p[np] == '*' {
+                while np < p.bsize && p[np] == '*' {
                     np = np + 1;
                 }
-                if np >= p.__bytesize {
-                    while ti <= t.__bytesize {
+                if np >= p.bsize {
+                    while ti <= t.bsize {
                         if Glob.match_at(p, np, t, ti) {
                             return true;
                         }
-                        if ti < t.__bytesize && t[ti] == '/' {
+                        if ti < t.bsize && t[ti] == '/' {
                             return false;
                         }
                         ti = ti + 1;
@@ -37,11 +37,11 @@ pub def Glob : class {
                     return false;
                 }
                 kk: int = ti;
-                while kk <= t.__bytesize {
+                while kk <= t.bsize {
                     if Glob.match_at(p, np, t, kk) {
                         return true;
                     }
-                    if kk < t.__bytesize && t[kk] == '/' {
+                    if kk < t.bsize && t[kk] == '/' {
                         return false;
                     }
                     kk = kk + 1;
@@ -49,7 +49,7 @@ pub def Glob : class {
                 return false;
             }
             if pc == '?' {
-                if ti >= t.__bytesize || t[ti] == '/' {
+                if ti >= t.bsize || t[ti] == '/' {
                     return false;
                 }
                 pi = pi + 1;
@@ -59,30 +59,30 @@ pub def Glob : class {
             if pc == '[' {
                 close: int = pi + 1;
                 negated: bool = false;
-                if close < p.__bytesize && (p[close] == '!' || p[close] == '^') {
+                if close < p.bsize && (p[close] == '!' || p[close] == '^') {
                     negated = true;
                     close = close + 1;
                 }
                 found: bool = false;
                 first: bool = true;
-                while close < p.__bytesize && (p[close] != ']' || first) {
+                while close < p.bsize && (p[close] != ']' || first) {
                     first = false;
-                    if close + 2 < p.__bytesize && p[close + 1] == '-' && p[close + 2] != ']' {
+                    if close + 2 < p.bsize && p[close + 1] == '-' && p[close + 2] != ']' {
                         if t[ti] >= p[close] && t[ti] <= p[close + 2] {
                             found = true;
                         }
                         close = close + 3;
                     } else {
-                        if ti < t.__bytesize && t[ti] == p[close] {
+                        if ti < t.bsize && t[ti] == p[close] {
                             found = true;
                         }
                         close = close + 1;
                     }
                 }
-                if close >= p.__bytesize {
+                if close >= p.bsize {
                     return false;
                 }
-                if ti >= t.__bytesize || (found == negated) {
+                if ti >= t.bsize || (found == negated) {
                     return false;
                 }
                 if t[ti] == '/' {
@@ -92,13 +92,13 @@ pub def Glob : class {
                 ti = ti + 1;
                 continue;
             }
-            if ti >= t.__bytesize || t[ti] != pc {
+            if ti >= t.bsize || t[ti] != pc {
                 return false;
             }
             pi = pi + 1;
             ti = ti + 1;
         }
-        return ti == t.__bytesize;
+        return ti == t.bsize;
     }
 
     static pub fnc is_pattern(s string) : bool {

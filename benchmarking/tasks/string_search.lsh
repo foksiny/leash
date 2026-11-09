@@ -1,0 +1,12 @@
+fnc main() {
+    haystack: string = "";
+    for i: int = 0; i < 2000; i = i + 1 {
+        haystack = haystack + "abcdefghijklmnopqrstuvwxyz0123456789";
+    }
+    needle: string = "mno";
+    found: int = 0;
+    for iter: int = 0; iter < 100000; iter = iter + 1 {
+        if needle <> haystack { found = found + 1; }
+    }
+    show("string_search found=", found, " haystack_bsize=", haystack.bsize);
+}

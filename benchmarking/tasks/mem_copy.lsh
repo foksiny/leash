@@ -1,0 +1,16 @@
+fnc main() {
+    src: vec<int>;
+    for i: int = 0; i < 1000000; i = i + 1 {
+        src.pushb(i % 1009);
+    }
+    dst: vec<int>;
+    for iter: int = 0; iter < 10; iter = iter + 1 {
+        dst.clear();
+        dst.extendv(src);
+    }
+    sum: int<64> = 0;
+    for i: int = 0; i < dst.size; i = i + 1 {
+        sum = sum + (int<64>)dst.get(i);
+    }
+    show("mem_copy sum=", sum, " size=", dst.size);
+}

@@ -74,7 +74,18 @@ int   leash_future_is_done(void* fut);
 
 /* ===== String/Vector/Matrix Helpers ===== */
 void* leash_gc_alloc_string(size_t len);
+void* leash_gc_alloc_string_cap(size_t len, size_t cap);
 void* leash_gc_alloc_vector_data(size_t elem_size, size_t capacity);
+int64_t leash_str_bsize(const char* s);
+void leash_str_share(const char* s);
+char* leash_str_append(char* s, const char* piece);
+char* leash_str_concat_ex(const char* s1, const char* s2);
+char* leash_int_to_str_fast(int64_t v);
+char* leash_uint_to_str_fast(uint64_t v);
+char* leash_str_concat_int(const char* s, int64_t v, int is_uint);
+char* leash_str_append_int(char* s, int64_t v, int is_uint);
+char* leash_str_append_char(char* s, char c);
+char* leash_sh_input(const char* prompt);
 
 /* ===== Optimized Matrix Binary Operations ===== */
 void leash_matrix_binary_op_float(

@@ -119,13 +119,51 @@ def _rss_kb(usage):
 def _run_exe(exe_path):
     """Run a compiled benchmark and report its own peak RSS.
 
-    Uses os.wait4 so each run carries rusage; subprocess.run discards it.
-    Falls back to subprocess.run where wait4 is unavailable (Windows)."""
+    Uses GNU `time -v` when available: on Linux, Python's own
+    ``os.wait4``/``resource.getrusage(RUSAGE_CHILDREN)`` returns the
+    interpreter's high-water mark (the forked child inherits the
+    ~13 MB Python parent RSS before exec, which becomes the reported
+    ``ru_maxrss`` for every small child). A tiny C parent (GNU time)
+    does not have this pollution, so its ``Maximum resident set size``
+    is the true child peak. Falls back to ``os.wait4`` (with the caveat
+    above) and to plain ``subprocess.run`` on Windows / when ``time``
+    is missing.
+    """
+    exe = str(exe_path)
+    # Preferred: /usr/bin/time -v (correct child RSS on Linux/BSD)
+    gnu_time = shutil.which("time")  # /usr/bin/time on Linux
+    # `shutil.which("time")` may find a shell keyword; prefer /usr/bin/time
+    if os.path.exists("/usr/bin/time"):
+        gnu_time = "/usr/bin/time"
+    if gnu_time:
+        result = subprocess.run([gnu_time, "-v", exe], capture_output=True, text=True, timeout=120)
+        rss_kb = None
+        clean_err_lines = []
+        for line in result.stderr.splitlines():
+            stripped = line.strip()
+            if "Maximum resident set size" in line:
+                try:
+                    # Format: "\tMaximum resident set size (kbytes): 1836"
+                    num = line.rsplit(":", 1)[-1].strip().split()[0]
+                    rss_kb = int(num)
+                except (ValueError, IndexError):
+                    rss_kb = None
+                continue
+            # Filter GNU time diagnostics so failure output stays readable.
+            if stripped.startswith(("Command being", "User time", "System time",
+                                    "Percent", "Elapsed", "Average", "Maximum",
+                                    "Swaps", "File system", "Exit status",
+                                    "Socket", "Piped")):
+                continue
+            clean_err_lines.append(line)
+        # GNU time exits with the child's exit code (0 on success);
+        # non-zero means the benchmark failed. stdout is the benchmark's.
+        return result.stdout, "\n".join(clean_err_lines), result.returncode, rss_kb
     if not hasattr(os, "wait4"):
-        result = subprocess.run([str(exe_path)], capture_output=True, text=True, timeout=120)
+        result = subprocess.run([exe], capture_output=True, text=True, timeout=120)
         return result.stdout, result.stderr, result.returncode, None
     with tempfile.TemporaryFile() as fo, tempfile.TemporaryFile() as fe:
-        proc = subprocess.Popen([str(exe_path)], stdout=fo, stderr=fe)
+        proc = subprocess.Popen([exe], stdout=fo, stderr=fe)
         _, status, usage = os.wait4(proc.pid, 0)
         try:
             proc.returncode = os.waitstatus_to_exitcode(status)
@@ -214,9 +252,14 @@ def run_benchmark(task_name, lang_key, opt_level, runs=5):
     # ── compile step ────────────────────────────────────────────
     compile_time = 0.0
     exe = None
+    binary_bytes = None
     if lang["build"]:
         try:
             exe, compile_time = lang["build"](task_path, opt_level, BUILD_DIR)
+            try:
+                binary_bytes = exe.stat().st_size if exe is not None else None
+            except OSError:
+                binary_bytes = None
         except (subprocess.TimeoutExpired, RuntimeError) as e:
             return {"error": str(e), "compile": None, "run": None}
 
@@ -251,7 +294,7 @@ def run_benchmark(task_name, lang_key, opt_level, runs=5):
 
     return {
         "error": None,
-        "compile": {"seconds": compile_time},
+        "compile": {"seconds": compile_time, "binary_bytes": binary_bytes},
         "run": {
             "mean": sum(valid) / len(valid),
             "median": median(valid),
@@ -260,6 +303,7 @@ def run_benchmark(task_name, lang_key, opt_level, runs=5):
             "stdev": stdev(valid) if len(valid) > 1 else 0.0,
             "runs": len(valid),
             "peak_rss_kb": max(rss_values) if rss_values else None,
+            "median_rss_kb": median(rss_values) if rss_values else None,
         },
         "stdout": stdout.strip(),
     }
@@ -291,6 +335,16 @@ def fmt_rss(kb):
     return f"{kb:>5.0f} KB"
 
 
+def fmt_bytes(n):
+    if n is None:
+        return "     N/A "
+    if n >= 1024 * 1024:
+        return f"{n / 1024 / 1024:>6.2f} MB"
+    if n >= 1024:
+        return f"{n / 1024:>6.1f} KB"
+    return f"{n:>5.0f} B "
+
+
 def print_table(title, results, tasks, langs, field):
     """Print a table extracting *field* from each result."""
     col_w = 12
@@ -315,13 +369,18 @@ def print_table(title, results, tasks, langs, field):
                 elif r.get("error"):
                     row.append(f"{'ERR':>{col_w}s}")
                 else:
-                    d = r.get("run") if field == "rss" else r.get(field)
+                    if field == "binary":
+                        d = r.get("compile")
+                    else:
+                        d = r.get("run") if field == "rss" else r.get(field)
                     if d is None:
                         row.append(f"{'N/A':>{col_w}s}")
                     elif field == "compile":
                         row.append(fmt_time_compact(d.get("seconds")))
                     elif field == "rss":
                         row.append(fmt_rss(d.get("peak_rss_kb")))
+                    elif field == "binary":
+                        row.append(fmt_bytes(d.get("binary_bytes")))
                     else:
                         row.append(fmt_time_compact(d.get("median")))
         print(sep.join(row))
@@ -404,6 +463,11 @@ def main():
     print("═══ PEAK RSS (max over runs) ═══")
     print()
     print_table("rss", results, tasks, langs, "rss")
+
+    print()
+    print("═══ BINARY SIZE ═══")
+    print()
+    print_table("binary", results, tasks, langs, "binary")
 
     # optional json output
     if args.json:

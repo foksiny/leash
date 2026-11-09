@@ -161,7 +161,7 @@ pub def Match : class {
     static pub fnc substr(s string, from int, count int) : string {
         out: string;
         i: int = from;
-        while i < from + count && i < s.__bytesize {
+        while i < from + count && i < s.bsize {
             out = out + s[i];
             i = i + 1;
         }
@@ -403,7 +403,7 @@ pub def RegexUtil : class {
     }
 
     static pub fnc is_numeric(key string) : bool {
-        if key.__bytesize == 0 {
+        if key.bsize == 0 {
             return false;
         }
         foreach _, ch in<string> key {
@@ -459,7 +459,7 @@ pub def RxParser : class {
     }
 
     pub fnc eof() : bool {
-        return this.pos >= this.pat.__bytesize;
+        return this.pos >= this.pat.bsize;
     }
 
     pub fnc peek() : char {
@@ -467,7 +467,7 @@ pub def RxParser : class {
     }
 
     pub fnc peek_at(k int) : char {
-        if this.pos + k < this.pat.__bytesize {
+        if this.pos + k < this.pat.bsize {
             return this.pat[this.pos + k];
         }
         return '\0';
@@ -576,7 +576,7 @@ pub def RxParser : class {
 
     pub fnc bound_ahead() : bool {
         i: int = this.pos + 1;
-        if i < this.pat.__bytesize && RegexUtil.is_digit(this.pat[i]) {
+        if i < this.pat.bsize && RegexUtil.is_digit(this.pat[i]) {
             return true;
         }
         return false;
@@ -774,7 +774,7 @@ pub def RxParser : class {
             }
             name = name + ch;
         }
-        if this.eof() || name.__bytesize == 0 {
+        if this.eof() || name.bsize == 0 {
             return "";
         }
         this.pos = this.pos + 1;
@@ -783,7 +783,7 @@ pub def RxParser : class {
 
     pub fnc claim_group(name string) : int {
         this.ncap = this.ncap + 1;
-        if name.__bytesize > 0 {
+        if name.bsize > 0 {
             if this.names.isin(name) {
                 this.ok = false;
                 this.err = "duplicate group name";
@@ -964,7 +964,7 @@ pub def RxParser : class {
                 return lb;
             }
             name: string = this.take_name('>');
-            if name.__bytesize == 0 {
+            if name.bsize == 0 {
                 return this.fail("invalid group name");
             }
             return this.finish_named_body(name);
@@ -972,7 +972,7 @@ pub def RxParser : class {
         if t == '\'' {
             this.pos = this.pos + 1;
             name2: string = this.take_name('\'');
-            if name2.__bytesize == 0 {
+            if name2.bsize == 0 {
                 return this.fail("invalid group name");
             }
             return this.finish_named_body(name2);
@@ -1066,7 +1066,7 @@ pub def RxParser : class {
                 close_c = '>';
             }
             name: string = this.take_name(close_c);
-            if name.__bytesize == 0 {
+            if name.bsize == 0 {
                 return this.fail("invalid named backreference");
             }
             nr: RxNode;
@@ -1098,7 +1098,7 @@ pub def RxParser : class {
             if !this.eof() && this.peek() == '<' {
                 this.pos = this.pos + 1;
                 gname: string = this.take_name('>');
-                if gname.__bytesize == 0 {
+                if gname.bsize == 0 {
                     return this.fail("invalid named backreference");
                 }
                 gnr: RxNode;
@@ -1232,7 +1232,7 @@ pub def RxParser : class {
             } else {
                 lo = this.nextc();
             }
-            if !this.eof() && this.peek() == '-' && this.pos + 1 < this.pat.__bytesize && this.pat[this.pos + 1] != ']' {
+            if !this.eof() && this.peek() == '-' && this.pos + 1 < this.pat.bsize && this.pat[this.pos + 1] != ']' {
                 this.pos = this.pos + 1;
                 if this.eof() {
                     return this.fail("trailing backslash in character class");
@@ -1343,7 +1343,7 @@ pub def Regex : class {
             return r;
         }
         bad: string = Regex.check_refs(root, p.ncap, p.names);
-        if bad.__bytesize > 0 {
+        if bad.bsize > 0 {
             r.err = bad;
             return r;
         }
@@ -1377,13 +1377,13 @@ pub def Regex : class {
         }
         foreach ki, _kid in<vector> nd.kids {
             msg: string = Regex.check_refs(nd.kids.get(ki), ncap, names);
-            if msg.__bytesize > 0 {
+            if msg.bsize > 0 {
                 return msg;
             }
         }
         foreach bi2, _br in<vector> nd.branches {
             msg2: string = Regex.check_refs(nd.branches.get(bi2), ncap, names);
-            if msg2.__bytesize > 0 {
+            if msg2.bsize > 0 {
                 return msg2;
             }
         }
@@ -1475,7 +1475,7 @@ pub def Regex : class {
     static pub fnc unbrace(s string) : string {
         out: string;
         i: int = 0;
-        n: int = s.__bytesize;
+        n: int = s.bsize;
         while i < n {
             c: char = s[i];
             if c == '\\' && i + 1 < n && (s[i + 1] == '{' || s[i + 1] == '}') {
@@ -1514,7 +1514,7 @@ pub def Regex : class {
 
     pub fnc scan_from(text string, start int) : Match {
         this.txt = text;
-        this.tn = text.__bytesize;
+        this.tn = text.bsize;
         total: int = (this.ncap + 1) * 2;
         caps0: vec<int>;
         for i: int = 0; i < total; i = i + 1 {
@@ -1575,7 +1575,7 @@ pub def Regex : class {
     pub fnc matches(text string) : vec<Match> {
         out: vec<Match>;
         b: int = 0;
-        while b <= text.__bytesize {
+        while b <= text.bsize {
             m: Match = this.scan_from(text, b);
             unless m.matched {
                 stop;
@@ -1599,7 +1599,7 @@ pub def Regex : class {
         out: vec<string>;
         last: int = 0;
         b: int = 0;
-        while b <= text.__bytesize {
+        while b <= text.bsize {
             m: Match = this.scan_from(text, b);
             unless m.matched {
                 stop;
@@ -1612,7 +1612,7 @@ pub def Regex : class {
                 b = m.end(0) + 1;
             }
         }
-        out.pushb(Match.substr(text, last, text.__bytesize - last));
+        out.pushb(Match.substr(text, last, text.bsize - last));
         return out;
     }
 
@@ -1620,7 +1620,7 @@ pub def Regex : class {
         out: string;
         last: int = 0;
         b: int = 0;
-        while b <= text.__bytesize {
+        while b <= text.bsize {
             m: Match = this.scan_from(text, b);
             unless m.matched {
                 stop;
@@ -1634,7 +1634,7 @@ pub def Regex : class {
                 b = m.end(0) + 1;
             }
         }
-        out = out + Match.substr(text, last, text.__bytesize - last);
+        out = out + Match.substr(text, last, text.bsize - last);
         return out;
     }
 
@@ -1645,7 +1645,7 @@ pub def Regex : class {
     priv fnc expand(m Match, tpl string) : string {
         out: string;
         i: int = 0;
-        n: int = tpl.__bytesize;
+        n: int = tpl.bsize;
         while i < n {
             c: char = tpl[i];
             if c == '$' {

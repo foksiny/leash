@@ -156,8 +156,8 @@ pub def Optimizer : class {
                 rv: int = r.ival;
                 // Big literals keep their raw text in sval: folding through
                 // the i64 ival would wrap them. Leave those to codegen.
-                if e.left.kind == ExprKind.INT && e.left.sval.__bytesize > 0 { return e; }
-                if e.right.kind == ExprKind.INT && e.right.sval.__bytesize > 0 { return e; }
+                if e.left.kind == ExprKind.INT && e.left.sval.bsize > 0 { return e; }
+                if e.right.kind == ExprKind.INT && e.right.sval.bsize > 0 { return e; }
                 if e.op == "+" { return Expr.make_int(lv + rv); }
                 if e.op == "-" { return Expr.make_int(lv - rv); }
                 if e.op == "*" { return Expr.make_int(lv * rv); }
@@ -206,7 +206,7 @@ pub def Optimizer : class {
 
         if e.kind == ExprKind.UNARY {
             o: Expr = this.opt_expr(e.left);
-            if e.op == "-" && o.kind == ExprKind.INT && o.sval.__bytesize == 0 { return Expr.make_int(-o.ival); }
+            if e.op == "-" && o.kind == ExprKind.INT && o.sval.bsize == 0 { return Expr.make_int(-o.ival); }
             if e.op == "-" && o.kind == ExprKind.FLOAT { return Expr.make_float(-o.fval); }
             if e.op == "!" && o.kind == ExprKind.BOOL { return Expr.make_bool(!o.bval); }
             e.left = o;

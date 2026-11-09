@@ -1,5 +1,5 @@
 fnc sieve_count(n int) : int {
-    is_prime: vec<int>;
+    is_prime: vec<char>;
     i: int = 0;
     while i <= n {
         is_prime.pushb(1);

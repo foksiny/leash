@@ -80,7 +80,7 @@ class TestExecOutput(_CompileRunBase):
 
 
 class TestStringSizeUnicode(_CompileRunBase):
-    """`string.size` counts code points; `.__bytesize` counts UTF-8 bytes."""
+    """`string.size` counts code points; `.bsize` (alias `.__bytesize`) counts UTF-8 bytes."""
 
     def test_size_counts_code_points_bytesize_counts_bytes(self):
         out = self._compile_and_run(
@@ -89,12 +89,12 @@ class TestStringSizeUnicode(_CompileRunBase):
             '    euro: string = "€";\n'
             '    emoji: string = "😀";\n'
             '    mixed: string = "héllo wörld";\n'
-            '    show(e.size, ":", e.__bytesize);\n'
-            '    show(euro.size, ":", euro.__bytesize);\n'
-            '    show(emoji.size, ":", emoji.__bytesize);\n'
-            '    show(mixed.size, ":", mixed.__bytesize);\n'
-            '    show(e.size(), ":", e.__bytesize());\n'
-            '    show("".size, ":", "".__bytesize);\n'
+            '    show(e.size, ":", e.bsize);\n'
+            '    show(euro.size, ":", euro.bsize);\n'
+            '    show(emoji.size, ":", emoji.bsize);\n'
+            '    show(mixed.size, ":", mixed.bsize);\n'
+            '    show(e.size(), ":", e.bsize());\n'
+            '    show("".size, ":", "".bsize);\n'
             '}\n'
         )
         self.assertEqual(
@@ -102,13 +102,25 @@ class TestStringSizeUnicode(_CompileRunBase):
             ["1:2", "1:3", "1:4", "11:13", "1:2", "0:0"],
         )
 
+    def test_bsize_alias_matches_bytesize(self):
+        out = self._compile_and_run(
+            'fnc main() : void {\n'
+            '    s: string = "héllo";\n'
+            '    show(s.bsize, ":", s.__bytesize, ":", s.bsize(), ":", s.__bytesize());\n'
+            '    dyn: string = "a" + "bc";\n'
+            '    show(dyn.bsize, ":", dyn.__bytesize);\n'
+            '}\n'
+        )
+        self.assertIn("6:6:6:6", out)
+        self.assertIn("3:3", out)
+
     def test_byte_indexing_still_walks_bytes(self):
         out = self._compile_and_run(
             'fnc main() : void {\n'
             '    e: string = "é";\n'
             '    n: int = 0;\n'
             '    foreach _, c in<string> e { _ = _ + 1 - 1; n = n + 1; }\n'
-            '    show(n == e.__bytesize);\n'
+            '    show(n == e.bsize);\n'
             '    show(e[0] == (char)0xC3);\n'
             '    show(e[1] == (char)0xA9);\n'
             '}\n'

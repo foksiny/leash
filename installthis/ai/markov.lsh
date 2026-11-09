@@ -16,7 +16,7 @@ pub def Markov : class {
         m: Markov = Markov { words: ws, nexts: ns, counts: cs };
         toks: vec<string>;
         i: int = 0;
-        n: int = text.__bytesize;
+        n: int = text.bsize;
         while i < n {
             while i < n && (text[i] == ' ' || text[i] == '\t' || text[i] == '\n' || text[i] == '\r') {
                 i = i + 1;
@@ -80,7 +80,7 @@ pub def Markov : class {
             if cur == "" {
                 stop;
             }
-            if out.__bytesize > 0 {
+            if out.bsize > 0 {
                 out = out + " ";
             }
             out = out + cur;
@@ -91,7 +91,7 @@ pub def Markov : class {
 
     static priv fnc slice(text string, start int, end int) : string {
         out: string = "";
-        for i: int = start; i < end && i < text.__bytesize; i = i + 1 {
+        for i: int = start; i < end && i < text.bsize; i = i + 1 {
             out = out + text[i];
         }
         return out;

@@ -50,10 +50,10 @@ pub def Color : class {
 
     static pub fnc hex_to_rgb(s string) : (int, int, int) {
         h: string = s;
-        if h.__bytesize > 0 && h[0] == '#' {
-            h = Color.slice(h, 1, h.__bytesize);
+        if h.bsize > 0 && h[0] == '#' {
+            h = Color.slice(h, 1, h.bsize);
         }
-        if h.__bytesize != 6 {
+        if h.bsize != 6 {
             return 0 - 1, 0 - 1, 0 - 1;
         }
         r: int = Color.hex_pair(h[0], h[1]);

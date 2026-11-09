@@ -81,7 +81,7 @@ pub def HttpResponse : class {
         if !this.ok {
             return "HttpResponse{err: " + this.err + "}";
         }
-        return "HttpResponse{status: " + tostring(this.status) + ", body: " + tostring(this.body.__bytesize) + " bytes}";
+        return "HttpResponse{status: " + tostring(this.status) + ", body: " + tostring(this.body.bsize) + " bytes}";
     }
 
     // True when the response has a 2xx status code.
@@ -92,9 +92,9 @@ pub def HttpResponse : class {
     // Returns the value of the first header matching `name`
     // (case-insensitive) or "" when absent.
     pub fnc header(name string) : string {
-        nlen: int = name.__bytesize;
+        nlen: int = name.bsize;
         p: int = 0;
-        n: int = this.headers.__bytesize;
+        n: int = this.headers.bsize;
         while p < n {
             eol: int = HttpResponse.find_ch(this.headers, p, '\n');
             if eol < 0 {
@@ -139,7 +139,7 @@ pub def HttpResponse : class {
     }
 
     static pub fnc find_ch(s string, start int, c char) : int {
-        for i: int = start; i < s.__bytesize; i = i + 1 {
+        for i: int = start; i < s.bsize; i = i + 1 {
             if s[i] == c {
                 return i;
             }
@@ -363,7 +363,7 @@ pub def Http : class {
     // Standard base64 (RFC 4648) of the string's bytes.
     static pub fnc base64_encode(s string) : string {
         out: string;
-        n: int = s.__bytesize;
+        n: int = s.bsize;
         i: int = 0;
         while i < n {
             b0: int = toint(int, s[i]);

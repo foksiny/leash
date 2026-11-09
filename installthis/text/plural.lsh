@@ -11,7 +11,7 @@ pub def Plural : class {
         if count == 1 {
             return w;
         }
-        n: int = w.__bytesize;
+        n: int = w.bsize;
         if n == 0 {
             return w;
         }
@@ -39,7 +39,7 @@ pub def Plural : class {
 
     // Singularize: "cats" -> "cat", "boxes" -> "box".
     static pub fnc singular(w string) : string {
-        n: int = w.__bytesize;
+        n: int = w.bsize;
         if n <= 1 {
             return w;
         }

@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v1.6.2 Release</div>
+        <div class="version">v1.7.0 Release</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -65,7 +65,7 @@
 <ul>
     <li>Hybrid root finding &mdash; globals and class statics are registered precisely by the compiler, plus conservative scanning of the calling thread's stack</li>
     <li>Explicit root management via <code>leash_gc_register_root()</code> / <code>leash_gc_unregister_root()</code></li>
-    <li>Automatic collection when allocation since the last cycle exceeds a threshold (deferred while worker threads are busy; disable with <code>LEASH_GC_AUTO=0</code>, exit-time stats with <code>LEASH_GC_STATS=1</code>)</li>
+    <li>Automatic collection when allocation since the last cycle exceeds a threshold (deferred while worker threads are busy; steady-state peak stays near 2&times; live + 256 KB; disable with <code>LEASH_GC_AUTO=0</code>, exit-time stats with <code>LEASH_GC_STATS=1</code>)</li>
     <li>Manual control from Leash code via the <code>gc_collect()</code> and <code>gc_stats()</code> builtins</li>
     <li>Slab allocator with per-size-class free lists &mdash; no per-object <code>malloc</code>, and no lock while the program is single-threaded</li>
     <li>Type-aware: strings, vectors, arrays, structs, classes, unions all handled properly</li>
@@ -294,7 +294,7 @@ gcc -shared -fPIC math_utils.c -o libmath.so</code></pre>
     <tr><td>3</td><td><strong>Reusable thread pool</strong> &mdash; replaces per-call thread creation (lazily initialized, persists for program lifetime)</td></tr>
     <tr><td>4</td><td><strong>Cache-blocked operations</strong> &mdash; processes tiles fitting in L1 cache</td></tr>
     <tr><td>5</td><td><strong>Vector batch utilities</strong> &mdash; bulk copy, reverse, sort (O(n log n))</td></tr>
-    <tr><td>6</td><td><strong>Slab allocator</strong> &mdash; 64 KB pages split into size-class cells with free-list reuse (replaces per-object <code>malloc</code>)</td></tr>
+    <tr><td>6</td><td><strong>Slab allocator</strong> &mdash; 16 KB slabs split into size-class cells with free-list reuse (replaces per-object <code>malloc</code>; one live cell pins at most 16 KB)</td></tr>
     <tr><td>7</td><td><strong>Iterative mark phase</strong> &mdash; explicit worklist instead of recursion, scanning an open-addressed page directory</td></tr>
     <tr><td>8</td><td><strong>Fast memcpy</strong> &mdash; thin wrapper with <code>__restrict__</code> hints</td></tr>
     <tr><td>9</td><td><strong>Unboxed byte-addressed vectors (1.0)</strong> &mdash; raw element arrays at the exact element width; inline fast paths in generated code for <code>pushb</code>/<code>get</code>/<code>set</code>/<code>popb</code>, calling into the runtime only to grow</td></tr>

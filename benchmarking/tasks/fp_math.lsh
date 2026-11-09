@@ -1,0 +1,12 @@
+fnc main() {
+    v: vec<float>;
+    for i: int = 0; i < 100000; i = i + 1 {
+        v.pushb((float)(i % 100) / 10.0);
+    }
+    sum: float = 0.0;
+    for i: int = 0; i < v.size; i = i + 1 {
+        x: float = v.get(i);
+        sum = sum + x * (float)i / 100.0 + (float)0.123;
+    }
+    show("fp_math sum=", sum);
+}
