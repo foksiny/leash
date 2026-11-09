@@ -151,6 +151,7 @@ typedef struct arena_block {
     struct arena_block* next; /* all blocks, newest first */
     char* base;               /* start of the region usable for payloads */
     size_t cap;               /* usable bytes after the header */
+    int sole;                 /* one dedicated large allocation fills the block */
 } arena_block;
 
 typedef struct arena_cp {
@@ -179,6 +180,7 @@ static void arena_oom(const char* what) {
     abort();
 }
 
+
 static arena_block* arena_new_block(arena_stack* st, size_t need) {
     size_t cap = need > ARENA_BLOCK_SIZE ? need : ARENA_BLOCK_SIZE;
     cap = (cap + 4095) & ~(size_t)4095; /* page-multiple, mmap-friendly */
@@ -187,6 +189,7 @@ static arena_block* arena_new_block(arena_stack* st, size_t need) {
     b->next = st->head;
     b->base = (char*)(b + 1);
     b->cap = cap;
+    b->sole = need > ARENA_BLOCK_SIZE;
     st->head = b;
     st->cur = b->base;
     st->end = b->base + cap;
@@ -214,6 +217,7 @@ static char* arena_raw(arena_stack* st, size_t need, size_t align, size_t* out_t
     /* align is a power of two >= 8, so the payload lands aligned and
      * the 8-byte header before it stays 8-aligned for the u64 store. */
     size_t head_room = 8;
+    int fresh = 0;
     for (;;) {
         uintptr_t cur = (uintptr_t)st->cur;
         uintptr_t base = (cur + head_room + align - 1) & ~(uintptr_t)(align - 1);
@@ -225,12 +229,17 @@ static char* arena_raw(arena_stack* st, size_t need, size_t align, size_t* out_t
             st->cur = (char*)hdr + total;
             /* Keep the bump 8-aligned for the next header store. */
             st->cur = (char*)(((uintptr_t)st->cur + 7) & ~(uintptr_t)7);
+            /* A freshly created oversize block holds exactly one
+             * allocation: consume its tail (< page slack) so no later
+             * bump can share it and it stays reclaimable as a whole. */
+            if (fresh && st->head && st->head->sole) st->cur = st->end;
             if (out_total) *out_total = total;
             memset(payload, 0, need);
             return payload;
         }
         size_t want = need + head_room + 2 * align + 8;
         arena_new_block(st, want);
+        fresh = 1;
     }
 }
 
@@ -257,6 +266,42 @@ static int arena_owns(arena_stack* st, const void* ptr) {
         if (p >= b->base && p < b->base + b->cap) return 1;
     }
     return 0;
+}
+
+static arena_block* arena_block_of(arena_stack* st, const void* ptr) {
+    if (!ptr) return NULL;
+    const char* p = (const char*)ptr;
+    for (arena_block* b = st->head; b; b = b->next) {
+        if (p >= b->base && p < b->base + b->cap) return b;
+    }
+    return NULL;
+}
+
+/* Reclaim a superseded large allocation's block immediately. Blocks
+ * flagged `sole` hold exactly one allocation (a dedicated oversize
+ * block whose tail was consumed), so once that allocation is dead —
+ * the caller has copied its bytes elsewhere — the whole block can go.
+ * Skipped when the newest block still points at it (growth alloc
+ * never lands here by construction, but guard anyway) or when any
+ * saved checkpoint references it as its rewind block (a scope below
+ * would otherwise restore through freed memory). */
+static void arena_try_free_solo(arena_stack* st, const void* ptr, size_t sub_bytes) {
+    arena_block* b = arena_block_of(st, ptr);
+    if (!b || !b->sole) return;
+    if (st->head == b) return;
+    for (size_t i = 0; i < st->cp_len; i++) {
+        if (st->cps[i].block == b) return;
+    }
+    arena_block** link = &st->head;
+    while (*link && *link != b) link = &(*link)->next;
+    if (!*link) return;
+    *link = b->next;
+    free(b);
+    if (st->bytes >= sub_bytes) st->bytes -= sub_bytes;
+}
+
+void leasharena_try_free_solo(void* ptr, size_t old_size_bytes) {
+    arena_try_free_solo(&leasharena_tls_ar, ptr, old_size_bytes);
 }
 
 /* Free every block newer than `keep` (NULL = free all). `keep`'s own
@@ -388,6 +433,7 @@ void* leash_gc_realloc(void* ptr, size_t new_size) {
     }
     void* np = leash_gc_malloc(new_size);
     memcpy(np, ptr, old_size < new_size ? old_size : new_size);
+    arena_try_free_solo(&leasharena_tls_ar, ptr, old_size);
     return np;
 }
 
@@ -582,6 +628,12 @@ char* leash_str_append(char* s, const char* piece) {
     if (sl) memcpy(out, s, sl);
     if (pl) memcpy(out + sl, piece, pl);
     out[tot] = '\0';
+    {
+        size_t old_total = 0;
+        if (arena_str_info(s, NULL, NULL)) old_total = *(uint64_t*)(void*)(s - 16);
+        /* arena_str_info hit => old alloc tracked total-8 bytes. */
+        arena_try_free_solo(&leasharena_tls_ar, s, old_total > 8 ? old_total - 8 : 0);
+    }
     return out;
 }
 
@@ -648,6 +700,7 @@ void leash_gc_verify(void) {}
 
 void leash_gc_init(void) {}
 void leash_gc_shutdown(void) {}
+void leasharena_try_free_solo(void* ptr, size_t old_size_bytes) { (void)ptr; (void)old_size_bytes; }
 
 void* leash_gc_malloc(size_t size) {
     if (size == 0) return NULL;
@@ -2306,6 +2359,8 @@ size_t leash_gc_get_allocated(void) {
     return v;
 }
 
+void leasharena_try_free_solo(void* ptr, size_t old_size_bytes) { (void)ptr; (void)old_size_bytes; }
+
 size_t leash_gc_get_object_count(void) {
     GC_LOCK();
     size_t v = gc.object_count;
@@ -3937,6 +3992,9 @@ void leash_sh_hash_push(void* hash_ptr, const char* key, void* val) {
         h->buckets = new_b;
         h->num_buckets = new_num;
         idx = (int64_t)(hash & (uint64_t)(new_num - 1));
+#if defined(LEASH_ARENA)
+        leasharena_try_free_solo(old_b, (size_t)old_num * sizeof(LeashHashNode*));
+#endif
     }
     /* Single allocation for node + key payload (key bytes follow struct). */
     size_t alloc_sz = sizeof(LeashHashNode) + klen + 1;

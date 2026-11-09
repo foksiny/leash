@@ -85,6 +85,10 @@ char* leash_str_concat_int(const char* s, int64_t v, int is_uint);
 char* leash_str_append_int(char* s, int64_t v, int is_uint);
 char* leash_str_append_char(char* s, char c);
 char* leash_sh_input(const char* prompt);
+/* Arena: reclaim a superseded single-allocation block (growth waste).
+ * Defined by the arena backend; other backends keep a stub that does
+ * nothing (growth abandonment is reclaimed by their collectors). */
+void leasharena_try_free_solo(void* ptr, size_t old_size_bytes);
 
 /* ===== Optimized Matrix Binary Operations ===== */
 void leash_matrix_binary_op_float(

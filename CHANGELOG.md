@@ -5,6 +5,29 @@ All notable changes to the Leash compiler are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.1] - 2026-11-09
+
+### Changed
+- **Arena growth reclaim.** Oversize growth buffers now free the
+  superseded allocation's block immediately instead of holding it
+  until scope exit (dedicated single-occupant blocks, gated on no
+  saved frame referencing the block). Vector growth routes through
+  realloc (tip-extension plus block reclaim — doubling in arena mode
+  instead of GC's +50% policy), and string appends and hash bucket
+  growth do the same. Measured peak RSS (GC → arena, O2):
+  `mem_copy` 9.6 → **10.1 MB** (was 14.0 before reclaim),
+  `vec_stress` 3.9 → **3.4 MB** (now leaner than GC),
+  `hash_lookup` 4.6 → **4.3 MB**, `allocstress` 2.5 → **1.9 MB**,
+  `fib` parity. `string_concat` is still 2.4 → 2.9 MB: per-iteration
+  string temporaries necessarily outlive their loop's survivors and
+  stay in the function's frame.
+
+### Fixed
+- **Arena frameless returns inside loops.** Scalar functions proven
+  allocation-free skip framing; their loop frames are now excluded
+  too, so a return issued from inside an instrumented loop cannot
+  pop the caller's frame.
+
 ## [1.8.0] - 2026-11-09
 
 ### Added

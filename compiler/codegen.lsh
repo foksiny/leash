@@ -1055,6 +1055,10 @@ pub def CodeGen : class {
     // frame index ("" when the loop is not instrumented).
     pub fnc ar_loop_enter(s Stmt) : string {
         if !this.arena { return ""; }
+        if this.ar_frameless {
+            this.ar_loop_handles.pushb("");
+            return "";
+        }
         if !this.ar_loop_ok(s.body) {
             this.ar_loop_handles.pushb("");
             return "";
