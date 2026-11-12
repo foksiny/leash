@@ -10,6 +10,8 @@ Leash is a strongly-typed, modern compiled programming language built on LLVM. I
 
 > **Full documentation available at [`docs/`](docs/index.html) &mdash; covers language reference, compiler CLI, standard library, package manager, concurrency, and advanced topics.**
 
+Leash was made with the help of AI, but its design and ideas come from a human. The AI's role was to implement the language and toolchain and to write the documentation. The human and the AI also stress-tested Leash &mdash; checking where it fails and where it wins, then fixing quirks as they were found. Bugs are addressed right away, which is why all features (and 90%+ of them in practice) are kept stable and reliable.
+
 ## Self-Hosted since 1.0
 
 The compiler shipped as `leash`/`leashc` is **written in Leash** and builds itself from a checked-in bootstrap seed with **no Python dependency**: the seed binary compiles the current sources, that binary then compiles itself, and the result is what gets installed — verified as a **bootstrap fixed point** (stage N emits IR byte-identical to stage N+1).
