@@ -28,6 +28,11 @@ void leash_gc_shutdown(void);
 
 /* ===== Allocation ===== */
 void* leash_gc_malloc(size_t size);
+void* leash_gc_malloc_nz(size_t size);
+/* 8-byte-aligned payload for headers/nodes whose fields never need more
+ * than pointer alignment. The arena backend drops the 16-byte padding,
+ * saving 8 bytes per small object; other backends delegate to malloc. */
+void* leash_gc_malloc_compact(size_t size);
 void* leash_gc_malloc_ex(size_t size, unsigned int flags);
 void* leash_gc_realloc(void* ptr, size_t new_size);
 void* leash_gc_aligned_alloc(size_t size, size_t alignment);
@@ -166,6 +171,12 @@ void leasharena_exit_n(int64_t nframes);
 void leasharena_escape_string(void** slot, int64_t nframes);
 void leasharena_escape_vec(void** slot, int64_t nframes);
 void leasharena_escape_hash(void** slot, int64_t nframes);
+typedef struct { int64_t offset; int32_t kind; int32_t _pad; } ar_field_desc;
+/* Deep-escape a vec whose elements are pointers to structs containing
+ * heap fields (string=1, vec=2, hash=3 at given offsets). pointee_size
+ * is the struct's byte size. Stages all elements+fields, pops nframes,
+ * commits into the new frame, and rewrites element pointers. */
+void leasharena_escape_vec_typed(void** slot, int64_t nframes, int64_t pointee_size, int32_t nfields, const ar_field_desc* fields);
 void leasharena_escape_blob(void** slot, int64_t size, int64_t nframes);
 void leasharena_escape_slice(void* agg, int64_t elem_size, int64_t nframes);
 /* Tuple returns (2+ heap components) cannot use the single-call

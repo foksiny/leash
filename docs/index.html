@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v1.8.3 Release</div>
+        <div class="version">v1.8.4 Release</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -44,7 +44,7 @@
 <main class="main">
 
 <div class="hero">
-    <div class="version-badge">v1.8.3 Release</div>
+    <div class="version-badge">v1.8.4 Release</div>
     <h1>Leash</h1>
     <p class="tagline">A strongly-typed, modern compiled programming language built on LLVM.</p>
 </div>
@@ -71,8 +71,8 @@
         <p>Classes, generics, lambdas, and operator overloading compile down to efficient machine code.</p>
     </div>
     <div class="feature-card">
-        <h3>Built-in GC</h3>
-        <p>Automatic memory management with an optional manual mode (<code>nogc</code>) for low-level control.</p>
+        <h3>Built-in GC &amp; Arena</h3>
+        <p>Automatic mark-and-sweep GC by default, plus optional <code>nogc</code>, <code>--autofree</code>, and an experimental scoped <code>--arena</code> backend with deterministic frame/loop reclamation, poison-on-reclaim safety, and C-ABI-friendly pointers.</p>
     </div>
     <div class="feature-card">
         <h3>Package Manager</h3>

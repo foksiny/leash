@@ -965,6 +965,7 @@ pub def CompilerDriver : class {
         cg.debug_instrument = debug_instrument;
         cg.autofree = autofree;
         cg.arena = arena;
+        cg.opt_level = opt_level;
         // Library outputs omit the @main wrapper (a consumer linking its
         // own main would otherwise get a duplicate symbol).
         cg.is_lib = output_type == "dynamic" || output_type == "static";
@@ -1132,6 +1133,12 @@ pub def CompilerDriver : class {
             // frame; spawn arg blocks and future boxes go to the
             // program-lifetime root arena.
             rt_extra = rt_extra + " -DLEASH_ARENA";
+            if opt_level == "2" || opt_level == "3" || opt_level == "4" || opt_level == "s" || opt_level == "z" {
+                rt_extra = rt_extra + " -DLEASH_ARENA_O2";
+            }
+            if opt_level == "3" || opt_level == "4" {
+                rt_extra = rt_extra + " -DLEASH_ARENA_O3";
+            }
         }
         if no_gc || autofree {
             // Stub runtime: plain malloc/free behind the same API.
@@ -1276,9 +1283,11 @@ pub def CompilerDriver : class {
         // Runtime (gc.c + stubs) is compiled once per (size,mtime,flags) tag.
         // For O3/O4 we build the runtime at -O3 so the GC/hash/string
         // hot paths benefit from the same pipeline as user code.
+        // For O4 enable LTO on the runtime too (cross-module inlining).
         // The rt_opt string is part of the cache key below.
         rt_opt: string = "-O2";
-        if opt_level == "3" || opt_level == "4" { rt_opt = "-O3"; }
+        if opt_level == "3" { rt_opt = "-O3"; }
+        if opt_level == "4" { rt_opt = "-O3 -flto"; }
         rsp_rt: string = rsp_dir + "/ccrt_" + tostring(this.fnv_str("rt|" + cc_bin + "|" + cc_flags + "|" + rt_extra + "|" + rt_opt)) + ".rsp";
         f_rt_rsp: File = File.open(rsp_rt, "w");
         if f_rt_rsp != null {

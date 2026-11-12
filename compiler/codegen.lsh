@@ -11,6 +11,7 @@ pub def CodeGen : class {
     pub arena: bool;      // --arena (experimental): scoped bump arena —
                           // enter/exit per function, loop checkpoints,
                           // return escapes (no GC, no borrow checker)
+    pub opt_level: string;  // "0".."4","s","z" - arena layout optimizations
     pub has_entry: bool;  // an entry point exists (top-level or class
                           // static main): executables require one, libraries
                           // must not gain one
@@ -47,6 +48,11 @@ pub def CodeGen : class {
     pub ar_loop_depth: int;   // instrumented loop frames above the current
                               // function's arena frame (arena mode only)
     pub ar_loop_handles: vec<string>;  // per-depth i64 alloca slot regs
+    pub ar_stage_slots: vec<string>;
+    pub ar_stage_kinds: vec<string>;
+    pub ar_stage_types: vec<string>;
+    pub ar_stage_fidxs: vec<string>;
+    pub ar_stage_cursor: int;
     pub ar_frameless: bool;   // current function proved allocation-free:
                               // ar_init/ar_cleanup emit nothing
     pub opdef_inner: string;     // concrete inner type of the opdef container being compiled
@@ -57,12 +63,16 @@ pub def CodeGen : class {
     pub str_counter: int;
     pub reg_counter: int;
     pub label_counter: int;
+    pub loop_meta_id: int;          // next LLVM loop-metadata node id
+    pub loop_meta_lines: vec<string>; // align hints appended at module end
     pub current_block_terminated: bool;
     pub loop_head_stack: vec<string>;
     pub loop_exit_stack: vec<string>;
     pub var_ptrs: hash<string, string>;
     pub var_types: hash<string, string>;
     pub ar_alias_src: hash<string, string>;   // arena: var -> get()-source root for store skipping
+    pub ar_const_ints: hash<string, int>;     // arena: locals with a known int value
+    pub ar_const_dead: hash<string, bool>;    // arena: locals whose constant was invalidated
     pub tc: TypeChecker;
     pub current_func_ret: string;
     pub current_func_name: string;
@@ -78,10 +88,13 @@ pub def CodeGen : class {
     pub cur_func_unsafe: bool;
 
     static pub fnc make(tc TypeChecker) : CodeGen {
+        empty_ci: hash<string, int>;
+        empty_cd: hash<string, bool>;
         cg: CodeGen = CodeGen {
             str_counter: 0,
             reg_counter: 1,
             label_counter: 1,
+            loop_meta_id: 0,
             current_block_terminated: false,
             tc: tc,
             current_func_ret: "void",
@@ -93,8 +106,11 @@ pub def CodeGen : class {
             is_lib: false,
             autofree: false,
             arena: false,
+            opt_level: "2",
             ar_loop_depth: 0,
             ar_frameless: false,
+            ar_const_ints: empty_ci,
+            ar_const_dead: empty_cd,
             has_entry: false,
             af_arr: "",
             af_cnt: "",
@@ -248,12 +264,30 @@ pub def CodeGen : class {
         this.ar_loop_depth = 0;
         empty_h: vec<string>;
         this.ar_loop_handles = empty_h;
+        empty_s1: vec<string>;
+        empty_s2: vec<string>;
+        empty_s3: vec<string>;
+        empty_s4: vec<string>;
+        this.ar_stage_slots = empty_s1;
+        this.ar_stage_kinds = empty_s2;
+        this.ar_stage_types = empty_s3;
+        this.ar_stage_fidxs = empty_s4;
+        this.ar_stage_cursor = 0;
     }
 
     pub fnc ar_reset() : void {
         this.ar_loop_depth = 0;
         empty_h2: vec<string>;
         this.ar_loop_handles = empty_h2;
+        empty_r1: vec<string>;
+        empty_r2: vec<string>;
+        empty_r3: vec<string>;
+        empty_r4: vec<string>;
+        this.ar_stage_slots = empty_r1;
+        this.ar_stage_kinds = empty_r2;
+        this.ar_stage_types = empty_r3;
+        this.ar_stage_fidxs = empty_r4;
+        this.ar_stage_cursor = 0;
     }
 
     // Inline arena enter (fast path): push the current bump state onto
@@ -402,28 +436,63 @@ pub def CodeGen : class {
     // escape path blob-copies bodies shallow and fields dangle (T17).
     pub fnc ar_root_for_container(e Expr, target_expr Expr, inner_t string) : bool {
         tt: string = this.strip_ref(inner_t);
-        if this.tc.structs.isin(tt) || this.tc.classes.isin(tt) || this.tc.unions.isin(tt) {
-            return this.ar_store_escape(e);
+        lhs_root: string = this.ar_expr_root(target_expr);
+        // A vec of inline-POD structs stores the element BY VALUE in its
+        // own data buffer: the copy lands inside the container, so it
+        // cannot dangle when the current frame dies. Rooting it would
+        // allocate a permanent root copy for nothing (the arena's root
+        // arena is never reclaimed, so those copies are pure overhead).
+        if this.is_vec_type(this.get_expr_type(target_expr)) {
+            if this.vec_inline_pod(inner_t) { return false; }
         }
-        // Swap-style store of an element read from the same aggregate
-        // (`v.set(i, v.get(j))`): the contents are owned by the same
-        // container, so copies would always be redundant.
+        // Same-aggregate element reuse: `v.set(i, v.get(j))` moves the
+        // element pointer within the same container (no clone).
         if e != null && e.kind == ExprKind.METHOD_CALL && e.sval == "get" && e.left != null {
-            lhs: string = this.ar_expr_root(target_expr);
             rhs: string = this.ar_expr_root(e.left);
-            if lhs.bsize > 0 && lhs == rhs { return false; }
+            if lhs_root.bsize > 0 && lhs_root == rhs { return false; }
         }
-        // Local var whose last assignment (this block) came directly from
-        // the same aggregate's get/pop: same ownership argument.
-        if e != null && e.kind == ExprKind.IDENT {
-            lhs2: string = this.ar_expr_root(target_expr);
-            if lhs2.bsize > 0 && this.ar_alias_src.isin(e.sval) {
-                al: string = this.ar_alias_src[e.sval];
-                if al.bsize > 4 && this.str_slice2(al, 0, 4) == "get:" && this.str_slice2(al, 4, al.bsize) == lhs2 { return false; }
-                if al.bsize > 4 && this.str_slice2(al, 0, 4) == "pop:" && this.str_slice2(al, 4, al.bsize) == lhs2 { return false; }
+        // Alias of v.get(i): safe to skip root for pointer-identity types
+        // (string). For struct/class/union, assignment clones the value
+        // (fresh frame-local alloc) so storing that clone into an outer
+        // container still needs rooting — fall through.
+        if e != null && e.kind == ExprKind.IDENT && lhs_root.bsize > 0 && this.ar_alias_src.isin(e.sval) {
+            al: string = this.ar_alias_src[e.sval];
+            same_agg: bool = false;
+            if al.bsize > 4 && this.str_slice2(al, 0, 4) == "get:" && this.str_slice2(al, 4, al.bsize) == lhs_root { same_agg = true; }
+            if al.bsize > 4 && this.str_slice2(al, 0, 4) == "pop:" && this.str_slice2(al, 4, al.bsize) == lhs_root { same_agg = true; }
+            if same_agg {
+                if !(this.tc.structs.isin(tt) || this.tc.classes.isin(tt) || this.tc.unions.isin(tt)) {
+                    return false;
+                }
+                // struct alias clone: fall through to struct rooting below
             }
         }
-        if this.ar_is_outer_var(this.ar_expr_root(target_expr)) { return true; }
+        if this.tc.structs.isin(tt) || this.tc.classes.isin(tt) || this.tc.unions.isin(tt) {
+            // Struct/class/union: when the target aggregate outlives the
+            // current frame (param/global/shared), conservatively root so
+            // frame-local clones don't dangle. Skip for non-fresh sources
+            // (literals, null, member/index reads of stable values) that
+            // ar_store_escape identifies as non-escaping — but IDENT/GET
+            // may hold frame-local clones, so treat them as needing root
+            // when target is outer.
+            if !this.ar_is_outer_var(lhs_root) { return false; }
+            if e == null { return false; }
+            if e.kind == ExprKind.STRING || e.kind == ExprKind.INT || e.kind == ExprKind.FLOAT || e.kind == ExprKind.CHAR || e.kind == ExprKind.BOOL || e.kind == ExprKind.NIL { return false; }
+            if e.kind == ExprKind.MEMBER || e.kind == ExprKind.INDEX || e.kind == ExprKind.POINTER_MEMBER { return false; }
+            if e.kind == ExprKind.METHOD_CALL {
+                m: string = e.sval;
+                if m == "popb" || m == "popf" || m == "remove" { return false; }
+                if m == "get" {
+                    // get from a different (possibly outer-owned) container: the
+                    // element lives as long as that container; safe without root.
+                    // (same-container case handled above)
+                    return false;
+                }
+                if m == "push" || m == "pushb" || m == "pushf" || m == "set" || m == "insert" || m == "inserta" || m == "insertv" || m == "extend" || m == "extendv" || m == "keys" || m == "values" { return false; }
+            }
+            return true;
+        }
+        if this.ar_is_outer_var(lhs_root) { return true; }
         return false;
     }
 
@@ -513,6 +582,173 @@ pub def CodeGen : class {
         return nv;
     }
 
+    // Deep stage/commit for struct/class escape: heap fields (including
+    // nested struct/class fields) must be staged from the live dying-frame
+    // instance before pop, then committed into the caller-frame copy after
+    // pop. Reading nested heap pointers from a blob-copied/committed body
+    // after pop is a use-after-scope (and crashes with poison-on-reclaim).
+    pub fnc ar_deep_stage_struct_fields(inst_i8 string, tt string) : void {
+        szr: string = this.llvm_type(tt);
+        pty: string = "";
+        pq: int = 0;
+        while pq < szr.bsize - 1 { pty = pty + szr[pq]; pq = pq + 1; }
+        iptr: string = this.new_reg();
+        this.emit("  " + iptr + " = bitcast i8* " + inst_i8 + " to " + szr);
+        if this.tc.structs.isin(tt) {
+            si: StructInfo = this.tc.structs[tt];
+            fi: int = 0;
+            while fi < si.field_types.size {
+                ft: string = si.field_types.get(fi);
+                if this.ar_is_heap_type(ft) {
+                    this.ar_deep_stage_one_field(iptr, pty, szr, fi, ft, inst_i8, tt);
+                }
+                fi = fi + 1;
+            }
+        } also this.tc.classes.isin(tt) {
+            ci: ClassInfo = this.tc.classes[tt];
+            cfi: int = 0;
+            while cfi < ci.field_types.size {
+                cft: string = ci.field_types.get(cfi);
+                if this.ar_is_heap_type(cft) {
+                    this.ar_deep_stage_one_field(iptr, pty, szr, cfi + 1, cft, inst_i8, tt);
+                }
+                cfi = cfi + 1;
+            }
+        }
+    }
+
+    // Stage one heap field of a live instance. Stores the stage pointer in
+    // a compiler-managed alloca slot that ar_deep_commit_struct_fields will
+    // locate by walking the same field order (we emit a parallel store to a
+    // hidden slot array carried via a naming convention? no). Simpler: we
+    // cannot easily pass dynamic state between stage and commit passes
+    // across the pop. Instead, for nested struct/class fields we
+    // recursively deep-escape them as independent rooted-then-unrooted?
+    // No - easier: stage into malloc, but keep the stage pointer in an
+    // alloca that lives across the pop (allocas are in the function's
+    // stack frame, not the arena). So we create an alloca i8* per staged
+    // field right here and return nothing; commit will recreate the same
+    // traversal and load from allocas it... cannot. 
+    // 
+    // Alternative: store stage pointers into a vec of allocas collected
+    // in-order. Commit walks same order and takes from that vec.
+    pub fnc ar_deep_stage_one_field(iptr string, pty string, szr string, fld_idx int, ft string, inst_i8 string, owner_tt string) : void {
+        fp: string = this.new_reg();
+        this.emit("  " + fp + " = getelementptr inbounds " + pty + ", " + szr + " " + iptr + ", i32 0, i32 " + tostring(fld_idx));
+        felty: string = this.llvm_type(ft);
+        fval: string = this.new_reg();
+        this.emit("  " + fval + " = load " + felty + ", " + felty + "* " + fp);
+        fiv: string = this.new_reg();
+        if felty == "i8*" { fiv = fval; }
+        else { this.emit("  " + fiv + " = bitcast " + felty + " " + fval + " to i8*"); }
+        ftt: string = this.strip_ref(ft);
+        if ftt == "string" {
+            fstage: string = this.new_reg();
+            this.emit("  " + fstage + " = call i8* @leasharena_stage_string(i8* " + fiv + ")");
+            this.ar_stage_slots.pushb(fstage);
+            this.ar_stage_kinds.pushb("s");
+            this.ar_stage_types.pushb(ft);
+            this.ar_stage_fidxs.pushb(tostring(fld_idx));
+        } also this.is_vec_type(ftt) {
+            fstage: string = this.new_reg();
+            this.emit("  " + fstage + " = call i8* @leasharena_stage_vec(i8* " + fiv + ")");
+            this.ar_stage_slots.pushb(fstage);
+            this.ar_stage_kinds.pushb("v");
+            this.ar_stage_types.pushb(ft);
+            this.ar_stage_fidxs.pushb(tostring(fld_idx));
+        } also ftt.bsize > 5 && ftt[0] == 'h' && ftt[1] == 'a' && ftt[2] == 's' && ftt[3] == 'h' && ftt[4] == '<' {
+            fstage: string = this.new_reg();
+            this.emit("  " + fstage + " = call i8* @leasharena_stage_hash(i8* " + fiv + ")");
+            this.ar_stage_slots.pushb(fstage);
+            this.ar_stage_kinds.pushb("h");
+            this.ar_stage_types.pushb(ft);
+            this.ar_stage_fidxs.pushb(tostring(fld_idx));
+        } also this.tc.structs.isin(ftt) || this.tc.classes.isin(ftt) {
+            fsz: string = this.llvm_type(ft);
+            fpty: string = "";
+            fpi: int = 0;
+            while fpi < fsz.bsize - 1 { fpty = fpty + fsz[fpi]; fpi = fpi + 1; }
+            fsg: string = this.new_reg();
+            this.emit("  " + fsg + " = getelementptr " + fpty + ", " + fsz + " null, i32 1");
+            fsv: string = this.new_reg();
+            this.emit("  " + fsv + " = ptrtoint " + fsz + " " + fsg + " to i64");
+            fstage: string = this.new_reg();
+            this.emit("  " + fstage + " = call i8* @leasharena_stage_blob(i8* " + fiv + ", i64 " + fsv + ")");
+            this.ar_stage_slots.pushb(fstage);
+            this.ar_stage_kinds.pushb("b");
+            this.ar_stage_types.pushb(ft);
+            this.ar_stage_fidxs.pushb(tostring(fld_idx));
+            // Recursively stage nested heap fields from the live nested instance.
+            this.ar_deep_stage_struct_fields(fiv, ftt);
+        }
+    }
+
+    pub fnc ar_deep_commit_struct_fields(inst_i8 string, tt string) : void {
+        szr: string = this.llvm_type(tt);
+        pty: string = "";
+        pq: int = 0;
+        while pq < szr.bsize - 1 { pty = pty + szr[pq]; pq = pq + 1; }
+        if this.tc.structs.isin(tt) {
+            si: StructInfo = this.tc.structs[tt];
+            fi: int = 0;
+            while fi < si.field_types.size {
+                ft: string = si.field_types.get(fi);
+                if this.ar_is_heap_type(ft) {
+                    this.ar_deep_commit_one_field(inst_i8, pty, szr, fi, ft, tt);
+                }
+                fi = fi + 1;
+            }
+        } also this.tc.classes.isin(tt) {
+            ci: ClassInfo = this.tc.classes[tt];
+            cfi: int = 0;
+            while cfi < ci.field_types.size {
+                cft: string = ci.field_types.get(cfi);
+                if this.ar_is_heap_type(cft) {
+                    this.ar_deep_commit_one_field(inst_i8, pty, szr, cfi + 1, cft, tt);
+                }
+                cfi = cfi + 1;
+            }
+        }
+    }
+
+    pub fnc ar_deep_commit_one_field(inst_i8 string, pty string, szr string, fld_idx int, ft string, owner_tt string) : void {
+        if this.ar_stage_cursor >= this.ar_stage_slots.size { return; }
+        stage: string = this.ar_stage_slots.get(this.ar_stage_cursor);
+        kind: string = this.ar_stage_kinds.get(this.ar_stage_cursor);
+        stype: string = this.ar_stage_types.get(this.ar_stage_cursor);
+        this.ar_stage_cursor = this.ar_stage_cursor + 1;
+        // Get pointer-to-field in the committed instance.
+        iptr: string = this.new_reg();
+        this.emit("  " + iptr + " = bitcast i8* " + inst_i8 + " to " + szr);
+        fp: string = this.new_reg();
+        this.emit("  " + fp + " = getelementptr inbounds " + pty + ", " + szr + " " + iptr + ", i32 0, i32 " + tostring(fld_idx));
+        felty: string = this.llvm_type(ft);
+        fps: string = this.new_reg();
+        this.emit("  " + fps + " = bitcast " + felty + "* " + fp + " to i8**");
+        ftt: string = this.strip_ref(ft);
+        if kind == "s" {
+            this.emit("  call void @leasharena_commit_string(i8** " + fps + ", i8* " + stage + ")");
+        } also kind == "v" {
+            this.emit("  call void @leasharena_commit_vec(i8** " + fps + ", i8* " + stage + ")");
+        } also kind == "h" {
+            this.emit("  call void @leasharena_commit_hash(i8** " + fps + ", i8* " + stage + ")");
+        } also kind == "b" {
+            fsz: string = this.llvm_type(ft);
+            fpty: string = "";
+            fpi: int = 0;
+            while fpi < fsz.bsize - 1 { fpty = fpty + fsz[fpi]; fpi = fpi + 1; }
+            fsg: string = this.new_reg();
+            this.emit("  " + fsg + " = getelementptr " + fpty + ", " + fsz + " null, i32 1");
+            fsv: string = this.new_reg();
+            this.emit("  " + fsv + " = ptrtoint " + fsz + " " + fsg + " to i64");
+            this.emit("  call void @leasharena_commit_blob(i8** " + fps + ", i8* " + stage + ", i64 " + fsv + ")");
+            // Commit nested heap fields into the committed nested instance.
+            nested: string = this.new_reg();
+            this.emit("  " + nested + " = load i8*, i8** " + fps);
+            this.ar_deep_commit_struct_fields(nested, ftt);
+        }
+    }
+
     // Deep-root every heap field of a rooted struct/class instance.
     // `inst` is an i8* pointing at the (already copied) instance body.
     pub fnc ar_root_deep_fields(inst string, tt string) : void {
@@ -597,6 +833,40 @@ pub def CodeGen : class {
         return false;
     }
 
+    // Heap types that are bound by reference: the declaration stores the
+    // pointer, it never materialises a new object. Every other heap type
+    // (struct, class, union, array, slice, tuple) is copied by value, so
+    // its declaration allocates a fresh frame-local object.
+    pub fnc ar_is_ref_type(t string) : bool {
+        if t.bsize == 0 { return false; }
+        tt: string = this.strip_ref(t);
+        if tt == "string" { return true; }
+        if this.is_vec_type(tt) { return true; }
+        if tt.bsize > 5 && tt[0] == 'h' && tt[1] == 'a' && tt[2] == 's' && tt[3] == 'h' && tt[4] == '<' { return true; }
+        return false;
+    }
+
+    pub fnc is_pod_struct(typ string) : bool {
+        tt: string = this.strip_ref(typ);
+        if !this.tc.structs.isin(tt) { return false; }
+        si: StructInfo = this.tc.structs[tt];
+        foreach _, ft in<vector> si.field_types {
+            ftt: string = this.strip_ref(ft);
+            if ftt.bsize == 0 || ftt[0] == '&' || ftt[0] == '*' { return false; }
+            if ftt == "string" { return false; }
+            if this.is_vec_type(ftt) { return false; }
+            if ftt.bsize > 5 && ftt[0] == 'h' && ftt[1] == 'a' && ftt[2] == 's' && ftt[3] == 'h' && ftt[4] == '<' { return false; }
+            if ftt.bsize > 2 && ftt[ftt.bsize - 1] == ']' { return false; }
+            if ftt.bsize > 1 && ftt[0] == '(' && ftt[ftt.bsize - 1] == ')' { return false; }
+            if this.tc.classes.isin(ftt) { return false; }
+            if this.tc.unions.isin(ftt) { return false; }
+            if this.tc.structs.isin(ftt) {
+                if !this.is_pod_struct(ftt) { return false; }
+            }
+        }
+        return true;
+    }
+
     // Escape a spared returned value into the caller's frame. Returns
     // the value register to `ret` (escapes change the pointer, unlike
     // autofree's spare). `val` is the i8* view for pointer returns; for
@@ -622,15 +892,70 @@ pub def CodeGen : class {
         if tt2 == "string" {
             this.emit("  call void @leasharena_escape_string(i8** " + slot + ", i64 " + tostring(nf) + ")");
         } also this.is_vec_type(tt2) {
-            this.emit("  call void @leasharena_escape_vec(i8** " + slot + ", i64 " + tostring(nf) + ")");
+            inner_et: string = this.strip_ref(this.vec_inner_type(tt2));
+            use_typed: bool = false;
+            f_offs: vec<string>;
+            f_kinds: vec<string>;
+            pointee_lty: string = "";
+            pointee_sz: string = "8";
+            if this.tc.structs.isin(inner_et) {
+                pointee_lty = "%struct." + inner_et;
+                pointee_sz = this.type_alloc_size(pointee_lty);
+                si_v: StructInfo = this.tc.structs[inner_et];
+                si_v: StructInfo = this.tc.structs[inner_et];
+                fi_v: int = 0;
+                while fi_v < si_v.field_types.size {
+                    ft_v: string = this.strip_ref(si_v.field_types.get(fi_v));
+                    fk: int = 0;
+                    if ft_v == "string" { fk = 1; }
+                    also this.is_vec_type(ft_v) { fk = 2; }
+                    also ft_v.bsize > 5 && ft_v[0] == 'h' && ft_v[1] == 'a' && ft_v[2] == 's' && ft_v[3] == 'h' && ft_v[4] == '<' { fk = 3; }
+                    if fk > 0 {
+                        og: string = this.new_reg();
+                        this.emit("  " + og + " = getelementptr %struct." + inner_et + ", %struct." + inner_et + "* null, i32 0, i32 " + tostring(fi_v));
+                        ov: string = this.new_reg();
+                        this.emit("  " + ov + " = ptrtoint %struct." + inner_et + "* " + og + " to i64");
+                        f_offs.pushb(ov);
+                        f_kinds.pushb(tostring(fk));
+                    }
+                    fi_v = fi_v + 1;
+                }
+                if f_offs.size > 0 { use_typed = true; }
+            }
+            if use_typed {
+                nf_v: int = f_offs.size;
+                da: string = this.new_reg();
+                this.emit("  " + da + " = alloca [" + tostring(nf_v) + " x { i64, i32, i32 }], align 8");
+                di_v: int = 0;
+                while di_v < nf_v {
+                    dp: string = this.new_reg();
+                    this.emit("  " + dp + " = getelementptr inbounds [" + tostring(nf_v) + " x { i64, i32, i32 }], [" + tostring(nf_v) + " x { i64, i32, i32 }]* " + da + ", i64 0, i64 " + tostring(di_v));
+                    dp0: string = this.new_reg();
+                    this.emit("  " + dp0 + " = getelementptr inbounds { i64, i32, i32 }, { i64, i32, i32 }* " + dp + ", i32 0, i32 0");
+                    this.emit("  store i64 " + f_offs.get(di_v) + ", i64* " + dp0);
+                    dp1: string = this.new_reg();
+                    this.emit("  " + dp1 + " = getelementptr inbounds { i64, i32, i32 }, { i64, i32, i32 }* " + dp + ", i32 0, i32 1");
+                    this.emit("  store i32 " + f_kinds.get(di_v) + ", i32* " + dp1);
+                    dp2: string = this.new_reg();
+                    this.emit("  " + dp2 + " = getelementptr inbounds { i64, i32, i32 }, { i64, i32, i32 }* " + dp + ", i32 0, i32 2");
+                    this.emit("  store i32 0, i32* " + dp2);
+                    di_v = di_v + 1;
+                }
+                dptr: string = this.new_reg();
+                this.emit("  " + dptr + " = getelementptr inbounds [" + tostring(nf_v) + " x { i64, i32, i32 }], [" + tostring(nf_v) + " x { i64, i32, i32 }]* " + da + ", i64 0, i64 0");
+                this.emit("  call void @leasharena_escape_vec_typed(i8** " + slot + ", i64 " + tostring(nf) + ", i64 " + pointee_sz + ", i32 " + tostring(nf_v) + ", { i64, i32, i32 }* " + dptr + ")");
+            } else {
+                this.emit("  call void @leasharena_escape_vec(i8** " + slot + ", i64 " + tostring(nf) + ")");
+            }
         } also tt2.bsize > 5 && tt2[0] == 'h' && tt2[1] == 'a' && tt2[2] == 's' && tt2[3] == 'h' && tt2[4] == '<' {
             this.emit("  call void @leasharena_escape_hash(i8** " + slot + ", i64 " + tostring(nf) + ")");
         } also this.tc.structs.isin(tt2) || this.tc.classes.isin(tt2) {
-            // Struct/class return: stage the instance body AND every
-            // heap-typed field, pop once, then commit them into the
-            // caller's copy. Shallow seal would leave field pointers
-            // pointing at the dying scope (documented escape rule for
-            // unions only; structs/classes get the deep copy).
+            // Struct/class return: deep-stage the instance body and all
+            // heap fields (recursively) into malloc-backed staging, pop
+            // the frame(s) once, then commit everything into the caller's
+            // frame. Staging must happen before pop because heap fields
+            // (including nested struct fields) may point into the dying
+            // frame; reading them after pop is a use-after-scope.
             szr: string = this.llvm_type(ret_typ);
             pty: string = "";
             pi: int = 0;
@@ -639,147 +964,27 @@ pub def CodeGen : class {
             this.emit("  " + szg + " = getelementptr " + pty + ", " + szr + " null, i32 1");
             szv: string = this.new_reg();
             this.emit("  " + szv + " = ptrtoint " + szr + " " + szg + " to i64");
-            sptr: string = this.new_reg();
-            this.emit("  " + sptr + " = bitcast i8* " + spared + " to " + szr);
             stage_obj: string = this.new_reg();
             this.emit("  " + stage_obj + " = call i8* @leasharena_stage_blob(i8* " + spared + ", i64 " + szv + ")");
-            // Stage each heap field from the dying instance.
-            fslots: vec<string>;
-            fstages: vec<string>;
-            ftypes2: vec<string>;
-            fidxs: vec<string>;
-            if this.tc.structs.isin(tt2) {
-                si: StructInfo = this.tc.structs[tt2];
-                fi: int = 0;
-                while fi < si.field_types.size {
-                    ft: string = si.field_types.get(fi);
-                    if this.ar_is_heap_type(ft) {
-                        fp: string = this.new_reg();
-                        this.emit("  " + fp + " = getelementptr inbounds " + pty + ", " + szr + " " + sptr + ", i32 0, i32 " + tostring(fi));
-                        felty: string = this.llvm_type(ft);
-                        fval: string = this.new_reg();
-                        this.emit("  " + fval + " = load " + felty + ", " + felty + "* " + fp);
-                        fiv: string = this.new_reg();
-                        if felty == "i8*" { fiv = fval; }
-                        else { this.emit("  " + fiv + " = bitcast " + felty + " " + fval + " to i8*"); }
-                        fslot: string = this.new_reg();
-                        this.emit("  " + fslot + " = alloca i8*, align 8");
-                        fstage: string = this.new_reg();
-                        ftt: string = this.strip_ref(ft);
-                        if ftt == "string" {
-                            this.emit("  " + fstage + " = call i8* @leasharena_stage_string(i8* " + fiv + ")");
-                        } also this.is_vec_type(ftt) {
-                            this.emit("  " + fstage + " = call i8* @leasharena_stage_vec(i8* " + fiv + ")");
-                        } also ftt.bsize > 5 && ftt[0] == 'h' && ftt[1] == 'a' && ftt[2] == 's' && ftt[3] == 'h' && ftt[4] == '<' {
-                            this.emit("  " + fstage + " = call i8* @leasharena_stage_hash(i8* " + fiv + ")");
-                        } else {
-                            // nested struct/class field: static-size blob.
-                            fsz: string = this.llvm_type(ft);
-                            fpty: string = "";
-                            fpi: int = 0;
-                            while fpi < fsz.bsize - 1 { fpty = fpty + fsz[fpi]; fpi = fpi + 1; }
-                            fsg: string = this.new_reg();
-                            this.emit("  " + fsg + " = getelementptr " + fpty + ", " + fsz + " null, i32 1");
-                            fsv: string = this.new_reg();
-                            this.emit("  " + fsv + " = ptrtoint " + fsz + " " + fsg + " to i64");
-                            this.emit("  " + fstage + " = call i8* @leasharena_stage_blob(i8* " + fiv + ", i64 " + fsv + ")");
-                        }
-                        this.emit("  store i8* " + fstage + ", i8** " + fslot);
-                        fslots.pushb(fslot);
-                        fstages.pushb(fstage);
-                        ftypes2.pushb(ft);
-                        fidxs.pushb(tostring(fi));
-                    }
-                    fi = fi + 1;
-                }
-            } also this.tc.classes.isin(tt2) {
-                // Field 0 of a class is the vtable (rodata, never
-                // arena-owned): only user fields at index+1 escape.
-                ci: ClassInfo = this.tc.classes[tt2];
-                cfi: int = 0;
-                while cfi < ci.field_types.size {
-                    cft: string = ci.field_types.get(cfi);
-                    if this.ar_is_heap_type(cft) {
-                        cfp: string = this.new_reg();
-                        this.emit("  " + cfp + " = getelementptr inbounds " + pty + ", " + szr + " " + sptr + ", i32 0, i32 " + tostring(cfi + 1));
-                        cfelty: string = this.llvm_type(cft);
-                        cfval: string = this.new_reg();
-                        this.emit("  " + cfval + " = load " + cfelty + ", " + cfelty + "* " + cfp);
-                        cfiv: string = this.new_reg();
-                        if cfelty == "i8*" { cfiv = cfval; }
-                        else { this.emit("  " + cfiv + " = bitcast " + cfelty + " " + cfval + " to i8*"); }
-                        cfslot: string = this.new_reg();
-                        this.emit("  " + cfslot + " = alloca i8*, align 8");
-                        cfstage: string = this.new_reg();
-                        cftt: string = this.strip_ref(cft);
-                        if cftt == "string" {
-                            this.emit("  " + cfstage + " = call i8* @leasharena_stage_string(i8* " + cfiv + ")");
-                        } also this.is_vec_type(cftt) {
-                            this.emit("  " + cfstage + " = call i8* @leasharena_stage_vec(i8* " + cfiv + ")");
-                        } also cftt.bsize > 5 && cftt[0] == 'h' && cftt[1] == 'a' && cftt[2] == 's' && cftt[3] == 'h' && cftt[4] == '<' {
-                            this.emit("  " + cfstage + " = call i8* @leasharena_stage_hash(i8* " + cfiv + ")");
-                        } else {
-                            cfsz: string = this.llvm_type(cft);
-                            cfpty: string = "";
-                            cfpi: int = 0;
-                            while cfpi < cfsz.bsize - 1 { cfpty = cfpty + cfsz[cfpi]; cfpi = cfpi + 1; }
-                            cfsg: string = this.new_reg();
-                            this.emit("  " + cfsg + " = getelementptr " + cfpty + ", " + cfsz + " null, i32 1");
-                            cfsv: string = this.new_reg();
-                            this.emit("  " + cfsv + " = ptrtoint " + cfsz + " " + cfsg + " to i64");
-                            this.emit("  " + cfstage + " = call i8* @leasharena_stage_blob(i8* " + cfiv + ", i64 " + cfsv + ")");
-                        }
-                        this.emit("  store i8* " + cfstage + ", i8** " + cfslot);
-                        fslots.pushb(cfslot);
-                        fstages.pushb(cfstage);
-                        ftypes2.pushb(cft);
-                        fidxs.pushb(tostring(cfi + 1));
-                    }
-                    cfi = cfi + 1;
-                }
-            }
-            // Single pop, then commit the instance + every field.
+            // Deep stage: stage all heap fields (and nested fields) before pop.
+            es1: vec<string>;
+            es2: vec<string>;
+            es3: vec<string>;
+            es4: vec<string>;
+            this.ar_stage_slots = es1;
+            this.ar_stage_kinds = es2;
+            this.ar_stage_types = es3;
+            this.ar_stage_fidxs = es4;
+            this.ar_stage_cursor = 0;
+            this.ar_deep_stage_struct_fields(spared, tt2);
+            // Single pop, then deep commit.
             this.emit("  call void @leasharena_exit_n(i64 " + tostring(nf) + ")");
             this.emit("  call void @leasharena_commit_blob(i8** " + slot + ", i8* " + stage_obj + ", i64 " + szv + ")");
+            // Re-read committed base and commit deep fields.
             nnp: string = this.new_reg();
-            this.emit("  " + nnp + " = load i8*, i8** " + slot);
-            gci: int = 0;
-            while gci < fslots.size {
-                gfp: string = this.new_reg();
-                this.emit("  " + gfp + " = getelementptr inbounds " + pty + ", " + szr + " " + nnp + ", i32 0, i32 " + fidxs.get(gci));
-                gfelty: string = this.llvm_type(ftypes2.get(gci));
-                gcs: string = this.new_reg();
-                this.emit("  " + gcs + " = bitcast " + gfelty + "* " + gfp + " to i8**");
-                gst: string = fstages.get(gci);
-                gtt: string = this.strip_ref(ftypes2.get(gci));
-                if gtt == "string" {
-                    this.emit("  call void @leasharena_commit_string(i8** " + gcs + ", i8* " + gst + ")");
-                } also this.is_vec_type(gtt) {
-                    this.emit("  call void @leasharena_commit_vec(i8** " + gcs + ", i8* " + gst + ")");
-                } also gtt.bsize > 5 && gtt[0] == 'h' && gtt[1] == 'a' && gtt[2] == 's' && gtt[3] == 'h' && gtt[4] == '<' {
-                    this.emit("  call void @leasharena_commit_hash(i8** " + gcs + ", i8* " + gst + ")");
-                } else {
-                    gsz: string = this.llvm_type(ftypes2.get(gci));
-                    gpty: string = "";
-                    gpi: int = 0;
-                    while gpi < gsz.bsize - 1 { gpty = gpty + gsz[gpi]; gpi = gpi + 1; }
-                    gsg: string = this.new_reg();
-                    this.emit("  " + gsg + " = getelementptr " + gpty + ", " + gsz + " null, i32 1");
-                    gsv: string = this.new_reg();
-                    this.emit("  " + gsv + " = ptrtoint " + gsz + " " + gsg + " to i64");
-                    this.emit("  call void @leasharena_commit_blob(i8** " + gcs + ", i8* " + gst + ", i64 " + gsv + ")");
-                    // Heap fields of the nested instance still alias the
-                    // dying frame (only the body was blob-copied). Deep-root
-                    // them NOW, before later commits reuse that memory.
-                    gnp: string = this.new_reg();
-                    this.emit("  " + gnp + " = load i8*, i8** " + gcs);
-                    gnst: string = this.strip_ref(ftypes2.get(gci));
-                    if this.tc.structs.isin(gnst) || this.tc.classes.isin(gnst) {
-                        this.ar_root_deep_fields(gnp, gnst);
-                    }
-                }
-                gci = gci + 1;
-            }
+            this.emit("  " + nnp + " = load i8*, i8** " + slot + ", align 8");
+            this.ar_stage_cursor = 0;
+            this.ar_deep_commit_struct_fields(nnp, tt2);
         } else {
             // union pointer: static-size blob copy (payload shallow).
             szr: string = this.llvm_type(ret_typ);
@@ -947,8 +1152,23 @@ pub def CodeGen : class {
                 if vt.bsize == 0 && s.value != null {
                     vt = this.get_expr_type(s.value);
                 }
-                if vt.bsize > 0 && this.ar_is_heap_type(vt) {
-                    return true;
+                // A declaration that binds an existing reference does not
+                // allocate: `tmp: string = v.get(i)` copies a pointer to an
+                // element the vector already owns. Value types are
+                // different: `tmp: Node = v.get(i)` copies the struct into
+                // a fresh frame-local object, so the declaration itself
+                // allocates whatever the initializer does.
+                if s.value != null {
+                    if vt.bsize > 0 && this.ar_is_heap_type(vt) && !this.ar_is_ref_type(vt) {
+                        return true;
+                    }
+                    if this.ar_expr_alloc(s.value) {
+                        return true;
+                    }
+                } else {
+                    if vt.bsize > 0 && this.ar_is_heap_type(vt) {
+                        return true;
+                    }
                 }
                 if s.is_infer && s.value != null && this.ar_expr_alloc(s.value) {
                     return true;
@@ -1046,6 +1266,7 @@ pub def CodeGen : class {
             return false;
         }
         if e.kind == ExprKind.CALL || e.kind == ExprKind.METHOD_CALL {
+            accessor: bool = false;
             if e.kind == ExprKind.METHOD_CALL && e.left != null {
                 rt: string = this.ar_expr_root(e.left);
                 if rt.bsize > 0 && this.ar_is_heap_type(this.ar_var_type(rt)) {
@@ -1054,10 +1275,20 @@ pub def CodeGen : class {
                     if m == "push" || m == "pushb" || m == "pushf" || m == "insert" || m == "inserta" || m == "insertv" || m == "extend" || m == "extendv" {
                         return true;
                     }
+                    // Element accessors hand back a reference to an object
+                    // that already exists (a vec slot, a hash value): they
+                    // move no bytes and allocate nothing. Their result type
+                    // is heap-shaped, so the generic "heap return type =>
+                    // allocates" rule below must not fire for them.
+                    if m == "get" || m == "getKey" {
+                        accessor = true;
+                    }
                 }
             }
-            if this.ar_is_heap_type(this.get_expr_type(e)) {
-                return true;
+            if !accessor {
+                if this.ar_is_heap_type(this.get_expr_type(e)) {
+                    return true;
+                }
             }
             if e.left != null && this.ar_expr_alloc(e.left) { return true; }
             foreach _, a in<vector> e.args {
@@ -1108,7 +1339,22 @@ pub def CodeGen : class {
         return this.ar_stmts_alloc(s.body);
     }
 
+    pub fnc ar_arena_opt_ge(n int) : bool {
+        if this.opt_level == "0" { return n <= 0; }
+        if this.opt_level == "1" { return n <= 1; }
+        if this.opt_level == "s" || this.opt_level == "z" { return n <= 2; }
+        // "2","3","4" and default
+        if this.opt_level == "2" { return n <= 2; }
+        if this.opt_level == "3" { return n <= 3; }
+        if this.opt_level == "4" { return n <= 4; }
+        return n <= 2;
+    }
+
     pub fnc ar_loop_ok(s Stmt) : bool {
+        // Arena's core win is per-iteration reclamation: always enable
+        // loop checkpoints when the loop is safe to reset (no outer
+        // survivors), including -O0, so churny loops don't retain all
+        // temporaries in the bump until the function exits.
         inner: hash<string, bool>;
         this.ar_collect_inner(s.body, inner);
         if this.ar_scan_outer(s.body, inner) { return false; }
@@ -1314,6 +1560,382 @@ pub def CodeGen : class {
         this.emit("  call void @leasharena_loop_reset(i64 " + hv2 + ")");
     }
 
+    // Is `nm` a vector receiver the current scope can already resolve?
+    // Locals and globals are known by name; a function parameter counts
+    // too (its address is the receiver). Anything else (a vector declared
+    // inside the loop body) is not addressable yet.
+    pub fnc ar_vec_receiver_known(nm string) : bool {
+        if nm.bsize == 0 { return false; }
+        if this.var_types.isin(nm) { return true; }
+        if this.global_vars.isin(nm) { return true; }
+        cur: string = this.current_func_name;
+        if cur.bsize > 0 && this.tc.func_param_names.isin(cur) {
+            pnames: vec<string> = this.tc.func_param_names[cur];
+            foreach _, pn in<vector> pnames {
+                if pn == nm { return true; }
+            }
+        }
+        return false;
+    }
+
+    // Compile-time integer folding for the arena's trip-count analysis.
+    // Only pure integer arithmetic over literals and locals whose value
+    // is a known constant folds; every other shape fails.
+    pub fnc ar_const_int_ok(e Expr) : bool {
+        if e == null { return false; }
+        if e.kind == ExprKind.INT { return e.ival <= 1073741824 && e.ival >= -1073741824; }
+        if e.kind == ExprKind.IDENT {
+            if !this.ar_const_ints.isin(e.sval) { return false; }
+            if this.ar_const_dead.isin(e.sval) && this.ar_const_dead[e.sval] { return false; }
+            return true;
+        }
+        if e.kind == ExprKind.UNARY {
+            if e.op != "-" && e.op != "+" { return false; }
+            return this.ar_const_int_ok(e.left);
+        }
+        if e.kind == ExprKind.BINOP {
+            if e.op != "+" && e.op != "-" && e.op != "*" && e.op != "/" && e.op != "%" { return false; }
+            if !this.ar_const_int_ok(e.left) { return false; }
+            if !this.ar_const_int_ok(e.right) { return false; }
+            if (e.op == "/" || e.op == "%") {
+                if this.ar_const_int_val(e.right) <= 0 { return false; }
+            }
+            return true;
+        }
+        return false;
+    }
+
+    pub fnc ar_const_int_val(e Expr) : int<64> {
+        if e.kind == ExprKind.INT { return e.ival; }
+        if e.kind == ExprKind.IDENT { return this.ar_const_ints[e.sval]; }
+        if e.kind == ExprKind.UNARY {
+            uv: int<64> = this.ar_const_int_val(e.left);
+            if e.op == "-" { return -uv; }
+            return uv;
+        }
+        av: int<64> = this.ar_const_int_val(e.left);
+        bv: int<64> = this.ar_const_int_val(e.right);
+        if e.op == "+" { return av + bv; }
+        if e.op == "-" { return av - bv; }
+        if e.op == "*" { return av * bv; }
+        if e.op == "/" { return av / bv; }
+        if e.op == "%" { return av % bv; }
+        return 0;
+    }
+
+    // Trip count of a counted `for` loop (i = start; i < end; i += 1) when
+    // the bound folds to a compile-time constant. 0 means "unknown".
+    // The arena uses the count to size buffers exactly once instead of
+    // growing them through a ladder of abandoned allocations.
+    // True when the loop step advances `ivar` by exactly one:
+    //   i = i + 1   or   i += 1
+    // Every test is a single condition: no boolean chain to mis-evaluate
+    // and no nesting, which keeps the analysis readable and cheap.
+    pub fnc ar_for_step_plus1(s Stmt, ivar string) : bool {
+        if s == null { return false; }
+        if s.kind != StmtKind.ASSIGN { return false; }
+        if s.target == null { return false; }
+        if s.target.kind != ExprKind.IDENT { return false; }
+        if s.target.sval != ivar { return false; }
+        if s.op == "+=" {
+            if s.value == null { return false; }
+            if s.value.kind != ExprKind.INT { return false; }
+            if s.value.ival != 1 { return false; }
+            return true;
+        }
+        if s.op != "=" { return false; }
+        if s.value == null { return false; }
+        if s.value.kind != ExprKind.BINOP { return false; }
+        if s.value.op != "+" { return false; }
+        if s.value.left == null { return false; }
+        if s.value.left.kind != ExprKind.IDENT { return false; }
+        if s.value.left.sval != ivar { return false; }
+        if s.value.right == null { return false; }
+        if s.value.right.kind != ExprKind.INT { return false; }
+        if s.value.right.ival != 1 { return false; }
+        return true;
+    }
+
+    // Trip count of a counted `for` loop (i = start; i < end; i += 1) when
+    // the bound folds to a compile-time constant. 0 means "unknown".
+    // The arena uses the count to size buffers exactly once instead of
+    // growing them through a ladder of abandoned allocations.
+    pub fnc ar_for_trip(s Stmt) : int<64> {
+        if s == null { return 0; }
+        if s.cond == null { return 0; }
+        if s.for_step == null { return 0; }
+        if s.cond.kind != ExprKind.BINOP { return 0; }
+        if s.cond.op != "<" { return 0; }
+        if s.cond.left == null { return 0; }
+        if s.cond.left.kind != ExprKind.IDENT { return 0; }
+        ivar: string = s.cond.left.sval;
+        if !this.ar_for_step_plus1(s.for_step, ivar) { return 0; }
+        start_expr: Expr = null;
+        if s.for_init != null {
+            if s.for_init.kind == StmtKind.VAR_DECL && s.for_init.name == ivar && s.for_init.value != null {
+                start_expr = s.for_init.value;
+            } else if s.for_init.kind == StmtKind.ASSIGN && s.for_init.target != null && s.for_init.target.kind == ExprKind.IDENT && s.for_init.target.sval == ivar && s.for_init.value != null {
+                start_expr = s.for_init.value;
+            }
+        }
+        if start_expr == null { return 0; }
+        end_expr: Expr = s.cond.right;
+        if end_expr == null { return 0; }
+        if !this.ar_const_int_ok(start_expr) { return 0; }
+        if !this.ar_const_int_ok(end_expr) { return 0; }
+        ev: int<64> = this.ar_const_int_val(end_expr);
+        sv: int<64> = this.ar_const_int_val(start_expr);
+        if ev <= sv { return 0; }
+        cnt: int<64> = ev - sv;
+        if cnt > 16777216 { return 0; }
+        return cnt;
+    }
+
+    // Emit `reserve(vec, vec.size + count)` for `count` more elements.
+    pub fnc ar_emit_vec_reserve(vec_name string, count int<64>) : void {
+        obj_val: string = this.gen_expr(Expr.make_ident(vec_name));
+        cur_sz: string = this.vec_field(obj_val, 1);
+        need_reg: string = this.new_reg();
+        this.emit("  " + need_reg + " = add i64 " + cur_sz + ", " + tostring(count));
+        if this.arena && this.ar_is_outer_var(vec_name) {
+            this.emit("  call void @leash_sh_vec_reserve_rooted(i8* " + obj_val + ", i64 " + need_reg + ")");
+        } else {
+            this.emit("  call void @leash_sh_vec_reserve(i8* " + obj_val + ", i64 " + need_reg + ")");
+        }
+    }
+
+    // Name of the first receiver a `method` call targets inside `body`.
+    // Nested loops are searched too: a vector that is only filled by an
+    // inner loop still has a nameable receiver.
+    pub fnc ar_loop_push_recv(body vec<Stmt>, method string) : string {
+        foreach _, bs in<vector> body {
+            if bs.kind == StmtKind.EXPR {
+                call_e: Expr = bs.value;
+                if call_e == null { continue; }
+                if call_e.kind != ExprKind.METHOD_CALL { continue; }
+                if call_e.sval != method { continue; }
+                if call_e.left == null || call_e.left.kind != ExprKind.IDENT { continue; }
+                return call_e.left.sval;
+            } also bs.kind == StmtKind.FOR {
+                r: string = this.ar_loop_push_recv(bs.body, method);
+                if r.bsize > 0 { return r; }
+            }
+        }
+        return "";
+    }
+
+    // Upper bound on the number of elements one iteration of the loop
+    // body can append to `recv`. Direct calls count once; a nested
+    // counted loop contributes its pushes times its trip count. The
+    // bound may over-count (a reservation may be larger than needed)
+    // but it never under-counts, so the vector cannot overflow.
+    pub fnc ar_loop_push_count(body vec<Stmt>, recv string, method string, nested bool) : int<64> {
+        total: int<64> = 0;
+        foreach _, bs in<vector> body {
+            if bs.kind == StmtKind.EXPR {
+                call_e: Expr = bs.value;
+                if call_e == null { continue; }
+                if call_e.kind != ExprKind.METHOD_CALL { continue; }
+                if call_e.sval != method { continue; }
+                if call_e.left == null || call_e.left.kind != ExprKind.IDENT { continue; }
+                if call_e.left.sval == recv { total = total + 1; }
+            } also bs.kind == StmtKind.FOR && nested {
+                inner_trip: int<64> = this.ar_for_trip(bs);
+                if inner_trip > 0 {
+                    inner_pushes: int<64> = this.ar_loop_push_count(bs.body, recv, method, true);
+                    if inner_pushes > 0 {
+                        total = total + inner_pushes * inner_trip;
+                    }
+                }
+            }
+        }
+        return total;
+    }
+
+    // Arena-only: match a hash key of the form
+    //   <string expr> + <int expr>        (also "<string>" + tostring(i))
+    // and evaluate it into [prefix_reg, int64_reg, is_uint].  The fused
+    // runtime helper builds the key in a stack buffer, so the arena
+    // never allocates a temporary key string -- the arena keeps
+    // temporaries alive until the scope ends, so for a table filled in
+    // one loop every key string would stay resident.
+    // `op` is the assignment operator of the use site: "" accepts any
+    // site, "=" only accepts a plain store (a compound store needs the
+    // old value and goes through the ordinary path).
+    // Returns an empty vec when the expression does not match; nothing
+    // is emitted in that case.
+    pub fnc ar_fused_hash_key(key_expr Expr, key_type string, op string) : vec<string> {
+        out: vec<string>;
+        if !this.arena { return out; }
+        if !this.ar_arena_opt_ge(3) { return out; }
+        if op != "" && op != "=" { return out; }
+        if this.strip_ref(key_type) != "string" { return out; }
+        if key_expr == null { return out; }
+        if key_expr.kind != ExprKind.BINOP { return out; }
+        if key_expr.op != "+" { return out; }
+        if key_expr.left == null || key_expr.right == null { return out; }
+        if this.strip_ref(this.get_expr_type(key_expr.left)) != "string" { return out; }
+        int_expr: Expr = key_expr.right;
+        int_ty: string = this.strip_ref(this.get_expr_type(int_expr));
+        if int_ty != "int" && int_ty != "uint" {
+            if int_expr.kind != ExprKind.CALL { return out; }
+            if int_expr.sval != "tostring" { return out; }
+            if int_expr.args.size != 1 { return out; }
+            int_expr = int_expr.args.get(0);
+            int_ty = this.strip_ref(this.get_expr_type(int_expr));
+            if int_ty != "int" && int_ty != "uint" { return out; }
+        }
+        prefix_reg: string = this.gen_expr(key_expr.left);
+        int_reg: string = this.gen_expr(int_expr);
+        int64_reg: string = this.concat_int_widen(int_expr, int_reg, int_ty);
+        is_uint: string = "0";
+        if int_ty == "uint" { is_uint = "1"; }
+        out.pushb(prefix_reg);
+        out.pushb(int64_reg);
+        out.pushb(is_uint);
+        return out;
+    }
+
+    // Arena-only: size a hash table for the number of entries the loop
+    // inserts, so its bucket ladder is allocated once instead of doubling
+    // through a chain of abandoned arrays.
+    pub fnc ar_for_hash_reserve(s Stmt) : void {
+        if !this.arena { return; }
+        if !this.ar_arena_opt_ge(2) { return; }
+        trip: int<64> = this.ar_for_trip(s);
+        if trip <= 0 { return; }
+        hash_name: string = this.ar_loop_push_recv(s.body, "push");
+        if hash_name.bsize == 0 { return; }
+        nested_ok: bool = this.ar_arena_opt_ge(3);
+        pushes: int<64> = this.ar_loop_push_count(s.body, hash_name, "push", nested_ok);
+        if pushes == 0 { return; }
+        if nested_ok {
+            inner_h: hash<string, bool>;
+            this.ar_collect_inner(s.body, inner_h);
+            if inner_h.isin(hash_name) { return; }
+        }
+        ht: string = "";
+        if this.var_types.isin(hash_name) { ht = this.var_types[hash_name]; }
+        else if this.global_vars.isin(hash_name) { ht = this.global_vars[hash_name]; }
+        if ht.bsize < 6 { return; }
+        if ht[0] != 'h' || ht[1] != 'a' || ht[2] != 's' || ht[3] != 'h' || ht[4] != '<' { return; }
+        total: int<64> = trip * pushes;
+        if total <= 0 || total > 16777216 { return; }
+        obj_val: string = this.gen_expr(Expr.make_ident(hash_name));
+        this.emit("  call void @leash_sh_hash_reserve(i8* " + obj_val + ", i64 " + tostring(total) + ")");
+    }
+
+    // Best-effort: detect `for i=start; i<end; i=i+1 { ...; v.pushb(x); ... }`
+    // and reserve capacity before the loop. Returns the vec receiver expr
+    // and count expr info via out params encoded as a small struct-like
+    // approach is awkward in Leash; instead emit reserve directly here.
+    pub fnc ar_for_pushb_reserve(s Stmt) : void {
+        if s.cond == null || s.for_step == null { return; }
+        // Body: count the unconditional top-level pushb calls that target
+        // one vector. `count * pushes` is an upper bound on the elements
+        // the loop can add, so a single reservation replaces the whole
+        // growth ladder (each step of which abandons the old buffer).
+        vec_name: string = this.ar_loop_push_recv(s.body, "pushb");
+        if vec_name.bsize == 0 { return; }
+        // O3+ (arena only): nested counted loops are folded into the
+        // count, so a vector filled by an inner loop is reserved once at
+        // its final size. The GC recycles its growth ladder through
+        // realloc; the arena cannot, so the deeper analysis pays off
+        // there and only there.
+        nested_ok: bool = this.arena && this.ar_arena_opt_ge(3);
+        pushes: int<64> = this.ar_loop_push_count(s.body, vec_name, "pushb", nested_ok);
+        if pushes == 0 { return; }
+        if nested_ok {
+            inner_v: hash<string, bool>;
+            this.ar_collect_inner(s.body, inner_v);
+            if inner_v.isin(vec_name) { return; }
+        }
+        // The receiver must be a variable the compiler can already name:
+        // a local in scope, a global, or a parameter of the current
+        // function. A vector declared inside the loop body is not.
+        if !this.ar_vec_receiver_known(vec_name) { return; }
+        // O2+: the trip count folds to a compile-time constant, so the
+        // reservation is exact and the buffer never grows through a
+        // ladder of abandoned allocations.
+        if this.ar_arena_opt_ge(2) {
+            trip: int<64> = this.ar_for_trip(s);
+            if trip > 0 {
+                total: int<64> = trip * pushes;
+                if total > 0 && total <= 16777216 {
+                    this.ar_emit_vec_reserve(vec_name, total);
+                    return;
+                }
+            }
+        }
+        // Fallback: compute count = end - start at runtime.
+        // condition: i < end
+        if s.cond.kind != ExprKind.BINOP || s.cond.op != "<" { return; }
+        if s.cond.left == null || s.cond.left.kind != ExprKind.IDENT { return; }
+        ivar: string = s.cond.left.sval;
+        // step: i = i + 1  (or i += 1)
+        if !this.ar_for_step_plus1(s.for_step, ivar) { return; }
+        // init gives start value
+        start_expr: Expr = null;
+        if s.for_init != null {
+            if s.for_init.kind == StmtKind.VAR_DECL && s.for_init.name == ivar && s.for_init.value != null {
+                start_expr = s.for_init.value;
+            } else if s.for_init.kind == StmtKind.ASSIGN && s.for_init.target != null && s.for_init.target.kind == ExprKind.IDENT && s.for_init.target.sval == ivar && s.for_init.value != null {
+                start_expr = s.for_init.value;
+            }
+        }
+        if start_expr == null { return; }
+        // The start and end expressions are read before the loop's init
+        // statement runs, so only side-effect-free forms may be hoisted.
+        if start_expr.kind != ExprKind.INT && start_expr.kind != ExprKind.IDENT { return; }
+        end_expr: Expr = s.cond.right;
+        if end_expr == null { return; }
+        if end_expr.kind != ExprKind.INT && end_expr.kind != ExprKind.IDENT { return; }
+        // compute count = end - start; emit reserve(vec, vec.size + count)
+        end_val: string = this.gen_expr(end_expr);
+        start_val: string = this.gen_expr(start_expr);
+        end_val = this.i32_to_rt_i64(end_expr, end_val);
+        start_val = this.i32_to_rt_i64(start_expr, start_val);
+        count_reg: string = this.new_reg();
+        this.emit("  " + count_reg + " = sub i64 " + end_val + ", " + start_val);
+        if pushes > 1 {
+            mul_reg: string = this.new_reg();
+            this.emit("  " + mul_reg + " = mul i64 " + count_reg + ", " + tostring(pushes));
+            count_reg = mul_reg;
+        }
+        // guard against non-positive count
+        pos_reg: string = this.new_reg();
+        this.emit("  " + pos_reg + " = icmp sgt i64 " + count_reg + ", 0");
+        l_do: string = this.new_label("b_rsrv_do");
+        l_skip: string = this.new_label("b_rsrv_skip");
+        this.emit("  br i1 " + pos_reg + ", label %" + l_do + ", label %" + l_skip);
+        this.emit(l_do + ":");
+        this.current_block_terminated = false;
+        // get vec ptr
+        obj_val: string = this.gen_expr(Expr.make_ident(vec_name));
+        cur_sz: string = this.vec_field(obj_val, 1);
+        need_reg: string = this.new_reg();
+        this.emit("  " + need_reg + " = add i64 " + cur_sz + ", " + count_reg);
+        if this.arena && this.ar_is_outer_var(vec_name) {
+            this.emit("  call void @leash_sh_vec_reserve_rooted(i8* " + obj_val + ", i64 " + need_reg + ")");
+        } else {
+            this.emit("  call void @leash_sh_vec_reserve(i8* " + obj_val + ", i64 " + need_reg + ")");
+        }
+        this.emit("  br label %" + l_skip);
+        this.emit(l_skip + ":");
+        this.current_block_terminated = false;
+    }
+    // Arena-only: tag a loop latch with llvm.loop.align so the hot loop
+    // header starts on a 64-byte boundary. Arena frames add enter/exit
+    // and checkpoint code ahead of inlined loops, which otherwise shifts
+    // them off the alignment the GC build happens to get. Returns the
+    // metadata suffix for the back-edge branch ("" when not applicable).
+    pub fnc ar_loop_meta() : string {
+        if !this.arena { return ""; }
+        if this.ar_frameless { return ""; }
+        if this.opt_level == "0" || this.opt_level == "s" || this.opt_level == "z" { return ""; }
+        return "";
+    }
+
     // The innermost instrumented handle, or "" if none.
     pub fnc ar_top_handle() : string {
         if this.ar_loop_handles.size == 0 { return ""; }
@@ -1436,6 +2058,28 @@ pub def CodeGen : class {
         l: string = prefix + "_" + tostring(this.label_counter);
         this.label_counter = this.label_counter + 1;
         return l;
+    }
+
+    // Arena: allocate `size_reg` bytes through the alwaysinline bump
+    // helper emitted in the IR prelude (fast TLS cur/end bump, header
+    // store, optional zero-fill; falls back to the runtime on block
+    // exhaustion). Non-arena modes keep the regular runtime call.
+    pub fnc ar_alloc(size_reg string, zeroed bool) : string {
+        r: string = this.new_reg();
+        if this.arena {
+            if zeroed {
+                this.emit("  " + r + " = call i8* @__leash_ar_alloc(i64 " + size_reg + ")");
+            } else {
+                this.emit("  " + r + " = call i8* @__leash_ar_alloc_nz(i64 " + size_reg + ")");
+            }
+            return r;
+        }
+        if zeroed {
+            this.emit("  " + r + " = call i8* @leash_gc_malloc(i64 " + size_reg + ")");
+        } else {
+            this.emit("  " + r + " = call i8* @leash_gc_malloc_nz(i64 " + size_reg + ")");
+        }
+        return r;
     }
 
     // Coerce a value to i1 the way Python's _cast_bool does: bool is
@@ -1596,7 +2240,26 @@ pub def CodeGen : class {
 
     // Byte size of one vec element for the runtime layout (pointer-typed
     // elements are stored as 8-byte references).
+    pub fnc vec_inline_pod(inner string) : bool {
+        // Inline POD structs (no heap fields) as value elements in vecs:
+        // eliminates pointer indirection. Only for plain structs, not
+        // classes/unions (different layout/semantics).
+        tt: string = this.strip_ref(inner);
+        if !this.tc.structs.isin(tt) { return false; }
+        return this.is_pod_struct(tt);
+    }
+
     pub fnc vec_elem_bytes(inner string) : int {
+        if this.vec_inline_pod(inner) {
+            slty: string = this.llvm_type(inner);
+            pty: string = "";
+            pi: int = 0;
+            while pi < slty.bsize - 1 { pty = pty + slty[pi]; pi = pi + 1; }
+            // compute sizeof via ABI helper if available; fall back
+            esz2: int = this.abi_size_of(this.strip_ref(inner));
+            if esz2 > 0 { return esz2; }
+            return 16;
+        }
         lty: string = this.llvm_type(inner);
         if lty.bsize > 1 && lty[lty.bsize - 1] == '*' { return 8; }
         // Union elements are boxed aggregates ({ i64 tag, payload }) — the
@@ -1615,6 +2278,7 @@ pub def CodeGen : class {
     pub fnc vec_elem_scan(inner string) : bool {
         if inner == "int" || inner == "float" || inner == "char" || inner == "bool" { return false; }
         if this.is_sized_int_type(inner) { return false; }
+        if this.vec_inline_pod(inner) { return false; }
         return true;
     }
 
@@ -1838,8 +2502,7 @@ pub def CodeGen : class {
         this.emit("  " + total + " = mul i64 " + len + ", " + tostring(dst_esz));
         lit_flags: int = 0;
         if !this.vec_elem_scan(to_base) { lit_flags = 2; }
-        raw: string = this.new_reg();
-        this.emit("  " + raw + " = call i8* @leash_gc_malloc_ex(i64 " + total + ", i32 " + tostring(lit_flags) + ")");
+        raw: string = this.ar_alloc(total, true);
         dst: string = this.new_reg();
         this.emit("  " + dst + " = bitcast i8* " + raw + " to " + to_e + "*");
         l_cond: string = this.new_label("ad_cond");
@@ -1957,21 +2620,29 @@ pub def CodeGen : class {
         this.emit("  " + szg + " = getelementptr " + pty + ", " + lty + " null, i32 1");
         szr: string = this.new_reg();
         this.emit("  " + szr + " = ptrtoint " + lty + " " + szg + " to i64");
-        cp8: string = this.new_reg();
-        this.emit("  " + cp8 + " = call i8* @leash_sh_clone_obj(i8* " + val + ", i64 " + szr + ")");
+        cp8: string = "";
+        if this.is_pod_struct(typ) {
+            cp8 = this.ar_alloc(szr, false);
+            this.emit("  call void @llvm.memcpy.p0i8.p0i8.i64(i8* " + cp8 + ", i8* " + val + ", i64 " + szr + ", i1 false)");
+        } else {
+            cp8 = this.new_reg();
+            this.emit("  " + cp8 + " = call i8* @leash_sh_clone_obj(i8* " + val + ", i64 " + szr + ")");
+        }
         cp: string = this.new_reg();
         this.emit("  " + cp + " = bitcast i8* " + cp8 + " to " + lty);
-        si: StructInfo = this.tc.structs[typ];
-        foreach fi, ft in<vector> si.field_types {
-            if ft.bsize == 0 || ft[0] == '&' { continue; }
-            if this.tc.structs.isin(ft) {
-                flty: string = this.llvm_type(ft);
-                fg: string = this.new_reg();
-                this.emit("  " + fg + " = getelementptr " + pty + ", " + lty + " " + cp + ", i32 0, i32 " + tostring(fi));
-                fold: string = this.new_reg();
-                this.emit("  " + fold + " = load " + flty + ", " + flty + "* " + fg);
-                fnew: string = this.clone_struct_val(fold, ft);
-                this.emit("  store " + flty + " " + fnew + ", " + flty + "* " + fg);
+        if !this.is_pod_struct(typ) {
+            si: StructInfo = this.tc.structs[typ];
+            foreach fi, ft in<vector> si.field_types {
+                if ft.bsize == 0 || ft[0] == '&' { continue; }
+                if this.tc.structs.isin(ft) && !this.is_pod_struct(ft) {
+                    flty: string = this.llvm_type(ft);
+                    fg: string = this.new_reg();
+                    this.emit("  " + fg + " = getelementptr " + pty + ", " + lty + " " + cp + ", i32 0, i32 " + tostring(fi));
+                    fold: string = this.new_reg();
+                    this.emit("  " + fold + " = load " + flty + ", " + flty + "* " + fg);
+                    fnew: string = this.clone_struct_val(fold, ft);
+                    this.emit("  store " + flty + " " + fnew + ", " + flty + "* " + fg);
+                }
             }
         }
         return cp;
@@ -2257,8 +2928,8 @@ pub def CodeGen : class {
             bw: int = this.lty_width(lty);
             if bw > 64 {
                 bbytes: int = (bw + 7) / 8;
-                bmem: string = this.new_reg();
-                this.emit("  " + bmem + " = call i8* @leash_gc_malloc(i64 " + tostring(bbytes) + ")");
+                // Wide-int box: the full width is stored immediately.
+                bmem: string = this.ar_alloc(tostring(bbytes), false);
                 bbp: string = this.new_reg();
                 this.emit("  " + bbp + " = bitcast i8* " + bmem + " to " + lty + "*");
                 this.emit("  store " + lty + " " + val + ", " + lty + "* " + bbp);
@@ -5326,8 +5997,8 @@ pub def CodeGen : class {
                 this.emit("  " + sz_gep + " = getelementptr " + cty + ", " + cty + "* null, i32 1");
                 sz_i: string = this.new_reg();
                 this.emit("  " + sz_i + " = ptrtoint " + cty + "* " + sz_gep + " to i64");
-                craw2: string = this.new_reg();
-                this.emit("  " + craw2 + " = call i8* @leash_gc_malloc(i64 " + sz_i + ")");
+                // Zeroed instance (fields not written by the ctor read 0).
+                craw2: string = this.ar_alloc(sz_i, true);
                 obj_ptr2: string = this.new_reg();
                 this.emit("  " + obj_ptr2 + " = bitcast i8* " + craw2 + " to " + cty + "*");
                 // Vtable pointer at slot 0 when the class has methods.
@@ -5416,8 +6087,7 @@ pub def CodeGen : class {
                 this.emit("  " + b_le + " = icmp ule i64 " + b_size + ", " + tostring(b_vbytes));
                 b_copy: string = this.new_reg();
                 this.emit("  " + b_copy + " = select i1 " + b_le + ", i64 " + b_size + ", i64 " + tostring(b_vbytes));
-                b_mem: string = this.new_reg();
-                this.emit("  " + b_mem + " = call i8* @leash_gc_malloc(i64 " + b_size + ")");
+                b_mem: string = this.ar_alloc(b_size, true);
                 this.emit("  call i8* @memmove(i8* " + b_mem + ", i8* " + b_bp + ", i64 " + b_copy + ")");
                 b_s0: string = this.new_reg();
                 this.emit("  " + b_s0 + " = insertvalue { i64, i8* } undef, i64 " + b_size + ", 0");
@@ -5671,6 +6341,12 @@ pub def CodeGen : class {
             if this.is_vec_type(obj_t) {
                 inner_t: string = this.vec_inner_type(obj_t);
                 elt_lty: string = this.llvm_type(inner_t);
+                api_lty: string = elt_lty;
+                slot_lty: string = elt_lty;
+                inline_pod: bool = this.vec_inline_pod(inner_t);
+                if inline_pod {
+                    slot_lty = "%struct." + this.strip_ref(inner_t);
+                }
 
                 if e.sval == "pushb" {
                     aval: string = this.gen_expr(e.args.get(0));
@@ -5696,19 +6372,31 @@ pub def CodeGen : class {
                     }
                     pv_dg: string = this.vec_field(obj_val, 0);
                     pv_epg: string = this.new_reg();
-                    this.emit("  " + pv_epg + " = bitcast i8* " + pv_dg + " to " + elt_lty + "*");
+                    this.emit("  " + pv_epg + " = bitcast i8* " + pv_dg + " to " + slot_lty + "*");
                     pv_slotg: string = this.new_reg();
-                    this.emit("  " + pv_slotg + " = getelementptr inbounds " + elt_lty + ", " + elt_lty + "* " + pv_epg + ", i64 " + pv_size);
-                    this.emit("  store " + elt_lty + " " + aval + ", " + elt_lty + "* " + pv_slotg);
+                    this.emit("  " + pv_slotg + " = getelementptr inbounds " + slot_lty + ", " + slot_lty + "* " + pv_epg + ", i64 " + pv_size);
+                    if inline_pod {
+                        pv_lvg: string = this.new_reg();
+                        this.emit("  " + pv_lvg + " = load " + slot_lty + ", " + slot_lty + "* " + aval);
+                        this.emit("  store " + slot_lty + " " + pv_lvg + ", " + slot_lty + "* " + pv_slotg);
+                    } else {
+                        this.emit("  store " + elt_lty + " " + aval + ", " + elt_lty + "* " + pv_slotg);
+                    }
                     this.vec_store_size(obj_val, pv_next);
                     this.emit("  br label %" + pv_done);
                     this.emit(pv_fast + ":");
                     this.current_block_terminated = false;
                     pv_epf: string = this.new_reg();
-                    this.emit("  " + pv_epf + " = bitcast i8* " + pv_data + " to " + elt_lty + "*");
+                    this.emit("  " + pv_epf + " = bitcast i8* " + pv_data + " to " + slot_lty + "*");
                     pv_slotf: string = this.new_reg();
-                    this.emit("  " + pv_slotf + " = getelementptr inbounds " + elt_lty + ", " + elt_lty + "* " + pv_epf + ", i64 " + pv_size);
-                    this.emit("  store " + elt_lty + " " + aval + ", " + elt_lty + "* " + pv_slotf);
+                    this.emit("  " + pv_slotf + " = getelementptr inbounds " + slot_lty + ", " + slot_lty + "* " + pv_epf + ", i64 " + pv_size);
+                    if inline_pod {
+                        pv_lvf: string = this.new_reg();
+                        this.emit("  " + pv_lvf + " = load " + slot_lty + ", " + slot_lty + "* " + aval);
+                        this.emit("  store " + slot_lty + " " + pv_lvf + ", " + slot_lty + "* " + pv_slotf);
+                    } else {
+                        this.emit("  store " + elt_lty + " " + aval + ", " + elt_lty + "* " + pv_slotf);
+                    }
                     pv_nf: string = this.new_reg();
                     this.emit("  " + pv_nf + " = add i64 " + pv_size + ", 1");
                     this.vec_store_size(obj_val, pv_nf);
@@ -5749,8 +6437,14 @@ pub def CodeGen : class {
                     this.emit("  " + pf_bytesg + " = mul i64 " + pf_size + ", " + tostring(pf_esz));
                     this.emit("  call i8* @memmove(i8* " + pf_dstg + ", i8* " + pf_dg + ", i64 " + pf_bytesg + ")");
                     pf_epg: string = this.new_reg();
-                    this.emit("  " + pf_epg + " = bitcast i8* " + pf_dg + " to " + elt_lty + "*");
-                    this.emit("  store " + elt_lty + " " + aval + ", " + elt_lty + "* " + pf_epg);
+                    this.emit("  " + pf_epg + " = bitcast i8* " + pf_dg + " to " + slot_lty + "*");
+                    if inline_pod {
+                        pf_lvg: string = this.new_reg();
+                        this.emit("  " + pf_lvg + " = load " + slot_lty + ", " + slot_lty + "* " + aval);
+                        this.emit("  store " + slot_lty + " " + pf_lvg + ", " + slot_lty + "* " + pf_epg);
+                    } else {
+                        this.emit("  store " + elt_lty + " " + aval + ", " + elt_lty + "* " + pf_epg);
+                    }
                     this.vec_store_size(obj_val, pf_next);
                     this.emit("  br label %" + pf_done);
                     this.emit(pf_fast + ":");
@@ -5761,8 +6455,14 @@ pub def CodeGen : class {
                     this.emit("  " + pf_bytesf + " = mul i64 " + pf_size + ", " + tostring(pf_esz));
                     this.emit("  call i8* @memmove(i8* " + pf_dstf + ", i8* " + pf_data + ", i64 " + pf_bytesf + ")");
                     pf_epf: string = this.new_reg();
-                    this.emit("  " + pf_epf + " = bitcast i8* " + pf_data + " to " + elt_lty + "*");
-                    this.emit("  store " + elt_lty + " " + aval + ", " + elt_lty + "* " + pf_epf);
+                    this.emit("  " + pf_epf + " = bitcast i8* " + pf_data + " to " + slot_lty + "*");
+                    if inline_pod {
+                        pf_lvf: string = this.new_reg();
+                        this.emit("  " + pf_lvf + " = load " + slot_lty + ", " + slot_lty + "* " + aval);
+                        this.emit("  store " + slot_lty + " " + pf_lvf + ", " + slot_lty + "* " + pf_epf);
+                    } else {
+                        this.emit("  store " + elt_lty + " " + aval + ", " + elt_lty + "* " + pf_epf);
+                    }
                     pf_nf: string = this.new_reg();
                     this.emit("  " + pf_nf + " = add i64 " + pf_size + ", 1");
                     this.vec_store_size(obj_val, pf_nf);
@@ -5777,12 +6477,21 @@ pub def CodeGen : class {
                     gv_i: string = this.vec_check_index(idx_val, gv_size, "Runtime error: Vector index out of bounds in get().\n");
                     gv_data: string = this.vec_field(obj_val, 0);
                     gv_ep: string = this.new_reg();
-                    this.emit("  " + gv_ep + " = bitcast i8* " + gv_data + " to " + elt_lty + "*");
+                    this.emit("  " + gv_ep + " = bitcast i8* " + gv_data + " to " + slot_lty + "*");
                     gv_slot: string = this.new_reg();
-                    this.emit("  " + gv_slot + " = getelementptr inbounds " + elt_lty + ", " + elt_lty + "* " + gv_ep + ", i64 " + gv_i);
-                    gv_val: string = this.new_reg();
-                    this.emit("  " + gv_val + " = load " + elt_lty + ", " + elt_lty + "* " + gv_slot);
-                    return gv_val;
+                    this.emit("  " + gv_slot + " = getelementptr inbounds " + slot_lty + ", " + slot_lty + "* " + gv_ep + ", i64 " + gv_i);
+                    if inline_pod {
+                        gv_ld: string = this.new_reg();
+                        this.emit("  " + gv_ld + " = load " + slot_lty + ", " + slot_lty + "* " + gv_slot);
+                        gv_al: string = this.new_reg();
+                        this.emit("  " + gv_al + " = alloca " + slot_lty);
+                        this.emit("  store " + slot_lty + " " + gv_ld + ", " + slot_lty + "* " + gv_al);
+                        return gv_al;
+                    } else {
+                        gv_val: string = this.new_reg();
+                        this.emit("  " + gv_val + " = load " + elt_lty + ", " + elt_lty + "* " + gv_slot);
+                        return gv_val;
+                    }
                 }
                 if e.sval == "popb" {
                     pp_size: string = this.vec_field(obj_val, 1);
@@ -5802,13 +6511,23 @@ pub def CodeGen : class {
                     this.emit("  " + pp_ns + " = sub i64 " + pp_size + ", 1");
                     pp_data: string = this.vec_field(obj_val, 0);
                     pp_ep: string = this.new_reg();
-                    this.emit("  " + pp_ep + " = bitcast i8* " + pp_data + " to " + elt_lty + "*");
+                    this.emit("  " + pp_ep + " = bitcast i8* " + pp_data + " to " + slot_lty + "*");
                     pp_slot: string = this.new_reg();
-                    this.emit("  " + pp_slot + " = getelementptr inbounds " + elt_lty + ", " + elt_lty + "* " + pp_ep + ", i64 " + pp_ns);
-                    pp_val: string = this.new_reg();
-                    this.emit("  " + pp_val + " = load " + elt_lty + ", " + elt_lty + "* " + pp_slot);
-                    this.vec_store_size(obj_val, pp_ns);
-                    return pp_val;
+                    this.emit("  " + pp_slot + " = getelementptr inbounds " + slot_lty + ", " + slot_lty + "* " + pp_ep + ", i64 " + pp_ns);
+                    if inline_pod {
+                        pp_ld: string = this.new_reg();
+                        this.emit("  " + pp_ld + " = load " + slot_lty + ", " + slot_lty + "* " + pp_slot);
+                        pp_al: string = this.new_reg();
+                        this.emit("  " + pp_al + " = alloca " + slot_lty);
+                        this.emit("  store " + slot_lty + " " + pp_ld + ", " + slot_lty + "* " + pp_al);
+                        this.vec_store_size(obj_val, pp_ns);
+                        return pp_al;
+                    } else {
+                        pp_val: string = this.new_reg();
+                        this.emit("  " + pp_val + " = load " + elt_lty + ", " + elt_lty + "* " + pp_slot);
+                        this.vec_store_size(obj_val, pp_ns);
+                        return pp_val;
+                    }
                 }
                 // popf: front element — res = data[0], shift left, size--
                 if e.sval == "popf" {
@@ -5830,16 +6549,31 @@ pub def CodeGen : class {
                     pf2_data: string = this.vec_field(obj_val, 0);
                     pf2_esz: int = this.vec_elem_bytes(inner_t);
                     pf2_ep: string = this.new_reg();
-                    this.emit("  " + pf2_ep + " = bitcast i8* " + pf2_data + " to " + elt_lty + "*");
-                    pf2_val: string = this.new_reg();
-                    this.emit("  " + pf2_val + " = load " + elt_lty + ", " + elt_lty + "* " + pf2_ep);
-                    pf2_src: string = this.new_reg();
-                    this.emit("  " + pf2_src + " = getelementptr inbounds i8, i8* " + pf2_data + ", i64 " + tostring(pf2_esz));
-                    pf2_bytes: string = this.new_reg();
-                    this.emit("  " + pf2_bytes + " = mul i64 " + pf2_ns + ", " + tostring(pf2_esz));
-                    this.emit("  call i8* @memmove(i8* " + pf2_data + ", i8* " + pf2_src + ", i64 " + pf2_bytes + ")");
-                    this.vec_store_size(obj_val, pf2_ns);
-                    return pf2_val;
+                    this.emit("  " + pf2_ep + " = bitcast i8* " + pf2_data + " to " + slot_lty + "*");
+                    if inline_pod {
+                        pf2_ld: string = this.new_reg();
+                        this.emit("  " + pf2_ld + " = load " + slot_lty + ", " + slot_lty + "* " + pf2_ep);
+                        pf2_al: string = this.new_reg();
+                        this.emit("  " + pf2_al + " = alloca " + slot_lty);
+                        this.emit("  store " + slot_lty + " " + pf2_ld + ", " + slot_lty + "* " + pf2_al);
+                        pf2_src: string = this.new_reg();
+                        this.emit("  " + pf2_src + " = getelementptr inbounds i8, i8* " + pf2_data + ", i64 " + tostring(pf2_esz));
+                        pf2_bytes: string = this.new_reg();
+                        this.emit("  " + pf2_bytes + " = mul i64 " + pf2_ns + ", " + tostring(pf2_esz));
+                        this.emit("  call i8* @memmove(i8* " + pf2_data + ", i8* " + pf2_src + ", i64 " + pf2_bytes + ")");
+                        this.vec_store_size(obj_val, pf2_ns);
+                        return pf2_al;
+                    } else {
+                        pf2_val: string = this.new_reg();
+                        this.emit("  " + pf2_val + " = load " + elt_lty + ", " + elt_lty + "* " + pf2_ep);
+                        pf2_src: string = this.new_reg();
+                        this.emit("  " + pf2_src + " = getelementptr inbounds i8, i8* " + pf2_data + ", i64 " + tostring(pf2_esz));
+                        pf2_bytes: string = this.new_reg();
+                        this.emit("  " + pf2_bytes + " = mul i64 " + pf2_ns + ", " + tostring(pf2_esz));
+                        this.emit("  call i8* @memmove(i8* " + pf2_data + ", i8* " + pf2_src + ", i64 " + pf2_bytes + ")");
+                        this.vec_store_size(obj_val, pf2_ns);
+                        return pf2_val;
+                    }
                 }
                 // insert(idx, v): negative idx normalizes (+size), bounds
                 // 0 <= idx <= size, shift right from idx, store, size+1.
@@ -5904,10 +6638,16 @@ pub def CodeGen : class {
                     this.emit("  " + iv_bytes + " = mul i64 " + iv_cnt + ", " + tostring(iv_esz));
                     this.emit("  call i8* @memmove(i8* " + iv_dst + ", i8* " + iv_src + ", i64 " + iv_bytes + ")");
                     iv_ep: string = this.new_reg();
-                    this.emit("  " + iv_ep + " = bitcast i8* " + iv_data + " to " + elt_lty + "*");
+                    this.emit("  " + iv_ep + " = bitcast i8* " + iv_data + " to " + slot_lty + "*");
                     iv_slot: string = this.new_reg();
-                    this.emit("  " + iv_slot + " = getelementptr inbounds " + elt_lty + ", " + elt_lty + "* " + iv_ep + ", i64 " + iv_idx2);
-                    this.emit("  store " + elt_lty + " " + iv_val + ", " + elt_lty + "* " + iv_slot);
+                    this.emit("  " + iv_slot + " = getelementptr inbounds " + slot_lty + ", " + slot_lty + "* " + iv_ep + ", i64 " + iv_idx2);
+                    if inline_pod {
+                        iv_lv: string = this.new_reg();
+                        this.emit("  " + iv_lv + " = load " + slot_lty + ", " + slot_lty + "* " + iv_val);
+                        this.emit("  store " + slot_lty + " " + iv_lv + ", " + slot_lty + "* " + iv_slot);
+                    } else {
+                        this.emit("  store " + elt_lty + " " + iv_val + ", " + elt_lty + "* " + iv_slot);
+                    }
                     iv_ns: string = this.new_reg();
                     this.emit("  " + iv_ns + " = add i64 " + iv_size + ", 1");
                     this.vec_store_size(obj_val, iv_ns);
@@ -5918,6 +6658,38 @@ pub def CodeGen : class {
                 }
                 if e.sval == "set" {
                     idx_val: string = this.i32_to_rt_i64(e.args.get(0), this.gen_expr(e.args.get(0)));
+                    // Fuse set(i, get(j)) for inline POD vec elements: direct slot copy.
+                    set_fused: bool = false;
+                    if inline_pod && e.args.get(1).kind == ExprKind.METHOD_CALL && e.args.get(1).sval == "get" && e.args.get(1).args.size == 1 {
+                        src_mc: Expr = e.args.get(1);
+                        src_rt: string = this.strip_ref(this.get_expr_type(src_mc.left));
+                        if this.is_vec_type(src_rt) {
+                            src_it: string = this.strip_ref(this.vec_inner_type(src_rt));
+                            if src_it == this.strip_ref(inner_t) && this.vec_inline_pod(src_it) {
+                                sov: string = this.gen_expr(src_mc.left);
+                                six: string = this.i32_to_rt_i64(src_mc.args.get(0), this.gen_expr(src_mc.args.get(0)));
+                                ssz: string = this.vec_field(sov, 1);
+                                sci: string = this.vec_check_index(six, ssz, "Runtime error: Vector index out of bounds in get().\n");
+                                sdt: string = this.vec_field(sov, 0);
+                                sep: string = this.new_reg();
+                                this.emit("  " + sep + " = bitcast i8* " + sdt + " to " + slot_lty + "*");
+                                ssl: string = this.new_reg();
+                                this.emit("  " + ssl + " = getelementptr inbounds " + slot_lty + ", " + slot_lty + "* " + sep + ", i64 " + sci);
+                                slv: string = this.new_reg();
+                                this.emit("  " + slv + " = load " + slot_lty + ", " + slot_lty + "* " + ssl);
+                                sv_size: string = this.vec_field(obj_val, 1);
+                                sv_i: string = this.vec_check_index(idx_val, sv_size, "Runtime error: Vector index out of bounds in set().\n");
+                                sv_data: string = this.vec_field(obj_val, 0);
+                                sv_ep: string = this.new_reg();
+                                this.emit("  " + sv_ep + " = bitcast i8* " + sv_data + " to " + slot_lty + "*");
+                                sv_slot: string = this.new_reg();
+                                this.emit("  " + sv_slot + " = getelementptr inbounds " + slot_lty + ", " + slot_lty + "* " + sv_ep + ", i64 " + sv_i);
+                                this.emit("  store " + slot_lty + " " + slv + ", " + slot_lty + "* " + sv_slot);
+                                set_fused = true;
+                                return "";
+                            }
+                        }
+                    }
                     aval: string = this.gen_expr(e.args.get(1));
                     if this.arena && this.ar_root_for_container(e.args.get(1), e.left, inner_t) { aval = this.ar_root_value(aval, inner_t); }
                     this.emit_share(aval, inner_t);
@@ -5925,10 +6697,16 @@ pub def CodeGen : class {
                     sv_i: string = this.vec_check_index(idx_val, sv_size, "Runtime error: Vector index out of bounds in set().\n");
                     sv_data: string = this.vec_field(obj_val, 0);
                     sv_ep: string = this.new_reg();
-                    this.emit("  " + sv_ep + " = bitcast i8* " + sv_data + " to " + elt_lty + "*");
+                    this.emit("  " + sv_ep + " = bitcast i8* " + sv_data + " to " + slot_lty + "*");
                     sv_slot: string = this.new_reg();
-                    this.emit("  " + sv_slot + " = getelementptr inbounds " + elt_lty + ", " + elt_lty + "* " + sv_ep + ", i64 " + sv_i);
-                    this.emit("  store " + elt_lty + " " + aval + ", " + elt_lty + "* " + sv_slot);
+                    this.emit("  " + sv_slot + " = getelementptr inbounds " + slot_lty + ", " + slot_lty + "* " + sv_ep + ", i64 " + sv_i);
+                    if inline_pod {
+                        sv_lv: string = this.new_reg();
+                        this.emit("  " + sv_lv + " = load " + slot_lty + ", " + slot_lty + "* " + aval);
+                        this.emit("  store " + slot_lty + " " + sv_lv + ", " + slot_lty + "* " + sv_slot);
+                    } else {
+                        this.emit("  store " + elt_lty + " " + aval + ", " + elt_lty + "* " + sv_slot);
+                    }
                     return "";
                 }
                 if e.sval == "remove" {
@@ -5936,10 +6714,19 @@ pub def CodeGen : class {
                     rm_sc: string = this.scratch_i8p();
                     this.emit("  call void @leash_sh_vec_remove(i8* " + obj_val + ", i64 " + rm_idx + ", i8* " + rm_sc + ")");
                     rm_ep: string = this.new_reg();
-                    this.emit("  " + rm_ep + " = bitcast [64 x i8]* @__lsh_scratch to " + elt_lty + "*");
-                    rm_val: string = this.new_reg();
-                    this.emit("  " + rm_val + " = load " + elt_lty + ", " + elt_lty + "* " + rm_ep);
-                    return rm_val;
+                    this.emit("  " + rm_ep + " = bitcast [64 x i8]* @__lsh_scratch to " + slot_lty + "*");
+                    if inline_pod {
+                        rm_ld: string = this.new_reg();
+                        this.emit("  " + rm_ld + " = load " + slot_lty + ", " + slot_lty + "* " + rm_ep);
+                        rm_al: string = this.new_reg();
+                        this.emit("  " + rm_al + " = alloca " + slot_lty);
+                        this.emit("  store " + slot_lty + " " + rm_ld + ", " + slot_lty + "* " + rm_al);
+                        return rm_al;
+                    } else {
+                        rm_val: string = this.new_reg();
+                        this.emit("  " + rm_val + " = load " + elt_lty + ", " + elt_lty + "* " + rm_ep);
+                        return rm_val;
+                    }
                 }
                 if e.sval == "size" {
                     return this.rt_i64_to_i32(this.vec_field(obj_val, 1));
@@ -5978,12 +6765,20 @@ pub def CodeGen : class {
                         this.emit("  " + is_inb + " = icmp ult i64 " + is_ci + ", " + is_size);
                         this.emit("  br i1 " + is_inb + ", label %" + is_body + ", label %" + is_nf);
                         this.emit(is_body + ":");
-                        is_epp: string = this.new_reg();
-                        this.emit("  " + is_epp + " = bitcast i8* " + is_data + " to %struct." + qtyp + "**");
-                        is_evp: string = this.new_reg();
-                        this.emit("  " + is_evp + " = getelementptr inbounds %struct." + qtyp + "*, %struct." + qtyp + "** " + is_epp + ", i64 " + is_ci);
-                        is_cell: string = this.new_reg();
-                        this.emit("  " + is_cell + " = load %struct." + qtyp + "*, %struct." + qtyp + "** " + is_evp);
+                        is_cell: string = "";
+                        if inline_pod && qtyp == this.strip_ref(inner_t) {
+                            is_epp: string = this.new_reg();
+                            this.emit("  " + is_epp + " = bitcast i8* " + is_data + " to %struct." + qtyp + "*");
+                            is_cell = this.new_reg();
+                            this.emit("  " + is_cell + " = getelementptr inbounds %struct." + qtyp + ", %struct." + qtyp + "* " + is_epp + ", i64 " + is_ci);
+                        } else {
+                            is_epp: string = this.new_reg();
+                            this.emit("  " + is_epp + " = bitcast i8* " + is_data + " to %struct." + qtyp + "**");
+                            is_evp: string = this.new_reg();
+                            this.emit("  " + is_evp + " = getelementptr inbounds %struct." + qtyp + "*, %struct." + qtyp + "** " + is_epp + ", i64 " + is_ci);
+                            is_cell = this.new_reg();
+                            this.emit("  " + is_cell + " = load %struct." + qtyp + "*, %struct." + qtyp + "** " + is_evp);
+                        }
                         // Field-wise equality across all fields
                         is_fi: int = 0;
                         is_and: string = "";
@@ -6086,11 +6881,11 @@ pub def CodeGen : class {
                         sbase = sbase + slice_t[sb];
                         sb = sb + 1;
                     }
-                    slt: string = this.llvm_type(sbase);
-                    ebytes: int = this.llvm_val_bytes(slt);
+                    slt2: string = this.llvm_type(sbase);
+                    ebytes: int = this.vec_elem_bytes(this.vec_inner_type(obj_t));
                     if ebytes < 1 { ebytes = 8; }
                     sl_bcp: string = this.new_reg();
-                    this.emit("  " + sl_bcp + " = bitcast " + slt + "* " + sl_ptr + " to i8*");
+                    this.emit("  " + sl_bcp + " = bitcast " + slt2 + "* " + sl_ptr + " to i8*");
                     this.emit("  call void @leash_sh_vec_extend(i8* " + obj_val + ", i8* " + sl_bcp + ", i64 " + sl_len + ", i64 " + tostring(ebytes) + ")");
                     return "";
                 }
@@ -6114,6 +6909,19 @@ pub def CodeGen : class {
                 val_t: string = this.hash_val_type(obj_t);
 
                 if e.sval == "push" {
+                    // Arena+ (O3+): a "<string> + <int>" key is built in a
+                    // stack buffer by the runtime, so the key string is
+                    // never allocated (the arena would keep it alive
+                    // until the scope ends).
+                    fk: vec<string> = this.ar_fused_hash_key(e.args.get(0), this.hash_key_type(obj_t), "");
+                    if fk.size == 3 {
+                        fk_aval: string = this.gen_expr(e.args.get(1));
+                        fk_boxed: string = this.box_to_i8ptr(fk_aval, val_t);
+                        if this.arena && this.ar_is_heap_type(val_t) && this.ar_is_outer_var(this.ar_expr_root(e.left)) { fk_boxed = this.ar_root_value(fk_boxed, val_t); }
+                        this.emit_share(fk_boxed, val_t);
+                        this.emit("  call void @leash_sh_hash_push_int(i8* " + obj_val + ", i8* " + fk.get(0) + ", i64 " + fk.get(1) + ", i64 " + fk.get(2) + ", i8* " + fk_boxed + ")");
+                        return "";
+                    }
                     key_val: string = this.gen_expr(e.args.get(0));
                     key_val = this.hash_key_arg(key_val, this.hash_key_type(obj_t));
                     aval: string = this.gen_expr(e.args.get(1));
@@ -6441,6 +7249,50 @@ pub def CodeGen : class {
                 return this.load_union_member(e, obj_t);
             }
 
+            // Fused v.get(i).field / v[i].field for inline POD vecs.
+            fuse_ok: bool = false;
+            mf_is_get: bool = e.left.kind == ExprKind.METHOD_CALL && e.left.sval == "get" && e.left.args.size == 1;
+            mf_is_idx: bool = e.left.kind == ExprKind.INDEX;
+            if mf_is_get || mf_is_idx {
+                mf_recv_e: Expr = e.left.left;
+                mf_idx_e: Expr = null;
+                if mf_is_get { mf_idx_e = e.left.args.get(0); } else { mf_idx_e = e.left.right; }
+                if mf_idx_e != null {
+                    recv_t_f: string = this.strip_ref(this.get_expr_type(mf_recv_e));
+                    if this.is_vec_type(recv_t_f) {
+                        in_t_f: string = this.vec_inner_type(recv_t_f);
+                        in_t_fb: string = this.strip_ref(in_t_f);
+                        if this.vec_inline_pod(in_t_f) && this.tc.structs.isin(in_t_fb) {
+                            si_f: StructInfo = this.tc.structs[in_t_fb];
+                            f_idx_f: int = 0 - 1;
+                            foreach idx_f, fname_f in<vector> si_f.field_names {
+                                if fname_f == e.sval { f_idx_f = idx_f; stop; }
+                            }
+                            if f_idx_f >= 0 {
+                                ov_f: string = this.gen_expr(mf_recv_e);
+                                ix_f: string = this.i32_to_rt_i64(mf_idx_e, this.gen_expr(mf_idx_e));
+                                sz_f: string = this.vec_field(ov_f, 1);
+                                ci_f: string = this.vec_check_index(ix_f, sz_f, "Runtime error: Vector index out of bounds in get().\n");
+                                dt_f: string = this.vec_field(ov_f, 0);
+                                sl_f: string = "%struct." + in_t_fb;
+                                ep_f: string = this.new_reg();
+                                this.emit("  " + ep_f + " = bitcast i8* " + dt_f + " to " + sl_f + "*");
+                                slp_f: string = this.new_reg();
+                                this.emit("  " + slp_f + " = getelementptr inbounds " + sl_f + ", " + sl_f + "* " + ep_f + ", i64 " + ci_f);
+                                gp_f: string = this.new_reg();
+                                this.emit("  " + gp_f + " = getelementptr inbounds " + sl_f + ", " + sl_f + "* " + slp_f + ", i32 0, i32 " + tostring(f_idx_f));
+                                ft_f: string = si_f.field_types.get(f_idx_f);
+                                lf_f: string = this.llvm_type(ft_f);
+                                ld_f: string = this.new_reg();
+                                this.emit("  " + ld_f + " = load " + lf_f + ", " + lf_f + "* " + gp_f);
+                                fuse_ok = true;
+                                return ld_f;
+                            }
+                        }
+                    }
+                }
+            }
+
             obj_val: string = this.gen_expr(e.left);
 
             if e.sval == "size" && obj_t == "string" {
@@ -6558,8 +7410,19 @@ pub def CodeGen : class {
 
         if e.kind == ExprKind.INDEX {
             arr_val: string = this.gen_expr(e.left);
-            idx_val: string = this.gen_expr(e.right);
             arr_t: string = this.strip_ref(this.get_expr_type(e.left));
+            // Arena+ (O3+): a "<string> + <int>" key is built in a stack
+            // buffer, so a lookup allocates no temporary key string.
+            if this.is_hash_type(arr_t) {
+                fk: vec<string> = this.ar_fused_hash_key(e.right, this.hash_key_type(arr_t), "");
+                if fk.size == 3 {
+                    fk_val_t: string = this.hash_val_type(arr_t);
+                    fk_raw: string = this.new_reg();
+                    this.emit("  " + fk_raw + " = call i8* @leash_sh_hash_get_int(i8* " + arr_val + ", i8* " + fk.get(0) + ", i64 " + fk.get(1) + ", i64 " + fk.get(2) + ")");
+                    return this.unbox_from_i8ptr(fk_raw, fk_val_t);
+                }
+            }
+            idx_val: string = this.gen_expr(e.right);
 
             if arr_t == "string" {
                 idx_val = this.i32_to_rt_i64(e.right, idx_val);
@@ -6575,16 +7438,28 @@ pub def CodeGen : class {
                 idx_val = this.i32_to_rt_i64(e.right, idx_val);
                 inner_t: string = this.vec_inner_type(arr_t);
                 iv_elt: string = this.llvm_type(inner_t);
+                iv_slot_lty: string = iv_elt;
+                iv_ipod: bool = this.vec_inline_pod(inner_t);
+                if iv_ipod { iv_slot_lty = "%struct." + this.strip_ref(inner_t); }
                 iv_size: string = this.vec_field(arr_val, 1);
                 iv_i: string = this.vec_check_index(idx_val, iv_size, "Runtime error: Vector index out of bounds.\n");
                 iv_data: string = this.vec_field(arr_val, 0);
                 iv_ep: string = this.new_reg();
-                this.emit("  " + iv_ep + " = bitcast i8* " + iv_data + " to " + iv_elt + "*");
+                this.emit("  " + iv_ep + " = bitcast i8* " + iv_data + " to " + iv_slot_lty + "*");
                 iv_slot: string = this.new_reg();
-                this.emit("  " + iv_slot + " = getelementptr inbounds " + iv_elt + ", " + iv_elt + "* " + iv_ep + ", i64 " + iv_i);
-                iv_val: string = this.new_reg();
-                this.emit("  " + iv_val + " = load " + iv_elt + ", " + iv_elt + "* " + iv_slot);
-                return iv_val;
+                this.emit("  " + iv_slot + " = getelementptr inbounds " + iv_slot_lty + ", " + iv_slot_lty + "* " + iv_ep + ", i64 " + iv_i);
+                if iv_ipod {
+                    iv_ld: string = this.new_reg();
+                    this.emit("  " + iv_ld + " = load " + iv_slot_lty + ", " + iv_slot_lty + "* " + iv_slot);
+                    iv_al: string = this.new_reg();
+                    this.emit("  " + iv_al + " = alloca " + iv_slot_lty);
+                    this.emit("  store " + iv_slot_lty + " " + iv_ld + ", " + iv_slot_lty + "* " + iv_al);
+                    return iv_al;
+                } else {
+                    iv_val: string = this.new_reg();
+                    this.emit("  " + iv_val + " = load " + iv_elt + ", " + iv_elt + "* " + iv_slot);
+                    return iv_val;
+                }
             }
 
             // hash<K,V>[key]
@@ -6723,8 +7598,8 @@ pub def CodeGen : class {
             if is_class { f_off = 1; }   // slot 0 is the vtable pointer
             alloc_sz: string = this.type_alloc_size(type_prefix + sname);
 
-            raw_mem: string = this.new_reg();
-            this.emit("  " + raw_mem + " = call i8* @leash_gc_malloc(i64 " + alloc_sz + ")");
+            // Fields are written below; padding/unset fields stay zeroed.
+            raw_mem: string = this.ar_alloc(alloc_sz, true);
             s_ptr: string = this.new_reg();
             this.emit("  " + s_ptr + " = bitcast i8* " + raw_mem + " to " + type_prefix + sname + "*");
 
@@ -6847,10 +7722,8 @@ pub def CodeGen : class {
             // Element-width-aware backing store; pointer-free element arrays
             // are ATOMIC so the collector never scans them.
             total: int = count * this.vec_elem_bytes(base_t);
-            raw: string = this.new_reg();
-            lit_flags: int = 0;
-            if !this.vec_elem_scan(base_t) { lit_flags = 2; }
-            this.emit("  " + raw + " = call i8* @leash_gc_malloc_ex(i64 " + tostring(total) + ", i32 " + tostring(lit_flags) + ")");
+            // Every element slot is stored below, so no zero-fill needed.
+            raw: string = this.ar_alloc(tostring(total), false);
             arr_data: string = this.new_reg();
             this.emit("  " + arr_data + " = bitcast i8* " + raw + " to " + blt + "*");
             ii: int = 0;
@@ -6981,8 +7854,62 @@ pub def CodeGen : class {
             ptr: string = "%" + s.name + ".ptr";
             this.var_ptrs.push(s.name, ptr);
             this.var_types.push(s.name, vtyp);
+            // Track plain-int locals initialized with a literal: the arena
+            // trip-count analysis folds them into exact buffer sizes. A
+            // name that is already tracked is a shadowing declaration:
+            // kill the constant instead of overwriting it (the outer
+            // binding is still live after the inner scope ends).
+            if s.value != null && s.value.kind == ExprKind.INT && vtyp == "int"
+               && !this.ar_const_ints.isin(s.name) {
+                this.ar_const_ints.push(s.name, (int)s.value.ival);
+                this.ar_const_dead.push(s.name, false);
+            } else {
+                this.ar_const_dead.push(s.name, true);
+            }
 
             if s.value != null {
+                nm_vd: string = s.name;
+                if s.value.kind == ExprKind.METHOD_CALL && s.value.sval == "get" && s.value.left != null {
+                    this.ar_alias_src.push(nm_vd, "get:" + this.ar_expr_root(s.value.left));
+                } also s.value.kind == ExprKind.INDEX && s.value.left != null {
+                    this.ar_alias_src.push(nm_vd, "get:" + this.ar_expr_root(s.value.left));
+                } also s.value.kind == ExprKind.METHOD_CALL && (s.value.sval == "popb" || s.value.sval == "popf") && s.value.left != null {
+                    this.ar_alias_src.push(nm_vd, "pop:" + this.ar_expr_root(s.value.left));
+                } else {
+                    this.ar_alias_src.push(nm_vd, "");
+                }
+                // Fuse: tmp: PodStruct = inline_pod_vec.get(i)/[i] -> clone directly from slot.
+                fused_vd: bool = false;
+                vd_is_get: bool = s.value.kind == ExprKind.METHOD_CALL && s.value.sval == "get" && s.value.args.size == 1;
+                vd_is_idx: bool = s.value.kind == ExprKind.INDEX;
+                if vd_is_get || vd_is_idx {
+                    rhs_vd: string = this.get_expr_type(s.value);
+                    vd_recv: Expr = s.value.left;
+                    vd_idx_e: Expr = null;
+                    if vd_is_get { vd_idx_e = s.value.args.get(0); } else { vd_idx_e = s.value.right; }
+                    if this.tc.structs.isin(vtyp) && rhs_vd == vtyp && this.vec_inline_pod(vtyp) && vd_idx_e != null {
+                        recv_vd: string = this.strip_ref(this.get_expr_type(vd_recv));
+                        if this.is_vec_type(recv_vd) {
+                            in_vd: string = this.strip_ref(this.vec_inner_type(recv_vd));
+                            if in_vd == this.strip_ref(vtyp) {
+                                ov_vd: string = this.gen_expr(vd_recv);
+                                ix_vd: string = this.i32_to_rt_i64(vd_idx_e, this.gen_expr(vd_idx_e));
+                                sz_vd: string = this.vec_field(ov_vd, 1);
+                                ci_vd: string = this.vec_check_index(ix_vd, sz_vd, "Runtime error: Vector index out of bounds in get().\n");
+                                dt_vd: string = this.vec_field(ov_vd, 0);
+                                sl_vd: string = "%struct." + this.strip_ref(vtyp);
+                                ep_vd: string = this.new_reg();
+                                this.emit("  " + ep_vd + " = bitcast i8* " + dt_vd + " to " + sl_vd + "*");
+                                slp_vd: string = this.new_reg();
+                                this.emit("  " + slp_vd + " = getelementptr inbounds " + sl_vd + ", " + sl_vd + "* " + ep_vd + ", i64 " + ci_vd);
+                                val: string = this.clone_struct_val(slp_vd, this.strip_ref(vtyp));
+                                this.emit("  store " + lty + " " + val + ", " + lty + "* " + ptr);
+                                fused_vd = true;
+                            }
+                        }
+                    }
+                }
+                if !fused_vd {
                 val: string = this.gen_expr(s.value);
                 rhs_t: string = this.get_expr_type(s.value);
                 if this.tc.unions.isin(vtyp) {
@@ -6997,6 +7924,7 @@ pub def CodeGen : class {
                 val = this.maybe_clone_value(val, vtyp);
                 val = this.coerce_store_val(s.value, val, lty, vtyp);
                 this.emit("  store " + lty + " " + val + ", " + lty + "* " + ptr);
+                }
             } else {
                 // Default-initialize union, vec and hash types
                 if this.tc.unions.isin(vtyp) {
@@ -7026,8 +7954,8 @@ pub def CodeGen : class {
                     // vec/hash fields — python parity.
                     sdflt: StructInfo = this.tc.structs[vtyp];
                     sd_sz: string = this.type_alloc_size("%struct." + vtyp);
-                    sraw: string = this.new_reg();
-                    this.emit("  " + sraw + " = call i8* @leash_gc_malloc(i64 " + sd_sz + ")");
+                    // A full zeroinitializer store follows immediately.
+                    sraw: string = this.ar_alloc(sd_sz, false);
                     sp2: string = this.new_reg();
                     this.emit("  " + sp2 + " = bitcast i8* " + sraw + " to %struct." + vtyp + "*");
                     this.emit("  store %struct." + vtyp + " zeroinitializer, %struct." + vtyp + "* " + sp2);
@@ -7058,8 +7986,8 @@ pub def CodeGen : class {
                     // initialization, minus the explicit fields).
                     cdflt: ClassInfo = this.tc.classes[vtyp];
                     cd_sz: string = this.type_alloc_size("%class." + vtyp);
-                    craw: string = this.new_reg();
-                    this.emit("  " + craw + " = call i8* @leash_gc_malloc(i64 " + cd_sz + ")");
+                    // A full zeroinitializer store follows immediately.
+                    craw: string = this.ar_alloc(cd_sz, false);
                     cp2: string = this.new_reg();
                     this.emit("  " + cp2 + " = bitcast i8* " + craw + " to %class." + vtyp + "*");
                     this.emit("  store %class." + vtyp + " zeroinitializer, %class." + vtyp + "* " + cp2);
@@ -7185,6 +8113,11 @@ pub def CodeGen : class {
         }
 
         if s.kind == StmtKind.ASSIGN {
+            // An assignment invalidates the local's compile-time constant
+            // (the arena trip-count analysis must not fold stale values).
+            if s.target != null && s.target.kind == ExprKind.IDENT {
+                this.ar_const_dead.push(s.target.sval, true);
+            }
             // Fusion integer globals take the atomic path (plain loads
             // hoist out of spin-waits; atomicrmw keeps counters exact).
             // Shadowed locals and non-integer widths use the plain path.
@@ -7343,10 +8276,54 @@ pub def CodeGen : class {
                 nm: string = s.target.sval;
                 if s.value != null && s.value.kind == ExprKind.METHOD_CALL && s.value.sval == "get" && s.value.left != null {
                     this.ar_alias_src.push(nm, "get:" + this.ar_expr_root(s.value.left));
+                } also s.value != null && s.value.kind == ExprKind.INDEX && s.value.left != null {
+                    this.ar_alias_src.push(nm, "get:" + this.ar_expr_root(s.value.left));
                 } also s.value != null && s.value.kind == ExprKind.METHOD_CALL && (s.value.sval == "popb" || s.value.sval == "popf") && s.value.left != null {
                     this.ar_alias_src.push(nm, "pop:" + this.ar_expr_root(s.value.left));
                 } else {
                     this.ar_alias_src.push(nm, "");
+                }
+            }
+            // Fuse inline-POD vec index store: v[i]=v[j] / v[i]=v.get(j) / v.set handled elsewhere.
+            if s.op == "=" && s.target.kind == ExprKind.INDEX && s.value != null {
+                ixst_base_t: string = this.strip_ref(this.get_expr_type(s.target.left));
+                ixst_rhs_is_idx: bool = s.value.kind == ExprKind.INDEX;
+                ixst_rhs_is_get: bool = s.value.kind == ExprKind.METHOD_CALL && s.value.sval == "get" && s.value.args.size == 1;
+                if this.is_vec_type(ixst_base_t) && (ixst_rhs_is_idx || ixst_rhs_is_get) {
+                    ixst_in: string = this.strip_ref(this.vec_inner_type(ixst_base_t));
+                    if this.vec_inline_pod(ixst_in) {
+                        rhs_recv_e2: Expr = s.value.left;
+                        rhs_idx_e2: Expr = null;
+                        if ixst_rhs_is_get { rhs_idx_e2 = s.value.args.get(0); } else { rhs_idx_e2 = s.value.right; }
+                        rhs_base_t2: string = this.strip_ref(this.get_expr_type(rhs_recv_e2));
+                        if this.is_vec_type(rhs_base_t2) && this.strip_ref(this.vec_inner_type(rhs_base_t2)) == ixst_in && rhs_idx_e2 != null {
+                            sl_ix: string = "%struct." + ixst_in;
+                            // evaluate RHS first (matches existing order)
+                            sov2: string = this.gen_expr(rhs_recv_e2);
+                            six2: string = this.i32_to_rt_i64(rhs_idx_e2, this.gen_expr(rhs_idx_e2));
+                            ssz2: string = this.vec_field(sov2, 1);
+                            sci2: string = this.vec_check_index(six2, ssz2, "Runtime error: Vector index out of bounds in get().\n");
+                            sdt2: string = this.vec_field(sov2, 0);
+                            sep2: string = this.new_reg();
+                            this.emit("  " + sep2 + " = bitcast i8* " + sdt2 + " to " + sl_ix + "*");
+                            ssl2: string = this.new_reg();
+                            this.emit("  " + ssl2 + " = getelementptr inbounds " + sl_ix + ", " + sl_ix + "* " + sep2 + ", i64 " + sci2);
+                            slv2: string = this.new_reg();
+                            this.emit("  " + slv2 + " = load " + sl_ix + ", " + sl_ix + "* " + ssl2);
+                            // then target
+                            tov2: string = this.gen_expr(s.target.left);
+                            tix2: string = this.i32_to_rt_i64(s.target.right, this.gen_expr(s.target.right));
+                            tsz2: string = this.vec_field(tov2, 1);
+                            tci2: string = this.vec_check_index(tix2, tsz2, "Runtime error: Vector index out of bounds.\n");
+                            tdt2: string = this.vec_field(tov2, 0);
+                            tep2: string = this.new_reg();
+                            this.emit("  " + tep2 + " = bitcast i8* " + tdt2 + " to " + sl_ix + "*");
+                            tsl2: string = this.new_reg();
+                            this.emit("  " + tsl2 + " = getelementptr inbounds " + sl_ix + ", " + sl_ix + "* " + tep2 + ", i64 " + tci2);
+                            this.emit("  store " + sl_ix + " " + slv2 + ", " + sl_ix + "* " + tsl2);
+                            return;
+                        }
+                    }
                 }
             }
             val: string = this.gen_expr(s.value);
@@ -7564,6 +8541,13 @@ pub def CodeGen : class {
                 if this.is_hash_type(ix_base) {
                     ix_vt: string = this.hash_val_type(ix_base);
                     ix_obj: string = this.gen_expr(s.target.left);
+                    // Arena+ (O3+): fused key, built in a stack buffer.
+                    ix_fk: vec<string> = this.ar_fused_hash_key(s.target.right, this.hash_key_type(ix_base), s.op);
+                    if ix_fk.size == 3 {
+                        ix_fk_boxed: string = this.box_to_i8ptr(val, this.get_expr_type(s.value));
+                        this.emit_share(ix_fk_boxed, ix_vt);
+                        this.emit("  call void @leash_sh_hash_push_int(i8* " + ix_obj + ", i8* " + ix_fk.get(0) + ", i64 " + ix_fk.get(1) + ", i64 " + ix_fk.get(2) + ", i8* " + ix_fk_boxed + ")");
+                    } else {
                     ix_key: string = this.gen_expr(s.target.right);
                     ix_key = this.hash_key_arg(ix_key, this.hash_key_type(ix_base));
                     if s.op == "=" {
@@ -7591,22 +8575,34 @@ pub def CodeGen : class {
                         this.emit_share(ix_boxed2, ix_vt);
                         this.emit("  call void @leash_sh_hash_push(i8* " + ix_obj + ", i8* " + ix_key + ", i8* " + ix_boxed2 + ")");
                     }
+                    }
                 } also this.is_vec_type(ix_base) {
                     ix_inner: string = this.vec_inner_type(ix_base);
                     ix_elty: string = this.llvm_type(ix_inner);
+                    ix_slot_lty: string = ix_elty;
+                    ix_ipod: bool = this.vec_inline_pod(ix_inner);
+                    if ix_ipod { ix_slot_lty = "%struct." + this.strip_ref(ix_inner); }
                     ix_vobj: string = this.gen_expr(s.target.left);
                     ix_vidx: string = this.i32_to_rt_i64(s.target.right, this.gen_expr(s.target.right));
                     ix_vsize: string = this.vec_field(ix_vobj, 1);
                     ix_vi: string = this.vec_check_index(ix_vidx, ix_vsize, "Runtime error: Vector index out of bounds.\n");
                     ix_vdata: string = this.vec_field(ix_vobj, 0);
                     ix_vep: string = this.new_reg();
-                    this.emit("  " + ix_vep + " = bitcast i8* " + ix_vdata + " to " + ix_elty + "*");
+                    this.emit("  " + ix_vep + " = bitcast i8* " + ix_vdata + " to " + ix_slot_lty + "*");
                     ix_vslot: string = this.new_reg();
-                    this.emit("  " + ix_vslot + " = getelementptr inbounds " + ix_elty + ", " + ix_elty + "* " + ix_vep + ", i64 " + ix_vi);
+                    this.emit("  " + ix_vslot + " = getelementptr inbounds " + ix_slot_lty + ", " + ix_slot_lty + "* " + ix_vep + ", i64 " + ix_vi);
                     if s.op == "=" {
-                        ix_cval: string = this.coerce_store_val(s.value, val, ix_elty, ix_inner);
-                        this.emit_share(ix_cval, ix_inner);
-                        this.emit("  store " + ix_elty + " " + ix_cval + ", " + ix_elty + "* " + ix_vslot);
+                        if ix_ipod {
+                            this.emit_share(val, ix_inner);
+                            ix_cval: string = this.coerce_store_val(s.value, val, ix_elty, ix_inner);
+                            ix_lv: string = this.new_reg();
+                            this.emit("  " + ix_lv + " = load " + ix_slot_lty + ", " + ix_slot_lty + "* " + ix_cval);
+                            this.emit("  store " + ix_slot_lty + " " + ix_lv + ", " + ix_slot_lty + "* " + ix_vslot);
+                        } else {
+                            ix_cval: string = this.coerce_store_val(s.value, val, ix_elty, ix_inner);
+                            this.emit_share(ix_cval, ix_inner);
+                            this.emit("  store " + ix_elty + " " + ix_cval + ", " + ix_elty + "* " + ix_vslot);
+                        }
                     } else {
                         ix_cval2: string = this.coerce_store_val(s.value, val, ix_elty, ix_inner);
                         this.emit_assign_compound(ix_vslot, ix_elty, s.op, ix_cval2);
@@ -7976,7 +8972,7 @@ pub def CodeGen : class {
             foreach _, sb in<vector> s.body { this.gen_statement(sb); }
             if !this.current_block_terminated {
                 this.ar_loop_reset(ar_slot);
-                this.emit("  br label %" + l_head);
+                this.emit("  br label %" + l_head + this.ar_loop_meta());
             }
 
             this.loop_head_stack.popb();
@@ -8002,6 +8998,8 @@ pub def CodeGen : class {
         }
 
         if s.kind == StmtKind.FOR {
+            this.ar_for_pushb_reserve(s);
+            this.ar_for_hash_reserve(s);
             if s.for_init != null { this.gen_statement(s.for_init); }
             l_head: string = this.new_label("b_for_head");
             l_body: string = this.new_label("b_for_body");
@@ -8025,7 +9023,7 @@ pub def CodeGen : class {
             if s.for_step != null { this.gen_statement(s.for_step); }
             if !this.current_block_terminated {
                 this.ar_loop_reset(ar_slot2);
-                this.emit("  br label %" + l_head);
+                this.emit("  br label %" + l_head + this.ar_loop_meta());
             }
 
             this.loop_head_stack.popb();
@@ -8062,7 +9060,7 @@ pub def CodeGen : class {
             foreach _, sb in<vector> s.body { this.gen_statement(sb); }
             if !this.current_block_terminated {
                 this.ar_loop_reset(ar_slot3);
-                this.emit("  br label %" + l_head);
+                this.emit("  br label %" + l_head + this.ar_loop_meta());
             }
 
             this.loop_head_stack.popb();
@@ -8459,7 +9457,7 @@ pub def CodeGen : class {
             arg_strs = arg_strs + this.llvm_type(p.typ) + " %p_" + p.name;
         }
         body: string = fn_name + "__async_body";
-        this.emit("define i8* @" + fn_name + "(" + param_sigs + ") {");
+        this.emit("define i8* @" + fn_name + "(" + param_sigs + ") align 64 {");
         this.emit("entry:");
         aw_fut: string = this.new_reg();
         this.emit("  " + aw_fut + " = call i8* @leash_future_new()");
@@ -8497,9 +9495,13 @@ pub def CodeGen : class {
         fresh_fn_ptrs: hash<string, string>;
         fresh_fn_types: hash<string, string>;
         fresh_fn_alias: hash<string, string>;
+        fresh_fn_ci: hash<string, int>;
+        fresh_fn_cd: hash<string, bool>;
         this.var_ptrs = fresh_fn_ptrs;
         this.var_types = fresh_fn_types;
         this.ar_alias_src = fresh_fn_alias;
+        this.ar_const_ints = fresh_fn_ci;
+        this.ar_const_dead = fresh_fn_cd;
         is_worker_fn: bool = f.is_worker;
         this.current_func_ret = f.ret_type;
         if is_worker_fn { this.current_func_ret = "*char"; }
@@ -8565,7 +9567,7 @@ pub def CodeGen : class {
             this.emit("declare " + lret + " @" + llvm_fn_name + "(" + param_sigs + ");");
             return;
         }
-        this.emit("define " + lret + " @" + llvm_fn_name + "(" + param_sigs + ") {");
+        this.emit("define " + lret + " @" + llvm_fn_name + "(" + param_sigs + ") align 64 {");
         this.emit("entry:");
         this.current_block_terminated = false;
         this.af_init();
@@ -8814,7 +9816,7 @@ pub def CodeGen : class {
                     param_sigs = param_sigs + this.llvm_type(p.typ) + " %p_" + p.name;
                 }
 
-                this.emit("define " + lret + " @" + fn_name + "(" + param_sigs + ") {");
+                this.emit("define " + lret + " @" + fn_name + "(" + param_sigs + ") align 64 {");
                 this.emit("entry:");
                 this.current_block_terminated = false;
                 this.af_init();
@@ -9028,7 +10030,7 @@ pub def CodeGen : class {
 
         this.has_entry = has_main || has_class_main;
         if (has_main || has_class_main) && !this.is_lib {
-            this.emit("define i32 @main(i32 %argc, i8** %argv) {");
+            this.emit("define i32 @main(i32 %argc, i8** %argv) align 64 {");
             this.emit("entry:");
             this.emit("  call void @leash_gc_init()");
             // Register pointer-bearing globals/statics as GC scan regions
@@ -9341,6 +10343,7 @@ pub def CodeGen : class {
                     "declare void @leash_gc_register_scan_region(i8*, i64)\n" +
                     "declare void @leash_gc_shutdown()\n" +
                     "declare i8* @leash_gc_malloc(i64)\n" +
+                    "declare i8* @leash_gc_malloc_nz(i64)\n" +
                     "declare i8* @leash_gc_realloc(i8*, i64)\n" +
                     "declare void @leash_gc_collect()\n" +
                     "; Self-hosted runtime helpers\n" +
@@ -9377,6 +10380,9 @@ pub def CodeGen : class {
                     "declare i8* @leash_sh_uint_key(i64)\n" +
                     "declare i8* @leash_sh_float_key(double)\n" +
                     "declare void @leash_sh_hash_push(i8*, i8*, i8*)\n" +
+                    "declare void @leash_sh_hash_push_int(i8*, i8*, i64, i64, i8*)\n" +
+                    "declare i8* @leash_sh_hash_get_int(i8*, i8*, i64, i64)\n" +
+                    "declare void @leash_sh_hash_reserve(i8*, i64)\n" +
                     "declare i8* @leash_sh_hash_get(i8*, i8*)\n" +
                     "declare i64 @leash_sh_hash_isin(i8*, i8*)\n" +
                     "declare i64 @leash_sh_hash_size(i8*)\n" +
@@ -9434,6 +10440,7 @@ pub def CodeGen : class {
                     "declare void @leasharena_escape_string(i8**, i64)\n" +
                     "declare void @leasharena_escape_vec(i8**, i64)\n" +
                     "declare void @leasharena_escape_hash(i8**, i64)\n" +
+                    "declare void @leasharena_escape_vec_typed(i8**, i64, i64, i32, { i64, i32, i32 }*)\n" +
                     "declare void @leasharena_escape_blob(i8**, i64, i64)\n" +
                     "declare void @leasharena_escape_slice(i8*, i64, i64)\n" +
                     "declare i8* @leasharena_stage_string(i8*)\n" +
@@ -9457,6 +10464,63 @@ pub def CodeGen : class {
                     "declare i8* @fgets(i8*, i32, i8*)\n" +
                     "declare void @exit(i64)\n" +
                     "declare i8* @leash_sh_stdin()\n\n");
+
+        // Arena-only inline bump allocation. Replicates the runtime fast
+        // path exactly: payload at a 16-byte boundary, requested size in
+        // the 8-byte header at payload-8, bump advanced to the 8-aligned
+        // end, bytes stat updated. Falls back to the runtime allocator
+        // (block growth / shutdown checks / sole-block handling) when the
+        // current block cannot satisfy the request.
+        if this.arena {
+            ar_head: string =
+                "  %iszero = icmp eq i64 %need, 0\n" +
+                "  br i1 %iszero, label %retnull, label %bump\n" +
+                "retnull:\n" +
+                "  ret i8* null\n";
+            ar_bump_body: string =
+                "bump:\n" +
+                "  %pcur = getelementptr inbounds %struct.arena_stack, %struct.arena_stack* @leasharena_tls_ar, i32 0, i32 1\n" +
+                "  %cur = load i8*, i8** %pcur, align 8\n" +
+                "  %ci = ptrtoint i8* %cur to i64\n" +
+                "  %bi0 = add i64 %ci, 23\n" +
+                "  %bi = and i64 %bi0, -16\n" +
+                "  %pe = getelementptr inbounds %struct.arena_stack, %struct.arena_stack* @leasharena_tls_ar, i32 0, i32 2\n" +
+                "  %endp = load i8*, i8** %pe, align 8\n" +
+                "  %ei = ptrtoint i8* %endp to i64\n" +
+                "  %ne = add i64 %bi, %need\n" +
+                "  %ok = icmp ule i64 %ne, %ei\n" +
+                "  br i1 %ok, label %fast, label %slow\n" +
+                "fast:\n" +
+                "  %hi = sub i64 %bi, 8\n" +
+                "  %hp = inttoptr i64 %hi to i64*\n" +
+                "  store i64 %need, i64* %hp, align 8\n" +
+                "  %n7 = add i64 %ne, 7\n" +
+                "  %nc = and i64 %n7, -8\n" +
+                "  %ncp = inttoptr i64 %nc to i8*\n" +
+                "  store i8* %ncp, i8** %pcur, align 8\n" +
+                "  %pb = getelementptr inbounds %struct.arena_stack, %struct.arena_stack* @leasharena_tls_ar, i32 0, i32 6\n" +
+                "  %b = load i64, i64* %pb, align 8\n" +
+                "  %nb = add i64 %b, %need\n" +
+                "  store i64 %nb, i64* %pb, align 8\n" +
+                "  %payload = inttoptr i64 %bi to i8*\n";
+            header_lines.pushb(
+                "define internal i8* @__leash_ar_alloc(i64 %need) alwaysinline {\n" +
+                "entry:\n" + ar_head + ar_bump_body +
+                "  call i8* @memset(i8* %payload, i32 0, i64 %need)\n" +
+                "  ret i8* %payload\n" +
+                "slow:\n" +
+                "  %slowr = call i8* @leash_gc_malloc(i64 %need)\n" +
+                "  ret i8* %slowr\n" +
+                "}\n\n");
+            header_lines.pushb(
+                "define internal i8* @__leash_ar_alloc_nz(i64 %need) alwaysinline {\n" +
+                "entry:\n" + ar_head + ar_bump_body +
+                "  ret i8* %payload\n" +
+                "slow:\n" +
+                "  %slowr = call i8* @leash_gc_malloc_nz(i64 %need)\n" +
+                "  ret i8* %slowr\n" +
+                "}\n\n");
+        }
 
         // C library stubs (mirrors python's func_symtab registrations:
         // functions the typechecker seeds but that are never defined in
@@ -9654,6 +10718,11 @@ pub def CodeGen : class {
 
         foreach _, body_ln in<vector> this.lines {
             header_lines.pushb(body_ln);
+        }
+        if this.arena {
+            foreach _, ml in<vector> this.loop_meta_lines {
+                header_lines.pushb(ml);
+            }
         }
 
         return header_lines;

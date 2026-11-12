@@ -5,6 +5,66 @@ All notable changes to the Leash compiler are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.8.4] - 2026-11-12
+
+### Added
+- **Arena safety hardening (`--arena`, experimental).** Reclaimed scope
+  and loop-iteration memory is now **poisoned with `0xDD` by default**,
+  so stale reads into a dead frame become obvious garbage instead of
+  silently valid-looking data. Disable the poison memset with
+  `LEASH_ARENA_POISON=0` (the legacy `LEASH_ARENA_POISON=1` is still
+  accepted) when lifetimes are already validated and peak speed matters.
+- **Arena diagnostics.** Frame/loop misuse now aborts with a clear
+  message instead of silently ignoring impossible states: scope
+  underflow on unmatched exit, `leasharena_exit_n` beyond current depth,
+  and invalid or out-of-range loop-frame indices on reset/exit.
+- **Arena instrumentation.** `LEASH_ARENA_STATS=1` prints arena peak
+  block bytes, current live blocks/payload and rooted bytes to stderr on
+  shutdown for per-program measurement.
+- **Arena-only optimizations at higher opt levels.**
+  - **O2+**: exact trip-count vector/collection reserves and arena-only
+    hash pre-sizing (`leash_sh_hash_reserve`) fire only when the opt
+    level is >= 2 (`-DLEASH_ARENA_O2`), keeping O0/O1 conservative.
+  - **O3+ (`-DLEASH_ARENA_O3`)**: nested counted-loop push analysis and
+    hoisted reserves (never above a loop-local receiver), compact 24-byte
+    hash nodes, and fused hash keys that build `"<prefix>"+int` in a
+    stack buffer for push/get/index-set (`leash_sh_hash_push_int` /
+    `get_int`), avoiding per-iteration temporary key strings.
+
+### Changed
+- **Arena peak memory and opt-level scaling.** Measured arena block peaks
+  (`LEASH_ARENA_STATS`, O2 vs O3) improve or stay flat and are monotonic
+  where applicable — notably `hash_lookup` 1,873,960 → 1,152,184 block
+  bytes at O3 and reduced peaks for `matrix_mul` / `matrix_transpose` at
+  O3 from compact hash nodes and fused keys.
+- **Arena performance profile (18-task suite, interleaved GC-vs-arena,
+  cache cleared, alternating order).** Arena shows broad wins and
+  identical outputs across allocation/churn- and hash/string-heavy tasks;
+  allocator peak bytes and structural wins are consistent. Timing and
+  max-RSS deltas on tiny/compute-bound cases (e.g. `fib`, `pi`, and in
+  some samples `matrix_mul`, `sort_int`/`sort_string`) can be run-to-run
+  noise on a loaded host, while growth-heavy kernels remain bounded by
+  live/superseded data retained until scope reset and by page
+  granularity.
+
+### Fixed
+- **Arena: deep escape of nested heap fields in returned structs/classes.**
+  Returning a struct/class containing nested struct fields with heap
+  members (e.g. `Inner { a: string }` inside `Outer`) now deep-stages all
+  heap fields recursively from the live dying frame **before** the scope
+  pop and deep-commits them into the caller's frame **after**, so nested
+  string/vec/hash/struct fields never read reclaimed (now-poisoned)
+  memory. This fixes a use-after-scope that could segfault under
+  poison-on-default and was previously exposed as `nested_struct_return`
+  corruption.
+
+### Documentation
+- Documented arena behavior end-to-end: safety model and env vars
+  (`LEASH_ARENA_POISON`, `LEASH_ARENA_STATS`), opt-level/arena-exclusive
+  optimizations, lifetime/escape rules, C-ABI/root-arena notes, and where
+  arena wins vs loses (with methodology caveats) across README, docs, and
+  benchmarking notes.
+
 ## [1.8.3] - 2026-11-09
 
 ### Fixed

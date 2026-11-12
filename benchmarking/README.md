@@ -29,6 +29,66 @@ directly. JSON results are git-ignored (`*.json`); regenerate them
 with the command above. The numbers in `CHANGELOG.md` `[1.7.0]` come
 from `results_memory.json` (lean runtime, primes as `vec<char>`).
 
+## GC vs arena (`--arena`, experimental)
+
+`LEASH_BENCH_ARENA=1` makes the harness compile/run Leash with
+`--arena` (the scoped bump-arena backend, `-DLEASH_ARENA`). Arena
+builds are **correctness-gated**: every task must produce output
+identical to GC (`0 errors`, same results) — the arena is not a
+benchmark-only mode.
+
+**Measurement methodology (recommended for fair GC-vs-arena comparisons):**
+- Run **one mode at a time** and **never compile in parallel** with a
+  running harness; clear the shared object cache first
+  (`rm -rf ~/.leash/shcache`) because parallel compiles can corrupt it.
+- **Interleave order** across repetitions (GC, arena, arena, GC, …) so
+  thermal/frequency/load drift does not systematically favor one side.
+- Record **wall time** (median/min), **child CPU/user+sys time**, and
+  **max peak RSS** via GNU `time -v` (the same method as this harness —
+  Python `os.wait4`/`ru_maxrss` is inflated by the interpreter across
+  `fork`).
+- For allocator-level truth, also record **arena block bytes** with
+  `LEASH_ARENA_STATS=1 <exe>` (prints `peak N block bytes ...` to
+  stderr). RSS is page-granular and can be noisy on small deltas; block
+  bytes and output parity are the stable signals.
+
+**Where arena tends to win (structural):**
+- **Allocation/churn-heavy and short-lived-temporary workloads** (e.g.
+  `allocstress`, per-iteration vector/string churn, allocation-free
+  loops that skip framing) — whole-scope/loop release is O(blocks) with
+  no per-object free, no scan, and no lock.
+- **Hash- and string-heavy workloads at higher opt levels** — arena-only
+  reserves/pre-sizing (O2+) and O3+ compact hash nodes/fused
+  `prefix+int` keys reduce temporary-key churn and peak block bytes
+  (e.g. measured `hash_lookup` peak block bytes improved from 1,873,960
+  at O2 to 1,152,184 at O3; `matrix_mul`/`matrix_transpose` peaks also
+  dropped at O3 in arena stats runs).
+- **C-ABI / deterministic-lifetime use** — plain bump pointers, no
+  stop-the-world pauses, root arena for data that must outlive scopes.
+
+**Where arena can lose or show smaller/noisy gains:**
+- **Growth-heavy kernels that retain superseded buffers until scope
+  reset** — the bump arena reclaims growth waste only in specific cases
+  (dedicated oversize blocks with no saved frame referencing them).
+  Examples (GC → arena peak RSS, O2, historical measurements):
+  `mem_copy` 9.7 → 10.1 MB (was 14.0 MB before reclaim),
+  `vec_stress` 3.9 → 3.4 MB, `allocstress` 2.5 → 1.9 MB, while
+  per-iteration string temporaries that outlive loop survivors keep
+  `string_concat` around 2.4 → 2.9 MB.
+- **Tiny/compute-bound tasks** (`fib`, `pi`, and in some samples
+  `matrix_mul`, `sort_int`/`sort_string`) — framing is elided where
+  allocation-free, so allocator work is minimal and wall/CPU/max-RSS
+  differences can be run-to-run noise on a loaded host; prefer medians
+  of many interleaved runs and compare block bytes.
+- **Page-granularity effects** — a small live-data advantage may not
+  reduce RSS if it does not cross a page/block boundary.
+
+**Safety while benchmarking arena:** reclamation poisoning is **on by
+default** (`LEASH_ARENA_POISON=0` disables the memset for peak-speed
+runs once lifetimes are validated). Poison and strict frame checks can
+change timings slightly; compare like-for-like configurations. See
+`docs/advanced.html` for the full safety model and environment knobs.
+
 ## Fairness notes (per task)
 
 | Task | Leash | C++ | Rust | Allocation pattern |

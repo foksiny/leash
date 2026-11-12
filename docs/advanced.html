@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v1.8.3 Release</div>
+        <div class="version">v1.8.4 Release</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -153,11 +153,66 @@ autofree: true</code></pre>
 
 <h3>Scoped Arena (<code>--arena</code>, experimental)</h3>
 
-<p>Since 1.8.0 Leash also ships a <strong>scoped bump arena</strong> backend (native-only, opt-in per program). Thread-local 32&nbsp;KB blocks are bump-allocated; leaving a function (or an instrumented loop) rewinds the bump and frees the blocks above its checkpoint &mdash; release is O(blocks) with no per-object free, no scan and no lock. There is no GC and no borrow checker: a pointer lives until its allocating frame exits, and code that must outlive that frame escapes by copy &mdash; returned strings/vecs/hashes/structs/slices/multi-heap tuples are copied into the caller&rsquo;s frame at the return site, <code>spawn</code> argument blocks and future boxes go to the program-lifetime root arena, and allocation-free functions skip framing entirely. Storing a callee temporary into a caller-owned aggregate (heap field, global, slice backing), raw <code>*T</code> pointers and union payloads remain caller-owned, exactly like <code>--autofree</code>&rsquo;s aggregate-escape limitation. The arena keeps growth copies until the scope resets (GC collects them), so growth-heavy kernels use more heap while churn kernels get leaner. Enable it with <code>leash compile myprogram.lsh --arena</code> or <code>arena: true</code> in <code>config.lshc</code>:</p>
+<p>Since 1.8.0 Leash ships a <strong>scoped bump arena</strong> backend (native-only, opt-in per program). It replaces mark-and-sweep with thread-local bump allocation and deterministic, scope-based reclamation: allocations are an aligned bump + memset, and leaving a function or an instrumented loop rewinds the bump and frees the blocks above its checkpoint. Release is O(blocks) with <strong>no per-object free, no heap scan, no lock, and no stop-the-world pause</strong>. There is no GC and no borrow checker &mdash; correctness relies on compiler-emitted framing, escapes, and root copies, plus runtime safety checks.</p>
+
+<p>Enable it per program (modes are exclusive: do not combine with <code>--no-garbage-collector</code> or <code>--autofree</code>; the JVM target rejects <code>--arena</code>):</p>
 
 <pre><code>leash run myprogram.lsh --arena
 leash compile myprogram.lsh --arena
+<span class="cm"># config.lshc</span>
 arena: true</code></pre>
+
+<h4>Allocation model &amp; lifetimes</h4>
+<ul>
+    <li><strong>Blocks:</strong> malloc-backed thread-local blocks, 32&nbsp;KB steady-state with a 4&nbsp;KB lazy initial block (<code>ARENA_BLOCK_SIZE</code>/<code>ARENA_INIT_BLOCK_SIZE</code>). Strings use a 16-byte arena header layout (<code>ARENA_STR_HDR</code>).</li>
+    <li><strong>Scopes:</strong> generated code pushes a frame on function entry and pops on exit. Eligible loops get checkpoints so temporaries can be reclaimed at iteration boundaries instead of only at function exit.</li>
+    <li><strong>Frameless fast paths:</strong> allocation-free functions and allocation-free loops can skip framing/reset overhead entirely, so pure/compute paths can run at GC parity.</li>
+    <li><strong>Pointer validity:</strong> a pointer is valid until the allocating frame/iteration scope exits (or until a loop reset reclaims that iteration). Pointers are plain C pointers with no collector metadata/barriers.</li>
+</ul>
+
+<h4>Escape rules (no borrow checker)</h4>
+<p>Values that must outlive their allocating scope are <strong>copied</strong>, not borrowed:</p>
+<ul>
+    <li><strong>Returns:</strong> strings, vecs, hashes, structs/classes (deep over heap-typed and nested fields), slices, and multi-heap tuples are staged, the frame(s) pop, and the value is committed into the caller&rsquo;s frame.</li>
+    <li><strong>Persistent / concurrent data:</strong> <code>spawn</code> argument blocks and futures/async results are copied/rooted in the <em>program-lifetime root arena</em> so workers and callers read stable storage.</li>
+    <li><strong>Caller-owned (care required):</strong> storing a frame-local temporary into a caller-owned aggregate (a heap field, global, or slice backing), raw <code>*T</code> pointers, and union payloads follow the same aggregate-escape limitation as <code>--autofree</code> &mdash; the compiler cannot track every cross-scope ownership transfer, so prefer returning values, using root/persistent storage, or GC mode when ownership must cross frames this way.</li>
+    <li><strong>Growth:</strong> superseded oversize growth buffers are reclaimed only in specific cases (dedicated single-occupant blocks with no saved frame referencing them). Growth-heavy kernels may retain waste until scope reset; churn-heavy kernels benefit from whole-scope release.</li>
+</ul>
+
+<h4>Safety model</h4>
+<ul>
+    <li><strong>Poison-on-reclaim (default):</strong> every reclaimed scope/loop byte is filled with <code>0xDD</code>, turning most use-after-scope reads into obvious corruption instead of silently valid-looking data. Set <code>LEASH_ARENA_POISON=0</code> to disable the memset cost (e.g. for peak-speed runs after lifetimes are validated); <code>LEASH_ARENA_POISON=1</code> is also accepted.</li>
+    <li><strong>Strict frame checks (abort with diagnostics):</strong> scope underflow / unmatched exits, <code>leasharena_exit_n</code> beyond current depth, and invalid or out-of-range loop-frame indices on reset/exit fail fast instead of silently corrupting state.</li>
+    <li><strong>Deep escape of nested heap fields:</strong> returned structs/classes deep-stage and deep-commit heap fields recursively (including nested struct/class fields) across the pop boundary, preventing reads of reclaimed/poisoned nested data after scope exit.</li>
+    <li><strong>Residual risk:</strong> arena is experimental. Lifetime errors that the compiler does not model (notably caller-owned aggregate stores of frame-local temps, raw pointers, and some union patterns) can still be unsafe in principle; poison/default checks make many bugs detectable, but <strong>GC remains the safest default</strong> for untrusted, highly dynamic, or hard-to-reason-about ownership.</li>
+</ul>
+
+<h4>Optimization levels &amp; arena-exclusive optimizations</h4>
+<p>The <code>-O</code> level controls frontend/LLVM/runtime as usual and also selects arena-aware behavior (compiled with <code>-DLEASH_ARENA</code>; <code>-DLEASH_ARENA_O2</code> at <code>-O2/-O3/-O4/-Os/-Oz</code>; <code>-DLEASH_ARENA_O3</code> at <code>-O3/-O4</code>):</p>
+<ul>
+    <li><strong>O0/O1:</strong> conservative runtime reserves/sizing to preserve predictable behavior.</li>
+    <li><strong>O2+ (arena-aware):</strong> exact trip-count vector/collection reserves and arena-only hash pre-sizing (<code>leash_sh_hash_reserve</code>) to reduce realloc/growth churn where counts are provable.</li>
+    <li><strong>O3+ (arena-exclusive):</strong> nested counted-loop push analysis with hoisted reserves (never hoisted above a loop-local receiver), compact 24-byte hash nodes, and fused hash keys that build <code>&quot;&lt;prefix&gt;&quot;+int</code> directly in a stack buffer for push/get/index-set (<code>leash_sh_hash_push_int</code>/<code>get_int</code>), avoiding per-iteration temporary key-string allocations. Measured arena block peaks improve or stay flat vs O2 where applicable (e.g. <code>hash_lookup</code> 1,873,960 &rarr; 1,152,184 block bytes; reduced peaks for <code>matrix_mul</code>/<code>matrix_transpose</code>).</li>
+</ul>
+
+<h4>Instrumentation &amp; measurement</h4>
+<ul>
+    <li><strong><code>LEASH_ARENA_STATS=1</code></strong> &mdash; prints to stderr on shutdown: peak block bytes, current blocks/bytes, current payload, and rooted bytes (e.g. <code>Arena stats: peak N block bytes (now X in Y blocks), current payload Z (+root W)</code>).</li>
+    <li><strong><code>LEASH_ARENA_POISON=0</code></strong> &mdash; disables reclaim poisoning for speed comparisons once lifetimes are validated (poison is on by default).</li>
+    <li>For fair GC-vs-arena comparisons: clear <code>~/.leash/shcache</code>, do not overlap compiles with runs, interleave mode order, and record child CPU plus max peak RSS via <code>/usr/bin/time -v</code>; prefer arena block-byte peaks for allocator-level truth because RSS is page-granular/noisy on small deltas.</li>
+</ul>
+
+<h4>Where arena wins and where it can lose</h4>
+<ul>
+    <li><strong>Often wins:</strong> allocation/churn-heavy and short-lived-temporary workloads, loop bodies that can reset per iteration or skip framing, and hash/string-heavy code at O2+/O3+ (pre-sizing, compact nodes, fused keys). Whole-scope release avoids per-object frees, scans, and GC barriers/pauses; outputs must remain identical to GC.</li>
+    <li><strong>Can lose or be noisy:</strong> growth-heavy kernels that retain superseded buffers/live data until scope reset, workloads dominated by live peak rather than churn, and tiny compute-bound kernels (e.g. pure recursion or tight scalar loops) where allocator work is minimal so wall/CPU/max-RSS deltas may be run-to-run noise. Page granularity can hide small allocator wins in RSS.</li>
+    <li><strong>Representative historical RSS points (GC &rarr; arena, O2):</strong> <code>allocstress</code> 2.5 &rarr; 1.9&nbsp;MB, <code>vec_stress</code> 3.9 &rarr; 3.4&nbsp;MB, <code>mem_copy</code> 9.7 &rarr; 10.1&nbsp;MB (14.0&nbsp;MB before reclaim), <code>string_concat</code> 2.4 &rarr; 2.9&nbsp;MB (per-iteration temporaries outlive loop survivors). Treat cross-run timing/RSS comparisons as environment-sensitive; see <a href="../benchmarking/README.md">benchmarking/README.md</a>.</li>
+</ul>
+
+<h4>C ABI &amp; runtime API</h4>
+<p>Arena pointers are plain bump memory (strings keep the O(1) <code>bsize</code> prefix) with deterministic, pause-free behavior. The public API in <code>leash/gc.h</code> includes <code>leasharena_enter/exit</code> and slow paths, loop ops (<code>leasharena_loop_enter/reset/exit</code>), escape/stage/commit helpers (<code>leasharena_escape_*</code>, <code>leasharena_stage_*</code>/<code>commit_*</code>), root allocation/copies (<code>leasharena_root_alloc*</code>, <code>leasharena_root_copy_*</code>), and growth-reclaim support. C/FFI consumers of Leash libraries should keep cross-call persistent data in the root arena and call <code>leash_init()</code> once before other library functions.</p>
+
+<div class="callout callout-info"><strong>Summary:</strong> <code>--arena</code> trades GC&rsquo;s reachability safety for deterministic scope reclamation and low-overhead allocation. It is fastest/leanest on allocation-churn and well-structured lifetimes, ships with poison-on-by-default and strict frame checks for safer debugging, and remains experimental &mdash; validate with <code>LEASH_ARENA_STATS</code> and prefer GC when ownership is ambiguous.</div>
 
 <div class="callout callout-info">Since 1.2.0 the self-hosted compiler implements <code>--autofree</code> and the <code>to-dynamic</code>/<code>to-static</code> library outputs natively — no Python fallback for either. C consumers of Leash libraries call <code>leash_init()</code> once before any other library function; in <code>--autofree</code> builds returned values are excluded from the automatic <code>free()</code>, so they stay valid for the caller.</div>
 

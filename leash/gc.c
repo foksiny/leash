@@ -48,6 +48,9 @@
 #include <time.h>
 
 #include "gc.h"
+#if defined(__linux__) && defined(__GLIBC__)
+#include <malloc.h>
+#endif
 
 #if defined(_WIN32)
 #include <windows.h>
@@ -145,12 +148,14 @@ void leash_spipe_drop(void) {}
 #endif
 
 #define ARENA_BLOCK_SIZE ((size_t)32 * 1024)
+#define ARENA_INIT_BLOCK_SIZE ((size_t)4 * 1024)
 #define ARENA_ALIGN ((size_t)16)
 
 typedef struct arena_block {
     struct arena_block* next; /* all blocks, newest first */
     char* base;               /* start of the region usable for payloads */
     size_t cap;               /* usable bytes after the header */
+    size_t map_len;           /* mmap length for this block (0 = malloc fallback) */
     int sole;                 /* one dedicated large allocation fills the block */
 } arena_block;
 
@@ -174,6 +179,34 @@ typedef struct arena_stack {
 ARENA_TLS arena_stack leasharena_tls_ar; /* named for IR fast paths (see gc.h) */
 static ARENA_TLS arena_stack tls_root;
 static ARENA_TLS int leasharena_tls_arena_dead; /* set by shutdown: further allocs abort */
+static ARENA_TLS size_t arena_live_block_bytes;
+static ARENA_TLS size_t arena_peak_block_bytes;
+
+/* Optional use-after-free detector.
+ *
+ * The arena reclaims a scope's memory by rewinding the bump pointer, so
+ * a stale pointer into that region keeps reading whatever lands there
+ * next — the same class of bug a garbage collector rules out by never
+ * freeing live memory. With LEASH_ARENA_POISON=1 every reclaimed byte is
+ * filled with 0xDD, so a stale read shows up as obvious garbage instead
+ * of silently wrong data. Off by default: the fill costs a memset per
+ * scope exit. */
+#define ARENA_POISON_BYTE ((unsigned char)0xDD)
+static int leash_arena_poison;
+
+static void arena_poison_range(char* from, char* to) {
+    if (!leash_arena_poison) return;
+    if (!from || !to || to <= from) return;
+    memset(from, ARENA_POISON_BYTE, (size_t)(to - from));
+}
+
+static inline void arena_block_stats_add(size_t bytes) {
+    arena_live_block_bytes += bytes;
+    if (arena_live_block_bytes > arena_peak_block_bytes) arena_peak_block_bytes = arena_live_block_bytes;
+}
+static inline void arena_block_stats_sub(size_t bytes) {
+    if (arena_live_block_bytes >= bytes) arena_live_block_bytes -= bytes;
+}
 
 static void arena_oom(const char* what) {
     fprintf(stderr, "Leash arena: out of memory allocating %s\n", what);
@@ -182,23 +215,34 @@ static void arena_oom(const char* what) {
 
 
 static arena_block* arena_new_block(arena_stack* st, size_t need) {
-    size_t cap = need > ARENA_BLOCK_SIZE ? need : ARENA_BLOCK_SIZE;
-    cap = (cap + 4095) & ~(size_t)4095; /* page-multiple, mmap-friendly */
-    arena_block* b = (arena_block*)malloc(sizeof(*b) + cap);
-    if (!b) arena_oom("block");
+    /* `need == 0` is the lazy initial block: start small so programs
+     * that allocate little (or never) do not carry a full 32 KB block
+     * in their resident set. Growth blocks keep the normal 32 KB size. */
+    size_t cap = need == 0 ? ARENA_INIT_BLOCK_SIZE : (need > ARENA_BLOCK_SIZE ? need : ARENA_BLOCK_SIZE);
+    size_t total = sizeof(arena_block) + cap;
+    int sole = need > ARENA_BLOCK_SIZE;
+    size_t map_len = 0;
+    arena_block* b = NULL;
+    if (!b) {
+        b = (arena_block*)malloc(total);
+        if (!b) arena_oom("block");
+        map_len = 0;
+    }
     b->next = st->head;
     b->base = (char*)(b + 1);
     b->cap = cap;
-    b->sole = need > ARENA_BLOCK_SIZE;
+    b->map_len = map_len;
+    b->sole = sole;
     st->head = b;
     st->cur = b->base;
     st->end = b->base + cap;
+    arena_block_stats_add(map_len ? map_len : total);
     return b;
 }
 
 static void arena_ensure_stack(arena_stack* st) {
     if (!st->cps) {
-        st->cp_cap = 256;
+        st->cp_cap = 32;
         st->cps = (arena_cp*)calloc(st->cp_cap, sizeof(*st->cps));
         if (!st->cps) arena_oom("checkpoints");
     }
@@ -209,13 +253,28 @@ static void arena_ensure_stack(arena_stack* st) {
  * the (possibly padded) total is returned via *out_total so arena
  * strings can recover `cap`. */
 static char* arena_raw_ex(arena_stack* st, size_t need, size_t align, size_t* out_total, int zero) {
-    if (leasharena_tls_arena_dead) {
+    if (__builtin_expect(leasharena_tls_arena_dead != 0, 0)) {
         fprintf(stderr, "Leash arena: allocation after shutdown\n");
         abort();
     }
+    /* Fast path: avoid repeated ensure_stack checks after init */
+    if (__builtin_expect(st->head != NULL, 1)) {
+        /* align is a power of two >= 8, so the payload lands aligned and
+         * the 8-byte header before it stays 8-aligned for the u64 store. */
+        size_t head_room = 8;
+        uintptr_t cur = (uintptr_t)st->cur;
+        uintptr_t base = (cur + head_room + align - 1) & ~(uintptr_t)(align - 1);
+        uintptr_t hdr = base - head_room;
+        if (__builtin_expect(hdr >= cur && (uintptr_t)st->end >= hdr + head_room + need, 1)) {
+            char* payload = (char*)hdr + head_room;
+            size_t total = (size_t)((char*)payload - (char*)hdr) + need;
+            st->cur = (char*)(((uintptr_t)((char*)hdr + total) + 7) & ~(uintptr_t)7);
+            if (out_total) *out_total = total;
+            if (zero) memset(payload, 0, need);
+            return payload;
+        }
+    }
     arena_ensure_stack(st);
-    /* align is a power of two >= 8, so the payload lands aligned and
-     * the 8-byte header before it stays 8-aligned for the u64 store. */
     size_t head_room = 8;
     int fresh = 0;
     for (;;) {
@@ -314,7 +373,14 @@ static void arena_try_free_solo(arena_stack* st, const void* ptr, size_t sub_byt
     while (*link && *link != b) link = &(*link)->next;
     if (!*link) return;
     *link = b->next;
+    size_t bsz = b->map_len ? b->map_len : (sizeof(*b) + b->cap);
+    arena_block_stats_sub(bsz);
+#if defined(__linux__) || defined(__APPLE__)
+    if (b->map_len) munmap(b, b->map_len);
+    else free(b);
+#else
     free(b);
+#endif
     if (st->bytes >= sub_bytes) st->bytes -= sub_bytes;
 }
 
@@ -328,7 +394,14 @@ static void arena_free_above(arena_stack* st, arena_block* keep) {
     while (st->head && st->head != keep) {
         arena_block* dead = st->head;
         st->head = dead->next;
+        size_t dsz = dead->map_len ? dead->map_len : (sizeof(*dead) + dead->cap);
+        arena_block_stats_sub(dsz);
+#if defined(__linux__) || defined(__APPLE__)
+        if (dead->map_len) munmap(dead, dead->map_len);
+        else free(dead);
+#else
         free(dead);
+#endif
     }
 }
 
@@ -349,14 +422,26 @@ static void arena_push_cp(arena_stack* st) {
 }
 
 static void arena_pop_cp(arena_stack* st) {
-    if (st->cp_len == 0) return;
+    if (st->cp_len == 0) {
+        fprintf(stderr, "Leash arena: scope underflow (pop with no active frame)\n");
+        abort();
+    }
     st->cp_len--;
     arena_cp cp = st->cps[st->cp_len];
+    char* old_cur = st->cur;
     arena_free_above(st, cp.block);
     st->head = cp.block;
     st->cur = cp.off;
     st->end = cp.end;
     st->bytes = cp.bytes;
+    /* Poison only the part of the reclaimed region that is still mapped
+     * (blocks above the checkpoint were just freed). */
+    if (cp.block) {
+        char* lim = old_cur;
+        char* blk_end = cp.block->base + cp.block->cap;
+        if (lim > blk_end) lim = blk_end;
+        arena_poison_range(cp.off, lim);
+    }
 }
 
 /* Reset (without popping) to the frame at stack index `frame`. */
@@ -364,31 +449,75 @@ static void arena_reset_to(arena_stack* st, size_t frame) {
     /* frame is the depth index (0-based) of the checkpoint to keep */
     if (frame >= st->cp_len) return;
     arena_cp cp = st->cps[frame];
+    char* old_cur = st->cur;
     arena_free_above(st, cp.block);
     st->head = cp.block;
     st->cur = cp.off;
     st->end = cp.end;
     st->bytes = cp.bytes;
+    if (cp.block) {
+        char* lim = old_cur;
+        char* blk_end = cp.block->base + cp.block->cap;
+        if (lim > blk_end) lim = blk_end;
+        arena_poison_range(cp.off, lim);
+    }
 }
 
 /* ---- runtime entry points (same API as the GC / stub) ---- */
 
 void leash_gc_init(void) {
-    arena_ensure_stack(&leasharena_tls_ar);
-    arena_ensure_stack(&tls_root);
+    /* Both arenas are created lazily on first allocation/enter. init
+     * itself allocates nothing: allocation-free programs (fib, pi, ...)
+     * should not carry an arena block or checkpoint array at all. */
+    /* Poison reclaimed scope bytes by default so stale reads into a
+     * dead frame become obvious garbage (0xDD) instead of silently
+     * valid-looking data. Set LEASH_ARENA_POISON=0 to disable the
+     * memset cost on scope exit/reset (e.g. for peak-speed runs where
+     * lifetime correctness is already established). */
+    {
+        const char* p = getenv("LEASH_ARENA_POISON");
+        leash_arena_poison = (!p || p[0] != '0' || p[1] != '\0') ? 1 : 0;
+    }
+#if defined(__linux__) && defined(__GLIBC__)
+    /* Fewer glibc malloc arenas reduces per-thread heap/page overhead
+     * and peak RSS for single-threaded arena programs. */
+    mallopt(M_ARENA_MAX, 2);
+#endif
     leasharena_tls_arena_dead = 0;
 }
 
 void leash_gc_shutdown(void) {
+    if (getenv("LEASH_ARENA_STATS")) {
+        size_t blocks = 0, cap = 0;
+        for (arena_block* b = leasharena_tls_ar.head; b; b = b->next) { blocks++; cap += b->cap; }
+        fprintf(stderr, "Arena stats: peak %zu block bytes (now %zu in %zu blocks), current payload %zu (+root %zu)\n",
+                arena_peak_block_bytes, cap, blocks, leasharena_tls_ar.bytes, tls_root.bytes);
+    }
     /* Free both arenas on the calling thread. Worker arenas are
      * retained for reuse (thread pool); only the main thread runs
      * this at program exit. */
     arena_block* b = leasharena_tls_ar.head;
-    while (b) { arena_block* n = b->next; free(b); b = n; }
+    while (b) {
+        arena_block* n = b->next;
+#if defined(__linux__) || defined(__APPLE__)
+        if (b->map_len) munmap(b, b->map_len); else free(b);
+#else
+        free(b);
+#endif
+        b = n;
+    }
     leasharena_tls_ar.head = NULL; leasharena_tls_ar.cur = NULL; leasharena_tls_ar.end = NULL;
     leasharena_tls_ar.cp_len = 0; leasharena_tls_ar.bytes = 0;
     b = tls_root.head;
-    while (b) { arena_block* n = b->next; free(b); b = n; }
+    while (b) {
+        arena_block* n = b->next;
+#if defined(__linux__) || defined(__APPLE__)
+        if (b->map_len) munmap(b, b->map_len); else free(b);
+#else
+        free(b);
+#endif
+        b = n;
+    }
     tls_root.head = NULL; tls_root.cur = NULL; tls_root.end = NULL;
     tls_root.cp_len = 0; tls_root.bytes = 0;
     leasharena_tls_arena_dead = 1;
@@ -402,6 +531,12 @@ void* leash_gc_malloc(size_t size) {
  * (see arena_alloc_nz for the safety contract). */
 void* leash_gc_malloc_nz(size_t size) {
     return arena_alloc_nz(&leasharena_tls_ar, size, ARENA_ALIGN);
+}
+
+/* Pointer-aligned payloads (vector/hash headers, hash nodes): 8-byte
+ * alignment avoids the 16-byte padding the general allocator reserves. */
+void* leash_gc_malloc_compact(size_t size) {
+    return arena_alloc(&leasharena_tls_ar, size, (size_t)8);
 }
 
 void* leash_gc_malloc_ex(size_t size, unsigned int flags) {
@@ -422,7 +557,7 @@ void* leash_gc_realloc(void* ptr, size_t new_size) {
     }
     /* Tip extension: if the object ends exactly at the bump, grow in
      * place (amortized O(1) for string/vec growth on the tip). */
-    if (!arena_owns(&leasharena_tls_ar, ptr)) {
+    if (arena_block_of(&leasharena_tls_ar, ptr) == NULL) {
         /* Foreign (e.g. C malloc) pointer: allocate + copy. */
         void* np = leash_gc_malloc(new_size);
         memcpy(np, ptr, old_size < new_size ? old_size : new_size);
@@ -453,6 +588,76 @@ void* leash_gc_realloc(void* ptr, size_t new_size) {
             leasharena_tls_ar.cur -= delta;
             if (new_size < old_size) leasharena_tls_ar.bytes -= (old_size - new_size);
             return (void*)p;
+        }
+    }
+    /* Sole-block growth: a dedicated oversize block holds exactly one
+     * allocation that consumed the whole block (see arena_raw_ex). Grow
+     * that block itself with realloc so large vectors/strings extend by
+     * mremap: no byte copy, no transient old+new resident peak, and no
+     * free/realloc churn on every doubling step. */
+    {
+        arena_block* b = arena_block_of(&leasharena_tls_ar, ptr);
+        if (b && b->sole && b == leasharena_tls_ar.head &&
+            leasharena_tls_ar.cur == leasharena_tls_ar.end) {
+            size_t off = (size_t)(p - b->base);
+            int referenced = 0;
+            for (size_t i = 0; i < leasharena_tls_ar.cp_len; i++) {
+                if (leasharena_tls_ar.cps[i].block == b) { referenced = 1; break; }
+            }
+            if (!referenced && off + old_adv <= b->cap) {
+                size_t need_cap = off + ((new_size + 7) & ~(size_t)7);
+                size_t new_cap = (need_cap + 4095) & ~(size_t)4095;
+                size_t old_cap = b->cap;
+                arena_block* nb = NULL;
+#if defined(__linux__)
+                if (b->map_len) {
+                    size_t old_map_len = b->map_len;
+                    size_t new_map_len = (sizeof(*b) + new_cap + 4095) & ~(size_t)4095;
+                    nb = (arena_block*)mremap(b, old_map_len, new_map_len, MREMAP_MAYMOVE);
+                    if (nb == MAP_FAILED) nb = NULL;
+                    else {
+                        nb->base = (char*)(nb + 1);
+                        nb->cap = new_cap;
+                        nb->map_len = new_map_len;
+                        char* np = nb->base + off;
+                        if (new_size > old_size) memset(np + old_size, 0, new_size - old_size);
+                        *(uint64_t*)(void*)(np - 8) = (uint64_t)new_size;
+                        leasharena_tls_ar.head = nb;
+                        leasharena_tls_ar.cur = nb->base + new_cap;
+                        leasharena_tls_ar.end = nb->base + new_cap;
+                        if (new_map_len >= old_map_len) arena_block_stats_add(new_map_len - old_map_len);
+                        else arena_block_stats_sub(old_map_len - new_map_len);
+                        if (new_size >= old_size) leasharena_tls_ar.bytes += new_size - old_size;
+                        else if (leasharena_tls_ar.bytes >= old_size - new_size)
+                            leasharena_tls_ar.bytes -= old_size - new_size;
+                        return (void*)np;
+                    }
+                }
+#endif
+                if (!nb && !b->map_len) {
+                    nb = (arena_block*)realloc(b, sizeof(*nb) + new_cap);
+                    if (nb) {
+                        /* realloc may move the block: the usable-area base is
+                         * an absolute pointer stored inside it, so repoint. */
+                        nb->base = (char*)(nb + 1);
+                        nb->cap = new_cap;
+                        char* np = nb->base + off;
+                        if (new_size > old_size) memset(np + old_size, 0, new_size - old_size);
+                        *(uint64_t*)(void*)(np - 8) = (uint64_t)new_size;
+                        leasharena_tls_ar.head = nb;
+                        leasharena_tls_ar.cur = nb->base + new_cap;
+                        leasharena_tls_ar.end = nb->base + new_cap;
+                        if (new_cap >= old_cap) arena_block_stats_add(new_cap - old_cap);
+                        else arena_block_stats_sub(old_cap - new_cap);
+                        if (new_size >= old_size) leasharena_tls_ar.bytes += new_size - old_size;
+                        else if (leasharena_tls_ar.bytes >= old_size - new_size)
+                            leasharena_tls_ar.bytes -= old_size - new_size;
+                        return (void*)np;
+                    }
+                }
+                /* realloc/mremap failed or mmap block on non-mremap: fall
+                 * back to allocate + copy. */
+            }
         }
     }
     void* np = leash_gc_malloc(new_size);
@@ -510,7 +715,13 @@ void leasharena_exit(void) {
 
 void leasharena_exit_n(int64_t nframes) {
     arena_ensure_stack(&leasharena_tls_ar);
-    for (int64_t i = 0; i < nframes && leasharena_tls_ar.cp_len > 0; i++) arena_pop_cp(&leasharena_tls_ar);
+    if (nframes < 0) return;
+    if ((size_t)nframes > leasharena_tls_ar.cp_len) {
+        fprintf(stderr, "Leash arena: scope underflow (exit_n(%lld) with depth %zu)\n",
+                (long long)nframes, leasharena_tls_ar.cp_len);
+        abort();
+    }
+    for (int64_t i = 0; i < nframes; i++) arena_pop_cp(&leasharena_tls_ar);
 }
 
 int64_t leasharena_loop_enter(void) {
@@ -520,18 +731,32 @@ int64_t leasharena_loop_enter(void) {
 }
 
 void leasharena_loop_reset_slow(int64_t frame) {
-    if (frame < 0) return;
+    if (frame < 0) {
+        fprintf(stderr, "Leash arena: invalid loop frame (%lld)\n", (long long)frame);
+        abort();
+    }
     arena_ensure_stack(&leasharena_tls_ar);
-    if ((size_t)frame >= leasharena_tls_ar.cp_len) return;
+    if ((size_t)frame >= leasharena_tls_ar.cp_len) {
+        fprintf(stderr, "Leash arena: loop reset frame %lld out of range (depth %zu)\n",
+                (long long)frame, leasharena_tls_ar.cp_len);
+        abort();
+    }
     leasharena_tls_ar.cp_len = (size_t)frame + 1;
     arena_reset_to(&leasharena_tls_ar, (size_t)frame);
 }
 
 void leasharena_loop_reset(int64_t frame) {
-    if (frame < 0) return;
+    if (frame < 0) {
+        fprintf(stderr, "Leash arena: invalid loop frame (%lld)\n", (long long)frame);
+        abort();
+    }
     arena_ensure_stack(&leasharena_tls_ar);
     /* frame must still be on the stack (inner frames balanced). */
-    if ((size_t)frame >= leasharena_tls_ar.cp_len) return;
+    if ((size_t)frame >= leasharena_tls_ar.cp_len) {
+        fprintf(stderr, "Leash arena: loop reset frame %lld out of range (depth %zu)\n",
+                (long long)frame, leasharena_tls_ar.cp_len);
+        abort();
+    }
     /* Drop any frames above the loop frame (should not happen with
      * balanced inner functions) then reset to the loop frame. */
     leasharena_tls_ar.cp_len = (size_t)frame + 1;
@@ -539,9 +764,16 @@ void leasharena_loop_reset(int64_t frame) {
 }
 
 void leasharena_loop_exit(int64_t frame) {
-    if (frame < 0) return;
+    if (frame < 0) {
+        fprintf(stderr, "Leash arena: invalid loop frame (%lld)\n", (long long)frame);
+        abort();
+    }
     arena_ensure_stack(&leasharena_tls_ar);
-    if ((size_t)frame >= leasharena_tls_ar.cp_len) return;
+    if ((size_t)frame >= leasharena_tls_ar.cp_len) {
+        fprintf(stderr, "Leash arena: loop exit frame %lld out of range (depth %zu)\n",
+                (long long)frame, leasharena_tls_ar.cp_len);
+        abort();
+    }
     leasharena_tls_ar.cp_len = (size_t)frame + 1;
     arena_pop_cp(&leasharena_tls_ar);
 }
@@ -551,6 +783,34 @@ void leasharena_loop_exit(int64_t frame) {
  * len lives at data-8 (shared prefix code keeps working); total lives
  * at data-16 and yields cap = total - 17. */
 #define ARENA_STR_HDR ((size_t)16)
+
+/* Capacity policy for arena strings.
+ *
+ * Short strings dominate real workloads (tokens, keys, formatted fields),
+ * so the first allocation reserves a slim buffer instead of a fat one.
+ * The request is rounded up to a 16-byte payload; the allocation's tail
+ * padding is real, usable capacity (the length word advertises it), so a
+ * 15-byte string fits without a second allocation and a 16-byte buffer
+ * costs 40 bytes total instead of 88.
+ *
+ * Growth is geometric while the buffer is small — few reallocations, and
+ * the tip-extension path grows most accumulators in place — then tapers
+ * to +25% so large strings waste at most a quarter of their buffer. */
+#define ARENA_STR_MIN_CAP ((size_t)16)
+#define ARENA_STR_DOUBLE_UNTIL ((size_t)256)
+
+static inline size_t ar_str_cap_for(size_t need, size_t cur_cap) {
+    size_t nc;
+    if (cur_cap == 0) {
+        nc = need < ARENA_STR_MIN_CAP ? ARENA_STR_MIN_CAP : need;
+    } else if (cur_cap < ARENA_STR_DOUBLE_UNTIL) {
+        nc = cur_cap * 2;
+    } else {
+        nc = cur_cap + (cur_cap >> 2);
+    }
+    if (nc < need) nc = need;
+    return nc;
+}
 
 void* leash_gc_alloc_string_cap_in(arena_stack* st, size_t len, size_t cap) {
     if (len > SIZE_MAX - 32) {
@@ -568,13 +828,14 @@ void* leash_gc_alloc_string_cap_in(arena_stack* st, size_t len, size_t cap) {
      * string-construction path. */
     size_t raw_total = 0;
     arena_ensure_stack(st);
+    char* cur_before = st->cur;
     if (leasharena_tls_arena_dead) {
         fprintf(stderr, "Leash arena: allocation after shutdown\n");
         abort();
     }
     /* Allocate via arena_raw with need = total - 8 (generic size sense
      * after its own 8-byte header would over-count; call raw directly). */
-    char* payload = arena_raw_ex(st, total - 8, ARENA_ALIGN, &raw_total, 0);
+    char* payload = arena_raw_ex(st, total - 8, (size_t)8, &raw_total, 0);
     /* payload is the string data area? No: arena_raw returns payload
      * past its 8-byte header. We want base+16 as data. Back out: base is
      * payload-8. Data is base+16 = payload+8. */
@@ -646,6 +907,7 @@ char* leash_str_append_span(char* s, const char* piece, size_t pl) {
     size_t sl = 0;
     size_t cur_cap = 0;
     size_t old_total = 0;
+    size_t grow_cap = 0;
     int tracked = arena_str_info(s, &sl, &cur_cap);
     if (!tracked) {
         sl = strlen(s ? s : "");
@@ -663,7 +925,8 @@ char* leash_str_append_span(char* s, const char* piece, size_t pl) {
          * where each iteration would otherwise abandon a large copy).
          * Old total lives at s-16; the allocation ends at s-16+total. */
         old_total = *(uint64_t*)(void*)(s - 16);
-        size_t new_cap = tot < 64 ? 64 : tot + (tot >> 2);
+        size_t new_cap = ar_str_cap_for(tot, cur_cap);
+        grow_cap = new_cap;
         size_t new_total = 16 + new_cap + 1;
         new_total = (new_total + 7) & ~(size_t)7;
         arena_stack* st = &leasharena_tls_ar;
@@ -681,7 +944,9 @@ char* leash_str_append_span(char* s, const char* piece, size_t pl) {
             }
         }
     }
-    char* out = (char*)leash_gc_alloc_string_cap(tot, tot < 64 ? 64 : tot + (tot >> 2));
+    /* A grown string keeps geometric slack so the next append does not
+     * copy the whole buffer again; a fresh string starts slim. */
+    char* out = (char*)leash_gc_alloc_string_cap(tot, grow_cap ? grow_cap : ar_str_cap_for(tot, 0));
     if (sl) memcpy(out, s, sl);
     if (pl) memcpy(out + sl, piece, pl);
     out[tot] = '\0';
@@ -695,7 +960,7 @@ char* leash_str_append_span(char* s, const char* piece, size_t pl) {
 char* leash_str_append(char* s, const char* piece) {
     if (!s) {
         size_t plen = (size_t)leash_str_bsize(piece);
-        size_t cap = plen < 32 ? 32 : plen + (plen >> 2);
+        size_t cap = ar_str_cap_for(plen, 0);
         char* out = (char*)leash_gc_alloc_string_cap(plen, cap);
         if (plen) memcpy(out, piece ? piece : "", plen);
         out[plen] = '\0';
@@ -720,53 +985,153 @@ char* leash_str_concat_ex(const char* s1, const char* s2) {
     return out;
 }
 
+/* Fast decimal helpers (match GC mode). */
+static int _ar_int_digits_i64(int64_t v) {
+    if (v == 0) return 1;
+    int neg = v < 0;
+    uint64_t u = neg ? (uint64_t)(-(v + 1)) + 1 : (uint64_t)v;
+    int d = neg ? 1 : 0;
+    while (u) { d++; u /= 10; }
+    return d;
+}
+static int _ar_uint_digits(uint64_t v) {
+    if (v == 0) return 1;
+    int d = 0;
+    while (v) { d++; v /= 10; }
+    return d;
+}
+
 char* leash_str_append_int(char* s, int64_t v, int is_uint) {
-    /* Format on the stack and append by span: the piece length is known,
-     * so the generic append's arena_str_info walks on both operands are
-     * skipped entirely (one lookup total instead of three). */
     char buf[32];
-    int n;
-    if (is_uint) n = snprintf(buf, sizeof(buf), "%llu", (unsigned long long)v);
-    else n = snprintf(buf, sizeof(buf), "%lld", (long long)v);
-    if (n < 0) n = 0;
-    if (n > 0 && !s) {
-        char* out = (char*)leash_gc_alloc_string_cap((size_t)n, (size_t)n < 32 ? 32 : (size_t)n + ((size_t)n >> 2));
-        memcpy(out, buf, (size_t)n);
-        out[n] = '\0';
+    int d;
+    if (is_uint) {
+        uint64_t u = (uint64_t)v;
+        d = _ar_uint_digits(u);
+        if (u == 0) { buf[0] = '0'; buf[1] = '\0'; }
+        else {
+            int pos = d;
+            buf[pos] = '\0';
+            while (u) { buf[--pos] = (char)('0' + (u % 10)); u /= 10; }
+        }
+    } else {
+        d = _ar_int_digits_i64(v);
+        if (v == 0) { buf[0] = '0'; buf[1] = '\0'; }
+        else {
+            int neg = v < 0;
+            uint64_t u = neg ? (uint64_t)(-(v + 1)) + 1 : (uint64_t)v;
+            int pos = d;
+            buf[pos] = '\0';
+            if (neg) { buf[0] = '-'; pos = d; }
+            while (u) { buf[--pos] = (char)('0' + (u % 10)); u /= 10; }
+        }
+    }
+    if (d > 0 && !s) {
+        char* out = (char*)leash_gc_alloc_string_cap((size_t)d, ar_str_cap_for((size_t)d, 0));
+        memcpy(out, buf, (size_t)d);
+        out[d] = '\0';
         return out;
     }
-    return leash_str_append_span(s, buf, n > 0 ? (size_t)n : 0);
+    return leash_str_append_span(s, buf, d > 0 ? (size_t)d : 0);
 }
 
 char* leash_str_append_char(char* s, char c) {
     if (!s) {
-        char* out = (char*)leash_gc_alloc_string_cap(1, 32);
+        char* out = (char*)leash_gc_alloc_string_cap(1, ARENA_STR_MIN_CAP);
         out[0] = c;
         out[1] = '\0';
         return out;
+    }
+    /* Hot path (arena, per-char loops): direct header access when the
+     * string lives in the current TLS bump block — the common case
+     * during tight append accumulation. Avoids arena_str_info's full
+     * validation and the append_span call overhead. */
+    if ((uintptr_t)s >= 16) {
+        arena_stack* tls = &leasharena_tls_ar;
+        const char* base = s - 16;
+        if (tls->head && base >= tls->head->base && base < tls->head->base + tls->head->cap) {
+            uint64_t total = *(uint64_t*)(void*)(s - 16);
+            uint64_t len = *(uint64_t*)(void*)(s - 8) & ((1ULL << 63) - 1);
+            size_t cap = (total >= 17) ? (size_t)(total - 17) : 0;
+            if (len <= cap) {
+                size_t tot = (size_t)len + 1;
+                if (tot <= cap) {
+                    s[len] = c;
+                    s[tot] = '\0';
+                    *(uint64_t*)(void*)(s - 8) = (uint64_t)tot;
+                    return s;
+                }
+                /* Tip-extend: grow the buffer in place if it's the bump tip. */
+                char* old_end = (s - 16) + (size_t)total;
+                if (old_end == tls->cur) {
+                    size_t new_cap = ar_str_cap_for(tot, cap);
+                    size_t new_total = (16 + new_cap + 1 + 7) & ~(size_t)7;
+                    size_t want = new_total - (size_t)total;
+                    if ((size_t)(tls->end - tls->cur) >= want) {
+                        *(uint64_t*)(void*)(s - 16) = (uint64_t)new_total;
+                        *(uint64_t*)(void*)(s - 8) = (uint64_t)tot;
+                        tls->cur += want;
+                        tls->bytes += want;
+                        s[len] = c;
+                        s[tot] = '\0';
+                        return s;
+                    }
+                }
+            }
+        }
     }
     return leash_str_append_span(s, &c, 1);
 }
 
 char* leash_int_to_str_fast(int64_t v) {
-    char buf[32]; int n = snprintf(buf, sizeof(buf), "%lld", (long long)v);
-    char* out = (char*)leash_gc_alloc_string((size_t)n);
-    memcpy(out, buf, (size_t)n + 1);
+    int d = _ar_int_digits_i64(v);
+    char* out = (char*)leash_gc_alloc_string((size_t)d);
+    if (v == 0) { out[0] = '0'; out[1] = '\0'; return out; }
+    int neg = v < 0;
+    uint64_t u = neg ? (uint64_t)(-(v + 1)) + 1 : (uint64_t)v;
+    int pos = d;
+    out[pos] = '\0';
+    if (neg) { out[0] = '-'; pos = d; }
+    while (u) { out[--pos] = (char)('0' + (u % 10)); u /= 10; }
     return out;
 }
 
 char* leash_uint_to_str_fast(uint64_t v) {
-    char buf[32]; int n = snprintf(buf, sizeof(buf), "%llu", (unsigned long long)v);
-    char* out = (char*)leash_gc_alloc_string((size_t)n);
-    memcpy(out, buf, (size_t)n + 1);
+    int d = _ar_uint_digits(v);
+    char* out = (char*)leash_gc_alloc_string((size_t)d);
+    if (v == 0) { out[0] = '0'; out[1] = '\0'; return out; }
+    int pos = d;
+    out[pos] = '\0';
+    while (v) { out[--pos] = (char)('0' + (v % 10)); v /= 10; }
     return out;
 }
 
 char* leash_str_concat_int(const char* s, int64_t v, int is_uint) {
-    char buf[32];
-    if (is_uint) snprintf(buf, sizeof(buf), "%llu", (unsigned long long)v);
-    else snprintf(buf, sizeof(buf), "%lld", (long long)v);
-    return leash_str_concat_ex(s ? s : "", buf);
+    if (!s) s = "";
+    size_t sl = (size_t)leash_str_bsize(s);
+    int d = is_uint ? _ar_uint_digits((uint64_t)v) : _ar_int_digits_i64(v);
+    size_t tot = sl + (size_t)d;
+    char* out = (char*)leash_gc_alloc_string_cap(tot, tot);
+    if (sl) memcpy(out, s, sl);
+    char* tail = out + sl;
+    if (is_uint) {
+        uint64_t u = (uint64_t)v;
+        if (u == 0) { tail[0] = '0'; }
+        else {
+            int pos = d;
+            while (u) { tail[--pos] = (char)('0' + (u % 10)); u /= 10; }
+        }
+    } else {
+        if (v == 0) { tail[0] = '0'; }
+        else {
+            int neg = v < 0;
+            uint64_t u = neg ? (uint64_t)(-(v + 1)) + 1 : (uint64_t)v;
+            int pos = d;
+            if (neg) { tail[0] = '-'; pos = d; }
+            while (u) { tail[--pos] = (char)('0' + (u % 10)); u /= 10; }
+        }
+    }
+    out[tot] = '\0';
+    return out;
 }
 
 void* leash_gc_alloc_vector_data(size_t elem_size, size_t capacity) {
@@ -806,6 +1171,8 @@ void* leash_gc_malloc_nz(size_t size) {
     if (!p) { fprintf(stderr, "Leash: Out of memory!\n"); abort(); }
     return p;
 }
+
+void* leash_gc_malloc_compact(size_t size) { return leash_gc_malloc(size); }
 
 void* leash_gc_malloc_ex(size_t size, unsigned int flags) {
     (void)flags; /* no GC scanning in stub mode, so the ATOMIC flag is unused */
@@ -1595,6 +1962,10 @@ void* leash_gc_malloc(size_t size) {
 }
 
 void* leash_gc_malloc_nz(size_t size) {
+    return leash_gc_malloc_ex(size, 0);
+}
+
+void* leash_gc_malloc_compact(size_t size) {
     return leash_gc_malloc_ex(size, 0);
 }
 
@@ -3703,7 +4074,7 @@ __attribute__((weak)) char* leash_sh_input(const char* prompt) {
 }
 
 void* leash_sh_vec_new(int64_t elem_size, int64_t scan) {
-    LeashVec* v = (LeashVec*)leash_gc_malloc(sizeof(LeashVec));
+    LeashVec* v = (LeashVec*)leash_gc_malloc_compact(sizeof(LeashVec));
     v->elem_size = elem_size > 0 ? elem_size : 8;
     v->scan = scan ? 1 : 0;
     /* Lazy data: never-pushed vectors cost one small header only. The
@@ -3914,12 +4285,28 @@ static void leash_sh_vec_ensure(void* vec_ptr, int64_t need) {
     LeashVec* v = (LeashVec*)vec_ptr;
     if (!v || v->cap >= need) return;
     int64_t nc = v->cap ? v->cap : 8;
-    /* Growth for the allocator in use: GC/NO_GC double while small
-     * then +50% so the final capacity wastes <=50%. Arena doubles
-     * throughout because every growth copy is retained until the scope
-     * resets (fewer copies = less retained waste). */
+    /* Growth for the allocator in use: double while small, then +50%
+     * so the final capacity wastes <=50%. */
 #ifdef LEASH_ARENA
-    while (nc < need) nc *= 2;
+    /* Bulk reservations grow to exactly `need`. Incremental pushb
+     * doubles for small/medium buffers (fewer growth events = less
+     * dead slack in shared blocks when non-tip, and power-of-two
+     * finals for fixed-size builds), but uses +50% for large buffers
+     * where tighter final capacity dominates. */
+    if (need - v->size > 8) {
+        nc = need > nc ? need : nc;
+        if (v->cap > 0 && v->cap * 2 > nc) { nc = v->cap * 2; }
+    } else {
+        while (nc < need) {
+            if (nc < 1024) {
+                nc *= 2;
+            } else if ((size_t)need * (size_t)v->elem_size > (size_t)512 * 1024) {
+                nc += nc / 2;
+            } else {
+                nc *= 2;
+            }
+        }
+    }
 #else
     while (nc < need) {
         if (nc < 1024) nc *= 2;
@@ -4012,12 +4399,16 @@ void leash_sh_vec_reserve_rooted(void* vec_ptr, int64_t need) {
     }
     size_t ncopy = (size_t)v->size * (size_t)v->elem_size;
     if (ncopy) memcpy(nd, v->data, ncopy);
+    /* Root buffers are conservatively scanned; zero the tail so stale
+     * pointers in unused capacity are not treated as live roots. */
+    size_t ntail = (size_t)(nc - v->size) * (size_t)v->elem_size;
+    if (ntail) memset((char*)nd + ncopy, 0, ntail);
     v->data = nd;
     v->cap = nc;
 }
 
 void* leash_sh_vec_from_parts(void* data, int64_t size, int64_t elem_size, int64_t scan) {
-    LeashVec* v = (LeashVec*)leash_gc_malloc(sizeof(LeashVec));
+    LeashVec* v = (LeashVec*)leash_gc_malloc_compact(sizeof(LeashVec));
     v->elem_size = elem_size > 0 ? elem_size : 8;
     v->scan = scan ? 1 : 0;
     v->size = size;
@@ -4035,15 +4426,7 @@ void* leash_sh_vec_from_parts(void* data, int64_t size, int64_t elem_size, int64
 /* Value-semantics copy for struct-typed params/assignments (python parity). */
 void* leash_sh_clone_obj(void* p, int64_t n) {
     if (!p || n <= 0) return p;
-#if defined(LEASH_ARENA)
-    /* Struct clones may be stored into caller-owned aggregates (e.g.
-     * swapped into a param-passed vec) where no caller frame is known.
-     * Root them: cloned instances outlive any scope they're stored
-     * into, at the cost of program-lifetime retention. */
-    void* q = leash_gc_malloc_rooted((size_t)n);
-#else
-    void* q = leash_gc_malloc((size_t)n);
-#endif
+    void* q = leash_gc_malloc_nz((size_t)n);
     if (!q) return p;
     memcpy(q, p, (size_t)n);
     return q;
@@ -4055,12 +4438,33 @@ int64_t leash_sh_vec_size(void* vec_ptr) {
     return v->size;
 }
 
+#if defined(LEASH_ARENA) && defined(LEASH_ARENA_O3)
+/* O3+ arena layout: the node carries no key pointer. The key bytes are
+ * stored inline right after the node, so the pointer is derived from
+ * the node address instead of stored: 8 bytes less per entry. Arena
+ * nodes are never relocated nor freed one by one, so the stored
+ * pointer could never dangle -- it was pure overhead. */
+typedef struct LeashHashNode {
+    void* val;
+    struct LeashHashNode* next;
+    uint64_t hash;
+} LeashHashNode;
+#define LEASH_HASH_KEY(n) ((char*)((n) + 1))
+#define LEASH_HASH_KEY_INIT(n) ((void)(n))
+#define LEASH_HASH_KEY_SLOT(n) (&(char*){LEASH_HASH_KEY(n)})
+#define LEASH_HASH_KEY_SLOT(n) (&(char*){LEASH_HASH_KEY(n)})
+#else
 typedef struct LeashHashNode {
     char* key;
     void* val;
     struct LeashHashNode* next;
     uint64_t hash;
 } LeashHashNode;
+#define LEASH_HASH_KEY(n) ((n)->key)
+#define LEASH_HASH_KEY_INIT(n) ((n)->key = (char*)((char*)(n) + sizeof(LeashHashNode)))
+#define LEASH_HASH_KEY_SLOT(n) (&(n)->key)
+#define LEASH_HASH_KEY_SLOT(n) (&(n)->key)
+#endif
 
 typedef struct LeashHash {
     LeashHashNode** buckets;
@@ -4070,24 +4474,26 @@ typedef struct LeashHash {
 
 /* FxHash-like: fast, good distribution for short "keyN" strings. */
 static inline uint64_t _leash_sh_str_hash_len(const char* s, size_t len) {
-    uint64_t h = 14695981039346656037ULL ^ (uint64_t)len;
-    /* Process in 8-byte chunks for long strings. */
+    /* FxHash: fast for short keys (common in arena workloads). */
+    uint64_t h = 0x517cc1b727220a95ULL + (uint64_t)len;
     while (len >= 8) {
         uint64_t w;
         memcpy(&w, s, 8);
-        h ^= w;
-        h *= 1099511628211ULL;
+        h = (h ^ w) * 0x517cc1b727220a95ULL;
         s += 8;
         len -= 8;
     }
-    while (len--) {
-        h ^= (uint8_t)(*s++);
-        h *= 1099511628211ULL;
+    if (len >= 4) {
+        uint32_t w;
+        memcpy(&w, s, 4);
+        h = (h ^ (uint64_t)w) * 0x517cc1b727220a95ULL;
+        s += 4;
+        len -= 4;
     }
-    /* Final mix. */
-    h ^= h >> 33;
-    h *= 0xff51afd7ed558ccdULL;
-    h ^= h >> 33;
+    while (len--) {
+        h = (h ^ (uint64_t)(uint8_t)(*s++)) * 0x517cc1b727220a95ULL;
+    }
+    h ^= h >> 32;
     return h;
 }
 static inline uint64_t _leash_sh_str_hash(const char* s) {
@@ -4096,11 +4502,71 @@ static inline uint64_t _leash_sh_str_hash(const char* s) {
 }
 
 void* leash_sh_hash_new(void) {
-    LeashHash* h = (LeashHash*)leash_gc_malloc(sizeof(LeashHash));
+    LeashHash* h = (LeashHash*)leash_gc_malloc_compact(sizeof(LeashHash));
     h->num_buckets = 64;
     h->count = 0;
-    h->buckets = (LeashHashNode**)leash_gc_malloc(h->num_buckets * sizeof(LeashHashNode*));
+    h->buckets = (LeashHashNode**)leash_gc_malloc_compact(h->num_buckets * sizeof(LeashHashNode*));
     return (void*)h;
+}
+
+/* Pre-size a hash table for `n` entries.
+ *
+ * The bucket array grows by doubling; every growth abandons the old
+ * array. In the arena that abandoned ladder is dead weight that stays
+ * resident until the scope ends, so a table filled in one loop pays for
+ * every rung of the ladder (a 20k-entry table allocates 64..32768
+ * buckets, ~520 KB of which only the last 256 KB is live). Knowing the
+ * entry count up front lets the table allocate its final bucket array
+ * once.
+ *
+ * The arena's realloc grows the array in place when it is still the bump
+ * tip, so the initial 64-bucket array is usually reused rather than
+ * abandoned. */
+void leash_sh_hash_reserve(void* hash_ptr, int64_t n) {
+#if defined(LEASH_ARENA)
+    LeashHash* h = (LeashHash*)hash_ptr;
+    if (!h || n <= 0) return;
+    /* Keep the load factor under 3/4, like the growth path. */
+    int64_t need = h->num_buckets > 0 ? h->num_buckets : 64;
+    while (need * 3 / 4 < n) {
+        need *= 2;
+        if (need > ((int64_t)1 << 30)) return;
+    }
+    if (need <= h->num_buckets) return;
+    if (h->count == 0) {
+        /* Empty table: grow the bucket array in place when it is still
+         * the arena's bump tip (the usual case: the table was created
+         * just before the loop that fills it). */
+        LeashHashNode** nb = (LeashHashNode**)leash_gc_realloc(
+            h->buckets, (size_t)need * sizeof(LeashHashNode*));
+        if (!nb) return;
+        memset(nb, 0, (size_t)need * sizeof(LeashHashNode*));
+        h->buckets = nb;
+        h->num_buckets = need;
+        return;
+    }
+    /* Non-empty table: allocate the final array and rehash into it. */
+    int64_t old_num = h->num_buckets;
+    LeashHashNode** old_b = h->buckets;
+    LeashHashNode** new_b = (LeashHashNode**)leash_gc_malloc_compact(
+        (size_t)need * sizeof(LeashHashNode*));
+    if (!new_b) return;
+    for (int64_t i = 0; i < old_num; i++) {
+        LeashHashNode* node = old_b[i];
+        while (node) {
+            LeashHashNode* next = node->next;
+            int64_t nidx = (int64_t)(node->hash & (uint64_t)(need - 1));
+            node->next = new_b[nidx];
+            new_b[nidx] = node;
+            node = next;
+        }
+    }
+    h->buckets = new_b;
+    h->num_buckets = need;
+#else
+    (void)hash_ptr;
+    (void)n;
+#endif
 }
 
 // Scalar hash keys: the runtime hash is string-keyed, so int/uint/float
@@ -4123,20 +4589,19 @@ char* leash_sh_float_key(double v) {
     return out;
 }
 
-void leash_sh_hash_push(void* hash_ptr, const char* key, void* val) {
-    LeashHash* h = (LeashHash*)hash_ptr;
-    if (!h || !key) return;
+/* Insert a key/value pair. The key bytes are copied into the node, so
+ * the caller may pass a temporary buffer -- the fused path below hands
+ * over a stack buffer. `klen` and `hash` are the caller's, so the key
+ * does not have to be a heap string. */
+static void leash_sh_hash_insert(LeashHash* h, const char* key, size_t klen, uint64_t hash, void* val) {
     if (!h->buckets) {
         h->num_buckets = 64;
-        h->buckets = (LeashHashNode**)leash_gc_malloc(h->num_buckets * sizeof(LeashHashNode*));
+        h->buckets = (LeashHashNode**)leash_gc_malloc_compact(h->num_buckets * sizeof(LeashHashNode*));
     }
-    int64_t klen_i = leash_str_bsize(key);
-    size_t klen = klen_i >= 0 ? (size_t)klen_i : strlen(key);
-    uint64_t hash = _leash_sh_str_hash_len(key, klen);
     int64_t idx = (int64_t)(hash & (uint64_t)(h->num_buckets - 1));
     LeashHashNode* cur = h->buckets[idx];
     while (cur) {
-        if (cur->hash == hash && leash_str_bsize(cur->key) == (int64_t)klen && memcmp(cur->key, key, klen) == 0) {
+        if (cur->hash == hash && leash_str_bsize(LEASH_HASH_KEY(cur)) == (int64_t)klen && memcmp(LEASH_HASH_KEY(cur), key, klen) == 0) {
             cur->val = val;
             return;
         }
@@ -4146,7 +4611,7 @@ void leash_sh_hash_push(void* hash_ptr, const char* key, void* val) {
         int64_t old_num = h->num_buckets;
         LeashHashNode** old_b = h->buckets;
         int64_t new_num = old_num * 2;
-        LeashHashNode** new_b = (LeashHashNode**)leash_gc_malloc(new_num * sizeof(LeashHashNode*));
+        LeashHashNode** new_b = (LeashHashNode**)leash_gc_malloc_compact(new_num * sizeof(LeashHashNode*));
         for (int64_t i = 0; i < old_num; i++) {
             LeashHashNode* node = old_b[i];
             while (node) {
@@ -4166,10 +4631,10 @@ void leash_sh_hash_push(void* hash_ptr, const char* key, void* val) {
     }
     /* Single allocation for node + key payload (key bytes follow struct). */
     size_t alloc_sz = sizeof(LeashHashNode) + klen + 1;
-    LeashHashNode* node = (LeashHashNode*)leash_gc_malloc_nz(alloc_sz);
-    node->key = (char*)((char*)node + sizeof(LeashHashNode));
-    memcpy(node->key, key, klen);
-    node->key[klen] = '\0';
+    LeashHashNode* node = (LeashHashNode*)leash_gc_malloc_compact(alloc_sz);
+    LEASH_HASH_KEY_INIT(node);
+    memcpy(LEASH_HASH_KEY(node), key, klen);
+    LEASH_HASH_KEY(node)[klen] = '\0';
     /* Patch prefix len for key string (prefix at key-8? No: key here is
      * inline after struct, not a full GC string. For bsize we rely on
      * strlen fallback for inline keys, so do not write prefix. Ensure
@@ -4181,21 +4646,36 @@ void leash_sh_hash_push(void* hash_ptr, const char* key, void* val) {
     h->count++;
 }
 
-void* leash_sh_hash_get(void* hash_ptr, const char* key) {
+void leash_sh_hash_push(void* hash_ptr, const char* key, void* val) {
     LeashHash* h = (LeashHash*)hash_ptr;
-    if (!h || !h->buckets || !key) return NULL;
+    if (!h || !key) return;
     int64_t klen_i = leash_str_bsize(key);
     size_t klen = klen_i >= 0 ? (size_t)klen_i : strlen(key);
     uint64_t hash = _leash_sh_str_hash_len(key, klen);
+    leash_sh_hash_insert(h, key, klen, hash, val);
+}
+
+/* Look up a key whose length the caller already knows. */
+static void* leash_sh_hash_lookup(LeashHash* h, const char* key, size_t klen, uint64_t hash) {
+    if (!h || !h->buckets || !key) return NULL;
     int64_t idx = (int64_t)(hash & (uint64_t)(h->num_buckets - 1));
     LeashHashNode* cur = h->buckets[idx];
     while (cur) {
-        if (cur->hash == hash && memcmp(cur->key, key, klen) == 0 && cur->key[klen] == '\0') {
+        if (cur->hash == hash && memcmp(LEASH_HASH_KEY(cur), key, klen) == 0 && LEASH_HASH_KEY(cur)[klen] == '\0') {
             return cur->val;
         }
         cur = cur->next;
     }
     return NULL;
+}
+
+void* leash_sh_hash_get(void* hash_ptr, const char* key) {
+    LeashHash* h = (LeashHash*)hash_ptr;
+    if (!h || !key) return NULL;
+    int64_t klen_i = leash_str_bsize(key);
+    size_t klen = klen_i >= 0 ? (size_t)klen_i : strlen(key);
+    uint64_t hash = _leash_sh_str_hash_len(key, klen);
+    return leash_sh_hash_lookup(h, key, klen, hash);
 }
 
 int64_t leash_sh_hash_isin(void* hash_ptr, const char* key) {
@@ -4207,7 +4687,7 @@ int64_t leash_sh_hash_isin(void* hash_ptr, const char* key) {
     int64_t idx = (int64_t)(hash & (uint64_t)(h->num_buckets - 1));
     LeashHashNode* cur = h->buckets[idx];
     while (cur) {
-        if (cur->hash == hash && memcmp(cur->key, key, klen) == 0 && cur->key[klen] == '\0') {
+        if (cur->hash == hash && memcmp(LEASH_HASH_KEY(cur), key, klen) == 0 && LEASH_HASH_KEY(cur)[klen] == '\0') {
             return 1;
         }
         cur = cur->next;
@@ -4227,12 +4707,85 @@ void* leash_sh_hash_getkey(void* hash_ptr, void* val) {
     for (int64_t i = 0; i < h->num_buckets; i++) {
         LeashHashNode* cur = h->buckets[i];
         while (cur) {
-            if (cur->val == val) return (void*)cur->key;
+            if (cur->val == val) return (void*)LEASH_HASH_KEY(cur);
             cur = cur->next;
         }
     }
     return NULL;
 }
+
+#if defined(LEASH_ARENA) && defined(LEASH_ARENA_O3)
+/* Fused hash keys: build "<prefix><decimal>" in a stack buffer and hand
+ * it to the table directly.
+ *
+ * The arena never reclaims a temporary before its scope ends, so the
+ * ordinary path -- build the key string, copy it into the node -- keeps
+ * every temporary key resident for the whole loop that fills the table.
+ * Building the key on the stack removes the temporary entirely: the key
+ * bytes are written once, into the node, and nothing else is allocated.
+ * This is arena-only because in the GC the temporary is collected
+ * anyway; here it is the difference between a table that fits and one
+ * that does not. */
+#define LEASH_FUSED_KEY_MAX 96
+
+/* Write the decimal form of v at out; returns the byte count. */
+static size_t leash_fmt_i64(char* out, int64_t v, int is_uint) {
+    size_t d = is_uint ? _ar_uint_digits((uint64_t)v) : _ar_int_digits_i64(v);
+    if (is_uint) {
+        uint64_t u = (uint64_t)v;
+        if (u == 0) { out[0] = '0'; return 1; }
+        size_t pos = d;
+        while (u) { out[--pos] = (char)('0' + (u % 10)); u /= 10; }
+    } else {
+        if (v == 0) { out[0] = '0'; return 1; }
+        int neg = v < 0;
+        uint64_t u = neg ? (uint64_t)(-(v + 1)) + 1 : (uint64_t)v;
+        size_t pos = d;
+        if (neg) { out[0] = '-'; pos = d; }
+        while (u) { out[--pos] = (char)('0' + (u % 10)); u /= 10; }
+    }
+    return d;
+}
+
+/* Build prefix + decimal(v) into buf. Returns the key length, or 0 when
+ * the key does not fit (the caller falls back to the ordinary path). */
+static size_t leash_fused_key(char* buf, size_t bufsz, const char* prefix, int64_t v, int is_uint) {
+    size_t plen = (size_t)leash_str_bsize(prefix);
+    /* 24 bytes covers any int64 in decimal, sign included. */
+    if (plen + 24 > bufsz) return 0;
+    if (plen) memcpy(buf, prefix, plen);
+    size_t d = leash_fmt_i64(buf + plen, v, is_uint);
+    size_t klen = plen + d;
+    buf[klen] = '\0';
+    return klen;
+}
+
+void leash_sh_hash_push_int(void* hash_ptr, const char* prefix, int64_t v, int is_uint, void* val) {
+    LeashHash* h = (LeashHash*)hash_ptr;
+    if (!h || !prefix) return;
+    char buf[LEASH_FUSED_KEY_MAX + 1];
+    size_t klen = leash_fused_key(buf, sizeof(buf), prefix, v, is_uint);
+    if (klen == 0) {
+        /* Long prefix: build the key the ordinary way. */
+        leash_sh_hash_push(h, leash_str_concat_int(prefix, v, is_uint), val);
+        return;
+    }
+    uint64_t hash = _leash_sh_str_hash_len(buf, klen);
+    leash_sh_hash_insert(h, buf, klen, hash, val);
+}
+
+void* leash_sh_hash_get_int(void* hash_ptr, const char* prefix, int64_t v, int is_uint) {
+    LeashHash* h = (LeashHash*)hash_ptr;
+    if (!h || !prefix) return NULL;
+    char buf[LEASH_FUSED_KEY_MAX + 1];
+    size_t klen = leash_fused_key(buf, sizeof(buf), prefix, v, is_uint);
+    if (klen == 0) {
+        return leash_sh_hash_get(h, leash_str_concat_int(prefix, v, is_uint));
+    }
+    uint64_t hash = _leash_sh_str_hash_len(buf, klen);
+    return leash_sh_hash_lookup(h, buf, klen, hash);
+}
+#endif /* LEASH_ARENA && LEASH_ARENA_O3 */
 
 void leash_sh_hash_delete(void* hash_ptr, const char* key) {
     LeashHash* h = (LeashHash*)hash_ptr;
@@ -4244,7 +4797,7 @@ void leash_sh_hash_delete(void* hash_ptr, const char* key) {
     LeashHashNode* cur = h->buckets[idx];
     LeashHashNode* prev = NULL;
     while (cur) {
-        if (cur->hash == hash && memcmp(cur->key, key, klen) == 0 && cur->key[klen] == '\0') {
+        if (cur->hash == hash && memcmp(LEASH_HASH_KEY(cur), key, klen) == 0 && LEASH_HASH_KEY(cur)[klen] == '\0') {
             if (prev) prev->next = cur->next;
             else h->buckets[idx] = cur->next;
             h->count--;
@@ -4318,12 +4871,12 @@ void leasharena_escape_hash(void** slot, int64_t nframes) {
         LeashHashNode* cur = h->buckets[i];
         LeashHashNode** tail = &stage_buckets[i];
         while (cur) {
-            size_t klen = strlen(cur->key);
+            size_t klen = strlen(LEASH_HASH_KEY(cur));
             size_t sz = sizeof(LeashHashNode) + klen + 1;
             LeashHashNode* sn = (LeashHashNode*)malloc(sz);
             if (!sn) break;
-            sn->key = (char*)sn + sizeof(LeashHashNode);
-            memcpy(sn->key, cur->key, klen + 1);
+            LEASH_HASH_KEY_INIT(sn);
+            memcpy(LEASH_HASH_KEY(sn), LEASH_HASH_KEY(cur), klen + 1);
             sn->val = cur->val;
             sn->hash = cur->hash;
             sn->next = NULL;
@@ -4343,11 +4896,11 @@ void leasharena_escape_hash(void** slot, int64_t nframes) {
         LeashHashNode* scur = stage_buckets[i];
         LeashHashNode** tail = &nh->buckets[i];
         while (scur) {
-            size_t klen = strlen(scur->key);
+            size_t klen = strlen(LEASH_HASH_KEY(scur));
             size_t sz = sizeof(LeashHashNode) + klen + 1;
             LeashHashNode* nn = (LeashHashNode*)leash_gc_malloc(sz);
-            nn->key = (char*)nn + sizeof(LeashHashNode);
-            memcpy(nn->key, scur->key, klen + 1);
+            LEASH_HASH_KEY_INIT(nn);
+            memcpy(LEASH_HASH_KEY(nn), LEASH_HASH_KEY(scur), klen + 1);
             nn->val = scur->val;
             nn->hash = scur->hash;
             nn->next = NULL;
@@ -4479,7 +5032,7 @@ void leasharena_commit_vec(void** slot, void* stage) {
     if (!slot) return;
     if (!stage) { *slot = NULL; return; }
     arena_vec_stage* st = (arena_vec_stage*)stage;
-    LeashVec* nv = (LeashVec*)leash_gc_malloc(sizeof(LeashVec));
+    LeashVec* nv = (LeashVec*)leash_gc_malloc_compact(sizeof(LeashVec));
     *nv = st->hdr;
     if (st->data_bytes && st->data) {
         void* nd = leash_gc_malloc(st->data_bytes);
@@ -4527,12 +5080,12 @@ void* leasharena_stage_hash(void* hash) {
         LeashHashNode* cur = h->buckets[i];
         LeashHashNode** tail = &st->buckets[i];
         while (cur) {
-            size_t klen = strlen(cur->key);
+            size_t klen = strlen(LEASH_HASH_KEY(cur));
             size_t sz = sizeof(LeashHashNode) + klen + 1;
             LeashHashNode* sn = (LeashHashNode*)malloc(sz);
             if (!sn) break;
-            sn->key = (char*)sn + sizeof(LeashHashNode);
-            memcpy(sn->key, cur->key, klen + 1);
+            LEASH_HASH_KEY_INIT(sn);
+            memcpy(LEASH_HASH_KEY(sn), LEASH_HASH_KEY(cur), klen + 1);
             sn->val = cur->val;
             sn->hash = cur->hash;
             sn->next = NULL;
@@ -4558,11 +5111,11 @@ void leasharena_commit_hash(void** slot, void* stage) {
         LeashHashNode* scur = st->buckets[i];
         LeashHashNode** tail = &nh->buckets[i];
         while (scur) {
-            size_t klen = strlen(scur->key);
+            size_t klen = strlen(LEASH_HASH_KEY(scur));
             size_t sz = sizeof(LeashHashNode) + klen + 1;
             LeashHashNode* nn = (LeashHashNode*)leash_gc_malloc(sz);
-            nn->key = (char*)nn + sizeof(LeashHashNode);
-            memcpy(nn->key, scur->key, klen + 1);
+            LEASH_HASH_KEY_INIT(nn);
+            memcpy(LEASH_HASH_KEY(nn), LEASH_HASH_KEY(scur), klen + 1);
             nn->val = scur->val;
             nn->hash = scur->hash;
             nn->next = NULL;
@@ -4575,6 +5128,90 @@ void leasharena_commit_hash(void** slot, void* stage) {
     free(st->buckets);
     free(st);
     *slot = (void*)nh;
+}
+
+/* Deep-escape a vec of pointer-stored structs that contain heap fields.
+ * kind: 1=string, 2=vec, 3=hash. Stages everything to malloc, pops,
+ * commits, and rewrites element pointers. */
+void leasharena_escape_vec_typed(void** slot, int64_t nframes, int64_t pointee_size, int32_t nfields, const ar_field_desc* fields) {
+    if (!slot) return;
+    LeashVec* v = (LeashVec*)*slot;
+    if (!v) { leasharena_exit_n(nframes); return; }
+    int64_t n = v->size;
+    int64_t esz = v->elem_size > 0 ? v->elem_size : 8;
+    int64_t psz = pointee_size > 0 ? pointee_size : esz;
+    size_t data_bytes = v->cap > 0 ? (size_t)v->cap * (size_t)esz : 0;
+    void* staged_data = data_bytes ? malloc(data_bytes) : NULL;
+    if (staged_data && v->data) memcpy(staged_data, v->data, data_bytes);
+    LeashVec vhdr = *v;
+    void** staged_blobs = n > 0 ? (void**)calloc((size_t)n, sizeof(void*)) : NULL;
+    void*** staged_fields = (n > 0 && nfields > 0) ? (void***)calloc((size_t)n, sizeof(void**)) : NULL;
+    for (int64_t i = 0; i < n; i++) {
+        void* elem = v->data ? *(void**)((char*)v->data + (size_t)i * (size_t)esz) : NULL;
+        if (!elem) continue;
+        if (staged_blobs) {
+            void* bl = malloc((size_t)psz);
+            if (bl) memcpy(bl, elem, (size_t)psz);
+            staged_blobs[i] = bl;
+        }
+        if (staged_fields && fields) {
+            staged_fields[i] = (void**)calloc((size_t)nfields, sizeof(void*));
+            if (staged_fields[i]) {
+                for (int32_t f = 0; f < nfields; f++) {
+                    void* fv = *(void**)((char*)elem + fields[f].offset);
+                    if (!fv) { staged_fields[i][f] = NULL; continue; }
+                    if (fields[f].kind == 1) staged_fields[i][f] = leasharena_stage_string(fv);
+                    else if (fields[f].kind == 2) staged_fields[i][f] = leasharena_stage_vec(fv);
+                    else if (fields[f].kind == 3) staged_fields[i][f] = leasharena_stage_hash(fv);
+                    else staged_fields[i][f] = NULL;
+                }
+            }
+        }
+    }
+    leasharena_exit_n(nframes);
+    LeashVec* nv = (LeashVec*)leash_gc_malloc(sizeof(LeashVec));
+    *nv = vhdr;
+    if (staged_data && data_bytes) {
+        void* nd = leash_gc_malloc(data_bytes);
+        memcpy(nd, staged_data, data_bytes);
+        nv->data = nd;
+    } else {
+        nv->data = NULL;
+    }
+    free(staged_data);
+    for (int64_t i = 0; i < n; i++) {
+        if (!staged_blobs || !staged_blobs[i]) {
+            if (staged_fields && staged_fields[i]) {
+                for (int32_t f = 0; f < nfields; f++) {
+                    if (staged_fields[i][f]) {
+                        void* tmp = NULL;
+                        if (fields[f].kind == 1) leasharena_commit_string(&tmp, staged_fields[i][f]);
+                        else if (fields[f].kind == 2) leasharena_commit_vec(&tmp, staged_fields[i][f]);
+                        else if (fields[f].kind == 3) leasharena_commit_hash(&tmp, staged_fields[i][f]);
+                    }
+                }
+                free(staged_fields[i]);
+            }
+            continue;
+        }
+        void* nelem = leash_gc_malloc((size_t)psz);
+        memcpy(nelem, staged_blobs[i], (size_t)psz);
+        free(staged_blobs[i]);
+        if (staged_fields && staged_fields[i] && fields) {
+            for (int32_t f = 0; f < nfields; f++) {
+                void** fslot = (void**)((char*)nelem + fields[f].offset);
+                if (fields[f].kind == 1) leasharena_commit_string(fslot, staged_fields[i][f]);
+                else if (fields[f].kind == 2) leasharena_commit_vec(fslot, staged_fields[i][f]);
+                else if (fields[f].kind == 3) leasharena_commit_hash(fslot, staged_fields[i][f]);
+                else *fslot = NULL;
+            }
+            free(staged_fields[i]);
+        }
+        if (nv->data) *(void**)((char*)nv->data + (size_t)i * (size_t)esz) = nelem;
+    }
+    free(staged_blobs);
+    free(staged_fields);
+    *slot = (void*)nv;
 }
 
 void* leasharena_stage_blob(void* ptr, int64_t size) {
@@ -4652,11 +5289,11 @@ void leasharena_root_copy_hash(void** slot) {
         LeashHashNode* scur = st->buckets[i];
         LeashHashNode** tail = &nh->buckets[i];
         while (scur) {
-            size_t klen = strlen(scur->key);
+            size_t klen = strlen(LEASH_HASH_KEY(scur));
             size_t sz = sizeof(LeashHashNode) + klen + 1;
             LeashHashNode* nn = (LeashHashNode*)leash_gc_malloc_rooted(sz);
-            nn->key = (char*)nn + sizeof(LeashHashNode);
-            memcpy(nn->key, scur->key, klen + 1);
+            LEASH_HASH_KEY_INIT(nn);
+            memcpy(LEASH_HASH_KEY(nn), LEASH_HASH_KEY(scur), klen + 1);
             nn->val = scur->val;
             nn->hash = scur->hash;
             nn->next = NULL;
@@ -5204,7 +5841,7 @@ void* leash_sh_hash_keys(void* hash_ptr) {
         while (cur) {
             /* pushb copies FROM the given address — pass the address of
                the key slot, not the string pointer itself */
-            leash_sh_vec_pushb(vec, &cur->key);
+            leash_sh_vec_pushb(vec, LEASH_HASH_KEY_SLOT(cur));
             cur = cur->next;
         }
     }

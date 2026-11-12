@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v1.8.3 Release</div>
+        <div class="version">v1.8.4 Release</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -49,10 +49,15 @@
 
 <h1>Known Limitations</h1>
 
-<p>Leash 1.8.3 is a complete, self-hosted toolchain: the compiler is written in Leash, builds itself from a checked-in bootstrap seed with no Python, and passes an 89/89 output-parity corpus. The items below are the honest, currently-known limits of the platform &mdash; each is intentional, scoped, and stable for 1.x.</p>
+<p>Leash 1.8.4 is a complete, self-hosted toolchain: the compiler is written in Leash, builds itself from a checked-in bootstrap seed with no Python, and passes an 89/89 output-parity corpus. The items below are the honest, currently-known limits of the platform &mdash; each is intentional, scoped, and stable for 1.x.</p>
 
 <table>
     <tr><th>Limitation</th><th>Severity</th><th>Comment</th></tr>
+    <tr>
+        <td><code>--arena</code> scoped bump arena is experimental (native-only)</td>
+        <td>&#128993; Medium</td>
+        <td>Opt-in alternative to GC with deterministic scope/loop reclamation. Lifetimes are frame-based (no borrow checker): returns/spawn/futures escape by copy or root arena, but stores of frame-local temporaries into caller-owned aggregates, raw <code>*T</code> pointers, and union payloads remain caller-owned (like <code>--autofree</code>). Reclaimed memory is poisoned by default (<code>LEASH_ARENA_POISON=0</code> opts out) and frame misuse aborts; some ownership patterns are still unsafe if not modeled. JVM target rejects <code>--arena</code>.</td>
+    </tr>
     <tr>
         <td>Windows <code>serve_tls</code> is experimental</td>
         <td>&#128994; Low</td>
@@ -89,6 +94,17 @@
 <p>Function values needed to pass handlers around are supported on the JVM: <code>fnc(...)</code> types lower to single-method interfaces (the handler shape to the shim's <code>LshHttpHandler</code>, anything else to a generated <code><Main>_LshFn<n></code>), and <code>&fname</code> lowers to a generated adapter class, so <code>&handler_fn</code> locals, parameters and indirect calls work.</p>
 
 <p>Runtime note: the JVM shims ride <code>java.net.http</code> (JDK 11+), so programs using <code>http</code>/<code>httpserver</code> on the JVM need a Java 11+ runtime; <code>sql</code> itself has no such floor. Programs that use none of the shims keep the JVM target's usual Java 5 class-file floor. Minor engine differences are inherent to the JDK for the web modules: response header casing/order follows the JDK (lookups stay case-insensitive), and the server's own <code>Date</code>/keep-alive handling replaces the C engine's.</p>
+
+<h2>Scoped arena (<code>--arena</code>) is experimental</h2>
+
+<p>The arena backend (<code>leash compile/run --arena</code>, native-only) provides deterministic bump allocation with whole-scope and per-iteration reclamation, no GC pauses/scans, and C-ABI-friendly plain pointers. It is often leaner/faster on allocation-churn and hash/string-heavy workloads (especially with O2+ reserves/pre-sizing and O3+ compact nodes/fused keys), but it is not a universal win: growth-heavy kernels can retain superseded buffers until scope reset, and tiny compute-bound cases may show noisy or negligible deltas.</p>
+
+<ul>
+    <li><strong>Lifetime model:</strong> no borrow checker. Pointers are valid until the allocating frame/iteration exits. Returns and spawned/async data escape by copy or into the root arena; allocation-free functions/loops may skip framing.</li>
+    <li><strong>Known ownership caveat:</strong> storing a frame-local temporary into a caller-owned aggregate (heap field, global, slice backing), raw <code>*T</code> pointers, and union payloads are caller-owned (same aggregate-escape limitation as <code>--autofree</code>). Prefer GC when ownership crosses frames in ways the compiler cannot prove.</li>
+    <li><strong>Safety defaults:</strong> reclaimed memory is poisoned with <code>0xDD</code> by default (<code>LEASH_ARENA_POISON=0</code> disables). Frame/loop misuse (underflow, over-depth exit, invalid/out-of-range frame ops) aborts with diagnostics. Nested heap fields in returned structs/classes are deep-staged/committed across pops.</li>
+    <li><strong>Measurement:</strong> use <code>LEASH_ARENA_STATS=1</code> for peak block bytes/payload/rooted bytes; compare GC vs arena with cleared <code>~/.leash/shcache</code>, interleaved runs, and CPU/max RSS via <code>/usr/bin/time -v</code> (RSS is page-granular).</li>
+</ul>
 
 <h2>HTTP/3 / QUIC</h2>
 
