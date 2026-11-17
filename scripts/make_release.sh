@@ -79,8 +79,11 @@ if not exist "%DEST%\\libs" mkdir "%DEST%\\libs"
 copy /Y "%~dp0bin\\$binfile" "%DEST%\\bin\\$binfile" >nul
 rem POSIX command shims + clang wrapper (see scripts/win_shim.c)
 for %%S in (realpath test rm mkdir stat date uname cp find clang) do copy /Y "%~dp0bin\\%%S.exe" "%DEST%\\bin\\%%S.exe" >nul
-xcopy /E /Y /Q "%~dp0leash\\*" "%DEST%\\leash\\" >nul
-xcopy /E /Y /Q "%~dp0stdlib\\*" "%DEST%\\libs\\*" >nul
+rem /I assumes a directory target: without it xcopy asks F/D and hangs.
+echo Installing runtime...
+xcopy /E /I /Y /Q "%~dp0leash\\*" "%DEST%\\leash\\" >nul
+echo Installing standard library...
+xcopy /E /I /Y /Q "%~dp0stdlib\\*" "%DEST%\\libs\\" >nul
 rem The clang shim forwards to clang.orig.exe. Set LEASH_CLANG to the full
 rem path of a native Windows clang.exe (LLVM for Windows or MSYS2 clang).
 if defined LEASH_CLANG (

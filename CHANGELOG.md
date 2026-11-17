@@ -5,6 +5,13 @@ All notable changes to the Leash compiler are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.10.2] - 2026-11-17
+
+Patch release: the Windows installer no longer hangs.
+
+### Fixed
+- **`install.bat` no longer hangs in `xcopy`.** The standard-library copy used a destination ending in `\*`, which makes `xcopy` ask "F = file, D = directory?" and wait forever for input. Both `xcopy` calls now use `/I` (assume directory target) with directory-only destinations, and print progress before each copy.
+
 ## [1.10.1] - 2026-11-17
 
 Patch release: the Windows release bundle is usable from a plain `cmd` prompt.
@@ -2281,6 +2288,7 @@ silent exfiltration all became loud errors or well-defined behavior.
 ### Changed
 - Bump version to `0.23.5 Beta`.
 
+[1.10.2]: https://github.com/foksiny/leash/releases/tag/v1.10.2
 [1.10.1]: https://github.com/foksiny/leash/releases/tag/v1.10.1
 [1.10.0]: https://github.com/foksiny/leash/releases/tag/v1.10.0
 [1.9.1]: https://github.com/foksiny/leash/releases/tag/v1.9.1
