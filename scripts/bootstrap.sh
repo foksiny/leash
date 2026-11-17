@@ -12,18 +12,46 @@ mkdir -p bin
 # already-built self-hosted seed (bin/leashc) so the bootstrap can run
 # with NO Python dependency; fall back to the checked-in bootstrap
 # compiler binary.
+#
+# The seed file name carries the release version, so derive it from the
+# source instead of hardcoding it: a version bump then never leaves the
+# script pointing at a seed that no longer exists. Any checked-in seed
+# can bootstrap the current sources, so fall back to those as well.
+LEASH_VERSION=$(sed -n 's/.*fnc leash_version().*return "\([^"]*\)".*/\1/p' compiler/main.lsh | head -1)
+SEED="bootstrap/leash-${LEASH_VERSION}-target-x86_64"
+# Fall back to the newest checked-in seed when the exact-version file is
+# absent. Pick by numeric version, not by name: 1.10.0 sorts before
+# 1.9.0 as text, and the older seed may not parse the current sources.
+seed_key() {
+    local ver="$1"
+    ver="${ver#bootstrap/leash-}"
+    ver="${ver%-target-x86_64}"
+    echo "$ver" | awk -F. '{printf "%06d%06d%06d", $1, $2, $3}'
+}
+if [ ! -x "$SEED" ]; then
+    SEED=""
+    SEED_KEY=""
+    for cand in bootstrap/leash-*-target-x86_64; do
+        [ -x "$cand" ] || continue
+        key=$(seed_key "$cand")
+        if [ -z "$SEED_KEY" ] || [[ "$key" > "$SEED_KEY" ]]; then
+            SEED="$cand"
+            SEED_KEY="$key"
+        fi
+    done
+fi
 if [ -x bin/leashc ]; then
     echo "[bootstrap] Stage 0: seeding from existing bin/leashc"
     cp bin/leashc bin/leashc_stage1
     chmod +x bin/leashc_stage1
-elif [ -x bootstrap/leash-1.8.3-target-x86_64 ]; then
-    echo "[bootstrap] Stage 0: seeding from bootstrap/leash-1.8.3-target-x86_64"
-    cp bootstrap/leash-1.8.3-target-x86_64 bin/leashc_stage1
+elif [ -x "$SEED" ]; then
+    echo "[bootstrap] Stage 0: seeding from $SEED"
+    cp "$SEED" bin/leashc_stage1
     chmod +x bin/leashc_stage1
 else
     echo "[bootstrap] ERROR: no seed compiler found." >&2
     echo "  Provide bin/leashc (a self-hosted seed) or" >&2
-    echo "  bootstrap/leash-1.8.3-target-x86_64." >&2
+    echo "  bootstrap/leash-${LEASH_VERSION}-target-x86_64." >&2
     exit 1
 fi
 

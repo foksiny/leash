@@ -108,7 +108,7 @@ export const BUILTIN_DOCS: Record<string, BuiltinDoc> = {
 
 export const KEYWORD_DOCS: Record<string, string> = {
     'fnc': 'Starts a function definition.',
-    'def': 'Declares a custom type (struct, class, union, enum, macro) or an alias.',
+    'def': 'Declares a custom type (struct, class, union, enum, macro), a type alias, or a restricted literal type.',
     'return': 'Exits current function and optionally returns a value.',
     'if': 'Conditional branching. Executes block when condition is true.',
     'else': 'Alternative branch executed when condition is false.',
@@ -137,7 +137,7 @@ export const KEYWORD_DOCS: Record<string, string> = {
     'union': 'Defines a union type (value type holding one of several variants).',
     'enum': 'Defines an enum type (named constants with optional types/values).',
     'class': 'Defines a class type (reference type with methods and inheritance).',
-    'type': 'Creates a type alias: `def MyType : type ExistingType;`.',
+    'type': 'Creates a type alias (`def MyType : type ExistingType;`) or a restricted literal type (`def status : type "ok", "error", nil;`) that accepts only the listed literals.',
     'template': 'Declares a template type parameter: `def T : template;`.',
     'macro': 'Defines a compile-time code transformation macro.',
     'opdef': 'Defines an operator overload or extension method for a type.',

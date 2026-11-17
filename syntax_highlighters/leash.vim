@@ -1,6 +1,6 @@
 " Vim syntax file for Leash (.lsh)
 " Language: Leash - A strongly-typed compiled language on LLVM
-" Version: 0.23.7 Beta
+" Version: 1.9.0
 " Maintainer: foksiny <foksiny@github.com>
 " Last Updated: 2026
 
@@ -103,6 +103,9 @@ syn match	leashMethod	/\.\zs[a-zA-Z_][a-zA-Z0-9_]*\ze\s*(/
 syn match	leashMethod	/\.\zs[a-zA-Z_][a-zA-Z0-9_]*\ze\s*[;:]/
 syn match	leashMethod	/\.\zs[a-zA-Z_][a-zA-Z0-9_]*\ze\s*{/
 
+" Restricted literal type: def Name : type 1, 2, "ok", nil; -----------------
+syn match	leashRestrictedType	/\<def\s\+\zs[A-Za-z_][a-zA-Z0-9_]*\ze\s*:\s*type\s*\(-\?[0-9"']\|nil\|true\|false\)/
+
 " Enum Member with Custom Value: MEMBER: type = value -----------------------
 syn match	leashEnumMember	/^\s*\zs[a-zA-Z_][a-zA-Z0-9_]*\ze\s*:/
 
@@ -163,6 +166,7 @@ hi def link leashGenericParam		Type
 hi def link leashStructType		Type
 hi def link leashMultiType		Type
 hi def link leashMultiReturn		Type
+hi def link leashRestrictedType		Type
 hi def link leashArrayType		Type
 hi def link leashFuncPointer		Type
 hi def link leashBoolean		Boolean

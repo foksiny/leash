@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v1.8.4 Release</div>
+        <div class="version">v1.9.0 Release</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -49,7 +49,7 @@
 
 <h1>Known Limitations</h1>
 
-<p>Leash 1.8.4 is a complete, self-hosted toolchain: the compiler is written in Leash, builds itself from a checked-in bootstrap seed with no Python, and passes an 89/89 output-parity corpus. The items below are the honest, currently-known limits of the platform &mdash; each is intentional, scoped, and stable for 1.x.</p>
+<p>Leash 1.9.0 is a complete, self-hosted toolchain: the compiler is written in Leash, builds itself from a checked-in bootstrap seed with no Python, and passes an 89/89 output-parity corpus. The items below are the honest, currently-known limits of the platform &mdash; each is intentional, scoped, and stable for 1.x.</p>
 
 <table>
     <tr><th>Limitation</th><th>Severity</th><th>Comment</th></tr>
@@ -100,10 +100,13 @@
 <p>The arena backend (<code>leash compile/run --arena</code>, native-only) provides deterministic bump allocation with whole-scope and per-iteration reclamation, no GC pauses/scans, and C-ABI-friendly plain pointers. It is often leaner/faster on allocation-churn and hash/string-heavy workloads (especially with O2+ reserves/pre-sizing and O3+ compact nodes/fused keys), but it is not a universal win: growth-heavy kernels can retain superseded buffers until scope reset, and tiny compute-bound cases may show noisy or negligible deltas.</p>
 
 <ul>
-    <li><strong>Lifetime model:</strong> no borrow checker. Pointers are valid until the allocating frame/iteration exits. Returns and spawned/async data escape by copy or into the root arena; allocation-free functions/loops may skip framing.</li>
+    <li><strong>Lifetime model:</strong> no borrow checker. Pointers are valid until the allocating frame/iteration exits. Returns and spawned/async data escape by copy or into the root arena; spawn uses the compiler's type tree to root nested fields, and unions are transferred as boxed values with their real size. The compiler audits arena builds for cases it cannot move safely: manual libc heap calls and raw-pointer returns are errors, while raw pointers stored long-term or passed to workers warn (or fail with <code>--warnings-as-errors</code>). Allocation-free functions/loops may skip framing only when allocation analysis can prove it.</li>
+    <li><strong>Root arena:</strong> a value that outlives its frame &mdash; a global, or an outer local written from a loop body &mdash; is copied into the program-lifetime root arena, which is never rewound. The root slot reuses its copy in place while it is the only owner of it, so storing into the same global in a loop keeps a constant footprint instead of growing the program&rsquo;s permanent memory. The arena stats report the scope arena and the root arena separately (<code>LEASH_ARENA_STATS=1</code>).</li>
+    <li><strong>Spawn hand-off:</strong> <code>spawn</code> copies its arguments into one compact private transfer block; string arguments travel through it, container and aggregate arguments keep their root copies. The worker releases the transfer as soon as it has unpacked it, so the transfer does not outlive the hand-off.</li>
     <li><strong>Known ownership caveat:</strong> storing a frame-local temporary into a caller-owned aggregate (heap field, global, slice backing), raw <code>*T</code> pointers, and union payloads are caller-owned (same aggregate-escape limitation as <code>--autofree</code>). Prefer GC when ownership crosses frames in ways the compiler cannot prove.</li>
-    <li><strong>Safety defaults:</strong> reclaimed memory is poisoned with <code>0xDD</code> by default (<code>LEASH_ARENA_POISON=0</code> disables). Frame/loop misuse (underflow, over-depth exit, invalid/out-of-range frame ops) aborts with diagnostics. Nested heap fields in returned structs/classes are deep-staged/committed across pops.</li>
-    <li><strong>Measurement:</strong> use <code>LEASH_ARENA_STATS=1</code> for peak block bytes/payload/rooted bytes; compare GC vs arena with cleared <code>~/.leash/shcache</code>, interleaved runs, and CPU/max RSS via <code>/usr/bin/time -v</code> (RSS is page-granular).</li>
+    <li><strong>One accepted difference from the GC:</strong> a mutable container stored into a global re-points the source local at the global&rsquo;s root copy, so <code>g = v; g.pushb(4)</code> is visible through both names. After <code>g = v; g = X</code> the arena reuses the global&rsquo;s root copy in place, so <code>v</code> observes <code>X</code>&rsquo;s contents; the GC keeps <code>v</code> pointing at the old vector. Strings are immutable/copy-on-write and are never re-pointed this way.</li>
+    <li><strong>Safety defaults:</strong> reclaimed memory is poisoned with <code>0xDD</code> by default (<code>LEASH_ARENA_POISON=0</code> disables). Before every scope pop/loop reset, registered global/shared/static pointer slots are checked for pointers into the frame being reclaimed (<code>LEASH_ARENA_VERIFY=0</code> disables this default-on check); a missed root copy becomes a loud abort instead of a silent dangling pointer. Frame/loop misuse (underflow, over-depth exit, invalid/out-of-range frame ops) aborts with diagnostics. Nested heap fields in returned structs/classes are deep-staged/committed across pops; recursive aggregate returns copy the reachable graph with an identity map so cycles survive. Value-copy cloning of a recursive struct is bounded at eight type levels — deeper pointer chains keep sharing the tail pointer, which is safe but not a full deep copy.</li>
+    <li><strong>Measurement:</strong> use <code>LEASH_ARENA_STATS=1</code> for the scope/root peak block bytes and payload; compare GC vs arena with cleared <code>~/.leash/shcache</code>, interleaved runs, and CPU/max RSS via <code>/usr/bin/time -v</code> (RSS is page-granular).</li>
 </ul>
 
 <h2>HTTP/3 / QUIC</h2>

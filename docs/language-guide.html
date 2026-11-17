@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v1.8.4 Release</div>
+        <div class="version">v1.9.0 Release</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -888,6 +888,20 @@ name: <span class="kw">string</span> = Names::PERSON1;      <span class="cm">// 
 <span class="kw">def</span> Pixel : <span class="kw">type</span> <span class="kw">uint</span>&lt;8&gt;;
 a: MyInt = 10;
 p: Pixel = 255;</code></pre>
+
+<h2>Restricted Literal Types</h2>
+<p>A restricted literal type (or "weird type") accepts only the exact literal values listed in its declaration. It is a compile-time constraint: the value is stored as the underlying literal type, but assigning another value is an error, and a restricted variable cannot be widened to its base type without declaring the same restricted type.</p>
+<pre><code><span class="kw">def</span> zero : <span class="kw">type</span> 0;
+<span class="kw">def</span> onetwo : <span class="kw">type</span> 1, 2;
+<span class="kw">def</span> status : <span class="kw">type</span> <span class="str">"ok"</span>, <span class="str">"error"</span>, nil;
+
+a: zero = 0;       <span class="cm">// ok</span>
+<span class="cm">// a = 1;          // rejected: zero only allows 0</span>
+b: onetwo = 2;     <span class="cm">// ok</span>
+s: status = nil;   <span class="cm">// ok</span>
+<span class="cm">// t: string = s;  // rejected: status is not string</span>
+u: status = s;     <span class="cm">// ok: same restricted type</span>
+def magnitude : type -1, 0, 1;  <span class="cm">// negative literals are allowed</span></code></pre>
 
 <h2>Macros</h2>
 

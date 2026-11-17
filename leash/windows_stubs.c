@@ -105,6 +105,10 @@ typedef struct {
 
 static DWORD WINAPI _leash_thread_wrapper(LPVOID lpParam) {
     WorkerArgs* wa = (WorkerArgs*)lpParam;
+    /* Register this thread with the runtime: in arena mode the worker
+       owns a thread-local arena that must be released when the thread
+       exits (the main thread's shutdown cannot reach it). */
+    leash_gc_thread_attach();
     /* Bracket the generated-code lifetime so this thread is known to the GC
        and automatic collection stays away while it runs. */
     leash_gc_worker_begin();
@@ -131,6 +135,10 @@ static int lsh_spawn_worker_internal(void* (*func)(void*), void* arg, int quiet)
         if (!quiet) {
             fprintf(stderr, "error: Maximum number of worker threads (%d) reached\n", cap);
         }
+        /* Arena: no worker will read the argument block, so release
+         * the transfer now (a no-op in the GC backends, where the
+         * collector reclaims the block). */
+        leasharena_xfer_free(arg);
         return 1;
     }
 
@@ -148,6 +156,9 @@ static int lsh_spawn_worker_internal(void* (*func)(void*), void* arg, int quiet)
     /* We need a wrapper because Windows threads have a different signature */
     WorkerArgs* wa = (WorkerArgs*)malloc(sizeof(WorkerArgs));
     if (!wa) {
+        /* Arena: the argument block is a private transfer; no worker
+         * will read it, so release it now. */
+        leasharena_xfer_free(arg);
         fprintf(stderr, "error: Out of memory\n");
         return -1;
     }
@@ -158,6 +169,7 @@ static int lsh_spawn_worker_internal(void* (*func)(void*), void* arg, int quiet)
     if (thread == NULL) {
         fprintf(stderr, "error: Failed to create worker thread\n");
         free(wa);
+        leasharena_xfer_free(arg);
         return -1;
     }
 

@@ -25,6 +25,7 @@ Usage:
 """
 import argparse
 import atexit
+import glob
 import json
 import os
 import re
@@ -318,8 +319,32 @@ def _selfhosted_compiler():
     if rc != 0:
         _COMPILER_CACHE["error"] = "compiler repo clone failed"
         return None
-    seed = os.path.join(checkout, "bootstrap", "leash-1.8.3-target-x86_64")
-    if not os.path.exists(seed):
+    # The seed file name carries the release version: look the current
+    # version up first, then accept any checked-in seed (a seed only has
+    # to understand the current sources).
+    boot_dir = os.path.join(checkout, "bootstrap")
+    version = ""
+    main_lsh = os.path.join(checkout, "compiler", "main.lsh")
+    try:
+        with open(main_lsh, encoding="utf-8") as fh:
+            m = re.search(r'fnc leash_version\(\).*?return\s*"([^"]+)"',
+                          fh.read(), re.S)
+            if m:
+                version = m.group(1)
+    except OSError:
+        version = ""
+    seed = os.path.join(boot_dir, "leash-%s-target-x86_64" % version) if version else ""
+    if not seed or not os.path.exists(seed):
+        candidates = glob.glob(os.path.join(boot_dir, "leash-*-target-x86_64"))
+        def _ver_key(path):
+            m = re.search(r"leash-(\d+(?:\.\d+)*)", os.path.basename(path))
+            if not m:
+                return ()
+            return tuple(int(x) for x in m.group(1).split("."))
+        # Newest by numeric version: 1.10.0 > 1.9.0 (text order differs).
+        candidates.sort(key=_ver_key)
+        seed = candidates[-1] if candidates else ""
+    if not seed or not os.path.exists(seed):
         _COMPILER_CACHE["error"] = "bootstrap seed missing"
         return None
     os.makedirs(os.path.join(checkout, "bin"), exist_ok=True)

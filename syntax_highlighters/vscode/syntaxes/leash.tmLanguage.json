@@ -134,6 +134,10 @@
                     "match": "\\b(int|uint|float|bool|string|char|void|array|vec|vector|hash|pointer|matrix)\\b"
                 },
                 {
+                    "name": "entity.name.type.restricted.leash",
+                    "match": "\\bdef\\s+([A-Za-z_][a-zA-Z0-9_]*)\\s*:\\s*type\\s+(?:-?\\d|\"|'|nil|true|false)"
+                },
+                {
                     "name": "entity.name.type.leash",
                     "match": "\\b[A-Z][a-zA-Z0-9_]*\\b"
                 },

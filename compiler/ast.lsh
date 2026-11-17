@@ -325,9 +325,10 @@ pub def FieldDecl : class {
     pub is_pub: bool;
     pub is_static: bool;
     pub init: Expr;
+    pub line: int;
 
     static pub fnc make(name string, typ string, is_p bool, is_s bool, init Expr) : FieldDecl {
-        return FieldDecl { name: name, typ: typ, is_pub: is_p, is_static: is_s, init: init };
+        return FieldDecl { name: name, typ: typ, is_pub: is_p, is_static: is_s, init: init, line: 0 };
     }
 }
 
@@ -398,13 +399,14 @@ pub def GlobalDecl : class {
     pub init_val: Expr;
     pub is_shared: bool;   // `shared` worker global: one writer, no atomics
     pub is_fusion: bool;   // `fusion` worker global: atomic access
+    pub line: int;
 
     static pub fnc make(name string, typ string, init Expr) : GlobalDecl {
-        return GlobalDecl { name: name, typ: typ, init_val: init, is_shared: false, is_fusion: false };
+        return GlobalDecl { name: name, typ: typ, init_val: init, is_shared: false, is_fusion: false, line: 0 };
     }
 
     static pub fnc make_concurrent(name string, typ string, init Expr, is_fusion bool) : GlobalDecl {
-        return GlobalDecl { name: name, typ: typ, init_val: init, is_shared: !is_fusion, is_fusion: is_fusion };
+        return GlobalDecl { name: name, typ: typ, init_val: init, is_shared: !is_fusion, is_fusion: is_fusion, line: 0 };
     }
 }
 
@@ -412,6 +414,17 @@ pub def MacroDef : class {
     pub name: string;
     pub params: vec<string>;
     pub body: Expr;
+}
+
+pub def RestrictedTypeDecl : class {
+    pub name: string;
+    pub base: string;
+    pub values: vec<Expr>;
+    pub line: int;
+
+    static pub fnc make(name string, base string, values vec<Expr>) : RestrictedTypeDecl {
+        return RestrictedTypeDecl { name: name, base: base, values: values, line: 0 };
+    }
 }
 
 pub def Program : class {
@@ -428,6 +441,7 @@ pub def Program : class {
     pub macros: hash<string, MacroDef>;      // zero-arg macro defs (post-import expansion)
     pub macro_defs: vec<MacroDef>;          // same, ordered (for import splicing)
     pub type_alias_defs: vec<string>;       // ordered "name" + "target" pairs (post-import alias resolution)
+    pub restricted_types: vec<RestrictedTypeDecl>; // def Name : type literal, ...;
     pub native_lib_files: vec<string>;       // source file of each @from block
     pub native_lib_lines: vec<int>;          // line of each @from block
     pub native_lib_cols: vec<int>;           // column of each @from block

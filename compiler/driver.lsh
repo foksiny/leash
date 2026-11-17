@@ -454,6 +454,9 @@ pub def CompilerDriver : class {
                 prog.type_alias_defs.pushb(mod_prog.type_alias_defs.get(ta_j + 1));
                 ta_j = ta_j + 2;
             }
+            foreach _, rt in<vector> mod_prog.restricted_types {
+                prog.restricted_types.pushb(rt);
+            }
             // Native library requests (@from blocks) carry their source
             // attribution along so the security scan can tell transitive
             // links from the main file's own declarations.
@@ -965,11 +968,16 @@ pub def CompilerDriver : class {
         cg.debug_instrument = debug_instrument;
         cg.autofree = autofree;
         cg.arena = arena;
+        cg.warnings_as_errors = warn_err;
         cg.opt_level = opt_level;
         // Library outputs omit the @main wrapper (a consumer linking its
         // own main would otherwise get a duplicate symbol).
         cg.is_lib = output_type == "dynamic" || output_type == "static";
         ir_lines: vec<string> = cg.generate_module(prog);
+        if cg.arena_audit_errors > 0 {
+            show("error: ", tostring(cg.arena_audit_errors), " arena lifetime error(s); not emitting output");
+            return 1;
+        }
         if verbose { show("[verbose] generated ", tostring(ir_lines.size), " IR lines"); }
         if output_type == "" && !emit_llvm && !check_mode && !cg.has_entry {
             show("error: no entry point: '", input_file, "' defines no 'main' function (build a library with to-dynamic/to-static, or add 'fnc main')");

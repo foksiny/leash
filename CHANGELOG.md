@@ -5,6 +5,397 @@ All notable changes to the Leash compiler are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.9.0] - 2026-11-16
+
+### Changed
+- **Arena: string metadata lookups cache the last block.** Repeated `bsize`,
+  comparison, and COW-marking calls on strings from the same older block no
+  longer walk the arena block list every time. The cache stores raw bounds
+  and is cleared by every block-free path, so it stays safe after scope
+  resets and block reallocation.
+- **Arena: spawn transfers size their private block from the copied payload.**
+  `xfer_ensure` no longer reserves 512 bytes for every hand-off with a short
+  string argument; the first block is sized from the request (with a small
+  alignment floor), reducing per-spawn heap use.
+
+### Added
+- **Restricted literal types (`def Name : type lit, ...;`).** A restricted
+  type accepts only its exact declared literals at compile time (`0`, `1, 2`,
+  `"ok", "error", nil`, and the same for char/bool/float). Assigning another
+  value is rejected with the allowed values in the message, and a restricted
+  variable cannot be implicitly widened to its underlying base type; copying
+  into another variable of the same restricted type is allowed. The value is
+  lowered to the literal's base type in codegen.
+
+### Fixed
+- **Arena: registered long-lived slots are validated before a frame is reclaimed.**
+  Global, shared, and static-field pointer slots are registered with the
+  runtime; before every scope pop or loop reset, the arena checks them for
+  pointers into the frame about to be reclaimed and aborts with a clear
+  diagnostic instead of leaving a dangling pointer. The check is on by
+  default and can be disabled with `LEASH_ARENA_VERIFY=0` after lifetimes
+  are proven. Library prologues now register function shared variables too,
+  class/struct static-field stores use the typed root-store path, and
+  boxed struct/class slots register their instance pointer instead of a
+  guessed inline byte range. Generated inline frame pops call the same
+  verifier as the runtime slow path, so the check is not limited to
+  `leasharena_exit()` calls.
+- **Arena: compile-time lifetime diagnostics.** An ergonomic, non-Rust-like
+  lifetime audit runs in `--arena` builds. It copies/roots the values whose
+  types are safe to move; direct `malloc`/`calloc`/`realloc`/`free` calls and
+  raw-pointer returns are hard errors (`E_ARENA_LIFETIME`), while raw pointers
+  stored into long-lived slots or passed to workers warn (`W_ARENA_LIFETIME`).
+  `--warnings-as-errors`/`-oe` now promotes those warnings to errors; the
+  previously unused flag is wired through the driver. Diagnostics use a
+  structured format with the source location, a three-line snippet and
+  caret, a `why` explanation, a concrete `help` suggestion, and an optional
+  audit `trace`.
+- **Arena: recursive aggregate escapes and root stores no longer allocate bookkeeping on every call.**
+  The identity maps and graph arrays used by `leasharena_escape_agg_typed`
+  and the typed root stores now come from the per-thread escape stage
+  cache instead of `malloc`/`calloc`/`realloc`. After the first few calls
+  these paths touch the heap allocator only when a temporary exceeds the
+  cache's 256&nbsp;KB limit or all 16 slots are in use.
+- **Arena: recursive structs/classes and cyclic aggregate graphs now compile and escape safely.**
+  Struct POD analysis and value cloning are bounded for self-referential
+  types, and `leasharena_escape_agg_typed` copies the reachable instance
+  graph with an identity map. A cycle in the returned graph keeps pointing
+  at the copied instances instead of recursing forever or retaining freed
+  frame memory.
+- **Arena: allocating functions are no longer misclassified as frameless.**
+  Local variable types are collected before allocation analysis, so
+  `s = s + c` on a local string is recognized as an allocation and the
+  function keeps its arena frame and loop checkpoints.
+- **Arena: hot string appends avoid repeated arena walks.**
+  `leash_str_append_char` uses spare capacity regardless of which block
+  owns the buffer, and `leash_str_append_span` grows a dedicated oversize
+  block in place instead of copying to a second large buffer. Loop stores
+  are promoted to the root arena only when an enclosing loop really
+  checkpoints.
+- **Arena: spawn arguments are rooted by type and unions keep their boxed size.**
+  Containers and aggregate arguments are copied with the compiler's type
+  tree so nested string/container fields survive the spawner's frame.
+  A union is a boxed value, so escape and hand-off paths move the box and
+  its payload bytes rather than treating the union as a pointer.
+- **Arena: string pointers are now distinguishable from other pointers.**
+  Arena strings carry a magic tag (`ARENA_STR_MAGIC`) in the high bits of
+  their header word, so a non-string payload pointer can never be
+  misread as a string (previously the length word was trusted blindly).
+  The tag is preserved by in-place string growth
+  (`leash_str_append_span`), so a grown string keeps its identity.
+- **Arena: `leash_gc_realloc` checks ownership before reading headers.**
+  The size header lives in front of the payload, so reading it first
+  could touch memory the thread does not own (a foreign pointer would
+  fault or produce a bogus size). Ownership is now checked first, and a
+  foreign pointer aborts with a clear diagnostic instead of corrupting
+  the heap.
+- **Arena: `leash_gc_realloc` reallocates strings as strings.**
+  Growing an arena string used to overwrite the string's length word and
+  write past the end of the allocation (the bump pointer only reserves
+  the string's total size). Strings now get a dedicated path that keeps
+  the magic tag, the length, and the bytes.
+- **Arena: shrinking a tip allocation zeroes the reclaimed tail**, so the
+  next allocation over that range cannot observe stale bytes through the
+  no-zero-fill fast path.
+- **Arena: an emptied vector keeps its buffer.** `leash_sh_vec_ensure`
+  only reallocated when `size > 0`, so clearing a vector abandoned its
+  growth buffer; the buffer is now reused (and reallocated whenever one
+  exists).
+- **Arena: deep escape of a vector of structs no longer leaks or
+  double-frees stage memory**, and `leasharena_root_copy_hash` no longer
+  frees interior pointers of a hash table it only copies.
+- **Arena: worker-thread arenas are released when the thread exits.**
+  A thread-local destructor (`pthread_key` on POSIX, the Windows
+  equivalent) now releases the thread's arena blocks and stage cache;
+  previously every worker thread leaked its arena until process exit.
+- **Vector element-wise arithmetic keeps the element width (all
+  backends).** `vec OP vec` used to read and write 8-byte elements
+  regardless of the vector's element size (an out-of-bounds read for
+  4-byte float vectors) and returned a vector of the wrong type. `vec OP
+  scalar` did not compile at all (invalid LLVM IR); the scalar is now
+  broadcast over the elements in both operand orders. `examples/vecmath.lsh`
+  now builds and runs under both GC and `--arena`.
+- **Windows: programs that read console input now link.** The runtime's
+  `leash_sh_input` was a weak definition, and a weak definition does not
+  satisfy a strong reference in COFF/PE: every Windows build that called
+  the input helper failed with "reference undefined to leash_sh_input"
+  (the compiler itself is such a program). The definition is strong
+  again — it lives once in the shared runtime region, so the old
+  duplicate-definition workaround is no longer needed.
+- **`--arena` compiles for Windows.** The escape staging path included
+  `<alloca.h>`, which does not exist on Windows targets, so every arena
+  build for `win64` failed to compile the runtime. The staging helper
+  now uses `_alloca` on MSVC and `__builtin_alloca` everywhere else.
+- **Windows: the per-thread state is really per-thread.** Clang's
+  `x86_64-w64-mingw32` target expands `__declspec(x)` to
+  `__attribute__((x))`, and `thread` is not a valid attribute there:
+  clang warns "unknown attribute 'thread' ignored" and the variable
+  silently degrades to a plain global shared by every thread. The
+  arena state (`leasharena_tls_ar`) therefore lived in a different
+  place than the one the generated IR addressed (the IR declares it as
+  `external thread_local global`), so the inline fast paths and the
+  runtime worked on two different arenas: the checkpoint stack was
+  indexed at `-1` and the first frame exit of a worker thread died with
+  a page fault at `0xffffffffffffffff`. The runtime now uses
+  `__declspec(thread)` only under MSVC and `__thread` everywhere else.
+  The same silent downgrade had turned the GC's per-thread "did I lock?"
+  guard into a process-wide flag; it is fixed too.
+- **Windows: `File.readb()` / `File.readlnb()` no longer crash.** The
+  byte-slice helpers returned a 16-byte struct by value, and a struct
+  return is not ABI-stable across the IR/C boundary: clang lowers the
+  generated IR call to "returned in RAX:RDX" but lowers the C
+  definition to "returned through a hidden pointer" on Windows x64. The
+  caller therefore passed the file handle where the runtime expected
+  the result slot, and the first `fseek` on the bogus handle died with
+  an invalid-handle exception (`examples/files.lsh` crashed in the
+  `writeb`/`readb` test). The slice now comes back through an
+  out-pointer, which keeps the boundary to plain scalars and pointers
+  on every target.
+- **Strings are copy-on-write across aliases (GC and `--arena`).**
+  Appending to a string used to mutate the buffer in place, so every
+  other reference to that string observed the write: `b: string = a;
+  a = a + "2";` changed `b` too, a string stored in a vector or hash
+  changed when the source variable was appended to, and a callee that
+  appended to a `string` parameter rewrote the caller's buffer. Every
+  store now marks the value shared (`leash_str_share`, emitted for
+  locals, globals, fields, container elements and all function/method
+  parameters), and an append copies a shared buffer before growing it.
+  `tests/test_codegen_fixes.py` locks in identical output for both
+  backends.
+- **Globals declared without an initializer are live empty containers.**
+  `g: vec<int>;` and `g: hash<string, int>;` compiled to a
+  `zeroinitializer` pointer, so the first `push`/`pushb` dereferenced
+  null. Global initialization (`main` and `leash_init`) now allocates
+  an empty container for such declarations.
+- **Arena: a loop's hoisted reserve never reads an uninitialized
+  container slot.** The O2+ trip-count reserve was emitted for any
+  receiver whose *declared* type was a vector/hash, including one
+  declared inside the loop body: its `alloca` slot is only written by
+  the first iteration, so the reserve ran on garbage. A new
+  declaration-ready set (`ar_decl_ready`) gates locals; parameters,
+  `this` and globals are marked ready in the prologue.
+- **Arena: an escaped hash owns its nodes after the commit.** The hash
+  escape rebuilt the bucket chains from the staged node pool, but the
+  stage block (and the pool in it) was released immediately after the
+  commit, leaving the committed table with dangling nodes
+  (heap-use-after-free on the first lookup, e.g. returning a
+  `hash<string, Box>` from a function). Commit now copies every node
+  (node image plus inline key) into the caller's arena/GC heap.
+- **Arena: type-tree leaf fields no longer collapse onto the root.**
+  The aggregate descriptor uses `-1` as the "no child" sentinel, but the
+  field builder round-tripped it through `parse_int_str`, which does not
+  parse a sign and returned `0`: a scalar field of a returning struct
+  was then emitted as a heap reference to descriptor 0 (the containing
+  type) instead of being skipped. The sentinel is carried explicitly
+  now, and the duplicate `ar_te` typedef was removed (one descriptor ABI,
+  `{ i8*, i32, i32, i32 }`).
+- **Compiler: long expression chains no longer cost exponential type
+  queries.** `get_expr_type` recursively typed both operands of a binary
+  expression and asked for both types twice, so an n-term `+` chain cost
+  O(2^n): the bootstrap seed effectively hung on a 48-term concat. The
+  operands are typed once and the result reused.
+- **Parser: type parsing no longer rewrites the token it reads.**
+  `parse_type` took the identifier token's text by reference and the
+  suffix parsers append to it (`Name[]`, `Name<N>`, sized ints). When the
+  type was a cast lookahead, restoring the token position did not undo
+  the text rewrite, so the following identifier could be corrupted (and
+  the result was an accidentally shared buffer). The parser copies the
+  token text now.
+- **`leash self-host` quotes paths.** `mkdir`, `cd`, `cp` and the seed
+  lookup interpolated a checkout path unquoted, so a repository under a
+  directory with spaces (or shell metacharacters) failed. Paths are
+  single-quoted now.
+- **Arena: a value stored into a global outlives the storing frame.**
+  `g = v` (string, vector, hash) left the global pointing into the
+  scope arena, which is rewound when the storing frame exits: the
+  global then read freed memory. Globals now hold a *root-arena copy*
+  of the value, and the slot reuses that copy in place when it is the
+  only owner (string shared bit, vector/hash `shared` flag), so a loop
+  that overwrites the global does not grow the root arena.
+- **Arena: a value stored into an outer local from a loop body
+  outlives the iteration.** The loop checkpoint rewinds the iteration's
+  allocations, so the outer slot was left pointing into reclaimed
+  memory. Such stores are now root-promoted into the root arena (the
+  slot keeps the root copy), which makes the iteration checkpointable
+  without losing the value.
+- **Arena: a variable declared in a loop body but read after the loop
+  is no longer reclaimed.** The GC keeps the last value alive (the
+  variable outlives the iteration); the arena let the checkpoint reclaim
+  it and the read was a use-after-free (a segfault in practice). An
+  escape analysis (`ar_collect_escapes`) now detects the names that are
+  declared in a loop body and referenced outside it, and root-promotes
+  their stores.
+- **Arena: `g = g + "x"` on a global reads the rooted value.** The
+  self-append read the scope copy that the previous store had already
+  replaced, so the global ended up with the wrong contents. The global
+  now keeps the root copy and the append sees it.
+- **Arena: the spawn hand-off no longer leaks the argument block.** When
+  the worker cap was reached (or the thread could not be created), the
+  private transfer block was dropped without being released: 20 000
+  capped spawns leaked 15 MB of arena RSS (GC: 2.9 MB). All failure
+  paths now release it.
+- **Arena: a non-string spawn argument produced invalid LLVM IR.** The
+  container/aggregate hand-off emitted `load i8*, i8** %slot, 8` instead
+  of `load i8*, i8** %slot, align 8`, so every spawn with a vector,
+  hash, struct or slice argument failed to compile ("expected metadata
+  or 'align'"). Only string arguments had been exercised.
+- **Arena: a spawn with a struct or class argument computed the size of
+  the pointer instead of the pointee.** The hand-off emitted
+  `getelementptr %struct.P* null, i32 1` (the pointer type as the GEP
+  base), which is not valid LLVM: the size of the pointee needs the
+  aggregate type as the base. Every spawn with a struct or class
+  argument failed to compile.
+- **Arena: a spawn with a union argument treated the union as a
+  pointer.** A union is a boxed value (`{ tag, payload }`), so the
+  pointer hand-off produced an invalid bitcast. The union is now copied
+  into the transfer block by value, which is what keeps it alive past
+  the spawner's frame.
+- **Unions can be built from a literal again (both backends).** `U { i:
+  3 }` emitted a GEP on the undefined `%struct.U` type and stored a
+  pointer into a `%union.U` slot, so every union literal failed to
+  compile ("base element of getelementptr must be sized"). The literal
+  now builds the union box (tag + payload) and hands the value on.
+- **A union can be stored in a hash (both backends).** Boxing a union
+  value for a container bitcast an aggregate to a pointer, which is not
+  valid LLVM. The value is now copied into a heap box that the
+  container points at, and read back out of it.
+
+### Added
+- **Arena: root slots for globals and outer locals.** The compiler emits
+  a typed root store for every heap value that outlives its frame
+  (`leasharena_root_store_string`/`_vec_typed`/`_hash_typed`/
+  `_blob`): the value is copied into the program-lifetime root arena
+  field by field (never a bulk copy of pointer elements), and the
+  previous root copy is reused in place when nothing else can observe
+  it. The root arena grows geometrically and releases a block once it
+  is the sole owner of its content, so a program that stores into the
+  same global in a loop keeps a constant footprint (measured: 89 KB of
+  root payload for 100 000 stores, GC RSS 2 240 KB vs arena 1 988 KB).
+- **Arena: a mutable container stored into a global re-points the
+  source local.** `g = v; g.pushb(4)` now sees the same vector through
+  both names (the source local is updated to the root copy). Strings
+  are deliberately *not* re-pointed: they are immutable/copy-on-write,
+  so the original keeps its own value.
+- **Arena: escape copies only the live payload.** A return that escapes
+  the frame copied the whole allocation, including the unused tail of
+  a grown vector or the slack of a hash table. The escape path now
+  copies the live size only.
+- **Arena: no zero-fill in arena mode.** The arena never scans or traces
+  its memory, so the runtime no longer memsets the region it hands out;
+  every skipped fill has a verified "fully initialised before read"
+  contract. The reclaimed-region poison fill is unchanged (it is the
+  debugger aid, not the allocator).
+- **Arena: the arena stats report the scope and the root arena
+  separately.** `LEASH_ARENA_STATS=1` prints the scope arena's peak and
+  current block bytes and the root arena's peak/current bytes and
+  payload, so a program that grows the permanent footprint is visible
+  instead of being hidden behind the scope numbers.
+- **Arena: a compact private transfer for `spawn`.** The hand-off uses
+  one private malloc (a `leash_xfer` header, the argument block and a
+  64-byte copy area) instead of a per-argument arena. Only string
+  arguments travel through the transfer (`leasharena_xfer_copy_string`);
+  vectors, hashes, structs and slices keep their root copies. The
+  worker prologue adopts the strings into its own frame
+  (`leasharena_adopt_string`) and releases the transfer immediately
+  after unpacking, so the transfer lives only for the hand-off
+  (measured: 20 000 spawns, arena RSS 2 048-2 164 KB vs GC 2 684-2 696 KB).
+- **Arena: returning a string literal does not copy it.** A literal is
+  read-only program data that outlives every frame, so the return only
+  pops the frames now (measured: 100 000 global string stores, arena
+  0.0048 s vs 0.0082 s before).
+- **Arena: rooted growth for caller-owned vectors and hashes.** A vector
+  or hash owned outside the current frame (a parameter or a global) must
+  keep its growth buffer alive after the growing frame exits. The
+  compiler now emits the rooted runtime entry points
+  (`leash_sh_vec_reserve_rooted`, `leash_sh_vec_extend_rooted`,
+  `leash_sh_vec_insertv_rooted`) and `leash_sh_hash_make_rooted` (which
+  relocates a hash table into the root arena and marks it rooted so
+  later inserts allocate there too) for those targets.
+- **Arena: regression harness for the runtime fixes.**
+  `tests/test_arena_runtime.c` / `tests/test_arena_runtime.py` cover the
+  string identity tag, rooted vector/hash survival across a frame pop,
+  tip growth that ignores strings, and the rejection of foreign-pointer
+  realloc. `tests/test_arena.py` gained Leash-level parity cases for
+  growing a caller-owned vector/hash from a framed callee (`extendv`,
+  `insertv`, hash inserts), for vector element-wise arithmetic with
+  scalar broadcasting, and for nested-container escape returns
+  (`vec<vec<...>>`, `hash<string, vec|hash|struct>`) plus
+  uninitialized global containers. `tests/test_codegen_fixes.py` adds
+  the string-alias copy-on-write and long-concat-chain regressions, and
+  `tests/test_cross_win64.py` builds and runs the arena backend for
+  win64.
+- **Arena: regression tests for the root-arena lifetime model.**
+  `tests/test_arena.py` gained a `TestArenaRootLifetime` class that
+  compares arena output against the GC output for the cases that used
+  to dangle: a global that holds a vector/hash/string, the aliasing of
+  a global vector with its source local, `g = g + "x"` on a global, an
+  outer local written from a loop body, and a variable declared in a
+  loop body but read after the loop. It also checks that the root arena
+  does not grow with the number of stores into the same global, and
+  that a spawn with a vector argument produces the same output in both
+  backends, that every spawn argument kind (string, vector, hash,
+  struct, class, union, slice) survives the hand-off, and that a union
+  keeps its value through a literal, a container, a return and a
+  global.
+
+### Changed
+- **Arena escapes stage on the C stack, not the heap.** Small escape
+  payloads are staged in the escape helper's own frame (`alloca`), and
+  larger ones come from a small per-thread stage cache (16 slots) that
+  recycles released stage blocks. The escape path no longer allocates
+  and frees a bounce buffer per value: a struct-returning benchmark went
+  from 405 mallocs / 404 frees to 7 / 7, and a 500-string benchmark now
+  performs 3 mallocs in total.
+- **Seed lookup ranks versions numerically.** The fallback that picks a
+  checked-in seed when the exact-version file is absent used text
+  order, so `leash-1.10.0-target-x86_64` sorted before
+  `leash-1.9.9-...` and could select an older seed that does not
+  understand the current sources. `scripts/bootstrap.sh`,
+  `leash self-host` and the registry validator try the current version
+  first and rank any fallback by numeric (major, minor, patch) order.
+- **Release drift after 1.8.4.** The VS Code extension still carried
+  version 1.8.3, and the checked-in bootstrap seed set was still the
+  1.8.3 one while the compiler reported 1.8.4. The extension version
+  now tracks the compiler again, every seed lookup
+  (`scripts/bootstrap.sh`, `leash self-host`, the registry validator)
+  derives the seed name from the compiler version instead of hardcoding
+  it, and the checked-in seeds were regenerated as
+  `bootstrap/leash-1.8.4-target-*` from the repaired compiler. All five
+  targets (x86_64, x86, arm, win64, jvm) were rebuilt; the native seeds
+  pass `compile --check`, and a fresh x86_64 seed bootstraps the
+  current sources to a fixed point.
+
+### Documentation
+- Documented rooted vector/hash growth, the stack-staged escape path and
+  its stage cache, worker-arena release, the hardened `realloc`
+  contract, and the vector-arithmetic/broadcast behavior across
+  `README.md`, `docs/advanced.html`, and `docs/compiler.html`.
+- Documented the arena lifetime model in `README.md`,
+  `docs/advanced.html` and `docs/limitations.html`: a value that
+  outlives its frame (a global, an outer local written from a loop
+  body) is copied into the program-lifetime root arena, the root arena
+  is never rewound, the root slot reuses its copy in place while it is
+  the only owner, and a `spawn` hand-off uses one compact private
+  transfer that the worker releases after unpacking. The one accepted
+  difference from the GC is documented too: after `g = v; g = X`, the
+  arena reuses the global's root copy in place, so `v` observes `X`'s
+  contents, while the GC keeps `v` pointing at the old vector.
+
+- Documented restricted literal types, the arena lifetime audit
+  (`W_ARENA_LIFETIME`/`E_ARENA_LIFETIME`, structured diagnostics, `-oe`),
+  the recursive graph copy, typed spawn roots, union box sizing, arena
+  string tagging and COW rules, the `LEASH_ARENA_*` environment flags,
+  and the 1.9.0 benchmark results across `README.md` and every page in
+  `docs/`.
+- Updated the Vim, Emacs, and VS Code highlighters for the 1.9.0 release,
+  including restricted literal type declarations, `type` keyword hover
+  documentation, and a committed ESLint config so `npm run lint` works
+  from a fresh checkout. Version strings in the VS Code extension and
+  all docs/README badges now track the compiler.
+- Bumped the compiler, package manifest, extension, docs, and README to
+  1.9.0, regenerated all five cross-target bootstrap seeds, and removed
+  the stale 1.8.4 seed set.
+
 ## [1.8.4] - 2026-11-12
 
 ### Added

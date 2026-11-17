@@ -8,7 +8,7 @@ use leashed::*;
 // Single source of truth for the release version. Bump discipline:
 // README, docs badges, CHANGELOG.
 fnc leash_version() : string {
-    return "1.8.4";
+    return "1.9.0";
 }
 
 // Prefix test (no stdlib dependency this early in main.lsh).
@@ -66,7 +66,83 @@ fnc xfile_exists(p string) : bool {
 }
 
 fnc xis_dir(p string) : bool {
-    return xout("test -d " + p + " && echo 1") == "1";
+    return xout("test -d " + shq(p) + " && echo 1") == "1";
+}
+
+// Single-quote a shell argument (paths with spaces or metacharacters).
+fnc shq(s string) : string {
+    out: string = "'";
+    i: int = 0;
+    while i < s.bsize {
+        if s[i] == '\'' {
+            out = out + "'\\''";
+        } else {
+            out = out + s[i];
+        }
+        i = i + 1;
+    }
+    return out + "'";
+}
+
+// Numeric rank of a seed file name (…/leash-1.9.0-target-x86_64):
+// major*1000000 + minor*1000 + patch. The version fallback must pick the
+// newest checked-in seed, not the lexicographically first one (1.10.0
+// sorts before 1.9.0 as text).
+fnc seed_ver_key(p string) : int {
+    start: int = 0;
+    i: int = 0;
+    while i + 6 <= p.bsize {
+        if p[i] == 'l' && p[i + 1] == 'e' && p[i + 2] == 'a'
+           && p[i + 3] == 's' && p[i + 4] == 'h' && p[i + 5] == '-' {
+            start = i + 6;
+        }
+        i = i + 1;
+    }
+    v: int = 0;
+    cur: int = 0;
+    part: int = 0;
+    i = start;
+    while i < p.bsize && part < 3 {
+        c: char = p[i];
+        if c >= '0' && c <= '9' {
+            cur = cur * 10 + (c - '0');
+        } also c == '.' && part < 2 {
+            v = v * 1000 + cur;
+            cur = 0;
+            part = part + 1;
+        } else {
+            stop;
+        }
+        i = i + 1;
+    }
+    v = v * 1000 + cur;
+    return v;
+}
+
+// Newest checked-in x86_64 seed under <repo>/bootstrap, "" when none.
+fnc best_seed(root string) : string {
+    listing: string = exec("ls " + shq(root + "/bootstrap")
+                           + "/leash-*-target-x86_64 2>/dev/null", "wait");
+    best: string = "";
+    best_k: int = -1;
+    line: string = "";
+    i: int = 0;
+    while i <= listing.bsize {
+        if i == listing.bsize || listing[i] == '\n' {
+            if line.bsize > 0 {
+                k: int = seed_ver_key(line);
+                if k > best_k {
+                    best_k = k;
+                    best = line;
+                }
+            }
+            line = "";
+        } else {
+            line = line + listing[i];
+        }
+        i = i + 1;
+    }
+    return best;
 }
 
 fnc xis_symlink(p string) : bool {
@@ -1386,18 +1462,22 @@ fnc cmd_self_host(args string[]) : int {
         show("error: self-host needs a repository checkout (compiler/main.lsh not found)");
         return 1;
     }
-    exec("mkdir -p " + root + "/bin", nil);
+    exec("mkdir -p " + shq(root + "/bin"), nil);
 
     // Python-free stage 0: seed from the installed self-hosted binary, or
     // from the checked-in bootstrap compiler when bin/leashc is missing.
+    // The seed file name carries the release version, so look the
+    // current version up first and fall back to any checked-in seed (a
+    // seed only has to understand the current sources).
     seed: string = root + "/bin/leashc";
-    if !xfile_exists(seed) { seed = root + "/bootstrap/leash-1.8.0-target-x86_64"; }
-    if !xfile_exists(seed) {
-        show("error: no seed compiler found (need bin/leashc or bootstrap/leash-1.8.3-target-x86_64)");
+    if !xfile_exists(seed) { seed = root + "/bootstrap/leash-" + leash_version() + "-target-x86_64"; }
+    if !xfile_exists(seed) { seed = best_seed(root); }
+    if seed.bsize == 0 || !xfile_exists(seed) {
+        show("error: no seed compiler found (need bin/leashc or bootstrap/leash-<version>-target-x86_64)");
         return 1;
     }
     show("[self-host] Stage 0: seeding bin/leashc_stage1 from ", seed);
-    rc: int = xcode("cd " + root + " && cp " + seed + " bin/leashc_stage1 && chmod +x bin/leashc_stage1");
+    rc: int = xcode("cd " + shq(root) + " && cp " + shq(seed) + " bin/leashc_stage1 && chmod +x bin/leashc_stage1");
     if rc != 0 {
         show("error: stage 0 failed (seed -> bin/leashc_stage1)");
         return rc;

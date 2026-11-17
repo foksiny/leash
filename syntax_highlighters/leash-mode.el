@@ -30,6 +30,8 @@
     ;; Enum member with custom value: MEMBER: type = value
     '("^[ \t]*\\([a-zA-Z_][a-zA-Z0-9_]*\\)[ \t]*:" . (1 font-lock-variable-name-face))
    '("\\b\\(int\\|uint\\|float\\|bool\\|string\\|char\\|void\\|array\\|vec\\|vector\\|matrix\\|hash\\|pointer\\)\\b\\(?:<[0-9]+>\\)?" . font-lock-type-face)
+   ;; Restricted literal type declarations: def Name : type 1, 2, "ok", nil;
+   '("\\bdef[ \t]+\\([A-Za-z_][a-zA-Z0-9_]*\\)[ \t]*:[ \t]*\\(type\\)" 1 font-lock-type-face)
    ;; Hash table type: hash<K, V>
    '("\\bhash<[^>]+>" . font-lock-type-face)
    ;; Array types with sizes: int[5], char[n], int[x + y]

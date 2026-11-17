@@ -1,0 +1,29 @@
+// Super restrictive types (or just Weird Types) are types where they only accept REALLY specific values.
+def zero : type 0;
+
+def onetwo : type 1, 2; // the ',' are used to separate the values.
+
+def status : type "ok", "error", nil;
+
+fnc main {
+    a: zero = 0;
+    // a = 1; // Error: The variable 'a' uses a super restrictive type that only lets you use the value of 0.
+    show(a);
+
+    b: onetwo = 1;
+    b = 2;
+    // b = 3 // Error: The variable 'b' uses a super restrictive type that only lets you use the value of 1 and 2.
+    show(b);
+
+    isok: status = nil;
+
+    if 10 + 10 == 20 {
+        isok = "ok";
+    } else {
+        isok = "error";
+    }
+
+    show(isok);
+
+    // c: string = isok; // this will error as the variable "isok" uses the super restrictive type "status" and not a normal string.
+}

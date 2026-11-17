@@ -6,7 +6,8 @@ This extension provides syntax highlighting and a full Language Server for the L
 
 - **Syntax Highlighting**: Comprehensive highlighting for Leash keywords, types, built-ins, and more (TextMate grammar).
 - **Semantic Tokens**: Precise, tokenizer-driven coloring for types, functions, locals, globals, enum members, macro uses, native bindings and `use` imports, on top of the TextMate grammar.
-- **Diagnostics**: Real-time errors and warnings from the official Leash compiler (`leash check`), with exact ranges, tips and notes. Configurable trigger mode (`onType` / `onSave` / `onOpen`), debounce and verbose output.
+- **Diagnostics**: Real-time errors and warnings from the official Leash compiler (`leash check`), with exact ranges, tips and notes. Arena lifetime diagnostics (`W_ARENA_LIFETIME` / `E_ARENA_LIFETIME`) are shown with source snippets, explanations and fix hints. Configurable trigger mode (`onType` / `onSave` / `onOpen`), debounce and verbose output.
+- **Restricted Literal Types**: highlights and documents `def Name : type 1, 2, "ok", nil;` declarations.
 - **Quick Fixes**: Add missing `;`, remove `let`/`var`, and wrap expressions in a cast.
 - **Hover**: Documentation and signatures for functions, methods, types, fields, enum members, parameters, locals, globals, imports, built-ins and keywords — including `@from` native bindings.
 - **Go to Definition / Go to Type Definition**: Across files, `use` imports, `::` enum member access, `.` member access and call sites (including `Person.new(...)` style constructor calls).
@@ -27,8 +28,9 @@ This extension provides syntax highlighting and a full Language Server for the L
 
 ## Installation
 
-### Method 1: Pre-built Extension
-1. Install the `leash-1.8.3.vsix` file in VS Code (Extensions view -> `...` -> `Install from VSIX...`).
+### Method 1: Packaged Extension
+1. Run `npm install && npm run package` to produce `leash-1.9.0.vsix`.
+2. Install it in VS Code (Extensions view -> `...` -> `Install from VSIX...`).
 
 ### Method 2: Manual Development Setup
 1. Copy this directory to your VS Code extensions folder.

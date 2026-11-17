@@ -406,6 +406,51 @@ pub def Parser : class {
         return true;
     }
 
+    pub fnc is_restricted_literal_tok(kind int) : bool {
+        return kind == Tok.INT || kind == Tok.FLOAT || kind == Tok.STRING ||
+               kind == Tok.CHAR || kind == Tok.BOOL || kind == Tok.NIL ||
+               kind == Tok.MINUS;
+    }
+
+    pub fnc restricted_base_of(e Expr) : string {
+        if e.kind == ExprKind.INT { return "int"; }
+        if e.kind == ExprKind.FLOAT { return "float"; }
+        if e.kind == ExprKind.STRING { return "string"; }
+        if e.kind == ExprKind.CHAR { return "char"; }
+        if e.kind == ExprKind.BOOL { return "bool"; }
+        if e.kind == ExprKind.NIL { return "nil"; }
+        return "";
+    }
+
+    // `def Name : type lit1, lit2, ...;`
+    pub fnc parse_restricted_type(prog Program, name_tok Token) : void {
+        values: vec<Expr>;
+        base: string = "";
+        while true {
+            if !this.is_restricted_literal_tok(this.current().kind) {
+                show("parse error: restricted type '", name_tok.val, "' expects a literal value at ",
+                     this.current().line, ":", this.current().col);
+                this.parse_errs = this.parse_errs + 1;
+                stop;
+            }
+            lit: Expr = this.parse_prefix();
+            lb: string = this.restricted_base_of(lit);
+            if lb == "nil" { }
+            else if base.bsize == 0 { base = lb; }
+            else if lb != base {
+                show("parse error: restricted type '", name_tok.val, "' mixes '", base, "' and '", lb, "' literals.");
+                this.parse_errs = this.parse_errs + 1;
+            }
+            values.pushb(lit);
+            if !this.match_tok(Tok.COMMA) { stop; }
+        }
+        this.consume(Tok.SEMI, "expected ';' after restricted type");
+        if base.bsize == 0 { base = "string"; }
+        rtd: RestrictedTypeDecl = RestrictedTypeDecl.make(name_tok.val, base, values);
+        rtd.line = name_tok.line;
+        prog.restricted_types.pushb(rtd);
+    }
+
     // --- Type Parsing ---
     pub fnc parse_type() : string {
         if this.depth_guard("Type") { return ""; }
@@ -488,7 +533,14 @@ pub def Parser : class {
         tok: Token = this.current();
         if tok.kind == Tok.IDENT {
             this.pos = this.pos + 1;
-            t = tok.val;
+            // Copy the token text: the suffix parsers below append to `t`
+            // (Name[], Name<N>, sized ints). Without the copy those
+            // appends can rewrite the token's own buffer, and a cast
+            // lookahead restores the token position but not its text.
+            // The concat also guarantees a fresh, exactly-sized buffer
+            // even with an old compiler whose in-place append path does
+            // not track sharing.
+            t = tok.val + "";
             // Resolve type aliases: def Name : type T;
             alias_guard: int = 0;
             while this.type_aliases.isin(t) && alias_guard < 8 {
@@ -581,7 +633,7 @@ pub def Parser : class {
             }
         } else {
             this.pos = this.pos + 1;
-            t = tok.val;
+            t = tok.val + "";
         }
 
         // Normalize sized primitives assembled from `name<width>` (the early
@@ -1088,6 +1140,14 @@ pub def Parser : class {
                 ne: Expr = Expr.make_int(-operand.ival);
                 ne.sval = "-" + operand.sval;
                 return ne;
+            }
+            if operand.kind == ExprKind.FLOAT && operand.sval.bsize > 0 {
+                nfe: Expr = Expr.make_float(-operand.fval);
+                // The raw token text may be `-.5` or `--1.5`, which is not
+                // valid LLVM float literal syntax. Canonicalize the folded
+                // value so codegen can emit it verbatim.
+                nfe.sval = tostring(-operand.fval);
+                return nfe;
             }
             return Expr.make_unary("-", operand);
         }
@@ -2782,7 +2842,9 @@ pub def Parser : class {
                 if !this.match_tok(Tok.SEMI) {
                     this.match_tok(Tok.COMMA);
                 }
-                fields.pushb(FieldDecl.make(fname.val, ftype, is_pub, is_static, init_v));
+                fd: FieldDecl = FieldDecl.make(fname.val, ftype, is_pub, is_static, init_v);
+                fd.line = fname.line;
+                fields.pushb(fd);
             }
         }
         this.consume(Tok.RBRACE, "expected '}' after struct body");
@@ -2863,7 +2925,9 @@ pub def Parser : class {
                 if !this.match_tok(Tok.SEMI) {
                     this.match_tok(Tok.COMMA);
                 }
-                fields.pushb(FieldDecl.make(fname.val, ftype, is_pub, is_static, init_v));
+                fd: FieldDecl = FieldDecl.make(fname.val, ftype, is_pub, is_static, init_v);
+                fd.line = fname.line;
+                fields.pushb(fd);
             }
         }
         this.consume(Tok.RBRACE, "expected '}' after class body");
@@ -3101,6 +3165,10 @@ pub def Parser : class {
                     alias_name: Token = this.consume(Tok.IDENT, "expected alias name");
                     this.consume(Tok.COLON, "expected ':' after alias name");
                     this.consume(Tok.TYPE, "expected 'type'");
+                    if this.is_restricted_literal_tok(this.current().kind) {
+                        this.parse_restricted_type(prog, alias_name);
+                        continue;
+                    }
                     alias_target: string = this.parse_type();
                     this.consume(Tok.SEMI, "expected ';' after type alias");
                     this.type_aliases.push(alias_name.val, alias_target);
@@ -3173,6 +3241,10 @@ pub def Parser : class {
                             ta_name: Token = this.consume(Tok.IDENT, "expected alias name");
                             this.consume(Tok.COLON, "expected ':' after alias name");
                             this.consume(Tok.TYPE, "expected 'type'");
+                            if this.is_restricted_literal_tok(this.current().kind) {
+                                this.parse_restricted_type(prog, ta_name);
+                                continue;
+                            }
                             ta_target: string = this.parse_type();
                             this.consume(Tok.SEMI, "expected ';' after type alias");
                             this.type_aliases.push(ta_name.val, ta_target);
@@ -3184,7 +3256,9 @@ pub def Parser : class {
                         this.consume(Tok.COLON, "expected ':' after native name");
                         nv_type: string = this.parse_type();
                         this.consume(Tok.SEMI, "expected ';' after native declaration");
-                        prog.globals.pushb(GlobalDecl.make(nv_tok.val, nv_type, null));
+                        gd_native: GlobalDecl = GlobalDecl.make(nv_tok.val, nv_type, null);
+                        gd_native.line = nv_tok.line;
+                        prog.globals.pushb(gd_native);
                         continue;
                     }
                     // external global: name: Type;
@@ -3193,7 +3267,9 @@ pub def Parser : class {
                         this.pos = this.pos + 2;
                         gtype: string = this.parse_type();
                         this.consume(Tok.SEMI, "expected ';' after native global");
-                        prog.globals.pushb(GlobalDecl.make(gn_tok.val, gtype, null));
+                        gd_ext: GlobalDecl = GlobalDecl.make(gn_tok.val, gtype, null);
+                        gd_ext.line = gn_tok.line;
+                        prog.globals.pushb(gd_ext);
                         continue;
                     }
                     show("parse error: unexpected token in @from block at ", this.current().line, ":", this.current().col);
@@ -3259,7 +3335,9 @@ pub def Parser : class {
                     sh_init = this.parse_expression(Precedence.LOWEST);
                 }
                 this.consume(Tok.SEMI, "expected ';' after shared/fusion global");
-                prog.globals.pushb(GlobalDecl.make_concurrent(sh_name.val, sh_type, sh_init, is_fusion));
+                gd_shared: GlobalDecl = GlobalDecl.make_concurrent(sh_name.val, sh_type, sh_init, is_fusion);
+                gd_shared.line = sh_name.line;
+                prog.globals.pushb(gd_shared);
                 continue;
             }
 
@@ -3273,7 +3351,9 @@ pub def Parser : class {
                     init_val = this.parse_expression(Precedence.LOWEST);
                 }
                 this.consume(Tok.SEMI, "expected ';' after global variable");
-                prog.globals.pushb(GlobalDecl.make(name_tok.val, var_type, init_val));
+                gd: GlobalDecl = GlobalDecl.make(name_tok.val, var_type, init_val);
+                gd.line = name_tok.line;
+                prog.globals.pushb(gd);
                 continue;
             }
 

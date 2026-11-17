@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v1.8.4 Release</div>
+        <div class="version">v1.9.0 Release</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -44,7 +44,7 @@
 <main class="main">
 
 <div class="hero">
-    <div class="version-badge">v1.8.4 Release</div>
+    <div class="version-badge">v1.9.0 Release</div>
     <h1>Leash</h1>
     <p class="tagline">A strongly-typed, modern compiled programming language built on LLVM.</p>
 </div>
@@ -61,6 +61,10 @@
         <p>Full type inference with explicit bit-width integers, floats, generics, and tagged unions.</p>
     </div>
     <div class="feature-card">
+        <h3>Restricted Literal Types</h3>
+        <p><code>def status : type &quot;ok&quot;, &quot;error&quot;, nil;</code> accepts only listed literals. Invalid values and widening to the base type are compile-time errors.</p>
+    </div>
+    <div class="feature-card">
         <h3>LLVM-Powered</h3>
         <p>Compiles to native code via LLVM with multiple optimization levels including LTO and PGO.</p>
     </div>
@@ -74,7 +78,7 @@
     </div>
     <div class="feature-card">
         <h3>Built-in GC &amp; Arena</h3>
-        <p>Automatic mark-and-sweep GC by default, plus optional <code>nogc</code>, <code>--autofree</code>, and an experimental scoped <code>--arena</code> backend with deterministic frame/loop reclamation, poison-on-reclaim safety, and C-ABI-friendly pointers.</p>
+        <p>Automatic mark-and-sweep GC by default, plus optional <code>nogc</code>, <code>--autofree</code>, and an experimental scoped <code>--arena</code> backend with deterministic frame/loop reclamation, poison-on-reclaim safety, C-ABI-friendly pointers, recursive graph escapes, and a compile-time lifetime audit.</p>
     </div>
     <div class="feature-card">
         <h3>Package Manager</h3>

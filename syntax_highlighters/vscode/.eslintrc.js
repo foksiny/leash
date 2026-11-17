@@ -1,0 +1,17 @@
+module.exports = {
+    root: true,
+    parser: '@typescript-eslint/parser',
+    plugins: ['@typescript-eslint'],
+    env: {
+        node: true,
+        es2020: true
+    },
+    parserOptions: {
+        ecmaVersion: 2020,
+        sourceType: 'module'
+    },
+    rules: {
+        'no-unused-vars': 'off',
+        'no-undef': 'off'
+    }
+};

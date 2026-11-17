@@ -562,5 +562,76 @@ class TestFusionAtomics(_CompileRunBase):
         self.assertIn("true", out)
 
 
+class TestHeapValueAliasing(_CompileRunBase):
+    """Strings are copy-on-write: a store must not let a later append
+    through one reference mutate a buffer another reference can see."""
+
+    SRC = (
+        'fnc eat(s string) : void { s = s + "!"; show(s); }\n'
+        'fnc main() : void {\n'
+        '    a: string = "x";\n'
+        '    a = a + "1";\n'
+        '    b: string = a;\n'
+        '    a = a + "2";\n'
+        '    show(a, " ", b, "|");\n'
+        '    v: vec<string>;\n'
+        '    s: string = "q";\n'
+        '    v.pushb(s);\n'
+        '    s = s + "1";\n'
+        '    h: hash<string, string>;\n'
+        '    t: string = "v";\n'
+        '    h.push("k", t);\n'
+        '    t = t + "z";\n'
+        '    eat(b);\n'
+        '    show(" ", v.get(0), " ", s, " ", h["k"], " ", t, "|");\n'
+        '}\n'
+    )
+
+    def _run_mode(self, arena):
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, "main.lsh")
+            exe = os.path.join(td, "prog")
+            with open(src, "w") as f:
+                f.write(self.SRC)
+            cmd = [BIN_LEASHC, "compile", src, "to", exe]
+            if arena:
+                cmd.append("--arena")
+            build = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True,
+                                   text=True, timeout=300)
+            self.assertEqual(build.returncode, 0,
+                             "compile failed:\n" + build.stdout + build.stderr)
+            run = subprocess.run([exe], cwd=REPO_ROOT, capture_output=True,
+                                 text=True, timeout=120)
+            self.assertEqual(run.returncode, 0,
+                             "run failed:\n" + run.stdout + run.stderr)
+            return run.stdout
+
+    def test_alias_does_not_mutate_in_place(self):
+        expected = "x12 x1|\nx1!\n q q1 v vz|\n"
+        self.assertEqual(self._run_mode(False), expected)
+        self.assertEqual(self._run_mode(True), expected)
+
+
+class TestCompilerScaling(_CompileRunBase):
+    """A long `+` chain must not trigger exponential type inference in
+    the bootstrap seed (get_expr_type used to type both operands of a
+    binary expression recursively, so an n-term chain cost 2^n)."""
+
+    def test_long_concat_chain_compiles(self):
+        terms = " + ".join('"t%d"' % i for i in range(48))
+        src = 'fnc main() : void { s: string = %s; show(s.bsize); }\n' % terms
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "main.lsh")
+            with open(path, "w") as f:
+                f.write(src)
+            build = subprocess.run(
+                [BIN_LEASHC, "compile", path, "--check", "to",
+                 os.path.join(td, "out")],
+                cwd=REPO_ROOT, capture_output=True, text=True, timeout=120,
+            )
+            self.assertEqual(build.returncode, 0,
+                             build.stdout + build.stderr)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -163,6 +163,9 @@ pub def TypeChecker : class {
     pub global_union_active: hash<string, string>; // global union var -> active variant
     pub global_union_active_ty: hash<string, string>;
     pub prog_aliases: hash<string, string>;        // post-import type aliases (def X : type Y)
+    pub restricted_types: hash<string, bool>;          // declared restricted type names
+    pub restricted_values: hash<string, vec<string>>; // restricted type -> allowed literal keys
+    pub restricted_base: hash<string, string>;        // restricted type -> underlying literal type
     pub fatal_idx: int;                            // raise-class error index (Python abort parity)
     pub worker_funcs: hash<string, bool>;          // `worker fnc` names
     pub async_funcs: hash<string, bool>;            // `async fnc` names
@@ -980,6 +983,7 @@ pub def TypeChecker : class {
         ai2: int = 0;
         while ai2 < pos_args.size && ai2 < params.size {
             at: string = this.infer_expr(pos_args.get(ai2));
+            this.check_restricted_arg(params.get(ai2), pos_args.get(ai2));
             if at.bsize > 0 && !this.ref_arg_compatible(this.strip_imut(at), this.strip_imut(params.get(ai2))) {
                 this.errors.pushb("Argument " + tostring(ai2 + 1) + " of '" + fname + "' expects '" + this.strip_imut(params.get(ai2)) + "' but got '" + this.strip_imut(at) + "'.");
             }
@@ -1000,6 +1004,7 @@ pub def TypeChecker : class {
             kidx2: int = this.sig_index_of(pnames, kw_names[ki2]);
             if kidx2 >= 0 && kidx2 < params.size {
                 kat: string = this.infer_expr(kw_vals.get(ki2));
+                this.check_restricted_arg(params.get(kidx2), kw_vals.get(ki2));
                 if kat.bsize > 0 && !this.ref_arg_compatible(this.strip_imut(kat), this.strip_imut(params.get(kidx2))) {
                     this.errors.pushb("Argument '" + kw_names[ki2] + "' of '" + fname + "' expects '" + this.strip_imut(params.get(kidx2)) + "' but got '" + this.strip_imut(kat) + "'.");
                 }
@@ -1889,9 +1894,11 @@ pub def TypeChecker : class {
             // `x is Type` / `x isnt Type` carry a type NAME on the right
             // — never inferred as a value expression.
             lt_full: string = this.infer_expr(e.left);
+            if this.restricted_types.isin(lt_full) { lt_full = this.restricted_base[lt_full]; }
             rt_full: string = "";
             if e.op != "isT" && e.op != "isntT" {
                 rt_full = this.infer_expr(e.right);
+                if this.restricted_types.isin(rt_full) { rt_full = this.restricted_base[rt_full]; }
             }
             // opdef operator overload: rewrite into a call of the (possibly
             // generic) `_opdef_<base>_<op>` function with both operands.
@@ -2445,6 +2452,7 @@ pub def TypeChecker : class {
                     while mai < mparams.size {
                         if !skip_types {
                             mat: string = this.infer_expr(e.args.get(mai));
+                            this.check_restricted_arg(mparams[mai], e.args.get(mai));
                             if mat.bsize > 0 && !this.ref_arg_compatible(this.strip_imut(mat), this.strip_imut(mparams[mai])) {
                                 this.errors.pushb("Argument " + tostring(mai + 1) + " of method '" + e.sval + "' expects '" + this.strip_imut(mparams[mai]) + "' but got '" + this.strip_imut(mat) + "'");
                             }
@@ -2470,6 +2478,7 @@ pub def TypeChecker : class {
                             smi: int = 0;
                             while smi < mps.size {
                                 smat: string = this.infer_expr(e.args.get(smi));
+                                this.check_restricted_arg(mps[smi], e.args.get(smi));
                                 if smat.bsize > 0 && !this.ref_arg_compatible(this.strip_imut(smat), this.strip_imut(mps[smi])) {
                                     this.errors.pushb("Argument " + tostring(smi + 1) + " of struct method '" + e.sval + "' expects '" + this.strip_imut(mps[smi]) + "' but got '" + this.strip_imut(smat) + "'");
                                 }
@@ -2790,8 +2799,12 @@ pub def TypeChecker : class {
                         sfti = sfti + 1;
                     }
                     if sfti < sinfo.field_names.size {
-                        s_expected: string = this.resolve_type_alias(sinfo.field_types.get(sfti));
+                        s_expected: string = this.preserve_restricted(sinfo.field_types.get(sfti));
                         s_actual: string = this.infer_expr(e.args.get(sfi));
+                        this.check_restricted_source(s_expected, e.args.get(sfi));
+                        if this.restricted_types.isin(s_expected) {
+                            this.check_restricted_value(s_expected, skey, e.args.get(sfi));
+                        }
                         this.check_int_literal_fits(e.args.get(sfi), s_expected);
                         if s_actual.bsize > 0 && !this.types_compatible(s_actual, s_expected) {
                             this.errors.pushb("Struct '" + e.sval + "' field '" + skey + "' expects '" + this.disp_type(s_expected) + "' but got '" + this.disp_type(s_actual) + "'.");
@@ -2836,7 +2849,14 @@ pub def TypeChecker : class {
         if this.fatal_idx >= 0 { return; }
 
         if s.kind == StmtKind.VAR_DECL {
+            declared_t: string = s.var_type;
             var_t: string = this.resolve_type_alias(s.var_type);
+            if this.restricted_types.isin(declared_t) {
+                // Keep the restricted name in the AST/type table so later
+                // assignments can enforce the literal set. Codegen lowers
+                // it to the underlying base type.
+                var_t = declared_t;
+            }
             s.var_type = var_t;
             // Unknown type names (int32, Bogus, ...) are rejected, not
             // silently compiled to a fallback (Python E003 parity).
@@ -2942,6 +2962,10 @@ pub def TypeChecker : class {
                     // Hash literals carry no type of their own: their keys
                     // and values are checked against the declared hash.
                     v_ei: string = this.infer_expr(s.value);
+                    this.check_restricted_source(declared_t, s.value);
+                    if this.restricted_types.isin(var_t) {
+                        this.check_restricted_value(var_t, s.name, s.value);
+                    }
                     v_hashlit: bool = s.value.kind == ExprKind.ARRAY_LIT && s.value.field_names.size > 0;
                     if this.fatal_idx < 0 && !v_hashlit && !this.types_compatible(v_ei, var_t) {
                         this.errors.pushb("Variable '" + s.name + "' declared as '" + this.disp_type(var_t) + "' but assigned a value of type '" + this.disp_type(v_ei) + "'.");
@@ -3003,6 +3027,12 @@ pub def TypeChecker : class {
         if s.kind == StmtKind.ASSIGN {
             a_tt: string = this.infer_expr(s.target);
             a_tv: string = this.infer_expr(s.value);
+            if s.target.kind == ExprKind.IDENT {
+                this.check_restricted_source(a_tt, s.value);
+                if this.restricted_types.isin(a_tt) {
+                    this.check_restricted_value(a_tt, s.target.sval, s.value);
+                }
+            }
             // Strings are immutable: reject element writes like s[0] = 'x'
             // (python LEASH-E013 parity).
             if s.target.kind == ExprKind.INDEX && s.target.left != null {
@@ -3116,6 +3146,10 @@ pub def TypeChecker : class {
         if s.kind == StmtKind.RETURN {
             if s.value != null {
                 this.infer_expr(s.value);
+                this.check_restricted_source(this.current_func_ret, s.value);
+                if this.restricted_types.isin(this.current_func_ret) {
+                    this.check_restricted_value(this.current_func_ret, this.current_func_name, s.value);
+                }
                 // LEASH-E010: the address of a call-frame local escapes the
                 // function and would dangle once the frame is gone.
                 off: string = this.frame_escape_in(s.value);
@@ -3727,7 +3761,9 @@ pub def TypeChecker : class {
 
         new_fields: vec<FieldDecl>;
         foreach _, fd in<vector> tmpl.fields {
-            new_fields.pushb(FieldDecl.make(fd.name, this.substitute_type_params(fd.typ, tmap), fd.is_pub, fd.is_static, fd.init));
+            nfd: FieldDecl = FieldDecl.make(fd.name, this.substitute_type_params(fd.typ, tmap), fd.is_pub, fd.is_static, fd.init);
+            nfd.line = fd.line;
+            new_fields.pushb(nfd);
         }
         new_methods: vec<FuncDecl>;
         foreach _, m in<vector> tmpl.methods {
@@ -3762,16 +3798,22 @@ pub def TypeChecker : class {
         ci: ClassInfo = ClassInfo.make(mangled, "");
         foreach _, fd2 in<vector> new_fields {
             if fd2.is_static {
-                this.static_fields.push(mangled + "_" + fd2.name, this.resolve_type_alias(fd2.typ));
+                this.static_fields.push(mangled + "_" + fd2.name, this.preserve_restricted(fd2.typ));
             } else {
-                ci.add_field(fd2.name, this.resolve_type_alias(fd2.typ));
+                ci.add_field(fd2.name, this.preserve_restricted(fd2.typ));
             }
         }
         foreach _, m2 in<vector> new_methods {
             m2_ps: vec<string>;
-            foreach _, m2_p in<vector> m2.params { m2_ps.pushb(m2_p.typ); }
+            m2_pnames: vec<string>;
+            if !m2.is_static { m2_pnames.pushb("this"); }
+            foreach _, m2_p in<vector> m2.params {
+                m2_ps.pushb(m2_p.typ);
+                m2_pnames.pushb(m2_p.name);
+            }
             ci.add_method(m2.name, m2.ret_type, m2.is_static, m2_ps);
             this.funcs.push(mangled + "_" + m2.name, m2.ret_type);
+            this.func_param_names.push(mangled + "_" + m2.name, m2_pnames);
             if !m2.is_static {
                 found2: bool = false;
                 foreach _, mo in<vector> ci.method_order {
@@ -3848,6 +3890,7 @@ pub def TypeChecker : class {
     // Base type of a possibly-generic type name: `vec<int>` -> `vec`.
     pub fnc base_of(t string) : string {
         tt: string = this.strip_imut(t);
+        if this.restricted_types.isin(tt) { tt = this.restricted_base[tt]; }
         if tt.bsize == 0 { return ""; }
         bi: int = 0;
         while bi < tt.bsize {
@@ -3907,6 +3950,7 @@ pub def TypeChecker : class {
             ai4: int = 0;
             while ai4 < mps.size {
                 at4: string = this.infer_expr(call_args.get(ai4 + 1));
+                this.check_restricted_arg(mps[ai4], call_args.get(ai4 + 1));
                 if at4.bsize > 0 && !this.types_compatible(at4, this.strip_imut(mps[ai4])) {
                     this.errors.pushb("Argument " + tostring(ai4 + 1) + " of struct method '" + mname + "' expects '" + this.strip_imut(mps[ai4]) + "' but got '" + this.disp_type(at4) + "'");
                 }
@@ -3920,6 +3964,7 @@ pub def TypeChecker : class {
             bi4: int = 0;
             while bi4 < mps.size {
                 bt4: string = this.infer_expr(call_args.get(bi4));
+                this.check_restricted_arg(mps[bi4], call_args.get(bi4));
                 if bt4.bsize > 0 && !this.types_compatible(bt4, this.strip_imut(mps[bi4])) {
                     this.errors.pushb("Argument " + tostring(bi4 + 1) + " of struct method '" + mname + "' expects '" + this.strip_imut(mps[bi4]) + "' but got '" + this.disp_type(bt4) + "'");
                 }
@@ -4383,6 +4428,9 @@ pub def TypeChecker : class {
 
     pub fnc types_compatible(src string, dst string) : bool {
         if src == dst { return true; }
+        if this.restricted_types.isin(src) { src = this.restricted_base[src]; }
+        if this.restricted_types.isin(dst) { dst = this.restricted_base[dst]; }
+        if src == dst { return true; }
         if src.bsize == 0 || dst.bsize == 0 { return true; }
         if src == "nil" { return true; }
         if dst == "void" { return true; }
@@ -4579,6 +4627,118 @@ pub def TypeChecker : class {
         return tt;
     }
 
+    pub fnc preserve_restricted(t string) : string {
+        if this.restricted_types.isin(t) { return t; }
+        return this.resolve_type_alias(t);
+    }
+
+    pub fnc trim_float_text(s string) : string {
+        if s.bsize == 0 { return s; }
+        has_dot: bool = false;
+        i: int = 0;
+        while i < s.bsize {
+            if s[i] == '.' { has_dot = true; stop; }
+            i = i + 1;
+        }
+        if !has_dot { return s; }
+        out: string = s;
+        while out.bsize > 1 && out[out.bsize - 1] == '0' {
+            k: int = 0;
+            while k < out.bsize {
+                if out[k] == '.' { stop; }
+                k = k + 1;
+            }
+            if k >= out.bsize - 1 { stop; }
+            out = this.str_slice(out, 0, out.bsize - 1);
+        }
+        if out.bsize > 0 && out[out.bsize - 1] == '.' {
+            out = this.str_slice(out, 0, out.bsize - 1);
+        }
+        return out;
+    }
+
+    pub fnc restricted_lit_key(e Expr) : string {
+        if e.kind == ExprKind.INT {
+            raw: string = e.sval;
+            if raw.bsize == 0 { raw = tostring(e.ival); }
+            return "i:" + raw;
+        }
+        if e.kind == ExprKind.STRING { return "s:" + e.sval; }
+        if e.kind == ExprKind.NIL { return "nil"; }
+        if e.kind == ExprKind.CHAR { return "c:" + tostring((int)e.cval); }
+        if e.kind == ExprKind.BOOL { return e.bval ? "b:true" : "b:false"; }
+        if e.kind == ExprKind.FLOAT {
+            raw2: string = e.sval;
+            if raw2.bsize == 0 { raw2 = tostring(e.fval); }
+            return "f:" + this.trim_float_text(raw2);
+        }
+        return "";
+    }
+
+    pub fnc restricted_values_desc(name string) : string {
+        vals: vec<string> = this.restricted_values[name];
+        parts: vec<string>;
+        foreach _, k in<vector> vals {
+            text: string = k;
+            if k.bsize > 2 && k[0] == 'i' && k[1] == ':' { text = this.str_slice(k, 2, k.bsize); }
+            else if k.bsize > 2 && k[0] == 's' && k[1] == ':' { text = "\"" + this.str_slice(k, 2, k.bsize) + "\""; }
+            else if k.bsize > 2 && k[0] == 'c' && k[1] == ':' { text = "'" + this.str_slice(k, 2, k.bsize) + "'"; }
+            else if k.bsize > 2 && k[0] == 'b' && k[1] == ':' { text = this.str_slice(k, 2, k.bsize); }
+            else if k.bsize > 2 && k[0] == 'f' && k[1] == ':' { text = this.trim_float_text(this.str_slice(k, 2, k.bsize)); }
+            parts.pushb(text);
+        }
+        if parts.size == 1 { return "the value of " + parts.get(0); }
+        phrase: string = "";
+        i: int = 0;
+        while i < parts.size {
+            if i > 0 { phrase = phrase + (i == parts.size - 1 ? " and " : ", "); }
+            phrase = phrase + parts.get(i);
+            i = i + 1;
+        }
+        return "the values of " + phrase;
+    }
+
+    pub fnc restricted_error(name string, var_name string) : string {
+        return "The variable '" + var_name + "' uses a super restrictive type '" + name +
+               "' that only lets you use " + this.restricted_values_desc(name) + ".";
+    }
+
+    pub fnc check_restricted_value(name string, var_name string, e Expr) : void {
+        if !this.restricted_types.isin(name) { return; }
+        if e.kind == ExprKind.IDENT {
+            src: string = this.lookup_var(e.sval);
+            // During early registration passes globals are not bound yet;
+            // a global-initialized field default cannot be validated here.
+            if src.bsize == 0 { return; }
+            if src == name { return; }
+        }
+        key: string = this.restricted_lit_key(e);
+        allowed: vec<string> = this.restricted_values[name];
+        ok: bool = false;
+        if key.bsize > 0 {
+            foreach _, a in<vector> allowed {
+                if a == key { ok = true; stop; }
+            }
+        }
+        if !ok { this.errors.pushb(this.restricted_error(name, var_name)); }
+    }
+
+    pub fnc check_restricted_arg(param_type string, arg Expr) : void {
+        this.check_restricted_source(param_type, arg);
+        if this.restricted_types.isin(param_type) {
+            this.check_restricted_value(param_type, param_type, arg);
+        }
+    }
+
+    pub fnc check_restricted_source(dst_type string, e Expr) : void {
+        if e == null || e.kind != ExprKind.IDENT { return; }
+        src: string = this.lookup_var(e.sval);
+        if src.bsize == 0 || !this.restricted_types.isin(src) { return; }
+        if src == dst_type { return; }
+        this.errors.pushb("Cannot use the super restrictive type '" + src + "' as '" + dst_type +
+                          "'; a restricted value must be assigned to a variable of the same restricted type.");
+    }
+
     pub fnc check_program(prog Program) : void {
         empty_al: hash<string, string>;
         this.prog_aliases = empty_al;
@@ -4587,10 +4747,27 @@ pub def TypeChecker : class {
             this.prog_aliases.push(prog.type_alias_defs.get(pa_i), prog.type_alias_defs.get(pa_i + 1));
             pa_i = pa_i + 2;
         }
+        foreach _, rt in<vector> prog.restricted_types {
+            this.restricted_types.push(rt.name, true);
+            this.restricted_base.push(rt.name, rt.base);
+            this.prog_aliases.push(rt.name, rt.base);
+            keys: vec<string>;
+            foreach _, v in<vector> rt.values {
+                key: string = this.restricted_lit_key(v);
+                if key.bsize > 0 { keys.pushb(key); }
+            }
+            this.restricted_values.push(rt.name, keys);
+        }
         // Pass 1: Register structs, classes, enums, globals
         foreach _, s in<vector> prog.structs {
             si: StructInfo = StructInfo.make(s.name);
             foreach _, fd in<vector> s.fields {
+                if fd.init != null {
+                    this.check_restricted_source(fd.typ, fd.init);
+                    if this.restricted_types.isin(fd.typ) {
+                        this.check_restricted_value(fd.typ, fd.name, fd.init);
+                    }
+                }
                 if fd.is_static {
                     this.static_fields.push(s.name + "_" + fd.name, fd.typ);
                 } else {
@@ -4612,6 +4789,12 @@ pub def TypeChecker : class {
             }
             ci: ClassInfo = ClassInfo.make(c.name, c.parent);
             foreach _, fd in<vector> c.fields {
+                if fd.init != null {
+                    this.check_restricted_source(fd.typ, fd.init);
+                    if this.restricted_types.isin(fd.typ) {
+                        this.check_restricted_value(fd.typ, fd.name, fd.init);
+                    }
+                }
                 if fd.is_static {
                     this.static_fields.push(c.name + "_" + fd.name, fd.typ);
                 } else {
@@ -4620,8 +4803,14 @@ pub def TypeChecker : class {
             }
             foreach _, m in<vector> c.methods {
                 m_ps: vec<string>;
-                foreach _, m_p in<vector> m.params { m_ps.pushb(this.resolve_type_alias(m_p.typ)); }
-                ci.add_method(m.name, this.resolve_type_alias(m.ret_type), m.is_static, m_ps);
+                m_pnames: vec<string>;
+                if !m.is_static { m_pnames.pushb("this"); }
+                foreach _, m_p in<vector> m.params {
+                    m_ps.pushb(this.preserve_restricted(m_p.typ));
+                    m_pnames.pushb(m_p.name);
+                }
+                ci.add_method(m.name, this.preserve_restricted(m.ret_type), m.is_static, m_ps);
+                this.func_param_names.push(c.name + "_" + m.name, m_pnames);
                 // Generic static methods (vec<T> params etc.) become
                 // templates under the Class_method key; concrete types
                 // arrive at the call site.
@@ -4698,7 +4887,13 @@ pub def TypeChecker : class {
         }
 
         foreach _, g in<vector> prog.globals {
-            this.globals.push(g.name, this.resolve_type_alias(g.typ));
+            this.globals.push(g.name, this.preserve_restricted(g.typ));
+            if g.init_val != null {
+                this.check_restricted_source(g.typ, g.init_val);
+                if this.restricted_types.isin(g.typ) {
+                    this.check_restricted_value(g.typ, g.name, g.init_val);
+                }
+            }
             if g.is_shared { this.shared_globals.push(g.name, true); }
             // Global union active-variant tracking (python lowlevel
             // parity): `gu: U = 5;` fixes the variant for later reads.
@@ -4755,14 +4950,14 @@ pub def TypeChecker : class {
             }
             fkey: string = f.name;
             if f.owner.bsize > 0 { fkey = f.owner + "_" + f.name; }
-            f_ret: string = this.resolve_type_alias(f.ret_type);
+            f_ret: string = this.preserve_restricted(f.ret_type);
             if f.is_async { f_ret = "future<" + f.ret_type + ">"; }
             this.funcs.push(fkey, f_ret);
             ptypes: vec<string>;
             pnames: vec<string>;
             pi_i: int = 0;
             foreach _, p in<vector> f.params {
-                ptypes.pushb(this.resolve_type_alias(p.typ));
+                ptypes.pushb(this.preserve_restricted(p.typ));
                 pnames.pushb(p.name);
                 if p.default_val != null {
                     this.func_defaults.push(fkey + "::" + tostring(pi_i), p.default_val);
@@ -4794,7 +4989,7 @@ pub def TypeChecker : class {
         // Pass 3: Typecheck function bodies
         foreach _, f in<vector> prog.funcs {
             if this.generic_funcs.isin(f.name) { continue; }
-            this.current_func_ret = this.resolve_type_alias(f.ret_type);
+            this.current_func_ret = this.preserve_restricted(f.ret_type);
             this.in_unsafe_func = f.is_unsafe;
             fkey2: string = f.name;
             if f.owner.bsize > 0 { fkey2 = f.owner + "_" + f.name; }
@@ -4832,11 +5027,12 @@ pub def TypeChecker : class {
             this.union_active_ty = uat_clear;
             foreach _, p in<vector> f.params {
                 if p.is_imut { this.imut_vars.push(p.name, true); }
-                this.define_var(p.name, this.resolve_type_alias(p.typ));
+                this.define_var(p.name, this.preserve_restricted(p.typ));
                 // M3: default parameter values must type-check against
                 // the declared parameter type (python parity — a bad
                 // default used to fall through to codegen as garbage).
                 if p.default_val != null {
+                    this.check_restricted_arg(p.typ, p.default_val);
                     pd_bare: string = this.strip_imut(this.resolve_type_alias(p.typ));
                     if !this.is_type_param(pd_bare) && !this.is_multi_type(p.typ) {
                         pd_t: string = this.infer_expr(p.default_val);
@@ -4873,7 +5069,7 @@ pub def TypeChecker : class {
         foreach _, c in<vector> prog.classes {
             if this.generic_classes.isin(c.name) { continue; }
             foreach _, m in<vector> c.methods {
-                this.current_func_ret = this.resolve_type_alias(m.ret_type);
+                this.current_func_ret = this.preserve_restricted(m.ret_type);
                 this.in_unsafe_func = m.is_unsafe;
                 this.current_func_name = c.name + "_" + m.name;
                 this.enter_shared_scope(m);
@@ -4896,10 +5092,11 @@ pub def TypeChecker : class {
                 this.union_active_ty = uat_clear2;
                 foreach _, p in<vector> m.params {
                     if p.is_imut { this.imut_vars.push(p.name, true); }
-                    this.define_var(p.name, this.resolve_type_alias(p.typ));
+                    this.define_var(p.name, this.preserve_restricted(p.typ));
                     // M3 (python parity): default values must match the
                     // declared parameter type — class methods too.
                     if p.default_val != null {
+                        this.check_restricted_arg(p.typ, p.default_val);
                         md_bare: string = this.strip_imut(this.resolve_type_alias(p.typ));
                         if !this.is_type_param(md_bare) && !this.is_multi_type(p.typ) {
                             md_t: string = this.infer_expr(p.default_val);

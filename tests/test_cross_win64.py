@@ -108,13 +108,15 @@ class TestCrossWin64(unittest.TestCase):
         with open(os.path.join(cls.tmp, "xwin.lsh"), "w") as fh:
             fh.write(PROG)
 
-    def _compile(self, compiler, out_base, target=None):
+    def _compile(self, compiler, out_base, target=None, extra=None):
         # NB: the python reference has no `-o` flag (it is silently
         # ignored); `to <path>` sets the output on both compilers.
         cmd = compiler + ["compile", os.path.join(self.tmp, "xwin.lsh"),
                           "to", os.path.join(self.tmp, out_base)]
         if target:
             cmd += ["--target", target]
+        if extra:
+            cmd += extra
         r = subprocess.run(cmd, capture_output=True, text=True,
                            cwd=ROOT, timeout=600)
         self.assertEqual(
@@ -144,6 +146,13 @@ class TestCrossWin64(unittest.TestCase):
         # ... and line-identical (modulo CRLF) to the native build.
         native = self._compile([BIN_LEASHC], "xw_nat")
         self.assertEqual(self._run(native).splitlines(), EXPECTED_LINES)
+
+    def test_selfhosted_win64_arena(self):
+        # The arena backend uses its own TLS (FLS on Windows), _alloca
+        # and 64-bit file offsets; the win64 build must run it too.
+        exe = self._compile([BIN_LEASHC], "xw_ar", "win64", ["--arena"])
+        self.assertTrue(_is_pe_amd64(exe), msg="not a PE32+ AMD64 binary")
+        self.assertEqual(self._run(exe).splitlines(), EXPECTED_LINES)
 
 
 if __name__ == "__main__":
