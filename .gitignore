@@ -97,6 +97,8 @@ examples/newclass
 examples/advanced_static
 examples/auto
 **/*.exe
+# Checked-in cross-target bootstrap seeds (the old one was force-added).
+!bootstrap/leash-*-target-win64.exe
 **/*.o
 
 # Trash

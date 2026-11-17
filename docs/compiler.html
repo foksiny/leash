@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v1.9.1 Release</div>
+        <div class="version">v1.10.0 Release</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -198,7 +198,7 @@ leash compile program.lsh -oe   # short form of --warnings-as-errors</code></pre
 <pre><code>leash check program.lsh --verbose
 leash compile program.lsh -vb</code></pre>
 
-<p>For strict builds (e.g., CI/CD), use the <code>--warnings-as-errors</code> flag to treat warnings as errors, ensuring your codebase stays clean. It applies to arena lifetime warnings (<code>W_ARENA_LIFETIME</code>), which become <code>E_ARENA_LIFETIME</code> errors. Arena diagnostics print the source location, a snippet with a caret, why the rule fired, how to fix it, and a short audit trace.</p>
+<p>For strict builds (e.g., CI/CD), use the <code>--warnings-as-errors</code> flag to treat warnings as errors, ensuring your codebase stays clean. In <code>--arena</code> mode the lifetime audit is <strong>always</strong> strict: every diagnostic is an <code>E_ARENA_LIFETIME</code> error and the compile either succeeds or fails, never emits a binary with a warning. The flag is kept as a no-op for existing scripts that still pass it. Arena diagnostics print the source location, a snippet with a caret, why the rule fired, how to fix it, and a short audit trace.</p>
 
 <h3>Verbose Diagnostics (<code>--verbose</code> / <code>-vb</code>)</h3>
 <p>For in-depth educational guidance, the <code>--verbose</code> or <code>-vb</code> flag prompts the compiler to print highly detailed, step-by-step masterclass explanations, diagnostics, and fully validated Leash code tips for any encountered errors or warnings. This is particularly useful when learning the language or debugging complex type issues.</p>
@@ -247,7 +247,7 @@ leash compile myprogram.lsh --arena     <span class="cm"># scoped bump arena (ex
 
 <p><strong>Escapes &amp; lifetimes:</strong> values that must outlive a frame are copied, not borrowed. Returned strings, vecs, hashes, structs/classes (deep over heap-typed and nested fields), slices, and multi-heap tuples are staged, the scope(s) pop, and the value is committed into the caller&rsquo;s frame; small payloads are staged on the C stack and larger ones from a per-thread stage cache, so the escape path performs very few heap allocations; <code>spawn</code> argument blocks and futures/async results go to the program-lifetime <em>root arena</em>. Allocation-free functions and allocation-free loops can skip framing/reset work entirely. Containers owned outside the current frame (parameters, globals) grow in the root arena via the rooted runtime entry points (<code>leash_sh_vec_reserve_rooted</code>, <code>leash_sh_vec_extend_rooted</code>, <code>leash_sh_vec_insertv_rooted</code>, <code>leash_sh_hash_make_rooted</code>), so their storage outlives the frame that grew them. Storing a frame-local temporary into a caller-owned aggregate (heap field, global, slice backing), raw <code>*T</code> pointers, and union payloads remain caller-owned (same aggregate-escape limitation as <code>--autofree</code>) &mdash; use care or prefer GC when ownership crosses frames this way. Superseded oversize growth buffers are reclaimed only in specific cases (dedicated blocks with no saved frame referencing them), so growth-heavy kernels can retain waste until scope reset while churn-heavy kernels stay lean.</p>
 
-<p><strong>Safety:</strong> reclaimed bytes are <strong>poisoned with <code>0xDD</code> by default</strong> to surface use-after-scope; set <code>LEASH_ARENA_POISON=0</code> to opt out (or <code>=1</code> explicitly) for peak speed once lifetimes are validated. Before every frame pop/loop reset, registered global/shared/static pointer slots are checked for pointers into the dying frame (`LEASH_ARENA_VERIFY=0` opts out), so a missed root copy aborts loudly instead of dangling. Runtime checks abort with diagnostics on scope underflow/unmatched exits, <code>exit_n</code> beyond depth, and invalid/out-of-range loop-frame operations. Deep stage/commit of nested heap fields on struct/class escape prevents post-pop reads of reclaimed nested data. Reallocation checks pointer ownership before reading the allocation header and rejects foreign pointers with a diagnostic; arena strings are reallocated through a string-aware path that preserves their length and identity. The compiler also runs an ergonomic lifetime audit in arena builds: manual libc heap calls and raw-pointer returns are <code>E_ARENA_LIFETIME</code> errors, while raw pointers stored long-term or passed to workers are <code>W_ARENA_LIFETIME</code> warnings (promoted by <code>-oe</code>). Arena remains experimental and <strong>native-only</strong> (the JVM target rejects <code>--arena</code>); for adversarial or highly dynamic lifetime patterns, prefer GC.</p>
+<p><strong>Safety:</strong> reclaimed bytes are <strong>poisoned with <code>0xDD</code> by default</strong> to surface use-after-scope; set <code>LEASH_ARENA_POISON=0</code> to opt out (or <code>=1</code> explicitly) for peak speed once lifetimes are validated. Before every frame pop/loop reset, registered global/shared/static pointer slots are checked for pointers into the dying frame (`LEASH_ARENA_VERIFY=0` opts out), so a missed root copy aborts loudly instead of dangling. Runtime checks abort with diagnostics on scope underflow/unmatched exits, <code>exit_n</code> beyond depth, and invalid/out-of-range loop-frame operations. Deep stage/commit of nested heap fields on struct/class escape prevents post-pop reads of reclaimed nested data. Reallocation checks pointer ownership before reading the allocation header and rejects foreign pointers with a diagnostic; arena strings are reallocated through a string-aware path that preserves their length and identity. The compiler also runs an ergonomic, strict lifetime audit in arena builds: manual libc heap calls, raw-pointer returns, and raw pointers stored long-term or passed to workers are all <code>E_ARENA_LIFETIME</code> errors. Header readers now validate a tagged size word, that the header lies inside the owning block, and that a string's advertised size fits that block before any copy; interior pointers, forged string lengths and size-overflow growth abort with diagnostics. Arena remains experimental and <strong>native-only</strong> (the JVM target rejects <code>--arena</code>); for adversarial or highly dynamic lifetime patterns, prefer GC.</p>
 
 <p><strong>Optimization levels (arena-aware):</strong> <code>--arena</code> compiles the runtime with <code>-DLEASH_ARENA</code> and, at <code>-O2</code>/<code>-O3</code>/<code>-O4</code>/<code>-Os</code>/<code>-Oz</code>, <code>-DLEASH_ARENA_O2</code>; at <code>-O3</code>/<code>-O4</code>, <code>-DLEASH_ARENA_O3</code>. Exact trip-count vector/collection reserves and arena-only hash pre-sizing apply at O2+ (O0/O1 stay conservative). O3+ enables arena-exclusive optimizations: nested counted-loop push analysis with hoisted reserves (never above a loop-local receiver), compact 24-byte hash nodes, and fused hash keys that build <code>&quot;&lt;prefix&gt;&quot;+int</code> in a stack buffer (no temporary key string) for push/get/index-set.</p>
 
@@ -261,14 +261,16 @@ leash compile myprogram.lsh --arena     <span class="cm"># scoped bump arena (ex
 
 <table>
     <tr><th>Level</th><th>Description</th><th>Key Passes</th></tr>
-    <tr><td><code>-O0</code></td><td>No optimization (default)</td><td>Fastest compilation</td></tr>
-    <tr><td><code>-O1</code></td><td>Basic</td><td>Instruction combining, DCE, CFG simplification</td></tr>
-    <tr><td><code>-O2</code></td><td>Standard</td><td>SROA, jump threading, reassociation, loop simplification</td></tr>
-    <tr><td><code>-O3</code></td><td>Aggressive</td><td>Loop unrolling, vectorization, inlining, IPSCCP, argument promotion</td></tr>
-    <tr><td><code>-O4</code></td><td>Maximum</td><td><code>-O1</code> + LTO + <code>-march=native</code> (native targets); <code>-O2/-O3</code> are slower than <code>-O1</code> for Leash</td></tr>
-    <tr><td><code>-Os</code></td><td>Size</td><td>O2 + global DCE + extra CFG simplification</td></tr>
-    <tr><td><code>-Oz</code></td><td>Minimum size</td><td>Additional size reductions</td></tr>
+    <tr><td><code>-O0</code></td><td>No optimization</td><td>Fastest compilation; runtime <code>-O0</code></td></tr>
+    <tr><td><code>-O1</code></td><td>Basic</td><td><code>-O1</code> backend; runtime <code>-O1</code></td></tr>
+    <tr><td><code>-O2</code></td><td>Standard</td><td>O1 backend + arena IR tier 2 (exact trip-count reserves, hash pre-sizing); runtime <code>-O2</code></td></tr>
+    <tr><td><code>-O3</code></td><td>Aggressive</td><td>O2 + LTO + arena IR tier 3 (nested-loop reserves, fused keys); runtime <code>-O3</code></td></tr>
+    <tr><td><code>-O4</code></td><td>Maximum</td><td>O3 + <code>-march=native -mtune=native</code>; runtime <code>-O3 -flto</code></td></tr>
+    <tr><td><code>-Os</code></td><td>Size</td><td>Size-oriented backend; arena IR tier 2</td></tr>
+    <tr><td><code>-Oz</code></td><td>Minimum size</td><td>Additional size reductions; arena IR tier 2</td></tr>
 </table>
+
+<p><strong>The -O scale is monotonic by construction.</strong> Every level is a strict superset of the one below it: O2 adds the arena's IR optimizations over O1, O3 adds LTO, and O4 adds native code generation. No level ever disables an optimization enabled by a lower one, so the scale cannot invert the way clang's stock <code>-O2</code>/<code>-O3</code> did on Leash's call-heavy IR (they regressed recursion-heavy code by over-inlining and vectorising string loops). Wall-clock numbers on tiny programs can still tie or vary with noise, but the optimization <em>contract</em> is stable and checked by <code>tests/test_opt_scale.py</code>.</p>
 
 <pre><code>leash compile program.lsh --opt 3
 leash run program.lsh -O s</code></pre>

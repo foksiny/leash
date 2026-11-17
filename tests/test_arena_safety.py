@@ -134,19 +134,25 @@ class TestArenaLifetimeAudit(unittest.TestCase):
         self.assertIn("= help:", out)
         self.assertIn("= trace:", out)
 
-    def test_raw_pointer_spawn_warns(self):
+    def test_raw_pointer_spawn_is_fatal(self):
+        # Arena mode is strict: a lifetime diagnostic is an error, never a
+        # warning that still emits a binary.
         r = self._compile(SPAWN_RAW_POINTER, "spawn_raw")
         out = r.stdout + r.stderr
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("W_ARENA_LIFETIME", out)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("E_ARENA_LIFETIME", out)
         self.assertIn("spawn w(&x);", out)
         self.assertIn("= why:", out)
         self.assertIn("= help:", out)
 
-    def test_warnings_as_errors_turns_spawn_warning_into_error(self):
-        r = self._compile(SPAWN_RAW_POINTER, "spawn_raw_oe", ["-oe"])
-        self.assertNotEqual(r.returncode, 0)
-        self.assertIn("E_ARENA_LIFETIME", r.stdout + r.stderr)
+    def test_warnings_as_errors_flag_is_noop_when_audit_is_strict(self):
+        # -oe used to promote warnings to errors. With every diagnostic now
+        # fatal, passing -oe changes nothing: both runs fail identically.
+        plain = self._compile(SPAWN_RAW_POINTER, "spawn_raw_plain")
+        strict = self._compile(SPAWN_RAW_POINTER, "spawn_raw_oe", ["-oe"])
+        self.assertNotEqual(plain.returncode, 0)
+        self.assertNotEqual(strict.returncode, 0)
+        self.assertIn("E_ARENA_LIFETIME", strict.stdout + strict.stderr)
 
     def test_manual_heap_in_global_initializer_is_fatal(self):
         r = self._compile(INITIALIZER_HEAP, "init_heap")
@@ -172,7 +178,7 @@ class TestArenaLifetimeAudit(unittest.TestCase):
     def test_declaration_diagnostic_uses_real_line(self):
         r = self._compile(GLOBAL_LINE, "global_line")
         out = r.stdout + r.stderr
-        self.assertIn("W_ARENA_LIFETIME", out)
+        self.assertIn("E_ARENA_LIFETIME", out)
         self.assertIn("global_line.lsh:2", out)
         self.assertIn("g: *int = null;", out)
 
@@ -200,18 +206,18 @@ class TestArenaLifetimeAudit(unittest.TestCase):
         self.assertIn("no_trailing_newline.lsh:2", out)
         self.assertIn("g: *int = null;", out)
 
-    def test_raw_pointer_into_long_lived_field_warns(self):
+    def test_raw_pointer_into_long_lived_field_is_fatal(self):
         r = self._compile(LONG_LIVED_FIELD_STORE, "long_field")
         out = r.stdout + r.stderr
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("W_ARENA_LIFETIME", out)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("E_ARENA_LIFETIME", out)
         self.assertIn("aggregate field", out)
 
-    def test_raw_pointer_into_long_lived_container_warns(self):
+    def test_raw_pointer_into_long_lived_container_is_fatal(self):
         r = self._compile(LONG_LIVED_CONTAINER_STORE, "long_container")
         out = r.stdout + r.stderr
-        self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn("W_ARENA_LIFETIME", out)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertIn("E_ARENA_LIFETIME", out)
         self.assertIn("pushb", out)
 
     def test_inline_pop_calls_frame_verifier(self):

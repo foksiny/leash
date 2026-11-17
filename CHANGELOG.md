@@ -5,6 +5,38 @@ All notable changes to the Leash compiler are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.10.0] - 2026-11-17
+
+Minor release: the arena memory layout is hardened end-to-end and the
+optimization scale is monotonic. `--arena` is now compile-or-fail (no
+warning-only outcome), its header layout is fully validated, and the
+compiler's object cache can no longer be poisoned by an interrupted build.
+
+### Added
+- **Arena: tagged allocation headers.** Every ordinary allocation now writes a magic tag into the spare high bits of its existing 8-byte size header. Interior pointers and foreign blocks are rejected structurally before any size word is trusted, at zero bytes per allocation. All header consumers (`realloc`, root blob/vec/hash stores, sole-block growth) share the same validation, replacing several inconsistent copies.
+- **Arena: block-bounded string validation.** A single validator now proves that a string's advertised `total` actually fits inside the block holding its header before trusting `len` or computing `cap = total - 17`. Used by every string consumer (lookup, append, `realloc`, root stores/reclaim), so a forged or stale header can no longer drive an out-of-bounds read or copy. Failures produce distinct diagnostics for tag, bounds, length and terminator.
+- **Arena: strict compile-time lifetime audit.** In `--arena` mode every lifetime diagnostic is now an `E_ARENA_LIFETIME` error (there is no warning-only outcome): the compile either emits a binary or fails. `-oe`/`--warnings-as-errors` is retained as a no-op for existing scripts.
+- **Arena: adversarial layout stress harness.** `tests/test_arena_layout.py` builds `tests/test_arena_layout.c` against the runtime under ASan/UBSan and checks forged string headers, interior-pointer `realloc`, oversized `realloc` and slice byte-count overflow all fail safely.
+- **README: compatibility promise for 1.x.** Documents what 1.x guarantees and that 2.0.0 will be the first breaking change, when `--arena` becomes the default layout.
+
+### Fixed
+- **Arena: a forged/stale string header could read past its block.** `ar_str_read` validated the magic and a self-consistent `(total, len)` pair but never compared `total` to the block's capacity, so a header inside a 32 KB block could advertise a megabyte string and make `s[len]` fault (reproduced under ASan). `total` is now bounded by the owning block on every path.
+- **Arena: `realloc` accepted interior pointers.** The generic header at `ptr-8` was an untagged size, so an interior pointer whose preceding bytes looked like a small integer passed `arena_check_payload`. The header is now tagged and its containment in the block checked.
+- **Arena: `realloc` sizes near `SIZE_MAX` were not rejected.** Only allocation was size-capped; a huge `realloc` wrapped `(n+7)&~7` into a tiny/shrunk buffer while the header advertised the huge size. Growth now applies the same 48-bit ceiling.
+- **Arena: unchecked byte arithmetic in vectors and slices.** `lv_alloc_data` and the three slice paths now guard `count * elem_size` against wraparound and the arena ceiling before allocating and `memcpy`ing.
+- **Arena: sole-block growth now checks containment.** `arena_grow_sole_string` verifies the string header lies inside the block and that the old allocation fits before rebasing it.
+- **Arena: spawn-transfer string lengths are ceiling-checked** before the worker copies them, so a corrupt prefix cannot advertise an unbounded length.
+- **Compiler: object-cache writes are atomic.** Runtime and program objects are compiled to a temp path and published with `File.rename` only on success, so an interrupted clang can no longer leave a truncated `.o` in `~/.leash/shcache` that every later compile silently reuses (this produced a "file not recognized" link error during stress testing).
+
+### Validation
+- **Full suite: 421 tests pass**, including the new adversarial arena layout tests, the strict lifetime-audit tests, and the monotonic `-O` scale contract.
+- **Arena-vs-GC corpus sweep:** 193 programs (96 examples, 101 stdlib smoke tests, minus programs without an entry point) were compiled and run in both modes. 185 produce identical output; 4 are cleanly rejected by the strict audit or have no entry point; 5 differ. Two of those (`examples/multithread.lsh`, `examples/vecmath.lsh`) are timing/RNG-dependent outputs, and three are **pre-existing arena lifetime bugs** reproduced with the 1.9.1 compiler and runtime: `tests/stdlib/collections_lru.lsh` and `tests/stdlib/text_regex.lsh` dereference a reclaimed frame pointer, and `tests/stdlib/llvm_ir.lsh` reallocs a stale string header. Arena remains experimental for these ownership patterns; use GC for them.
+- **Benchmarks (18-task suite, O2, median of 5):** arena is 1.13x faster than GC by geometric mean (8.9x on `alloc_churn_loop`, 2.25x on `allocstress`, 1.6x on `primes`) but slower on most tiny compute-bound tasks; it uses less peak RSS on **all 18 tasks** (1.12x geomean). Against best-of-level C++/Rust, arena is close but behind overall (0.91x / 0.86x geomean), ahead on churn/hash/matrix tasks and shipping ~22 KB binaries vs ~4.5 MB for Rust. The inline arena allocator in generated IR was corrected to emit the same tagged header as the runtime — without this, vector buffers grown through `realloc` failed the new header check.
+
+### Changed
+- **Arena runtime code size kept flat in generated binaries.** Duplicated string-header validation was consolidated into one helper; the generated `hello --arena` binary is byte-identical in size to the previous release despite the added checks. The SEGV diagnostic is emitted with a single formatted call.
+- **The `-O` scale is now monotonic by construction.** O1 uses the `-O1` backend, O2 adds the arena IR tier 2 (exact trip-count reserves) with the same backend, O3 adds LTO and IR tier 3, and O4 adds native code generation. No higher level disables an optimization enabled by a lower one, removing the old inversion where clang's `-O2`/`-O3` were slower than `-O1` for Leash's call-heavy IR. The runtime is compiled at `-O0`/`-O1`/`-O2`/`-O3`/`-O3 -flto` for O0..O4 instead of defaulting to `-O2` at every level. `tests/test_opt_scale.py` verifies the flag chain and IR tiers are additive. Wall-clock numbers on tiny programs can still tie or vary with noise; the optimization contract is what is guaranteed.
+
 ## [1.9.1] - 2026-11-17
 
 ### Added
@@ -2237,6 +2269,8 @@ silent exfiltration all became loud errors or well-defined behavior.
 ### Changed
 - Bump version to `0.23.5 Beta`.
 
+[1.10.0]: https://github.com/foksiny/leash/releases/tag/v1.10.0
+[1.9.1]: https://github.com/foksiny/leash/releases/tag/v1.9.1
 [0.24.3]: https://github.com/foksiny/leash/releases/tag/v0.24.3
 [0.24.2]: https://github.com/foksiny/leash/releases/tag/v0.24.2
 [0.24.1]: https://github.com/foksiny/leash/releases/tag/v0.24.1

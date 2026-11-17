@@ -168,14 +168,47 @@ void leash_spipe_drop(void) {}
 #define ARENA_BLOCK_SIZE ((size_t)32 * 1024)
 #define ARENA_INIT_BLOCK_SIZE ((size_t)4 * 1024)
 #define ARENA_ALIGN ((size_t)16)
+
+/* ===== Arena header layout =====
+ *
+ * Every arena allocation carries one 8-byte header immediately before its
+ * payload, at ptr-8. The high 16 bits are a tag and the low 48 bits are
+ * the size/length. Strings use the same slot for their length and put a
+ * tagged total one word earlier (see "arena string layout" below); the
+ * two tags are disjoint so a generic header can never be mistaken for a
+ * string and vice versa.
+ *
+ * Tagging the GENERIC header is what makes the whole layout safe against
+ * interior pointers. Previously ptr-8 held a bare size: an interior
+ * pointer whose preceding bytes happened to look like a small integer
+ * passed every check, and a realloc could copy from the middle of an
+ * unrelated object. Now the tag is validated before the size word is
+ * trusted, so a pointer must be a real allocation start to pass.
+ *
+ * The tag uses bits the 48-bit size ceiling already reserved, so this
+ * costs zero bytes per allocation and adds no payload padding. */
+#define ARENA_HDR_MAGIC ((uint64_t)0x4C48)        /* 'L','H' */
+#define ARENA_HDR_MAGIC_SHIFT 48
+#define ARENA_HDR_SIZE_MASK ((uint64_t)0x0000FFFFFFFFFFFFULL)
+static inline uint64_t ar_hdr_pack(size_t size) {
+    return (ARENA_HDR_MAGIC << ARENA_HDR_MAGIC_SHIFT) |
+           ((uint64_t)size & ARENA_HDR_SIZE_MASK);
+}
+static inline size_t ar_hdr_size(uint64_t raw) {
+    return (size_t)(raw & ARENA_HDR_SIZE_MASK);
+}
+static inline int ar_hdr_valid(uint64_t raw) {
+    return (raw >> ARENA_HDR_MAGIC_SHIFT) == ARENA_HDR_MAGIC;
+}
+
 /* Upper bound on a single arena allocation. The bump path below adds
  * header/alignment bytes and checks the end with uintptr_t arithmetic; a
  * request near SIZE_MAX wraps that arithmetic into a small address and
  * hands back a tiny buffer (plus a negative-size memset). The 48-bit
- * ceiling is the same one the string header's total field and
- * arena_check_payload use; on 32-bit targets half of SIZE_MAX is plenty. */
+ * ceiling is the same one the header's size field and arena_check_payload
+ * use; on 32-bit targets half of SIZE_MAX is plenty. */
 #if SIZE_MAX > 0xFFFFFFFFULL
-#define ARENA_MAX_ALLOC ((size_t)1 << 48)
+#define ARENA_MAX_ALLOC ((size_t)ARENA_HDR_SIZE_MASK)
 #else
 #define ARENA_MAX_ALLOC (SIZE_MAX / 2)
 #endif
@@ -263,6 +296,9 @@ static void xfer_free_all(void);
  * leash_gc_realloc and sole-block string growth. */
 void* leash_gc_alloc_string_cap_in(arena_stack* st, size_t len, size_t cap);
 static uint64_t ar_str_pack_total(size_t total);
+static void ar_str_require(const char* s, const char* region_end,
+                           const char* what, uint64_t* out_total,
+                           uint64_t* out_len);
 
 /* Release the per-thread stage cache (defined with the escape
  * helpers); called when the thread's arena goes away. */
@@ -463,7 +499,7 @@ static void* arena_alloc_ex(arena_stack* st, size_t need, size_t align, int zero
     if (need == 0) return NULL;
     size_t total = 0;
     char* payload = arena_raw_ex(st, need, align, &total, zero);
-    *(uint64_t*)(void*)(payload - 8) = (uint64_t)need;
+    *(uint64_t*)(void*)(payload - 8) = ar_hdr_pack(need);
     st->bytes += need;
     return (void*)payload;
 }
@@ -514,34 +550,41 @@ static arena_block* arena_block_of(arena_stack* st, const void* ptr) {
 }
 
 /* Validate that `ptr` is an allocation START (not an interior address)
- * and that its size header is coherent, before any code reads the
- * header or copies `old_size` bytes out of the payload. `arena_owns`
- * only proves the address lies inside some block, which an interior
+ * and that its header is coherent, before any code reads the size word
+ * or copies bytes out of the payload. `arena_owns`/`arena_block_of`
+ * only prove the address lies inside some block, which an interior
  * pointer also satisfies: trusting the word at ptr-8 then reads
- * whatever payload bytes happen to sit there (an out-of-bounds read of
- * a different object, and a garbage copy length).
+ * whatever payload bytes happen to sit there.
  *
- * The header is coherent when it is a size no larger than its block
- * and the payload ends inside the block. A forged size is larger than
- * the block with overwhelming probability, and any value >= 2^48 is
- * rejected outright (a real arena size is bounded by the address
- * space; string headers use the top bits for their tag and are handled
- * by the caller before this check). This does not prove the pointer is
- * a bump start in the mathematical sense, but it rules out the attacks
- * the runtime is actually exposed to: a foreign malloc block, a
- * pointer into another thread's arena, or an interior offset. */
-static void arena_check_payload(arena_stack* st, const void* ptr, const char* what) {
+ * The check is now structural, not heuristic. Every generic allocation
+ * writes a tagged header at ptr-8 (see "Arena header layout"): the tag
+ * must match, the header must lie inside the block (so ptr-8 is not the
+ * block's own metadata), and the size must fit in the block. A user-
+ * writable payload can still forge the tag only by deliberately copying
+ * it from another header, but an accidental interior offset is rejected
+ * deterministically. Returns the validated payload size. */
+static size_t arena_check_payload(arena_stack* st, const void* ptr, const char* what) {
     arena_block* b = arena_block_of(st, ptr);
     if (!b) {
         fprintf(stderr, "Leash arena: %s: pointer is not in this thread's arena\n", what);
         abort();
     }
     const char* p = (const char*)ptr;
-    uint64_t sz = *(const uint64_t*)(const void*)(p - 8);
-    if (sz > ((uint64_t)1 << 48) || sz > (uint64_t)b->cap || p + sz > b->base + b->cap) {
+    if (p - 8 < b->base) {
+        fprintf(stderr, "Leash arena: %s: not an allocation start (header outside block)\n", what);
+        abort();
+    }
+    uint64_t raw = *(const uint64_t*)(const void*)(p - 8);
+    if (!ar_hdr_valid(raw)) {
+        fprintf(stderr, "Leash arena: %s: not an allocation start (bad header tag)\n", what);
+        abort();
+    }
+    uint64_t sz = ar_hdr_size(raw);
+    if (sz > (uint64_t)b->cap || p + sz > b->base + b->cap) {
         fprintf(stderr, "Leash arena: %s: not an allocation start (bad size header)\n", what);
         abort();
     }
+    return (size_t)sz;
 }
 
 /* Reclaim a superseded large allocation's block immediately. Blocks
@@ -590,17 +633,21 @@ void leasharena_try_free_solo(void* ptr, size_t old_size_bytes) {
  * falls back to allocate + copy). */
 static void* arena_grow_tip(arena_stack* st, void* ptr,
                             size_t old_bytes, size_t new_bytes) {
-    if (!ptr || new_bytes == 0) return NULL;
-    if (!arena_owns(st, ptr)) return NULL;
+    if (!ptr || new_bytes == 0 || new_bytes > ARENA_MAX_ALLOC) return NULL;
+    arena_block* b = arena_block_of(st, ptr);
+    if (!b || (char*)ptr - 8 < b->base) return NULL;
     char* p = (char*)ptr;
     /* An arena string's payload sits behind a 16-byte header; its
-     * trailing word is the length, not an allocation size. */
-    if ((uintptr_t)p >= 16) {
+     * trailing word is the length, not an allocation size. Only read
+     * that word when it is actually inside the owning block. */
+    if (p - 16 >= b->base) {
         uint64_t raw = *(const uint64_t*)(const void*)(p - 16);
         if ((raw >> ARENA_STR_MAGIC_SHIFT) == ARENA_STR_MAGIC) return NULL;
     }
-    /* Cross-check the caller's size against the arena header. */
-    if (*(const uint64_t*)(const void*)(p - 8) != (uint64_t)old_bytes) return NULL;
+    /* Cross-check the caller's size against a TAGGED arena header: a
+     * bare payload word at ptr-8 cannot stand in for a real allocation. */
+    uint64_t hdr = *(const uint64_t*)(const void*)(p - 8);
+    if (!ar_hdr_valid(hdr) || ar_hdr_size(hdr) != old_bytes) return NULL;
     size_t old_adv = (old_bytes + 7) & ~(size_t)7;
     /* Tip test: the old allocation ends exactly at the bump pointer. */
     if (p + old_adv != st->cur) return NULL;
@@ -610,7 +657,7 @@ static void* arena_grow_tip(arena_stack* st, void* ptr,
     if ((size_t)(st->end - st->cur) < delta) return NULL;
     st->cur += delta;
     st->bytes += delta;
-    *(uint64_t*)(void*)(p - 8) = (uint64_t)new_bytes;
+    *(uint64_t*)(void*)(p - 8) = ar_hdr_pack(new_bytes);
     return p;
 }
 
@@ -621,15 +668,26 @@ static void* arena_grow_tip(arena_stack* st, void* ptr,
  * avoids allocating/copying a whole second buffer for large appends. */
 static char* arena_grow_sole_string(arena_stack* st, char* s,
                                     size_t old_total, size_t new_total) {
-    if (!st || !s || new_total <= old_total) return NULL;
+    if (!st || !s || new_total <= old_total || new_total > ARENA_MAX_ALLOC) return NULL;
     char* alloc_base = s - 16;
     arena_block* b = arena_block_of(st, alloc_base);
     if (!b || !b->sole || b != st->head || st->cur != st->end) return NULL;
+    /* The string header must be inside the block and the whole old
+     * allocation must fit in it. Without this a stale/interior `s`
+     * whose header lands in a sole block could rebase the block at an
+     * arbitrary offset and write a new header outside the allocation. */
+    if (alloc_base < b->base) return NULL;
+    size_t off = (size_t)(alloc_base - b->base);
+    if (off > b->cap || old_total > b->cap - off) return NULL;
     for (size_t i = 0; i < st->cp_len; i++) {
         if (st->cps[i].block == b) return NULL;
     }
-    size_t off = (size_t)(alloc_base - b->base);
-    size_t new_cap = (off + new_total + 4095) & ~(size_t)4095;
+    size_t new_cap;
+    /* Round the new capacity up to a page without overflowing; the
+     * rounded value must still cover the grown allocation. */
+    if (off > b->cap || new_total > b->cap - off + 4095) return NULL;
+    new_cap = (off + new_total + 4095) & ~(size_t)4095;
+    if (new_cap < off + new_total) return NULL;
     size_t old_cap = b->cap;
     arena_str_cache_forget(b);
     arena_block* nb = (arena_block*)realloc(b, sizeof(*nb) + new_cap);
@@ -804,9 +862,13 @@ static void arena_reset_to(arena_stack* st, size_t frame) {
 static void leash_segv_diag_handler(int sig, siginfo_t* info, void* ctx) {
     (void)sig;
     ucontext_t* u = (ucontext_t*)ctx;
-    fprintf(stderr, "\n=== LEASH SEGV ===\n");
-    fprintf(stderr, "RIP=%p, si_addr=%p\n", (void*)u->uc_mcontext.gregs[REG_RIP], info->si_addr);
-    fprintf(stderr, "RAX=%p, RDX=%p, RBX=%p, RCX=%p, RSI=%p\n",
+    /* One call, one format string: the diagnostic is identical but costs
+     * fewer instructions and less rodata in every arena binary. */
+    fprintf(stderr,
+            "\n=== LEASH SEGV ===\n"
+            "RIP=%p, si_addr=%p\n"
+            "RAX=%p, RDX=%p, RBX=%p, RCX=%p, RSI=%p\n",
+            (void*)u->uc_mcontext.gregs[REG_RIP], info->si_addr,
             (void*)u->uc_mcontext.gregs[REG_RAX],
             (void*)u->uc_mcontext.gregs[REG_RDX],
             (void*)u->uc_mcontext.gregs[REG_RBX],
@@ -927,40 +989,44 @@ void* leash_gc_realloc(void* ptr, size_t new_size) {
      * allocation start" (and abort). Ownership was already proven above,
      * so reading the two header words here is safe. */
     if ((uintptr_t)ptr >= 16) {
-        uint64_t raw = *(const uint64_t*)(const void*)((char*)ptr - 16);
-        if ((raw >> ARENA_STR_MAGIC_SHIFT) == ARENA_STR_MAGIC) {
-            uint64_t total = raw & ARENA_STR_TOTAL_MASK;
-            uint64_t lenword = *(const uint64_t*)(const void*)((char*)ptr - 8);
-            uint64_t slen = lenword & ARENA_STR_LEN_MASK;
-            if (total < 17 || slen > total - 17) {
-                fprintf(stderr, "Leash arena: corrupt string header in realloc\n");
-                abort();
+        arena_block* sb = arena_block_of(st, ptr);
+        if (sb && (char*)ptr - 16 >= sb->base) {
+            uint64_t raw = *(const uint64_t*)(const void*)((char*)ptr - 16);
+            if ((raw >> ARENA_STR_MAGIC_SHIFT) == ARENA_STR_MAGIC) {
+                uint64_t total = 0, slen = 0;
+                ar_str_require((const char*)ptr, sb->base + sb->cap,
+                               "realloc of string", &total, &slen);
+                uint64_t lenword = *(const uint64_t*)(const void*)((char*)ptr - 8);
+                size_t cap = new_size > (size_t)slen ? new_size : (size_t)slen;
+                char* out = (char*)leash_gc_alloc_string_cap_in(st, (size_t)slen, cap);
+                memcpy(out, ptr, (size_t)slen + 1);
+                /* A shared string still has other holders pointing at the old
+                 * buffer (a second variable, a container slot, a struct field).
+                 * Reclaiming its dedicated sole block would leave those holders
+                 * dangling -- the same rule the append and root-store paths
+                 * already honour. */
+                if (!(lenword & ARENA_STR_SHARED_BIT)) {
+                    arena_try_free_solo(st, ptr, (size_t)total - 8);
+                }
+                return (void*)out;
             }
-            size_t cap = new_size > (size_t)slen ? new_size : (size_t)slen;
-            char* out = (char*)leash_gc_alloc_string_cap_in(st, (size_t)slen, cap);
-            memcpy(out, ptr, (size_t)slen + 1);
-            /* A shared string still has other holders pointing at the old
-             * buffer (a second variable, a container slot, a struct field).
-             * Reclaiming its dedicated sole block would leave those holders
-             * dangling -- the same rule the append and root-store paths
-             * already honour. */
-            if (!(lenword & ARENA_STR_SHARED_BIT)) {
-                arena_try_free_solo(st, ptr, (size_t)total - 8);
-            }
-            return (void*)out;
         }
     }
 
-    /* Is `ptr` an allocation START, not just an address inside a block?
-     * The size header at ptr-8 must describe a real allocation: a size
-     * no larger than the block that contains it, whose payload ends
-     * inside that block. An interior pointer fails this with
-     * overwhelming probability (the bytes in front of it are another
-     * object's payload), so reading the header is safe afterwards. */
-    arena_check_payload(st, ptr, "realloc");
+    /* A realloc size near SIZE_MAX wraps the (n+7)&~7 rounding below into
+     * a tiny (or zero) capacity, after which the header would advertise a
+     * huge size over a tiny buffer and every later element write would
+     * run past the end. Reject it up front, at allocation-time strictness. */
+    if (new_size > ARENA_MAX_ALLOC) {
+        fprintf(stderr, "Leash arena: realloc size too large (%zu bytes)\n", new_size);
+        abort();
+    }
 
-    /* Read old size from the header at ptr-8. */
-    size_t old_size = (size_t)*(uint64_t*)(void*)((char*)ptr - 8);
+    /* Is `ptr` an allocation START, not just an address inside a block?
+     * The tagged header at ptr-8 must describe a real allocation: its tag
+     * must match, its header must lie in the block, and its size must fit
+     * in that block. An interior pointer is rejected structurally now. */
+    size_t old_size = arena_check_payload(st, ptr, "realloc");
     /* Root objects stay in the root arena (never moved into scopes). */
     if (in_root) {
         /* Still at the root arena's tip? Extend in place: no copy, and
@@ -1000,7 +1066,7 @@ void* leash_gc_realloc(void* ptr, size_t new_size) {
                  * The fill would be pure overhead on the hot growth
                  * path (a vector that doubles pays it once per byte
                  * it ever allocates). */
-                *(uint64_t*)(void*)(p - 8) = (uint64_t)new_size;
+                *(uint64_t*)(void*)(p - 8) = ar_hdr_pack(new_size);
                 leasharena_tls_ar.cur += delta;
                 leasharena_tls_ar.bytes += (new_size > old_size ? new_size - old_size : 0);
                 /* The buffer may predate a checkpoint: growing it past
@@ -1021,7 +1087,7 @@ void* leash_gc_realloc(void* ptr, size_t new_size) {
              * new-size padding (0-7 bytes) and leave that many bytes of
              * old data live at the tail of the reclaimed region. */
             memset(p + new_adv, 0, delta);
-            *(uint64_t*)(void*)(p - 8) = (uint64_t)new_size;
+            *(uint64_t*)(void*)(p - 8) = ar_hdr_pack(new_size);
             leasharena_tls_ar.cur -= delta;
             if (new_size < old_size) leasharena_tls_ar.bytes -= (old_size - new_size);
             return (void*)p;
@@ -1055,7 +1121,7 @@ void* leash_gc_realloc(void* ptr, size_t new_size) {
                     char* np = nb->base + off;
                     /* The extension is fresh capacity: see the tip
                      * growth path above for why it is not zeroed. */
-                    *(uint64_t*)(void*)(np - 8) = (uint64_t)new_size;
+                    *(uint64_t*)(void*)(np - 8) = ar_hdr_pack(new_size);
                     leasharena_tls_ar.head = nb;
                     leasharena_tls_ar.cur = nb->base + new_cap;
                     leasharena_tls_ar.end = nb->base + new_cap;
@@ -1245,19 +1311,50 @@ static uint64_t ar_str_pack_total(size_t total) {
     return ((ARENA_STR_MAGIC << ARENA_STR_MAGIC_SHIFT) | (uint64_t)total);
 }
 
-/* Read the header words of a candidate arena string and validate it.
- * Returns 1 only for a real arena string; the caller may then trust
- * `len` (the byte length) and `total` (the allocation size). */
-static inline int ar_str_read(const char* s, uint64_t* out_total, uint64_t* out_len) {
-    uint64_t raw = *(const uint64_t*)(const void*)(s - 16);
+/* Read and FULLY validate a candidate arena-string header. `region_end`
+ * is one-past-the-end of the block that contains s-16; it is the single
+ * most important argument here. Matching the magic and having a
+ * self-consistent (total, len) pair is NOT enough: a dangling pointer
+ * into a reused region, or a caller-forged header, can advertise a
+ * megabyte-long string inside a 32 KB block, and the `s[len]` terminator
+ * test (or a later memcpy using cap = total-17) then reads/writes far
+ * outside the block. Requiring the whole allocation to fit in the block
+ * turns that whole class of bug into a rejected lookup.
+ *
+ * Returns 1 only for a real arena string whose header and payload are
+ * contained in `region_end`; the caller may then trust `len` and
+ * `total`. Pass NULL for `region_end` only on paths that have not
+ * established containment (there are none on the consumer side). */
+static inline int ar_str_read(const char* s, const char* region_end,
+                              uint64_t* out_total, uint64_t* out_len) {
+    if ((uintptr_t)s < 16) return 0;
+    const char* base = s - 16;
+    if (region_end && base >= region_end) return 0;
+    uint64_t raw = *(const uint64_t*)(const void*)base;
     if ((raw >> ARENA_STR_MAGIC_SHIFT) != ARENA_STR_MAGIC) return 0;
     uint64_t total = raw & ARENA_STR_TOTAL_MASK;
+    if (total < 17) return 0;
+    /* region_end - base is the bytes actually available in the block. */
+    if (region_end && total > (uint64_t)(region_end - base)) return 0;
     uint64_t len = *(const uint64_t*)(const void*)(s - 8) & ARENA_STR_LEN_MASK;
-    if (total < 17 || len > total - 17) return 0;
+    if (len > total - 17) return 0;
     if (s[len] != '\0') return 0;
     if (out_total) *out_total = total;
     if (out_len) *out_len = len;
     return 1;
+}
+
+/* Strict form for paths that KNOW the pointer should be an arena string
+ * (a string currently held in a realloc/root slot). A failure there is
+ * corruption, not a non-string literal, so fail loudly. */
+static void ar_str_require(const char* s, const char* region_end,
+                           const char* what, uint64_t* out_total,
+                           uint64_t* out_len) {
+    if (!ar_str_read(s, region_end, out_total, out_len)) {
+        fprintf(stderr, "Leash arena: %s: corrupt string header "
+                        "(tag, bounds, length or terminator invalid)\n", what);
+        abort();
+    }
 }
 
 /* Capacity policy for arena strings.
@@ -1288,7 +1385,7 @@ static inline size_t ar_str_cap_for(size_t need, size_t cur_cap) {
 }
 
 void* leash_gc_alloc_string_cap_in(arena_stack* st, size_t len, size_t cap) {
-    if (len > SIZE_MAX - 32) {
+    if (len > SIZE_MAX - 32 || cap > ARENA_MAX_ALLOC - 32) {
         fprintf(stderr, "Leash arena: string allocation too large!\n");
         abort();
     }
@@ -1333,28 +1430,33 @@ void* leasharena_root_alloc_string_cap(size_t len, size_t cap) {
 
 void* leash_gc_alloc_string(size_t len) { return leash_gc_alloc_string_cap(len, len); }
 
+/* Shared tail of every string lookup: validate against the block bounds
+ * once, then publish len/cap. Keeping this in one place shrinks the hot,
+ * cached and full-walk paths to a single call each. */
+static int ar_str_info_bounded(const char* s, const char* region_end,
+                               size_t* out_len, size_t* out_cap) {
+    uint64_t total = 0, len = 0;
+    if (!ar_str_read(s, region_end, &total, &len)) return 0;
+    if (out_len) *out_len = (size_t)len;
+    if (out_cap) *out_cap = (size_t)(total - 17);
+    return 1;
+}
+
 static int arena_str_info(const char* s, size_t* out_len, size_t* out_cap) {
     if (!s || (uintptr_t)s < 16) return 0;
     const char* base = s - 16;
     /* Hot path: most strings live in the newest TLS block. Those pointer
      * checks are strictly cheaper than walking both arena block lists. */
     arena_stack* tls = &leasharena_tls_ar;
-    uint64_t total = 0, len = 0;
     if (tls->head && base >= tls->head->base && base < tls->head->base + tls->head->cap) {
-        if (!ar_str_read(s, &total, &len)) return 0;
-        if (out_len) *out_len = (size_t)len;
-        if (out_cap) *out_cap = (size_t)(total - 17);
-        return 1;
+        return ar_str_info_bounded(s, tls->head->base + tls->head->cap, out_len, out_cap);
     }
     /* Last block used by a string lookup: repeated comparisons of strings
      * from the same older block avoid a full block-list walk. The range
      * is cleared whenever that block is freed. */
     if (arena_str_cache_base && base >= arena_str_cache_base &&
         base < arena_str_cache_end) {
-        if (!ar_str_read(s, &total, &len)) return 0;
-        if (out_len) *out_len = (size_t)len;
-        if (out_cap) *out_cap = (size_t)(total - 17);
-        return 1;
+        return ar_str_info_bounded(s, arena_str_cache_end, out_len, out_cap);
     }
     /* String base must be inside one of our arenas. Resolve the block once
      * and remember it for the next lookup. */
@@ -1362,10 +1464,7 @@ static int arena_str_info(const char* s, size_t* out_len, size_t* out_cap) {
     if (!owner) owner = arena_block_of(&tls_root, base);
     if (owner) {
         arena_str_cache_set(owner);
-        if (!ar_str_read(s, &total, &len)) return 0;
-        if (out_len) *out_len = (size_t)len;
-        if (out_cap) *out_cap = (size_t)(total - 17);
-        return 1;
+        return ar_str_info_bounded(s, owner->base + owner->cap, out_len, out_cap);
     }
     return 0;
 }
@@ -4669,7 +4768,18 @@ static inline void* lv_at(const LeashVec* v, int64_t i) {
 static void* lv_alloc_data(int64_t cap, int64_t esz, int64_t scan) {
     if (esz <= 0) esz = 8;
     if (cap < 0) cap = 0;
+    /* `cap * esz` feeds both an allocation size and a memcpy length. A
+     * wrapped product would allocate a tiny buffer that element writes
+     * then overrun. */
+    if ((uint64_t)cap > (uint64_t)(SIZE_MAX / (size_t)esz)) {
+        fprintf(stderr, "Leash: vector allocation too large\n");
+        abort();
+    }
 #if defined(LEASH_ARENA)
+    if ((uint64_t)cap > (uint64_t)ARENA_MAX_ALLOC / (uint64_t)esz) {
+        fprintf(stderr, "Leash arena: vector allocation too large\n");
+        abort();
+    }
     /* The arena never scans: the GC's zero-fill exists so a fresh
      * cell can be traced safely. A vec writes every live element
      * before it is read and bounds every access by v->size, so the
@@ -5973,6 +6083,21 @@ void leasharena_escape_blob(void** slot, int64_t size, int64_t nframes) {
     *slot = np;
 }
 
+/* Shared byte-count guard for every slice/element path. A wrapped
+ * `len * elem_size` would allocate a small buffer and then memcpy the
+ * unwrapped (or wrapped) count into it; the ceiling also keeps the value
+ * representable in an arena header. */
+static size_t ar_bytes_checked(int64_t len, int64_t elem_size, const char* what) {
+    if (len <= 0 || elem_size <= 0) return 0;
+    uint64_t l = (uint64_t)len, e = (uint64_t)elem_size;
+    if (l > (uint64_t)ARENA_MAX_ALLOC / e) {
+        fprintf(stderr, "Leash arena: %s too large (%lld x %lld elements)\n",
+                what, (long long)len, (long long)elem_size);
+        abort();
+    }
+    return (size_t)(l * e);
+}
+
 void leasharena_escape_slice(void* agg, int64_t elem_size, int64_t nframes) {
     if (!agg) return;
     /* agg points at a {i64 len, i8* data} aggregate on the stack. */
@@ -5988,7 +6113,7 @@ void leasharena_escape_slice(void* agg, int64_t elem_size, int64_t nframes) {
         leasharena_exit_n(nframes);
         return;
     }
-    size_t bytes = (size_t)len * (size_t)elem_size;
+    size_t bytes = ar_bytes_checked(len, elem_size, "slice escape");
     int heap = 0;
     char* stage = NULL;
     size_t stage_cap = 0;
@@ -7277,7 +7402,7 @@ void leasharena_root_copy_slice(void* agg, int64_t elem_size) {
     struct slice_view { int64_t len; void* data; };
     struct slice_view* sv = (struct slice_view*)agg;
     if (!sv || !sv->data || sv->len <= 0 || elem_size <= 0) return;
-    size_t bytes = (size_t)sv->len * (size_t)elem_size;
+    size_t bytes = ar_bytes_checked(sv->len, elem_size, "slice root copy");
     void* nb = leash_gc_malloc_rooted(bytes);
     memcpy(nb, sv->data, bytes);
     sv->data = nb;
@@ -7324,10 +7449,10 @@ void leasharena_root_copy_slice(void* agg, int64_t elem_size) {
  * block cannot be released without freeing those objects too. */
 static void arena_root_reclaim_string(char* ptr) {
     if (!ptr || (uintptr_t)ptr < 16) return;
-    uint64_t raw = *(const uint64_t*)(const void*)(ptr - 16);
-    if ((raw >> ARENA_STR_MAGIC_SHIFT) != ARENA_STR_MAGIC) return;
-    uint64_t total = raw & ARENA_STR_TOTAL_MASK;
-    if (total < 17) return;
+    arena_block* b = arena_block_of(&tls_root, ptr);
+    if (!b || ptr - 16 < b->base) return;
+    uint64_t total = 0, len = 0;
+    if (!ar_str_read(ptr, b->base + b->cap, &total, &len)) return;
     if (*(const uint64_t*)(const void*)(ptr - 8) & ARENA_STR_SHARED_BIT) return;
     arena_try_free_solo(&tls_root, ptr, (size_t)(total - 8));
 }
@@ -7350,10 +7475,10 @@ void* leasharena_root_store_string(void** slot, void* val) {
     size_t old_cap = 0;
     int old_exclusive = 0;
     if (old && arena_owns(&tls_root, old)) {
-        uint64_t raw = *(const uint64_t*)(const void*)(old - 16);
-        if ((raw >> ARENA_STR_MAGIC_SHIFT) == ARENA_STR_MAGIC) {
-            uint64_t total = raw & ARENA_STR_TOTAL_MASK;
-            uint64_t olen = *(const uint64_t*)(const void*)(old - 8) & ARENA_STR_LEN_MASK;
+        arena_block* ob = arena_block_of(&tls_root, old);
+        uint64_t total = 0, olen = 0;
+        if (ob && old - 16 >= ob->base &&
+            ar_str_read(old, ob->base + ob->cap, &total, &olen)) {
             int shared = (*(uint64_t*)(const void*)(old - 8) & ARENA_STR_SHARED_BIT) != 0;
             if (!shared && total >= 17 && olen <= total - 17) {
                 size_t ocap = (size_t)(total - 17);
@@ -7580,9 +7705,11 @@ void* leasharena_root_store_hash(void** slot, void* val) {
 /* The key area of a hash node: the allocation holds the node fields
  * followed by the key bytes and the terminator. */
 static size_t hash_node_key_cap(LeashHashNode* n) {
-    uint64_t sz = *(const uint64_t*)(const void*)((char*)n - 8);
+    /* A recycled node is a real arena allocation in the root arena; the
+     * same tagged, contained header every other consumer requires. */
+    size_t sz = arena_check_payload(&tls_root, n, "hash node key cap");
     if (sz <= sizeof(LeashHashNode)) return 0;
-    return (size_t)(sz - sizeof(LeashHashNode));
+    return sz - sizeof(LeashHashNode);
 }
 
 /* Rebuild a root hash table from a source table, recycling the
@@ -7808,10 +7935,15 @@ static void root_store_blob_d(void** slot, void* val, int64_t size,
     void* old = *slot;
     int reusable = 0;
     if (old && arena_owns(&tls_root, old)) {
-        /* The size header in front of the payload must describe a
-         * root blob of exactly this size, or the copy would not fit. */
-        uint64_t sz = *(const uint64_t*)(const void*)((char*)old - 8);
-        if (sz == (uint64_t)size) reusable = 1;
+        /* Only reuse a slot's previous copy if it is a genuine allocation
+         * start with a tagged header of exactly this size. An interior
+         * pointer or a stale region whose preceding word coincidentally
+         * equals `size` must get a fresh buffer, not be written through. */
+        arena_block* ob = arena_block_of(&tls_root, old);
+        if (ob && (char*)old - 8 >= ob->base) {
+            uint64_t raw = *(const uint64_t*)(const void*)((char*)old - 8);
+            if (ar_hdr_valid(raw) && ar_hdr_size(raw) == (uint64_t)size) reusable = 1;
+        }
     }
     char* nb = (char*)(reusable ? old : leash_gc_malloc_rooted((size_t)size));
     if (!nb) return;
@@ -7929,7 +8061,14 @@ void* leasharena_xfer_copy_string(void* block, void* src) {
  * NULs are legal in a Leash string); only fall back to strlen for a
  * pointer that did not come through leasharena_xfer_copy_string.
  * The transfer is released by the generated worker immediately after
- * this call, so the worker keeps a real arena string of its own. */
+ * this call, so the worker keeps a real arena string of its own.
+ *
+ * The prefix is untrusted: a stale or bogus pointer with the transfer
+ * magic in its preceding word could advertise a huge length and make the
+ * memcpy below run off its source. The transfer arena is private to the
+ * hand-off and is not reachable from `slot` alone, so the best available
+ * guard is a hard ceiling on the advertised length: anything larger is
+ * corruption, not a real Leash string. */
 void leasharena_adopt_string(void** slot) {
     if (!slot || !*slot) return;
     const char* src = (const char*)*slot;
@@ -7937,6 +8076,10 @@ void leasharena_adopt_string(void** slot) {
     uint64_t tag = *(const uint64_t*)(const void*)(src - 8);
     if ((uint32_t)tag == LEASH_XFER_STR_MAGIC) {
         len = (size_t)(uint32_t)(tag >> 32);
+        if (len > (size_t)ARENA_MAX_ALLOC) {
+            fprintf(stderr, "Leash arena: corrupt transfer string length\n");
+            abort();
+        }
     } else {
         len = strlen(src);
     }
@@ -7983,7 +8126,7 @@ void leasharena_xfer_copy_slice(void* block, void* agg, int64_t elem_size) {
     struct slice_view { int64_t len; void* data; };
     struct slice_view* sv = (struct slice_view*)agg;
     if (!sv || !sv->data || sv->len <= 0 || elem_size <= 0) return;
-    size_t bytes = (size_t)sv->len * (size_t)elem_size;
+    size_t bytes = ar_bytes_checked(sv->len, elem_size, "slice transfer");
     void* nb = xfer_alloc(x, bytes);
     if (!nb) return;
     memcpy(nb, sv->data, bytes);

@@ -1517,6 +1517,14 @@ pub def CodeGen : class {
 
     pub fnc ar_audit_diag(msg string, code string, tip string, src string, line int,
                           fatal bool, why string, token string, trace vec<string>) : void {
+        // Arena mode is strict on purpose: there is no "compiles with a
+        // warning" outcome. Every lifetime diagnostic is a hard error, so
+        // the compile either succeeds with proven-safe ownership or fails.
+        // Normalise here rather than at each call site so no diagnostic can
+        // slip through as a warning; -oe is kept only as a no-op for scripts
+        // that still pass it.
+        if code == "W_ARENA_LIFETIME" { code = "E_ARENA_LIFETIME"; }
+        fatal = true;
         if fatal { show("error[", code, "]: ", msg); }
         else { show("warning[", code, "]: ", msg); }
         show("  --> ", src, ":", tostring(line));
@@ -12127,7 +12135,13 @@ pub def CodeGen : class {
                 "fast:\n" +
                 "  %hi = sub i64 %bi, 8\n" +
                 "  %hp = inttoptr i64 %hi to i64*\n" +
-                "  store i64 %need, i64* %hp, align 8\n" +
+                // Tagged header: bits 63..48 carry the 0x4C48 'LH' magic,
+                // the low 48 bits the size. Must match ar_hdr_pack in gc.c
+                // or arena_check_payload rejects every inline allocation.
+                "  %tagv = shl i64 19528, 48\n" +
+                "  %needm = and i64 %need, 281474976710655\n" +
+                "  %tagged = or i64 %tagv, %needm\n" +
+                "  store i64 %tagged, i64* %hp, align 8\n" +
                 "  %n7 = add i64 %ne, 7\n" +
                 "  %nc = and i64 %n7, -8\n" +
                 "  %ncp = inttoptr i64 %nc to i8*\n" +

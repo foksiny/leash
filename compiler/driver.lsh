@@ -1039,23 +1039,39 @@ pub def CompilerDriver : class {
         // Keyed by an FNV-1a hash of the IR lines + opt level; the runtime
         // (gc.c + stubs) is compiled once per (size,mtime) tag. Warm compiles
         // link prebuilt objects only: fast and ~70MB total RSS.
+        // Strictly monotonic -O scale.
+        //
+        // Each level is a STRICT SUPERSET of the one below it: O1 is the
+        // -O1 backend, O2 adds inlining, O3 adds LTO, O4 adds native
+        // tuning. Nothing is ever turned off going up a level, so the
+        // scale cannot invert the way `-O2`/`-O3` did on Leash's IR
+        // (clang's stock -O2/-O3 regressed call-heavy fib 255ms -> 336ms
+        // by inlining recursions and vectorising string/hash loops).
+        // The arena IR gates (ar_arena_opt_ge) are monotonic in the same
+        // way, so both halves of the scale now agree.
         opt_flag: string = "-O2";
         if opt_level == "0" { opt_flag = "-O0"; }
         also opt_level == "1" { opt_flag = "-O1"; }
-        also opt_level == "3" { opt_flag = "-O3"; }
+        also opt_level == "2" {
+            // O2 = O1 backend + the arena IR's O2 tier (exact trip-count
+            // reserves). No LLVM flag changes at all: LLVM's -O2 regresses
+            // Leash's call-heavy IR, so the gain must come from the IR we
+            // control, not from unpredictable inliner heuristics.
+            opt_flag = "-O1";
+        }
+        also opt_level == "3" {
+            // O3 = O2 + whole-program inlining of the runtime helpers and
+            // the arena IR's O3 tier (nested-loop folding, fused keys).
+            opt_flag = "-O1 -flto";
+        }
         also opt_level == "4" {
-        // O4: -O1 with LTO and native tuning. -O2/-O3 are slower
-            // than -O1 for Leash (aggressive inlining/vectorization
-            // hurts recursion-heavy fib and bloats i-cache for
-            // string/hash; -O1 wins on fib 255ms vs 336ms at -O2).
-            // -O1 + -flto + -march=native keeps the -O1 code size while
-            // adding cross-unit inlining of runtime helpers and
-            // AVX2/AVX512 vectorization for fp kernels.
+            // O4 = O3 + native code generation (AVX2/AVX512 for fp
+            // kernels, native tuning for call-heavy code).
             is_native: bool = target_name.bsize == 0 || target_name == "linux64" || target_name == "linux32";
             if is_native {
-                opt_flag = "-O1 -march=native -mtune=native -flto -mllvm -inline-threshold=125";
+                opt_flag = "-O1 -flto -march=native -mtune=native";
             } else {
-                opt_flag = "-O1 -flto -mllvm -inline-threshold=125";
+                opt_flag = "-O1 -flto";
             }
         }
         also opt_level == "s" { opt_flag = "-Os"; }
@@ -1294,6 +1310,8 @@ pub def CompilerDriver : class {
         // For O4 enable LTO on the runtime too (cross-module inlining).
         // The rt_opt string is part of the cache key below.
         rt_opt: string = "-O2";
+        if opt_level == "0" { rt_opt = "-O0"; }
+        if opt_level == "1" { rt_opt = "-O1"; }
         if opt_level == "3" { rt_opt = "-O3"; }
         if opt_level == "4" { rt_opt = "-O3 -flto"; }
         rsp_rt: string = rsp_dir + "/ccrt_" + tostring(this.fnv_str("rt|" + cc_bin + "|" + cc_flags + "|" + rt_extra + "|" + rt_opt)) + ".rsp";
@@ -1313,9 +1331,17 @@ pub def CompilerDriver : class {
             rt_gc: string = cache_dir + "/rt" + tostring(this.fnv_str(gc_tag)) + "_gc.o";
             if !this.file_exists(rt_gc) {
                 if verbose { show("[verbose] compiling runtime gc.c"); }
-                ec_rt: string = this.exec_code(cc_bin + " " + gc_path + " -c -o " + rt_gc + " @" + rsp_rt);
+                // Compile to a temp name and publish only on success: an
+                // interrupted clang can otherwise leave a truncated object
+                // in the cache that every later compile silently reuses.
+                tmp_gc: string = rt_gc + ".tmp";
+                ec_rt: string = this.exec_code(cc_bin + " " + gc_path + " -c -o " + tmp_gc + " @" + rsp_rt);
                 if ec_rt != "0" {
                     show("error: cannot compile runtime gc.c");
+                    return 1;
+                }
+                if File.rename(tmp_gc, rt_gc) != 0 {
+                    show("error: cannot publish cached runtime gc.o");
                     return 1;
                 }
             }
@@ -1325,9 +1351,14 @@ pub def CompilerDriver : class {
                 stubs_tag: string = this.exec_out("stat -c '%s_%Y' " + stubs_path) + "|" + rt_opt + "|fsections|" + cc_flags + "|" + rt_extra;
                 rt_stubs: string = cache_dir + "/rt" + tostring(this.fnv_str(stubs_tag)) + "_stubs.o";
                 if !this.file_exists(rt_stubs) {
-                    ec_st: string = this.exec_code(cc_bin + " " + stubs_path + " -c -o " + rt_stubs + " @" + rsp_rt);
+                    tmp_stubs: string = rt_stubs + ".tmp";
+                    ec_st: string = this.exec_code(cc_bin + " " + stubs_path + " -c -o " + tmp_stubs + " @" + rsp_rt);
                     if ec_st != "0" {
                         show("error: cannot compile runtime stubs");
+                        return 1;
+                    }
+                    if File.rename(tmp_stubs, rt_stubs) != 0 {
+                        show("error: cannot publish cached runtime stubs.o");
                         return 1;
                     }
                 }
@@ -1364,15 +1395,25 @@ pub def CompilerDriver : class {
                     f_obj_rsp.write(cc_flags + "\n");
                     f_obj_rsp.write(pic_flag + "\n");
                     f_obj_rsp.close();
-                    ec_obj: string = this.exec_code(cc_bin + " " + temp_ll + " -c -o " + obj_path + " @" + rsp_obj);
+                    tmp_obj: string = obj_path + ".tmp";
+                    ec_obj: string = this.exec_code(cc_bin + " " + temp_ll + " -c -o " + tmp_obj + " @" + rsp_obj);
                     if ec_obj != "0" {
                         show("error: clang IR compilation failed");
                         return 1;
                     }
+                    if File.rename(tmp_obj, obj_path) != 0 {
+                        show("error: cannot publish cached program object");
+                        return 1;
+                    }
                 } else {
-                    ec_obj2: string = this.exec_code(cc_bin + " " + temp_ll + " -c -o " + obj_path + " " + opt_flag + " " + cc_flags + " " + pic_flag);
+                    tmp_obj2: string = obj_path + ".tmp";
+                    ec_obj2: string = this.exec_code(cc_bin + " " + temp_ll + " -c -o " + tmp_obj2 + " " + opt_flag + " " + cc_flags + " " + pic_flag);
                     if ec_obj2 != "0" {
                         show("error: clang IR compilation failed");
+                        return 1;
+                    }
+                    if File.rename(tmp_obj2, obj_path) != 0 {
+                        show("error: cannot publish cached program object");
                         return 1;
                     }
                 }
