@@ -42,6 +42,11 @@ void* leash_sh_hash_new(void);
 void leash_sh_hash_push(void* hash_ptr, const char* key, void* val);
 void* leash_sh_hash_get(void* hash_ptr, const char* key);
 void leash_sh_hash_make_rooted(void* hash_ptr);
+void leasharena_escape_hash(void** slot, int64_t nframes);
+void* leasharena_xfer_new(int64_t size);
+void* leasharena_xfer_copy_string(void* block, void* src);
+void leasharena_adopt_string(void** slot);
+void leasharena_xfer_free(void* block);
 
 /* The string helper used by the harness: append a known-length piece. */
 char* leash_str_append_span(char* s, const char* piece, size_t pl);
@@ -234,6 +239,227 @@ static void test_tip_growth_ignores_strings(void) {
     leasharena_exit();
 }
 
+/* realloc of a SHARED arena string must stay on the string-aware path.
+ *
+ * A shared string carries bit 63 in its length word. The generic realloc
+ * header check reads the word at ptr-8 as an allocation size, so without
+ * the string check running FIRST it rejects the string as "not an
+ * allocation start" and aborts. The string path must also leave the old
+ * buffer alone when it is shared: other holders still point at it, so a
+ * dedicated sole block must not be reclaimed (a use-after-free). */
+static void test_realloc_shared_string(void) {
+    leash_gc_init();
+
+    leasharena_enter();
+    char* s = (char*)leash_gc_alloc_string_cap(5, 8);
+    assert(s != NULL);
+    memcpy(s, "abcde", 6);
+    leash_str_share(s);
+
+    char* r = (char*)leash_gc_realloc(s, 64);
+    assert(r != NULL);
+    assert(r != s);                       /* string realloc makes a fresh buffer */
+    assert(leash_str_bsize(r) == 5);
+    assert(strcmp(r, "abcde") == 0);
+    /* The shared original must remain valid: realloc must not reclaim it. */
+    assert(strcmp(s, "abcde") == 0);
+    assert(leash_str_bsize(s) == 5);
+    leasharena_exit();
+}
+
+/* The sole-block case: a large shared string lives in a dedicated block.
+ * Reclaiming that block on realloc would dangle the other holder. Under
+ * ASan this test fails hard on the use-after-free; without sanitizers the
+ * content assertions still verify the copy. */
+static void test_realloc_shared_sole_string(void) {
+    leash_gc_init();
+
+    leasharena_enter();
+    size_t n = 40 * 1024;
+    char* s = (char*)leash_gc_alloc_string_cap(n, n);
+    assert(s != NULL);
+    memset(s, 'q', n);
+    s[n] = '\0';
+    leash_str_share(s);
+
+    char* r = (char*)leash_gc_realloc(s, n + 1024);
+    assert(r != NULL);
+    assert(leash_str_bsize(r) == (int64_t)n);
+    for (size_t i = 0; i < n; i++) assert(r[i] == 'q');
+    /* The old (still shared) buffer must stay readable. */
+    assert(s[0] == 'q');
+    assert(s[n - 1] == 'q');
+    assert(s[n] == '\0');
+    leasharena_exit();
+}
+
+/* Self-append of a large string whose buffer lives in a dedicated sole
+ * block. Growing that block uses realloc, which may MOVE it; the piece
+ * being appended aliases the string (`s = s + s`), so reading it after the
+ * move is a use-after-free. A barrier after the sole block makes realloc
+ * move under ASan. */
+static void test_self_append_sole_string(void) {
+    leash_gc_init();
+
+    leasharena_enter();
+    size_t n = 40 * 1024;
+    char* s = (char*)leash_gc_alloc_string_cap(n, n);
+    assert(s != NULL);
+    memset(s, 'a', n);
+    s[n] = '\0';
+
+    /* Fragment the heap right after the sole block so realloc cannot grow
+     * it in place and must relocate (freeing the old payload). */
+    void* barrier = malloc(128);
+    assert(barrier != NULL);
+
+    char* t = leash_str_append(s, s);
+    assert(t != NULL);
+    assert(leash_str_bsize(t) == (int64_t)(2 * n));
+    for (size_t i = 0; i < 2 * n; i++) assert(t[i] == 'a');
+    assert(t[2 * n] == '\0');
+
+    free(barrier);
+    leasharena_exit();
+}
+
+/* A near-SIZE_MAX allocation request must be rejected, not wrap the bump
+ * allocator's pointer arithmetic into a tiny buffer (and a negative-size
+ * memset). Fork so the expected abort does not kill the harness. */
+static void test_huge_allocation_aborts(void) {
+#ifdef __linux__
+    leash_gc_init();
+    pid_t pid = fork();
+    assert(pid >= 0);
+    if (pid == 0) {
+        leash_gc_malloc((size_t)-8);
+        _exit(0);
+    }
+    int status = 0;
+    assert(waitpid(pid, &status, 0) == pid);
+    assert(!WIFEXITED(status) || WEXITSTATUS(status) != 0);
+#endif
+}
+
+/* Narrowing a tip allocation must zero the whole reclaimed tail, so a
+ * following no-zero-fill allocation never sees stale old bytes. */
+static void test_shrink_zeroes_reclaimed_tail(void) {
+    leash_gc_init();
+
+    leasharena_enter();
+    size_t old_sz = 40;                       /* 8-aligned: no old padding */
+    unsigned char* p = (unsigned char*)leash_gc_malloc(old_sz);
+    assert(p != NULL);
+    memset(p, 0xAB, old_sz);
+
+    size_t new_sz = 17;                       /* new_adv = 24, pad = 7 */
+    unsigned char* q = (unsigned char*)leash_gc_realloc(p, new_sz);
+    assert(q == p);                           /* tip shrink stays in place */
+
+    /* The bytes the bump pointer moved back over must all be zero. Read
+     * them directly (the invariant the shrink path promises). */
+    for (size_t i = new_sz + 7; i < old_sz; i++) {
+        /* p + round8(new_sz) .. p + old_sz is the reclaimed region; the
+         * first few bytes of it are the next allocation's header, all zero. */
+        assert(q[i] == 0);
+    }
+    leasharena_exit();
+}
+
+/* A string with an embedded NUL survives the spawn transfer unchanged.
+ * The transfer copy carries its byte length in a prefix; adopting it must
+ * not recompute the length with strlen. */
+static void test_transfer_string_keeps_embedded_nul(void) {
+    leash_gc_init();
+    leasharena_enter();
+
+    const char src[4] = {'a', '\0', 'b', 'c'};
+    char* s = (char*)leash_gc_alloc_string_cap(4, 4);
+    assert(s != NULL);
+    memcpy(s, src, 4);
+    s[4] = '\0';
+
+    void* block = leasharena_xfer_new(64);
+    assert(block != NULL);
+    char* cp = (char*)leasharena_xfer_copy_string(block, s);
+    assert(cp != NULL);
+    void* slot = cp;
+    leasharena_adopt_string(&slot);
+    assert(leash_str_bsize((const char*)slot) == 4);
+    assert(memcmp(slot, src, 4) == 0);
+
+    leasharena_xfer_free(block);
+    leasharena_exit();
+}
+
+/* The typed root copy must preserve container identity: two aggregate
+ * fields holding the same vec must still alias after the copy, and the
+ * walk must terminate. `seen` was previously ignored for containers. */
+static void test_typed_root_copy_keeps_vec_identity(void) {
+    leash_gc_init();
+    leasharena_enter();
+
+    /* A frame-local vec. */
+    void* v = leash_sh_vec_new(8, 0);
+    assert(v != NULL);
+    int64_t one = 1;
+    leash_sh_vec_pushb(v, &one);
+
+    /* Aggregate body: two pointer fields, both pointing at `v`. */
+    void* body[2] = {v, v};
+
+    /* Descriptor: node 0 = aggregate (16-byte body, fields 1..2);
+     * nodes 1 and 2 = field entries at offsets 0 and 8, both typed as
+     * the vec at node 3 (leaf element). */
+    ar_te tree[4];
+    tree[0].off = (void*)(uintptr_t)16; tree[0].kind = 4; tree[0].child = 1; tree[0].aux = 2;
+    tree[1].off = (void*)(uintptr_t)0;  tree[1].kind = 5; tree[1].child = 3; tree[1].aux = 0;
+    tree[2].off = (void*)(uintptr_t)8;  tree[2].kind = 5; tree[2].child = 3; tree[2].aux = 0;
+    tree[3].off = (void*)(uintptr_t)0;  tree[3].kind = 2; tree[3].child = -1; tree[3].aux = 0;
+
+    void* slot = body;
+    leasharena_root_copy_blob_typed_d(&slot, tree, 0);
+    assert(slot != NULL);
+    void** fields = (void**)slot;
+    assert(fields[0] != NULL);
+    /* The two holders must point at the SAME root copy. */
+    assert(fields[0] == fields[1]);
+    /* And the copy still holds the element. */
+    int64_t out = 0;
+    leash_sh_vec_get(fields[0], 0, &out);
+    assert(out == 1);
+
+    leasharena_exit();
+}
+
+/* Escaping a hash with several short keys stages contiguous node images.
+ * Each image must be 8-byte aligned (UBSan flags misaligned member reads
+ * even where the hardware tolerates them). */
+static void test_hash_escape_node_alignment(void) {
+    leash_gc_init();
+    leasharena_enter();
+    void* h = leash_sh_hash_new();
+    assert(h != NULL);
+    leash_sh_hash_push(h, "a", (void*)"1");
+    leash_sh_hash_push(h, "bb", (void*)"2");
+    leash_sh_hash_push(h, "ccc", (void*)"3");
+    leash_sh_hash_push(h, "dddd", (void*)"4");
+
+    leasharena_enter();
+    void* slot = h;
+    leasharena_escape_hash(&slot, 1);
+    /* The inner frame is gone; the escaped table must still work. */
+    void* got = leash_sh_hash_get(slot, "a");
+    assert(got && strcmp((const char*)got, "1") == 0);
+    got = leash_sh_hash_get(slot, "bb");
+    assert(got && strcmp((const char*)got, "2") == 0);
+    got = leash_sh_hash_get(slot, "ccc");
+    assert(got && strcmp((const char*)got, "3") == 0);
+    got = leash_sh_hash_get(slot, "dddd");
+    assert(got && strcmp((const char*)got, "4") == 0);
+    leasharena_exit();
+}
+
 /* A buffer that predates a checkpoint must survive the checkpoint's
  * rewind when it is grown in place.
  *
@@ -353,6 +579,14 @@ static void test_large_string_grows_in_sole_block(void) {
 int main(void) {
     test_string_growth_keeps_identity();
     test_repeated_share_keeps_string();
+    test_realloc_shared_string();
+    test_realloc_shared_sole_string();
+    test_self_append_sole_string();
+    test_huge_allocation_aborts();
+    test_shrink_zeroes_reclaimed_tail();
+    test_transfer_string_keeps_embedded_nul();
+    test_typed_root_copy_keeps_vec_identity();
+    test_hash_escape_node_alignment();
     test_scan_region_verifier_catches_dangling();
     test_append_char_outside_head();
     test_large_string_grows_in_sole_block();

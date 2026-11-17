@@ -5,6 +5,28 @@ All notable changes to the Leash compiler are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.9.1] - 2026-11-17
+
+### Added
+- **Arena regression coverage under sanitizers.** `tests/test_arena_runtime.py`
+  now builds the runtime harness with ASan/UBSan when the compiler supports
+  it, so the shared-string and use-after-free regressions fail loudly in CI.
+  The C harness gained cases for shared-string `realloc` (small and sole-block),
+  self-append of a large string, near-`SIZE_MAX` allocations, tip-shrink tail
+  zeroing, spawn-transfer strings with embedded NULs, typed root-copy container
+  identity, and staged-hash-node alignment.
+
+### Fixed
+- **Arena: `realloc` of a shared string no longer aborts or dangles its other holders.** The string header is now checked before the generic allocation-size header (whose `ptr-8` word is the string length, with bit 63 set for a shared string), and a shared string's dedicated sole block is never reclaimed. Regression tests cover both a small shared string and a large sole-block string under ASan.
+- **Arena: self-append of a large sole-block string no longer reads freed memory.** Growing the block with `realloc` can move it; when the appended piece aliases the string (`s = s + s`), the runtime now falls back to the alias-safe allocate-then-copy path instead of reading the piece through the freed pointer.
+- **Arena: near-`SIZE_MAX` allocation requests are rejected.** The bump allocator's pointer arithmetic could wrap and return a tiny buffer with a negative-size memset; a 48-bit per-allocation ceiling now fails such requests deterministically. Non-power-of-two alignments are rejected too.
+- **Arena: shrinking a tip allocation zeroes the entire reclaimed tail.** The old memset started at the unaligned `new_size`, leaving up to 7 bytes of stale data in the region the bump pointer moved back over.
+- **Arena: worker-thread TLS destructor now marks the arena dead and clears its key**, matching the Windows path and preventing a later allocation from rebuilding an arena behind unwound frames.
+- **Arena: typed root copies now preserve container identity and cycles.** `te_root_vec`/`te_root_hash` consult the same identity map as aggregates, so two fields holding the same vec/hash still alias after the copy and a container cycle terminates instead of recursing to the depth cap. The depth-cap fallback now stores `NULL` rather than a frame-local pointer into a root slot (a dangling pointer after the pop).
+- **Arena: spawn transfers keep embedded NULs in string arguments.** The transfer copy carries its byte length in an 8-byte prefix; the worker's adopt step no longer truncates binary strings at the first `'\0'`.
+- **Arena: staged hash nodes are 8-byte aligned.** The node+key stride is rounded up to 8 in every staging sizing and copy pass (and in the typed commit walker), removing undefined behaviour on strict-alignment targets.
+- **Arena: miscellaneous hardening.** Re-storing a slot's own root copy no longer marks it shared (which stopped in-place reuse and grew the root arena each iteration); `escape_agg_typed` now pops its frame on a NULL slot; and root-copying a malformed hash with a non-positive bucket count no longer reads past its bucket array.
+
 ## [1.9.0] - 2026-11-16
 
 ### Changed

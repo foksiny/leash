@@ -168,6 +168,17 @@ void leash_spipe_drop(void) {}
 #define ARENA_BLOCK_SIZE ((size_t)32 * 1024)
 #define ARENA_INIT_BLOCK_SIZE ((size_t)4 * 1024)
 #define ARENA_ALIGN ((size_t)16)
+/* Upper bound on a single arena allocation. The bump path below adds
+ * header/alignment bytes and checks the end with uintptr_t arithmetic; a
+ * request near SIZE_MAX wraps that arithmetic into a small address and
+ * hands back a tiny buffer (plus a negative-size memset). The 48-bit
+ * ceiling is the same one the string header's total field and
+ * arena_check_payload use; on 32-bit targets half of SIZE_MAX is plenty. */
+#if SIZE_MAX > 0xFFFFFFFFULL
+#define ARENA_MAX_ALLOC ((size_t)1 << 48)
+#else
+#define ARENA_MAX_ALLOC (SIZE_MAX / 2)
+#endif
 
 typedef struct arena_block {
     struct arena_block* next; /* all blocks, newest first */
@@ -233,6 +244,11 @@ static int arena_verify_roots = 1;
  * the worker.
  */
 #define LEASH_XFER_MAGIC ((uint64_t)0x53504658u) /* 'SPFX' */
+/* A transfer string carries its byte length in an 8-byte prefix so the
+ * worker's adopt step keeps embedded NULs. Leash strings are length-
+ * prefixed and may contain '\0'; `strlen` on the receiving side would
+ * silently truncate binary arguments. Layout: [u64 magic|len][bytes][NUL]. */
+#define LEASH_XFER_STR_MAGIC ((uint32_t)0x58535452u) /* 'XSTR' */
 
 typedef struct leash_xfer {
     uint64_t magic;
@@ -375,6 +391,23 @@ static void arena_free_stack(arena_stack* st) {
 static char* arena_raw_ex(arena_stack* st, size_t need, size_t align, size_t* out_total, int zero) {
     if (__builtin_expect(leasharena_tls_arena_dead != 0, 0)) {
         fprintf(stderr, "Leash arena: allocation after shutdown\n");
+        abort();
+    }
+    /* Reject sizes that would wrap the pointer arithmetic below. Without
+     * this, a near-SIZE_MAX request passes the bounds check with a wrapped
+     * address, returns a pointer into an ordinary small block, and memsets
+     * a wraparound (negative) length. Fail deterministically, like every
+     * other arena OOM. */
+    if (__builtin_expect(need > ARENA_MAX_ALLOC, 0)) {
+        fprintf(stderr, "Leash arena: allocation too large (%zu bytes)\n", need);
+        abort();
+    }
+    /* The alignment is used as `(x + align - 1) & ~(align - 1)`, which
+     * only aligns for a power of two. aligned_alloc's contract requires
+     * one, but a bad C/FFI caller must not get a misaligned payload (and a
+     * misaligned 8-byte header store) instead of a diagnostic. */
+    if (__builtin_expect(align == 0 || (align & (align - 1)) != 0, 0)) {
+        fprintf(stderr, "Leash arena: invalid allocation alignment (%zu)\n", align);
         abort();
     }
     /* Fast path: avoid repeated ensure_stack checks after init */
@@ -878,14 +911,6 @@ void* leash_gc_realloc(void* ptr, size_t new_size) {
         abort();
     }
 
-    /* Is `ptr` an allocation START, not just an address inside a block?
-     * The size header at ptr-8 must describe a real allocation: a size
-     * no larger than the block that contains it, whose payload ends
-     * inside that block. An interior pointer fails this with
-     * overwhelming probability (the bytes in front of it are another
-     * object's payload), so reading the header is safe afterwards. */
-    arena_check_payload(st, ptr, "realloc");
-
     /* An arena string's payload sits behind a 16-byte header: the word
      * at ptr-8 is the string LENGTH, not an allocation size, and the
      * allocation size lives at ptr-16 behind the magic tag. Growing it
@@ -893,12 +918,20 @@ void* leash_gc_realloc(void* ptr, size_t new_size) {
      * string's identity) and write past the end of the allocation
      * (the bump pointer only reserves `total` bytes). Strings get their
      * own path: a fresh string with the requested capacity that keeps
-     * the bytes and the header. */
+     * the bytes and the header.
+     *
+     * This check MUST run before arena_check_payload below. That helper
+     * reads the word at ptr-8 as an allocation size; for a string it is
+     * the length, and a SHARED string carries bit 63 in that word, so the
+     * generic check would reject a perfectly valid string as "not an
+     * allocation start" (and abort). Ownership was already proven above,
+     * so reading the two header words here is safe. */
     if ((uintptr_t)ptr >= 16) {
         uint64_t raw = *(const uint64_t*)(const void*)((char*)ptr - 16);
         if ((raw >> ARENA_STR_MAGIC_SHIFT) == ARENA_STR_MAGIC) {
             uint64_t total = raw & ARENA_STR_TOTAL_MASK;
-            uint64_t slen = *(const uint64_t*)(const void*)((char*)ptr - 8) & ARENA_STR_LEN_MASK;
+            uint64_t lenword = *(const uint64_t*)(const void*)((char*)ptr - 8);
+            uint64_t slen = lenword & ARENA_STR_LEN_MASK;
             if (total < 17 || slen > total - 17) {
                 fprintf(stderr, "Leash arena: corrupt string header in realloc\n");
                 abort();
@@ -906,10 +939,25 @@ void* leash_gc_realloc(void* ptr, size_t new_size) {
             size_t cap = new_size > (size_t)slen ? new_size : (size_t)slen;
             char* out = (char*)leash_gc_alloc_string_cap_in(st, (size_t)slen, cap);
             memcpy(out, ptr, (size_t)slen + 1);
-            arena_try_free_solo(st, ptr, (size_t)total - 8);
+            /* A shared string still has other holders pointing at the old
+             * buffer (a second variable, a container slot, a struct field).
+             * Reclaiming its dedicated sole block would leave those holders
+             * dangling -- the same rule the append and root-store paths
+             * already honour. */
+            if (!(lenword & ARENA_STR_SHARED_BIT)) {
+                arena_try_free_solo(st, ptr, (size_t)total - 8);
+            }
             return (void*)out;
         }
     }
+
+    /* Is `ptr` an allocation START, not just an address inside a block?
+     * The size header at ptr-8 must describe a real allocation: a size
+     * no larger than the block that contains it, whose payload ends
+     * inside that block. An interior pointer fails this with
+     * overwhelming probability (the bytes in front of it are another
+     * object's payload), so reading the header is safe afterwards. */
+    arena_check_payload(st, ptr, "realloc");
 
     /* Read old size from the header at ptr-8. */
     size_t old_size = (size_t)*(uint64_t*)(void*)((char*)ptr - 8);
@@ -968,7 +1016,11 @@ void* leash_gc_realloc(void* ptr, size_t new_size) {
              * and the next allocation may take the no-zero-fill path,
              * which would otherwise expose the old contents. */
             size_t delta = old_adv - new_adv;
-            memset(p + new_size, 0, delta);
+            /* Zero exactly the reclaimed region [p+new_adv, p+old_adv).
+             * Starting at p+new_size would be shifted LEFT by the
+             * new-size padding (0-7 bytes) and leave that many bytes of
+             * old data live at the tail of the reclaimed region. */
+            memset(p + new_adv, 0, delta);
             *(uint64_t*)(void*)(p - 8) = (uint64_t)new_size;
             leasharena_tls_ar.cur -= delta;
             if (new_size < old_size) leasharena_tls_ar.bytes -= (old_size - new_size);
@@ -1398,12 +1450,27 @@ char* leash_str_append_span(char* s, const char* piece, size_t pl) {
         if (arena_owns(&tls_root, s - 16)) old_owner = &tls_root;
         else if (arena_owns(st, s - 16)) old_owner = st;
         if (old_owner) {
-            char* grown = arena_grow_sole_string(old_owner, s, old_total, new_total);
-            if (grown) {
-                *(uint64_t*)(void*)(grown - 8) = (uint64_t)tot;
-                if (pl) memcpy(grown + sl, piece, pl);
-                grown[tot] = '\0';
-                return grown;
+            /* Growing a sole block uses realloc on the block itself, which
+             * may MOVE it (freeing the old block). `piece` can alias `s`
+             * -- `s = s + s` is emitted by the compiler -- so reading it
+             * after the move would be a use-after-free. A sole block holds
+             * one allocation, so any piece inside that block aliases the
+             * string; for that case fall through to the alias-safe
+             * allocate-then-copy path below. */
+            int piece_aliases = 0;
+            arena_block* sb = arena_block_of(old_owner, s - 16);
+            if (sb) {
+                const char* pb = (const char*)piece;
+                if (pb >= sb->base && pb < sb->base + sb->cap) piece_aliases = 1;
+            }
+            if (!piece_aliases) {
+                char* grown = arena_grow_sole_string(old_owner, s, old_total, new_total);
+                if (grown) {
+                    *(uint64_t*)(void*)(grown - 8) = (uint64_t)tot;
+                    if (pl) memcpy(grown + sl, piece, pl);
+                    grown[tot] = '\0';
+                    return grown;
+                }
             }
         }
     }
@@ -1609,9 +1676,17 @@ static pthread_key_t arena_tls_key;
  * touched here: only this thread's own blocks are freed. */
 static void arena_tls_dtor(void* p) {
     if (!p) return;
+    /* Clear the key so POSIX does not call this destructor again on the
+     * remaining destructor iterations (frees are idempotent, but a second
+     * pass has no work to do). */
+    pthread_setspecific(arena_tls_key, NULL);
     xfer_free_all();
     arena_free_stack((arena_stack*)p);
     arena_free_stack(&tls_root);
+    /* Match the Windows path: after thread exit this thread's TLS arena is
+     * gone, so any later allocation must fail loudly instead of silently
+     * rebuilding an arena behind unwound frames. */
+    leasharena_tls_arena_dead = 1;
 }
 
 static void arena_tls_make_key(void) {
@@ -5112,6 +5187,14 @@ typedef struct LeashHashNode {
 #define LEASH_HASH_KEY_SLOT(n) (&(n)->key)
 #endif
 
+/* A staged node carries pointers and a u64 hash, so each node image must
+ * start 8-byte aligned. Round the stride (node struct + inline key) up to
+ * 8 in BOTH the sizing pass and the copy pass; overflowing the stage by a
+ * few bytes or leaving a later node misaligned is undefined behaviour on
+ * targets that require aligned 64-bit accesses. */
+#define AR_HASH_NODE_SZ(klen) \
+    (((sizeof(LeashHashNode) + (size_t)(klen) + 1) + 7) & ~(size_t)7)
+
 typedef struct LeashHash {
     LeashHashNode** buckets;
     int64_t num_buckets;
@@ -5852,7 +5935,7 @@ void leasharena_escape_hash(void** slot, int64_t nframes) {
     for (int64_t i = 0; i < nb; i++) {
         for (LeashHashNode* cur = h->buckets[i]; cur; cur = cur->next) {
             size_t klen = strlen(LEASH_HASH_KEY(cur));
-            node_bytes += sizeof(LeashHashNode) + klen + 1;
+            node_bytes += AR_HASH_NODE_SZ(klen);
         }
     }
     int heap = 0;
@@ -6076,7 +6159,7 @@ static arena_hash_stage* lh_stage_hash_into(char* buf, LeashHash* h) {
     for (int64_t i = 0; i < nb; i++) {
         for (LeashHashNode* cur = h->buckets[i]; cur; cur = cur->next) {
             size_t klen = strlen(LEASH_HASH_KEY(cur));
-            node_bytes += sizeof(LeashHashNode) + klen + 1;
+            node_bytes += AR_HASH_NODE_SZ(klen);
         }
     }
     arena_hash_stage* st = (arena_hash_stage*)buf;
@@ -6095,7 +6178,7 @@ static arena_hash_stage* lh_stage_hash_into(char* buf, LeashHash* h) {
         LeashHashNode** tail = &st->buckets[i];
         while (node) {
             size_t klen = strlen(LEASH_HASH_KEY(node));
-            size_t sz = sizeof(LeashHashNode) + klen + 1;
+            size_t sz = AR_HASH_NODE_SZ(klen);
             LeashHashNode* sn = (LeashHashNode*)pool_cur;
             pool_cur += sz;
             LEASH_HASH_KEY_INIT(sn);
@@ -6119,7 +6202,7 @@ void* leasharena_stage_hash(void* hash) {
     for (int64_t i = 0; i < nb; i++) {
         for (LeashHashNode* cur = h->buckets[i]; cur; cur = cur->next) {
             size_t klen = strlen(LEASH_HASH_KEY(cur));
-            node_bytes += sizeof(LeashHashNode) + klen + 1;
+            node_bytes += AR_HASH_NODE_SZ(klen);
         }
     }
     size_t bytes = lh_stage_bytes(nb, node_bytes);
@@ -6362,7 +6445,7 @@ static te_stage* te_stage_hash(void* hp, const ar_te* tree, int32_t node, int de
     for (int64_t b = 0; b < st->nbuckets; b++) {
         for (LeashHashNode* c = h->buckets[b]; c; c = c->next) {
             count++;
-            pool += sizeof(LeashHashNode) + strlen(LEASH_HASH_KEY(c)) + 1;
+            pool += AR_HASH_NODE_SZ(strlen(LEASH_HASH_KEY(c)));
         }
     }
     st->n_nodes = count;
@@ -6386,7 +6469,7 @@ static te_stage* te_stage_hash(void* hp, const ar_te* tree, int32_t node, int de
     for (int64_t b = 0; b < st->nbuckets; b++) {
         for (LeashHashNode* c = h->buckets[b]; c; c = c->next, ni++) {
             size_t klen = strlen(LEASH_HASH_KEY(c));
-            size_t sz = sizeof(LeashHashNode) + klen + 1;
+            size_t sz = AR_HASH_NODE_SZ(klen);
             LeashHashNode* nn = (LeashHashNode*)cur;
             cur += sz;
             LEASH_HASH_KEY_INIT(nn);
@@ -6504,7 +6587,7 @@ static void* te_commit_hash(te_stage* st, const ar_te* tree, int32_t node) {
         for (int64_t k = 0; k < st->bucket_len[b]; k++, ni++) {
             LeashHashNode* sn = (LeashHashNode*)cur;
             size_t klen = strlen(LEASH_HASH_KEY(sn));
-            cur += sizeof(LeashHashNode) + klen + 1;
+            cur += AR_HASH_NODE_SZ(klen);
             LeashHashNode* nn = (LeashHashNode*)leash_gc_malloc_compact(sizeof(LeashHashNode) + klen + 1);
             if (!nn) return (void*)nh;
             LEASH_HASH_KEY_INIT(nn);
@@ -6875,7 +6958,7 @@ static void gcopy_commit_graph(void** slot, gcopy_graph* g, const ar_te* tree) {
  * at the copy. */
 void leasharena_escape_agg_typed(void** slot, int64_t nframes,
                                  const ar_te* tree, int32_t node) {
-    if (!slot) return;
+    if (!slot) { leasharena_exit_n(nframes); return; }
     void* inst = *slot;
     if (!inst || node < 0 || !tree || tree[node].kind != TE_AGG) {
         leasharena_exit_n(nframes);
@@ -6904,6 +6987,13 @@ static void* te_root_vec(void* vp, const ar_te* tree, int32_t node, int depth,
                          ptr_map* seen) {
     LeashVec* v = (LeashVec*)vp;
     if (!v) return NULL;
+    /* Containers participate in the identity map just like aggregate
+     * bodies: two fields holding the same vec must still alias after the
+     * copy, and a vec whose element points back at it must terminate. */
+    if (seen) {
+        void* prev = ptr_map_get(seen, vp);
+        if (prev) return prev;
+    }
     int64_t esz = v->elem_size > 0 ? v->elem_size : 8;
     int64_t n = v->size;
     /* Only the LIVE elements are worth copying: the unused capacity is
@@ -6912,6 +7002,7 @@ static void* te_root_vec(void* vp, const ar_te* tree, int32_t node, int depth,
     size_t data_bytes = (size_t)(n > 0 ? n : 0) * (size_t)esz;
     LeashVec* nv = (LeashVec*)leash_gc_malloc_rooted_nz(sizeof(LeashVec), (size_t)8);
     *nv = *v;
+    if (seen) ptr_map_put(seen, vp, nv);
     nv->cap = n > 0 ? n : 0;
     /* The copy is a fresh object owned by the root slot: nobody else
      * can reach it, so the shared flag must be clear (a set flag would
@@ -6944,8 +7035,15 @@ static void* te_root_hash(void* hp, const ar_te* tree, int32_t node, int depth,
                           ptr_map* seen) {
     LeashHash* h = (LeashHash*)hp;
     if (!h || !h->buckets) return NULL;
+    /* Same identity rule as vecs and aggregates: preserve aliasing and
+     * break cycles through a root-copied table. */
+    if (seen) {
+        void* prev = ptr_map_get(seen, hp);
+        if (prev) return prev;
+    }
     int64_t nb = h->num_buckets > 0 ? h->num_buckets : 64;
     LeashHash* nh = (LeashHash*)leash_gc_malloc_rooted_nz(sizeof(LeashHash), (size_t)8);
+    if (seen) ptr_map_put(seen, hp, nh);
     nh->num_buckets = nb;
     nh->count = h->count;
     nh->rooted = LH_HASH_ROOTED;
@@ -7143,7 +7241,11 @@ void leasharena_root_copy_hash(void** slot) {
     nh->count = h->count;
     nh->rooted = LH_HASH_ROOTED;
     nh->buckets = (LeashHashNode**)leash_gc_malloc_rooted((size_t)nb * sizeof(LeashHashNode*));
-    for (int64_t i = 0; i < nb; i++) {
+    /* Only walk buckets the source actually has: a malformed table with
+     * num_buckets <= 0 and a non-NULL array must not make us read `nb`
+     * (64) pointers from a shorter allocation. */
+    int64_t src_nb = h->num_buckets > 0 ? h->num_buckets : 0;
+    for (int64_t i = 0; i < src_nb; i++) {
         LeashHashNode* scur = h->buckets[i];
         LeashHashNode** tail = &nh->buckets[i];
         while (scur) {
@@ -7355,6 +7457,12 @@ void* leasharena_root_store_vec_typed(void** slot, void* val,
     if (!slot) return NULL;
     LeashVec* nv = (LeashVec*)val;
     if (!nv) { *slot = NULL; return NULL; }
+    LeashVec* old = (LeashVec*)*slot;
+    /* A store of the slot's OWN root copy is a no-op. It must be checked
+     * before the alias branch below: marking that copy shared would stop
+     * every later store from reusing it, growing the root arena with each
+     * iteration. */
+    if (old == nv) return (void*)old;
     /* The source may already be a root copy owned by another slot (the
      * compiler re-points a source local at the copy when it stores into
      * a global). Alias that copy instead of making a second one: the GC
@@ -7365,8 +7473,6 @@ void* leasharena_root_store_vec_typed(void** slot, void* val,
         *slot = (void*)nv;
         return (void*)nv;
     }
-    LeashVec* old = (LeashVec*)*slot;
-    if (old == nv) return (void*)old;
     int64_t esz = nv->elem_size > 0 ? nv->elem_size : 8;
     int64_t n = nv->size > 0 ? nv->size : 0;
     int32_t ec = (node >= 0 && tree) ? tree[node].child : -1;
@@ -7572,6 +7678,9 @@ void* leasharena_root_store_hash_typed(void** slot, void* val,
     if (!slot) return NULL;
     LeashHash* nh = (LeashHash*)val;
     if (!nh) { *slot = NULL; return NULL; }
+    LeashHash* old = (LeashHash*)*slot;
+    /* Own root copy: no-op, and do not mark it shared (see the vec store). */
+    if (old == nh) return (void*)old;
     /* Alias an existing root table instead of copying it: the GC keeps
      * both holders pointing at the same mutable hash. */
     if (arena_owns(&tls_root, nh)) {
@@ -7579,8 +7688,6 @@ void* leasharena_root_store_hash_typed(void** slot, void* val,
         *slot = (void*)nh;
         return (void*)nh;
     }
-    LeashHash* old = (LeashHash*)*slot;
-    if (old == nh) return (void*)old;
     /* Reuse the slot's previous root copy when the slot owns it alone:
      * the bucket array and the nodes are recycled in place, so a loop
      * that stores a fresh hash into a global keeps ONE table instead of
@@ -7649,9 +7756,11 @@ static void root_store_ref_d(void** rslot, void* newv, const ar_te* tree,
                              int32_t node, int depth, ptr_map* seen) {
     if (!rslot || node < 0 || !tree) return;
     if (depth >= TE_MAX_DEPTH) {
-        /* Preserve the source reference rather than truncating the graph
-         * with a null field when an acyclic chain is unusually deep. */
-        *rslot = newv;
+        /* The source lives in the frame being escaped; storing it verbatim
+         * in a root slot would leave a dangling pointer after the pop. A
+         * null field is the only safe outcome at the depth cap (cycles are
+         * already broken by the identity map before reaching it). */
+        *rslot = NULL;
         return;
     }
     int32_t k = tree[node].kind;
@@ -7683,8 +7792,12 @@ static void root_store_blob_d(void** slot, void* val, int64_t size,
                               const ar_te* tree, int32_t node, int depth,
                               ptr_map* seen) {
     if (!slot) return;
-    if (depth >= TE_MAX_DEPTH) { *slot = val; return; }
-    if (!val || size <= 0 || node < 0 || !tree) { *slot = NULL; return; }
+    if (depth >= TE_MAX_DEPTH || !val || size <= 0 || node < 0 || !tree) {
+        /* Never store a frame-local `val` into a root slot at the depth
+         * cap: it dies with the frame this store is escaping. */
+        *slot = NULL;
+        return;
+    }
     /* A field that points back at an instance already copied in this
      * store must point at its copy. Without the identity map a cycle
      * would recurse until the stack overflows. */
@@ -7792,32 +7905,41 @@ void* leasharena_xfer_new(int64_t size) {
     return (void*)((char*)x + sizeof(leash_xfer));
 }
 
-/* Copy a string into the transfer. The copy is a plain C string: the
- * arena string helpers treat a string they do not own as untracked
- * (strlen for the length), which is what a transfer copy needs -- it
- * is read by the worker and released together with the transfer. */
+/* Copy a string into the transfer. The 8-byte length prefix keeps the
+ * true byte length (Leash strings can contain embedded NULs), so the
+ * worker's adopt step does not have to guess it with strlen. */
 void* leasharena_xfer_copy_string(void* block, void* src) {
     leash_xfer* x = xfer_of(block);
     if (!x || !src) return NULL;
     const char* s = (const char*)src;
     size_t len = 0;
     if (!arena_str_info(s, &len, NULL)) len = strlen(s);
-    char* out = (char*)xfer_alloc(x, len + 1);
-    if (!out) return NULL;
+    if (len > (size_t)0xFFFFFFFFu) arena_oom("transfer string");
+    char* raw = (char*)xfer_alloc(x, len + 8 + 1);
+    if (!raw) return NULL;
+    *(uint64_t*)(void*)raw = (((uint64_t)len) << 32) | LEASH_XFER_STR_MAGIC;
+    char* out = raw + 8;
     if (len) memcpy(out, s, len);
     out[len] = '\0';
     return out;
 }
 
 /* Copy an argument string out of the transfer and into the worker's own
- * frame. A transfer copy is a plain C string with no arena header, so it
- * cannot be appended to in place; the worker keeps a real arena string.
+ * frame. The transfer copy's length prefix is authoritative (embedded
+ * NULs are legal in a Leash string); only fall back to strlen for a
+ * pointer that did not come through leasharena_xfer_copy_string.
  * The transfer is released by the generated worker immediately after
- * this call. */
+ * this call, so the worker keeps a real arena string of its own. */
 void leasharena_adopt_string(void** slot) {
     if (!slot || !*slot) return;
     const char* src = (const char*)*slot;
-    size_t len = strlen(src);
+    size_t len;
+    uint64_t tag = *(const uint64_t*)(const void*)(src - 8);
+    if ((uint32_t)tag == LEASH_XFER_STR_MAGIC) {
+        len = (size_t)(uint32_t)(tag >> 32);
+    } else {
+        len = strlen(src);
+    }
     char* out = (char*)leash_gc_alloc_string_cap(len, len ? len : ARENA_STR_MIN_CAP);
     if (len) memcpy(out, src, len);
     out[len] = '\0';

@@ -16,6 +16,22 @@ import subprocess
 import tempfile
 import unittest
 
+
+def _sanitizer_ok(cc):
+    """Whether `cc` can build a trivial ASan/UBSan executable."""
+    import tempfile as _tf
+    try:
+        with _tf.TemporaryDirectory() as td:
+            src = os.path.join(td, "probe.c")
+            exe = os.path.join(td, "probe")
+            with open(src, "w") as fh:
+                fh.write("int main(void){return 0;}\n")
+            r = subprocess.run(cc + ["-fsanitize=address,undefined", src, "-o", exe],
+                               capture_output=True, text=True, timeout=60)
+            return r.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
@@ -30,24 +46,42 @@ class TestArenaRuntime(unittest.TestCase):
                 return [path]
         self.skipTest("no C compiler available")
 
-    def _build(self, cc, td):
+    def _build(self, cc, td, sanitize=False):
         exe = os.path.join(td, "test_arena_runtime")
+        flags = ["-D_GNU_SOURCE", "-DLEASH_ARENA", "-O1", "-g", "-pthread"]
+        if sanitize:
+            flags += ["-fsanitize=address,undefined", "-fno-omit-frame-pointer"]
         build = subprocess.run(
-            cc + ["tests/test_arena_runtime.c", "leash/gc.c",
-                  "-DLEASH_ARENA", "-O1", "-o", exe, "-pthread"],
+            cc + ["tests/test_arena_runtime.c", "leash/gc.c"] + flags +
+            ["-o", exe],
             cwd=REPO_ROOT, capture_output=True, text=True, timeout=300)
         self.assertEqual(build.returncode, 0, build.stderr)
         return exe
+
+    def _run(self, exe):
+        run = subprocess.run([exe], cwd=REPO_ROOT, capture_output=True,
+                             text=True, timeout=300)
+        self.assertEqual(run.returncode, 0, run.stdout + "\n" + run.stderr)
+        self.assertIn("all tests passed", run.stdout)
 
     def test_runtime_harness(self):
         """String identity tag, rooted vec/hash lifetime, tip-growth safety."""
         cc = self._compiler()
         with tempfile.TemporaryDirectory() as td:
-            exe = self._build(cc, td)
+            self._run(self._build(cc, td))
+
+    def test_runtime_harness_sanitized(self):
+        """Same invariants under ASan/UBSan: catches the shared-string
+        realloc use-after-free that a plain build cannot observe."""
+        cc = self._compiler()
+        if not _sanitizer_ok(cc):
+            self.skipTest("compiler does not support ASan/UBSan")
+        with tempfile.TemporaryDirectory() as td:
+            exe = self._build(cc, td, sanitize=True)
             run = subprocess.run([exe], cwd=REPO_ROOT, capture_output=True,
-                                 text=True, timeout=300)
-            self.assertEqual(run.returncode, 0,
-                             run.stdout + "\n" + run.stderr)
+                                 text=True, timeout=300,
+                                 env=dict(os.environ, ASAN_OPTIONS="detect_leaks=0"))
+            self.assertEqual(run.returncode, 0, run.stdout + "\n" + run.stderr)
             self.assertIn("all tests passed", run.stdout)
 
 

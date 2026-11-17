@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v1.9.0 Release</div>
+        <div class="version">v1.9.1 Release</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -190,7 +190,8 @@ arena: true</code></pre>
     <li><strong>Poison-on-reclaim (default):</strong> every reclaimed scope/loop byte is filled with <code>0xDD</code>, turning most use-after-scope reads into obvious corruption instead of silently valid-looking data. Set <code>LEASH_ARENA_POISON=0</code> to disable the memset cost (e.g. for peak-speed runs after lifetimes are validated); <code>LEASH_ARENA_POISON=1</code> is also accepted.</li>
     <li><strong>Strict frame checks (abort with diagnostics):</strong> scope underflow / unmatched exits, <code>leasharena_exit_n</code> beyond current depth, and invalid or out-of-range loop-frame indices on reset/exit fail fast instead of silently corrupting state.</li>
     <li><strong>Deep escape of nested heap fields:</strong> returned structs/classes deep-stage and deep-commit heap fields recursively (including nested struct/class fields) across the pop boundary, preventing reads of reclaimed/poisoned nested data after scope exit. Recursive types use a compiler-emitted type tree; the runtime stages the reachable instance graph with an identity map, so a returned cycle points at the copied instances instead of dying with the frame.</li>
-    <li><strong>Hardened <code>leash_gc_realloc</code>:</strong> ownership is checked <em>before</em> the allocation header is read (a foreign pointer would otherwise fault or yield a bogus size), and a foreign pointer aborts with a diagnostic. Arena strings are reallocated through a string-aware path that preserves the magic tag and the length, and a shrinking tip allocation zeroes the reclaimed tail.</li>
+    <li><strong>Hardened <code>leash_gc_realloc</code>:</strong> ownership is checked <em>before</em> the allocation header is read (a foreign pointer would otherwise fault or yield a bogus size), and a foreign pointer aborts with a diagnostic. Arena strings are reallocated through a string-aware path that preserves the magic tag and the length; a shared string keeps its old buffer (and sole block) intact for its other holders, and a shrinking tip allocation zeroes the entire reclaimed tail. Absurd allocation sizes and non-power-of-two alignments are rejected before the bump arithmetic can wrap.</li>
+    <li><strong>Alias-safe large-string growth:</strong> when a string's buffer lives in a dedicated sole block and the appended piece aliases it (e.g. <code>s = s + s</code>), the runtime avoids the in-place <code>realloc</code> that could move the block and instead copies into a fresh buffer, so the source is never read through a freed pointer.</li>
     <li><strong>Ergonomic lifetime audit:</strong> the compiler copies/roots values whose types it knows how to move, and only flags what it cannot prove safe. Direct libc heap calls and raw-pointer returns are <code>E_ARENA_LIFETIME</code> errors; raw pointers stored into long-lived slots or passed to workers are <code>W_ARENA_LIFETIME</code> warnings, promoted to errors by <code>--warnings-as-errors</code>.</li>
     <li><strong>Residual risk:</strong> arena is experimental. Lifetime errors that the compiler does not model (notably caller-owned aggregate stores of frame-local temps, raw pointers, and some union patterns) can still be unsafe in principle; poison/default checks make many bugs detectable, but <strong>GC remains the safest default</strong> for untrusted, highly dynamic, or hard-to-reason-about ownership.</li>
 </ul>
