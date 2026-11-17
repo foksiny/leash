@@ -100,6 +100,8 @@ examples/auto
 # Checked-in cross-target bootstrap seeds (the old one was force-added).
 !bootstrap/leash-*-target-win64.exe
 **/*.o
+# Generated release bundles (built by scripts/make_release.sh)
+dist/
 
 # Trash
 trash/

@@ -38,6 +38,16 @@ bin/leashc version
 # leash 1.10.0 (self-hosted)
 ```
 
+Prebuilt **release bundles** are attached to every [GitHub release](https://github.com/foksiny/leash/releases) for Linux x86-64, Linux x86, Linux ARM64, Windows x86-64 and the JVM target. Each bundle ships the compiler, runtime, bundled standard library, docs, compiler sources and an `install.sh` (or `install.bat`) that lays them out under `~/.leash`:
+
+```bash
+tar -xzf leash-1.10.0-linux-x86_64.tar.gz && cd leash-1.10.0-linux-x86_64
+./install.sh                 # PREFIX=/some/root overrides the destination
+export PATH="$HOME/.leash/bin:$PATH"
+```
+
+Regenerate all bundles locally with `./scripts/make_release.sh` (output in `dist/`).
+
 The bootstrap compiles `compiler/*.lsh` and installs the resulting native compiler at `bin/leashc`. To install the toolchain globally — binaries into `~/.leash/bin`, plus the Leash runtime (`~/.leash/leash`) and the bundled standard library (`~/.leash/libs`) so `leash` / `leashc` work from any directory:
 
 ```bash
