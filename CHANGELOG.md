@@ -5,6 +5,18 @@ All notable changes to the Leash compiler are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.10.1] - 2026-11-17
+
+Patch release: the Windows release bundle is usable from a plain `cmd` prompt.
+
+### Fixed
+- **Windows bundle now works from a plain `cmd` prompt.** The self-hosted compiler shells out through `system()`/`popen()`, which use `cmd.exe` on Windows, but its command strings were POSIX (`realpath`, `test -L`, `rm -f`, `date +%s%N`, `/tmp/...`, `-pthread -lm -ldl`, `--hash-style=gnu`). The Windows bundle now ships tiny native shims (`scripts/win_shim.c`, built with MinGW-w64) for those utilities and a `clang.exe` wrapper that strips POSIX linker flags, rewrites response files, selects `leash/windows_stubs.c`, adds the Windows system libraries, and forwards to a real Windows clang (`clang.orig.exe`). The compiler uses `date.exe` and `.exe` temp names on a Windows host, detected at runtime with `echo %OS%` (`_PLATFORM` is always baked as `linux64`). Temp files live in the current directory instead of `/tmp`.
+- **`install.bat` sets up the clang shim** and accepts `LEASH_CLANG=<path to clang.exe>` for the real compiler; it prints a clear message when no Windows clang is configured.
+- **Host detection and temp paths are Windows-safe.** `echo %OS%` is used at runtime (`_PLATFORM` is always `linux64` in the self-hosted compiler), `date.exe` is called explicitly because `cmd` has a `date` builtin, carriage returns are trimmed from shell output, and `leashc run` uses a plain `.exe` temp name in the current directory.
+
+### Known limitation (Wine)
+- Under Wine, `leashc compile ... to out.exe` works end-to-end and produces a runnable PE, but `leashc run` fails at its final auto-exec of the temporary exe: Wine's `popen`/`cmd` does not resolve the temp binary from the compiler process even though the same command works from a standalone PE and the file exists. Use `leashc compile` followed by running the produced `.exe` under Wine. This is a Wine-specific process-spawn quirk, not a bundle issue.
+
 ## [1.10.0] - 2026-11-17
 
 Minor release: the arena memory layout is hardened end-to-end and the
@@ -2269,6 +2281,7 @@ silent exfiltration all became loud errors or well-defined behavior.
 ### Changed
 - Bump version to `0.23.5 Beta`.
 
+[1.10.1]: https://github.com/foksiny/leash/releases/tag/v1.10.1
 [1.10.0]: https://github.com/foksiny/leash/releases/tag/v1.10.0
 [1.9.1]: https://github.com/foksiny/leash/releases/tag/v1.9.1
 [0.24.3]: https://github.com/foksiny/leash/releases/tag/v0.24.3

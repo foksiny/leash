@@ -77,8 +77,19 @@ if not exist "%DEST%\\bin" mkdir "%DEST%\\bin"
 if not exist "%DEST%\\leash" mkdir "%DEST%\\leash"
 if not exist "%DEST%\\libs" mkdir "%DEST%\\libs"
 copy /Y "%~dp0bin\\$binfile" "%DEST%\\bin\\$binfile" >nul
+rem POSIX command shims + clang wrapper (see scripts/win_shim.c)
+for %%S in (realpath test rm mkdir stat date uname cp find clang) do copy /Y "%~dp0bin\\%%S.exe" "%DEST%\\bin\\%%S.exe" >nul
 xcopy /E /Y /Q "%~dp0leash\\*" "%DEST%\\leash\\" >nul
-xcopy /E /Y /Q "%~dp0stdlib\\*" "%DEST%\\libs\\" >nul
+xcopy /E /Y /Q "%~dp0stdlib\\*" "%DEST%\\libs\\*" >nul
+rem The clang shim forwards to clang.orig.exe. Set LEASH_CLANG to the full
+rem path of a native Windows clang.exe (LLVM for Windows or MSYS2 clang).
+if defined LEASH_CLANG (
+  copy /Y "%LEASH_CLANG%" "%DEST%\\bin\\clang.orig.exe" >nul
+  echo Using clang: %LEASH_CLANG%
+) else (
+  echo note: to compile programs, set LEASH_CLANG to a Windows clang.exe path
+  echo       ^(e.g. C:\msys64\mingw64\bin\clang.exe^) and re-run install.bat.
+)
 echo Leash $VERSION installed to %DEST%
 echo Add %DEST%\\bin to your PATH.
 EOF
@@ -109,6 +120,16 @@ mkdir -p "$root/bin"
 common "$root"
 cp "bootstrap/leash-${VERSION}-target-win64.exe" "$root/bin/leashc.exe"
 cp "bootstrap/leash-${VERSION}-target-win64.exe" "$root/bootstrap-seed.exe"
+# cmd.exe has no POSIX utilities; ship tiny native stand-ins so the
+# compiler's exec()/system() calls work from a plain cmd prompt.
+command -v x86_64-w64-mingw32-gcc >/dev/null || {
+    echo "error: x86_64-w64-mingw32-gcc is required for the Windows bundle" >&2
+    exit 1
+}
+x86_64-w64-mingw32-gcc -O2 scripts/win_shim.c -o "$root/bin/lshshim.exe"
+for shim in realpath test rm mkdir stat date uname cp find clang; do
+    cp "$root/bin/lshshim.exe" "$root/bin/$shim.exe"
+done
 emit_install_bat "$root" "leashc.exe"
 (cd "$WORK" && zip -q -r "$OLDPWD/$DIST/leash-${VERSION}-${label}.zip" "leash-${VERSION}-${label}")
 echo "  built $DIST/leash-${VERSION}-${label}.zip"
@@ -125,7 +146,7 @@ common "$root"
 cp "bootstrap/leash-${VERSION}-target-x86_64" "$root/bin/leashc"
 cp "bootstrap/leash-${VERSION}-target-x86_64" "$root/bootstrap-seed"
 bin/leashc compile compiler/main.lsh --target jvm \
-    to "$WORK/leash_1_10_0_target_java.class" >/dev/null
+    to "$WORK/leash_jvm_compiler.class" >/dev/null
 mv "$WORK"/*.class "$root/artifacts/jvm-compiler/"
 emit_install_sh "$root" "leashc" "leash"
 cat > "$root/README-JVM.txt" <<EOF

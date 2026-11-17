@@ -8,7 +8,7 @@ use leashed::*;
 // Single source of truth for the release version. Bump discipline:
 // README, docs badges, CHANGELOG.
 fnc leash_version() : string {
-    return "1.10.0";
+    return "1.10.1";
 }
 
 // Prefix test (no stdlib dependency this early in main.lsh).
@@ -27,7 +27,7 @@ fnc xout(cmd string) : string {
     out: string = exec(cmd, "wait");
     trimmed: string = "";
     i: int = 0;
-    while i < out.bsize && out[i] != '\n' {
+    while i < out.bsize && out[i] != '\n' && out[i] != '\r' {
         trimmed = trimmed + out[i];
         i = i + 1;
     }
@@ -52,7 +52,17 @@ fnc xcode(cmd string) : int {
     return v;
 }
 
+// Runtime host detection: `_PLATFORM` is a compile-time constant that the
+// self-hosted compiler always bakes as "linux64", so ask the shell instead.
+// `%OS%` expands to Windows_NT under cmd and stays literal under POSIX sh.
+fnc host_is_win() : bool {
+    return xout("echo %OS%") == "Windows_NT";
+}
+
 fnc xsuffix() : string {
+    // cmd.exe has a `date` builtin that wins over date.exe on PATH, so name
+    // the Windows shim explicitly (the bundle ships date.exe).
+    if host_is_win() { return xout("date.exe +%s%N"); }
     return xout("date +%s%N");
 }
 
@@ -86,7 +96,7 @@ fnc shq(s string) : string {
 
 // Numeric rank of a seed file name (…/leash-1.9.0-target-x86_64):
 // major*1000000 + minor*1000 + patch. The version fallback must pick the
-// newest checked-in seed, not the lexicographically first one (1.10.0
+// newest checked-in seed, not the lexicographically first one (1.10.1
 // sorts before 1.9.0 as text).
 fnc seed_ver_key(p string) : int {
     start: int = 0;
@@ -736,7 +746,7 @@ fnc cmd_run(args string[]) : int {
                 li = li + 1;
             }
         }
-        tmp: string = "./.__temp_run_leash_exe_" + xsuffix();
+        tmp: string = host_is_win() ? "__leash_tmp_" + xsuffix() + ".exe" : "./.__temp_run_leash_exe_" + xsuffix();
         drv: CompilerDriver = CompilerDriver.make();
         drv.self_path = args[0];
         drv.treat_from_safe = r_tfs;
@@ -786,7 +796,7 @@ fnc cmd_run(args string[]) : int {
         ri3 = ri3 + 1;
     }
 
-    tmp2: string = "./.__temp_run_leash_exe_" + xsuffix();
+    tmp2: string = host_is_win() ? "__leash_tmp_" + xsuffix() + ".exe" : "./.__temp_run_leash_exe_" + xsuffix();
     drv2: CompilerDriver = CompilerDriver.make();
     drv2.self_path = args[0];
     drv2.treat_from_safe = r_tfs;

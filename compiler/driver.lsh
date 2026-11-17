@@ -12,7 +12,7 @@ pub def Path : class {
     static pub fnc sh_out(cmd string) : string {
         out: string = exec(cmd, "wait");
         i: int = 0;
-        while i < out.bsize && out[i] != '\n' {
+        while i < out.bsize && out[i] != '\n' && out[i] != '\r' {
             i = i + 1;
         }
         trimmed: string = "";
@@ -766,18 +766,26 @@ pub def CompilerDriver : class {
         }
         trimmed: string = "";
         i: int = 0;
-        while i < ec.bsize && ec[i] != '\n' {
+        while i < ec.bsize && ec[i] != '\n' && ec[i] != '\r' {
             trimmed = trimmed + ec[i];
             i = i + 1;
         }
         return trimmed;
     }
 
+    // `_PLATFORM` is baked as "linux64" in the self-hosted compiler, so
+    // detect the actual host shell at runtime. `%OS%` expands to Windows_NT
+    // under cmd and stays literal under POSIX sh.
+    pub fnc temp_dir() : string {
+        if this.exec_out("echo %OS%") == "Windows_NT" { return "."; }
+        return "/tmp";
+    }
+
     pub fnc exec_out(cmd string) : string {
         out: string = exec(cmd, "wait");
         trimmed: string = "";
         i: int = 0;
-        while i < out.bsize && out[i] != '\n' {
+        while i < out.bsize && out[i] != '\n' && out[i] != '\r' {
             trimmed = trimmed + out[i];
             i = i + 1;
         }
@@ -1303,7 +1311,7 @@ pub def CompilerDriver : class {
         // not fit inline. One rsp per purpose, written under the cache dir
         // (or /tmp without one).
         rsp_dir: string = cache_dir;
-        if !use_cache { rsp_dir = "/tmp"; }
+        if !use_cache { rsp_dir = this.temp_dir(); }
         // Runtime (gc.c + stubs) is compiled once per (size,mtime,flags) tag.
         // For O3/O4 we build the runtime at -O3 so the GC/hash/string
         // hot paths benefit from the same pipeline as user code.
@@ -1377,7 +1385,7 @@ pub def CompilerDriver : class {
 
             if verbose { show("[verbose] object cache: ", this.file_exists(obj_path) ? "hit" : "miss"); }
             if !this.file_exists(obj_path) {
-                temp_ll: string = "/tmp/leashc_" + Path.basename(out_bin) + ".ll";
+                temp_ll: string = this.temp_dir() + "/leashc_" + Path.basename(out_bin) + ".ll";
                 f_tmp: File = File.open(temp_ll, "w");
                 if f_tmp == null {
                     show("error: cannot write to '", temp_ll, "'");
@@ -1388,7 +1396,7 @@ pub def CompilerDriver : class {
                     f_tmp.write("\n");
                 }
                 f_tmp.close();
-                rsp_obj: string = "/tmp/leashc_" + Path.basename(out_bin) + "_obj.rsp";
+                rsp_obj: string = this.temp_dir() + "/leashc_" + Path.basename(out_bin) + "_obj.rsp";
                 f_obj_rsp: File = File.open(rsp_obj, "w");
                 if f_obj_rsp != null {
                     f_obj_rsp.write(opt_flag + "\n");
@@ -1420,7 +1428,7 @@ pub def CompilerDriver : class {
             }
         } else {
             // Cold path, no usable cache dir: compile + link in one go
-            temp_ll: string = "/tmp/leashc_" + Path.basename(out_bin) + ".ll";
+            temp_ll: string = this.temp_dir() + "/leashc_" + Path.basename(out_bin) + ".ll";
             f_tmp: File = File.open(temp_ll, "w");
             if f_tmp == null {
                 show("error: cannot write to '", temp_ll, "'");
@@ -1434,7 +1442,7 @@ pub def CompilerDriver : class {
             if output_type == "dynamic" || output_type == "static" {
                 // Cold-path libraries: PIC object first, then shared/ar.
                 cold_pic: string = "-fPIC";
-                cold_obj: string = "/tmp/leashc_" + Path.basename(out_bin) + ".o";
+                cold_obj: string = this.temp_dir() + "/leashc_" + Path.basename(out_bin) + ".o";
                 ec_cobj: string = this.exec_code(cc_bin + " " + temp_ll + " -c -o " + cold_obj + " " + opt_flag + " " + cc_flags + " " + cold_pic);
                 if ec_cobj != "0" {
                     show("error: clang IR compilation failed");
@@ -1474,7 +1482,7 @@ pub def CompilerDriver : class {
             if stubs_path.bsize > 0 {
                 rt_files_cold = rt_files_cold + " " + stubs_path;
             }
-            rsp_cold: string = "/tmp/leashc_" + Path.basename(out_bin) + ".rsp";
+            rsp_cold: string = this.temp_dir() + "/leashc_" + Path.basename(out_bin) + ".rsp";
             f_rc: File = File.open(rsp_cold, "w");
             clang_cmd: string = cc_bin + " " + temp_ll + " " + rt_files_cold + " -o " + out_bin + " " + opt_flag + " " + cc_flags + link_flags_inline + tail_flags + lib_flags;
             if f_rc != null {
@@ -1497,14 +1505,26 @@ pub def CompilerDriver : class {
                     return 1;
                 }
                 run_cmd: string = out_bin;
-                if xpre.bsize == 0 && run_cmd.bsize > 0 && run_cmd[0] != '/' && run_cmd[0] != '.' {
+                // On Windows the temp exe is a plain filename in the current
+                // directory; cmd resolves it directly. POSIX needs "./".
+                if xpre.bsize == 0 && this.temp_dir() != "." && run_cmd.bsize > 0 && run_cmd[0] != '/' && run_cmd[0] != '.' {
                     run_cmd = "./" + run_cmd;
                 }
                 if run_args.bsize > 0 {
                     run_cmd = run_cmd + " " + run_args;
                 }
-                show("--- Executed at ", this.exec_out("date '+%Y-%m-%d %H:%M:%S'"), " ---");
-                rc_out0: string = exec(xpre + run_cmd, "run");
+                date_bin0: string = this.temp_dir() == "." ? "date.exe" : "date";
+                show("--- Executed at ", this.exec_out(date_bin0 + " '+%Y-%m-%d %H:%M:%S'"), " ---");
+                rc_out0: string = "0";
+                if this.temp_dir() == "." {
+                    // Wine's cmd resolves a bare system() launch of the temp
+                    // exe unreliably; popen ("wait") works and forwards its
+                    // captured output here.
+                    win_out0: string = exec("cmd /c " + run_cmd, "wait");
+                    if win_out0.bsize > 0 { show(win_out0); }
+                } else {
+                    rc_out0 = exec(xpre + run_cmd, "run");
+                }
                 rv0: int = 0;
                 p0: int = 0;
                 neg0: bool = false;
@@ -1557,7 +1577,7 @@ pub def CompilerDriver : class {
             }
             return 0;
         }
-        rsp_file: string = "/tmp/leashc_" + Path.basename(out_bin) + ".rsp";
+        rsp_file: string = this.temp_dir() + "/leashc_" + Path.basename(out_bin) + ".rsp";
         link_cmd: string = cc_bin + " " + obj_path + " " + runtime_objs + " -o " + out_bin + " " + opt_flag + " " + cc_flags + link_flags_inline + tail_flags + lib_flags;
         f_rsp: File = File.open(rsp_file, "w");
         if f_rsp != null {
@@ -1590,14 +1610,22 @@ pub def CompilerDriver : class {
                 return 1;
             }
             run_cmd: string = out_bin;
-            if xpre.bsize == 0 && run_cmd.bsize > 0 && run_cmd[0] != '/' && run_cmd[0] != '.' {
+            if xpre.bsize == 0 && this.temp_dir() != "." && run_cmd.bsize > 0 && run_cmd[0] != '/' && run_cmd[0] != '.' {
                 run_cmd = "./" + run_cmd;
             }
             if run_args.bsize > 0 {
                 run_cmd = run_cmd + " " + run_args;
             }
-            show("--- Executed at ", this.exec_out("date '+%Y-%m-%d %H:%M:%S'"), " ---");
-            rc_out: string = exec(xpre + run_cmd, "run");
+            // cmd's `date` builtin ignores args; call our shim explicitly.
+            date_bin: string = this.temp_dir() == "." ? "date.exe" : "date";
+            show("--- Executed at ", this.exec_out(date_bin + " '+%Y-%m-%d %H:%M:%S'"), " ---");
+            rc_out: string = "0";
+            if this.temp_dir() == "." {
+                win_out: string = exec("cmd /c " + run_cmd, "wait");
+                if win_out.bsize > 0 { show(win_out); }
+            } else {
+                rc_out = exec(xpre + run_cmd, "run");
+            }
             rv: int = 0;
             ri2: int = 0;
             rneg: bool = false;
