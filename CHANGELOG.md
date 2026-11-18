@@ -5,6 +5,20 @@ All notable changes to the Leash compiler are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.11.0] - 2026-11-17
+
+Minor release: runtime numeric safety, automatic array defaults, and nil-safety analysis. **431 tests pass.**
+
+### Added
+- **Nil-flow audit and runtime nil-show guard.** `show` of a value that may be nil is now a compile-time error (`E_NIL_SHOW`): the audit tracks assignments of `nil`, is branch-sensitive for `if`/`else`, and is conservative for loops and interpolation. Reassigning a non-nil value before the show, or showing only inside the branch where the value is non-nil, compiles cleanly. Values whose nilness the compiler cannot track (e.g. a nil string from a container) are caught at runtime by `leash_sh_show_guard`, which aborts with a diagnostic instead of relying on libc's undefined `%s` handling.
+- **Fixed-size arrays get their element defaults automatically.** `a: int[1000];` now allocates and zero-fills all 1000 elements in one allocation instead of producing an empty `{0, null}` slice. Numeric/POD arrays need a single zeroing allocation; `string[N]` is filled with empty strings and `vec<T>[N]` / `hash<K,V>[N]` with fresh empty containers through new bulk-fill helpers (`leash_sh_array_fill_ptr` / `_vec` / `_hash`). All three runtime variants (GC, arena, no-GC) compile the helpers.
+- **Runtime numeric-safety regressions** (`tests/test_safety_conversions.py`) cover narrow string/float overflow, dynamic division by zero, dynamic `MIN / -1`, valid conversions, and fixed-array defaults.
+
+### Fixed
+- **Out-of-range `toint(int<N>, …)` no longer truncates silently.** Every string-to-integer conversion (both `toint(T, s)` and the typed conversion path) now uses the checked `leash_bigint_parse` for all widths, including narrow ones — `toint(int<8>, "300")` reports a runtime range error instead of returning 44.
+- **Out-of-range float-to-int conversions no longer produce poison.** `toint(T, float)` and float→int casts call `leash_int_from_double_checked`, which rejects NaN, infinity and values outside the target's signed/unsigned range with a diagnostic instead of LLVM's undefined `fptosi` result (a common source of bogus indices/sizes and crashes).
+- **Dynamic division and remainder are guarded at runtime.** A divisor that is not a compile-time constant is checked for zero, and signed `MIN_VALUE / -1` is rejected, with a diagnostic instead of an LLVM trap or undefined value. Static checks still catch constant cases at compile time.
+
 ## [1.10.2] - 2026-11-17
 
 Patch release: the Windows installer no longer hangs.
@@ -2288,6 +2302,7 @@ silent exfiltration all became loud errors or well-defined behavior.
 ### Changed
 - Bump version to `0.23.5 Beta`.
 
+[1.11.0]: https://github.com/foksiny/leash/releases/tag/v1.11.0
 [1.10.2]: https://github.com/foksiny/leash/releases/tag/v1.10.2
 [1.10.1]: https://github.com/foksiny/leash/releases/tag/v1.10.1
 [1.10.0]: https://github.com/foksiny/leash/releases/tag/v1.10.0

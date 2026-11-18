@@ -15,6 +15,7 @@ pub def CodeGen : class {
     pub warnings_as_errors: bool; // -oe: turn arena lifetime warnings into errors
     pub arena_audit_warns: int;
     pub arena_audit_errors: int;
+    pub nil_audit_errors: int;
     pub ar_source_line_cache: hash<string, vec<string>>;
     pub has_entry: bool;  // an entry point exists (top-level or class
                           // static main): executables require one, libraries
@@ -134,6 +135,7 @@ pub def CodeGen : class {
             warnings_as_errors: false,
             arena_audit_warns: 0,
             arena_audit_errors: 0,
+            nil_audit_errors: 0,
             ar_source_line_cache: empty_slc,
             ar_loop_depth: 0,
             ar_loop_nest: 0,
@@ -1736,6 +1738,133 @@ pub def CodeGen : class {
                            src, line, this.warnings_as_errors,
                            "The field can outlive the frame that produced its value; a raw *T carries no ownership information for the arena to copy or root.",
                            name, tr);
+    }
+
+    // ---- nil-flow audit -------------------------------------------------
+    // `show` must never receive a nil value. State: 0 = non-nil, 1 = nil,
+    // 2 = maybe nil. The analysis is branch-sensitive for if/else and
+    // conservative for loops (a loop body may not execute).
+    pub fnc nil_copy_names(names vec<string>) : vec<string> {
+        out: vec<string>;
+        foreach _, n in<vector> names { out.pushb(n); }
+        return out;
+    }
+
+    pub fnc nil_copy_state(st hash<string,int>, names vec<string>) : hash<string,int> {
+        out: hash<string,int>;
+        foreach _, n in<vector> names {
+            if st.isin(n) { out.push(n, st[n]); }
+        }
+        return out;
+    }
+
+    pub fnc nil_state(st hash<string,int>, n string) : int {
+        if !st.isin(n) { return 0; }
+        return st[n];
+    }
+
+    pub fnc nil_set_state(st hash<string,int>, names vec<string>, n string, val int) : void {
+        if !st.isin(n) { names.pushb(n); }
+        st[n] = val;
+    }
+
+    pub fnc nil_expr_state(e Expr, st hash<string,int>) : int {
+        if e == null { return 0; }
+        if e.kind == ExprKind.NIL { return 1; }
+        if e.kind == ExprKind.IDENT { return this.nil_state(st, e.sval); }
+        return 0;
+    }
+
+    pub fnc nil_diag(msg string, src string, line int, token string) : void {
+        show("error[E_NIL_SHOW]: ", msg);
+        show("  --> ", src, ":", tostring(line));
+        snippet: string = this.ar_read_source_line(src, line);
+        if snippet.bsize > 0 { show("   | ", snippet); }
+        show("   = why: a nil value cannot be shown; show() requires a value that is definitely non-nil on every path.\n");
+        show("   = help: assign a non-nil value before show, or move show into the branch where the value is known to be non-nil.");
+        this.nil_audit_errors = this.nil_audit_errors + 1;
+    }
+
+    pub fnc nil_scan_expr(e Expr, st hash<string,int>, src string, line int) : void {
+        if e == null { return; }
+        if e.kind == ExprKind.IDENT {
+            if this.nil_state(st, e.sval) > 0 {
+                this.nil_diag("value '" + e.sval + "' may be nil when shown", src, line, e.sval);
+            }
+            return;
+        }
+        this.nil_scan_expr(e.left, st, src, line);
+        this.nil_scan_expr(e.right, st, src, line);
+        this.nil_scan_expr(e.cond, st, src, line);
+        foreach _, a in<vector> e.args { this.nil_scan_expr(a, st, src, line); }
+    }
+
+    pub fnc nil_merge(st hash<string,int>, names vec<string>, other hash<string,int>, onames vec<string>) : void {
+        foreach _, n in<vector> onames {
+            if !st.isin(n) { names.pushb(n); st[n] = this.nil_state(other, n); }
+            else {
+                a: int = st[n];
+                b: int = this.nil_state(other, n);
+                if a != b { st[n] = 2; }
+            }
+        }
+        foreach _, n in<vector> names {
+            if !other.isin(n) && st[n] > 0 { st[n] = 2; }
+        }
+    }
+
+    pub fnc nil_audit_stmts(stmts vec<Stmt>, st hash<string,int>, names vec<string>, src string) : void {
+        foreach _, s in<vector> stmts {
+            if s.kind == StmtKind.VAR_DECL {
+                ns: int = this.nil_expr_state(s.value, st);
+                this.nil_set_state(st, names, s.name, ns);
+            } also s.kind == StmtKind.ASSIGN {
+                if s.target != null && s.target.kind == ExprKind.IDENT {
+                    ns2: int = this.nil_expr_state(s.value, st);
+                    this.nil_set_state(st, names, s.target.sval, ns2);
+                }
+            } also s.kind == StmtKind.SHOW {
+                foreach _, a in<vector> s.args { this.nil_scan_expr(a, st, src, s.line); }
+            } also s.kind == StmtKind.IF {
+                tnames: vec<string> = this.nil_copy_names(names);
+                enames: vec<string> = this.nil_copy_names(names);
+                ts: hash<string,int> = this.nil_copy_state(st, names);
+                es: hash<string,int> = this.nil_copy_state(st, names);
+                this.nil_audit_stmts(s.then_block, ts, tnames, src);
+                this.nil_audit_stmts(s.else_block, es, enames, src);
+                // Join the two branch states directly. Merging each branch
+                // with the pre-branch state would keep a stale nil when both
+                // arms assign non-nil values.
+                foreach _, n in<vector> tnames {
+                    a: int = this.nil_state(ts, n);
+                    b: int = this.nil_state(es, n);
+                    if !es.isin(n) { b = 2; }
+                    if a == b { this.nil_set_state(st, names, n, a); }
+                    else { this.nil_set_state(st, names, n, 2); }
+                }
+                foreach _, n in<vector> enames {
+                    if !st.isin(n) { this.nil_set_state(st, names, n, this.nil_state(es, n)); }
+                }
+            } also s.kind == StmtKind.WHILE || s.kind == StmtKind.FOR || s.kind == StmtKind.LOOP {
+                bnames: vec<string> = this.nil_copy_names(names);
+                bs: hash<string,int> = this.nil_copy_state(st, names);
+                this.nil_audit_stmts(s.body, bs, bnames, src);
+                this.nil_merge(st, names, bs, bnames);
+            } also s.kind == StmtKind.BLOCK {
+                this.nil_audit_stmts(s.body, st, names, src);
+            }
+        }
+    }
+
+    pub fnc nil_audit_program(prog Program) : void {
+        src: string = this.main_file;
+        if src.bsize == 0 { src = "<source>"; }
+        foreach _, f in<vector> prog.funcs {
+            if f.is_external { continue; }
+            st: hash<string,int>;
+            names: vec<string>;
+            this.nil_audit_stmts(f.body, st, names, src);
+        }
     }
 
     pub fnc ar_audit_program(prog Program) : void {
@@ -4444,6 +4573,122 @@ pub def CodeGen : class {
         this.current_block_terminated = false;
     }
 
+    // Parse a decimal string into ANY sized integer with full range checks.
+    // Used for every width (including <= 64): the previous atoll+trunc path
+    // silently wrapped values that did not fit the target type.
+    pub fnc emit_checked_int_parse(sval string, target string) : string {
+        lty: string = this.llvm_type(target);
+        bits: int = this.lty_width(lty);
+        if bits <= 0 { bits = 64; }
+        sg: int = 1;
+        if this.is_uint_type(target) || target == "char" { sg = 0; }
+        else if this.is_sized_int_type(target) && !this.sized_int_is_signed(target) { sg = 0; }
+        slot: string = this.new_reg();
+        this.emit("  " + slot + " = alloca " + lty);
+        bp: string = this.new_reg();
+        this.emit("  " + bp + " = bitcast " + lty + "* " + slot + " to i8*");
+        ok: string = this.new_reg();
+        if bits > 64 {
+            this.emit("  " + ok + " = call i64 @leash_bigint_parse(i8* " + sval + ", i64 " + tostring(bits) + ", i64 " + tostring(sg) + ", i8* " + bp + ")");
+        } else {
+            // Narrow/plain ints keep the historical prefix-parse behaviour
+            // ("12ab" -> 12, "" -> 0) but reject values outside the range.
+            this.emit("  " + ok + " = call i64 @leash_int_parse_checked(i8* " + sval + ", i64 " + tostring(bits) + ", i64 " + tostring(sg) + ", i8* " + bp + ")");
+        }
+        ok_l: string = this.new_label("ip_ok");
+        bad_l: string = this.new_label("ip_bad");
+        is_bad: string = this.new_reg();
+        this.emit("  " + is_bad + " = icmp eq i64 " + ok + ", 0");
+        this.emit("  br i1 " + is_bad + ", label %" + bad_l + ", label %" + ok_l);
+        this.emit(bad_l + ":");
+        msg: string = this.const_str_of("Runtime error: '" + target + "' value out of range or invalid.\n");
+        this.emit("  call i32 (i8*, ...) @printf(i8* " + msg + ")");
+        this.emit("  call void @exit(i64 1)");
+        this.emit("  unreachable");
+        this.emit(ok_l + ":");
+        this.current_block_terminated = false;
+        res: string = this.new_reg();
+        this.emit("  " + res + " = load " + lty + ", " + lty + "* " + slot);
+        return res;
+    }
+
+    // float -> sized int conversion with an explicit range check. The raw
+    // fptosi of an out-of-range double is poison and can segfault later when
+    // the value is used as an index or allocation size.
+    pub fnc emit_checked_float_to_int(val string, from_lty string, target string) : string {
+        lty: string = this.llvm_type(target);
+        bits: int = this.lty_width(lty);
+        if bits > 64 {
+            // Wide targets have no native int: keep the existing path.
+            res0: string = this.new_reg();
+            this.emit("  " + res0 + " = fptosi " + from_lty + " " + val + " to " + lty);
+            return res0;
+        }
+        sg: int = 1;
+        if this.is_uint_type(target) || target == "char" { sg = 0; }
+        else if this.is_sized_int_type(target) && !this.sized_int_is_signed(target) { sg = 0; }
+        w: string = this.new_reg();
+        this.emit("  " + w + " = call i64 @leash_int_from_double_checked(double " + val + ", i64 " + tostring(bits) + ", i64 " + tostring(sg) + ")");
+        if lty == "i64" { return w; }
+        r: string = this.new_reg();
+        this.emit("  " + r + " = trunc i64 " + w + " to " + lty);
+        return r;
+    }
+
+    // Runtime guard for signed/unsigned division and remainder. The static
+    // checker only folds constants; a dynamic zero divisor traps in LLVM and
+    // MIN_VALUE / -1 is undefined for signed integers.
+    // Fixed array type `T[N]` helpers. Arrays lower to slices { i64, T* },
+    // so a declaration without an initializer used to produce {0, null}.
+    pub fnc fixed_array_base(t string) : string {
+        n: int = t.bsize;
+        if n < 3 || t[n - 1] != ']' { return ""; }
+        i: int = n - 2;
+        while i >= 0 && t[i] >= '0' && t[i] <= '9' { i = i - 1; }
+        if i < 0 || t[i] != '[' || i == n - 2 { return ""; }
+        return this.str_slice2(t, 0, i);
+    }
+
+    pub fnc fixed_array_count(t string) : int {
+        n: int = t.bsize;
+        if n < 3 || t[n - 1] != ']' { return 0; }
+        i: int = n - 2;
+        while i >= 0 && t[i] >= '0' && t[i] <= '9' { i = i - 1; }
+        if i < 0 || t[i] != '[' || i == n - 2 { return 0; }
+        return this.parse_int_str(this.str_slice2(t, i + 1, n - 1));
+    }
+
+    pub fnc div_check(l string, r string, lty string, unsigned bool) : void {
+        if this.cur_func_unsafe { return; }
+        bits: int = this.lty_width(lty);
+        if bits <= 0 { return; }
+        ok_l: string = this.new_label("dv_ok");
+        fail_l: string = this.new_label("dv_fail");
+        zero: string = this.new_reg();
+        this.emit("  " + zero + " = icmp eq " + lty + " " + r + ", 0");
+        bad: string = zero;
+        if !unsigned && bits <= 64 {
+            one64: int<64> = 1;
+            min_c: string = tostring(0 - (one64 << (bits - 1)));
+            is_min: string = this.new_reg();
+            this.emit("  " + is_min + " = icmp eq " + lty + " " + l + ", " + min_c);
+            is_mone: string = this.new_reg();
+            this.emit("  " + is_mone + " = icmp eq " + lty + " " + r + ", -1");
+            both: string = this.new_reg();
+            this.emit("  " + both + " = and i1 " + is_min + ", " + is_mone);
+            bad = this.new_reg();
+            this.emit("  " + bad + " = or i1 " + zero + ", " + both);
+        }
+        this.emit("  br i1 " + bad + ", label %" + fail_l + ", label %" + ok_l);
+        this.emit(fail_l + ":");
+        msg: string = this.const_str_of("Runtime error: division by zero or integer overflow in division.\n");
+        this.emit("  call i32 (i8*, ...) @printf(i8* " + msg + ")");
+        this.emit("  call void @exit(i64 1)");
+        this.emit("  unreachable");
+        this.emit(ok_l + ":");
+        this.current_block_terminated = false;
+    }
+
     pub fnc union_auto_store(ptr string, uname string, val string, src_typ string) : void {
         uty: string = "%union." + uname;
         if src_typ == uname {
@@ -6751,6 +6996,7 @@ pub def CodeGen : class {
             also e.op == "-" { this.emit("  " + res + " = sub " + lty + " " + l_val + ", " + r_val); }
             also e.op == "*" { this.emit("  " + res + " = mul " + lty + " " + l_val + ", " + r_val); }
             also e.op == "/" {
+                this.div_check(l_val, r_val, lty, this.is_uint_type(lt));
                 if this.is_uint_type(lt) {
                     this.emit("  " + res + " = udiv " + lty + " " + l_val + ", " + r_val);
                 } else {
@@ -6758,6 +7004,7 @@ pub def CodeGen : class {
                 }
             }
             also e.op == "%" {
+                this.div_check(l_val, r_val, lty, this.is_uint_type(lt));
                 if this.is_uint_type(lt) {
                     this.emit("  " + res + " = urem " + lty + " " + l_val + ", " + r_val);
                 } else {
@@ -7101,48 +7348,14 @@ pub def CodeGen : class {
                     }
                     return cast2_val;
                 }
-                // toint / tochar: integer targets
+                // toint / tochar: integer targets. Both string and float
+                // sources now go through range-checked helpers instead of
+                // an unchecked atoll+trunc / poison-producing fptosi.
                 if cast2_from == "float" || cast2_from == "double" {
-                    this.emit("  " + res + " = fptosi double " + cast2_val + " to " + cast2_lty);
-                    return res;
+                    return this.emit_checked_float_to_int(cast2_val, "double", cast2_tgt);
                 }
                 if cast2_from == "string" {
-                    if this.lty_width(cast2_lty) > 64 {
-                        // Full-precision decimal parse for wide targets.
-                        wsgn: int = 0;
-                        if !this.is_uint_type(cast2_tgt) { wsgn = 1; }
-                        wslot: string = this.new_reg();
-                        this.emit("  " + wslot + " = alloca " + cast2_lty);
-                        wbp: string = this.new_reg();
-                        this.emit("  " + wbp + " = bitcast " + cast2_lty + "* " + wslot + " to i8*");
-                        wok: string = this.new_reg();
-                        this.emit("  " + wok + " = call i64 @leash_bigint_parse(i8* " + cast2_val + ", i64 " + tostring(this.lty_width(cast2_lty)) + ", i64 " + tostring(wsgn) + ", i8* " + wbp + ")");
-                        wbad: string = this.new_label("b_tc2_bad");
-                        wok_l: string = this.new_label("b_tc2_ok");
-                        wokb: string = this.new_reg();
-                        this.emit("  " + wokb + " = icmp eq i64 " + wok + ", 0");
-                        this.emit("  br i1 " + wokb + ", label %" + wbad + ", label %" + wok_l);
-                        this.emit(wbad + ":");
-                        wmsg: string = "Runtime error: '" + cast2_tgt + "' value out of range or invalid\n";
-                        wep: string = this.const_str_of(wmsg);
-                        this.emit("  call i32 (i8*, ...) @printf(i8* " + wep + ")");
-                        this.emit("  call void @exit(i64 1)");
-                        this.emit("  unreachable");
-                        this.emit(wok_l + ":");
-                        this.current_block_terminated = false;
-                        wres: string = this.new_reg();
-                        this.emit("  " + wres + " = load " + cast2_lty + ", " + cast2_lty + "* " + wslot);
-                        return wres;
-                    }
-                    a64: string = this.new_reg();
-                    this.emit("  " + a64 + " = call i64 @atoll(i8* " + cast2_val + ")");
-                    if this.lty_width(cast2_lty) > 32 {
-                        this.emit("  " + res + " = trunc i64 " + a64 + " to " + cast2_lty);
-                        return res;
-                    }
-                    r32: string = this.new_reg();
-                    this.emit("  " + r32 + " = trunc i64 " + a64 + " to i32");
-                    return this.coerce_store_val(e.args.get(1), r32, cast2_lty, cast2_tgt);
+                    return this.emit_checked_int_parse(cast2_val, cast2_tgt);
                 }
                 from_lty2: string = this.llvm_type(cast2_from);
                 if this.is_int_lty(from_lty2) && this.is_int_lty(cast2_lty) {
@@ -7208,49 +7421,11 @@ pub def CodeGen : class {
                     return tc_cr;
                 }
                 if tc_from == "float" || tc_from == "double" {
-                    tc_fr2: string = this.new_reg();
-                    this.emit("  " + tc_fr2 + " = fptosi double " + tc_val + " to " + this.llvm_type(tc_target));
-                    return tc_fr2;
+                    return this.emit_checked_float_to_int(tc_val, "double", tc_target);
                 }
-                if this.is_sized_int_type(tc_target) && this.sized_int_width(tc_target) > 64 {
-                    tcw: int = this.sized_int_width(tc_target);
-                    tcs: int = 0;
-                    if this.sized_int_is_signed(tc_target) { tcs = 1; }
-                    tc_slot: string = this.new_reg();
-                    this.emit("  " + tc_slot + " = alloca i" + tostring(tcw));
-                    tc_bp: string = this.new_reg();
-                    this.emit("  " + tc_bp + " = bitcast i" + tostring(tcw) + "* " + tc_slot + " to i8*");
-                    tc_ok: string = this.new_reg();
-                    this.emit("  " + tc_ok + " = call i64 @leash_bigint_parse(i8* " + tc_val + ", i64 " + tostring(tcw) + ", i64 " + tostring(tcs) + ", i8* " + tc_bp + ")");
-                    tc_bad: string = this.new_label("b_tcn_bad");
-                    tc_ok_l: string = this.new_label("b_tcn_ok");
-                    tc_okb: string = this.new_reg();
-                    this.emit("  " + tc_okb + " = icmp eq i64 " + tc_ok + ", 0");
-                    this.emit("  br i1 " + tc_okb + ", label %" + tc_bad + ", label %" + tc_ok_l);
-                    this.emit(tc_bad + ":");
-                    tc_msg: string = "Runtime error: '" + tc_target + "' value out of range or invalid\n";
-                    tc_ep: string = this.const_str_of(tc_msg);
-                    this.emit("  call i32 (i8*, ...) @printf(i8* " + tc_ep + ")");
-                    this.emit("  call void @exit(i64 1)");
-                    this.emit("  unreachable");
-                    this.emit(tc_ok_l + ":");
-                    this.current_block_terminated = false;
-                    tc_res: string = this.new_reg();
-                    this.emit("  " + tc_res + " = load i" + tostring(tcw) + ", i" + tostring(tcw) + "* " + tc_slot);
-                    return tc_res;
-                }
-                // narrow target: decimal parse via atoll
-                tc_r64: string = this.new_reg();
-                this.emit("  " + tc_r64 + " = call i64 @atoll(i8* " + tc_val + ")");
-                if this.is_sized_int_type(tc_target) {
-                    tc_nw: int = this.sized_int_width(tc_target);
-                    if tc_nw < 64 {
-                        tc_tr: string = this.new_reg();
-                        this.emit("  " + tc_tr + " = trunc i64 " + tc_r64 + " to i" + tostring(tc_nw));
-                        return tc_tr;
-                    }
-                }
-                return tc_r64;
+                // Range-checked for every width, including narrow targets
+                // that used to truncate atoll's result silently.
+                return this.emit_checked_int_parse(tc_val, tc_target);
             }
 
             // Special built-in: tostring(val)
@@ -9502,6 +9677,43 @@ pub def CodeGen : class {
                     }
                 } also lty.bsize > 0 && lty[lty.bsize - 1] == '*' {
                     this.emit("  store " + lty + " null, " + lty + "* " + ptr);
+                } also this.fixed_array_base(vtyp).bsize > 0 {
+                    // Fixed array T[N]: allocate all N elements and fill them
+                    // with their default value in one go. Numeric/POD arrays
+                    // are a single zeroing allocation (memset); strings and
+                    // containers use bulk fill helpers; other element types
+                    // get a zeroed buffer (valid for pointers/unions).
+                    fa_base: string = this.fixed_array_base(vtyp);
+                    fa_n: int = this.fixed_array_count(vtyp);
+                    if fa_n > 0 {
+                        fa_baselt: string = this.llvm_type(fa_base);
+                        fa_esz: int = this.vec_elem_bytes(fa_base);
+                        fa_total: int = fa_n * fa_esz;
+                        fa_raw: string = this.ar_alloc(tostring(fa_total), true);
+                        fa_data: string = this.new_reg();
+                        this.emit("  " + fa_data + " = bitcast i8* " + fa_raw + " to " + fa_baselt + "*");
+                        if fa_base == "string" {
+                            fa_empty_lbl: string = this.get_str_constant("");
+                            fa_empty: string = this.new_reg();
+                            this.emit("  " + fa_empty + " = getelementptr inbounds [1 x i8], [1 x i8]* " + fa_empty_lbl + ", i64 0, i64 0");
+                            this.emit("  call void @leash_sh_array_fill_ptr(i8* " + fa_raw + ", i64 " + tostring(fa_n) + ", i8* " + fa_empty + ")");
+                        } also this.is_vec_type(fa_base) {
+                            fa_inner: string = this.vec_inner_type(fa_base);
+                            fa_iesz: int = this.vec_elem_bytes(fa_inner);
+                            fa_scan: int = 0;
+                            if this.vec_elem_scan(fa_inner) { fa_scan = 1; }
+                            this.emit("  call void @leash_sh_array_fill_vec(i8* " + fa_raw + ", i64 " + tostring(fa_n) + ", i64 " + tostring(fa_iesz) + ", i64 " + tostring(fa_scan) + ")");
+                        } also this.is_hash_type(fa_base) {
+                            this.emit("  call void @leash_sh_array_fill_hash(i8* " + fa_raw + ", i64 " + tostring(fa_n) + ")");
+                        }
+                        fa_s0: string = this.new_reg();
+                        this.emit("  " + fa_s0 + " = insertvalue " + lty + " undef, i64 " + tostring(fa_n) + ", 0");
+                        fa_s1: string = this.new_reg();
+                        this.emit("  " + fa_s1 + " = insertvalue " + lty + " " + fa_s0 + ", " + fa_baselt + "* " + fa_data + ", 1");
+                        this.emit("  store " + lty + " " + fa_s1 + ", " + lty + "* " + ptr);
+                    } else {
+                        this.emit("  store " + lty + " zeroinitializer, " + lty + "* " + ptr);
+                    }
                 } also lty.bsize > 0 && lty[0] == '{' {
                     this.emit("  store " + lty + " zeroinitializer, " + lty + "* " + ptr);
                     // Python parity: a default struct value gets empty
@@ -10659,6 +10871,8 @@ pub def CodeGen : class {
                 aval: string = this.gen_expr(arg);
 
                 if atyp == "string" {
+                    show_guard_msg: string = this.const_str_of("show argument");
+                    this.emit("  call void @leash_sh_show_guard(i8* " + aval + ", i8* " + show_guard_msg + ")");
                     this.emit("  call i32 (i8*, ...) @printf(i8* getelementptr inbounds ([3 x i8], [3 x i8]* @.fmt_s, i64 0, i64 0), i8* " + aval + ")");
                 } also atyp == "int" {
                     this.emit("  call i32 (i8*, ...) @printf(i8* getelementptr inbounds ([5 x i8], [5 x i8]* @.fmt_d, i64 0, i64 0), i64 " + this.i32_to_rt_i64(arg, aval) + ")");
@@ -10681,6 +10895,8 @@ pub def CodeGen : class {
                         while pi3 < atyp.bsize { p_inner = p_inner + atyp[pi3]; pi3 = pi3 + 1; }
                     }
                     if p_inner == "char" && atyp[0] == '*' {
+                        pguard: string = this.const_str_of("show argument");
+                        this.emit("  call void @leash_sh_show_guard(i8* " + aval + ", i8* " + pguard + ")");
                         this.emit("  call i32 (i8*, ...) @printf(i8* getelementptr inbounds ([3 x i8], [3 x i8]* @.fmt_s, i64 0, i64 0), i8* " + aval + ")");
                     } else {
                         p_lty: string = this.llvm_type(atyp);
@@ -11278,6 +11494,7 @@ pub def CodeGen : class {
         // before codegen so unsafe raw-pointer/manual-heap patterns fail at
         // compile time instead of dangling at runtime.
         this.ar_audit_program(prog);
+        this.nil_audit_program(prog);
 
         // Record struct/class field default initializers (for Name {} literals)
         foreach _, sd in<vector> prog.structs {
@@ -11971,6 +12188,12 @@ pub def CodeGen : class {
                     "declare void @leash_sh_vec_remove(i8*, i64, i8*)\n" +
                     "declare i8* @leash_bigint_to_str(i8*, i64, i64)\n" +
                     "declare i64 @leash_bigint_parse(i8*, i64, i64, i8*)\n" +
+                    "declare i64 @leash_int_from_double_checked(double, i64, i64)\n" +
+                    "declare i64 @leash_int_parse_checked(i8*, i64, i64, i8*)\n" +
+                    "declare void @leash_sh_show_guard(i8*, i8*)\n" +
+                    "declare void @leash_sh_array_fill_ptr(i8*, i64, i8*)\n" +
+                    "declare void @leash_sh_array_fill_vec(i8*, i64, i64, i64)\n" +
+                    "declare void @leash_sh_array_fill_hash(i8*, i64)\n" +
                     "declare void @leash_sh_vec_print(i8*, i64)\n" +
                     "declare void @leash_sh_vec_print_wide(i8*, i64, i64)\n" +
                     "declare void @leash_sh_showb_append(i8*)\n" +

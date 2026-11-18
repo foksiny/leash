@@ -8,7 +8,7 @@ use leashed::*;
 // Single source of truth for the release version. Bump discipline:
 // README, docs badges, CHANGELOG.
 fnc leash_version() : string {
-    return "1.10.2";
+    return "1.11.0";
 }
 
 // Prefix test (no stdlib dependency this early in main.lsh).
@@ -96,7 +96,7 @@ fnc shq(s string) : string {
 
 // Numeric rank of a seed file name (…/leash-1.9.0-target-x86_64):
 // major*1000000 + minor*1000 + patch. The version fallback must pick the
-// newest checked-in seed, not the lexicographically first one (1.10.2
+// newest checked-in seed, not the lexicographically first one (1.11.0
 // sorts before 1.9.0 as text).
 fnc seed_ver_key(p string) : int {
     start: int = 0;

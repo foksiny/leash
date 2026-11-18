@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v1.10.2 Release</div>
+        <div class="version">v1.11.0 Release</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -370,8 +370,11 @@ leash compile program.lsh --opt 3 --pgo-use</code></pre>
 
 <table>
     <tr><th>Check</th><th>Description</th></tr>
-    <tr><td>Division by zero</td><td>Caught at runtime with descriptive error message</td></tr>
-    <tr><td>Vector bounds checking</td><td><code>get()</code>, <code>set()</code>, <code>popb()</code>, <code>popf()</code> validate indices and empty vectors</td></tr>
+    <tr><td>Division by zero / signed overflow</td><td>Dynamic divisors are checked for zero and <code>MIN / -1</code> with a diagnostic; constant cases are rejected at compile time</td></tr>
+    <tr><td>Integer conversion range</td><td><code>toint(int&lt;N&gt;, s)</code> and float→int conversions reject out-of-range, NaN and infinite values instead of truncating or producing poison</td></tr>
+    <tr><td>Shift amount</td><td>Variable shift amounts outside <code>[0, width-1]</code> are rejected at runtime</td></tr>
+    <tr><td>Nil values in <code>show</code></td><td>A value that may be nil is rejected at compile time (<code>E_NIL_SHOW</code>) with branch-sensitive flow analysis; a runtime guard catches nil values the compiler cannot track</td></tr>
+    <tr><td>Vector / array bounds</td><td><code>get()</code>, <code>set()</code>, <code>popb()</code>, <code>popf()</code> and fixed-array indexing validate indices</td></tr>
     <tr><td>Null file handle checks</td><td>File operations on unopened/closed files produce clear errors</td></tr>
     <tr><td>Union tag mismatch</td><td>Accessing the wrong union variant halts with a runtime error</td></tr>
 </table>

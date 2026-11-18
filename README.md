@@ -4,7 +4,7 @@
 
 # Leash Programming Language
 
-**Version 1.10.2** — Leash compiles itself.
+**Version 1.11.0** — Leash compiles itself.
 
 Leash is a strongly-typed, modern compiled programming language built on LLVM. It features an intuitive syntax and native performance with a built-in garbage collector, package manager, and cross-platform support.
 
@@ -35,13 +35,13 @@ Output parity is enforced by a frozen corpus: **89/89 example programs compile a
 git clone https://github.com/foksiny/leash && cd leash
 ./scripts/bootstrap.sh     # seeds from bootstrap/, builds bin/leashc (Python-free)
 bin/leashc version
-# leash 1.10.2 (self-hosted)
+# leash 1.11.0 (self-hosted)
 ```
 
 Prebuilt **release bundles** are attached to every [GitHub release](https://github.com/foksiny/leash/releases) for Linux x86-64, Linux x86, Linux ARM64, Windows x86-64 and the JVM target. Each bundle ships the compiler, runtime, bundled standard library, docs, compiler sources and an `install.sh` (or `install.bat`) that lays them out under `~/.leash`:
 
 ```bash
-tar -xzf leash-1.10.2-linux-x86_64.tar.gz && cd leash-1.10.2-linux-x86_64
+tar -xzf leash-1.11.0-linux-x86_64.tar.gz && cd leash-1.11.0-linux-x86_64
 ./install.sh                 # PREFIX=/some/root overrides the destination
 export PATH="$HOME/.leash/bin:$PATH"
 ```
@@ -96,7 +96,7 @@ bin/leashc self-host   # 3-stage bootstrap + fixed-point check, installs bin/lea
 ## Key Features
 
 - **Self-hosted compiler** — the language's own compiler is written in the language, with a verified bootstrap fixed point and 89/89 output parity against the reference implementation
-- **Strongly typed** with full type inference, generics (`class<T>`, multi-type `[int, float, ...]` parameters), operator overloading (`opdef`) and explicit bit-width integers/floats (`int<128>`, `uint<512>`, …)
+- **Strongly typed** with full type inference, generics (`class<T>`, multi-type `[int, float, ...]` parameters), operator overloading (`opdef`) and explicit bit-width integers/floats (`int<128>`, `uint<512>`, …). Numeric conversions are range-checked at runtime (no silent truncation or poison from out-of-range floats), and dynamic division is guarded against zero and signed `MIN / -1`. Fixed-size arrays get their element defaults automatically (`a: int[1000];` allocates and fills all elements in one go). A nil-flow audit rejects `show` of a value that may be nil at compile time, with a runtime guard for paths the compiler cannot prove.
 - **Restricted literal types** — `def status : type "ok", "error", nil;` declares a type that accepts only its listed literals; invalid values and widening to the base type are compile-time errors. See [the language guide](docs/language-guide.html#restricted-literal-types).
 - **LLVM-powered** compilation with a monotonic -O scale: O0-O4, Os, Oz. O1 uses the `-O1` backend, O2 adds the arena IR tier 2 (exact trip-count reserves), O3 adds LTO and IR tier 3, and O4 adds native code generation; no higher level disables a lower level's optimization. See [docs/compiler.html](docs/compiler.html#optimization-levels).
 - **Precise, lean garbage collection** — pointer-free vector buffers are never scanned (no false pins from integer payloads); unboxed inline element storage with reference semantics; peak resident memory stays near `2× live + 256 KB` (16 KB slabs, adaptive hash, exact string caps) with ~22 KB binaries
@@ -126,7 +126,7 @@ bin/leashc self-host   # 3-stage bootstrap + fixed-point check, installs bin/lea
 
 ## Known Limitations
 
-Leash 1.10.2 is a complete, self-hosted toolchain with no Python in the build or run path. The items below are the honest, currently-known limits of the platform &mdash; each is intentional and stable for 1.x.
+Leash 1.11.0 is a complete, self-hosted toolchain with no Python in the build or run path. The items below are the honest, currently-known limits of the platform &mdash; each is intentional and stable for 1.x.
 
 | Limitation | Severity | Comment |
 |------------|----------|---------|

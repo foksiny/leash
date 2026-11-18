@@ -29,7 +29,7 @@ This extension provides syntax highlighting and a full Language Server for the L
 ## Installation
 
 ### Method 1: Packaged Extension
-1. Run `npm install && npm run package` to produce `leash-1.10.2.vsix`.
+1. Run `npm install && npm run package` to produce `leash-1.11.0.vsix`.
 2. Install it in VS Code (Extensions view -> `...` -> `Install from VSIX...`).
 
 ### Method 2: Manual Development Setup

@@ -986,6 +986,10 @@ pub def CompilerDriver : class {
             show("error: ", tostring(cg.arena_audit_errors), " arena lifetime error(s); not emitting output");
             return 1;
         }
+        if cg.nil_audit_errors > 0 {
+            show("error: ", tostring(cg.nil_audit_errors), " nil-value error(s); not emitting output");
+            return 1;
+        }
         if verbose { show("[verbose] generated ", tostring(ir_lines.size), " IR lines"); }
         if output_type == "" && !emit_llvm && !check_mode && !cg.has_entry {
             show("error: no entry point: '", input_file, "' defines no 'main' function (build a library with to-dynamic/to-static, or add 'fnc main')");

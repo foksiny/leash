@@ -8184,6 +8184,104 @@ static void xfer_free_all(void) {
 #include <stdarg.h>
 #include <unistd.h>
 
+
+/* ---- Checked numeric conversions & bulk default fills ----------------
+ * Shared by all backends (defined after the backend-specific sections).
+ * The compiler emits calls to these for conversions that would otherwise
+ * truncate silently or produce poison from out-of-range fptosi. */
+
+void* leash_sh_vec_new(int64_t elem_size, int64_t scan);
+void* leash_sh_hash_new(void);
+
+/* Convert a double to a sized integer with an explicit range check.
+ * Out-of-range, NaN and infinity produce a diagnostic instead of the
+ * undefined value LLVM's fptosi would yield. Only for widths <= 64;
+ * wider targets use leash_bigint_parse / bigint formatting. */
+int64_t leash_int_from_double_checked(double v, int64_t bits, int64_t is_signed) {
+    if (bits <= 0 || bits > 64) {
+        fprintf(stderr, "Runtime error: unsupported integer width %lld for float conversion.\n",
+                (long long)bits);
+        exit(1);
+    }
+    long double lim = 1.0L;
+    int64_t i;
+    for (i = 0; i < (is_signed ? bits - 1 : bits); ++i) lim *= 2.0L;
+    long double lo = is_signed ? -lim : 0.0L;
+    long double hi = is_signed ? lim - 1.0L : lim - 1.0L;
+    long double x = (long double)v;
+    /* A NaN or infinity fails both comparisons, so this catches all UB. */
+    if (!(x >= lo && x <= hi)) {
+        fprintf(stderr, "Runtime error: floating-point value out of range for %s integer<%lld>.\n",
+                is_signed ? "signed" : "unsigned", (long long)bits);
+        exit(1);
+    }
+    return (int64_t)v;
+}
+
+/* `show` of a nil value is always a programming error. The C library's
+ * printf may print "(null)" or fault depending on libc; produce a clear
+ * diagnostic instead. */
+void leash_sh_show_guard(const void* value, const char* what) {
+    if (value) return;
+    if (what && *what)
+        fprintf(stderr, "Runtime error: cannot show a nil value (%s).\n", what);
+    else
+        fprintf(stderr, "Runtime error: cannot show a nil value.\n");
+    exit(1);
+}
+
+/* Parse a decimal prefix (like atoll) into a sized integer, but reject a
+ * value outside the target range instead of silently truncating it. No
+ * digits ("" or "abc") yields zero, matching the historical behaviour. */
+int leash_int_parse_checked(const char* s, unsigned bits, int is_signed,
+                            unsigned char* out) {
+    if (!s || !out || bits == 0 || bits > 64) return 0;
+    while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r') ++s;
+    int neg = 0;
+    if (*s == '+' || *s == '-') { neg = (*s == '-'); ++s; }
+    const char* first = s;
+    unsigned long long mag = 0;
+    while (*s >= '0' && *s <= '9') {
+        unsigned long long d = (unsigned long long)(*s - '0');
+        if (mag > (0xFFFFFFFFFFFFFFFFULL - d) / 10ULL) return 0;
+        mag = mag * 10ULL + d;
+        ++s;
+    }
+    if (s == first) mag = 0; /* no digits -> 0, matching atoll */
+    unsigned long long lim;
+    if (is_signed) {
+        unsigned long long half = (bits == 64) ? 0x8000000000000000ULL
+                                               : (1ULL << (bits - 1));
+        lim = neg ? half : half - 1ULL;
+        if (mag > lim) return 0;
+    } else {
+        lim = (bits == 64) ? 0xFFFFFFFFFFFFFFFFULL : ((1ULL << bits) - 1ULL);
+        if (mag > lim) return 0;
+    }
+    unsigned long long v = neg ? (0ULL - mag) : mag;
+    unsigned nbytes = (bits + 7u) / 8u, i;
+    for (i = 0; i < nbytes; ++i) out[i] = (unsigned char)(v >> (8u * i));
+    return 1;
+}
+
+/* Fill an array of pointer-sized slots in one pass (strings, pointers). */
+void leash_sh_array_fill_ptr(void** data, int64_t count, void* value) {
+    if (!data || count <= 0) return;
+    for (int64_t i = 0; i < count; ++i) data[i] = value;
+}
+
+/* Fill an array of vec handles with one fresh empty vec per element. */
+void leash_sh_array_fill_vec(void** data, int64_t count, int64_t elem_size, int64_t scan) {
+    if (!data || count <= 0) return;
+    for (int64_t i = 0; i < count; ++i) data[i] = leash_sh_vec_new(elem_size, scan);
+}
+
+/* Fill an array of hash handles with one fresh empty hash per element. */
+void leash_sh_array_fill_hash(void** data, int64_t count) {
+    if (!data || count <= 0) return;
+    for (int64_t i = 0; i < count; ++i) data[i] = leash_sh_hash_new();
+}
+
 static struct timespec _leash_sh_start_ts = {0, 0};
 
 void leash_sh_timepass_init(void) {
