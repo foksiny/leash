@@ -7602,11 +7602,11 @@ void* leasharena_root_store_vec_typed(void** slot, void* val,
     int64_t n = nv->size > 0 ? nv->size : 0;
     int32_t ec = (node >= 0 && tree) ? tree[node].child : -1;
     int32_t ek = ec >= 0 ? tree[ec].kind : TE_LEAF;
-    /* A pointer element is a single pointer: the element store roots
-     * it through the slot. An aggregate element is stored BY VALUE in
-     * the element buffer, so it is not a pointer and cannot be rooted
-     * through a slot. */
-    int ptr_elems = (ek == TE_STR || ek == TE_VEC || ek == TE_HASH);
+    /* Every aggregate (struct or class) is represented by a pointer to
+     * its body -- including as a vector element. Only POD structs that
+     * are inlined into the element buffer carry a LEAF child descriptor,
+     * so an AGG child here really is a pointer to a heap body. */
+    int ptr_elems = (ek == TE_STR || ek == TE_VEC || ek == TE_HASH || ek == TE_AGG);
 
     /* Reuse the slot's previous root copy when the slot owns it alone. */
     if (old && !old->shared && old->elem_size == nv->elem_size

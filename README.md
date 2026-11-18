@@ -4,7 +4,7 @@
 
 # Leash Programming Language
 
-**Version 1.11.0** — Leash compiles itself.
+**Version 1.12.0** — Leash compiles itself.
 
 Leash is a strongly-typed, modern compiled programming language built on LLVM. It features an intuitive syntax and native performance with a built-in garbage collector, package manager, and cross-platform support.
 
@@ -35,13 +35,13 @@ Output parity is enforced by a frozen corpus: **89/89 example programs compile a
 git clone https://github.com/foksiny/leash && cd leash
 ./scripts/bootstrap.sh     # seeds from bootstrap/, builds bin/leashc (Python-free)
 bin/leashc version
-# leash 1.11.0 (self-hosted)
+# leash 1.12.0 (self-hosted)
 ```
 
 Prebuilt **release bundles** are attached to every [GitHub release](https://github.com/foksiny/leash/releases) for Linux x86-64, Linux x86, Linux ARM64, Windows x86-64 and the JVM target. Each bundle ships the compiler, runtime, bundled standard library, docs, compiler sources and an `install.sh` (or `install.bat`) that lays them out under `~/.leash`:
 
 ```bash
-tar -xzf leash-1.11.0-linux-x86_64.tar.gz && cd leash-1.11.0-linux-x86_64
+tar -xzf leash-1.12.0-linux-x86_64.tar.gz && cd leash-1.12.0-linux-x86_64
 ./install.sh                 # PREFIX=/some/root overrides the destination
 export PATH="$HOME/.leash/bin:$PATH"
 ```
@@ -98,7 +98,7 @@ bin/leashc self-host   # 3-stage bootstrap + fixed-point check, installs bin/lea
 - **Self-hosted compiler** — the language's own compiler is written in the language, with a verified bootstrap fixed point and 89/89 output parity against the reference implementation
 - **Strongly typed** with full type inference, generics (`class<T>`, multi-type `[int, float, ...]` parameters), operator overloading (`opdef`) and explicit bit-width integers/floats (`int<128>`, `uint<512>`, …). Numeric conversions are range-checked at runtime (no silent truncation or poison from out-of-range floats), and dynamic division is guarded against zero and signed `MIN / -1`. Fixed-size arrays get their element defaults automatically (`a: int[1000];` allocates and fills all elements in one go). A nil-flow audit rejects `show` of a value that may be nil at compile time, with a runtime guard for paths the compiler cannot prove.
 - **Restricted literal types** — `def status : type "ok", "error", nil;` declares a type that accepts only its listed literals; invalid values and widening to the base type are compile-time errors. See [the language guide](docs/language-guide.html#restricted-literal-types).
-- **LLVM-powered** compilation with a monotonic -O scale: O0-O4, Os, Oz. O1 uses the `-O1` backend, O2 adds the arena IR tier 2 (exact trip-count reserves), O3 adds LTO and IR tier 3, and O4 adds native code generation; no higher level disables a lower level's optimization. See [docs/compiler.html](docs/compiler.html#optimization-levels).
+- **LLVM-powered** compilation with a monotonic -O scale: O0-O4, Os, Oz. O1 uses the `-O1` backend, O2 is the full `-O2` pipeline plus the arena IR tier 2 (exact trip-count reserves), O3 adds thin LTO and recursive-call unrolling, and O4 adds native code generation and a deeper unroll; no higher level disables a lower level's optimization. See [docs/compiler.html](docs/compiler.html#optimization-levels).
 - **Precise, lean garbage collection** — pointer-free vector buffers are never scanned (no false pins from integer payloads); unboxed inline element storage with reference semantics; peak resident memory stays near `2× live + 256 KB` (16 KB slabs, adaptive hash, exact string caps) with ~22 KB binaries
 - **Experimental `--arena` memory layout** — scoped bump arena (thread-local bump blocks, whole-scope release, no GC, no borrow checker) selectable per program with `leash compile <file> --arena`. It gives plain C pointers, deterministic frame lifetimes, and C-ABI-friendly storage; reclaimed scope memory is **poisoned by default** (`0xDD`, disable with `LEASH_ARENA_POISON=0`) and frame/loop misuse aborts with diagnostics. Escapes stage on the C stack (small payloads) or a per-thread stage cache, containers owned outside the current frame grow in the root arena, and each worker's arena is released when the thread exits — so the arena path stays lean on heap allocations. A value that outlives its frame (a global, an outer local written from a loop body) is copied into the program-lifetime root arena, whose slot reuses that copy in place while it is the only owner — so storing into the same global in a loop keeps a constant footprint instead of growing the program's permanent memory. `spawn` hands its arguments over in one compact private transfer that the worker releases after unpacking. Recursive aggregate returns copy the reachable instance graph with an identity map, so cycles keep their shape; spawn arguments and union values are rooted using their real type layout (a union is a boxed value, not a pointer). A strict compile-time lifetime audit rejects raw-pointer escapes and manual libc heap calls with `E_ARENA_LIFETIME` errors (there is no warning-only outcome: `--arena` is compile-or-fail), with structured source snippets and fix hints; header readers validate a tagged size word, header containment and block-bounded string lengths so forged or stale pointers abort instead of reading out of bounds. A default-on runtime verifier checks registered global/static pointer slots before every frame pop (`LEASH_ARENA_VERIFY=0` opts out), turning a missed root copy into a loud abort instead of a dangling pointer. Allocation/churn- and hash-heavy workloads often see lower peak block memory and competitive-or-better speed (measured 1.1-1.2x aggregate speedup at O2/O3, 3-4x on churn-heavy tasks), while growth-heavy kernels keep superseded buffers until scope reset and tiny compute-bound cases can be noise-dominated (planned default in a future release; see [docs/advanced.html](docs/advanced.html) and [benchmarking/README.md](benchmarking/README.md)).
 - **Package manager** (`leash pkg`) with fully self-service publishing — registry updates are validated and merged by a bot, no human review; install from the index or any git URL; **reproducible project builds** with `leash.lock`
@@ -126,7 +126,7 @@ bin/leashc self-host   # 3-stage bootstrap + fixed-point check, installs bin/lea
 
 ## Known Limitations
 
-Leash 1.11.0 is a complete, self-hosted toolchain with no Python in the build or run path. The items below are the honest, currently-known limits of the platform &mdash; each is intentional and stable for 1.x.
+Leash 1.12.0 is a complete, self-hosted toolchain with no Python in the build or run path. The items below are the honest, currently-known limits of the platform &mdash; each is intentional and stable for 1.x.
 
 | Limitation | Severity | Comment |
 |------------|----------|---------|

@@ -15,7 +15,7 @@
 <aside class="sidebar">
     <div class="sidebar-header">
         <h1>Leash</h1>
-        <div class="version">v1.11.0 Release</div>
+        <div class="version">v1.12.0 Release</div>
         <div class="subtitle">Programming Language</div>
     </div>
     <nav class="sidebar-nav">
@@ -263,14 +263,14 @@ leash compile myprogram.lsh --arena     <span class="cm"># scoped bump arena (ex
     <tr><th>Level</th><th>Description</th><th>Key Passes</th></tr>
     <tr><td><code>-O0</code></td><td>No optimization</td><td>Fastest compilation; runtime <code>-O0</code></td></tr>
     <tr><td><code>-O1</code></td><td>Basic</td><td><code>-O1</code> backend; runtime <code>-O1</code></td></tr>
-    <tr><td><code>-O2</code></td><td>Standard</td><td>O1 backend + arena IR tier 2 (exact trip-count reserves, hash pre-sizing); runtime <code>-O2</code></td></tr>
-    <tr><td><code>-O3</code></td><td>Aggressive</td><td>O2 + LTO + arena IR tier 3 (nested-loop reserves, fused keys); runtime <code>-O3</code></td></tr>
-    <tr><td><code>-O4</code></td><td>Maximum</td><td>O3 + <code>-march=native -mtune=native</code>; runtime <code>-O3 -flto</code></td></tr>
+    <tr><td><code>-O2</code></td><td>Standard</td><td><code>-O2</code> backend + arena IR tier 2 (exact trip-count reserves, hash pre-sizing); runtime <code>-O2</code></td></tr>
+    <tr><td><code>-O3</code></td><td>Aggressive</td><td>O2 + thin LTO (<code>-flto=thin -fno-plt</code>) + recursive-call unrolling (depth 4) + arena IR tier 3; runtime <code>-O3 -flto=thin</code></td></tr>
+    <tr><td><code>-O4</code></td><td>Maximum</td><td>O3 + <code>-march=native -mtune=native</code> + deeper recursive-call unrolling (depth 8); runtime <code>-O3 -flto=thin</code></td></tr>
     <tr><td><code>-Os</code></td><td>Size</td><td>Size-oriented backend; arena IR tier 2</td></tr>
     <tr><td><code>-Oz</code></td><td>Minimum size</td><td>Additional size reductions; arena IR tier 2</td></tr>
 </table>
 
-<p><strong>The -O scale is monotonic by construction.</strong> Every level is a strict superset of the one below it: O2 adds the arena's IR optimizations over O1, O3 adds LTO, and O4 adds native code generation. No level ever disables an optimization enabled by a lower one, so the scale cannot invert the way clang's stock <code>-O2</code>/<code>-O3</code> did on Leash's call-heavy IR (they regressed recursion-heavy code by over-inlining and vectorising string loops). Wall-clock numbers on tiny programs can still tie or vary with noise, but the optimization <em>contract</em> is stable and checked by <code>tests/test_opt_scale.py</code>.</p>
+<p><strong>The -O scale is monotonic by construction.</strong> Every level is a strict superset of the one below it: O2 is the full <code>-O2</code> backend plus the arena's IR tier 2, O3 adds thin LTO and recursive-call unrolling, and O4 adds native code generation and a deeper unroll. No level ever disables an optimization enabled by a lower one. Earlier releases silently pinned O2/O3/O4 to <code>-O1</code> because clang's stock <code>-O2</code>/<code>-O3</code> regressed call-heavy IR; the recursive-call clone chains now give LLVM the inlining it could not perform on a genuinely recursive function, so the stock pipeline is a win again. Cross targets deliberately skip LTO/unrolling. Wall-clock numbers on tiny programs can still tie or vary with noise, but the optimization <em>contract</em> is stable and checked by <code>tests/test_opt_scale.py</code>.</p>
 
 <pre><code>leash compile program.lsh --opt 3
 leash run program.lsh -O s</code></pre>

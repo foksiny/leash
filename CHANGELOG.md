@@ -5,6 +5,23 @@ All notable changes to the Leash compiler are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [1.12.0] - 2026-11-18
+
+Minor release: the `-O` scale finally delivers its promised performance, and the arena backend is hardened enough to compile the self-hosted compiler. **432 tests pass.**
+
+### Added
+- **Recursive-call unrolling at O3/O4.** A new IR pass emits `alwaysinline` clones of self-recursive functions and chains them, giving LLVM the inlining opportunities it refuses on a truly recursive call. O3 unrolls to depth 4 (body cap 96), O4 to depth 8 (body cap 80); neither O2 nor cross-target builds use the pass, so the IR stays small where LTO cannot exploit it.
+- **Thin LTO at O3/O4.** Host-native builds now link with `-flto=thin -fno-plt` (and `-march=native -mtune=native` at O4), with `-O2` as the common base. Cross targets deliberately fall back to plain `-O2` because their toolchains may lack the matching LLVM plugin.
+
+### Fixed
+- **`-O2`, `-O3` and `-O4` are no longer silently pinned to `-O1`.** All three levels used the same backend flags, so `fib(50)` took ~44 s at every level while gcc `-O3` took ~15 s. The scale is now strictly ordered; `fib(50)` runs in ~30 s at O2 and completes in milliseconds at O3/O4 (fib(60) ≈ 136 ms at O4). Output parity is preserved for O2 vs O4.
+- **Arena root stores of vectors of class instances.** The root-store helper treated aggregate elements as inline bodies, leaving their pointers dangling when the producing frame exited. A `vec<Expr>` assigned to an outer object now deep-roots every element through its type tree.
+- **Arena field stores into outer objects.** Assigning a freshly built container to a field of a caller-owned object now root-copies the value. Alias-derived variables (`x = coll.get(i)` / `x = coll[i]`) are recognised as outer roots, and hash index stores into outer hashes promote the table so its nodes survive the callee's frame.
+- **Arena compiler regression tests:** `compiler/main.lsh` now builds with `--arena`, and `leashc compile examples/hello.lsh --arena` produces a working program.
+
+### Changed
+- `tests/test_opt_scale.py` now asserts the emitted IR/flag structure (monotonic codegen levels, additive LTO/native flags, unroll only at O3/O4) instead of noisy wall-clock timings.
+
 ## [1.11.0] - 2026-11-17
 
 Minor release: runtime numeric safety, automatic array defaults, and nil-safety analysis. **431 tests pass.**
@@ -2302,6 +2319,7 @@ silent exfiltration all became loud errors or well-defined behavior.
 ### Changed
 - Bump version to `0.23.5 Beta`.
 
+[1.12.0]: https://github.com/foksiny/leash/releases/tag/v1.12.0
 [1.11.0]: https://github.com/foksiny/leash/releases/tag/v1.11.0
 [1.10.2]: https://github.com/foksiny/leash/releases/tag/v1.10.2
 [1.10.1]: https://github.com/foksiny/leash/releases/tag/v1.10.1

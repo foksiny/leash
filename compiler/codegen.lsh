@@ -589,7 +589,31 @@ pub def CodeGen : class {
     pub fnc ar_is_outer_var(nm string) : bool {
         if nm.bsize == 0 { return false; }
         if this.global_vars.isin(nm) || this.shared_var_names.isin(nm) { return true; }
-        return this.ar_is_param(nm);
+        if this.ar_is_param(nm) { return true; }
+        // A local bound to a container element (`x = coll.get(i)`,
+        // `x = coll[i]`, `x = coll.popb()`) points AT memory owned by
+        // the container. A store through it reaches the container's
+        // object, which may outlive the current frame, so the field /
+        // element store helpers must treat it like an outer variable.
+        // Follow alias chains (`a = b.get(i); c = a.get(j)`) with a
+        // small depth cap: a self-referential chain cannot occur in a
+        // well-typed program, but the cap keeps a malformed one finite.
+        cur: string = nm;
+        guard: int = 0;
+        while guard < 8 {
+            if !this.ar_alias_src.isin(cur) { return false; }
+            al: string = this.ar_alias_src[cur];
+            if al.bsize <= 4 { return false; }
+            pre: string = this.str_slice2(al, 0, 4);
+            if pre != "get:" && pre != "pop:" { return false; }
+            src: string = this.str_slice2(al, 4, al.bsize);
+            if src.bsize == 0 { return false; }
+            if this.global_vars.isin(src) || this.shared_var_names.isin(src) { return true; }
+            if this.ar_is_param(src) { return true; }
+            cur = src;
+            guard = guard + 1;
+        }
+        return false;
     }
 
     pub fnc ar_alias_clear() : void {
@@ -773,7 +797,12 @@ pub def CodeGen : class {
                 // aggregate body) is not a pointer and keeps the plain
                 // copy path.
                 vt_v: string = this.strip_ref(this.vec_inner_type(this.strip_ref(typ)));
-                need_v: bool = this.ar_ptr_type(vt_v);
+                // A class is represented by a pointer to its body, just
+                // like a string / vec / hash: `ar_ptr_type` omits it, but
+                // the element slot still holds an address that dies with
+                // this frame. The type tree contains the class body and
+                // all of its heap fields, so use it for those too.
+                need_v: bool = this.ar_ptr_type(vt_v) || this.ar_te_needs_tree(vt_v);
                 te_v: int = -1;
                 if need_v { te_v = this.ar_te_build(this.strip_ref(typ)); }
                 if te_v >= 0 {
@@ -10192,8 +10221,23 @@ pub def CodeGen : class {
                         ftyp: string = si.field_types.get(f_idx);
                         lftyp: string = this.llvm_type(ftyp);
                         if s.op == "=" {
-                            this.emit_share(val, ftyp);
-                            this.emit("  store " + lftyp + " " + val + ", " + lftyp + "* " + gep_r);
+                            // The struct may be caller-owned (`this`, a
+                            // param, an element of a param container). A
+                            // frame-local string/vec/hash stored into it
+                            // would be reclaimed when this frame pops, so
+                            // root-store the value. A local struct dies
+                            // with the frame and needs no copy.
+                            store_m: bool = true;
+                            if this.arena && this.ar_is_outer_var(this.ar_expr_root(s.target)) {
+                                src_m: string = "";
+                                if s.value.kind == ExprKind.IDENT { src_m = s.value.sval; }
+                                nv_m: string = this.ar_emit_outer_store(gep_r, val, ftyp, lftyp, src_m);
+                                if nv_m.bsize == 0 { store_m = false; } else { val = nv_m; }
+                            }
+                            if store_m {
+                                this.emit_share(val, ftyp);
+                                this.emit("  store " + lftyp + " " + val + ", " + lftyp + "* " + gep_r);
+                            }
                         } else {
                             this.emit_assign_compound(gep_r, lftyp, s.op, val);
                         }
@@ -10211,8 +10255,22 @@ pub def CodeGen : class {
                         ftyp: string = ci.field_types.get(f_idx);
                         lftyp: string = this.llvm_type(ftyp);
                         if s.op == "=" {
-                            this.emit_share(val, ftyp);
-                            this.emit("  store " + lftyp + " " + val + ", " + lftyp + "* " + gep_r);
+                            // Same rule as struct fields: a field of a
+                            // caller-owned object outlives this frame, so
+                            // a frame-local heap value must be root-copied
+                            // before the store. Rooting every store would
+                            // leak, so only outer roots are promoted.
+                            store_c: bool = true;
+                            if this.arena && this.ar_is_outer_var(this.ar_expr_root(s.target)) {
+                                src_c: string = "";
+                                if s.value.kind == ExprKind.IDENT { src_c = s.value.sval; }
+                                nv_c: string = this.ar_emit_outer_store(gep_r, val, ftyp, lftyp, src_c);
+                                if nv_c.bsize == 0 { store_c = false; } else { val = nv_c; }
+                            }
+                            if store_c {
+                                this.emit_share(val, ftyp);
+                                this.emit("  store " + lftyp + " " + val + ", " + lftyp + "* " + gep_r);
+                            }
                         } else {
                             this.emit_assign_compound(gep_r, lftyp, s.op, val);
                         }
@@ -10227,6 +10285,14 @@ pub def CodeGen : class {
                 if this.is_hash_type(ix_base) {
                     ix_vt: string = this.hash_val_type(ix_base);
                     ix_obj: string = this.gen_expr(s.target.left);
+                    // A hash that outlives this frame (param, global,
+                    // element of an outer container) must own its nodes
+                    // in the root arena: the nodes this store allocates
+                    // would otherwise die with the current frame and
+                    // leave the table pointing at poisoned memory.
+                    if this.arena && this.ar_is_outer_var(this.ar_expr_root(s.target.left)) {
+                        this.emit("  call void @leash_sh_hash_make_rooted(i8* " + ix_obj + ")");
+                    }
                     // Arena+ (O3+): fused key, built in a stack buffer.
                     ix_fk: vec<string> = this.ar_fused_hash_key(s.target.right, this.hash_key_type(ix_base), s.op);
                     if ix_fk.size == 3 {
@@ -11475,6 +11541,202 @@ pub def CodeGen : class {
         this.ar_alias_src = old_fn_alias;
         this.ar_decl_ready = old_fn_decl_ready;
         this.cur_func_unsafe = old_fn_unsafe;
+    }
+
+    // ---- Recursive-call unrolling (O2+) ---------------------------------
+    // LLVM refuses to inline a call to the function it is currently
+    // inlining, so a hot self-recursive function (fib, ackermann, a tree
+    // walk) pays a real call per level no matter which -O level is used.
+    // GCC sidesteps this by inlining a few copies of the function. We get
+    // the same effect inside LLVM: emit K renamed copies of the body,
+    // mark every copy alwaysinline, and chain copy j -> j+1, with the
+    // last copy calling the original. The inliner then expands K+1 levels
+    // at each call site, bounded by construction.
+    pub fnc ir_ident_char(c char) : bool {
+        if c >= 'a' && c <= 'z' { return true; }
+        if c >= 'A' && c <= 'Z' { return true; }
+        if c >= '0' && c <= '9' { return true; }
+        return c == '_' || c == '.' || c == '$' || c == '-';
+    }
+
+    // Append `suf` to every %local (parameters, SSA values, label refs).
+    // c"..." literals are copied verbatim so printf formats stay intact.
+    pub fnc ir_rename_locals(line string, suf string) : string {
+        out: string = "";
+        i: int = 0;
+        n: int = line.bsize;
+        while i < n {
+            c: char = line[i];
+            if c == ';' {
+                out = out + this.str_slice2(line, i, n);
+                i = n;
+            } also c == 'c' && i + 1 < n && line[i + 1] == '"' {
+                j: int = i + 2;
+                while j < n {
+                    if line[j] == '\\' { j = j + 2; }
+                    also line[j] == '"' { j = j + 1; stop; }
+                    else { j = j + 1; }
+                }
+                out = out + this.str_slice2(line, i, j);
+                i = j;
+            } also c == '%' {
+                j: int = i + 1;
+                while j < n && this.ir_ident_char(line[j]) { j = j + 1; }
+                out = out + this.str_slice2(line, i, j) + suf;
+                i = j;
+            } else {
+                out = out + c;
+                i = i + 1;
+            }
+        }
+        return out;
+    }
+
+    // Rename a block label definition (`foo:` at top level of the line).
+    pub fnc ir_rename_label(line string, suf string) : string {
+        i: int = 0;
+        while i < line.bsize && (line[i] == ' ' || line[i] == '\t') { i = i + 1; }
+        j: int = i;
+        while j < line.bsize && this.ir_ident_char(line[j]) { j = j + 1; }
+        e: int = line.bsize - 1;
+        while e > 0 && (line[e] == ' ' || line[e] == '\t' || line[e] == '\r') { e = e - 1; }
+        if j > i && j == e && line[j] == ':' {
+            return this.str_slice2(line, 0, j) + suf + ":";
+        }
+        return line;
+    }
+
+    // IR emission keeps some multi-line helpers in a single vec entry.
+    // Normalise to one physical line per element before the pass (the
+    // driver writes one "\n" per entry, so the emitted text is identical).
+    pub fnc ir_split_lines(lines vec<string>) : vec<string> {
+        out: vec<string>;
+        foreach _, s in<vector> lines {
+            cur: string = "";
+            i: int = 0;
+            while i < s.bsize {
+                if s[i] == '\n' {
+                    out.pushb(cur);
+                    cur = "";
+                } else {
+                    cur = cur + s[i];
+                }
+                i = i + 1;
+            }
+            out.pushb(cur);
+        }
+        return out;
+    }
+
+    pub fnc ir_define_name(line string) : string {
+        if !this.tp_has_prefix(line, "define ") { return ""; }
+        at: int = this.str_index_of(line, " @");
+        if at < 0 { return ""; }
+        op: int = this.str_index_of_from(line, "(", at + 2);
+        if op <= at + 2 { return ""; }
+        return this.str_slice2(line, at + 2, op);
+    }
+
+    pub fnc ir_has_self_call(lines vec<string>, a int, b int, name string) : bool {
+        needle: string = "@" + name + "(";
+        i: int = a;
+        while i < b {
+            if this.str_index_of(lines[i], needle) >= 0 { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    pub fnc ir_replace_calls(line string, name string, target string) : string {
+        needle: string = "@" + name + "(";
+        out: string = "";
+        i: int = 0;
+        while i < line.bsize {
+            k: int = this.str_index_of_from(line, needle, i);
+            if k < 0 {
+                out = out + this.str_slice2(line, i, line.bsize);
+                stop;
+            }
+            out = out + this.str_slice2(line, i, k) + "@" + target + "(";
+            i = k + needle.bsize;
+        }
+        return out;
+    }
+
+    pub fnc ir_add_alwaysinline(line string) : string {
+        idx: int = this.str_index_of(line, " {");
+        if idx < 0 { return line; }
+        return this.str_slice2(line, 0, idx) + " alwaysinline" + this.str_slice2(line, idx, line.bsize);
+    }
+
+    pub fnc unroll_recursive_ir(lines vec<string>, depth int, max_body int) : vec<string> {
+        if depth <= 0 { return lines; }
+        lines = this.ir_split_lines(lines);
+        starts: vec<int>;
+        ends: vec<int>;
+        names: vec<string>;
+        i: int = 0;
+        while i < lines.size {
+            nm: string = this.ir_define_name(lines[i]);
+            if nm.bsize > 0 {
+                e: int = i + 1;
+                while e < lines.size && lines[e] != "}" { e = e + 1; }
+                if e < lines.size && e - i - 1 <= max_body && this.ir_has_self_call(lines, i + 1, e, nm) {
+                    starts.pushb(i);
+                    ends.pushb(e);
+                    names.pushb(nm);
+                }
+                i = e + 1;
+            } else {
+                i = i + 1;
+            }
+        }
+        // Rewrite from the bottom up so earlier indices stay valid.
+        ci: int = starts.size - 1;
+        while ci >= 0 {
+            s: int = starts[ci];
+            e: int = ends[ci];
+            nm: string = names[ci];
+            header: string = lines[s];
+            repl: vec<string>;
+            repl.pushb(this.ir_add_alwaysinline(header));
+            bi: int = s + 1;
+            while bi < e {
+                repl.pushb(this.ir_replace_calls(lines[bi], nm, nm + "__leash_ru1"));
+                bi = bi + 1;
+            }
+            repl.pushb("}");
+            j: int = 1;
+            while j <= depth {
+                suf: string = "__leash_ru" + tostring(j);
+                h: string = this.ir_replace_calls(header, nm, nm + suf);
+                h = this.ir_rename_locals(h, suf);
+                repl.pushb(this.ir_add_alwaysinline(h));
+                bi = s + 1;
+                while bi < e {
+                    cl: string = this.ir_rename_locals(lines[bi], suf);
+                    cl = this.ir_rename_label(cl, suf);
+                    if j < depth {
+                        cl = this.ir_replace_calls(cl, nm, nm + "__leash_ru" + tostring(j + 1));
+                    } else {
+                        cl = this.ir_replace_calls(cl, nm, nm);
+                    }
+                    repl.pushb(cl);
+                    bi = bi + 1;
+                }
+                repl.pushb("}");
+                j = j + 1;
+            }
+            nxt: vec<string>;
+            k: int = 0;
+            while k < s { nxt.pushb(lines[k]); k = k + 1; }
+            foreach _, rl in<vector> repl { nxt.pushb(rl); }
+            k = e + 1;
+            while k < lines.size { nxt.pushb(lines[k]); k = k + 1; }
+            lines = nxt;
+            ci = ci - 1;
+        }
+        return lines;
     }
 
     pub fnc generate_module(prog Program) : vec<string> {

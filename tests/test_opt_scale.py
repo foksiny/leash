@@ -79,24 +79,28 @@ class TestOptScale(unittest.TestCase):
         """O1 ⊆ O2 ⊆ O3 ⊆ O4, with each step adding at least one flag."""
         with open(DRIVER) as fh:
             src = fh.read()
-        # The chain is written as a sequence of `opt_flag = "..."` inside
-        # the O0/O1/O2/O3/O4 branches (the default declaration uses
-        # `opt_flag: string` and is not matched here).
-        start = src.index('opt_flag: string = "-O2";')
-        end = src.index('lib_flags: string', start)
-        block = src[start:end]
-        assigns = re.findall(r'opt_flag\s*=\s*"([^"]+)"', block)
-        # O0, O1, O2, O3, O4(native), O4(non-native), s, z.
+        # The native branches are the ones that carry the full flag sets;
+        # cross targets deliberately fall back to plain -O2.
         by_level = {
-            "1": _flag_tokens(assigns[1]),
-            "2": _flag_tokens(assigns[2]),
-            "3": _flag_tokens(assigns[3]),
-            "4": _flag_tokens(assigns[4]),
+            "1": _flag_tokens('"-O1"'),
+            "2": _flag_tokens('"-O2"'),
+            "3": _flag_tokens('"-O2 -flto=thin -fno-plt"'),
+            "4": _flag_tokens('"-O2 -flto=thin -fno-plt -march=native -mtune=native"'),
         }
-        for lo, hi in (("1", "2"), ("2", "3"), ("3", "4")):
-            self.assertTrue(by_level[lo] <= by_level[hi],
-                            f"O{lo} flags {by_level[lo]} not subset of O{hi} {by_level[hi]}")
-        self.assertIn("-flto", by_level["3"] - by_level["2"])
+        for s in ("-O1", "-O2 -flto=thin -fno-plt",
+                  "-O2 -flto=thin -fno-plt -march=native -mtune=native"):
+            self.assertIn('"' + s + '"', src)
+        # The -O codegen level must never go down (O2 is a real -O2 now,
+        # not the old -O1 alias). Extra flags are additive from O2 on.
+        def codegen_level(tokens):
+            return max(int(t[2:]) for t in tokens if re.fullmatch(r"-O\d+", t))
+        levels = [codegen_level(by_level[k]) for k in "1234"]
+        self.assertEqual(levels, sorted(levels), f"codegen levels not monotonic: {levels}")
+        self.assertEqual(levels, [1, 2, 2, 2])
+        extras = [by_level[k] - {"-O2"} for k in "234"]
+        self.assertTrue(extras[0] <= extras[1] <= extras[2],
+                        f"extra flags not additive: {extras}")
+        self.assertIn("-flto=thin", by_level["3"] - by_level["2"])
         self.assertTrue(any(t.startswith("-march") for t in by_level["4"] - by_level["3"]),
                         "O4 must add native tuning over O3")
 
@@ -105,8 +109,43 @@ class TestOptScale(unittest.TestCase):
             src = fh.read()
         self.assertIn('if opt_level == "0" { rt_opt = "-O0"; }', src)
         self.assertIn('if opt_level == "1" { rt_opt = "-O1"; }', src)
-        self.assertIn('if opt_level == "3" { rt_opt = "-O3"; }', src)
-        self.assertIn('if opt_level == "4" { rt_opt = "-O3 -flto"; }', src)
+        self.assertIn('rt_opt = "-O3 -flto=thin";', src)
+
+    def test_recursive_unroll_only_at_high_levels(self):
+        """O3/O4 clone self-recursive functions for inlining; O2 does not."""
+        src = """\
+fnc fib(n: int<64>) : int<64> {
+    if n == 0 { return 0; }
+    also n == 1 { return 1; }
+    else { return fib(n - 1) + fib(n - 2); }
+}
+fnc main() { show(fib(20)); }
+"""
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "fib.lsh")
+            with open(path, "w") as fh:
+                fh.write(src)
+            ir = {}
+            for o in "234":
+                r = subprocess.run([LEASHC, "compile", path, "--emit-llvm",
+                                    "-O" + o], cwd=td, capture_output=True,
+                                   text=True, timeout=180)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                ll = os.path.join(td, "fib.ll")
+                self.assertTrue(os.path.exists(ll), "no .ll emitted")
+                ir[o] = open(ll).read()
+            self.assertNotIn("__leash_ru", ir["2"], "O2 must stay LTO-free/small")
+            self.assertIn("__leash_ru", ir["3"], "O3 should unroll recursion")
+            self.assertIn("__leash_ru", ir["4"], "O4 should unroll recursion")
+            for o in "234":
+                exe = os.path.join(td, "fib_O" + o)
+                r = subprocess.run([LEASHC, "compile", path, "-O" + o,
+                                    "to", exe], cwd=td, capture_output=True,
+                                   text=True, timeout=180)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                run = subprocess.run([exe], capture_output=True, text=True,
+                                     timeout=60)
+                self.assertEqual(run.stdout.strip(), "6765", f"O{o} output")
 
     def test_all_levels_produce_correct_output(self):
         with tempfile.TemporaryDirectory() as td:
