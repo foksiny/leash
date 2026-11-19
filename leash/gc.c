@@ -218,6 +218,7 @@ typedef struct arena_block {
     char* base;               /* start of the region usable for payloads */
     size_t cap;               /* usable bytes after the header */
     int sole;                 /* one dedicated large allocation fills the block */
+    int frame_id;             /* checkpoint depth when this block was created */
 } arena_block;
 
 typedef struct arena_cp {
@@ -389,6 +390,7 @@ static arena_block* arena_new_block_sized(arena_stack* st, size_t cap, int sole)
     b->base = (char*)(b + 1);
     b->cap = cap;
     b->sole = sole;
+    b->frame_id = (int)st->cp_len;
     st->head = b;
     st->cur = b->base;
     st->end = b->base + cap;
@@ -580,6 +582,59 @@ static arena_block* arena_block_of(arena_stack* st, const void* ptr) {
         }
     }
     return NULL;
+}
+
+/* Frame-aware write barrier.
+ *
+ * Arena objects die with the checkpoint (frame) that created them. A
+ * pointer stored into an object whose frame is AT LEAST AS YOUNG as the
+ * value's frame cannot dangle: both die together (or the object dies
+ * first). Only when the destination outlives the value (an older frame,
+ * or the root arena) does the value have to be copied/re-rooted.
+ *
+ * The compiler used to root every store through a parameter (`this.field
+ * = value`), which deep-copied whole AST subtrees at every node and made
+ * arena builds orders of magnitude slower than GC. The barrier keeps the
+ * common same-frame mutation a plain pointer store. */
+static int arena_frame_of(const arena_stack* st, const void* p) {
+    arena_block* b = arena_block_of((arena_stack*)st, p);
+    if (!b) return -1;
+    int frame = b->frame_id;
+    for (size_t i = st->cp_len; i > 0; i--) {
+        const arena_cp* cp = &st->cps[i - 1];
+        if (cp->block == b && (const char*)p >= cp->off) {
+            frame = (int)i;
+            break;
+        }
+    }
+    return frame;
+}
+
+static int arena_direct_store_ok(void** slot, const void* val) {
+    if (!slot || !val) return 0;
+    if (!arena_owns(&leasharena_tls_ar, val)) return 0;
+    int vf = arena_frame_of(&leasharena_tls_ar, val);
+    if (vf < 0) return 0;
+    if (arena_owns(&leasharena_tls_ar, slot)) {
+        int df = arena_frame_of(&leasharena_tls_ar, slot);
+        return df >= vf;
+    }
+    /* A stack alloca (a local variable slot) dies with the current call.
+     * The value is safe to keep directly only when it belongs to a frame
+     * OLDER than the innermost checkpoint: a value allocated in the
+     * current loop iteration frame would dangle after the loop resets,
+     * while one escaped into the function frame outlives the slot. */
+    char probe;
+    uintptr_t sp = (uintptr_t)&probe;
+    uintptr_t ss = (uintptr_t)slot;
+    uintptr_t dist = sp >= ss ? sp - ss : ss - sp;
+    if (dist > (1u << 20)) return 0; /* global / heap, not this frame's stack */
+    /* In --arena-loose builds there are no loop checkpoints, so a value
+     * in the current frame is as long-lived as the stack slot itself. */
+    static int loose = -1;
+    if (loose < 0) loose = getenv("LEASH_ARENA_LOOSE") ? 1 : 0;
+    return loose ? vf <= (int)leasharena_tls_ar.cp_len
+                 : vf < (int)leasharena_tls_ar.cp_len;
 }
 
 /* Validate that `ptr` is an allocation START (not an interior address)
@@ -7508,6 +7563,7 @@ static void arena_root_reclaim_string(char* ptr) {
  * copy. */
 void* leasharena_root_store_string(void** slot, void* val) {
     if (!slot) return NULL;
+    if (arena_direct_store_ok(slot, val)) { *slot = val; return val; }
     char* nv = (char*)val;
     if (!nv) { *slot = NULL; return NULL; }
     char* old = (char*)*slot;
@@ -7626,6 +7682,7 @@ void* leasharena_root_store_vec(void** slot, void* val) {
 void* leasharena_root_store_vec_typed(void** slot, void* val,
                                       const ar_te* tree, int32_t node) {
     if (!slot) return NULL;
+    if (arena_direct_store_ok(slot, val)) { *slot = val; return val; }
     LeashVec* nv = (LeashVec*)val;
     if (!nv) { *slot = NULL; return NULL; }
     LeashVec* old = (LeashVec*)*slot;
@@ -7849,6 +7906,7 @@ static int hash_rebuild_root(LeashHash* dst, LeashHash* src,
 void* leasharena_root_store_hash_typed(void** slot, void* val,
                                        const ar_te* tree, int32_t node) {
     if (!slot) return NULL;
+    if (arena_direct_store_ok(slot, val)) { *slot = val; return val; }
     LeashHash* nh = (LeashHash*)val;
     if (!nh) { *slot = NULL; return NULL; }
     LeashHash* old = (LeashHash*)*slot;
@@ -7955,6 +8013,7 @@ static void root_store_ref_d(void** rslot, void* newv, const ar_te* tree,
 
 void leasharena_root_store_blob_typed(void** slot, void* val, int64_t size,
                                       const ar_te* tree, int32_t node) {
+    if (arena_direct_store_ok(slot, val)) { *slot = val; return; }
     ptr_map seen;
     ptr_map_init(&seen, 32);
     root_store_blob_d(slot, val, size, tree, node, 0, &seen);

@@ -124,8 +124,7 @@ pub def Optimizer : class {
     pub fnc opt_args(e Expr) : void {
         i: int = 0;
         while i < e.args.size {
-            nv: Expr = this.opt_expr(e.args.get(i));
-            e.args.set(i, nv);
+            e.args.set(i, this.opt_expr(e.args.get(i)));
             i = i + 1;
         }
     }
@@ -133,8 +132,7 @@ pub def Optimizer : class {
     pub fnc opt_stmt_args(s Stmt) : void {
         i2: int = 0;
         while i2 < s.args.size {
-            nv2: Expr = this.opt_expr(s.args.get(i2));
-            s.args.set(i2, nv2);
+            s.args.set(i2, this.opt_expr(s.args.get(i2)));
             i2 = i2 + 1;
         }
     }
