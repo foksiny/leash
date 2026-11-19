@@ -47,6 +47,8 @@
 #include <setjmp.h>
 #include <time.h>
 
+static int arena_flat_on(void); /* single-region arena mode (runtime flag) */
+
 #include "gc.h"
 #if defined(__linux__) && defined(__GLIBC__)
 #include <malloc.h>
@@ -1309,6 +1311,7 @@ void* leasharena_root_alloc_aligned(size_t size, size_t alignment) {
 /* ---- scope API (called by generated code) ---- */
 
 void leasharena_enter(void) {
+    if (arena_flat_on()) return;
     arena_ensure_stack(&leasharena_tls_ar);
     arena_push_cp(&leasharena_tls_ar);
 }
@@ -1322,10 +1325,12 @@ void leasharena_exit_slow(void) {
 }
 
 void leasharena_exit(void) {
+    if (arena_flat_on()) return;
     arena_pop_cp(&leasharena_tls_ar);
 }
 
 void leasharena_exit_n(int64_t nframes) {
+    if (arena_flat_on()) return;
     arena_ensure_stack(&leasharena_tls_ar);
     if (nframes < 0) return;
     if ((size_t)nframes > leasharena_tls_ar.cp_len) {
@@ -1337,12 +1342,14 @@ void leasharena_exit_n(int64_t nframes) {
 }
 
 int64_t leasharena_loop_enter(void) {
+    if (arena_flat_on()) return 0;
     arena_ensure_stack(&leasharena_tls_ar);
     arena_push_cp(&leasharena_tls_ar);
     return (int64_t)(leasharena_tls_ar.cp_len - 1);
 }
 
 void leasharena_loop_reset_slow(int64_t frame) {
+    if (arena_flat_on()) return;
     if (frame < 0) {
         fprintf(stderr, "Leash arena: invalid loop frame (%lld)\n", (long long)frame);
         abort();
@@ -6077,7 +6084,25 @@ static arena_vec_stage* lv_stage_vec_into(char* buf, LeashVec* v);
 static size_t lh_stage_bytes(int64_t nbuckets, size_t pool_bytes);
 static arena_hash_stage* lh_stage_hash_into(char* buf, LeashHash* h);
 
+/* Single-region ("flat") arena mode. No scope pops, no escapes, no root
+ * copies: every allocation stays valid for the whole program. This is
+ * the fastest arena configuration for long-lived, pointer-rich workloads
+ * such as a self-hosting compiler; it trades reclamation for zero copy
+ * and zero lifetime bookkeeping. Opt in with LEASH_ARENA_FLAT=1. */
+static int arena_flat = -1;
+static int arena_flat_on(void) {
+    if (arena_flat < 0) arena_flat = getenv("LEASH_ARENA_FLAT") ? 1 : 0;
+    return arena_flat;
+}
+
+/* Escape-commit allocators (defined just below). */
+static void* escape_alloc(size_t n);
+static void* escape_alloc_nz(size_t n);
+static void* escape_alloc_compact(size_t n);
+static char* escape_str_alloc(size_t len, size_t cap);
+
 void leasharena_escape_string(void** slot, int64_t nframes) {
+    if (arena_flat_on()) return;
     if (!slot) return;
     char* s = (char*)*slot;
     if (!s) {
@@ -6093,13 +6118,62 @@ void leasharena_escape_string(void** slot, int64_t nframes) {
     if (!stage) { leasharena_exit_n(nframes); return; }
     memcpy(stage, s, len + 1);
     leasharena_exit_n(nframes);
-    char* out = (char*)leash_gc_alloc_string_cap(len, len);
+    char* out = escape_str_alloc(len, len);
     memcpy(out, stage, len + 1);
     if (heap) arena_stage_free(stage, stage_cap);
     *slot = (void*)out;
 }
 
+/* Escape allocation policy. By default a staged value is committed into
+ * the CALLER's frame: its lifetime is exactly the caller's scope, and
+ * the frame pop reclaims it. That is the memory-efficient choice for
+ * ordinary programs.
+ *
+ * Compiler-style workloads mutate a single long-lived AST through many
+ * short calls. Re-committing each returned node into the current frame
+ * means every later field store must deep-copy it into the program-
+ * lifetime root arena (the destination outlives the value). Promoting
+ * escaped values straight into the long-lived arena at commit time
+ * makes those stores O(1) aliases instead. Opt in with
+ * LEASH_ARENA_ESCAPE_ROOT=1; no language or API change is involved. */
+static int arena_escape_root = -1;
+
+static void* escape_alloc(size_t n);
+static void* escape_alloc_nz(size_t n);
+static void* escape_alloc_compact(size_t n);
+static char* escape_str_alloc(size_t len, size_t cap);
+
+static int arena_escape_root_on(void) {
+    if (arena_escape_root < 0) {
+        arena_escape_root = getenv("LEASH_ARENA_ESCAPE_ROOT") ? 1 : 0;
+    }
+    return arena_escape_root;
+}
+
+static void* escape_alloc(size_t n) {
+    return arena_escape_root_on() ? leash_gc_malloc_rooted(n) : leash_gc_malloc(n);
+}
+
+static void* escape_alloc_nz(size_t n) {
+    return arena_escape_root_on()
+        ? leash_gc_malloc_rooted_nz(n, ARENA_ALIGN)
+        : leash_gc_malloc_compact_nz(n);
+}
+
+static void* escape_alloc_compact(size_t n) {
+    return arena_escape_root_on()
+        ? leash_gc_malloc_rooted_nz(n, (size_t)8)
+        : leash_gc_malloc_compact(n);
+}
+
+static char* escape_str_alloc(size_t len, size_t cap) {
+    return arena_escape_root_on()
+        ? (char*)leasharena_root_alloc_string_cap(len, cap)
+        : (char*)leash_gc_alloc_string_cap(len, cap);
+}
+
 void leasharena_escape_vec(void** slot, int64_t nframes) {
+    if (arena_flat_on()) return;
     if (!slot) return;
     LeashVec* v = (LeashVec*)*slot;
     if (!v) {
@@ -6132,6 +6206,7 @@ void* leasharena_stage_hash(void* hash);
 void leasharena_commit_hash(void** slot, void* stage);
 
 void leasharena_escape_hash(void** slot, int64_t nframes) {
+    if (arena_flat_on()) return;
     if (!slot) return;
     LeashHash* h = (LeashHash*)*slot;
     if (!h || !h->buckets) {
@@ -6246,7 +6321,7 @@ void leasharena_commit_string(void** slot, void* stage) {
     if (!slot) return;
     if (!stage) { *slot = NULL; return; }
     size_t len = strlen((const char*)stage);
-    char* out = (char*)leash_gc_alloc_string_cap(len, len);
+    char* out = escape_str_alloc(len, len);
     memcpy(out, stage, len + 1);
     arena_stage_prefixed_free(stage);
     *slot = (void*)out;
@@ -6342,10 +6417,10 @@ void leasharena_commit_vec(void** slot, void* stage) {
     if (!slot) return;
     if (!stage) { *slot = NULL; return; }
     arena_vec_stage* st = (arena_vec_stage*)stage;
-    LeashVec* nv = (LeashVec*)leash_gc_malloc_compact_nz(sizeof(LeashVec));
+    LeashVec* nv = (LeashVec*)escape_alloc_nz(sizeof(LeashVec));
     *nv = st->hdr;
     if (st->data_bytes && st->data) {
-        void* nd = leash_gc_malloc(st->data_bytes);
+        void* nd = escape_alloc(st->data_bytes);
         memcpy(nd, st->data, st->live_bytes);
         nv->data = nd;
         /* The committed buffer holds only the live elements, so the
@@ -6355,7 +6430,7 @@ void leasharena_commit_vec(void** slot, void* stage) {
         int64_t esz = nv->elem_size > 0 ? nv->elem_size : 8;
         for (size_t k = 0; k < st->entry_n; k++) {
             size_t elen = strlen(st->entry_stage[k]);
-            char* ns = (char*)leash_gc_alloc_string_cap(elen, elen);
+            char* ns = escape_str_alloc(elen, elen);
             memcpy(ns, st->entry_stage[k], elen + 1);
             *(void**)((char*)nd + (size_t)st->entry_idx[k] * (size_t)esz) = (void*)ns;
         }
@@ -6444,18 +6519,18 @@ void leasharena_commit_hash(void** slot, void* stage) {
     if (!slot) return;
     if (!stage) { *slot = NULL; return; }
     arena_hash_stage* st = (arena_hash_stage*)stage;
-    LeashHash* nh = (LeashHash*)leash_gc_malloc_compact_nz(sizeof(LeashHash));
+    LeashHash* nh = (LeashHash*)escape_alloc_nz(sizeof(LeashHash));
     nh->num_buckets = st->num_buckets;
     nh->count = st->count;
     nh->rooted = 0;
-    nh->buckets = (LeashHashNode**)leash_gc_malloc((size_t)(st->num_buckets > 0 ? st->num_buckets : 1) * sizeof(LeashHashNode*));
+    nh->buckets = (LeashHashNode**)escape_alloc((size_t)(st->num_buckets > 0 ? st->num_buckets : 1) * sizeof(LeashHashNode*));
     for (int64_t i = 0; i < st->num_buckets; i++) {
         LeashHashNode* scur = st->buckets[i];
         LeashHashNode** tail = &nh->buckets[i];
         while (scur) {
             size_t klen = strlen(LEASH_HASH_KEY(scur));
             size_t sz = sizeof(LeashHashNode) + klen + 1;
-            LeashHashNode* nn = (LeashHashNode*)leash_gc_malloc(sz);
+            LeashHashNode* nn = (LeashHashNode*)escape_alloc(sz);
             LEASH_HASH_KEY_INIT(nn);
             memcpy(LEASH_HASH_KEY(nn), LEASH_HASH_KEY(scur), klen + 1);
             nn->val = scur->val;
@@ -6756,7 +6831,7 @@ static void* te_stage_val(void* val, const ar_te* tree, int32_t node, int depth)
 static void* te_commit_str(void* stage) {
     if (!stage) return NULL;
     size_t len = strlen((const char*)stage);
-    char* out = (char*)leash_gc_alloc_string_cap(len, len);
+    char* out = escape_str_alloc(len, len);
     memcpy(out, stage, len + 1);
     return out;
 }
@@ -6764,11 +6839,11 @@ static void* te_commit_str(void* stage) {
 /* Commit a vec stage into the caller's frame. */
 static void* te_commit_vec(te_stage* st, const ar_te* tree, int32_t node) {
     if (!st) return NULL;
-    LeashVec* nv = (LeashVec*)leash_gc_malloc_compact_nz(sizeof(LeashVec));
+    LeashVec* nv = (LeashVec*)escape_alloc_nz(sizeof(LeashVec));
     *nv = st->vhdr;
     int64_t esz = nv->elem_size > 0 ? nv->elem_size : 8;
     if (st->data_bytes) {
-        void* nd = leash_gc_malloc(st->data_bytes);
+        void* nd = escape_alloc(st->data_bytes);
         memcpy(nd, st->data, st->data_bytes);
         nv->data = nd;
         /* The committed buffer holds only the live elements, so the
@@ -6795,11 +6870,11 @@ static void* te_commit_vec(te_stage* st, const ar_te* tree, int32_t node) {
 /* Commit a hash stage into the caller's frame. */
 static void* te_commit_hash(te_stage* st, const ar_te* tree, int32_t node) {
     if (!st) return NULL;
-    LeashHash* nh = (LeashHash*)leash_gc_malloc_compact_nz(sizeof(LeashHash));
+    LeashHash* nh = (LeashHash*)escape_alloc_nz(sizeof(LeashHash));
     nh->num_buckets = st->nbuckets;
     nh->count = st->hcount;
     nh->rooted = 0;
-    nh->buckets = (LeashHashNode**)leash_gc_malloc_compact((size_t)(st->nbuckets > 0 ? st->nbuckets : 1) * sizeof(LeashHashNode*));
+    nh->buckets = (LeashHashNode**)escape_alloc_compact((size_t)(st->nbuckets > 0 ? st->nbuckets : 1) * sizeof(LeashHashNode*));
     for (int64_t b = 0; b < st->nbuckets; b++) nh->buckets[b] = NULL;
     int32_t vc = tree[node].child;
     /* Rebuild the chains. The staged node pool lives on the malloc
@@ -6814,7 +6889,7 @@ static void* te_commit_hash(te_stage* st, const ar_te* tree, int32_t node) {
             LeashHashNode* sn = (LeashHashNode*)cur;
             size_t klen = strlen(LEASH_HASH_KEY(sn));
             cur += AR_HASH_NODE_SZ(klen);
-            LeashHashNode* nn = (LeashHashNode*)leash_gc_malloc_compact(sizeof(LeashHashNode) + klen + 1);
+            LeashHashNode* nn = (LeashHashNode*)escape_alloc_compact(sizeof(LeashHashNode) + klen + 1);
             if (!nn) return (void*)nh;
             LEASH_HASH_KEY_INIT(nn);
             memcpy(LEASH_HASH_KEY(nn), LEASH_HASH_KEY(sn), klen + 1);
@@ -6834,7 +6909,7 @@ static void* te_commit_hash(te_stage* st, const ar_te* tree, int32_t node) {
 /* Commit an aggregate body into the caller's frame. */
 static void* te_commit_agg(te_stage* st, const ar_te* tree, int32_t node) {
     if (!st || !st->body_bytes || !st->body) return NULL;
-    void* nb = leash_gc_malloc(st->body_bytes);
+    void* nb = escape_alloc(st->body_bytes);
     memcpy(nb, st->body, st->body_bytes);
     int32_t nf = tree[node].aux;
     int32_t first = tree[node].child;
@@ -7134,7 +7209,7 @@ static void gcopy_commit_graph(void** slot, gcopy_graph* g, const ar_te* tree) {
     ptr_map_init(&done, (size_t)g->n * 2 + 8);
     for (int32_t i = 0; i < g->n; i++) {
         gcopy_inst* in = &g->insts[i];
-        void* nb = leash_gc_malloc(in->body);
+        void* nb = escape_alloc(in->body);
         if (!nb) arena_oom("aggregate copy");
         memcpy(nb, in->staged, in->body);
         ptr_map_put(&done, in->orig, nb);
@@ -7350,6 +7425,7 @@ static void* te_root_val(void* val, const ar_te* tree, int32_t node, int depth,
 }
 
 void leasharena_root_copy_vec_typed_d(void** slot, const ar_te* tree, int32_t te_node) {
+    if (arena_flat_on()) return;
     if (!slot || !*slot) return;
     if (te_node < 0 || !tree) { leasharena_root_copy_vec(slot); return; }
     ptr_map seen;
@@ -7359,6 +7435,7 @@ void leasharena_root_copy_vec_typed_d(void** slot, const ar_te* tree, int32_t te
 }
 
 void leasharena_root_copy_hash_typed_d(void** slot, const ar_te* tree, int32_t te_node) {
+    if (arena_flat_on()) return;
     if (!slot || !*slot) return;
     if (te_node < 0 || !tree) { leasharena_root_copy_hash(slot); return; }
     ptr_map seen;
@@ -7404,6 +7481,7 @@ void leasharena_commit_blob(void** slot, void* stage, int64_t size) {
 
 /* Root copies: no staging, no pop — straight into tls_root. */
 void leasharena_root_copy_string(void** slot) {
+    if (arena_flat_on()) return;
     if (!slot || !*slot) return;
     char* s = (char*)*slot;
     int64_t len_i = leash_str_bsize(s);
@@ -7417,6 +7495,7 @@ void leasharena_root_copy_string(void** slot) {
 }
 
 void leasharena_root_copy_vec(void** slot) {
+    if (arena_flat_on()) return;
     if (!slot || !*slot) return;
     LeashVec* v = (LeashVec*)*slot;
     int64_t esz = v->elem_size > 0 ? v->elem_size : 8;
@@ -7454,6 +7533,7 @@ void leasharena_root_copy_vec(void** slot) {
 }
 
 void leasharena_root_copy_hash(void** slot) {
+    if (arena_flat_on()) return;
     if (!slot || !*slot) return;
     LeashHash* h = (LeashHash*)*slot;
     if (!h || !h->buckets) return;
@@ -7492,6 +7572,7 @@ void leasharena_root_copy_hash(void** slot) {
 }
 
 void leasharena_root_copy_blob(void** slot, int64_t size) {
+    if (arena_flat_on()) return;
     if (!slot || !*slot || size <= 0) return;
     void* np = leash_gc_malloc_rooted((size_t)size);
     memcpy(np, *slot, (size_t)size);
@@ -7562,6 +7643,7 @@ static void arena_root_reclaim_string(char* ptr) {
  * caller may need it to keep a source local in sync with the root
  * copy. */
 void* leasharena_root_store_string(void** slot, void* val) {
+    if (arena_flat_on()) { if (slot) *slot = val; return val; }
     if (!slot) return NULL;
     if (arena_direct_store_ok(slot, val)) { *slot = val; return val; }
     char* nv = (char*)val;
@@ -7664,6 +7746,7 @@ static void root_store_ref(void** rslot, void* newv,
  * copy (the GC backend aliases the two, so a mutation through one
  * must be visible through the other). */
 void* leasharena_root_store_vec(void** slot, void* val) {
+    if (arena_flat_on()) { if (slot) *slot = val; return val; }
     return leasharena_root_store_vec_typed(slot, val, NULL, -1);
 }
 

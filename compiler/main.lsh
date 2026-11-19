@@ -366,6 +366,7 @@ fnc print_usage() : void {
     show("  --no-garbage-collector / -ngc    Disable garbage collector (plain C malloc/free runtime)");
     show("  --autofree / -af                Track allocations and free them at function exit (GC-free)");
     show("  --arena                         Scoped bump-arena allocator (experimental, native-only)");
+    show("  --arena-flat                    Single bump region, no scope pops (fastest arena mode)");
     show("  --static / -static               Fully-static musl-linked binary (linux64/linux32 only)");
     show("  --emit-llvm                      Emit LLVM IR instead of linking");
     show("  --verbose / -vb                  Print pipeline phases");
@@ -769,6 +770,7 @@ fnc cmd_run(args string[]) : int {
     r_static: bool = false;
     r_autofree: bool = false;
     r_arena: bool = false;
+    r_flat: bool = false;
     ri3: int = 2;
     while ri3 < sep_idx {
         ra: string = args[ri3];
@@ -786,6 +788,10 @@ fnc cmd_run(args string[]) : int {
         if ra == "--arena" {
             r_arena = true;
         }
+        if ra == "--arena-flat" {
+            r_arena = true;
+            r_flat = true;
+        }
         if ra == "--static" || ra == "-static" {
             r_static = true;
         }
@@ -800,6 +806,7 @@ fnc cmd_run(args string[]) : int {
     drv2: CompilerDriver = CompilerDriver.make();
     drv2.self_path = args[0];
     drv2.treat_from_safe = r_tfs;
+    drv2.set_arena_flat(r_flat);
     foreach _, d2 in<vector> extra_dirs { drv2.add_import_dir(d2); }
     rc2: int = drv2.compile_file(operand, tmp2, false, true, prog_args, opt_level, false, empty_libs_global(), r_verbose, false, false, r_target, r_ngc, r_static, "", r_autofree, r_arena);
     cleanup_temp(tmp2);
@@ -1694,6 +1701,7 @@ fnc main(args string[]) : int {
         output_type: string = "";
         autofree: bool = false;
         arena_f: bool = false;
+        flat_f: bool = false;
 
         i: int = loop_start;
         while i < args.size {
@@ -1794,6 +1802,12 @@ fnc main(args string[]) : int {
                 i = i + 1;
                 continue;
             }
+            if arg == "--arena-flat" {
+                arena_f = true;
+                flat_f = true;
+                i = i + 1;
+                continue;
+            }
             if arg == "--static" || arg == "-static" {
                 static_link = true;
                 i = i + 1;
@@ -1823,6 +1837,7 @@ fnc main(args string[]) : int {
         driver: CompilerDriver = CompilerDriver.make();
         driver.self_path = args[0];
         driver.treat_from_safe = tfs;
+        driver.set_arena_flat(flat_f);
         foreach _, d in<vector> extra_dirs { driver.add_import_dir(d); }
         return driver.compile_file(input_file, output_file, emit_llvm, false, "",
                                    opt_level, check_mode, extra_libs, verbose, warn_err, false,
