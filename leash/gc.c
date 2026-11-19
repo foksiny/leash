@@ -227,6 +227,15 @@ typedef struct arena_cp {
     size_t bytes;   /* cumulative allocated bytes at checkpoint (stats) */
 } arena_cp;
 
+/* Direct-mapped lookup cache for ROOT-arena blocks. The root arena never
+ * rewinds and can grow to thousands of 32 KB blocks; the linear block walk
+ * in arena_owns/arena_block_of turned every per-object root store into an
+ * O(blocks) scan. The frame arena keeps its exact linear path (its blocks
+ * are freed wholesale and checkpointed). Entries are validated by the
+ * block's own bounds before use and cleared when a block is reclaimed. */
+#define ROOT_BLOCK_CACHE_N 128u
+static ARENA_TLS arena_block* root_block_cache[ROOT_BLOCK_CACHE_N];
+
 typedef struct arena_stack {
     arena_block* head;   /* newest block */
     char* cur;           /* bump pointer */
@@ -309,6 +318,11 @@ static void arena_stage_cache_release(void);
  * tell a string payload apart from an ordinary arena allocation. */
 #define ARENA_STR_MAGIC ((uint64_t)0x4C53)            /* 'L','S' */
 #define ARENA_STR_MAGIC_SHIFT 48
+/* Forward declaration: the realloc path needs the full string-header
+ * check, while the implementation sits with the rest of the string
+ * helpers further down this file. */
+static inline int ar_str_read(const char* s, const char* region_end,
+                              uint64_t* out_total, uint64_t* out_len);
 #define ARENA_STR_TOTAL_MASK ((uint64_t)0x0000FFFFFFFFFFFFULL)
 #define ARENA_STR_LEN_MASK ((uint64_t)0x7FFFFFFFFFFFFFFFULL)
 /* Bit 63 of the length word marks a string that another variable,
@@ -378,6 +392,9 @@ static arena_block* arena_new_block_sized(arena_stack* st, size_t cap, int sole)
     st->head = b;
     st->cur = b->base;
     st->end = b->base + cap;
+    if (st == &tls_root) {
+        root_block_cache[((uintptr_t)b->base >> 12) & (ROOT_BLOCK_CACHE_N - 1)] = b;
+    }
     arena_block_stats_add(total);
     if (st == &tls_root && total > arena_root_peak_block_bytes) {
         arena_root_peak_block_bytes = total;
@@ -524,10 +541,17 @@ static void* arena_root_alloc(arena_stack* st, size_t need, size_t align) {
     return arena_alloc(st, need, align);
 }
 
+static arena_block* root_cached_block(const char* p) {
+    arena_block* b = root_block_cache[((uintptr_t)p >> 12) & (ROOT_BLOCK_CACHE_N - 1)];
+    if (b && p >= b->base && p < b->base + b->cap) return b;
+    return NULL;
+}
+
 /* Find whether `ptr` (payload) belongs to `st`'s blocks. */
 static int arena_owns(arena_stack* st, const void* ptr) {
     if (!ptr) return 0;
     const char* p = (const char*)ptr;
+    if (st == &tls_root && root_cached_block(p)) return 1;
     /* Hot path: the pointer is almost always in the newest block. */
     arena_block* h = st->head;
     if (h && p >= h->base && p < h->base + h->cap) return 1;
@@ -540,11 +564,20 @@ static int arena_owns(arena_stack* st, const void* ptr) {
 static arena_block* arena_block_of(arena_stack* st, const void* ptr) {
     if (!ptr) return NULL;
     const char* p = (const char*)ptr;
+    if (st == &tls_root) {
+        arena_block* cb = root_cached_block(p);
+        if (cb) return cb;
+    }
     /* Hot path: the newest block holds nearly every live allocation. */
     arena_block* h = st->head;
     if (h && p >= h->base && p < h->base + h->cap) return h;
     for (arena_block* b = h ? h->next : NULL; b; b = b->next) {
-        if (p >= b->base && p < b->base + b->cap) return b;
+        if (p >= b->base && p < b->base + b->cap) {
+            if (st == &tls_root) {
+                root_block_cache[((uintptr_t)p >> 12) & (ROOT_BLOCK_CACHE_N - 1)] = b;
+            }
+            return b;
+        }
     }
     return NULL;
 }
@@ -609,6 +642,11 @@ static void arena_try_free_solo(arena_stack* st, const void* ptr, size_t sub_byt
     size_t bsz = sizeof(*b) + b->cap;
     arena_block_stats_sub(bsz);
     arena_str_cache_forget(b);
+    if (st == &tls_root) {
+        for (size_t ci = 0; ci < ROOT_BLOCK_CACHE_N; ci++) {
+            if (root_block_cache[ci] == b) root_block_cache[ci] = NULL;
+        }
+    }
     free(b);
     if (st->bytes >= sub_bytes) st->bytes -= sub_bytes;
 }
@@ -994,21 +1032,29 @@ void* leash_gc_realloc(void* ptr, size_t new_size) {
             uint64_t raw = *(const uint64_t*)(const void*)((char*)ptr - 16);
             if ((raw >> ARENA_STR_MAGIC_SHIFT) == ARENA_STR_MAGIC) {
                 uint64_t total = 0, slen = 0;
-                ar_str_require((const char*)ptr, sb->base + sb->cap,
-                               "realloc of string", &total, &slen);
-                uint64_t lenword = *(const uint64_t*)(const void*)((char*)ptr - 8);
-                size_t cap = new_size > (size_t)slen ? new_size : (size_t)slen;
-                char* out = (char*)leash_gc_alloc_string_cap_in(st, (size_t)slen, cap);
-                memcpy(out, ptr, (size_t)slen + 1);
-                /* A shared string still has other holders pointing at the old
-                 * buffer (a second variable, a container slot, a struct field).
-                 * Reclaiming its dedicated sole block would leave those holders
-                 * dangling -- the same rule the append and root-store paths
-                 * already honour. */
-                if (!(lenword & ARENA_STR_SHARED_BIT)) {
-                    arena_try_free_solo(st, ptr, (size_t)total - 8);
+                /* The magic can also occur in the payload of a DIFFERENT
+                 * allocation that precedes this one in the same block (a
+                 * vector buffer reusing a reclaimed string's slot, for
+                 * example). Only the full header check proves that ptr is
+                 * really a string payload; when it fails, fall through to
+                 * the generic realloc path below, which validates the
+                 * tagged size header at ptr-8. */
+                if (ar_str_read((const char*)ptr, sb->base + sb->cap,
+                                &total, &slen)) {
+                    uint64_t lenword = *(const uint64_t*)(const void*)((char*)ptr - 8);
+                    size_t cap = new_size > (size_t)slen ? new_size : (size_t)slen;
+                    char* out = (char*)leash_gc_alloc_string_cap_in(st, (size_t)slen, cap);
+                    memcpy(out, ptr, (size_t)slen + 1);
+                    /* A shared string still has other holders pointing at the old
+                     * buffer (a second variable, a container slot, a struct field).
+                     * Reclaiming its dedicated sole block would leave those holders
+                     * dangling -- the same rule the append and root-store paths
+                     * already honour. */
+                    if (!(lenword & ARENA_STR_SHARED_BIT)) {
+                        arena_try_free_solo(st, ptr, (size_t)total - 8);
+                    }
+                    return (void*)out;
                 }
-                return (void*)out;
             }
         }
     }
@@ -7924,6 +7970,21 @@ static void root_store_blob_d(void** slot, void* val, int64_t size,
          * cap: it dies with the frame this store is escaping. */
         *slot = NULL;
         return;
+    }
+    /* Already a root object: alias it instead of deep-copying the whole
+     * subtree. Rewriting an AST field with one of its own root-owned
+     * children must not copy that child's entire subtree at every node --
+     * that turned a linear walk into a quadratic one. A root object's
+     * heap fields were already rooted when it was copied there. */
+    if (arena_owns(&tls_root, val)) {
+        arena_block* vb = arena_block_of(&tls_root, val);
+        if (vb && (char*)val - 8 >= vb->base) {
+            uint64_t vraw = *(const uint64_t*)(const void*)((char*)val - 8);
+            if (ar_hdr_valid(vraw) && ar_hdr_size(vraw) == (uint64_t)size) {
+                *slot = val;
+                return;
+            }
+        }
     }
     /* A field that points back at an instance already copied in this
      * store must point at its copy. Without the identity map a cycle

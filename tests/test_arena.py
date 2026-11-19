@@ -79,6 +79,37 @@ fnc main() : void {
 }
 """
 
+# Nested generic closers are lexed as one `>>` token and split by the
+# parser. The split must not corrupt the token vector it shares with the
+# previous root copy (tests/test_arena.py regression).
+NESTED_GENERICS = """\
+def Table : class {
+    rows: hash<string, vec<string>>;
+    more: hash<string, vec<vec<string>>>;
+}
+fnc main() {
+    t: Table = Table {};
+    show("ok");
+}
+"""
+
+# A vector that outgrows its buffer while strings are allocated in the
+# same arena block: the buffer header must not be mistaken for an arena
+# string header on realloc (tests/test_arena.py regression).
+VEC_GROWTH = """\
+fnc main() {
+    v: vec<int>;
+    s: string = "prefix";
+    i: int = 0;
+    while i < 3000 {
+        if i % 7 == 0 { s = s + "x"; }
+        v.pushb(i);
+        i = i + 1;
+    }
+    show(v.size, " ", v.get(0), " ", v.get(2999), " ", s.bsize);
+}
+"""
+
 EARLY_MULTI = """\
 fnc early(flag: bool) : string {
     if flag { return "early"; }
@@ -318,6 +349,12 @@ class TestArena(unittest.TestCase):
 
     def test_generic_class(self):
         self._assert_parity(GENERIC_CLASS, "genclass")
+
+    def test_nested_generic_closers(self):
+        self._assert_parity(NESTED_GENERICS, "nestedgen")
+
+    def test_vector_growth_after_strings(self):
+        self._assert_parity(VEC_GROWTH, "vecgrowth")
 
     def test_exec_result(self):
         self._assert_parity(EXEC_PROG, "execprog")

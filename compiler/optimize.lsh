@@ -117,6 +117,28 @@ pub def Optimizer : class {
         return this.copy_expr(e);
     }
 
+    // Optimize a call's argument list in place. Rebuilding the vector and
+    // assigning it back makes the arena root-store deep-copy every element
+    // (and its whole subtree) at every call node, turning a linear walk of
+    // the AST into a quadratic one.
+    pub fnc opt_args(e Expr) : void {
+        i: int = 0;
+        while i < e.args.size {
+            nv: Expr = this.opt_expr(e.args.get(i));
+            e.args.set(i, nv);
+            i = i + 1;
+        }
+    }
+
+    pub fnc opt_stmt_args(s Stmt) : void {
+        i2: int = 0;
+        while i2 < s.args.size {
+            nv2: Expr = this.opt_expr(s.args.get(i2));
+            s.args.set(i2, nv2);
+            i2 = i2 + 1;
+        }
+    }
+
     pub fnc opt_expr(e Expr) : Expr {
         if e == null { return e; }
 
@@ -218,17 +240,13 @@ pub def Optimizer : class {
             if e.sval == "tostring" && e.args.size == 1 && e.args.get(0).kind == ExprKind.STRING {
                 return e.args.get(0);
             }
-            na: vec<Expr>;
-            foreach _, a in<vector> e.args { na.pushb(this.opt_expr(a)); }
-            e.args = na;
+            this.opt_args(e);
             return e;
         }
 
         if e.kind == ExprKind.METHOD_CALL {
             e.left = this.opt_expr(e.left);
-            na: vec<Expr>;
-            foreach _, a in<vector> e.args { na.pushb(this.opt_expr(a)); }
-            e.args = na;
+            this.opt_args(e);
             return e;
         }
 
@@ -260,16 +278,12 @@ pub def Optimizer : class {
         }
 
         if e.kind == ExprKind.STRUCT_INIT {
-            na: vec<Expr>;
-            foreach _, a in<vector> e.args { na.pushb(this.opt_expr(a)); }
-            e.args = na;
+            this.opt_args(e);
             return e;
         }
 
         if e.kind == ExprKind.ARRAY_LIT {
-            na: vec<Expr>;
-            foreach _, a in<vector> e.args { na.pushb(this.opt_expr(a)); }
-            e.args = na;
+            this.opt_args(e);
             return e;
         }
 
@@ -330,9 +344,7 @@ pub def Optimizer : class {
             return;
         }
         if s.kind == StmtKind.SHOW {
-            na: vec<Expr>;
-            foreach _, a in<vector> s.args { na.pushb(this.opt_expr(a)); }
-            s.args = na;
+            this.opt_stmt_args(s);
             return;
         }
         if s.kind == StmtKind.EXPR {

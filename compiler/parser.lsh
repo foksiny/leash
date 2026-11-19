@@ -346,22 +346,14 @@ pub def Parser : class {
     // two GTs first (python `_eat_gt`, needed for `vec<uint<128>>`).
     pub fnc eat_gt() : Token {
         if this.check(Tok.RSHIFT) {
-            new_toks: vec<Token>;
-            bi: int = 0;
-            while bi < this.tokens.size {
-                t_tok2: Token = this.tokens.get(bi);
-                if bi == this.pos {
-                    t_tok2.kind = Tok.GT;
-                    t_tok2.val = ">";
-                    new_toks.pushb(t_tok2);
-                    extra: Token = Token.make(Tok.GT, ">", t_tok2.line, t_tok2.col);
-                    new_toks.pushb(extra);
-                } else {
-                    new_toks.pushb(t_tok2);
-                }
-                bi = bi + 1;
-            }
-            this.tokens = new_toks;
+            // Split in place: rebuilding the whole token vector would
+            // root-store every token again, which is both O(n) per
+            // nested generic and unsafe when the old and new vectors
+            // share element objects.
+            gt_tok: Token = this.tokens.get(this.pos);
+            gt_tok.kind = Tok.GT;
+            gt_tok.val = ">";
+            this.tokens.insert(this.pos + 1, Token.make(Tok.GT, ">", gt_tok.line, gt_tok.col));
             this.len = this.tokens.size;
         }
         return this.consume(Tok.GT, "expected '>'");
@@ -585,22 +577,10 @@ pub def Parser : class {
                     gargs.pushb(this.parse_type());
                 }
                 if this.check(Tok.RSHIFT) {
-                    new_toks: vec<Token>;
-                    bi: int = 0;
-                    while bi < this.tokens.size {
-                        t_tok2: Token = this.tokens.get(bi);
-                        if bi == this.pos {
-                            t_tok2.kind = Tok.GT;
-                            t_tok2.val = ">";
-                            new_toks.pushb(t_tok2);
-                            extra: Token = Token.make(Tok.GT, ">", t_tok2.line, t_tok2.col);
-                            new_toks.pushb(extra);
-                        } else {
-                            new_toks.pushb(t_tok2);
-                        }
-                        bi = bi + 1;
-                    }
-                    this.tokens = new_toks;
+                    gt_tok: Token = this.tokens.get(this.pos);
+                    gt_tok.kind = Tok.GT;
+                    gt_tok.val = ">";
+                    this.tokens.insert(this.pos + 1, Token.make(Tok.GT, ">", gt_tok.line, gt_tok.col));
                     this.len = this.tokens.size;
                 }
                 this.consume(Tok.GT, "expected '>' after generic type argument");
