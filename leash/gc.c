@@ -1716,6 +1716,19 @@ char* leash_str_concat_ex(const char* s1, const char* s2) {
     if (!s2) s2 = "";
     size_t l1 = (size_t)leash_str_bsize(s1);
     size_t l2 = (size_t)leash_str_bsize(s2);
+    /* Implicit ownership (the arena's own borrow rule): an arena string
+     * whose SHARED bit is clear has no other holder, so `a + b` can append
+     * into `a`'s existing buffer just like `a += b`. This removes the
+     * largest source of short-lived garbage in string-heavy code (LLVM IR
+     * emission), which a GC backend would collect but a bump arena would
+     * otherwise retain until the frame exits. */
+    if (l1 > 0) {
+        size_t sl = 0, cap = 0;
+        if (arena_str_info(s1, &sl, &cap) &&
+            !(*(const uint64_t*)(const void*)(s1 - 8) & ARENA_STR_SHARED_BIT)) {
+            return leash_str_append_span((char*)s1, s2, l2);
+        }
+    }
     size_t tot = l1 + l2;
     char* out = (char*)leash_gc_alloc_string_cap(tot, tot);
     if (l1) memcpy(out, s1, l1);
