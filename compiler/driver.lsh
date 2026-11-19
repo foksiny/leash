@@ -166,14 +166,9 @@ pub def CompilerDriver : class {
     pub treat_from_safe: bool;   // -tfs: suppress @from native-lib security warnings
     pub imports_fatal: bool;     // a use-import failed to resolve (python raises)
     pub deferred_parse_errors: vec<string>;  // parser diagnostics surfaced as typecheck errors (M5)
-    pub arena_flat: bool;   // --arena-flat: single bump region
 
     static pub fnc make() : CompilerDriver {
         return CompilerDriver {};
-    }
-
-    pub fnc set_arena_flat(v bool) : void {
-        this.arena_flat = v;
     }
 
     pub fnc add_import_dir(d string) : void {
@@ -981,7 +976,6 @@ pub def CompilerDriver : class {
         cg.debug_instrument = debug_instrument;
         cg.autofree = autofree;
         cg.arena = arena;
-        cg.arena_flat = arena && this.arena_flat;
         cg.warnings_as_errors = warn_err;
         cg.opt_level = opt_level;
         // Library outputs omit the @main wrapper (a consumer linking its

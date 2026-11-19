@@ -8,8 +8,6 @@ pub def CodeGen : class {
                         // library with its own main cannot link its consumer)
     pub autofree: bool;   // --autofree: track heap allocations per function
                           // and free them at function exit (no GC)
-    pub arena_flat: bool;  // --arena-flat: single bump region, no scope pops
-                           // (fastest for long-lived pointer-rich workloads)
     pub arena: bool;      // --arena (experimental): scoped bump arena —
                           // enter/exit per function, loop checkpoints,
                           // return escapes (no GC, no borrow checker)
@@ -133,7 +131,6 @@ pub def CodeGen : class {
             is_lib: false,
             autofree: false,
             arena: false,
-            arena_flat: false,
             opt_level: "2",
             warnings_as_errors: false,
             arena_audit_warns: 0,
@@ -296,7 +293,6 @@ pub def CodeGen : class {
     // registers only point at temporaries; the helpers copy them out).
     pub fnc ar_init() : void {
         if !this.arena { return; }
-        if this.arena_flat { return; }
         if this.ar_frameless { return; }
         this.ar_emit_enter();
         this.ar_loop_depth = 0;
@@ -720,7 +716,6 @@ pub def CodeGen : class {
     // back to the copy-and-root path).
     pub fnc ar_emit_root_blob_store(slot string, val string, typ string, lty string) : bool {
         if !this.arena { return false; }
-        if this.arena_flat { return false; }
         if val.bsize == 0 || val[0] != '%' { return false; }
         tt: string = this.strip_ref(typ);
         if !this.ar_root_blob_kind(tt) { return false; }
@@ -764,7 +759,6 @@ pub def CodeGen : class {
     // pointed at the root copy to keep the two in step.
     pub fnc ar_emit_outer_store(slot string, val string, typ string, lty string, src string) : string {
         if !this.arena { return val; }
-        if this.arena_flat { return val; }
         if val.bsize == 0 || val[0] != '%' { return val; }
         kind: string = this.ar_root_store_kind(typ);
         if kind.bsize > 0 {
@@ -1266,7 +1260,6 @@ pub def CodeGen : class {
     // tuple/slice aggregates call ar_cleanup_agg instead.
     pub fnc ar_cleanup(spared string, ret_typ string) : string {
         if !this.arena { return spared; }
-        if this.arena_flat { return spared; }
         if this.ar_frameless { return spared; }
         nf: int = this.ar_loop_depth + 1;
         if spared.bsize == 0 || spared == "null" || (spared.bsize > 0 && spared[0] == '@') {
@@ -1365,7 +1358,6 @@ pub def CodeGen : class {
     // into the caller's frame; the aggregate itself is stack memory.
     pub fnc ar_cleanup_slice(agg_val string, agg_lret string, ret_typ string) : string {
         if this.ar_frameless { return agg_val; }
-        if this.arena_flat { return agg_val; }
         nf2: int = this.ar_loop_depth + 1;
         slot2: string = this.new_reg();
         this.emit("  " + slot2 + " = alloca " + agg_lret + ", align 8");
@@ -2213,7 +2205,6 @@ pub def CodeGen : class {
     }
 
     pub fnc ar_loop_ok(s Stmt) : bool {
-        if this.arena_flat { return false; }
         // Arena's core win is per-iteration reclamation: always enable
         // loop checkpoints when the loop is safe to reset (no outer
         // survivors), including -O0, so churny loops don't retain all
