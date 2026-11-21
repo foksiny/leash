@@ -6783,6 +6783,29 @@ void leasharena_commit_string_h(void** slot, uint32_t hh) {
     if (out) { memcpy(out, staged, len + 1); *slot = (void*)out; }
     ah_free((arena_handle)hh);
 }
+/* Gen-validating handle wrappers for vec/hash escape staging. The staged
+ * object is structured (a te_stage), so the handle slot carries its
+ * pointer; ah_ptr() validates the generation before commit, rejecting a
+ * stale stage instead of dereferencing freed memory. */
+static uint32_t ar_stage_handle_wrap(void* stage) {
+    if (!stage) return AH_NULL;
+    arena_handle h = ah_alloc_slot();
+    if (h == AH_NULL) return AH_NULL;
+    ah_slots[h & AH_IDX_MASK].data = (char*)stage;
+    return (uint32_t)h;
+}
+uint32_t leasharena_stage_vec_h(void* v) { return ar_stage_handle_wrap(leasharena_stage_vec(v)); }
+uint32_t leasharena_stage_hash_h(void* h) { return ar_stage_handle_wrap(leasharena_stage_hash(h)); }
+void leasharena_commit_vec_h(void** slot, uint32_t hh) {
+    void* st = ah_ptr((arena_handle)hh);
+    if (!st) { if(slot)*slot=NULL; return; }
+    leasharena_commit_vec(slot, st); ah_free((arena_handle)hh);
+}
+void leasharena_commit_hash_h(void** slot, uint32_t hh) {
+    void* st = ah_ptr((arena_handle)hh);
+    if (!st) { if(slot)*slot=NULL; return; }
+    leasharena_commit_hash(slot, st); ah_free((arena_handle)hh);
+}
 void* leasharena_stage_string(void* s) {
     if (!s) return NULL;
     int64_t len_i = leash_str_bsize((const char*)s);
@@ -10085,6 +10108,10 @@ void leasharena_commit_string(void** slot, void* stage) { *slot = stage; }
  * (values live in the collectible GC heap), so the handle is unused. */
 uint32_t leasharena_stage_string_h(void* s) { (void)s; return 0xFFFFFFFFu; }
 void leasharena_commit_string_h(void** slot, uint32_t h) { (void)h; if(slot) *slot = NULL; }
+uint32_t leasharena_stage_vec_h(void* v) { (void)v; return 0xFFFFFFFFu; }
+uint32_t leasharena_stage_hash_h(void* h) { (void)h; return 0xFFFFFFFFu; }
+void leasharena_commit_vec_h(void** slot, uint32_t h) { (void)h; if(slot) *slot = NULL; }
+void leasharena_commit_hash_h(void** slot, uint32_t h) { (void)h; if(slot) *slot = NULL; }
 void* leasharena_stage_vec(void* v) { return v; }
 void leasharena_commit_vec(void** slot, void* stage) { *slot = stage; }
 void* leasharena_stage_hash(void* h) { return h; }

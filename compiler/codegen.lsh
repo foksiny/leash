@@ -895,14 +895,22 @@ pub def CodeGen : class {
             this.ar_stage_fidxs.pushb(tostring(fld_idx));
         } also this.is_vec_type(ftt) {
             fstage: string = this.new_reg();
-            this.emit("  " + fstage + " = call i8* @leasharena_stage_vec(i8* " + fiv + ")");
+            if this.bridge_host {
+                this.emit("  " + fstage + " = call i8* @leasharena_stage_vec(i8* " + fiv + ")");
+            } else {
+                this.emit("  " + fstage + " = call i32 @leasharena_stage_vec_h(i8* " + fiv + ")");
+            }
             this.ar_stage_slots.pushb(fstage);
             this.ar_stage_kinds.pushb("v");
             this.ar_stage_types.pushb(ft);
             this.ar_stage_fidxs.pushb(tostring(fld_idx));
         } also ftt.bsize > 5 && ftt[0] == 'h' && ftt[1] == 'a' && ftt[2] == 's' && ftt[3] == 'h' && ftt[4] == '<' {
             fstage: string = this.new_reg();
-            this.emit("  " + fstage + " = call i8* @leasharena_stage_hash(i8* " + fiv + ")");
+            if this.bridge_host {
+                this.emit("  " + fstage + " = call i8* @leasharena_stage_hash(i8* " + fiv + ")");
+            } else {
+                this.emit("  " + fstage + " = call i32 @leasharena_stage_hash_h(i8* " + fiv + ")");
+            }
             this.ar_stage_slots.pushb(fstage);
             this.ar_stage_kinds.pushb("h");
             this.ar_stage_types.pushb(ft);
@@ -986,9 +994,17 @@ pub def CodeGen : class {
                 this.emit("  call void @leasharena_commit_string_h(i8** " + fps + ", i32 " + stage + ")");
             }
         } also kind == "v" {
-            this.emit("  call void @leasharena_commit_vec(i8** " + fps + ", i8* " + stage + ")");
+            if this.bridge_host {
+                this.emit("  call void @leasharena_commit_vec(i8** " + fps + ", i8* " + stage + ")");
+            } else {
+                this.emit("  call void @leasharena_commit_vec_h(i8** " + fps + ", i32 " + stage + ")");
+            }
         } also kind == "h" {
-            this.emit("  call void @leasharena_commit_hash(i8** " + fps + ", i8* " + stage + ")");
+            if this.bridge_host {
+                this.emit("  call void @leasharena_commit_hash(i8** " + fps + ", i8* " + stage + ")");
+            } else {
+                this.emit("  call void @leasharena_commit_hash_h(i8** " + fps + ", i32 " + stage + ")");
+            }
         } also kind == "b" {
             fsz: string = this.llvm_type(ft);
             fpty: string = "";
@@ -12450,6 +12466,10 @@ pub def CodeGen : class {
                     "declare void @leasharena_commit_string(i8**, i8*)\n" +
                     "declare i32 @leasharena_stage_string_h(i8*)\n" +
                     "declare void @leasharena_commit_string_h(i8**, i32)\n" +
+                    "declare i32 @leasharena_stage_vec_h(i8*)\n" +
+                    "declare void @leasharena_commit_vec_h(i8**, i32)\n" +
+                    "declare i32 @leasharena_stage_hash_h(i8*)\n" +
+                    "declare void @leasharena_commit_hash_h(i8**, i32)\n" +
                     "declare i8* @leasharena_stage_vec(i8*)\n" +
                     "declare void @leasharena_commit_vec(i8**, i8*)\n" +
                     "declare i8* @leasharena_stage_hash(i8*)\n" +
