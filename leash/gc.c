@@ -362,7 +362,141 @@ static ARENA_TLS const char* arena_str_cache_end;
  * thousand unique buffers. */
 #define ARENA_INTERN_BITS 20
 #define ARENA_INTERN_N (1u << ARENA_INTERN_BITS)
-static ARENA_TLS void* arena_str_intern[ARENA_INTERN_N];
+/* ------------------------------------------------------------------
+ * 32-bit handles and a compacting data stack (arena strings).
+ *
+ * A handle packs a 20-bit slot index and a 12-bit generation:
+ *   idx  = h & 0xFFFFF, gen = h >> 20.
+ * The slot table owns the stable address; the compacting stack owns the
+ * bytes. Moving a string updates only its slot, so every handle stays
+ * valid across a compaction. This is the foundation for replacing raw
+ * arena pointers with handles in the IR.
+ * ------------------------------------------------------------------ */
+#if defined(LEASH_ARENA)
+typedef uint32_t arena_handle;
+#define AH_IDX_MASK ((uint32_t)0x000FFFFFu)
+#define AH_GEN_SHIFT 20
+#define AH_NULL ((arena_handle)0xFFFFFFFFu)
+
+typedef struct {
+    char* data;      /* owned by the compacting stack, or NULL */
+    uint32_t len;
+    uint16_t gen;
+    uint16_t used;
+} arena_handle_slot;
+
+static arena_handle_slot* ah_slots;
+static size_t ah_slot_count, ah_slot_cap;
+static char* ah_stack;
+static size_t ah_stack_len, ah_stack_cap;
+
+static ARENA_TLS size_t ah_free_head; /* index+1 of first free slot, 0 = none */
+static arena_handle ah_alloc_slot(void) {
+    if (ah_free_head) {
+        size_t i = ah_free_head - 1;
+        arena_handle_slot* s = &ah_slots[i];
+        ah_free_head = (size_t)(uintptr_t)s->data;
+        s->used = 1;
+        s->gen = (uint16_t)((s->gen + 1) & 0xFFF);
+        s->data = NULL;
+        return (arena_handle)((i & AH_IDX_MASK) | ((uint32_t)s->gen << AH_GEN_SHIFT));
+    }
+    if (ah_slot_count >= AH_IDX_MASK) return AH_NULL;
+    if (ah_slot_count == ah_slot_cap) {
+        size_t nc = ah_slot_cap ? ah_slot_cap*2 : 256;
+        arena_handle_slot* ns = (arena_handle_slot*)realloc(ah_slots,nc*sizeof(*ns));
+        if (!ns) return AH_NULL;
+        memset(ns+ah_slot_cap,0,(nc-ah_slot_cap)*sizeof(*ns));
+        ah_slots=ns; ah_slot_cap=nc;
+    }
+    size_t i = ah_slot_count++;
+    ah_slots[i].used=1; ah_slots[i].gen=1;
+    return (arena_handle)(i | ((uint32_t)1<<AH_GEN_SHIFT));
+}
+
+/* Copy `len` bytes into the compacting stack and return a handle. */
+static arena_handle ah_push(const char* bytes, size_t len) {
+    arena_handle h = ah_alloc_slot();
+    if (h == AH_NULL) return AH_NULL;
+    if (ah_stack_len + len + 1 > ah_stack_cap) {
+        size_t nc = ah_stack_cap ? ah_stack_cap * 2 : 4096;
+        while (nc < ah_stack_len + len + 1) nc *= 2;
+        char* ns = (char*)realloc(ah_stack, nc);
+        if (!ns) return AH_NULL;
+        ah_stack = ns;
+        ah_stack_cap = nc;
+    }
+    char* dst = ah_stack + ah_stack_len;
+    if (len) memcpy(dst, bytes, len);
+    dst[len] = '\0';
+    ah_stack_len += len + 1;
+    arena_handle_slot* s = &ah_slots[h & AH_IDX_MASK];
+    s->data = dst;
+    s->len = (uint32_t)len;
+    return h;
+}
+
+static char* ah_ptr(arena_handle h) {
+    if (h == AH_NULL) return NULL;
+    arena_handle_slot* s = &ah_slots[h & AH_IDX_MASK];
+    if (!s->used || s->gen != (uint16_t)(h >> AH_GEN_SHIFT)) return NULL;
+    return s->data;
+}
+
+static void ah_free(arena_handle h) {
+    if (h == AH_NULL) return;
+    arena_handle_slot* s = &ah_slots[h & AH_IDX_MASK];
+    if (!s->used || s->gen != (uint16_t)(h >> AH_GEN_SHIFT)) return;
+    size_t idx=(size_t)(h & AH_IDX_MASK);
+    s->used=0; s->data=(char*)(uintptr_t)ah_free_head; s->len=0;
+    ah_free_head=idx+1;
+}
+
+/* Compact: rewrite all live strings into a fresh contiguous block and
+ * repoint their slots. Handles are unchanged. */
+static void ah_shutdown(void) {
+    free(ah_slots); ah_slots = NULL; ah_slot_count = ah_slot_cap = 0;
+    free(ah_stack); ah_stack = NULL; ah_stack_len = ah_stack_cap = 0;
+}
+
+static void ah_compact(void) {
+    size_t need = 0;
+    for (size_t i = 0; i < ah_slot_count; i++)
+        if (ah_slots[i].used && ah_slots[i].data) need += ah_slots[i].len + 1;
+    char* fresh = (char*)malloc(need ? need : 1);
+    if (!fresh) return;
+    size_t off = 0;
+    for (size_t i = 0; i < ah_slot_count; i++) {
+        arena_handle_slot* s = &ah_slots[i];
+        if (!s->used || !s->data) continue;
+        memcpy(fresh + off, s->data, s->len + 1);
+        s->data = fresh + off;
+        off += s->len + 1;
+    }
+    free(ah_stack);
+    ah_stack = fresh;
+    ah_stack_len = off;
+    ah_stack_cap = need;
+}
+
+/* Test hook: expose the handle API without changing the public header. */
+int leasharena_handle_selftest(void);
+int leasharena_handle_selftest(void) {
+    arena_handle a = ah_push("alpha", 5);
+    arena_handle b = ah_push("beta", 4);
+    if (!ah_ptr(a) || strcmp(ah_ptr(a), "alpha")) return 1;
+    if (!ah_ptr(b) || strcmp(ah_ptr(b), "beta")) return 2;
+    ah_free(a);
+    if (ah_ptr(a)) return 3;
+    ah_compact();
+    if (!ah_ptr(b) || strcmp(ah_ptr(b), "beta")) return 4;
+    ah_free(b);
+    return 0;
+}
+#endif /* LEASH_ARENA */
+static ARENA_TLS arena_handle arena_str_intern[ARENA_INTERN_N];
+
+
 
 /* Zero-header compact data stack for interned root strings. Chunks are
  * never reallocated (pointers stay stable); lengths live in a parallel
@@ -373,21 +507,28 @@ static ARENA_TLS void* arena_str_intern[ARENA_INTERN_N];
 static ARENA_TLS char** ar_istr_chunks;
 static ARENA_TLS size_t ar_istr_nchunk, ar_istr_chunk_cap, ar_istr_off;
 static ARENA_TLS uint32_t* ar_istr_len; /* indexed by intern slot */
-static char* ar_istr_put(const char* s, size_t len) {
+/* Store an interned string in the compact data stack and return a
+ * generation-validating handle to it. The handle owns the stable address
+ * in ah_slots; compaction/intern lookups validate through ah_ptr(). */
+static arena_handle ar_istr_put(const char* s, size_t len) {
+    arena_handle h = ah_alloc_slot();
+    if (h == AH_NULL) return AH_NULL;
     if (!ar_istr_len) ar_istr_len=(uint32_t*)calloc(ARENA_INTERN_N,sizeof(uint32_t));
     if (!ar_istr_chunks || ar_istr_off + len + 1 > AR_ISTR_CHUNK) {
         if (ar_istr_nchunk==ar_istr_chunk_cap) {
             size_t nc=ar_istr_chunk_cap?ar_istr_chunk_cap*2:8;
             char** nn=(char**)realloc(ar_istr_chunks,nc*sizeof(*nn));
-            if(!nn)return NULL; ar_istr_chunks=nn; ar_istr_chunk_cap=nc;
+            if(!nn)return AH_NULL; ar_istr_chunks=nn; ar_istr_chunk_cap=nc;
         }
         ar_istr_chunks[ar_istr_nchunk]=(char*)malloc(AR_ISTR_CHUNK);
-        if(!ar_istr_chunks[ar_istr_nchunk])return NULL;
+        if(!ar_istr_chunks[ar_istr_nchunk])return AH_NULL;
         ar_istr_nchunk++; ar_istr_off=0;
     }
     char* d=ar_istr_chunks[ar_istr_nchunk-1]+ar_istr_off;
     if(len)memcpy(d,s,len); d[len]='\0'; ar_istr_off+=len+1;
-    return d;
+    arena_handle_slot* hs=&ah_slots[h & AH_IDX_MASK];
+    hs->data=d; hs->len=(uint32_t)len;
+    return h;
 }
 
 static uint64_t ar_str_hash_bytes(const char* s, size_t n) {
@@ -1173,6 +1314,7 @@ void leash_gc_init(void) {
      * memset cost on scope exit/reset (e.g. for peak-speed runs where
      * lifetime correctness is already established). */
     {
+        for (size_t i=0;i<ARENA_INTERN_N;i++) arena_str_intern[i]=AH_NULL;
         const char* p = getenv("LEASH_ARENA_POISON");
         leash_arena_poison = (!p || p[0] != '0' || p[1] != '\0') ? 1 : 0;
         leash_arena_poison_on = leash_arena_poison;
@@ -7919,20 +8061,27 @@ void leasharena_root_copy_string(void** slot) {
     size_t idx = (size_t)(h & (ARENA_INTERN_N - 1));
     for (size_t probe = 0; probe < 8; probe++) {
         size_t at = (idx + probe) & (ARENA_INTERN_N - 1);
-        char* cand = (char*)arena_str_intern[at];
-        if (!cand) break;
+        arena_handle ih = arena_str_intern[at];
+        if (ih == AH_NULL) break;
+        /* Generation-validated dereference of the persistent root slot. */
+        char* cand = ah_ptr(ih);
+        if (!cand) continue;               /* stale generation: skip */
         if (ar_istr_len && ar_istr_len[at] == len && memcmp(cand, s, len) == 0) {
             *slot = (void*)cand;
             return;
         }
     }
-    char* out = ar_istr_put(s, len);
-    if (!out) return;
+    arena_handle ih = ar_istr_put(s, len);
+    if (ih == AH_NULL) return;
     for (size_t probe = 0; probe < 8; probe++) {
         size_t at = (idx + probe) & (ARENA_INTERN_N - 1);
-        if (!arena_str_intern[at]) { arena_str_intern[at] = out; if(ar_istr_len)ar_istr_len[at]=(uint32_t)len; break; }
+        if (arena_str_intern[at] == AH_NULL) {
+            arena_str_intern[at] = ih;
+            if(ar_istr_len)ar_istr_len[at]=(uint32_t)len;
+            break;
+        }
     }
-    *slot = (void*)out;
+    *slot = (void*)ah_ptr(ih);
 }
 
 void leasharena_root_copy_vec(void** slot) {
@@ -9945,136 +10094,4 @@ void leasharena_loop_exit(int64_t frame) { (void)frame; }
 
 #endif /* !LEASH_ARENA && !NO_GC */
 
-/* ------------------------------------------------------------------
- * 32-bit handles and a compacting data stack (arena strings).
- *
- * A handle packs a 20-bit slot index and a 12-bit generation:
- *   idx  = h & 0xFFFFF, gen = h >> 20.
- * The slot table owns the stable address; the compacting stack owns the
- * bytes. Moving a string updates only its slot, so every handle stays
- * valid across a compaction. This is the foundation for replacing raw
- * arena pointers with handles in the IR.
- * ------------------------------------------------------------------ */
-#if defined(LEASH_ARENA)
-typedef uint32_t arena_handle;
-#define AH_IDX_MASK ((uint32_t)0x000FFFFFu)
-#define AH_GEN_SHIFT 20
-#define AH_NULL ((arena_handle)0xFFFFFFFFu)
 
-typedef struct {
-    char* data;      /* owned by the compacting stack, or NULL */
-    uint32_t len;
-    uint16_t gen;
-    uint16_t used;
-} arena_handle_slot;
-
-static arena_handle_slot* ah_slots;
-static size_t ah_slot_count, ah_slot_cap;
-static char* ah_stack;
-static size_t ah_stack_len, ah_stack_cap;
-
-static arena_handle ah_alloc_slot(void) {
-    for (size_t i = 0; i < ah_slot_count; i++) {
-        if (!ah_slots[i].used) {
-            ah_slots[i].used = 1;
-            ah_slots[i].gen = (uint16_t)((ah_slots[i].gen + 1) & 0xFFF);
-            return (arena_handle)((i & AH_IDX_MASK) |
-                                  ((uint32_t)ah_slots[i].gen << AH_GEN_SHIFT));
-        }
-    }
-    if (ah_slot_count >= AH_IDX_MASK) return AH_NULL;
-    if (ah_slot_count == ah_slot_cap) {
-        size_t nc = ah_slot_cap ? ah_slot_cap * 2 : 256;
-        arena_handle_slot* ns = (arena_handle_slot*)realloc(
-            ah_slots, nc * sizeof(*ns));
-        if (!ns) return AH_NULL;
-        memset(ns + ah_slot_cap, 0, (nc - ah_slot_cap) * sizeof(*ns));
-        ah_slots = ns;
-        ah_slot_cap = nc;
-    }
-    size_t i = ah_slot_count++;
-    ah_slots[i].used = 1;
-    ah_slots[i].gen = 1;
-    return (arena_handle)(i | ((uint32_t)1 << AH_GEN_SHIFT));
-}
-
-/* Copy `len` bytes into the compacting stack and return a handle. */
-static arena_handle ah_push(const char* bytes, size_t len) {
-    arena_handle h = ah_alloc_slot();
-    if (h == AH_NULL) return AH_NULL;
-    if (ah_stack_len + len + 1 > ah_stack_cap) {
-        size_t nc = ah_stack_cap ? ah_stack_cap * 2 : 4096;
-        while (nc < ah_stack_len + len + 1) nc *= 2;
-        char* ns = (char*)realloc(ah_stack, nc);
-        if (!ns) return AH_NULL;
-        ah_stack = ns;
-        ah_stack_cap = nc;
-    }
-    char* dst = ah_stack + ah_stack_len;
-    if (len) memcpy(dst, bytes, len);
-    dst[len] = '\0';
-    ah_stack_len += len + 1;
-    arena_handle_slot* s = &ah_slots[h & AH_IDX_MASK];
-    s->data = dst;
-    s->len = (uint32_t)len;
-    return h;
-}
-
-static char* ah_ptr(arena_handle h) {
-    if (h == AH_NULL) return NULL;
-    arena_handle_slot* s = &ah_slots[h & AH_IDX_MASK];
-    if (!s->used || s->gen != (uint16_t)(h >> AH_GEN_SHIFT)) return NULL;
-    return s->data;
-}
-
-static void ah_free(arena_handle h) {
-    if (h == AH_NULL) return;
-    arena_handle_slot* s = &ah_slots[h & AH_IDX_MASK];
-    if (!s->used || s->gen != (uint16_t)(h >> AH_GEN_SHIFT)) return;
-    s->used = 0;
-    s->data = NULL;
-    s->len = 0;
-}
-
-/* Compact: rewrite all live strings into a fresh contiguous block and
- * repoint their slots. Handles are unchanged. */
-static void ah_shutdown(void) {
-    free(ah_slots); ah_slots = NULL; ah_slot_count = ah_slot_cap = 0;
-    free(ah_stack); ah_stack = NULL; ah_stack_len = ah_stack_cap = 0;
-}
-
-static void ah_compact(void) {
-    size_t need = 0;
-    for (size_t i = 0; i < ah_slot_count; i++)
-        if (ah_slots[i].used && ah_slots[i].data) need += ah_slots[i].len + 1;
-    char* fresh = (char*)malloc(need ? need : 1);
-    if (!fresh) return;
-    size_t off = 0;
-    for (size_t i = 0; i < ah_slot_count; i++) {
-        arena_handle_slot* s = &ah_slots[i];
-        if (!s->used || !s->data) continue;
-        memcpy(fresh + off, s->data, s->len + 1);
-        s->data = fresh + off;
-        off += s->len + 1;
-    }
-    free(ah_stack);
-    ah_stack = fresh;
-    ah_stack_len = off;
-    ah_stack_cap = need;
-}
-
-/* Test hook: expose the handle API without changing the public header. */
-int leasharena_handle_selftest(void);
-int leasharena_handle_selftest(void) {
-    arena_handle a = ah_push("alpha", 5);
-    arena_handle b = ah_push("beta", 4);
-    if (!ah_ptr(a) || strcmp(ah_ptr(a), "alpha")) return 1;
-    if (!ah_ptr(b) || strcmp(ah_ptr(b), "beta")) return 2;
-    ah_free(a);
-    if (ah_ptr(a)) return 3;
-    ah_compact();
-    if (!ah_ptr(b) || strcmp(ah_ptr(b), "beta")) return 4;
-    ah_free(b);
-    return 0;
-}
-#endif /* LEASH_ARENA */
