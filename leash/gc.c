@@ -576,6 +576,26 @@ static ARENA_TLS size_t ar_vroot_n;
 void* leasharena_root_store_string_impl(void** slot, void* val);
 void* leasharena_root_store_vec_typed_impl(void** slot, void* val, const ar_te* tree, int32_t node);
 void* leasharena_root_store_hash_typed_impl(void** slot, void* val, const ar_te* tree, int32_t node);
+/* ---- persistent root-arena field slots ----
+ * A slot whose ADDRESS is in tls_root is a field of a root-owned aggregate:
+ * its address is stable for the whole program. Such slots are exact roots. */
+#define AR_RSLOT_MAX 16384
+typedef struct { void** slot; const ar_te* tree; int32_t node; } ar_rslot_ent;
+static ARENA_TLS ar_rslot_ent ar_rslot[AR_RSLOT_MAX];
+static ARENA_TLS size_t ar_rslot_n;
+static void ar_rslot_add(void** slot, const ar_te* tree, int32_t node) {
+    if (!ar_escape_reg_on || !slot) return;
+    arena_block_ent* se = ar_btab_find_any((const void*)slot);
+    if (!se || se->st != &tls_root) return;
+    for (size_t i=0;i<ar_rslot_n;i++) if (ar_rslot[i].slot==slot) {
+        ar_rslot[i].tree=tree; ar_rslot[i].node=node; return; }
+    if (ar_rslot_n < AR_RSLOT_MAX) {
+        ar_rslot[ar_rslot_n].slot=slot;
+        ar_rslot[ar_rslot_n].tree=tree;
+        ar_rslot[ar_rslot_n].node=node;
+        ar_rslot_n++;
+    }
+}
 static void ar_vroot_add(void* v, const ar_te* tree, int32_t node) {
     if (!ar_escape_reg_on || !v) return;
     /* Only values actually in the root arena: compact-stack strings are
@@ -7514,6 +7534,16 @@ static void ar_etrace_roots(void) {
         if(ar_vroot[i].tree&&ar_vroot[i].node>=0)
             ar_etrace_walk(v,ar_vroot[i].tree,ar_vroot[i].node,0);
     }
+    for(size_t i=0;i<ar_rslot_n;i++){
+        void* v=*ar_rslot[i].slot;
+        if(!v) continue;
+        arena_block_ent* e=ar_btab_find_any(v);
+        if(e&&e->st==&tls_root&&!ar_etrace_mark[e->b->seq&(AR_ETRACE_N-1)]){
+            ar_etrace_mark[e->b->seq&(AR_ETRACE_N-1)]=1; roots++;
+            if(ar_rslot[i].tree&&ar_rslot[i].node>=0)
+                ar_etrace_walk(v,ar_rslot[i].tree,ar_rslot[i].node,0);
+        }
+    }
     /* Seed from a conservative C-stack scan: at shutdown these are the
      * root pointers still held by live frames -- the real root set. */
     if (ar_etrace_stack_top) {
@@ -7552,7 +7582,7 @@ static void ar_etrace_roots(void) {
             }
     } while (again);
     size_t live=0; for(arena_block* b=tls_root.head;b;b=b->next) if(ar_etrace_mark[b->seq&(AR_ETRACE_N-1)])live++;
-    fprintf(stderr,"ETRACE descriptor_roots=%zu traced_blocks=%zu root_values=%zu\n",roots,live,ar_vroot_n);
+    fprintf(stderr,"ETRACE descriptor_roots=%zu traced_blocks=%zu root_values=%zu root_slots=%zu\n",roots,live,ar_vroot_n,ar_rslot_n);
 }
 /* Commit a staged string into the caller's frame. The stage block is
  * left alone: the stage release owns it. */
@@ -8450,7 +8480,7 @@ static void arena_root_reclaim_string(char* ptr) {
  * exact-root tracing. Opt-in via ar_escape_reg_on. */
 void* leasharena_root_store_string(void** slot, void* val) {
     void* r = leasharena_root_store_string_impl(slot, val);
-    ar_vroot_add(r, NULL, -1);
+    ar_rslot_add(slot, NULL, -1); ar_vroot_add(r, NULL, -1);
     return r;
 }
 void* leasharena_root_store_string_impl(void** slot, void* val) {
@@ -8580,7 +8610,7 @@ void* leasharena_root_store_vec(void** slot, void* val) {
 void* leasharena_root_store_vec_typed(void** slot, void* val,
                                       const ar_te* tree, int32_t node) {
     void* r = leasharena_root_store_vec_typed_impl(slot, val, tree, node);
-    ar_vroot_add(r, tree, node);
+    ar_rslot_add(slot, tree, node); ar_vroot_add(r, tree, node);
     return r;
 }
 void* leasharena_root_store_vec_typed_impl(void** slot, void* val,
@@ -8810,7 +8840,7 @@ static int hash_rebuild_root(LeashHash* dst, LeashHash* src,
 void* leasharena_root_store_hash_typed(void** slot, void* val,
                                        const ar_te* tree, int32_t node) {
     void* r = leasharena_root_store_hash_typed_impl(slot, val, tree, node);
-    ar_vroot_add(r, tree, node);
+    ar_rslot_add(slot, tree, node); ar_vroot_add(r, tree, node);
     return r;
 }
 void* leasharena_root_store_hash_typed_impl(void** slot, void* val,
