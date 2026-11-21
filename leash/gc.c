@@ -364,6 +364,32 @@ static ARENA_TLS const char* arena_str_cache_end;
 #define ARENA_INTERN_N (1u << ARENA_INTERN_BITS)
 static ARENA_TLS void* arena_str_intern[ARENA_INTERN_N];
 
+/* Zero-header compact data stack for interned root strings. Chunks are
+ * never reallocated (pointers stay stable); lengths live in a parallel
+ * table indexed by the intern slot, so no per-string allocation header
+ * is needed. The generated IR reads these via the strlen fallback in
+ * arena_str_info — safe because interned strings are immutable. */
+#define AR_ISTR_CHUNK ((size_t)1<<20)
+static ARENA_TLS char** ar_istr_chunks;
+static ARENA_TLS size_t ar_istr_nchunk, ar_istr_chunk_cap, ar_istr_off;
+static ARENA_TLS uint32_t* ar_istr_len; /* indexed by intern slot */
+static char* ar_istr_put(const char* s, size_t len) {
+    if (!ar_istr_len) ar_istr_len=(uint32_t*)calloc(ARENA_INTERN_N,sizeof(uint32_t));
+    if (!ar_istr_chunks || ar_istr_off + len + 1 > AR_ISTR_CHUNK) {
+        if (ar_istr_nchunk==ar_istr_chunk_cap) {
+            size_t nc=ar_istr_chunk_cap?ar_istr_chunk_cap*2:8;
+            char** nn=(char**)realloc(ar_istr_chunks,nc*sizeof(*nn));
+            if(!nn)return NULL; ar_istr_chunks=nn; ar_istr_chunk_cap=nc;
+        }
+        ar_istr_chunks[ar_istr_nchunk]=(char*)malloc(AR_ISTR_CHUNK);
+        if(!ar_istr_chunks[ar_istr_nchunk])return NULL;
+        ar_istr_nchunk++; ar_istr_off=0;
+    }
+    char* d=ar_istr_chunks[ar_istr_nchunk-1]+ar_istr_off;
+    if(len)memcpy(d,s,len); d[len]='\0'; ar_istr_off+=len+1;
+    return d;
+}
+
 static uint64_t ar_str_hash_bytes(const char* s, size_t n) {
     uint64_t h = 1469598103934665603ULL;
     for (size_t i = 0; i < n; i++) { h ^= (unsigned char)s[i]; h *= 1099511628211ULL; }
@@ -1184,6 +1210,9 @@ void leash_gc_shutdown(void) {
      * program exit. */
     arena_free_stack(&leasharena_tls_ar);
     arena_free_stack(&tls_root);
+    for (size_t i=0;i<ar_istr_nchunk;i++) free(ar_istr_chunks[i]);
+    free(ar_istr_chunks); ar_istr_chunks=NULL; ar_istr_nchunk=ar_istr_chunk_cap=ar_istr_off=0;
+    free(ar_istr_len); ar_istr_len=NULL;
     free(arena_block_tab);
     arena_block_tab = NULL;
 #if defined(LEASH_ARENA)
@@ -7889,22 +7918,19 @@ void leasharena_root_copy_string(void** slot) {
     uint64_t h = ar_str_hash_bytes(s, len);
     size_t idx = (size_t)(h & (ARENA_INTERN_N - 1));
     for (size_t probe = 0; probe < 8; probe++) {
-        char* cand = (char*)arena_str_intern[(idx + probe) & (ARENA_INTERN_N - 1)];
+        size_t at = (idx + probe) & (ARENA_INTERN_N - 1);
+        char* cand = (char*)arena_str_intern[at];
         if (!cand) break;
-        size_t clen = 0;
-        if (arena_str_info(cand, &clen, NULL) && clen == len && memcmp(cand, s, len) == 0) {
+        if (ar_istr_len && ar_istr_len[at] == len && memcmp(cand, s, len) == 0) {
             *slot = (void*)cand;
             return;
         }
     }
-    char* out = (char*)leasharena_root_alloc_string_cap(len, len);
-    memcpy(out, s, len + 1);
-    /* Interned strings must never be mutated in place, and must never be
-     * confused with an exclusive slot copy during root-store reuse. */
-    *(uint64_t*)(void*)(out - 8) |= (ARENA_STR_SHARED_BIT | ARENA_STR_INTERN_BIT);
+    char* out = ar_istr_put(s, len);
+    if (!out) return;
     for (size_t probe = 0; probe < 8; probe++) {
         size_t at = (idx + probe) & (ARENA_INTERN_N - 1);
-        if (!arena_str_intern[at]) { arena_str_intern[at] = out; break; }
+        if (!arena_str_intern[at]) { arena_str_intern[at] = out; if(ar_istr_len)ar_istr_len[at]=(uint32_t)len; break; }
     }
     *slot = (void*)out;
 }
