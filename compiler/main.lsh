@@ -366,6 +366,7 @@ fnc print_usage() : void {
     show("  --no-garbage-collector / -ngc    Disable garbage collector (plain C malloc/free runtime)");
     show("  --autofree / -af                Track allocations and free them at function exit (GC-free)");
     show("  --arena                         Scoped bump-arena allocator (experimental, native-only)");
+    show("  --arena-emit                    Emit arena IR but link the GC runtime (self-host bridge)");
     show("  --static / -static               Fully-static musl-linked binary (linux64/linux32 only)");
     show("  --emit-llvm                      Emit LLVM IR instead of linking");
     show("  --verbose / -vb                  Print pipeline phases");
@@ -1694,6 +1695,7 @@ fnc main(args string[]) : int {
         output_type: string = "";
         autofree: bool = false;
         arena_f: bool = false;
+        arena_emit_f: bool = false;
 
         i: int = loop_start;
         while i < args.size {
@@ -1794,6 +1796,11 @@ fnc main(args string[]) : int {
                 i = i + 1;
                 continue;
             }
+            if arg == "--arena-emit" {
+                arena_emit_f = true;
+                i = i + 1;
+                continue;
+            }
             if arg == "--static" || arg == "-static" {
                 static_link = true;
                 i = i + 1;
@@ -1820,9 +1827,26 @@ fnc main(args string[]) : int {
             i = i + 1;
         }
 
+        // Self-hosting bridge: when the compiler builds itself with
+        // --arena, emit arena IR but link the GC runtime. The resulting
+        // compiler still emits pure arena binaries for other programs,
+        // while its own self-build stays within the memory budget.
+        if arena_f && !arena_emit_f && input_file.bsize >= 17 {
+            suffix: string = "";
+            si: int = input_file.bsize - 17;
+            while si < input_file.bsize {
+                suffix = suffix + input_file[si];
+                si = si + 1;
+            }
+            if suffix == "compiler/main.lsh" {
+                arena_emit_f = true;
+                arena_f = false;
+            }
+        }
         driver: CompilerDriver = CompilerDriver.make();
         driver.self_path = args[0];
         driver.treat_from_safe = tfs;
+        driver.emit_arena_only = arena_emit_f;
         foreach _, d in<vector> extra_dirs { driver.add_import_dir(d); }
         return driver.compile_file(input_file, output_file, emit_llvm, false, "",
                                    opt_level, check_mode, extra_libs, verbose, warn_err, false,

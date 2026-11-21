@@ -166,6 +166,7 @@ pub def CompilerDriver : class {
     pub treat_from_safe: bool;   // -tfs: suppress @from native-lib security warnings
     pub imports_fatal: bool;     // a use-import failed to resolve (python raises)
     pub deferred_parse_errors: vec<string>;  // parser diagnostics surfaced as typecheck errors (M5)
+    pub emit_arena_only: bool;   // emit arena IR but link the GC runtime (self-host bridge)
 
     static pub fnc make() : CompilerDriver {
         return CompilerDriver {};
@@ -975,7 +976,8 @@ pub def CompilerDriver : class {
         }
         cg.debug_instrument = debug_instrument;
         cg.autofree = autofree;
-        cg.arena = arena;
+        cg.arena = arena || this.emit_arena_only;
+        cg.bridge_host = this.emit_arena_only;
         cg.warnings_as_errors = warn_err;
         cg.opt_level = opt_level;
         // Library outputs omit the @main wrapper (a consumer linking its
@@ -1179,6 +1181,9 @@ pub def CompilerDriver : class {
         } also target_name == "macos-arm" {
             cc_flags = "--target=aarch64-apple-darwin";
             is_macos = true;
+        }
+        if this.emit_arena_only {
+            rt_extra = rt_extra + " -DLEASH_ARENA_EMIT_HOST";
         }
         if arena {
             // Scoped bump-arena backend (experimental): thread-local
