@@ -6764,6 +6764,25 @@ void leasharena_escape_slice(void* agg, int64_t elem_size, int64_t nframes) {
 }
 
 /* ---- stage/commit (tuple returns) and root copies (spawn args) ---- */
+/* Gen-validating handle-based string stage/commit. The staged bytes live
+ * in the compact handle data stack; the handle is generation-validated on
+ * commit, so a stale stage is rejected instead of dereferenced. This is
+ * the handle-indirection path emitted by the arena IR for string escapes. */
+uint32_t leasharena_stage_string_h(void* s) {
+    if (!s) return AH_NULL;
+    int64_t len_i = leash_str_bsize((const char*)s);
+    size_t len = len_i > 0 ? (size_t)len_i : 0;
+    return (uint32_t)ar_istr_put((const char*)s, len);
+}
+void leasharena_commit_string_h(void** slot, uint32_t hh) {
+    if (!slot) return;
+    char* staged = ah_ptr((arena_handle)hh);
+    if (!staged) { *slot = NULL; return; }
+    size_t len = strlen(staged);
+    char* out = leash_gc_alloc_string_cap(len, len);
+    if (out) { memcpy(out, staged, len + 1); *slot = (void*)out; }
+    ah_free((arena_handle)hh);
+}
 void* leasharena_stage_string(void* s) {
     if (!s) return NULL;
     int64_t len_i = leash_str_bsize((const char*)s);
@@ -10062,6 +10081,10 @@ void leasharena_escape_slice(void* agg, int64_t esz, int64_t n) { (void)agg; (vo
 
 void* leasharena_stage_string(void* s) { return s; }
 void leasharena_commit_string(void** slot, void* stage) { *slot = stage; }
+/* Handle-based stage/commit shims: in GC/stub modes staging is a no-op
+ * (values live in the collectible GC heap), so the handle is unused. */
+uint32_t leasharena_stage_string_h(void* s) { (void)s; return 0xFFFFFFFFu; }
+void leasharena_commit_string_h(void** slot, uint32_t h) { (void)h; if(slot) *slot = NULL; }
 void* leasharena_stage_vec(void* v) { return v; }
 void leasharena_commit_vec(void** slot, void* stage) { *slot = stage; }
 void* leasharena_stage_hash(void* h) { return h; }
