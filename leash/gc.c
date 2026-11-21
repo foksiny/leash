@@ -563,6 +563,7 @@ static ARENA_TLS int ar_escape_reg_on;
 typedef struct { const ar_te* tree; int32_t node; } ar_escape_desc;
 static ARENA_TLS ar_escape_desc ar_escape_descs[AR_ESCAPE_RING];
 static void ar_etrace_roots(void);
+static void ar_etrace_bounds(void);
 /* ---- rooted-value registry (value snapshots, NOT slots) ----
  * At the end of a root_store, the rooted value lives permanently in the
  * root arena / compact stack, so its pointer stays valid for the whole
@@ -1366,7 +1367,7 @@ void leash_gc_init(void) {
      * lifetime correctness is already established). */
     {
         for (size_t i=0;i<ARENA_INTERN_N;i++) arena_str_intern[i]=AH_NULL;
-        { const char* t=getenv("LEASH_ARENA_TRACE_ROOTS"); ar_escape_reg_on=(t&&t[0]!='0')?1:0; }
+        { const char* t=getenv("LEASH_ARENA_TRACE_ROOTS"); ar_escape_reg_on=(t&&t[0]!='0')?1:0; if(ar_escape_reg_on) ar_etrace_bounds(); }
         const char* p = getenv("LEASH_ARENA_POISON");
         leash_arena_poison = (!p || p[0] != '0' || p[1] != '\0') ? 1 : 0;
         leash_arena_poison_on = leash_arena_poison;
@@ -7439,6 +7440,18 @@ static int te_any_dies(void* val, const ar_te* tree, int32_t node, int depth) {
  * ar_te descriptors registered at each escape site. */
 #define AR_ETRACE_N (1u<<13)
 static ARENA_TLS unsigned char* ar_etrace_mark;
+static char* ar_etrace_stack_top;
+static void ar_etrace_bounds(void) {
+#if defined(__linux__)
+    pthread_attr_t attr; void* addr=NULL; size_t size=0;
+    if(pthread_getattr_np(pthread_self(),&attr)==0 &&
+       pthread_attr_getstack(&attr,&addr,&size)==0 && addr && size)
+        ar_etrace_stack_top=(char*)addr+size;
+    pthread_attr_destroy(&attr);
+#elif defined(__APPLE__)
+    ar_etrace_stack_top=(char*)pthread_get_stackaddr_np(pthread_self());
+#endif
+}
 static void ar_etrace_walk(void* val, const ar_te* tree, int32_t node, int depth) {
     if (!val||!tree||node<0||depth>=TE_MAX_DEPTH) return;
     arena_block_ent* e=ar_btab_find_any(val);
@@ -7482,6 +7495,43 @@ static void ar_etrace_roots(void) {
         if(ar_vroot[i].tree&&ar_vroot[i].node>=0)
             ar_etrace_walk(v,ar_vroot[i].tree,ar_vroot[i].node,0);
     }
+    /* Seed from a conservative C-stack scan: at shutdown these are the
+     * root pointers still held by live frames -- the real root set. */
+    if (ar_etrace_stack_top) {
+        char probe; char* sp=&probe;
+        if (sp < ar_etrace_stack_top) {
+            size_t n=(size_t)(ar_etrace_stack_top-sp);
+            for (size_t off=0; off+sizeof(void*)<=n; off+=sizeof(void*)) {
+                void* p; memcpy(&p,sp+off,sizeof(p));
+                arena_block_ent* e=ar_btab_find_any(p);
+                if (e && e->st==&tls_root && !ar_etrace_mark[e->b->seq&(AR_ETRACE_N-1)]) {
+                    ar_etrace_mark[e->b->seq&(AR_ETRACE_N-1)]=1;
+                    roots++;
+                    /* Find a registered descriptor for this pointer and
+                     * follow its children precisely. */
+                    for (size_t k=0;k<ar_vroot_n;k++)
+                        if (ar_vroot[k].val==p && ar_vroot[k].tree && ar_vroot[k].node>=0) {
+                            ar_etrace_walk(p,ar_vroot[k].tree,ar_vroot[k].node,0); break; }
+                }
+            }
+        }
+    }
+    /* Conservative closure over marked blocks reaches pointers held inside
+     * root containers whose descriptors were not registered. */
+    int again;
+    do {
+        again=0;
+        for (arena_block* b=tls_root.head;b;b=b->next)
+            if (ar_etrace_mark[b->seq&(AR_ETRACE_N-1)]) {
+                char* base=b->base; size_t cap=b->cap;
+                for (size_t off=0; off+sizeof(void*)<=cap; off+=sizeof(void*)) {
+                    void* p; memcpy(&p,base+off,sizeof(p));
+                    arena_block_ent* e=ar_btab_find_any(p);
+                    if (e&&e->st==&tls_root&&!ar_etrace_mark[e->b->seq&(AR_ETRACE_N-1)]) {
+                        ar_etrace_mark[e->b->seq&(AR_ETRACE_N-1)]=1; again=1; }
+                }
+            }
+    } while (again);
     size_t live=0; for(arena_block* b=tls_root.head;b;b=b->next) if(ar_etrace_mark[b->seq&(AR_ETRACE_N-1)])live++;
     fprintf(stderr,"ETRACE descriptor_roots=%zu traced_blocks=%zu root_values=%zu\n",roots,live,ar_vroot_n);
 }
