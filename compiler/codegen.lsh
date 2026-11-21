@@ -689,7 +689,11 @@ pub def CodeGen : class {
         tt: string = this.strip_ref(elt);
         if !this.ar_is_heap_type(tt) { return aval; }
         slot: string = this.new_reg();
-        this.emit("  " + slot + " = alloca i8*, align 8");
+        if this.bridge_host {
+            this.emit("  " + slot + " = alloca i8*, align 8");
+        } else {
+            this.emit("  " + slot + " = call i8** @leasharena_rootcopy_slot()");
+        }
         this.emit("  store i8* " + aval + ", i8** " + slot);
         if tt == "string" {
             this.emit_root_copy("  call void @leasharena_root_copy_string(i8** " + slot + ")");
@@ -12457,6 +12461,7 @@ pub def CodeGen : class {
                     "declare void @leasharena_exit_n(i64)\n" +
                     "declare void @leasharena_escape_string(i8**, i64)\n" +
                     "declare i8** @leasharena_escape_slot()\n" +
+                    "declare i8** @leasharena_rootcopy_slot()\n" +
                     "declare void @leasharena_escape_slot_desc(i8**, " + "{ " + "i8*, i32, i32, i32" + " }*, i32)\n" +
                     "declare void @leasharena_escape_vec(i8**, i64)\n" +
                     "declare void @leasharena_escape_hash(i8**, i64)\n" +

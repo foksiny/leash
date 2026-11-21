@@ -594,6 +594,18 @@ void** leasharena_escape_slot(void) {
     ar_escape_ring[i] = NULL;
     return &ar_escape_ring[i];
 }
+/* ---- recycling root-copy slots ----
+ * ar_root_value emits store -> root_copy -> load into register; the slot
+ * is dead immediately after the load. A ring gives a persistent, stable
+ * address (registrable, traceable) without retaining every value. */
+#define AR_RCSLOT_RING 64
+static ARENA_TLS void* ar_rcslot_ring[AR_RCSLOT_RING];
+static ARENA_TLS unsigned ar_rcslot_pos;
+void** leasharena_rootcopy_slot(void) {
+    unsigned i = ar_rcslot_pos++ & (AR_RCSLOT_RING-1);
+    ar_rcslot_ring[i] = NULL;
+    return &ar_rcslot_ring[i];
+}
 /* Register the descriptor for the value placed in the most recent slot. */
 void leasharena_escape_slot_desc(void** slot, const ar_te* tree, int32_t node) {
     if (!ar_escape_reg_on) return;
@@ -7486,6 +7498,13 @@ static void ar_etrace_roots(void) {
         if(ar_escape_descs[i].tree&&ar_escape_descs[i].node>=0)
             ar_etrace_walk(v,ar_escape_descs[i].tree,ar_escape_descs[i].node,0);
     }
+    for(unsigned i=0;i<AR_RCSLOT_RING;i++){
+        void* v=ar_rcslot_ring[i];
+        if(!v) continue;
+        arena_block_ent* e=ar_btab_find_any(v);
+        if(e&&e->st==&tls_root&&!ar_etrace_mark[e->b->seq&(AR_ETRACE_N-1)]){
+            ar_etrace_mark[e->b->seq&(AR_ETRACE_N-1)]=1; roots++; }
+    }
     for(size_t i=0;i<ar_vroot_n;i++){
         void* v=ar_vroot[i].val;
         if(!v) continue;
@@ -10277,6 +10296,7 @@ void leasharena_escape_agg_typed(void** slot, int64_t n, const ar_te* t, int32_t
 void leasharena_escape_blob(void** slot, int64_t size, int64_t n) { (void)slot; (void)size; (void)n; }
 void leasharena_escape_slice(void* agg, int64_t esz, int64_t n) { (void)agg; (void)esz; (void)n; }
 void** leasharena_escape_slot(void) { return NULL; }
+void** leasharena_rootcopy_slot(void) { return NULL; }
 void leasharena_escape_slot_desc(void** slot, const ar_te* tree, int32_t node) { (void)slot; (void)tree; (void)node; }
 
 void* leasharena_stage_string(void* s) { return s; }
