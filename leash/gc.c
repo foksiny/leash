@@ -549,6 +549,32 @@ static arena_scan_region arena_scan_regions[ARENA_SCAN_REGION_MAX];
 static int arena_scan_region_count;
 static int arena_verify_roots = 1;
 
+/* ---- recyclable persistent escape slots ----
+ * Generated arena IR requests a stable i8** slot for a return escape. The
+ * value is loaded into a register immediately after the escape call, so a
+ * small ring of slots can be recycled: the previous value of a slot is
+ * already consumed before the slot is handed out again. This gives a
+ * persistent, registrable root address without retaining every escaped
+ * value for the whole program. */
+#define AR_ESCAPE_RING 64
+static ARENA_TLS void* ar_escape_ring[AR_ESCAPE_RING];
+static ARENA_TLS unsigned ar_escape_ring_pos;
+static ARENA_TLS int ar_escape_reg_on;
+typedef struct { const ar_te* tree; int32_t node; } ar_escape_desc;
+static ARENA_TLS ar_escape_desc ar_escape_descs[AR_ESCAPE_RING];
+static void ar_etrace_roots(void);
+void** leasharena_escape_slot(void) {
+    unsigned i = ar_escape_ring_pos++ & (AR_ESCAPE_RING-1);
+    ar_escape_ring[i] = NULL;
+    return &ar_escape_ring[i];
+}
+/* Register the descriptor for the value placed in the most recent slot. */
+void leasharena_escape_slot_desc(void** slot, const ar_te* tree, int32_t node) {
+    if (!ar_escape_reg_on) return;
+    for (unsigned i=0;i<AR_ESCAPE_RING;i++) if (&ar_escape_ring[i]==slot) {
+        ar_escape_descs[i].tree=tree; ar_escape_descs[i].node=node; return; }
+}
+
 /* ---- spawn transfer ---------------------------------------------
  *
  * A spawn argument block outlives the frame that built it: the
@@ -1315,6 +1341,7 @@ void leash_gc_init(void) {
      * lifetime correctness is already established). */
     {
         for (size_t i=0;i<ARENA_INTERN_N;i++) arena_str_intern[i]=AH_NULL;
+        { const char* t=getenv("LEASH_ARENA_TRACE_ROOTS"); ar_escape_reg_on=(t&&t[0]!='0')?1:0; }
         const char* p = getenv("LEASH_ARENA_POISON");
         leash_arena_poison = (!p || p[0] != '0' || p[1] != '\0') ? 1 : 0;
         leash_arena_poison_on = leash_arena_poison;
@@ -1339,6 +1366,7 @@ void leash_gc_init(void) {
 static void ah_shutdown(void);
 #endif
 void leash_gc_shutdown(void) {
+    if (ar_escape_reg_on) ar_etrace_roots();
     if (getenv("LEASH_ARENA_STATS")) {
         size_t blocks = 0, cap = 0;
         for (arena_block* b = leasharena_tls_ar.head; b; b = b->next) { blocks++; cap += b->cap; }
@@ -7381,6 +7409,48 @@ static int te_any_dies(void* val, const ar_te* tree, int32_t node, int depth) {
     return 0;
 }
 
+
+/* Descriptor-driven tracing over the exact escape-root slots. Uses the
+ * ar_te descriptors registered at each escape site. */
+#define AR_ETRACE_N (1u<<13)
+static ARENA_TLS unsigned char* ar_etrace_mark;
+static void ar_etrace_walk(void* val, const ar_te* tree, int32_t node, int depth) {
+    if (!val||!tree||node<0||depth>=TE_MAX_DEPTH) return;
+    arena_block_ent* e=ar_btab_find_any(val);
+    if (!e||e->st!=&tls_root) return;
+    ar_etrace_mark[e->b->seq&(AR_ETRACE_N-1)]=1;
+    int32_t k=tree[node].kind;
+    if(k==TE_VEC){LeashVec* v=(LeashVec*)val;int32_t ec=tree[node].child;
+        if(!v||ec<0||v->size<=0||!v->data)return;int32_t ek=tree[ec].kind;
+        if(ek!=TE_STR&&ek!=TE_VEC&&ek!=TE_HASH&&ek!=TE_AGG)return;
+        size_t esz=v->elem_size>0?(size_t)v->elem_size:8;
+        for(int64_t i=0;i<v->size;i++){void* el=*(void**)((char*)v->data+(size_t)i*esz);ar_etrace_walk(el,tree,ec,depth+1);}
+    }else if(k==TE_HASH){LeashHash* h=(LeashHash*)val;int32_t vc=tree[node].child;
+        if(!h||!h->buckets||vc<0)return;
+        for(int64_t b=0;b<h->num_buckets;b++)for(LeashHashNode* c=h->buckets[b];c;c=c->next)ar_etrace_walk(c->val,tree,vc,depth+1);
+    }else if(k==TE_AGG){size_t bsz=tree[node].off?(size_t)(uintptr_t)tree[node].off:0;
+        int32_t nf=tree[node].aux,first=tree[node].child;if(!bsz||nf<=0||first<0)return;
+        for(int32_t i=0;i<nf;i++){const ar_te* f=&tree[first+i];size_t off=f->off?(size_t)(uintptr_t)f->off:0;
+            if(off+sizeof(void*)>bsz)continue;void* fv=*(void**)((char*)val+off);ar_etrace_walk(fv,tree,f->child,depth+1);}
+    }
+}
+static void ar_etrace_roots(void) {
+    if(!ar_etrace_mark) ar_etrace_mark=(unsigned char*)calloc(AR_ETRACE_N,1);
+    if(!ar_etrace_mark) return;
+    memset(ar_etrace_mark,0,AR_ETRACE_N);
+    size_t roots=0;
+    for(unsigned i=0;i<AR_ESCAPE_RING;i++){
+        void* v=ar_escape_ring[i];
+        if(!v) continue;
+        arena_block_ent* e=ar_btab_find_any(v);
+        if(!e||e->st!=&tls_root) continue;
+        roots++; ar_etrace_mark[e->b->seq&(AR_ETRACE_N-1)]=1;
+        if(ar_escape_descs[i].tree&&ar_escape_descs[i].node>=0)
+            ar_etrace_walk(v,ar_escape_descs[i].tree,ar_escape_descs[i].node,0);
+    }
+    size_t live=0; for(arena_block* b=tls_root.head;b;b=b->next) if(ar_etrace_mark[b->seq&(AR_ETRACE_N-1)])live++;
+    fprintf(stderr,"ETRACE descriptor_roots=%zu traced_blocks=%zu\n",roots,live);
+}
 /* Commit a staged string into the caller's frame. The stage block is
  * left alone: the stage release owns it. */
 static void* te_commit_str(void* stage) {
@@ -10101,6 +10171,8 @@ void leasharena_escape_hash_typed_d(void** slot, int64_t n, const ar_te* t, int3
 void leasharena_escape_agg_typed(void** slot, int64_t n, const ar_te* t, int32_t node) { (void)slot; (void)n; (void)t; (void)node; }
 void leasharena_escape_blob(void** slot, int64_t size, int64_t n) { (void)slot; (void)size; (void)n; }
 void leasharena_escape_slice(void* agg, int64_t esz, int64_t n) { (void)agg; (void)esz; (void)n; }
+void** leasharena_escape_slot(void) { return NULL; }
+void leasharena_escape_slot_desc(void** slot, const ar_te* tree, int32_t node) { (void)slot; (void)tree; (void)node; }
 
 void* leasharena_stage_string(void* s) { return s; }
 void leasharena_commit_string(void** slot, void* stage) { *slot = stage; }

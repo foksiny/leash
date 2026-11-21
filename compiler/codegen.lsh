@@ -1140,11 +1140,16 @@ pub def CodeGen : class {
             return spared;
         }
         slot: string = this.new_reg();
-        this.emit("  " + slot + " = alloca i8*, align 8");
+        if this.bridge_host {
+            this.emit("  " + slot + " = alloca i8*, align 8");
+        } else {
+            this.emit("  " + slot + " = call i8** @leasharena_escape_slot()");
+        }
         this.emit("  store i8* " + spared + ", i8** " + slot + ", align 8");
         tt2: string = this.strip_ref(ret_typ);
         if tt2 == "string" {
             this.emit("  call void @leasharena_escape_string(i8** " + slot + ", i64 " + tostring(nf) + ")");
+            if !this.bridge_host { this.emit("  call void @leasharena_escape_slot_desc(i8** " + slot + ", " + this.ar_te_entry_ty() + "* null, i32 -1)"); }
         } also this.is_vec_type(tt2) {
             inner_et: string = this.strip_ref(this.vec_inner_type(tt2));
             // The generic helper re-homes string elements, but a nested
@@ -1159,8 +1164,10 @@ pub def CodeGen : class {
             }
             if te_idx >= 0 {
                 this.emit("  call void @leasharena_escape_vec_typed_d(i8** " + slot + ", i64 " + tostring(nf) + ", " + this.ar_te_entry_ty() + "* @.ar_te_0, i32 " + tostring(te_idx) + ")");
+                if !this.bridge_host { this.emit("  call void @leasharena_escape_slot_desc(i8** " + slot + ", " + this.ar_te_entry_ty() + "* @.ar_te_0, i32 " + tostring(te_idx) + ")"); }
             } else {
                 this.emit("  call void @leasharena_escape_vec(i8** " + slot + ", i64 " + tostring(nf) + ")");
+                if !this.bridge_host { this.emit("  call void @leasharena_escape_slot_desc(i8** " + slot + ", " + this.ar_te_entry_ty() + "* null, i32 -1)"); }
             }
         } also this.is_hash_type(tt2) {
             // A hash value that is a string or a container is copied raw
@@ -12449,6 +12456,8 @@ pub def CodeGen : class {
                     "declare void @leasharena_no_poison()\n" +
                     "declare void @leasharena_exit_n(i64)\n" +
                     "declare void @leasharena_escape_string(i8**, i64)\n" +
+                    "declare i8** @leasharena_escape_slot()\n" +
+                    "declare void @leasharena_escape_slot_desc(i8**, " + "{ " + "i8*, i32, i32, i32" + " }*, i32)\n" +
                     "declare void @leasharena_escape_vec(i8**, i64)\n" +
                     "declare void @leasharena_escape_hash(i8**, i64)\n" +
                     // Keep this declaration block literal-only: the
