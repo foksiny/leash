@@ -684,6 +684,15 @@ pub def CodeGen : class {
         return val;
     }
 
+    // Emit a gen-validating handle-based string root copy into `slot`.
+    pub fnc ar_root_string_handle(slot string, aval string) : void {
+        hv: string = this.new_reg();
+        this.emit("  " + hv + " = call i32 @leasharena_root_copy_string_h(i8* " + aval + ")");
+        hp: string = this.new_reg();
+        this.emit("  " + hp + " = call i8* @leasharena_handle_deref(i32 " + hv + ")");
+        this.emit("  store i8* " + hp + ", i8** " + slot + ", align 8");
+    }
+
     pub fnc ar_root_value(aval string, elt string) : string {
         if !this.arena { return aval; }
         tt: string = this.strip_ref(elt);
@@ -696,7 +705,11 @@ pub def CodeGen : class {
         }
         this.emit("  store i8* " + aval + ", i8** " + slot);
         if tt == "string" {
-            this.emit_root_copy("  call void @leasharena_root_copy_string(i8** " + slot + ")");
+            if this.arena && !this.bridge_host {
+                this.ar_root_string_handle(slot, aval);
+            } else {
+                this.emit_root_copy("  call void @leasharena_root_copy_string(i8** " + slot + ")");
+            }
         } also this.is_vec_type(tt) {
             // A nested container or an aggregate element needs the type
             // tree: the generic root copy copies the inner pointer raw,
@@ -746,7 +759,13 @@ pub def CodeGen : class {
     pub fnc ar_root_value_typed(slot string, typ string) : void {
         tt: string = this.strip_ref(typ);
         if tt == "string" {
-            this.emit_root_copy("  call void @leasharena_root_copy_string(i8** " + slot + ")");
+            if this.arena && !this.bridge_host {
+                tv: string = this.new_reg();
+                this.emit("  " + tv + " = load i8*, i8** " + slot + ", align 8");
+                this.ar_root_string_handle(slot, tv);
+            } else {
+                this.emit_root_copy("  call void @leasharena_root_copy_string(i8** " + slot + ")");
+            }
         } also this.is_vec_type(tt) {
             inner: string = this.strip_ref(this.vec_inner_type(tt));
             te_idx: int = -1;
@@ -12462,6 +12481,8 @@ pub def CodeGen : class {
                     "declare void @leasharena_escape_string(i8**, i64)\n" +
                     "declare i8** @leasharena_escape_slot()\n" +
                     "declare i8** @leasharena_rootcopy_slot()\n" +
+                    "declare i32 @leasharena_root_copy_string_h(i8*)\n" +
+                    "declare i8* @leasharena_handle_deref(i32)\n" +
                     "declare void @leasharena_escape_slot_desc(i8**, " + "{ " + "i8*, i32, i32, i32" + " }*, i32)\n" +
                     "declare void @leasharena_escape_vec(i8**, i64)\n" +
                     "declare void @leasharena_escape_hash(i8**, i64)\n" +

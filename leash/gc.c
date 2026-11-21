@@ -8331,6 +8331,36 @@ void leasharena_root_copy_string(void** slot) {
     *slot = (void*)ah_ptr(ih);
 }
 
+/* Gen-validating handle-returning string root copy. Interns s into the
+ * compact data stack and returns the arena_handle; ah_ptr() validates the
+ * generation on dereference. IR-level handle indirection for string roots. */
+uint32_t leasharena_root_copy_string_h(void* s) {
+    if (!s) return AH_NULL;
+    char* str=(char*)s;
+    int64_t li=leash_str_bsize(str);
+    size_t len=li>0?(size_t)li:0;
+    uint64_t h=ar_str_hash_bytes(str,len);
+    size_t idx=(size_t)(h&(ARENA_INTERN_N-1));
+    for (size_t probe=0;probe<8;probe++){
+        size_t at=(idx+probe)&(ARENA_INTERN_N-1);
+        arena_handle ih=arena_str_intern[at];
+        if (ih==AH_NULL) break;
+        char* cand=ah_ptr(ih);
+        if (cand && ar_istr_len && ar_istr_len[at]==len && memcmp(cand,str,len)==0) return ih;
+    }
+    arena_handle ih=ar_istr_put(str,len);
+    if (ih==AH_NULL) return AH_NULL;
+    for (size_t probe=0;probe<8;probe++){
+        size_t at=(idx+probe)&(ARENA_INTERN_N-1);
+        if (arena_str_intern[at]==AH_NULL){
+            arena_str_intern[at]=ih;
+            if(ar_istr_len)ar_istr_len[at]=(uint32_t)len;
+            break;
+        }
+    }
+    return ih;
+}
+char* leasharena_handle_deref(uint32_t h) { return ah_ptr((arena_handle)h); }
 void leasharena_root_copy_vec(void** slot) {
     if (!slot || !*slot) return;
     LeashVec* v = (LeashVec*)*slot;
@@ -10334,6 +10364,8 @@ void leasharena_commit_string(void** slot, void* stage) { *slot = stage; }
 /* Handle-based stage/commit shims: in GC/stub modes staging is a no-op
  * (values live in the collectible GC heap), so the handle is unused. */
 uint32_t leasharena_stage_string_h(void* s) { (void)s; return 0xFFFFFFFFu; }
+uint32_t leasharena_root_copy_string_h(void* s) { (void)s; return 0xFFFFFFFFu; }
+char* leasharena_handle_deref(uint32_t h) { (void)h; return NULL; }
 void leasharena_commit_string_h(void** slot, uint32_t h) { (void)h; if(slot) *slot = NULL; }
 uint32_t leasharena_stage_vec_h(void* v) { (void)v; return 0xFFFFFFFFu; }
 uint32_t leasharena_stage_hash_h(void* h) { (void)h; return 0xFFFFFFFFu; }
