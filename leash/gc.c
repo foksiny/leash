@@ -563,6 +563,24 @@ static ARENA_TLS int ar_escape_reg_on;
 typedef struct { const ar_te* tree; int32_t node; } ar_escape_desc;
 static ARENA_TLS ar_escape_desc ar_escape_descs[AR_ESCAPE_RING];
 static void ar_etrace_roots(void);
+/* ---- rooted-value registry (value snapshots, NOT slots) ----
+ * At the end of a root_store, the rooted value lives permanently in the
+ * root arena / compact stack, so its pointer stays valid for the whole
+ * program. Registering the VALUE (not the transient slot or the frame-local
+ * source) gives stable exact roots. Bounded + opt-in. */
+#define AR_VROOT_MAX 16384
+typedef struct { void* val; const ar_te* tree; int32_t node; } ar_vroot_ent;
+static ARENA_TLS ar_vroot_ent ar_vroot[AR_VROOT_MAX];
+static ARENA_TLS size_t ar_vroot_n;
+static void ar_vroot_add(void* v, const ar_te* tree, int32_t node) {
+    if (!ar_escape_reg_on || !v) return;
+    if (ar_vroot_n < AR_VROOT_MAX) {
+        ar_vroot[ar_vroot_n].val=v;
+        ar_vroot[ar_vroot_n].tree=tree;
+        ar_vroot[ar_vroot_n].node=node;
+        ar_vroot_n++;
+    }
+}
 void** leasharena_escape_slot(void) {
     unsigned i = ar_escape_ring_pos++ & (AR_ESCAPE_RING-1);
     ar_escape_ring[i] = NULL;
@@ -7448,8 +7466,17 @@ static void ar_etrace_roots(void) {
         if(ar_escape_descs[i].tree&&ar_escape_descs[i].node>=0)
             ar_etrace_walk(v,ar_escape_descs[i].tree,ar_escape_descs[i].node,0);
     }
+    for(size_t i=0;i<ar_vroot_n;i++){
+        void* v=ar_vroot[i].val;
+        if(!v) continue;
+        arena_block_ent* e=ar_btab_find_any(v);
+        if(!e||e->st!=&tls_root) continue;
+        roots++; ar_etrace_mark[e->b->seq&(AR_ETRACE_N-1)]=1;
+        if(ar_vroot[i].tree&&ar_vroot[i].node>=0)
+            ar_etrace_walk(v,ar_vroot[i].tree,ar_vroot[i].node,0);
+    }
     size_t live=0; for(arena_block* b=tls_root.head;b;b=b->next) if(ar_etrace_mark[b->seq&(AR_ETRACE_N-1)])live++;
-    fprintf(stderr,"ETRACE descriptor_roots=%zu traced_blocks=%zu\n",roots,live);
+    fprintf(stderr,"ETRACE descriptor_roots=%zu traced_blocks=%zu root_values=%zu\n",roots,live,ar_vroot_n);
 }
 /* Commit a staged string into the caller's frame. The stage block is
  * left alone: the stage release owns it. */
@@ -8115,6 +8142,7 @@ void leasharena_root_copy_vec_typed_d(void** slot, const ar_te* tree, int32_t te
     ptr_map_init(&seen, 32);
     *slot = te_root_vec(*slot, tree, te_node, 0, &seen);
     ptr_map_free(&seen);
+    ar_vroot_add(*slot, tree, te_node);
 }
 
 void leasharena_root_copy_hash_typed_d(void** slot, const ar_te* tree, int32_t te_node) {
@@ -8125,6 +8153,7 @@ void leasharena_root_copy_hash_typed_d(void** slot, const ar_te* tree, int32_t t
     ptr_map_init(&seen, 32);
     *slot = te_root_hash(*slot, tree, te_node, 0, &seen);
     ptr_map_free(&seen);
+    ar_vroot_add(*slot, tree, te_node);
 }
 
 /* Copy a struct/class body into the root arena and root every heap
