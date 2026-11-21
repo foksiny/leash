@@ -7822,6 +7822,11 @@ static void* te_root_val(void* val, const ar_te* tree, int32_t node, int depth,
 
 void leasharena_root_copy_vec_typed_d(void** slot, const ar_te* tree, int32_t te_node) {
     if (!slot || !*slot) return;
+    /* A value already rooted is immortal: re-rooting it allocates a
+     * fresh header + data on every call (the dominant root growth in
+     * self-compilation). te_root_val applies this guard to children;
+     * apply it to the top-level value the entry points receive too. */
+    if (arena_owns(&tls_root, *slot)) return;
     if (te_node < 0 || !tree) { leasharena_root_copy_vec(slot); return; }
     ptr_map seen;
     ptr_map_init(&seen, 32);
@@ -7831,6 +7836,7 @@ void leasharena_root_copy_vec_typed_d(void** slot, const ar_te* tree, int32_t te
 
 void leasharena_root_copy_hash_typed_d(void** slot, const ar_te* tree, int32_t te_node) {
     if (!slot || !*slot) return;
+    if (arena_owns(&tls_root, *slot)) return;
     if (te_node < 0 || !tree) { leasharena_root_copy_hash(slot); return; }
     ptr_map seen;
     ptr_map_init(&seen, 32);
@@ -7845,6 +7851,7 @@ void leasharena_root_copy_hash_typed_d(void** slot, const ar_te* tree, int32_t t
 void leasharena_root_copy_blob_typed_d(void** slot, const ar_te* tree,
                                        int32_t te_node) {
     if (!slot || !*slot) return;
+    if (arena_owns(&tls_root, *slot)) return;
     if (te_node < 0 || !tree) return;
     ptr_map seen;
     ptr_map_init(&seen, 32);
