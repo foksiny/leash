@@ -177,6 +177,20 @@ void leash_spipe_drop(void) {}
  * aggregate-escape limitation. */
 #define ARENA_TLS LEASH_TLS
 
+/* Direct-mapped cache of container pointers that already passed the
+ * access guard. An entry is valid only in the epoch it was filled;
+ * every block removal bumps the epoch, so a reclaimed block can never
+ * produce a stale hit. Depth records the frame at fill time: pops of
+ * deeper frames cannot reclaim a pointer that was already live. */
+#define AR_CHECKED_CACHE_N 256
+typedef struct {
+    const void* p;
+    uint64_t epoch;
+    size_t depth;
+} ar_checked_ent;
+static ARENA_TLS ar_checked_ent ar_checked_cache[AR_CHECKED_CACHE_N];
+static ARENA_TLS uint64_t ar_checked_epoch = 1;
+
 #define ARENA_BLOCK_SIZE ((size_t)32 * 1024)
 #define ARENA_INIT_BLOCK_SIZE ((size_t)4 * 1024)
 #define ARENA_ALIGN ((size_t)16)
@@ -321,6 +335,7 @@ static void ar_btab_forget(const void* base) {
     size_t pos = ar_btab_upper(base);
     if (pos == 0 || arena_block_tab[pos - 1].base != base) return;
     pos--;
+    ar_checked_epoch++;
     if (pos + 1 < arena_block_tab_len) {
         memmove(&arena_block_tab[pos], &arena_block_tab[pos + 1],
                 (arena_block_tab_len - pos - 1) * sizeof(*arena_block_tab));
@@ -1468,29 +1483,41 @@ static int ar_checked_payload(const char* base, const char* blk_base, const char
     size_t sz = ar_hdr_size(raw);
     return sz > 0 && sz <= (size_t)(blk_end - base);
 }
-void* leasharena_checked(void* p) {
-    if (!p) return p;
+/* Cache miss: locate the owning block, validate the header and payload
+ * bounds, then publish the entry. Kept out of line so the hit path (98%
+ * of accesses) compiles to a comparison chain with no frame setup. */
+#if defined(_MSC_VER)
+#  define AR_NOINLINE __declspec(noinline)
+#else
+#  define AR_NOINLINE __attribute__((noinline))
+#endif
+static AR_NOINLINE void* ar_checked_slow(void* p, ar_checked_ent* ce) {
     const char* base = (const char*)p;
-    /* Hot path: nearly every access touches the newest block of the
-     * current or root arena. Checking those two ranges first avoids the
-     * block-table binary search; the table still covers older blocks. */
     arena_block* h = leasharena_tls_ar.head;
     if (h && base >= h->base && base < h->base + h->cap) {
-        if (ar_checked_payload(base, h->base, h->base + h->cap)) return p;
-        goto invalid;
-    }
-    h = tls_root.head;
-    if (h && base >= h->base && base < h->base + h->cap) {
-        if (ar_checked_payload(base, h->base, h->base + h->cap)) return p;
-        goto invalid;
-    }
-    {
+        if (!ar_checked_payload(base, h->base, h->base + h->cap)) goto invalid;
+    } else if ((h = tls_root.head) && base >= h->base && base < h->base + h->cap) {
+        if (!ar_checked_payload(base, h->base, h->base + h->cap)) goto invalid;
+    } else {
         arena_block_ent* e = ar_btab_find_any(p);
-        if (e && ar_checked_payload(base, e->base, e->end)) return p;
+        if (!e || !ar_checked_payload(base, e->base, e->end)) goto invalid;
     }
+    ce->p = p;
+    ce->epoch = ar_checked_epoch;
+    ce->depth = leasharena_tls_ar.cp_len;
+    return p;
 invalid:
     fprintf(stderr, "Leash arena: invalid container pointer %p at access\n", p);
     abort();
+}
+
+void* leasharena_checked(void* p) {
+    if (!p) return p;
+    size_t slot = ((uintptr_t)p >> 4) & (AR_CHECKED_CACHE_N - 1);
+    ar_checked_ent* ce = &ar_checked_cache[slot];
+    if (ce->p == p && ce->epoch == ar_checked_epoch &&
+        ce->depth <= leasharena_tls_ar.cp_len) return p;
+    return ar_checked_slow(p, ce);
 }
 void* leash_gc_malloc(size_t size) {
     return arena_alloc(&leasharena_tls_ar, size, ARENA_ALIGN);
