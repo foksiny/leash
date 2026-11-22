@@ -126,10 +126,9 @@ class TestArenaContainerHandles(unittest.TestCase):
 
 
 class TestArenaEscapeAsan(unittest.TestCase):
-    @unittest.expectedFailure
     def test_callee_frame_vec_is_staged_before_pop(self):
-        """Known defect: a vec created in a popped frame is staged by the
-        caller. Remove expectedFailure when the escape redesign lands."""
+        """A vec created in a popped frame is staged from the escape
+        snapshot, so no reclaimed memory is read."""
         cc = _compiler(self)
         if not _sanitizer_ok(cc):
             self.skipTest("compiler does not support ASan/UBSan")

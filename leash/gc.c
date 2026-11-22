@@ -303,6 +303,42 @@ static ARENA_TLS size_t arena_block_tab_cap;
  * ordering the store barrier and the escape filter need. */
 static ARENA_TLS uint64_t arena_block_seq;
 
+/* Opt-in escape-snapshot mode: when a frame is reclaimed, keep a bounded
+ * byte copy of its blocks. Staging of values that outlive the frame reads
+ * through the snapshot instead of freed memory, so container headers,
+ * buffers, hash nodes and strings remain valid and exact. */
+#define AR_SNAP_N 64
+typedef struct {
+    const char* base;
+    const char* end;
+    char* bytes;
+} ar_snap_ent;
+static ARENA_TLS ar_snap_ent ar_snaps[AR_SNAP_N];
+static ARENA_TLS size_t ar_snap_pos;
+static ARENA_TLS int ar_snapshot_on;
+static const void* ar_snap_ptr(const void* p) {
+    if (!ar_snapshot_on || !p) return p;
+    for (size_t i = 0; i < AR_SNAP_N; i++) {
+        const char* lo = ar_snaps[i].base;
+        if (lo && (const char*)p >= lo && (const char*)p < ar_snaps[i].end)
+            return ar_snaps[i].bytes + ((const char*)p - lo);
+    }
+    return p;
+}
+static void ar_snapshot_add(arena_block* b) {
+    if (!ar_snapshot_on || b->cap > (size_t)128 * 1024) return;
+    ar_snap_ent* e = &ar_snaps[ar_snap_pos];
+    free(e->bytes);
+    e->bytes = (char*)malloc(b->cap);
+    if (!e->bytes) { e->base = e->end = NULL; }
+    else {
+        memcpy(e->bytes, b->base, b->cap);
+        e->base = b->base;
+        e->end = b->base + b->cap;
+    }
+    ar_snap_pos = (ar_snap_pos + 1) & (AR_SNAP_N - 1);
+}
+
 /* Scoped blocks are kept mapped for the life of the thread: a raw C
  * pointer into a popped frame must stay valid, and without a handle
  * indirection or a full register/stack trace there is no safe point at
@@ -1276,6 +1312,7 @@ static void arena_free_above(arena_stack* st, arena_block* keep) {
         arena_block_stats_sub(dsz);
         arena_str_cache_forget(dead);
         ar_btab_forget(dead->base);
+        ar_snapshot_add(dead);
         free(dead);
     }
 }
@@ -1438,6 +1475,7 @@ void leash_gc_init(void) {
     {
         for (size_t i=0;i<ARENA_INTERN_N;i++) arena_str_intern[i]=AH_NULL;
         { const char* t=getenv("LEASH_ARENA_TRACE_ROOTS"); ar_escape_reg_on=(t&&t[0]!='0')?1:0; if(ar_escape_reg_on) ar_etrace_bounds(); }
+        { const char* sn = getenv("LEASH_ARENA_ESCAPE_SNAPSHOT"); ar_snapshot_on = (sn && sn[0] != '0'); }
         const char* p = getenv("LEASH_ARENA_POISON");
         leash_arena_poison = (!p || p[0] != '0' || p[1] != '\0') ? 1 : 0;
         leash_arena_poison_on = leash_arena_poison;
@@ -1479,6 +1517,7 @@ void leash_gc_shutdown(void) {
     for (size_t i=0;i<ar_istr_nchunk;i++) free(ar_istr_chunks[i]);
     free(ar_istr_chunks); ar_istr_chunks=NULL; ar_istr_nchunk=ar_istr_chunk_cap=ar_istr_off=0;
     free(ar_istr_len); ar_istr_len=NULL;
+    for (size_t i = 0; i < AR_SNAP_N; i++) { free(ar_snaps[i].bytes); ar_snaps[i].bytes = NULL; ar_snaps[i].base = ar_snaps[i].end = NULL; }
     free(arena_block_tab);
     arena_block_tab = NULL;
 #if defined(LEASH_ARENA)
@@ -6801,6 +6840,12 @@ static inline int ar_dies_in_escape(const void* p) {
     if (arena_escape_cutoff < 0) return 1;
     arena_stack* st = &leasharena_tls_ar;
     if ((size_t)arena_escape_cutoff >= st->cp_len) return 0;
+    if (ar_snapshot_on) {
+        for (size_t i = 0; i < AR_SNAP_N; i++) {
+            const char* lo = ar_snaps[i].base;
+            if (lo && (const char*)p >= lo && (const char*)p < ar_snaps[i].end) return 1;
+        }
+    }
     arena_block* b = arena_block_of(st, p);
     if (!b) return 0;
     return ar_after_cp(b, (const char*)p, &st->cps[arena_escape_cutoff]);
@@ -7451,18 +7496,19 @@ static void te_stage_release(te_stage* st, const ar_te* tree, int32_t node) {
 /* Stage a vec. `node` is the vec's descriptor: its child is the
  * descriptor of the element type. */
 static te_stage* te_stage_vec(void* vp, const ar_te* tree, int32_t node, int depth) {
-    LeashVec* v = (LeashVec*)vp;
+    LeashVec* v = (LeashVec*)ar_snap_ptr(vp);
     te_stage* st = te_stage_new(TE_VEC);
     if (!v) return st;
     st->vhdr = *v;
     int64_t esz = v->elem_size > 0 ? v->elem_size : 8;
     st->n = v->size;
+    const char* vdata = (const char*)ar_snap_ptr(v->data);
     /* Only the live elements are staged: the unused capacity is slack
      * that the next push refills. */
     st->data_bytes = v->size > 0 ? (size_t)v->size * (size_t)esz : 0;
     if (st->data_bytes) {
         st->data = (char*)arena_stage_alloc(st->data_bytes, &st->data_cap);
-        if (v->data) memcpy(st->data, v->data, st->data_bytes);
+        if (v->data) memcpy(st->data, vdata, st->data_bytes);
     }
     int32_t ec = tree[node].child;
     if (st->n > 0 && ec >= 0 && depth < TE_MAX_DEPTH) {
@@ -7471,7 +7517,7 @@ static te_stage* te_stage_vec(void* vp, const ar_te* tree, int32_t node, int dep
             st->child = (void**)arena_stage_alloc((size_t)st->n * sizeof(void*), &st->child_cap);
             memset(st->child, 0, (size_t)st->n * sizeof(void*));
             for (int64_t i = 0; i < st->n; i++) {
-                void* ent = v->data ? *(void**)((char*)v->data + (size_t)i * (size_t)esz) : NULL;
+                void* ent = v->data ? *(void**)(vdata + (size_t)i * (size_t)esz) : NULL;
                 /* Caller-owned elements outlive the pop: leave the
                  * pointer in the copied data image instead of moving
                  * the same subtree again. Nested containers are staged
@@ -7488,7 +7534,7 @@ static te_stage* te_stage_vec(void* vp, const ar_te* tree, int32_t node, int dep
 /* Stage a hash. `node` is the hash's descriptor: its child is the
  * descriptor of the value type. */
 static te_stage* te_stage_hash(void* hp, const ar_te* tree, int32_t node, int depth) {
-    LeashHash* h = (LeashHash*)hp;
+    LeashHash* h = (LeashHash*)ar_snap_ptr(hp);
     te_stage* st = te_stage_new(TE_HASH);
     if (!h || !h->buckets) return st;
     st->nbuckets = h->num_buckets;
@@ -7499,7 +7545,7 @@ static te_stage* te_stage_hash(void* hp, const ar_te* tree, int32_t node, int de
     int64_t count = 0;
     size_t pool = 0;
     for (int64_t b = 0; b < st->nbuckets; b++) {
-        for (LeashHashNode* c = h->buckets[b]; c; c = c->next) {
+        for (LeashHashNode* c = (LeashHashNode*)ar_snap_ptr(h->buckets[b]); c; c = (LeashHashNode*)ar_snap_ptr(c->next)) {
             count++;
             pool += AR_HASH_NODE_SZ(strlen(LEASH_HASH_KEY(c)));
         }
@@ -7508,7 +7554,7 @@ static te_stage* te_stage_hash(void* hp, const ar_te* tree, int32_t node, int de
     st->bucket_len = (int64_t*)arena_stage_alloc((size_t)(st->nbuckets > 0 ? st->nbuckets : 1) * sizeof(int64_t), &st->bucket_len_cap);
     memset(st->bucket_len, 0, (size_t)(st->nbuckets > 0 ? st->nbuckets : 1) * sizeof(int64_t));
     for (int64_t b = 0; b < st->nbuckets; b++) {
-        for (LeashHashNode* c = h->buckets[b]; c; c = c->next) st->bucket_len[b]++;
+        for (LeashHashNode* c = (LeashHashNode*)ar_snap_ptr(h->buckets[b]); c; c = (LeashHashNode*)ar_snap_ptr(c->next)) st->bucket_len[b]++;
     }
     if (count > 0 && (vk == TE_STR || vk == TE_VEC || vk == TE_HASH || vk == TE_AGG)) {
         st->hval = (void**)arena_stage_alloc((size_t)count * sizeof(void*), &st->hval_cap);
@@ -7577,7 +7623,7 @@ static te_stage* te_stage_agg(void* bp, const ar_te* tree, int32_t node, int dep
 static void* te_stage_val(void* val, const ar_te* tree, int32_t node, int depth) {
     if (!val || node < 0 || depth >= TE_MAX_DEPTH) return NULL;
     int32_t k = tree[node].kind;
-    if (k == TE_STR) return leasharena_stage_string(val);
+    if (k == TE_STR) return leasharena_stage_string((void*)ar_snap_ptr(val));
     if (k == TE_VEC) return (void*)te_stage_vec(val, tree, node, depth);
     if (k == TE_HASH) return (void*)te_stage_hash(val, tree, node, depth);
     if (k == TE_AGG) return (void*)te_stage_agg(val, tree, node, depth);
@@ -7616,7 +7662,7 @@ static int te_any_dies(void* val, const ar_te* tree, int32_t node, int depth) {
         int32_t vk = tree[vc].kind;
         if (vk != TE_STR && vk != TE_VEC && vk != TE_HASH && vk != TE_AGG) return 0;
         for (int64_t b = 0; b < h->num_buckets; b++)
-            for (LeashHashNode* c = h->buckets[b]; c; c = c->next)
+            for (LeashHashNode* c = (LeashHashNode*)ar_snap_ptr(h->buckets[b]); c; c = (LeashHashNode*)ar_snap_ptr(c->next))
                 if (c->val && te_any_dies(c->val, tree, vc, depth + 1)) return 1;
     } else if (k == TE_AGG) {
         size_t bsz = tree[node].off ? (size_t)(uintptr_t)tree[node].off : 0;
@@ -8327,7 +8373,7 @@ static void* te_root_hash(void* hp, const ar_te* tree, int32_t node, int depth,
     int32_t vk = vc >= 0 ? tree[vc].kind : TE_LEAF;
     for (int64_t b = 0; b < h->num_buckets; b++) {
         LeashHashNode** tail = &nh->buckets[b];
-        for (LeashHashNode* c = h->buckets[b]; c; c = c->next) {
+        for (LeashHashNode* c = (LeashHashNode*)ar_snap_ptr(h->buckets[b]); c; c = (LeashHashNode*)ar_snap_ptr(c->next)) {
             size_t klen = strlen(LEASH_HASH_KEY(c));
             size_t sz = sizeof(LeashHashNode) + klen + 1;
             LeashHashNode* nn = (LeashHashNode*)leash_gc_malloc_rooted(sz);
