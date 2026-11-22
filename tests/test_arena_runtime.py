@@ -35,16 +35,20 @@ def _sanitizer_ok(cc):
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
+def _compiler(test):
+    cc = os.environ.get("CC")
+    if cc:
+        return cc.split()
+    for cand in ("cc", "gcc", "clang"):
+        path = shutil.which(cand)
+        if path:
+            return [path]
+    test.skipTest("no C compiler available")
+
+
 class TestArenaRuntime(unittest.TestCase):
     def _compiler(self):
-        cc = os.environ.get("CC")
-        if cc:
-            return cc.split()
-        for cand in ("cc", "gcc", "clang"):
-            path = shutil.which(cand)
-            if path:
-                return [path]
-        self.skipTest("no C compiler available")
+        return _compiler(self)
 
     def _build(self, cc, td, sanitize=False):
         exe = os.path.join(td, "test_arena_runtime")
@@ -83,6 +87,24 @@ class TestArenaRuntime(unittest.TestCase):
                                  env=dict(os.environ, ASAN_OPTIONS="detect_leaks=0"))
             self.assertEqual(run.returncode, 0, run.stdout + "\n" + run.stderr)
             self.assertIn("all tests passed", run.stdout)
+
+
+class TestArenaCheckedGuard(unittest.TestCase):
+    def test_checked_guard(self):
+        """Live and NULL pointers pass; foreign and interior pointers abort."""
+        cc = _compiler(self)
+        with tempfile.TemporaryDirectory() as td:
+            exe = os.path.join(td, "test_arena_checked")
+            build = subprocess.run(
+                cc + ["tests/test_arena_checked.c", "leash/gc.c",
+                      "-D_GNU_SOURCE", "-DLEASH_ARENA", "-O1", "-g", "-pthread",
+                      "-o", exe],
+                cwd=REPO_ROOT, capture_output=True, text=True, timeout=300)
+            self.assertEqual(build.returncode, 0, build.stderr)
+            run = subprocess.run([exe], cwd=REPO_ROOT, capture_output=True,
+                                 text=True, timeout=300)
+            self.assertEqual(run.returncode, 0, run.stdout + "\n" + run.stderr)
+            self.assertIn("checked guard ok", run.stdout)
 
 
 if __name__ == "__main__":

@@ -3139,7 +3139,12 @@ pub def CodeGen : class {
 
     pub fnc vec_field(handle string, idx int) : string {
         vh: string = this.new_reg();
-        this.emit("  " + vh + " = bitcast i8* " + handle + " to " + this.vec_hdr_ty() + "*");
+        ch: string = handle;
+        if this.arena && !this.bridge_host {
+            ch = this.new_reg();
+            this.emit("  " + ch + " = call i8* @leasharena_checked(i8* " + handle + ")");
+        }
+        this.emit("  " + vh + " = bitcast i8* " + ch + " to " + this.vec_hdr_ty() + "*");
         vf: string = this.new_reg();
         this.emit("  " + vf + " = getelementptr inbounds " + this.vec_hdr_ty() + ", " + this.vec_hdr_ty() + "* " + vh + ", i32 0, i32 " + tostring(idx));
         vv: string = this.new_reg();
@@ -12482,6 +12487,7 @@ pub def CodeGen : class {
                     "declare i8** @leasharena_escape_slot()\n" +
                     "declare i8** @leasharena_rootcopy_slot()\n" +
                     "declare i32 @leasharena_root_copy_string_h(i8*)\n" +
+                    "declare i8* @leasharena_checked(i8*)\n" +
                     "declare i8* @leasharena_handle_deref(i32)\n" +
                     "declare void @leasharena_escape_slot_desc(i8**, " + "{ " + "i8*, i32, i32, i32" + " }*, i32)\n" +
                     "declare void @leasharena_escape_vec(i8**, i64)\n" +

@@ -183,6 +183,10 @@ void leasharena_exit_slow(void);
  * frame before generated code performs an inline pop. */
 void leasharena_verify_current_frame(void);
 void leasharena_exit_n(int64_t nframes);
+/* Guard emitted before container field access in arena IR: returns `p`
+ * when it is a live allocation start inside the thread's arena, aborts
+ * otherwise. NULL passes through so optional containers stay valid. */
+void* leasharena_checked(void* p);
 /* Copy a heap value about to be returned out of nframes scopes into
  * the caller's frame. slot points at the generated-code holding the
  * pointer (updated in place); nframes = loop frames + 1. */

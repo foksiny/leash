@@ -1450,6 +1450,48 @@ void leash_gc_shutdown(void) {
     leasharena_tls_arena_dead = 1;
 }
 
+/* Gen/bounds-validated dereference guard for generated container GEP
+ * access. Every container pointer in emitted arena IR must resolve to a
+ * live, tagged arena allocation: the address must fall inside a known
+ * block, the preceding word must carry the arena header tag, and the
+ * recorded payload size must fit between the header and the block end.
+ * A corrupt, stale, or interior pointer aborts deterministically instead
+ * of letting the getelementptr/load that follows walk out of bounds.
+ * Nulls pass through. Only arena codegen emits calls to this function;
+ * the definition is linked in every runtime build so the same IR can be
+ * checked, but GC-mode code never calls it. */
+static int ar_checked_payload(const char* base, const char* blk_base, const char* blk_end) {
+    const char* hdr = base - 8;
+    if (hdr < blk_base) return 0;
+    uint64_t raw = *(const uint64_t*)(const void*)hdr;
+    if (!ar_hdr_valid(raw)) return 0;
+    size_t sz = ar_hdr_size(raw);
+    return sz > 0 && sz <= (size_t)(blk_end - base);
+}
+void* leasharena_checked(void* p) {
+    if (!p) return p;
+    const char* base = (const char*)p;
+    /* Hot path: nearly every access touches the newest block of the
+     * current or root arena. Checking those two ranges first avoids the
+     * block-table binary search; the table still covers older blocks. */
+    arena_block* h = leasharena_tls_ar.head;
+    if (h && base >= h->base && base < h->base + h->cap) {
+        if (ar_checked_payload(base, h->base, h->base + h->cap)) return p;
+        goto invalid;
+    }
+    h = tls_root.head;
+    if (h && base >= h->base && base < h->base + h->cap) {
+        if (ar_checked_payload(base, h->base, h->base + h->cap)) return p;
+        goto invalid;
+    }
+    {
+        arena_block_ent* e = ar_btab_find_any(p);
+        if (e && ar_checked_payload(base, e->base, e->end)) return p;
+    }
+invalid:
+    fprintf(stderr, "Leash arena: invalid container pointer %p at access\n", p);
+    abort();
+}
 void* leash_gc_malloc(size_t size) {
     return arena_alloc(&leasharena_tls_ar, size, ARENA_ALIGN);
 }
