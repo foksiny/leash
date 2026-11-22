@@ -125,5 +125,28 @@ class TestArenaContainerHandles(unittest.TestCase):
             self.assertIn("container handles ok", run.stdout)
 
 
+class TestArenaEscapeAsan(unittest.TestCase):
+    @unittest.expectedFailure
+    def test_callee_frame_vec_is_staged_before_pop(self):
+        """Known defect: a vec created in a popped frame is staged by the
+        caller. Remove expectedFailure when the escape redesign lands."""
+        cc = _compiler(self)
+        if not _sanitizer_ok(cc):
+            self.skipTest("compiler does not support ASan/UBSan")
+        with tempfile.TemporaryDirectory() as td:
+            exe = os.path.join(td, "test_arena_escape_asan")
+            build = subprocess.run(
+                cc + ["tests/test_arena_escape_asan.c", "leash/gc.c",
+                      "-D_GNU_SOURCE", "-DLEASH_ARENA", "-O1", "-g", "-pthread",
+                      "-fsanitize=address", "-fno-omit-frame-pointer", "-o", exe],
+                cwd=REPO_ROOT, capture_output=True, text=True, timeout=300)
+            self.assertEqual(build.returncode, 0, build.stderr)
+            run = subprocess.run([exe], cwd=REPO_ROOT, capture_output=True,
+                                 text=True, timeout=300,
+                                 env=dict(os.environ, ASAN_OPTIONS="detect_leaks=0"))
+            self.assertEqual(run.returncode, 0, run.stdout + "\n" + run.stderr)
+            self.assertIn("escape ok", run.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
