@@ -7634,7 +7634,7 @@ static te_stage* te_stage_agg(void* bp, const ar_te* tree, int32_t node, int dep
     st->body_bytes = body_bytes;
     if (body_bytes && bp) {
         st->body = (char*)arena_stage_alloc(body_bytes, &st->body_cap);
-        memcpy(st->body, bp, body_bytes);
+        memcpy(st->body, ar_snap_ptr(bp), body_bytes);
     }
     int32_t nf = tree[node].aux;
     int32_t first = tree[node].child;
