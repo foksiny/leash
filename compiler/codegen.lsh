@@ -3137,12 +3137,19 @@ pub def CodeGen : class {
         return "{ " + "i8*, i64, i64, i32, i8" + " }";
     }
 
+    /* Validate a container pointer through its generation handle before
+     * any GEP or runtime call. One IR call keeps the old guard shape. */
+    pub fnc container_ref(raw string) : string {
+        p: string = this.new_reg();
+        this.emit("  " + p + " = call i8* @leasharena_container_ref(i8* " + raw + ")");
+        return p;
+    }
+
     pub fnc vec_field(handle string, idx int) : string {
         vh: string = this.new_reg();
         ch: string = handle;
         if this.arena && !this.bridge_host {
-            ch = this.new_reg();
-            this.emit("  " + ch + " = call i8* @leasharena_checked(i8* " + handle + ")");
+            ch = this.container_ref(handle);
         }
         this.emit("  " + vh + " = bitcast i8* " + ch + " to " + this.vec_hdr_ty() + "*");
         vf: string = this.new_reg();
@@ -3169,7 +3176,9 @@ pub def CodeGen : class {
 
     pub fnc vec_store_size(handle string, val string) : void {
         vh2: string = this.new_reg();
-        this.emit("  " + vh2 + " = bitcast i8* " + handle + " to " + this.vec_hdr_ty() + "*");
+        ph: string = handle;
+        if this.arena && !this.bridge_host { ph = this.container_ref(handle); }
+        this.emit("  " + vh2 + " = bitcast i8* " + ph + " to " + this.vec_hdr_ty() + "*");
         vf2: string = this.new_reg();
         this.emit("  " + vf2 + " = getelementptr inbounds " + this.vec_hdr_ty() + ", " + this.vec_hdr_ty() + "* " + vh2 + ", i32 0, i32 1");
         this.emit("  store i64 " + val + ", i64* " + vf2);
@@ -8375,6 +8384,8 @@ pub def CodeGen : class {
             // hash<K,V> methods
             if this.is_hash_type(obj_t) {
                 val_t: string = this.hash_val_type(obj_t);
+                hobj: string = obj_val;
+                if this.arena && !this.bridge_host { hobj = this.container_ref(obj_val); }
 
                 if e.sval == "push" {
                     // Arena: a hash owned outside the current frame (a
@@ -8383,7 +8394,7 @@ pub def CodeGen : class {
                     // allocates would otherwise die with the callee's
                     // frame, leaving the table with a dangling pointer.
                     if this.arena && this.ar_is_outer_var(this.ar_expr_root(e.left)) {
-                        this.emit("  call void @leash_sh_hash_make_rooted(i8* " + obj_val + ")");
+                        this.emit("  call void @leash_sh_hash_make_rooted(i8* " + hobj + ")");
                     }
                     // Arena+ (O3+): a "<string> + <int>" key is built in a
                     // stack buffer by the runtime, so the key string is
@@ -8395,7 +8406,7 @@ pub def CodeGen : class {
                         fk_boxed: string = this.box_to_i8ptr(fk_aval, val_t);
                         if this.arena && this.ar_is_heap_type(val_t) && this.ar_is_outer_var(this.ar_expr_root(e.left)) { fk_boxed = this.ar_root_value(fk_boxed, val_t); }
                         this.emit_share(fk_boxed, val_t);
-                        this.emit("  call void @leash_sh_hash_push_int(i8* " + obj_val + ", i8* " + fk.get(0) + ", i64 " + fk.get(1) + ", i64 " + fk.get(2) + ", i8* " + fk_boxed + ")");
+                        this.emit("  call void @leash_sh_hash_push_int(i8* " + hobj + ", i8* " + fk.get(0) + ", i64 " + fk.get(1) + ", i64 " + fk.get(2) + ", i8* " + fk_boxed + ")");
                         return "";
                     }
                     key_val: string = this.gen_expr(e.args.get(0));
@@ -8404,14 +8415,14 @@ pub def CodeGen : class {
                     boxed: string = this.box_to_i8ptr(aval, val_t);
                     if this.arena && this.ar_is_heap_type(val_t) && this.ar_is_outer_var(this.ar_expr_root(e.left)) { boxed = this.ar_root_value(boxed, val_t); }
                     this.emit_share(boxed, val_t);
-                    this.emit("  call void @leash_sh_hash_push(i8* " + obj_val + ", i8* " + key_val + ", i8* " + boxed + ")");
+                    this.emit("  call void @leash_sh_hash_push(i8* " + hobj + ", i8* " + key_val + ", i8* " + boxed + ")");
                     return "";
                 }
                 if e.sval == "isin" {
                     key_val: string = this.gen_expr(e.args.get(0));
                     key_val = this.hash_key_arg(key_val, this.hash_key_type(obj_t));
                     res: string = this.new_reg();
-                    this.emit("  " + res + " = call i64 @leash_sh_hash_isin(i8* " + obj_val + ", i8* " + key_val + ")");
+                    this.emit("  " + res + " = call i64 @leash_sh_hash_isin(i8* " + hobj + ", i8* " + key_val + ")");
                     bool_r: string = this.new_reg();
                     this.emit("  " + bool_r + " = trunc i64 " + res + " to i1");
                     return bool_r;
@@ -8420,12 +8431,12 @@ pub def CodeGen : class {
                     key_val: string = this.gen_expr(e.args.get(0));
                     key_val = this.hash_key_arg(key_val, this.hash_key_type(obj_t));
                     raw: string = this.new_reg();
-                    this.emit("  " + raw + " = call i8* @leash_sh_hash_get(i8* " + obj_val + ", i8* " + key_val + ")");
+                    this.emit("  " + raw + " = call i8* @leash_sh_hash_get(i8* " + hobj + ", i8* " + key_val + ")");
                     return this.unbox_from_i8ptr(raw, val_t);
                 }
                 if e.sval == "size" {
                     res: string = this.new_reg();
-                    this.emit("  " + res + " = call i64 @leash_sh_hash_size(i8* " + obj_val + ")");
+                    this.emit("  " + res + " = call i64 @leash_sh_hash_size(i8* " + hobj + ")");
                     return res;
                 }
                 if e.sval == "getKey" {
@@ -8433,24 +8444,24 @@ pub def CodeGen : class {
                     qtyp: string = this.get_expr_type(e.args.get(0));
                     qboxed: string = this.box_to_i8ptr(qval, qtyp);
                     res: string = this.new_reg();
-                    this.emit("  " + res + " = call i8* @leash_sh_hash_getkey(i8* " + obj_val + ", i8* " + qboxed + ")");
+                    this.emit("  " + res + " = call i8* @leash_sh_hash_getkey(i8* " + hobj + ", i8* " + qboxed + ")");
                     return res;
                 }
                 if e.sval == "delete" {
                     key_val: string = this.gen_expr(e.args.get(0));
                     key_val = this.hash_key_arg(key_val, this.hash_key_type(obj_t));
-                    this.emit("  call void @leash_sh_hash_delete(i8* " + obj_val + ", i8* " + key_val + ")");
+                    this.emit("  call void @leash_sh_hash_delete(i8* " + hobj + ", i8* " + key_val + ")");
                     return "";
                 }
                 if e.sval == "keys" {
                     res: string = this.new_reg();
-                    this.emit("  " + res + " = call i8* @leash_sh_hash_keys(i8* " + obj_val + ")");
+                    this.emit("  " + res + " = call i8* @leash_sh_hash_keys(i8* " + hobj + ")");
                     this.af_track(res);
                     return res;
                 }
                 if e.sval == "values" {
                     res: string = this.new_reg();
-                    this.emit("  " + res + " = call i8* @leash_sh_hash_values(i8* " + obj_val + ")");
+                    this.emit("  " + res + " = call i8* @leash_sh_hash_values(i8* " + hobj + ")");
                     this.af_track(res);
                     return res;
                 }
@@ -12488,6 +12499,7 @@ pub def CodeGen : class {
                     "declare i8** @leasharena_rootcopy_slot()\n" +
                     "declare i32 @leasharena_root_copy_string_h(i8*)\n" +
                     "declare i8* @leasharena_checked(i8*)\n" +
+                    "declare i8* @leasharena_container_ref(i8*)\n" +
                     "declare i8* @leasharena_handle_deref(i32)\n" +
                     "declare void @leasharena_escape_slot_desc(i8**, " + "{ " + "i8*, i32, i32, i32" + " }*, i32)\n" +
                     "declare void @leasharena_escape_vec(i8**, i64)\n" +

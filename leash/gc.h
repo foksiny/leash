@@ -190,6 +190,7 @@ void* leasharena_checked(void* p);
 /* Gen-validating container handles: callers register a live vec/hash
  * header and dereference the generation handle at access. COW staging
  * and root copies return handles whose generation is checked on use. */
+void* leasharena_container_ref(void* p);
 uint32_t leasharena_container_handle(void* p);
 void* leasharena_handle_require(uint32_t h);
 uint32_t leasharena_root_copy_vec_h(void* p);

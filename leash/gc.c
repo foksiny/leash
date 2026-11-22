@@ -1345,7 +1345,10 @@ void leasharena_verify_current_frame(void) {
  * been freed. The string-info cache is a pure lookup hint; it may point
  * into the reclaimed tail of the kept block, so drop it. */
 static void arena_rewind_to(arena_stack* st, const arena_cp* cp) {
-    ar_container_epoch++;
+    /* Frame depth in the handle cache already rejects reclaimed values:
+     * a pop lowers cp_len, and a loop reset keeps only shallower frames.
+     * Bumping here would invalidate every entry on every return and
+     * exhaust the 20-bit handle index space. */
     st->head = cp->block;
     st->cur = cp->off;
     st->end = cp->end;
@@ -1566,15 +1569,31 @@ uint32_t leasharena_container_handle(void* p) {
     if (!p) return AH_NULL;
     size_t slot = ((uintptr_t)p >> 4) & (AR_CONT_HANDLE_N - 1);
     ar_cont_ent* ce = &ar_cont_cache[slot];
+    uint32_t h = ce->h;
     if (ce->p == p && ce->epoch == ar_container_epoch &&
-        ce->depth <= leasharena_tls_ar.cp_len && ah_container_ptr(ce->h)) return ce->h;
-    uint32_t h = ah_container_alloc(p);
+        ce->depth <= leasharena_tls_ar.cp_len && ah_container_ptr(h)) return h;
+    /* Reuse this entry's handle slot instead of allocating on every epoch
+     * change. IR handles are transient (the caller only uses the returned
+     * pointer), so repointing the slot keeps the 20-bit index space bounded
+     * by the cache size. */
+    if (!ah_container_ptr(h)) h = ah_container_alloc(p);
     if (h == AH_NULL) return AH_NULL;
+    ah_slots[h & AH_IDX_MASK].data = (char*)p;
     ce->p = p;
     ce->h = h;
     ce->epoch = ar_container_epoch;
     ce->depth = leasharena_tls_ar.cp_len;
     return h;
+}
+
+/* Single-call form used at container GEP sites: validates the raw
+ * pointer, resolves its generation handle and returns the dereferenced
+ * header. A null container is an invalid but reachable value in a few
+ * IR paths; a zeroed header keeps the following GEP from faulting. */
+static uint64_t ar_null_container[8];
+void* leasharena_container_ref(void* p) {
+    if (!p) return (void*)ar_null_container;
+    return leasharena_handle_require(leasharena_container_handle(p));
 }
 
 void* leasharena_handle_require(uint32_t h) {
@@ -7573,6 +7592,10 @@ static int te_any_dies(void* val, const ar_te* tree, int32_t node, int depth) {
         LeashVec* v = (LeashVec*)val;
         int32_t ec = tree[node].child;
         if (!v || ec < 0 || v->size <= 0 || !v->data) return 0;
+        /* A header may outlive the pop while its BUFFER was allocated in
+         * the dying frame. The old header-only check skipped staging in
+         * that case and left the escaped vec with a dangling data ptr. */
+        if (ar_dies_in_escape(v->data)) return 1;
         int32_t ek = tree[ec].kind;
         if (ek != TE_STR && ek != TE_VEC && ek != TE_HASH && ek != TE_AGG) return 0;
         size_t esz = v->elem_size > 0 ? (size_t)v->elem_size : 8;
@@ -7584,6 +7607,12 @@ static int te_any_dies(void* val, const ar_te* tree, int32_t node, int depth) {
         LeashHash* h = (LeashHash*)val;
         int32_t vc = tree[node].child;
         if (!h || !h->buckets || vc < 0) return 0;
+        /* Same rule as vec buffers: the table and its nodes may live in
+         * the frame being popped even when the header survives. */
+        if (ar_dies_in_escape(h->buckets)) return 1;
+        for (int64_t bi = 0; bi < h->num_buckets; bi++)
+            for (LeashHashNode* cn = h->buckets[bi]; cn; cn = cn->next)
+                if (ar_dies_in_escape(cn)) return 1;
         int32_t vk = tree[vc].kind;
         if (vk != TE_STR && vk != TE_VEC && vk != TE_HASH && vk != TE_AGG) return 0;
         for (int64_t b = 0; b < h->num_buckets; b++)
@@ -10543,6 +10572,7 @@ void leasharena_commit_string(void** slot, void* stage) { *slot = stage; }
 uint32_t leasharena_stage_string_h(void* s) { (void)s; return 0xFFFFFFFFu; }
 uint32_t leasharena_root_copy_string_h(void* s) { (void)s; return 0xFFFFFFFFu; }
 uint32_t leasharena_container_handle(void* p) { (void)p; return 0xFFFFFFFFu; }
+void* leasharena_container_ref(void* p) { (void)p; return NULL; }
 void* leasharena_handle_require(uint32_t h) { (void)h; return NULL; }
 uint32_t leasharena_root_copy_vec_h(void* p) { (void)p; return 0xFFFFFFFFu; }
 uint32_t leasharena_root_copy_hash_h(void* p) { (void)p; return 0xFFFFFFFFu; }
