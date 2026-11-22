@@ -187,6 +187,14 @@ void leasharena_exit_n(int64_t nframes);
  * when it is a live allocation start inside the thread's arena, aborts
  * otherwise. NULL passes through so optional containers stay valid. */
 void* leasharena_checked(void* p);
+/* Gen-validating container handles: callers register a live vec/hash
+ * header and dereference the generation handle at access. COW staging
+ * and root copies return handles whose generation is checked on use. */
+uint32_t leasharena_container_handle(void* p);
+void* leasharena_handle_require(uint32_t h);
+uint32_t leasharena_root_copy_vec_h(void* p);
+uint32_t leasharena_root_copy_hash_h(void* p);
+uint32_t leasharena_container_cow(uint32_t h, int kind);
 /* Copy a heap value about to be returned out of nframes scopes into
  * the caller's frame. slot points at the generated-code holding the
  * pointer (updated in place); nframes = loop frames + 1. */

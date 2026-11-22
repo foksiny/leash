@@ -191,6 +191,20 @@ typedef struct {
 static ARENA_TLS ar_checked_ent ar_checked_cache[AR_CHECKED_CACHE_N];
 static ARENA_TLS uint64_t ar_checked_epoch = 1;
 
+/* Container pointer -> gen handle registry. A hit is accepted only for
+ * the current arena generation and a frame depth that still covers the
+ * pointer; block removals and rewinds bump the generation. */
+#define AR_CONT_HANDLE_N 256
+typedef struct {
+    const void* p;
+    uint32_t h;
+    uint32_t pad;
+    uint64_t epoch;
+    size_t depth;
+} ar_cont_ent;
+static ARENA_TLS ar_cont_ent ar_cont_cache[AR_CONT_HANDLE_N];
+static ARENA_TLS uint64_t ar_container_epoch = 1;
+
 #define ARENA_BLOCK_SIZE ((size_t)32 * 1024)
 #define ARENA_INIT_BLOCK_SIZE ((size_t)4 * 1024)
 #define ARENA_ALIGN ((size_t)16)
@@ -336,6 +350,7 @@ static void ar_btab_forget(const void* base) {
     if (pos == 0 || arena_block_tab[pos - 1].base != base) return;
     pos--;
     ar_checked_epoch++;
+    ar_container_epoch++;
     if (pos + 1 < arena_block_tab_len) {
         memmove(&arena_block_tab[pos], &arena_block_tab[pos + 1],
                 (arena_block_tab_len - pos - 1) * sizeof(*arena_block_tab));
@@ -398,6 +413,8 @@ typedef struct {
     uint32_t len;
     uint16_t gen;
     uint16_t used;
+    uint8_t kind;    /* 0 = string bytes, 1 = container pointer */
+    uint8_t pad;
 } arena_handle_slot;
 
 static arena_handle_slot* ah_slots;
@@ -414,6 +431,7 @@ static arena_handle ah_alloc_slot(void) {
         s->used = 1;
         s->gen = (uint16_t)((s->gen + 1) & 0xFFF);
         s->data = NULL;
+        s->kind = 0;
         return (arena_handle)((i & AH_IDX_MASK) | ((uint32_t)s->gen << AH_GEN_SHIFT));
     }
     if (ah_slot_count >= AH_IDX_MASK) return AH_NULL;
@@ -425,7 +443,7 @@ static arena_handle ah_alloc_slot(void) {
         ah_slots=ns; ah_slot_cap=nc;
     }
     size_t i = ah_slot_count++;
-    ah_slots[i].used=1; ah_slots[i].gen=1;
+    ah_slots[i].used=1; ah_slots[i].gen=1; ah_slots[i].kind=0;
     return (arena_handle)(i | ((uint32_t)1<<AH_GEN_SHIFT));
 }
 
@@ -463,7 +481,7 @@ static void ah_free(arena_handle h) {
     arena_handle_slot* s = &ah_slots[h & AH_IDX_MASK];
     if (!s->used || s->gen != (uint16_t)(h >> AH_GEN_SHIFT)) return;
     size_t idx=(size_t)(h & AH_IDX_MASK);
-    s->used=0; s->data=(char*)(uintptr_t)ah_free_head; s->len=0;
+    s->used=0; s->data=(char*)(uintptr_t)ah_free_head; s->len=0; s->kind=0;
     ah_free_head=idx+1;
 }
 
@@ -477,13 +495,14 @@ static void ah_shutdown(void) {
 static void ah_compact(void) {
     size_t need = 0;
     for (size_t i = 0; i < ah_slot_count; i++)
-        if (ah_slots[i].used && ah_slots[i].data) need += ah_slots[i].len + 1;
+        if (ah_slots[i].used && ah_slots[i].data && !ah_slots[i].kind)
+            need += ah_slots[i].len + 1;
     char* fresh = (char*)malloc(need ? need : 1);
     if (!fresh) return;
     size_t off = 0;
     for (size_t i = 0; i < ah_slot_count; i++) {
         arena_handle_slot* s = &ah_slots[i];
-        if (!s->used || !s->data) continue;
+        if (!s->used || !s->data || s->kind) continue;
         memcpy(fresh + off, s->data, s->len + 1);
         s->data = fresh + off;
         off += s->len + 1;
@@ -1326,6 +1345,7 @@ void leasharena_verify_current_frame(void) {
  * been freed. The string-info cache is a pure lookup hint; it may point
  * into the reclaimed tail of the kept block, so drop it. */
 static void arena_rewind_to(arena_stack* st, const arena_cp* cp) {
+    ar_container_epoch++;
     st->head = cp->block;
     st->cur = cp->off;
     st->end = cp->end;
@@ -1519,6 +1539,54 @@ void* leasharena_checked(void* p) {
         ce->depth <= leasharena_tls_ar.cp_len) return p;
     return ar_checked_slow(p, ce);
 }
+/* ---- gen-validating handles for vec/hash containers ----------------
+ * IR no longer trusts a raw container header pointer: it asks for a
+ * generation handle and dereferences that handle at every access. The
+ * registry maps a live container header to a stable handle and rejects
+ * a stale generation with ah_ptr(). COW copies are staged/committed
+ * with the same handle machinery used by string root copies. */
+static uint32_t ah_container_alloc(void* p) {
+    arena_handle h = ah_alloc_slot();
+    if (h == AH_NULL) return AH_NULL;
+    arena_handle_slot* s = &ah_slots[h & AH_IDX_MASK];
+    s->data = (char*)p;
+    s->len = 0;
+    s->kind = 1;
+    return (uint32_t)h;
+}
+
+static void* ah_container_ptr(uint32_t h) {
+    if (h == AH_NULL || (h & AH_IDX_MASK) >= ah_slot_count) return NULL;
+    arena_handle_slot* s = &ah_slots[h & AH_IDX_MASK];
+    if (!s->used || s->kind != 1 || s->gen != (uint16_t)(h >> AH_GEN_SHIFT)) return NULL;
+    return (void*)s->data;
+}
+
+uint32_t leasharena_container_handle(void* p) {
+    if (!p) return AH_NULL;
+    size_t slot = ((uintptr_t)p >> 4) & (AR_CONT_HANDLE_N - 1);
+    ar_cont_ent* ce = &ar_cont_cache[slot];
+    if (ce->p == p && ce->epoch == ar_container_epoch &&
+        ce->depth <= leasharena_tls_ar.cp_len && ah_container_ptr(ce->h)) return ce->h;
+    uint32_t h = ah_container_alloc(p);
+    if (h == AH_NULL) return AH_NULL;
+    ce->p = p;
+    ce->h = h;
+    ce->epoch = ar_container_epoch;
+    ce->depth = leasharena_tls_ar.cp_len;
+    return h;
+}
+
+void* leasharena_handle_require(uint32_t h) {
+    if (h == AH_NULL) return NULL;
+    void* p = ah_container_ptr(h);
+    if (!p) {
+        fprintf(stderr, "Leash arena: stale container handle %u at access\n", h);
+        abort();
+    }
+    return p;
+}
+
 void* leash_gc_malloc(size_t size) {
     return arena_alloc(&leasharena_tls_ar, size, ARENA_ALIGN);
 }
@@ -8505,6 +8573,46 @@ void leasharena_root_copy_hash(void** slot) {
     *slot = (void*)nh;
 }
 
+/* Gen-validating root copies for containers: the COW copy is staged in
+ * the program-lifetime arena and the returned value is a handle whose
+ * generation is checked on every later dereference. */
+uint32_t leasharena_root_copy_vec_h(void* v) {
+    if (!v) return AH_NULL;
+    void** slot = leasharena_rootcopy_slot();
+    if (!slot) return AH_NULL;
+    *slot = v;
+    leasharena_root_copy_vec(slot);
+    return leasharena_container_handle(*slot);
+}
+uint32_t leasharena_root_copy_hash_h(void* h) {
+    if (!h) return AH_NULL;
+    void** slot = leasharena_rootcopy_slot();
+    if (!slot) return AH_NULL;
+    *slot = h;
+    leasharena_root_copy_hash(slot);
+    return leasharena_container_handle(*slot);
+}
+
+/* Copy-on-write for a shared container. The share bits are set by the
+ * emitted IR when a container gets a second holder; a writer that asks
+ * for COW receives a fresh private copy with a new generation handle. */
+uint32_t leasharena_container_cow(uint32_t h, int kind) {
+    void* p = ah_container_ptr(h);
+    if (!p) return AH_NULL;
+    int shared = kind
+        ? (((LeashHash*)p)->rooted & LH_HASH_SHARED) != 0
+        : ((LeashVec*)p)->shared != 0;
+    if (!shared) return h;
+    void** slot = leasharena_rootcopy_slot();
+    if (!slot) return AH_NULL;
+    *slot = p;
+    if (kind) leasharena_root_copy_hash(slot);
+    else leasharena_root_copy_vec(slot);
+    uint32_t nh = leasharena_container_handle(*slot);
+    if (nh != AH_NULL && nh != h) ah_free((arena_handle)h);
+    return nh;
+}
+
 void leasharena_root_copy_blob(void** slot, int64_t size) {
     if (!slot || !*slot || size <= 0) return;
     void* np = leash_gc_malloc_rooted((size_t)size);
@@ -10434,6 +10542,11 @@ void leasharena_commit_string(void** slot, void* stage) { *slot = stage; }
  * (values live in the collectible GC heap), so the handle is unused. */
 uint32_t leasharena_stage_string_h(void* s) { (void)s; return 0xFFFFFFFFu; }
 uint32_t leasharena_root_copy_string_h(void* s) { (void)s; return 0xFFFFFFFFu; }
+uint32_t leasharena_container_handle(void* p) { (void)p; return 0xFFFFFFFFu; }
+void* leasharena_handle_require(uint32_t h) { (void)h; return NULL; }
+uint32_t leasharena_root_copy_vec_h(void* p) { (void)p; return 0xFFFFFFFFu; }
+uint32_t leasharena_root_copy_hash_h(void* p) { (void)p; return 0xFFFFFFFFu; }
+uint32_t leasharena_container_cow(uint32_t h, int kind) { (void)h; (void)kind; return 0xFFFFFFFFu; }
 char* leasharena_handle_deref(uint32_t h) { (void)h; return NULL; }
 void leasharena_commit_string_h(void** slot, uint32_t h) { (void)h; if(slot) *slot = NULL; }
 uint32_t leasharena_stage_vec_h(void* v) { (void)v; return 0xFFFFFFFFu; }

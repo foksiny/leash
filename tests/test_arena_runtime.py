@@ -107,5 +107,23 @@ class TestArenaCheckedGuard(unittest.TestCase):
             self.assertIn("checked guard ok", run.stdout)
 
 
+class TestArenaContainerHandles(unittest.TestCase):
+    def test_container_handles(self):
+        """Container handles validate generations, COW and root copies."""
+        cc = _compiler(self)
+        with tempfile.TemporaryDirectory() as td:
+            exe = os.path.join(td, "test_arena_container_handles")
+            build = subprocess.run(
+                cc + ["tests/test_arena_container_handles.c", "leash/gc.c",
+                      "-D_GNU_SOURCE", "-DLEASH_ARENA", "-O1", "-g", "-pthread",
+                      "-o", exe],
+                cwd=REPO_ROOT, capture_output=True, text=True, timeout=300)
+            self.assertEqual(build.returncode, 0, build.stderr)
+            run = subprocess.run([exe], cwd=REPO_ROOT, capture_output=True,
+                                 text=True, timeout=300)
+            self.assertEqual(run.returncode, 0, run.stdout + "\n" + run.stderr)
+            self.assertIn("container handles ok", run.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
