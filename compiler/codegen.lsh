@@ -656,6 +656,11 @@ pub def CodeGen : class {
             } else {
                 this.emit("  " + rr + " = call i8* @leasharena_root_store_" + kind + "(i8** " + slot + ", i8* " + val + ")");
             }
+            if this.arena && !this.bridge_host {
+                rrh: string = this.new_reg();
+                this.emit("  " + rrh + " = call i8* @leasharena_container_ref(i8* " + rr + ")");
+                rr = rrh;
+            }
             this.ar_emit_source_update(src, rr);
             return "";
         }
