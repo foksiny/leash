@@ -643,6 +643,28 @@ static int arena_verify_roots = 1;
 static ARENA_TLS void* ar_escape_ring[AR_ESCAPE_RING];
 static ARENA_TLS unsigned ar_escape_ring_pos;
 static ARENA_TLS int ar_escape_reg_on;
+
+/* Exact roots for pointer-valued locals. Slots are registered at their
+ * alloca and pruned when the owning frame is popped, so a shutdown trace
+ * can mark root values without scanning the C stack. */
+#define AR_LSLOT_MAX 4096
+typedef struct { void** slot; size_t depth; } ar_lslot_ent;
+static ARENA_TLS ar_lslot_ent ar_lslot[AR_LSLOT_MAX];
+static ARENA_TLS size_t ar_lslot_n;
+void leasharena_local_slot(void** slot) {
+    if (!ar_escape_reg_on || !slot || ar_lslot_n >= AR_LSLOT_MAX) return;
+    ar_lslot[ar_lslot_n].slot = slot;
+    ar_lslot[ar_lslot_n].depth = leasharena_tls_ar.cp_len;
+    ar_lslot_n++;
+}
+static void ar_lslot_prune(size_t depth) {
+    size_t w = 0;
+    for (size_t i = 0; i < ar_lslot_n; i++)
+        if (ar_lslot[i].depth <= depth) ar_lslot[w++] = ar_lslot[i];
+    ar_lslot_n = w;
+}
+
+
 typedef struct { const ar_te* tree; int32_t node; } ar_escape_desc;
 static ARENA_TLS ar_escape_desc ar_escape_descs[AR_ESCAPE_RING];
 static void ar_etrace_roots(void);
@@ -1414,6 +1436,7 @@ static void arena_pop_cp(arena_stack* st) {
         abort();
     }
     st->cp_len--;
+    ar_lslot_prune(st->cp_len);
     arena_cp cp = st->cps[st->cp_len];
     char* old_cur = st->cur;
     arena_verify_scan_regions(st, &cp);
@@ -1431,6 +1454,7 @@ static void arena_pop_cp(arena_stack* st) {
 
 /* Reset (without popping) to the frame at stack index `frame`. */
 static void arena_reset_to(arena_stack* st, size_t frame) {
+    ar_lslot_prune(frame);
     /* frame is the depth index (0-based) of the checkpoint to keep */
     if (frame >= st->cp_len) return;
     arena_cp cp = st->cps[frame];
@@ -7770,25 +7794,13 @@ static void ar_etrace_roots(void) {
                 ar_etrace_walk(v,ar_rslot[i].tree,ar_rslot[i].node,0);
         }
     }
-    /* Seed from a conservative C-stack scan: at shutdown these are the
-     * root pointers still held by live frames -- the real root set. */
-    if (ar_etrace_stack_top) {
-        char probe; char* sp=&probe;
-        if (sp < ar_etrace_stack_top) {
-            size_t n=(size_t)(ar_etrace_stack_top-sp);
-            for (size_t off=0; off+sizeof(void*)<=n; off+=sizeof(void*)) {
-                void* p; memcpy(&p,sp+off,sizeof(p));
-                arena_block_ent* e=ar_btab_find_any(p);
-                if (e && e->st==&tls_root && !ar_etrace_mark[e->b->seq&(AR_ETRACE_N-1)]) {
-                    ar_etrace_mark[e->b->seq&(AR_ETRACE_N-1)]=1;
-                    roots++;
-                    /* Find a registered descriptor for this pointer and
-                     * follow its children precisely. */
-                    for (size_t k=0;k<ar_vroot_n;k++)
-                        if (ar_vroot[k].val==p && ar_vroot[k].tree && ar_vroot[k].node>=0) {
-                            ar_etrace_walk(p,ar_vroot[k].tree,ar_vroot[k].node,0); break; }
-                }
-            }
+    for (size_t i = 0; i < ar_lslot_n; i++) {
+        void* v = *ar_lslot[i].slot;
+        if (!v) continue;
+        arena_block_ent* e = ar_btab_find_any(v);
+        if (e && e->st == &tls_root && !ar_etrace_mark[e->b->seq & (AR_ETRACE_N - 1)]) {
+            ar_etrace_mark[e->b->seq & (AR_ETRACE_N - 1)] = 1;
+            roots++;
         }
     }
     /* Conservative closure over marked blocks reaches pointers held inside

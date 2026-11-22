@@ -705,6 +705,7 @@ pub def CodeGen : class {
         slot: string = this.new_reg();
         if this.bridge_host {
             this.emit("  " + slot + " = alloca i8*, align 8");
+            this.emit_local_slot(slot);
         } else {
             this.emit("  " + slot + " = call i8** @leasharena_rootcopy_slot()");
         }
@@ -1170,6 +1171,7 @@ pub def CodeGen : class {
         slot: string = this.new_reg();
         if this.bridge_host {
             this.emit("  " + slot + " = alloca i8*, align 8");
+            this.emit_local_slot(slot);
         } else {
             this.emit("  " + slot + " = call i8** @leasharena_escape_slot()");
         }
@@ -1326,6 +1328,7 @@ pub def CodeGen : class {
                 tt3: string = this.strip_ref(et);
                 ssl: string = this.new_reg();
                 this.emit("  " + ssl + " = alloca i8*, align 8");
+            this.emit_local_slot(ssl);
                 sslv: string = this.new_reg();
                 if tt3 == "string" {
                     this.emit("  " + sslv + " = call i8* @leasharena_stage_string(i8* " + comp + ")");
@@ -3148,6 +3151,14 @@ pub def CodeGen : class {
         p: string = this.new_reg();
         this.emit("  " + p + " = call i8* @leasharena_container_ref(i8* " + raw + ")");
         return p;
+    }
+
+    /* Register a pointer local as an exact root for arena tracing. The
+     * runtime drops the registration when the owning frame is popped. */
+    pub fnc emit_local_slot(slot string) : void {
+        if this.arena && !this.bridge_host {
+            this.emit("  call void @leasharena_local_slot(i8** " + slot + ")");
+        }
     }
 
     pub fnc vec_field(handle string, idx int) : string {
@@ -10571,6 +10582,7 @@ pub def CodeGen : class {
                         if !spn_is_union && !spn_is_tuple {
                         spn_slot: string = this.new_reg();
                         this.emit("  " + spn_slot + " = alloca i8*, align 8");
+            this.emit_local_slot(spn_slot);
                         spn_iv: string = this.new_reg();
                         if spn_lty2 == "i8*" { spn_iv = spn_av; }
                         else { this.emit("  " + spn_iv + " = bitcast " + spn_lty2 + " " + spn_av + " to i8*"); }
@@ -11088,6 +11100,7 @@ pub def CodeGen : class {
             }
             fio: int = 0;
             this.emit("  %" + s.name + ".ptr = alloca i8*, align 8");
+            this.emit_local_slot("%" + s.name + ".ptr");
             this.emit("  %" + s.var_type + ".ptr = alloca " + this.llvm_type(ftypes.get(0)) + ", align 8");
             while fio < fnames.size {
                 name_decl: Stmt = Stmt.make_var_decl(s.name, "string", false, false, Expr.make_string(fnames.get(fio)));
@@ -11111,6 +11124,7 @@ pub def CodeGen : class {
             if this.tc.works_error.bsize > 0 {
                 // run the otherwise handler with the captured message
                 this.emit("  %" + s.name + ".ptr = alloca i8*, align 8");
+            this.emit_local_slot("%" + s.name + ".ptr");
                 err_decl: Stmt = Stmt.make_var_decl(s.name, "string", false, false, Expr.make_string(this.tc.works_error));
                 this.gen_statement(err_decl);
                 this.tc.works_error = "";
@@ -12504,7 +12518,7 @@ pub def CodeGen : class {
                     "declare i8** @leasharena_rootcopy_slot()\n" +
                     "declare i32 @leasharena_root_copy_string_h(i8*)\n" +
                     "declare i8* @leasharena_checked(i8*)\n" +
-                    "declare i8* @leasharena_container_ref(i8*)\n" +
+                    "declare i8* @leasharena_container_ref(i8*)\n" +                    "declare void @leasharena_local_slot(i8**)\n" +
                     "declare i8* @leasharena_handle_deref(i32)\n" +
                     "declare void @leasharena_escape_slot_desc(i8**, " + "{ " + "i8*, i32, i32, i32" + " }*, i32)\n" +
                     "declare void @leasharena_escape_vec(i8**, i64)\n" +
