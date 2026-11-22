@@ -23,7 +23,6 @@ static void producer(void) {
 
 int main(void) {
     setenv("LEASH_ARENA_POISON", "0", 1);
-    setenv("LEASH_ARENA_ESCAPE_SNAPSHOT", "1", 1);
     leash_gc_init();
     producer();
     void** slot = leasharena_escape_slot();
