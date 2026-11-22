@@ -325,6 +325,17 @@ static const void* ar_snap_ptr(const void* p) {
     }
     return p;
 }
+/* A recycled block can land at the same address as an old snapshot.
+ * Forget the stale image as soon as that address is live again, or a
+ * live pointer would be redirected into old bytes. */
+static void ar_snapshot_forget(const char* base) {
+    for (size_t i = 0; i < AR_SNAP_N; i++)
+        if (ar_snaps[i].base == base) {
+            free(ar_snaps[i].bytes);
+            ar_snaps[i].bytes = NULL;
+            ar_snaps[i].base = ar_snaps[i].end = NULL;
+        }
+}
 static void ar_snapshot_add(arena_block* b) {
     if (!ar_snapshot_on || b->cap > (size_t)128 * 1024) return;
     ar_snap_ent* e = &ar_snaps[ar_snap_pos];
@@ -827,6 +838,7 @@ static arena_block* arena_new_block_sized(arena_stack* st, size_t cap, int sole)
     b->next = st->head;
     b->base = (char*)(b + 1);
     b->cap = cap;
+    ar_snapshot_forget(b->base);
     b->sole = sole;
     b->frame_id = (int)st->cp_len;
     b->seq = ++arena_block_seq;
@@ -1475,6 +1487,7 @@ void leash_gc_init(void) {
     {
         for (size_t i=0;i<ARENA_INTERN_N;i++) arena_str_intern[i]=AH_NULL;
         { const char* t=getenv("LEASH_ARENA_TRACE_ROOTS"); ar_escape_reg_on=(t&&t[0]!='0')?1:0; if(ar_escape_reg_on) ar_etrace_bounds(); }
+        /* Opt-in: snapshot reclaimed blocks for exact escape staging. */
         { const char* sn = getenv("LEASH_ARENA_ESCAPE_SNAPSHOT"); ar_snapshot_on = (sn && sn[0] != '0'); }
         const char* p = getenv("LEASH_ARENA_POISON");
         leash_arena_poison = (!p || p[0] != '0' || p[1] != '\0') ? 1 : 0;
