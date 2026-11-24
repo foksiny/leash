@@ -186,6 +186,15 @@ export class TextPositioner {
         const end = line + 1 < this.lineStarts.length ? this.lineStarts[line + 1] - 1 : this.text.length;
         return this.text.slice(start, end);
     }
+    /** First occurrence of a whole identifier in the document. Used to
+     *  place compiler diagnostics that carry no source location. */
+    findToken(token: string): Position | null {
+        if (!token) return null;
+        const esc = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const re = new RegExp(`(^|[^A-Za-z0-9_])(${esc})(?![A-Za-z0-9_])`);
+        const m = re.exec(this.text);
+        return m ? this.positionAt(m.index + m[1].length) : null;
+    }
     wordRangeAt(offset: number): Range | null {
         const text = this.text;
         if (offset < 0 || offset > text.length) return null;

@@ -21,6 +21,11 @@ This extension provides syntax highlighting and a full Language Server for the L
 - **Formatting**: Whole-document indentation-based formatting.
 - **Diagnostics for unsaved files**: Files opened from untitled/unsaved buffers are checked via a temporary file next to the real one (or in the system temp dir), so relative imports still resolve.
 
+## Development
+
+- `npm test` compiles, lints, then runs the offline LSP regression suite (`src/test/runTest.ts`). It checks compiler argument order, parser/arena diagnostic formats, real `leash check` output (including `E_ARENA_LIFETIME`), macro/`async` parsing and new builtins.
+- `npm run package` builds the installable `.vsix`. `.vscodeignore` keeps sources, tests and dev-only node modules out of the package.
+
 ## Prerequisites
 
 - **Node.js** (v16 or newer)
@@ -29,7 +34,7 @@ This extension provides syntax highlighting and a full Language Server for the L
 ## Installation
 
 ### Method 1: Packaged Extension
-1. Run `npm install && npm run package` to produce `leash-1.12.0.vsix`.
+1. Run `npm install && npm run package` to produce `leash-2.0.0.vsix`.
 2. Install it in VS Code (Extensions view -> `...` -> `Install from VSIX...`).
 
 ### Method 2: Manual Development Setup

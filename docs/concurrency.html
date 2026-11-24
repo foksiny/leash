@@ -3,136 +3,150 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="color-scheme" content="dark">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Crect width=%27100%27 height=%27100%27 rx=%2722%27 fill=%27%237c3aed%27/%3E%3Ctext x=%2750%27 y=%2768%27 font-size=%2752%27 text-anchor=%27middle%27 font-family=%27monospace%27 fill=%27white%27%3EL%3C/text%3E%3C/svg%3E">
-<title>Concurrency - Leash</title>
+<title>Concurrency Model - Leash documentation</title>
+<meta name="description" content="Leash concurrency: worker threads and spawn, shared and fusion globals, async/await with futures, thread safety rules, and arena root escapes.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Crect width=%27100%27 height=%27100%27 rx=%2722%27 fill=%27%23241f4d%27/%3E%3Ctext x=%2750%27 y=%2770%27 font-size=%2760%27 text-anchor=%27middle%27 font-family=%27monospace%27 fill=%27white%27%3EL%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
+<script src="docs.js" defer></script>
 </head>
 <body>
+<a class="skip-link" href="#main-content">Skip to content</a>
 
-<button class="menu-toggle" onclick="document.querySelector('.sidebar').classList.toggle('open')">&#9776;</button>
+<header class="topbar">
+  <a class="topbar-brand" href="index.html"><img src="leash-icon-light.svg" alt="" onerror="this.style.display='none'"><span>Leash</span></a>
+  <nav class="topbar-nav" aria-label="Top navigation">
+    <a href="index.html" class="">Docs</a>
+    <a href="getting-started.html" class="">Tutorial</a>
+    <a href="language-guide.html" class="">Reference</a>
+    <a href="compiler.html" class="">Spec</a>
+    <a href="stdlib.html" class="">Library</a>
+    <a href="package-manager.html" class="">Packages</a>
+    <a href="../benchmarking/README.md">Benchmarks</a>
+    <a href="https://github.com/foksiny/leash">GitHub</a>
+  </nav>
+  <button class="menu-toggle" type="button" aria-label="Toggle navigation" aria-expanded="false">&#9776;</button>
+  <input id="doc-search" class="topbar-search" type="search" placeholder="Search docs" aria-label="Search documentation" autocomplete="off">
+  <button class="theme-toggle" type="button" aria-label="Toggle color theme" title="Toggle theme">&#9680;</button>
+</header>
 
-<aside class="sidebar">
-    <div class="sidebar-header">
-        <h1>Leash</h1>
-        <div class="version">v1.12.0 Release</div>
-        <div class="subtitle">Programming Language</div>
+<div class="layout">
+  <aside class="sidenav">
+    <div class="sidenav-title">Leash documentation</div>
+    <div class="sidenav-group">
+      <a href="index.html" class="">Overview</a>
+      <a href="getting-started.html" class="">The language, in reading order</a>
+      <a href="language-guide.html" class="">Language reference</a>
+      <a href="compiler.html" class="">The compiler</a>
     </div>
-    <nav class="sidebar-nav">
-        <div class="nav-section">
-            <div class="nav-section-title">Getting Started</div>
-            <a href="index.html">Overview</a>
-            <a href="getting-started.html">Installation &amp; Setup</a>
+    <div class="sidenav-group">
+      <a href="self-hosted.html" class="">Getting the compiler</a>
+      <a href="stdlib.html" class="">Library and tools</a>
+      <a href="package-manager.html" class="">Building programs and using packages</a>
+      <a href="concurrency.html" class="current">Concurrency</a>
+    </div>
+    <div class="sidenav-group">
+      <a href="advanced.html" class="">Standalone pages</a>
+      <a href="limitations.html" class="">Known limitations</a>
+    </div>
+    <div class="sidenav-foot">Leash 2.0.0</div>
+  </aside>
+
+  <main class="content" id="main-content">
+    <div class="progress" id="progress-bar" aria-hidden="true"></div>
+    <article>
+        <h1>Concurrency Model</h1>
+
+
+        <h2 id="mental-model">Mental model</h2>
+        <p>Leash supports multi-threaded programming through <strong>workers</strong> — special functions that run concurrently in separate OS threads. Ordinary code runs on one thread; a worker is a unit of work you hand to the runtime. Workers do not share function locals: each thread has its own stack. They communicate through two kinds of module-wide variables, <code>shared</code> and <code>fusion</code>, or they can return a value through an <code>async fnc</code> future.</p>
+
+        <div class="stat-grid">
+          <div class="stat"><div class="value">2</div><div class="label">communication variable kinds</div></div>
+          <div class="stat"><div class="value">64</div><div class="label">maximum live worker threads</div></div>
+          <div class="stat"><div class="value">1</div><div class="label">writer allowed per shared variable</div></div>
+          <div class="stat"><div class="value">1:1</div><div class="label">worker function to OS thread on spawn</div></div>
         </div>
-        <div class="nav-section">
-            <div class="nav-section-title">Language Guide</div>
-            <a href="language-guide.html">Language Reference</a>
-            <a href="compiler.html">Compiler &amp; CLI</a>
-            <a href="self-hosted.html">Self-Hosted Compiler</a>
-            <a href="stdlib.html">Standard Library</a>
+
+        <div class="feature-grid">
+          <div class="feature-card"><h3>Workers</h3><p>A <code>worker fnc</code> is a function the runtime can start on its own OS thread. Spawn one for each independent stream of work.</p></div>
+          <div class="feature-card"><h3>Shared state</h3><p><code>shared</code> is one-writer, many-reader; <code>fusion</code> allows every thread to read and write with atomic scalar updates.</p></div>
+          <div class="feature-card"><h3>Futures</h3><p><code>async fnc</code> returns a <code>future&lt;T&gt;</code> immediately. <code>await</code> joins it and yields the typed result.</p></div>
         </div>
-        <div class="nav-section">
-            <div class="nav-section-title">Ecosystem</div>
-            <a href="package-manager.html">Package Manager</a>
-            <a href="concurrency.html" class="active">Concurrency Model</a>
-            <a href="advanced.html">Advanced Topics</a>
-            <a href="limitations.html">Known Limitations</a>
+
+        <div class="callout callout-info"><strong>Three ways to run concurrently.</strong> Use <code>spawn</code> for fire-and-forget workers, <code>async fnc</code> + <code>await</code> when you need a result, and <code>shared</code>/<code>fusion</code> globals for state that several threads observe. They all use the same worker machinery under the hood.</div>
+
+        <h2 id="worker-functions">Worker functions</h2>
+        <p>Mark a function with <code>worker fnc</code> instead of <code>fnc</code> to make it runnable in its own OS thread. Workers are declared just like regular functions, accept parameters normally, and typically run in a loop — checking <code>thisworker.interrupted</code> to know when the program is shutting down.</p>
+
+        <ul>
+          <li>Workers are declared like regular functions but with the <code>worker</code> keyword</li>
+          <li>They accept parameters like normal functions</li>
+          <li>They run in an infinite loop by default</li>
+          <li>Use <code>thisworker.interrupted</code> to check if the program is shutting down</li>
+        </ul>
+
+        <div class="callout callout-warning"><strong>Workers are not started by declaration.</strong> A <code>worker fnc</code> is just a callable body until you <code>spawn</code> it (or it is invoked as the body of an <code>async fnc</code> call). Declaring one does not create a thread.</div>
+
+        <h2 id="spawning">Spawning workers</h2>
+        <p>Use <code>spawn</code> to launch a worker function in a new OS thread. Each <code>spawn</code> call creates a dedicated thread, passes arguments by value (copied into a heap-allocated struct), and starts execution immediately. Spawned threads run concurrently with <code>main</code> and with each other.</p>
+
+        <ul>
+          <li>Each <code>spawn</code> creates a new OS thread running the given worker function</li>
+          <li>Arguments are passed by value (copied into a heap-allocated struct)</li>
+          <li>All spawned threads run concurrently with <code>main</code> and with each other</li>
+          <li>Workers stop when the program terminates or when <code>thisworker.interrupted</code> becomes true (for example on Ctrl+C)</li>
+        </ul>
+
+        <p><code>spawn</code> is fire-and-forget: it gives you no handle and no result. For a value, use <a href="#async-await">async/await</a> instead. <code>spawn</code> cannot be used on an <code>async fnc</code> — that call already runs on a worker.</p>
+
+        <h2 id="shared-variables">Shared variables (<code>shared</code>)</h2>
+        <p>A <code>shared</code> variable allows <strong>one thread to write</strong> while any number of threads read. This is the default safe pattern for producer-consumer scenarios where a single worker produces data and multiple workers consume it. Since only one writer is allowed, there is no risk of write-write conflicts, making <code>shared</code> the simplest and safest choice for one-to-many communication patterns.</p>
+        <p>The one-writer rule is enforced at compile time: assigning to a <code>shared</code> variable (including through an element or field write) from two different functions is an error — use a <code>fusion</code> variable instead if several workers must write it.</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Property</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td>Writers</td><td>Only one worker may write at a time</td></tr>
+              <tr><td>Readers</td><td>Any number of workers may read</td></tr>
+              <tr><td>Atomicity</td><td>No guarantees — readers may see stale values</td></tr>
+            </tbody>
+          </table>
         </div>
-    </nav>
-</aside>
 
-<main class="main">
+        <div class="callout callout-warning"><strong>Not the same thing as a function shared variable.</strong> The <code>shared</code> keyword declares a module-wide variable that every function in the module can see — it exists for worker communication, and the one-writer rule keeps concurrent access safe. Leash also has <em>function shared variables</em>, declared in a function signature (<code>fnc f() : void | result: int</code>): those are program-wide storage too, but only the functions that declare them may touch them, and they carry no thread-safety rules at all. See <a href="language-guide.html#shared-variables">Shared Variables</a> in the language guide for the full comparison.</div>
 
-<div class="breadcrumb">
-    <a href="index.html">Home</a> <span class="sep">/</span> <span class="current">Concurrency Model</span>
-</div>
+        <h2 id="fusion-variables">Fusion variables (<code>fusion</code>)</h2>
+        <p>A <code>fusion</code> variable allows <strong>multiple threads</strong> to both read and write concurrently. Scalar integer <code>fusion</code> variables compile to atomic (sequentially consistent) loads and stores, and the counter idiom <code>counter = counter + n</code> lowers to a single atomic read-modify-write, so concurrent updates never lose increments. This makes <code>fusion</code> the right choice for counters, flags, and coordination variables that many threads need to share and update. Sub-byte values (such as <code>bool</code>) and composite values (arrays, vectors, structs) do not have atomic forms and keep plain access.</p>
 
-<h1>Concurrency Model</h1>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Property</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td>Readers &amp; Writers</td><td>Any worker may read or write</td></tr>
+              <tr><td>Visibility</td><td>Changes eventually visible to all threads (atomic semantics)</td></tr>
+              <tr><td>Use cases</td><td>Counters, flags, values shared by many threads</td></tr>
+            </tbody>
+          </table>
+        </div>
 
-<p>Leash supports multi-threaded programming through <strong>workers</strong> &mdash; special functions that run concurrently in separate OS threads. Workers communicate through two kinds of global variables: <code>shared</code> and <code>fusion</code>.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Question</th><th><code>shared</code></th><th><code>fusion</code></th></tr></thead>
+            <tbody>
+              <tr><td>How many writers?</td><td>Exactly one, enforced at compile time</td><td>Any number</td></tr>
+              <tr><td>How many readers?</td><td>Any number</td><td>Any number</td></tr>
+              <tr><td>Atomic loads / stores?</td><td>No — stale reads are possible</td><td>Yes for scalar integers (sequentially consistent)</td></tr>
+              <tr><td><code>x = x + n</code> atomic?</td><td>Not relevant: one writer</td><td>Yes — one atomic read-modify-write</td></tr>
+              <tr><td>Works for <code>bool</code> / composites?</td><td>Plain access</td><td>Plain access (no atomic form)</td></tr>
+            </tbody>
+          </table>
+        </div>
 
-<h2>Shared Variables (<code>shared</code>)</h2>
+        <h2 id="async-await">Async, await &amp; futures</h2>
+        <p>Where <code>spawn</code> is fire-and-forget, <strong>async/await</strong> gives you a value back. Declare a function with <code>async fnc</code> and calling it returns a <code>future&lt;T&gt;</code> handle immediately — the body runs on a worker thread. <code>await</code> joins the future and yields the result <code>T</code>.</p>
 
-<p>A <code>shared</code> variable allows <strong>one thread to write</strong> while any number of threads read. This is the default safe pattern for producer-consumer scenarios where a single worker produces data and multiple workers consume it. Since only one writer is allowed, there's no risk of write-write conflicts, making <code>shared</code> the simplest and safest choice for one-to-many communication patterns.</p>
-<p>The one-writer rule is enforced at compile time: assigning to a <code>shared</code> variable (including through an element or field write) from two different functions is an error &mdash; use a <code>fusion</code> variable instead if several workers must write it.</p>
-
-<pre><code><span class="kw">shared</span> result: <span class="kw">int</span> = 0;  <span class="cm">// Only one writer, many readers</span></code></pre>
-
-<table>
-    <tr><th>Property</th><th>Description</th></tr>
-    <tr><td>Writers</td><td>Only one worker may write at a time</td></tr>
-    <tr><td>Readers</td><td>Any number of workers may read</td></tr>
-    <tr><td>Atomicity</td><td>No guarantees &mdash; readers may see stale values</td></tr>
-</table>
-
-<p><strong>Not the same thing as a function shared variable.</strong> The <code>shared</code> keyword declares a module-wide variable that every function in the module can see &mdash; it exists for worker communication, and the one-writer rule keeps concurrent access safe. Leash also has <em>function shared variables</em>, declared in a function signature (<code>fnc f() : void | result: int</code>): those are program-wide storage too, but only the functions that declare them may touch them, and they carry no thread-safety rules at all. See <a href="language-guide.html#shared-variables">Shared Variables</a> in the language guide for the full comparison.</p>
-
-<h2>Fusion Variables (<code>fusion</code>)</h2>
-
-<p>A <code>fusion</code> variable allows <strong>multiple threads</strong> to both read and write concurrently. Scalar integer <code>fusion</code> variables compile to atomic (sequentially consistent) loads and stores, and the counter idiom <code>counter = counter + n</code> lowers to a single atomic read-modify-write, so concurrent updates never lose increments. This makes <code>fusion</code> the right choice for counters, flags, and coordination variables that many threads need to share and update. Sub-byte values (such as <code>bool</code>) and composite values (arrays, vectors, structs) do not have atomic forms and keep plain access.</p>
-
-<pre><code><span class="kw">fusion</span> counter: <span class="kw">int</span> = 0;  <span class="cm">// Multiple readers and writers</span></code></pre>
-
-<table>
-    <tr><th>Property</th><th>Description</th></tr>
-    <tr><td>Readers &amp; Writers</td><td>Any worker may read or write</td></tr>
-    <tr><td>Visibility</td><td>Changes eventually visible to all threads (atomic semantics)</td></tr>
-    <tr><td>Use cases</td><td>Counters, flags, values shared by many threads</td></tr>
-</table>
-
-<h2>Worker Functions (<code>worker fnc</code>)</h2>
-
-<p>Mark a function with <code>worker fnc</code> instead of <code>fnc</code> to make it runnable in its own OS thread. Workers are declared just like regular functions but with the <code>worker</code> keyword, accept parameters normally, and typically run in an infinite loop &mdash; checking <code>thisworker.interrupted</code> to know when the program is shutting down.</p>
-
-<pre><code><span class="kw">worker</span> <span class="kw">fnc</span> <span class="fn">calculate</span>(a <span class="kw">int</span>, b <span class="kw">int</span>) {
-    result: <span class="kw">int</span> = 0;
-    <span class="kw">while</span> !thisworker.interrupted {
-        result = a + b + result;
-        <span class="fn">show</span>(<span class="str">"calculate updated result to: "</span>, result);
-    }
-}</code></pre>
-
-<ul>
-    <li>Workers are declared like regular functions but with the <code>worker</code> keyword</li>
-    <li>They accept parameters like normal functions</li>
-    <li>They run in an infinite loop by default</li>
-    <li>Use <code>thisworker.interrupted</code> to check if the program is shutting down</li>
-</ul>
-
-<h2>Spawning Workers (<code>spawn</code>)</h2>
-
-<p>Use <code>spawn</code> to launch a worker function in a new OS thread. Each <code>spawn</code> call creates a dedicated thread, passes arguments by value (copied into a heap-allocated struct), and starts execution immediately. Spawned threads run concurrently with <code>main</code> and with each other.</p>
-
-<pre><code><span class="kw">worker</span> <span class="kw">fnc</span> <span class="fn">calculate</span>(a <span class="kw">int</span>, b <span class="kw">int</span>) : <span class="kw">void</span> {
-    <span class="fn">show</span>(a + b);
-}
-
-<span class="kw">worker</span> <span class="kw">fnc</span> <span class="fn">increment_counter</span>() : <span class="kw">void</span> {
-    <span class="fn">show</span>(<span class="str">"counting..."</span>);
-}
-
-<span class="kw">worker</span> <span class="kw">fnc</span> <span class="fn">show_result</span>() : <span class="kw">void</span> {
-    <span class="fn">show</span>(<span class="str">"done"</span>);
-}
-
-<span class="kw">fnc</span> <span class="fn">main</span>() {
-    <span class="kw">spawn</span> calculate(3, 5);
-    <span class="kw">spawn</span> increment_counter();
-    <span class="kw">spawn</span> show_result();
-}</code></pre>
-
-<ul>
-    <li>Each <code>spawn</code> creates a new OS thread running the given worker function</li>
-    <li>Arguments are passed by value (copied into a heap-allocated struct)</li>
-    <li>All spawned threads run concurrently with <code>main</code> and with each other</li>
-    <li>Workers stop when the program terminates or when <code>thisworker.interrupted</code> becomes true (e.g., on Ctrl+C)</li>
-</ul>
-
-<h2>Async Functions & Awaiting (<code>async fnc</code> / <code>await</code>)</h2>
-
-<p>Where <code>spawn</code> is fire-and-forget, <strong>async/await</strong> gives you a value back. Declare a function with <code>async fnc</code> and calling it returns a <code>future<T></code> handle immediately — the body runs on a worker thread. <code>await</code> joins the future and yields the result <code>T</code>.</p>
-
-<pre><code><span class="kw">fnc</span> <span class="fn">heavy_computation</span>(user <span class="kw">string</span>) : <span class="kw">int</span> {
+        <pre><code><span class="kw">fnc</span> <span class="fn">heavy_computation</span>(user <span class="kw">string</span>) : <span class="kw">int</span> {
     <span class="kw">return</span> user.size * 10;
 }
 
@@ -141,96 +155,132 @@
     <span class="kw">return</span> heavy_computation(user);
 }
 
-<span class="kw">fnc</span> <span class="fn">main</span>() {
+<span class="kw">fnc</span> <span class="fn">main</span>() : <span class="kw">void</span> {
     <span class="cm">// three tasks in flight at once — real parallelism</span>
-    a: <span class="kw">future</span><<span class="kw">int</span>> = <span class="fn">fetch_score</span>(<span class="str">"ada"</span>);
-    b: <span class="kw">future</span><<span class="kw">int</span>> = <span class="fn">fetch_score</span>(<span class="str">"linus"</span>);
-    c: <span class="kw">future</span><<span class="kw">int</span>> = <span class="fn">fetch_score</span>(<span class="str">"grace"</span>);
+    a: <span class="kw">future</span>&lt;<span class="kw">int</span>&gt; = fetch_score(<span class="str">"ada"</span>);
+    b: <span class="kw">future</span>&lt;<span class="kw">int</span>&gt; = fetch_score(<span class="str">"linus"</span>);
+    c: <span class="kw">future</span>&lt;<span class="kw">int</span>&gt; = fetch_score(<span class="str">"grace"</span>);
 
     <span class="fn">show</span>(<span class="kw">await</span> a, <span class="kw">await</span> b, <span class="kw">await</span> c);  <span class="cm">// joins in any order</span>
 }</code></pre>
 
-<h3>Rules</h3>
-<table>
-    <tr><th>Construct</th><th>Behavior</th></tr>
-    <tr><td><code>async fnc name(...) : T</code></td><td>Callable like any function; every call spawns a worker and returns <code>future<T></code></td></tr>
-    <tr><td><code>future<T></code></td><td>A first-class type — store it in variables, pass it around, await it once</td></tr>
-    <tr><td><code>await f</code> / <code>await name(...)</code></td><td>Blocks the calling thread until the result is ready; the expression's type is <code>T</code></td></tr>
-    <tr><td><code>async fnc ... : void</code></td><td>Join with <code>await f;</code> as a statement (no value)</td></tr>
-    <tr><td>Plain call, no <code>await</code></td><td>Legal fire-and-forget — the task still runs to completion</td></tr>
-</table>
+        <h3>Rules</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Construct</th><th>Behavior</th></tr></thead>
+            <tbody>
+              <tr><td><code>async fnc name(...) : T</code></td><td>Callable like any function; every call spawns a worker and returns <code>future&lt;T&gt;</code></td></tr>
+              <tr><td><code>future&lt;T&gt;</code></td><td>A first-class type — store it in variables, pass it around, await it once</td></tr>
+              <tr><td><code>await f</code> / <code>await name(...)</code></td><td>Blocks the calling thread until the result is ready; the expression's type is <code>T</code></td></tr>
+              <tr><td><code>async fnc ... : void</code></td><td>Join with <code>await f;</code> as a statement (no value)</td></tr>
+              <tr><td>Plain call, no <code>await</code></td><td>Legal fire-and-forget — the task still runs to completion</td></tr>
+            </tbody>
+          </table>
+        </div>
 
-<div class="callout callout-info">Async functions compose: an <code>async fnc</code> may call (and <code>await</code>) other async functions — including itself, where recursion spawns child tasks. Calling an async function from inside its own body is always a new task; use <code>await</code> to collect results. <code>spawn</code> cannot be used on an async function (it already runs on a worker), and <code>main</code> cannot be async.</div>
+        <div class="callout callout-info"><strong>Async functions compose.</strong> An <code>async fnc</code> may call (and <code>await</code>) other async functions — including itself, where recursion spawns child tasks. Calling an async function from inside its own body is always a new task; use <code>await</code> to collect results. <code>spawn</code> cannot be used on an async function (it already runs on a worker), and <code>main</code> cannot be async.</div>
 
-<div class="callout callout-info"><strong>Worker cap.</strong> The runtime runs at most 64 worker threads. Creating a 65th task does not deadlock and does not lose the result: the extra task runs inline on the calling thread, so its future still completes (you lose only the parallelism, and the runtime prints a notice). A future you never <code>await</code> stays rooted until the process exits, so fire-and-forget tasks are fine for a bounded number of calls, not an unbounded loop.</div>
+        <div class="callout callout-info"><strong>Worker cap.</strong> The runtime runs at most 64 worker threads. Creating a 65th task does not deadlock and does not lose the result: the extra task runs inline on the calling thread, so its future still completes (you lose only the parallelism, and the runtime prints a notice). A future you never <code>await</code> stays rooted until the process exits, so fire-and-forget tasks are fine for a bounded number of calls, not an unbounded loop.</div>
 
-<h2>The <code>thisworker</code> Built-in</h2>
+        <h2 id="thisworker">The <code>thisworker</code> built-in</h2>
+        <p>Inside a worker body, <code>thisworker</code> gives the running thread a handle on its own shutdown state. Polling it is the cooperative way to exit a long-running loop cleanly.</p>
 
-<table>
-    <tr><th>Member</th><th>Type</th><th>Description</th></tr>
-    <tr><td><code>interrupted</code></td><td><code>bool</code></td><td><code>true</code> when program is shutting down (e.g., Ctrl+C)</td></tr>
-</table>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Member</th><th>Type</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td><code>interrupted</code></td><td><code>bool</code></td><td><code>true</code> when program is shutting down (for example, Ctrl+C)</td></tr>
+            </tbody>
+          </table>
+        </div>
 
-<pre><code><span class="kw">worker</span> <span class="kw">fnc</span> <span class="fn">my_worker</span>() {
-    <span class="kw">while</span> !thisworker.interrupted {
-        <span class="cm">// Do work</span>
-    }
-}</code></pre>
+        <h2 id="full-example">Full example</h2>
+        <p>Put together: a <code>shared</code> value with a single writer, a <code>fusion</code> counter with atomic increments, three workers, and a <code>main</code> that spawns them.</p>
 
-<h2>Full Example</h2>
-
-<pre><code><span class="kw">shared</span> result: <span class="kw">int</span> = 0;
+        <pre><code><span class="kw">shared</span> result: <span class="kw">int</span> = 0;
 <span class="kw">fusion</span> counter: <span class="kw">int</span> = 0;
 
-<span class="kw">worker</span> <span class="kw">fnc</span> <span class="fn">calculate</span>(a <span class="kw">int</span>, b <span class="kw">int</span>) {
+<span class="kw">worker</span> <span class="kw">fnc</span> <span class="fn">calculate</span>(a <span class="kw">int</span>, b <span class="kw">int</span>) : <span class="kw">void</span> {
     <span class="kw">while</span> !thisworker.interrupted {
         result = a + b + result;
         <span class="fn">show</span>(<span class="str">"calculate updated result to: "</span>, result);
     }
 }
 
-<span class="kw">worker</span> <span class="kw">fnc</span> <span class="fn">increment_counter</span>() {
+<span class="kw">worker</span> <span class="kw">fnc</span> <span class="fn">increment_counter</span>() : <span class="kw">void</span> {
     <span class="kw">while</span> !thisworker.interrupted {
         counter = counter + 1;
         <span class="fn">show</span>(<span class="str">"counter incremented to: "</span>, counter);
     }
 }
 
-<span class="kw">worker</span> <span class="kw">fnc</span> <span class="fn">show_result</span>() {
+<span class="kw">worker</span> <span class="kw">fnc</span> <span class="fn">show_result</span>() : <span class="kw">void</span> {
     <span class="kw">while</span> !thisworker.interrupted {
         <span class="fn">show</span>(<span class="str">"result:"</span>, result, <span class="str">" counter:"</span>, counter);
     }
 }
 
-<span class="kw">fnc</span> <span class="fn">main</span>() {
+<span class="kw">fnc</span> <span class="fn">main</span>() : <span class="kw">void</span> {
     <span class="kw">spawn</span> calculate(3, 5);
     <span class="kw">spawn</span> increment_counter();
     <span class="kw">spawn</span> show_result();
 }</code></pre>
 
-<h2>Lifecycle &amp; Cleanup</h2>
+        <h2 id="lifecycle">Lifecycle &amp; cleanup</h2>
+        <div class="steps">
+          <div class="step"><h3>Declaration</h3><p>A <code>worker fnc</code> is compiled like any function but flagged as thread-capable. No thread exists yet.</p></div>
+          <div class="step"><h3>Start</h3><p>Workers are automatically started when <code>spawn</code> is called (or when an <code>async fnc</code> call is made). Arguments are copied into a private transfer block.</p></div>
+          <div class="step"><h3>Run</h3><p>They run until the program exits or <code>thisworker.interrupted</code> is true. Ctrl+C sets the interrupted flag for clean shutdown.</p></div>
+          <div class="step"><h3>Join</h3><p>Futures are joined with <code>await</code>; the runtime waits for all workers to finish before full exit. There is no explicit thread-join API for <code>spawn</code>.</p></div>
+          <div class="step"><h3>Reclaim</h3><p>Worker scope allocations use each thread's arena; root objects are published process-wide when workers spawn (in `--gc` builds the collector handles them instead); each worker's private arena/GC state is released when its thread exits.</p></div>
+        </div>
 
-<ul>
-    <li>Workers are automatically started when <code>spawn</code> is called</li>
-    <li>They run until the program exits or <code>thisworker.interrupted</code> is true</li>
-    <li>Ctrl+C sets the interrupted flag for clean shutdown</li>
-    <li>The runtime waits for all workers to finish before full exit</li>
-    <li>Memory allocated in workers is handled by the thread-safe garbage collector</li>
-</ul>
+        <h2 id="thread-safety">Thread safety notes</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Feature</th><th>Safety</th></tr></thead>
+            <tbody>
+              <tr><td><code>shared</code> variables</td><td>No atomicity guarantees — the one-writer rule is enforced at compile time</td></tr>
+              <tr><td><code>fusion</code> variables</td><td>Atomic loads/stores (and atomic read-modify-write for <code>x = x + n</code>) — writes visible across threads</td></tr>
+              <tr><td>Garbage collector</td><td>Fully thread-safe — allocations from any worker are safe. A thread that reaches the GC without being spawned by Leash (for example an FFI callback) permanently disables automatic collection (its stack is never scanned); native libraries that call back into Leash should call <code>leash_gc_thread_attach()</code> from the new thread first.</td></tr>
+              <tr><td><code>show()</code> function</td><td>Thread-safe (output lines may interleave)</td></tr>
+              <tr><td>Mutex / locks</td><td>Not built-in — use <code>fusion</code> variables for coordination</td></tr>
+            </tbody>
+          </table>
+        </div>
 
-<h2>Thread Safety Notes</h2>
+        <h2 id="pitfalls">Pitfalls</h2>
+        <div class="callout callout-danger"><strong>Two writers to one <code>shared</code> variable.</strong> Assigning to a <code>shared</code> global — including through an element or field write — from two different functions is rejected at compile time. Split the value into one variable per writer, or switch the variable to <code>fusion</code> if it is a scalar integer.</div>
+        <div class="callout callout-warning"><strong>Expecting <code>shared</code> reads to be fresh.</strong> There is no atomicity guarantee: readers may observe stale values. If you need a counter or flag that several threads update, use <code>fusion</code>.</div>
+        <div class="callout callout-warning"><strong>Busy loops with no exit check.</strong> A worker that loops forever without consulting <code>thisworker.interrupted</code> prevents a clean shutdown. Check the flag on each iteration.</div>
+        <div class="callout callout-warning"><strong>Unbounded fire-and-forget futures.</strong> An unawaited <code>future&lt;T&gt;</code> stays rooted until process exit. Bounded call counts are fine; an unbounded loop of <code>async</code> calls without <code>await</code> grows memory.</div>
+        <div class="callout callout-info"><strong>Interleaved output is normal.</strong> <code>show()</code> is thread-safe, but lines from different workers can appear in any order. Do not read sequencing into the printed output.</div>
 
-<table>
-    <tr><th>Feature</th><th>Safety</th></tr>
-    <tr><td><code>shared</code> variables</td><td>No atomicity guarantees &mdash; the one-writer rule is enforced at compile time</td></tr>
-    <tr><td><code>fusion</code> variables</td><td>Atomic loads/stores (and atomic read-modify-write for <code>x = x + n</code>) &mdash; writes visible across threads</td></tr>
-    <tr><td>Garbage collector</td><td>Fully thread-safe &mdash; allocations from any worker are safe. A thread that reaches the GC without being spawned by Leash (e.g. an FFI callback) permanently disables automatic collection (its stack is never scanned); native libraries that call back into Leash should call <code>leash_gc_thread_attach()</code> from the new thread first.</td></tr>
-    <tr><td><code>show()</code> function</td><td>Thread-safe (output lines may interleave)</td></tr>
-    <tr><td>Mutex / locks</td><td>Not built-in &mdash; use <code>fusion</code> variables for coordination</td></tr>
-</table>
+        <h2 id="faq">Frequently asked questions</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Question</th><th>Answer</th></tr></thead>
+            <tbody>
+              <tr><td>How do I get a result back from a worker?</td><td>Use <code>async fnc</code> and <code>await</code>; <code>spawn</code> is fire-and-forget and returns no handle.</td></tr>
+              <tr><td>Can two workers increment the same variable?</td><td>Yes, if it is a scalar <code>fusion</code> integer. <code>counter = counter + n</code> is one atomic read-modify-write, so no increments are lost.</td></tr>
+              <tr><td>Can I spawn an async function?</td><td>No. Every <code>async fnc</code> call already runs on a worker; just call it and <code>await</code> the returned future.</td></tr>
+              <tr><td>Can <code>main</code> be async?</td><td>No. <code>main</code> stays a plain function; it can create and await futures.</td></tr>
+              <tr><td>What happens after 64 workers?</td><td>The next task runs inline on the calling thread. Its future still completes; only the parallelism is lost.</td></tr>
+              <tr><td>Are there mutexes or locks?</td><td>Not built in. Coordinate with <code>fusion</code> variables (atomic scalar updates) instead.</td></tr>
+              <tr><td>Is <code>shared</code> the same as a function-shared variable?</td><td>No. <code>shared</code> is module-wide and has the one-writer rule; function-shared variables are declared in signatures, visible only to functions that declare them, and carry no thread-safety guarantees.</td></tr>
+              <tr><td>Is allocation from a worker safe?</td><td>Yes — the GC is thread-safe. Native threads created outside Leash (FFI callbacks) must call <code>leash_gc_thread_attach()</code> first.</td></tr>
+            </tbody>
+          </table>
+        </div>
 
-</main>
+        <div class="quick-links">
+          <a class="quick-link" href="language-guide.html"><strong>Language reference</strong><span>Types, functions and shared variables &rarr;</span></a>
+          <a class="quick-link" href="advanced.html"><strong>Advanced topics</strong><span>Memory, escapes and native interop &rarr;</span></a>
+          <a class="quick-link" href="compiler.html"><strong>Compiler &amp; CLI</strong><span>Building programs with workers &rarr;</span></a>
+        </div>
 
-<script src="docs.js"></script>
+    </article>
+  </main>
+</div>
 </body>
 </html>

@@ -182,6 +182,12 @@ void leasharena_exit_slow(void);
 /* Validate registered global/static pointer slots against the current
  * frame before generated code performs an inline pop. */
 void leasharena_verify_current_frame(void);
+/* Abort when a raw pointer points into a scoped arena frame (root and
+ * foreign pointers are accepted). Used for proven-safe FFI handles. */
+void* leasharena_xfer_copy_ptr(const void* p, int64_t size);
+/* Process-lifetime zeroed storage for escaping locals in worker programs. */
+void* leasharena_immortal_alloc(size_t size);
+void leasharena_check_native_ptr(const void* p);
 void leasharena_exit_n(int64_t nframes);
 /* Guard emitted before container field access in arena IR: returns `p`
  * when it is a live allocation start inside the thread's arena, aborts

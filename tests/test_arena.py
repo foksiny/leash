@@ -322,6 +322,8 @@ class TestArena(unittest.TestCase):
         cmd = [BIN_LEASHC, "compile", src, "to", out]
         if arena:
             cmd += ["--arena"]
+        else:
+            cmd += ["--gc"]
         r = _run(cmd, ROOT)
         self.assertEqual(r.returncode, 0,
                          msg=f"compile failed: {r.stderr}\n{r.stdout}")
@@ -993,6 +995,8 @@ class TestArenaEscapes(unittest.TestCase):
         cmd = [BIN_LEASHC, "compile", src, "to", out]
         if arena:
             cmd += ["--arena"]
+        else:
+            cmd += ["--gc"]
         r = _run(cmd, ROOT)
         self.assertEqual(r.returncode, 0,
                          msg=f"compile failed ({name}): {r.stderr}\n{r.stdout}")
@@ -1173,6 +1177,8 @@ class TestArenaRootLifetime(unittest.TestCase):
         cmd = [BIN_LEASHC, "compile", src, "to", out]
         if arena:
             cmd += ["--arena"]
+        else:
+            cmd += ["--gc"]
         r = _run(cmd, ROOT)
         self.assertEqual(r.returncode, 0,
                          msg=f"compile failed ({name}): {r.stderr}\n{r.stdout}")
@@ -1332,6 +1338,8 @@ class TestArenaAggregateLayout(unittest.TestCase):
         cmd = [BIN_LEASHC, "compile", src, "to", out]
         if arena:
             cmd += ["--arena"]
+        else:
+            cmd += ["--gc"]
         r = _run(cmd, ROOT)
         self.assertEqual(r.returncode, 0,
                          msg=f"compile failed ({name}): {r.stderr}\n{r.stdout}")
@@ -1457,6 +1465,8 @@ class TestArenaSpawnArgs(unittest.TestCase):
         cmd = [BIN_LEASHC, "compile", src, "to", out]
         if arena:
             cmd += ["--arena"]
+        else:
+            cmd += ["--gc"]
         r = _run(cmd, ROOT)
         self.assertEqual(r.returncode, 0,
                          msg=f"compile failed ({name}): {r.stderr}\n{r.stdout}")
@@ -1471,9 +1481,13 @@ class TestArenaSpawnArgs(unittest.TestCase):
         return r.stdout
 
     def _assert_both(self, source, expected, name):
+        # Worker output can overtake the spawner's `show("done")`, so
+        # compare the line multiset rather than arrival order.
+        want = sorted(expected.splitlines())
         for arena in (False, True):
             with self.subTest(case=name, arena=arena):
-                self.assertEqual(self._out(source, name, arena), expected)
+                got = sorted(self._out(source, name, arena).splitlines())
+                self.assertEqual(got, want)
 
     def test_spawn_args_with_heap_fields(self):
         self._assert_both(SPAWN_HEAP_FIELDS,

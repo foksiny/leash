@@ -3,208 +3,336 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="color-scheme" content="dark">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Crect width=%27100%27 height=%27100%27 rx=%2722%27 fill=%27%237c3aed%27/%3E%3Ctext x=%2750%27 y=%2768%27 font-size=%2752%27 text-anchor=%27middle%27 font-family=%27monospace%27 fill=%27white%27%3EL%3C/text%3E%3C/svg%3E">
-<title>Package Manager - Leash</title>
+<title>Package Manager - Leash documentation</title>
+<meta name="description" content="Create, publish, share and install Leash libraries through GitHub: config.lshc, semantic versioning, lockfiles, registry protocol and security checks.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Crect width=%27100%27 height=%27100%27 rx=%2722%27 fill=%27%23241f4d%27/%3E%3Ctext x=%2750%27 y=%2770%27 font-size=%2760%27 text-anchor=%27middle%27 font-family=%27monospace%27 fill=%27white%27%3EL%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
+<script src="docs.js" defer></script>
 </head>
 <body>
+<a class="skip-link" href="#main-content">Skip to content</a>
 
-<button class="menu-toggle" onclick="document.querySelector('.sidebar').classList.toggle('open')">&#9776;</button>
+<header class="topbar">
+  <a class="topbar-brand" href="index.html"><img src="leash-icon-light.svg" alt="" onerror="this.style.display='none'"><span>Leash</span></a>
+  <nav class="topbar-nav" aria-label="Top navigation">
+    <a href="index.html" class="">Docs</a>
+    <a href="getting-started.html" class="">Tutorial</a>
+    <a href="language-guide.html" class="">Reference</a>
+    <a href="compiler.html" class="">Spec</a>
+    <a href="stdlib.html" class="">Library</a>
+    <a href="package-manager.html" class="current" aria-current="page">Packages</a>
+    <a href="../benchmarking/README.md" class="">Benchmarks</a>
+    <a href="https://github.com/foksiny/leash">GitHub</a>
+  </nav>
+  <button class="menu-toggle" type="button" aria-label="Toggle navigation" aria-expanded="false">&#9776;</button>
+  <input id="doc-search" class="topbar-search" type="search" placeholder="Search docs" aria-label="Search documentation" autocomplete="off">
+  <button class="theme-toggle" type="button" aria-label="Toggle color theme" title="Toggle theme">&#9680;</button>
+</header>
 
-<aside class="sidebar">
-    <div class="sidebar-header">
-        <h1>Leash</h1>
-        <div class="version">v1.12.0 Release</div>
-        <div class="subtitle">Programming Language</div>
+<div class="layout">
+  <aside class="sidenav">
+    <div class="sidenav-title">Leash documentation</div>
+    <div class="sidenav-group">
+      <a href="index.html" class="">Overview</a>
+      <a href="getting-started.html" class="">The language, in reading order</a>
+      <a href="language-guide.html" class="">Language reference</a>
+      <a href="compiler.html" class="">The compiler</a>
     </div>
-    <nav class="sidebar-nav">
-        <div class="nav-section">
-            <div class="nav-section-title">Getting Started</div>
-            <a href="index.html">Overview</a>
-            <a href="getting-started.html">Installation &amp; Setup</a>
+    <div class="sidenav-group">
+      <a href="self-hosted.html" class="">Getting the compiler</a>
+      <a href="stdlib.html" class="">Library and tools</a>
+      <a href="package-manager.html" class="current">Building programs and using packages</a>
+      <a href="concurrency.html" class="">Concurrency</a>
+    </div>
+    <div class="sidenav-group">
+      <a href="advanced.html" class="">Standalone pages</a>
+      <a href="limitations.html" class="">Known limitations</a>
+    </div>
+    <div class="sidenav-foot">Leash 2.0.0</div>
+  </aside>
+
+  <main class="content" id="main-content">
+    <div class="progress" id="progress-bar" aria-hidden="true"></div>
+    <article>
+        <h1>Package Manager</h1>
+
+
+        <h2 id="overview">Overview</h2>
+        <p>Every library lives in its own GitHub repository; the registry is an <code>index.json</code> that maps library names to repo URLs. The package manager is implemented natively in the self-hosted compiler (<code>compiler/leashed.lsh</code>) — there is no Python component. Publishing is <strong>fully self-service</strong>: a validation bot reviews and merges registry updates automatically, with no maintainer approval and no waiting on humans. The registry is also optional: you can install any library directly from its Git URL.</p>
+
+        <div class="stat-grid">
+          <div class="stat"><div class="value">1</div><div class="label">command family: leash pkg</div></div>
+          <div class="stat"><div class="value">11</div><div class="label">subcommands for daily use</div></div>
+          <div class="stat"><div class="value">0.5.0</div><div class="label">registry / protocol version</div></div>
+          <div class="stat"><div class="value">1</div><div class="label">lockfile format version</div></div>
         </div>
-        <div class="nav-section">
-            <div class="nav-section-title">Language Guide</div>
-            <a href="language-guide.html">Language Reference</a>
-            <a href="compiler.html">Compiler &amp; CLI</a>
-            <a href="self-hosted.html">Self-Hosted Compiler</a>
-            <a href="stdlib.html">Standard Library</a>
+
+        <div class="feature-grid">
+          <div class="feature-card"><h3>Self-service publish</h3><p>Verification, repo creation, tagging and registration happen in one command. A bot merges clean registry updates.</p></div>
+          <div class="feature-card"><h3>Reproducible installs</h3><p><code>leash.lock</code> pins exact versions and commit revisions so fresh clones and CI builds match.</p></div>
+          <div class="feature-card"><h3>Registry optional</h3><p>Install from the central index, a full Git URL, or a <code>user/repo</code> shorthand.</p></div>
         </div>
-        <div class="nav-section">
-            <div class="nav-section-title">Ecosystem</div>
-            <a href="package-manager.html" class="active">Package Manager</a>
-            <a href="concurrency.html">Concurrency Model</a>
-            <a href="advanced.html">Advanced Topics</a>
-            <a href="limitations.html">Known Limitations</a>
-        </div>
-    </nav>
-</aside>
 
-<main class="main">
+        <div class="callout callout-info"><strong>Built in, no extra install.</strong> The package manager ships with the self-hosted compiler. Check the installed protocol version with <code>leash pkg --version</code>:</div>
 
-<div class="breadcrumb">
-    <a href="index.html">Home</a> <span class="sep">/</span> <span class="current">Package Manager</span>
-</div>
-
-<h1>Package Manager (<code>leash pkg</code>)</h1>
-
-<p><code>leash pkg</code> is the official package manager for Leash, built into the self-hosted compiler. It lets you create, publish, share, and install Leash libraries through a central registry at <code>github.com/foksiny/leash-packages</code>. Every library lives in its own GitHub repository; the registry is an <code>index.json</code> that maps library names to repo URLs. The package manager is implemented natively in the self-hosted compiler (<code>compiler/leashed.lsh</code>) &mdash; there is no Python component.</p>
-
-<p>Publishing is <strong>fully self-service</strong>: a validation bot reviews and merges registry updates automatically &mdash; no maintainer approval, no waiting on humans. The registry is also optional: you can install any library directly from its Git URL.</p>
-
-<h2>Installation</h2>
-<pre><code><span class="cm"># Built into the self-hosted compiler - no extra install step</span>
+        <pre><code><span class="cm"># Built into the self-hosted compiler - no extra install step</span>
 leash pkg --version
 <span class="cm"># leash pkg v0.5.0</span></code></pre>
 
-<h2>Creating a Package</h2>
-<p>Scaffold a new library project with <code>leash pkg init</code>. This creates the standard library structure with a package configuration file where you specify the library's name, version, author, and entry point.</p>
-<pre><code>leash pkg init mylib
+        <h2 id="quick-start">Quick start</h2>
+        <div class="steps">
+          <div class="step"><h3>Scaffold a library</h3><p>Run <code>leash pkg init mylib</code> to create the standard project layout, then <code>cd mylib</code>.</p></div>
+          <div class="step"><h3>Configure it</h3><p>Edit <code>leash-pkg.lshc</code>: set the name, version, author, description and entry point (see <a href="#package-configuration">Package configuration</a>).</p></div>
+          <div class="step"><h3>Publish</h3><p>Run <code>leash pkg publish</code>. Your source is checked, compiled, pushed to a GitHub repo, tagged and registered — a bot merges the registry update.</p></div>
+          <div class="step"><h3>Install it anywhere</h3><p>Use <code>leash pkg install mylib</code> globally, or <code>leash pkg add mylib</code> to declare and install a project dependency.</p></div>
+        </div>
+
+        <h2 id="command-reference">Command reference</h2>
+        <p>All commands are subcommands of <code>leash pkg</code>. Unless noted, they work from any directory; dependency-related commands operate on the current project (a directory containing <code>leash-pkg.lshc</code> or <code>leash.lock</code>).</p>
+
+        <h3 id="project-commands">Creating &amp; publishing</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Command</th><th>What it does</th></tr></thead>
+            <tbody>
+              <tr><td><code>leash pkg init &lt;name&gt;</code></td><td>Scaffold a new library project with <code>src/main.lsh</code>, <code>leash-pkg.lshc</code> and <code>.gitignore</code></td></tr>
+              <tr><td><code>leash pkg publish</code></td><td>Check, compile, push, tag and register the library in one step</td></tr>
+              <tr><td><code>leash pkg --version</code></td><td>Print the package manager / protocol version</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3 id="dependency-commands">Dependencies &amp; installs</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Command</th><th>What it does</th></tr></thead>
+            <tbody>
+              <tr><td><code>leash pkg install &lt;name&gt;</code></td><td>Install globally (pinned version when inside a project)</td></tr>
+              <tr><td><code>leash pkg install &lt;name&gt;@1.2.3</code></td><td>Install a specific published version</td></tr>
+              <tr><td><code>leash pkg install</code></td><td>Inside a project: restore exactly the versions in <code>leash.lock</code></td></tr>
+              <tr><td><code>leash pkg install --locked</code></td><td>CI mode: fail if anything is not pinned in the lockfile</td></tr>
+              <tr><td><code>leash pkg add &lt;name&gt;</code></td><td>Install, append <code>name@version</code> to dependencies, and insert the import</td></tr>
+              <tr><td><code>leash pkg uninstall &lt;name&gt;</code></td><td>Remove an installed library and unpin it from the lockfile</td></tr>
+              <tr><td><code>leash pkg update</code></td><td>Update every dependency of the current project</td></tr>
+              <tr><td><code>leash pkg update &lt;name&gt;</code></td><td>Reinstall one library at its latest version</td></tr>
+              <tr><td><code>leash pkg lock</code></td><td>Resolve dependencies and (re)write <code>leash.lock</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3 id="registry-commands">Discovery &amp; inspection</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Command</th><th>What it does</th></tr></thead>
+            <tbody>
+              <tr><td><code>leash pkg search &lt;term&gt;</code></td><td>Search registry names and descriptions (fetches only <code>index.json</code>)</td></tr>
+              <tr><td><code>leash pkg info &lt;name&gt;</code></td><td>Show registry metadata and all published versions</td></tr>
+              <tr><td><code>leash pkg list</code></td><td>List installed libraries and their versions</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="package-configuration">Package configuration (<code>leash-pkg.lshc</code>)</h2>
+        <p><code>leash pkg init</code> creates the standard library structure with a package configuration file where you specify the library's name, version, author, and entry point.</p>
+
+        <pre><code>leash pkg init mylib
 <span class="kw">cd</span> mylib</code></pre>
 
-<p>Creates:</p>
-<pre><code>mylib/
+        <pre><code>mylib/
 &#x251C;&#x2500; src/
 &#x2502;   &#x2514;&#x2500; main.lsh        <span class="cm"># Library entry point</span>
 &#x251C;&#x2500; leash-pkg.lshc     <span class="cm"># Package configuration</span>
 &#x2514;&#x2500; .gitignore</code></pre>
 
-<h3>Package Configuration (<code>leash-pkg.lshc</code>)</h3>
-<pre><code>name: <span class="str">"mylib"</span>
+        <pre><code>name: <span class="str">"mylib"</span>
 version: <span class="str">"0.1.0"</span>
 author: <span class="str">"your-github-username"</span>
 description: <span class="str">"The mylib library"</span>
 main: <span class="str">"src/main.lsh"</span></code></pre>
 
-<p>To ship command-line tools with your package, add a <code>global_install</code> field (single line, <code>{name: src, ...}</code> — sources must live under the main source tree). Installing the package compiles each entry to a host binary in <code>~/.leash/bin</code>; uninstalling the package removes them again:</p>
-<pre><code>global_install: <span class="str">{lint: src/lint.lsh, fmt: src/fmt.lsh}</span></code></pre>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Key</th><th>Required</th><th>Meaning</th></tr></thead>
+            <tbody>
+              <tr><td><code>name</code></td><td>Yes</td><td>Package name; must match <code>[a-zA-Z_][a-zA-Z0-9_-]*</code></td></tr>
+              <tr><td><code>version</code></td><td>Yes</td><td>Semantic version (<code>X.Y.Z</code>, optional <code>-prerelease</code>)</td></tr>
+              <tr><td><code>author</code></td><td>Yes</td><td>Your GitHub login; binds the package to your identity</td></tr>
+              <tr><td><code>description</code></td><td>Yes</td><td>Short description stored in the registry index</td></tr>
+              <tr><td><code>main</code></td><td>Yes</td><td>Library entry point, e.g. <code>src/main.lsh</code></td></tr>
+              <tr><td><code>global_install</code></td><td>No</td><td>Single-line map of command name to source path; installs host binaries in <code>~/.leash/bin</code></td></tr>
+              <tr><td><code>repo</code></td><td>No</td><td>Existing GitHub repo URL to publish into instead of creating one</td></tr>
+              <tr><td><code>dependencies</code></td><td>No</td><td>Project dependencies (managed by <code>leash pkg add</code> / <code>update</code> / <code>uninstall</code>)</td></tr>
+            </tbody>
+          </table>
+        </div>
 
-<p>To link to an existing GitHub repo, add a <code>repo</code> field:</p>
-<pre><code>repo: <span class="str">"https://github.com/you/mylib.git"</span></code></pre>
+        <h3>Shipping command-line tools</h3>
+        <p>To ship command-line tools with your package, add a <code>global_install</code> field (single line, <code>{name: src, ...}</code> — sources must live under the main source tree). Installing the package compiles each entry to a host binary in <code>~/.leash/bin</code>; uninstalling the package removes them again:</p>
+        <pre><code>global_install: <span class="str">{lint: src/lint.lsh, fmt: src/fmt.lsh}</span></code></pre>
 
-<h2>Publishing a Package</h2>
-<p>From inside your project directory, publish your library to the central registry. The publish command handles everything from verification to registration, making it easy to share your libraries with the community.</p>
-<pre><code>leash pkg publish</code></pre>
+        <h3>Linking to an existing repository</h3>
+        <p>To link to an existing GitHub repo, add a <code>repo</code> field:</p>
+        <pre><code>repo: <span class="str">"https://github.com/you/mylib.git"</span></code></pre>
 
-<p>This does the following automatically:</p>
-<ol>
-    <li><strong>Verifies</strong> your source code with <code>leash check</code></li>
-    <li><strong>Compiles</strong> your library to a static <code>.lib</code> / <code>.a</code> file</li>
-    <li><strong>Creates a GitHub repo</strong> under your account (if no <code>repo</code> is set) via <code>gh repo create</code></li>
-    <li><strong>Pushes</strong> the source and compiled library to your repo and tags it as <code>v&lt;version&gt;</code></li>
-    <li><strong>Registers</strong> the library in the central registry:
+        <h2 id="project-config">Project <code>config.lshc</code> keys</h2>
+        <p>Separate from a library's <code>leash-pkg.lshc</code>, every application project has a <code>config.lshc</code> that controls builds. The <code>build</code>, <code>run</code> and <code>install</code> commands read it from the current directory. A generated file looks like this:</p>
+
+        <pre><code>main: <span class="str">"src/main.lsh"</span>
+clibs: {}
+imports: <span class="str">"imports/"</span>
+opt_level: <span class="str">"O3"</span>
+out_name: <span class="str">"myprogram"</span>
+autofree: <span class="kw">false</span>
+gc: <span class="kw">false</span>
+arena: <span class="kw">true</span></code></pre>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Key</th><th>Example</th><th>Meaning</th></tr></thead>
+            <tbody>
+              <tr><td><code>main</code></td><td><code>"src/main.lsh"</code></td><td>Entry point of the project</td></tr>
+              <tr><td><code>clibs</code></td><td><code>{}</code></td><td>External C libraries to link</td></tr>
+              <tr><td><code>imports</code></td><td><code>"imports/"</code></td><td>Local import search directory</td></tr>
+              <tr><td><code>opt_level</code></td><td><code>"O3"</code></td><td>Optimization level used by the build</td></tr>
+              <tr><td><code>out_name</code></td><td><code>"myprogram"</code></td><td>Name of the generated binary</td></tr>
+              <tr><td><code>global_install</code></td><td><code>{tester: src/main_test.lsh}</code></td><td>Tools built into <code>~/.leash/bin</code> by <code>leash install</code></td></tr>
+              <tr><td><code>autofree</code></td><td><code>true</code></td><td>Compile-time automatic frees, no GC runtime; also disables the arena</td></tr>
+              <tr><td><code>gc: true</code> <span class="chip accent">new</span></td><td><code>true</code> / <code>yes</code> / <code>1</code></td><td>Opt back into the mark-and-sweep garbage collector instead of the default scoped arena. Equivalent to passing <code>--gc</code>.</td></tr>
+              <tr><td><code>arena: false</code> <span class="chip accent">new</span></td><td><code>false</code> / <code>no</code> / <code>0</code></td><td>Disable the scoped bump arena when it is on by default. The arena is the default native layout; <code>gc: true</code> and <code>autofree: true</code> both turn it off as well.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout callout-warning"><strong>Memory modes are exclusive.</strong> Do not combine <code>gc: true</code>, <code>--no-garbage-collector</code> and <code>autofree: true</code>. The JVM target always uses its own GC and ignores native memory-layout choices. See <a href="advanced.html">Advanced Topics</a> for the full semantics of each mode.</div>
+
+        <h2 id="publishing">Publishing a package</h2>
+        <p>From inside your project directory, publish your library to the central registry. The publish command handles everything from verification to registration, making it easy to share your libraries with the community.</p>
+
+        <pre><code>leash pkg publish</code></pre>
+
+        <div class="steps">
+          <div class="step"><h3>Verify</h3><p>Your source code is checked with <code>leash check</code>.</p></div>
+          <div class="step"><h3>Compile</h3><p>Your library is compiled to a static <code>.lib</code> / <code>.a</code> file.</p></div>
+          <div class="step"><h3>Create the repo</h3><p>A GitHub repo is created under your account (if no <code>repo</code> is set) via <code>gh repo create</code>.</p></div>
+          <div class="step"><h3>Push &amp; tag</h3><p>The source and compiled library are pushed to your repo and tagged <code>v&lt;version&gt;</code>.</p></div>
+          <div class="step"><h3>Register</h3><p>If you are the registry owner, the update is pushed directly to <code>index.json</code>; otherwise a fork opens a pull request that a <strong>validation bot merges automatically</strong>, usually within a minute. No human review is required.</p></div>
+        </div>
+
+        <div class="callout callout-info"><strong>Prerequisites.</strong> Requires <a href="https://cli.github.com">GitHub CLI (<code>gh</code>)</a> installed and authenticated (<code>gh auth login</code>), and Git installed.</div>
+
+        <h3>Publishing rules</h3>
+        <p>The registry bot enforces the same checks locally before anything is pushed, so mistakes fail fast:</p>
         <ul>
-            <li>If you're the registry owner &mdash; pushes directly to <code>index.json</code></li>
-            <li>Otherwise &mdash; forks the registry and opens a pull request that a <strong>validation bot merges automatically</strong>, usually within a minute. No human review is required.</li>
+          <li>You can only publish packages under your own GitHub login (the entry's <code>publisher</code> must match)</li>
+          <li>Only the original owner can update an existing package — names cannot be hijacked</li>
+          <li>Versions follow semantic versioning (<code>X.Y.Z</code>, optional <code>-prerelease</code>) and each publish must be strictly greater than the last</li>
+          <li>All previously published versions stay installable forever</li>
         </ul>
-    </li>
-</ol>
 
-<div class="callout callout-info">Requires <a href="https://cli.github.com">GitHub CLI (<code>gh</code>)</a> installed and authenticated (<code>gh auth login</code>), and Git installed.</div>
+        <h2 id="semantic-versioning">Semantic versioning</h2>
+        <p>Every release is tagged as <code>v&lt;version&gt;</code> in the library's repository and recorded in the registry's version history. Republishing requires bumping the version in <code>leash-pkg.lshc</code>:</p>
 
-<h3>Publishing rules</h3>
-<p>The registry bot enforces the same checks locally before anything is pushed, so mistakes fail fast:</p>
-<ul>
-    <li>You can only publish packages under your own GitHub login (the entry's <code>publisher</code> must match)</li>
-    <li>Only the original owner can update an existing package &mdash; names cannot be hijacked</li>
-    <li>Versions follow semantic versioning (<code>X.Y.Z</code>, optional <code>-prerelease</code>) and each publish must be strictly greater than the last</li>
-    <li>All previously published versions stay installable forever</li>
-</ul>
+        <pre><code>version: <span class="str">"1.2.0"</span></code></pre>
 
-<h2>Semantic Versioning</h2>
-<p>Every release is tagged as <code>v&lt;version&gt;</code> in the library's repository and recorded in the registry's version history. Republishing requires bumping the version in <code>leash-pkg.lshc</code>:</p>
-<pre><code>version: <span class="str">"1.2.0"</span></code></pre>
-<p>Pre-release versions are supported and ordered correctly (<code>1.0.0-rc.1 &lt; 1.0.0</code>):</p>
-<pre><code>version: <span class="str">"1.0.0-beta.2"</span></code></pre>
+        <p>Pre-release versions are supported and ordered correctly (<code>1.0.0-rc.1 &lt; 1.0.0</code>):</p>
 
-<h2>Lockfile: reproducible builds (<code>leash.lock</code>)</h2>
+        <pre><code>version: <span class="str">"1.0.0-beta.2"</span></code></pre>
 
-<p><code>leash pkg</code> maintains a per-project <code>leash.lock</code> file recording the
-<strong>exact resolved versions</strong> of the project's dependencies. Even though the
-object-file cache already skips recompiles for unchanged sources, the lockfile is what
-makes a project build identically on a fresh machine (or in CI) without any waiting or
-guesswork.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Change</th><th>Version bump</th><th>Example</th></tr></thead>
+            <tbody>
+              <tr><td>Fixes that do not break compatibility</td><td>Patch</td><td><code>1.2.0 &rarr; 1.2.1</code></td></tr>
+              <tr><td>Backward-compatible features</td><td>Minor</td><td><code>1.2.0 &rarr; 1.3.0</code></td></tr>
+              <tr><td>Breaking API changes</td><td>Major</td><td><code>1.2.0 &rarr; 2.0.0</code></td></tr>
+              <tr><td>Pre-release of an upcoming version</td><td>Suffix</td><td><code>1.0.0-beta.2</code>, <code>1.0.0-rc.1</code></td></tr>
+            </tbody>
+          </table>
+        </div>
 
-<pre><code>{ <span class="cm"># leash.lock</span>
+        <h2 id="lockfile">Lockfile: reproducible builds (<code>leash.lock</code>)</h2>
+        <p><code>leash pkg</code> maintains a per-project <code>leash.lock</code> file recording the <strong>exact resolved versions</strong> of the project's dependencies. Even though the object-file cache already skips recompiles for unchanged sources, the lockfile is what makes a project build identically on a fresh machine (or in CI) without any waiting or guesswork.</p>
+
+        <pre><code>{ <span class="cm"># leash.lock</span>
   <span class="str">"version"</span>: 1,
   <span class="str">"packages"</span>: {
     <span class="str">"mylib"</span>: { <span class="str">"version"</span>: <span class="str">"1.2.3"</span>, <span class="str">"repo"</span>: <span class="str">"https://github.com/you/mylib.git"</span>, <span class="str">"tag"</span>: <span class="str">"v1.2.3"</span>, <span class="str">"rev"</span>: <span class="str">"a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4"</span> }
   }
 }</code></pre>
 
-<p>Rules of the lockfile:</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Field</th><th>Meaning</th></tr></thead>
+            <tbody>
+              <tr><td><code>version</code></td><td>Lockfile format version (currently <code>1</code>)</td></tr>
+              <tr><td><code>packages</code></td><td>Map from package name to its pinned entry</td></tr>
+              <tr><td><code>entry.version</code></td><td>Exact semantic version installed</td></tr>
+              <tr><td><code>entry.repo</code></td><td>Repository URL the package came from</td></tr>
+              <tr><td><code>entry.tag</code></td><td>Version tag in the repository (<code>v</code> + version)</td></tr>
+              <tr><td><code>entry.rev</code></td><td>40-character commit SHA the tag resolved to</td></tr>
+            </tbody>
+          </table>
+        </div>
 
-<ul>
-    <li><strong>Write it once, commit it:</strong> <code>leash pkg lock</code> resolves
-    <code>leash-pkg.lshc</code>'s <code>dependencies</code> field, installs each package,
-    and writes the lock. The file is meant to go into version control.</li>
-    <li><strong>Fresh environments restore exactly:</strong> inside a project,
-    bare <code>leash pkg install</code> (no target) restores the pinned versions from
-    <code>leash.lock</code> &mdash; no re-resolution, no surprises.</li>
-    <li><strong>Lockfile pins win:</strong> inside a project, <code>leash pkg install</code>
-    (with a target) prefers the locked version when it exists.</li>
-    <li><strong>Strict CI mode:</strong> <code>leash pkg install --locked</code> fails when a
-    package isn't pinned in <code>leash.lock</code> (or when no lockfile is present),
-    instead of silently resolving another version.</li>
-    <li><strong>Kept in sync:</strong> <code>leash pkg add</code>, <code>leash pkg update</code>
-    and <code>leash pkg uninstall</code> update the lockfile automatically.</li>
-    <li><strong>Revision pins:</strong> each entry also records the tag's commit
-    SHA (<code>rev</code>). Restores verify it and abort on a moved tag, so a
-    re-pointed tag can never silently change your build.</li>
-</ul>
+        <h3>Rules of the lockfile</h3>
+        <ul>
+          <li><strong>Write it once, commit it:</strong> <code>leash pkg lock</code> resolves <code>leash-pkg.lshc</code>'s <code>dependencies</code> field, installs each package, and writes the lock. The file is meant to go into version control.</li>
+          <li><strong>Fresh environments restore exactly:</strong> inside a project, bare <code>leash pkg install</code> (no target) restores the pinned versions from <code>leash.lock</code> — no re-resolution, no surprises.</li>
+          <li><strong>Lockfile pins win:</strong> inside a project, <code>leash pkg install</code> (with a target) prefers the locked version when it exists.</li>
+          <li><strong>Strict CI mode:</strong> <code>leash pkg install --locked</code> fails when a package is not pinned in <code>leash.lock</code> (or when no lockfile is present), instead of silently resolving another version.</li>
+          <li><strong>Kept in sync:</strong> <code>leash pkg add</code>, <code>leash pkg update</code> and <code>leash pkg uninstall</code> update the lockfile automatically.</li>
+          <li><strong>Revision pins:</strong> each entry also records the tag's commit SHA (<code>rev</code>). Restores verify it and abort on a moved tag, so a re-pointed tag can never silently change your build.</li>
+        </ul>
 
-<pre><code>git clone myapp && cd myapp    <span class="cm"># fresh clone</span>
+        <pre><code>git clone myapp &amp;&amp; cd myapp    <span class="cm"># fresh clone</span>
 leash pkg install              <span class="cm"># installs exactly leash.lock's versions</span>
 
 leash pkg lock                 <span class="cm"># (re)write the lockfile from dependencies</span>
 leash pkg install --locked     <span class="cm"># CI: fail on un-pinned dependencies</span></code></pre>
 
-<h2>Installing Libraries</h2>
-<p>Install a library globally so any Leash program can use it. The installer fetches the registry, finds the library's repository, clones it, and places the files in the global libraries directory &mdash; no manual configuration needed.
-Inside a project directory (one containing a <code>leash-pkg.lshc</code> or a lockfile), installs are additionally recorded into <code>leash.lock</code> &mdash; see above.</p>
-<pre><code>leash pkg install mylib
+        <h2 id="registry-protocol">Registry protocol</h2>
+        <h3>Installing libraries</h3>
+        <p>Install a library globally so any Leash program can use it. The installer fetches the registry, finds the library's repository, clones it, and places the files in the global libraries directory — no manual configuration needed. Inside a project directory (one containing a <code>leash-pkg.lshc</code> or a lockfile), installs are additionally recorded into <code>leash.lock</code>.</p>
+
+        <pre><code>leash pkg install mylib
 
 <span class="cm"># Install a specific published version</span>
 leash pkg install mylib@1.2.3</code></pre>
 
-<h3>Installing Without the Registry</h3>
-<p>The registry is only for discovery &mdash; any Git repository works as a package source. This is useful for private libraries, testing unpublished work, or when you don't want to wait for (or use) the central index:</p>
-<pre><code><span class="cm"># Full git URL</span>
+        <p>This process:</p>
+        <ol>
+          <li>Fetches the registry <code>index.json</code> from <code>raw.githubusercontent.com</code> (no clone needed for the registry itself)</li>
+          <li>Looks up the library name and finds its repo URL</li>
+          <li>Shallow-clones only the library's repository (efficient, no history; at the requested version tag if given)</li>
+          <li>Copies the files to <code>~/.leash/libs/&lt;name&gt;/</code></li>
+          <li>Creates a stub <code>&lt;name&gt;.lsh</code> so <code>use mylib::*;</code> resolves correctly</li>
+        </ol>
+
+        <h3>Installing without the registry</h3>
+        <p>The registry is only for discovery — any Git repository works as a package source. This is useful for private libraries, testing unpublished work, or when you don't want to wait for (or use) the central index:</p>
+
+        <pre><code><span class="cm"># Full git URL</span>
 leash pkg install https://github.com/someone/somelib.git
 
 <span class="cm"># GitHub shorthand (equivalent to the URL above)</span>
 leash pkg install someone/somelib</code></pre>
-<p>The repo needs either a published <code>library/</code> layout or a <code>package.lshc</code>/<code>.lsh</code> sources at its root.</p>
 
-<p>This process:</p>
-<ol>
-    <li>Fetches the registry <code>index.json</code> from <code>raw.githubusercontent.com</code> (no clone needed for the registry itself)</li>
-    <li>Looks up the library name and finds its repo URL</li>
-    <li>Shallow-clones only the library's repository (efficient, no history; at the requested version tag if given)</li>
-    <li>Copies the files to <code>~/.leash/libs/&lt;name&gt;/</code></li>
-    <li>Creates a stub <code>&lt;name&gt;.lsh</code> so <code>use mylib::*;</code> resolves correctly</li>
-</ol>
+        <p>The repo needs either a published <code>library/</code> layout or a <code>package.lshc</code> / <code>.lsh</code> sources at its root.</p>
 
-<pre><code><span class="kw">use</span> mylib::*;
+        <h3>Adding dependencies to a project</h3>
+        <p>Add a library as a dependency of the current project. This is the standard way to declare and manage project dependencies — it installs the library, records the dependency in your package config, and sets up the import automatically.</p>
 
-<span class="kw">fnc</span> <span class="fn">main</span>() {
-    <span class="fn">show</span>(<span class="fn">greet</span>(<span class="str">"World"</span>));
-}</code></pre>
+        <pre><code>leash pkg add mylib</code></pre>
 
-<h2>Adding Dependencies to a Project</h2>
-<p>Add a library as a dependency of the current project. This is the standard way to declare and manage project dependencies &mdash; it installs the library, records the dependency in your package config, and sets up the import automatically.</p>
-<pre><code>leash pkg add mylib</code></pre>
+        <p>This process:</p>
+        <ol>
+          <li>Installs the library globally if not already installed</li>
+          <li>Appends <code>mylib@version</code> to the <code>dependencies</code> field in <code>leash-pkg.lshc</code></li>
+          <li>Inserts <code>use mylib::*;</code> into your main source file</li>
+        </ol>
 
-<p>This process:</p>
-<ol>
-    <li>Installs the library globally if not already installed</li>
-    <li>Appends <code>mylib@version</code> to the <code>dependencies</code> field in <code>leash-pkg.lshc</code></li>
-    <li>Inserts <code>use mylib::*;</code> into your main source file</li>
-</ol>
-
-<h2>Managing Libraries</h2>
-<pre><code>leash pkg list               <span class="cm"># show installed libraries and versions</span>
+        <h3>Managing libraries</h3>
+        <pre><code>leash pkg list               <span class="cm"># show installed libraries and versions</span>
 leash pkg info mylib         <span class="cm"># registry metadata, all published versions</span>
 leash pkg install mylib      <span class="cm"># install globally (pinned version inside a project)</span>
 leash pkg install            <span class="cm"># inside a project: restore from leash.lock</span>
@@ -213,15 +341,14 @@ leash pkg uninstall mylib    <span class="cm"># remove an installed library (and
 leash pkg update             <span class="cm"># update every dependency of the current project</span>
 leash pkg update mylib       <span class="cm"># reinstall one library at its latest version</span></code></pre>
 
-<h2>Searching for Libraries</h2>
-<p>Search the registry for libraries by name or description. The search is efficient because it only fetches the lightweight <code>index.json</code> file &mdash; no cloning of individual library repositories is needed until you decide to install one.</p>
-<pre><code>leash pkg search math</code></pre>
+        <h3>Searching for libraries</h3>
+        <p>Search the registry for libraries by name or description. The search is efficient because it only fetches the lightweight <code>index.json</code> file — no cloning of individual library repositories is needed until you decide to install one.</p>
+        <pre><code>leash pkg search math</code></pre>
 
-<h2>How Publishing Works Under the Hood</h2>
+        <h3>The index.json format</h3>
+        <p>Each library has its own GitHub repository. The central registry (<code>foksiny/leash-packages</code>) is an <code>index.json</code> file:</p>
 
-<p>Each library has its own GitHub repository. The central registry (<code>foksiny/leash-packages</code>) is an <code>index.json</code> file:</p>
-
-<pre><code>{
+        <pre><code>{
   <span class="str">"libraries"</span>: {
     <span class="str">"mylib"</span>: {
       <span class="str">"repo"</span>: <span class="str">"https://github.com/you/mylib.git"</span>,
@@ -237,49 +364,92 @@ leash pkg update mylib       <span class="cm"># reinstall one library at its lat
   }
 }</code></pre>
 
-<p>The top-level fields always describe the latest version; the <code>versions</code> map keeps every release ever published so old versions remain installable.</p>
+        <p>The top-level fields always describe the latest version; the <code>versions</code> map keeps every release ever published so old versions remain installable.</p>
 
-<h3>Security Checks</h3>
-<table>
-    <tr><th>Check</th><th>Description</th></tr>
-    <tr><td>Package name validation</td><td>Only <code>[a-zA-Z_][a-zA-Z0-9_-]*</code> names allowed</td></tr>
-    <tr><td>Source verification</td><td>Code must pass <code>leash check</code></td></tr>
-    <tr><td>Publisher identity</td><td>Registry entries are bound to a verified GitHub login; only the original owner can update an entry, and nobody can publish under someone else's name</td></tr>
-    <tr><td>Compilation check</td><td>Library must compile to a static library (locally on publish, plus a best-effort smoke test in CI)</td></tr>
-    <tr><td>Semantic versioning</td><td>Versions must be valid semver and strictly increasing; history is immutable</td></tr>
-    <tr><td>Pinned, verified installs</td><td>Version tags resolve to commit SHAs (branch shadowing rejected); the installed manifest must equal the request, and restores abort on SHA mismatch</td></tr>
-    <tr><td>Publish integrity</td><td>Ownership and version re-checked against fresh registry data (concurrent publishes preserved); published tags immutable; pushes use <code>--force-with-lease</code>; only allowlisted paths ship, secret-shaped files skipped, credential-bearing URLs rejected</td></tr>
-    <tr><td>Automated validation</td><td>A registry bot re-checks every rule on each pull request and auto-merges only clean updates</td></tr>
-</table>
+        <h2 id="security-checks">Security checks</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Check</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td>Package name validation</td><td>Only <code>[a-zA-Z_][a-zA-Z0-9_-]*</code> names allowed</td></tr>
+              <tr><td>Source verification</td><td>Code must pass <code>leash check</code></td></tr>
+              <tr><td>Publisher identity</td><td>Registry entries are bound to a verified GitHub login; only the original owner can update an entry, and nobody can publish under someone else's name</td></tr>
+              <tr><td>Compilation check</td><td>Library must compile to a static library (locally on publish, plus a best-effort smoke test in CI)</td></tr>
+              <tr><td>Semantic versioning</td><td>Versions must be valid semver and strictly increasing; history is immutable</td></tr>
+              <tr><td>Pinned, verified installs</td><td>Version tags resolve to commit SHAs (branch shadowing rejected); the installed manifest must equal the request, and restores abort on SHA mismatch</td></tr>
+              <tr><td>Publish integrity</td><td>Ownership and version re-checked against fresh registry data (concurrent publishes preserved); published tags immutable; pushes use <code>--force-with-lease</code>; only allowlisted paths ship, secret-shaped files skipped, credential-bearing URLs rejected</td></tr>
+              <tr><td>Automated validation</td><td>A registry bot re-checks every rule on each pull request and auto-merges only clean updates</td></tr>
+            </tbody>
+          </table>
+        </div>
 
-<h2>Global Library Installation</h2>
+        <h2 id="global-install">Global library installation</h2>
+        <p>Leash also provides a lower-level <code>install</code> command on the <code>leash</code> CLI to copy library files into <code>~/.leash/libs/</code> without the package manager.</p>
 
-<p>Leash also provides a lower-level <code>install</code> command on the <code>leash</code> CLI to copy library files into <code>~/.leash/libs/</code> without the package manager.</p>
+        <h3>Installing a single file</h3>
+        <pre><code>leash install path/to/mylib.lsh</code></pre>
 
-<h3>Installing a Single File</h3>
-<pre><code>leash install path/to/mylib.lsh</code></pre>
+        <h3>Installing a directory</h3>
+        <pre><code>leash install path/to/mylib_folder/</code></pre>
 
-<h3>Installing a Directory</h3>
-<pre><code>leash install path/to/mylib_folder/</code></pre>
+        <p>The <strong>contents</strong> of the directory are copied directly into <code>~/.leash/libs/</code>. The top-level folder name is not preserved.</p>
 
-<p>The <strong>contents</strong> of the directory are copied directly into <code>~/.leash/libs/</code>. The top-level folder name is not preserved.</p>
-
-<p>For example, given:</p>
-<pre><code>mylib_folder/
+        <p>For example, given:</p>
+        <pre><code>mylib_folder/
 &#x251C;&#x2500; hash.lsh
 &#x2514;&#x2500; utils/
     &#x2514;&#x2500; string_helpers.lsh</code></pre>
 
-<p>After installation, <code>~/.leash/libs/</code> contains:</p>
-<pre><code>~/.leash/libs/
+        <p>After installation, <code>~/.leash/libs/</code> contains:</p>
+        <pre><code>~/.leash/libs/
 &#x251C;&#x2500; hash.lsh
 &#x2514;&#x2500; utils/
     &#x2514;&#x2500; string_helpers.lsh</code></pre>
 
-<div class="callout callout-info">If a file or directory with the same name already exists in the global libs directory, the installation will fail. Remove the existing library first to replace it.</div>
+        <div class="callout callout-info">If a file or directory with the same name already exists in the global libs directory, the installation will fail. Remove the existing library first to replace it.</div>
 
-</main>
+        <h2 id="troubleshooting">Troubleshooting</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Symptom</th><th>Likely cause</th><th>Fix</th></tr></thead>
+            <tbody>
+              <tr><td><code>gh: command not found</code> on publish</td><td>GitHub CLI is not installed or not on PATH</td><td>Install <a href="https://cli.github.com">GitHub CLI</a> and run <code>gh auth login</code></td></tr>
+              <tr><td><code>use mylib::*;</code> still fails after install</td><td>Install went to a different libs directory, or the stub was not created</td><td>Check <code>~/.leash/libs/&lt;name&gt;/</code> and run <code>leash pkg list</code></td></tr>
+              <tr><td><code>install --locked</code> fails in CI</td><td>A dependency is missing from <code>leash.lock</code>, or no lockfile was committed</td><td>Run <code>leash pkg lock</code> locally and commit the generated <code>leash.lock</code></td></tr>
+              <tr><td>Restore aborts with a revision mismatch</td><td>A version tag was moved to a different commit</td><td>Publish a new version; tags and revisions are immutable by design</td></tr>
+              <tr><td>Publish rejected: version not greater</td><td><code>version</code> in <code>leash-pkg.lshc</code> was not bumped</td><td>Increase the semver version, then publish again</td></tr>
+              <tr><td>Publish rejected: publisher mismatch</td><td>The entry's <code>publisher</code> does not match your GitHub login</td><td>Publish under your own account; only the original owner may update a package</td></tr>
+              <tr><td><code>leash install</code> fails with "already exists"</td><td>A file or directory of the same name is already in the global libs directory</td><td>Remove the existing library first, then retry</td></tr>
+              <tr><td>CI builds differ from local builds</td><td>Local build used a floating version, not the lockfile</td><td>Use <code>leash pkg install --locked</code> in CI and commit <code>leash.lock</code></td></tr>
+              <tr><td><code>config.lshc</code> memory key seems ignored</td><td>Multiple exclusive modes set at once, or a JVM target</td><td>Choose one of arena (default), <code>gc: true</code>, or <code>autofree: true</code>; the JVM uses its own GC</td></tr>
+            </tbody>
+          </table>
+        </div>
 
-<script src="docs.js"></script>
+        <h2 id="faq">Frequently asked questions</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Question</th><th>Answer</th></tr></thead>
+            <tbody>
+              <tr><td>Do I need a Python tool to publish?</td><td>No. The package manager is written natively in the self-hosted compiler; there is no Python component.</td></tr>
+              <tr><td>Is registry approval required?</td><td>No. A validation bot re-checks every rule and auto-merges clean pull requests, usually within a minute.</td></tr>
+              <tr><td>Can I install private packages?</td><td>Yes — install from a full Git URL or a <code>user/repo</code> shorthand without touching the registry.</td></tr>
+              <tr><td>Why commit <code>leash.lock</code>?</td><td>It pins exact versions and commit SHAs so fresh clones and CI builds are identical and protected against moved tags.</td></tr>
+              <tr><td>What does <code>leash pkg add</code> change?</td><td>It installs the library, appends <code>name@version</code> to <code>dependencies</code>, inserts <code>use name::*;</code> in the main source, and updates the lockfile.</td></tr>
+              <tr><td>Can I ship executables with a library?</td><td>Yes — add <code>global_install: {name: src/path.lsh, ...}</code>; installs build binaries into <code>~/.leash/bin</code>.</td></tr>
+              <tr><td>How do I opt out of the arena in a project?</td><td>Set <code>gc: true</code> or <code>arena: false</code> in <code>config.lshc</code> (or pass <code>--gc</code> on the command line).</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="quick-links">
+          <a class="quick-link" href="stdlib.html"><strong>Standard Library</strong><span>Browse the bundled modules &rarr;</span></a>
+          <a class="quick-link" href="compiler.html"><strong>Compiler &amp; CLI</strong><span>Build, check and install commands &rarr;</span></a>
+          <a class="quick-link" href="advanced.html"><strong>Advanced Topics</strong><span>Memory modes and interop &rarr;</span></a>
+        </div>
+
+    </article>
+  </main>
+</div>
 </body>
 </html>

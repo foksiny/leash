@@ -153,6 +153,7 @@ pub def Base64 : class {
 
     static pub fnc valid(s string) : bool {
         pad: int = 0;
+        n: int = 0;
         in_pad: bool = false;
         foreach _, c in<string> s {
             _ = _ + 1 - 1;
@@ -171,9 +172,12 @@ pub def Base64 : class {
                 if Base64.val(c) < 0 {
                     return false;
                 }
+                n = n + 1;
             }
         }
-        if pad > 2 {
+        // Keep valid() in sync with decode_bytes(): reject bad padding and
+        // lengths (e.g. "A" or "A=") instead of only checking the alphabet.
+        if pad > 2 || (n + pad) % 4 != 0 || n % 4 == 1 {
             return false;
         }
         return true;

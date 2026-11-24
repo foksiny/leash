@@ -28,6 +28,9 @@ pub def BitSet : class {
     }
 
     pub fnc set(i int) : void {
+        if i < 0 {
+            return;
+        }
         this.grow_to(i);
         w: int = i / 64;
         b: int = i - (w * 64);
@@ -36,7 +39,7 @@ pub def BitSet : class {
     }
 
     pub fnc clear(i int) : void {
-        if i >= this.nbits {
+        if i < 0 || i >= this.nbits {
             return;
         }
         w: int = i / 64;
@@ -46,7 +49,7 @@ pub def BitSet : class {
     }
 
     pub fnc get(i int) : bool {
-        if i >= this.nbits {
+        if i < 0 || i >= this.nbits {
             return false;
         }
         w: int = i / 64;
@@ -56,6 +59,9 @@ pub def BitSet : class {
     }
 
     pub fnc toggle(i int) : void {
+        if i < 0 {
+            return;
+        }
         this.grow_to(i);
         w: int = i / 64;
         b: int = i - (w * 64);

@@ -129,6 +129,101 @@ class TestStringSizeUnicode(_CompileRunBase):
         self.assertEqual(out.split("\n")[:3], ["true", "true", "true"])
 
 
+class TestConsoleInputBuiltins(_CompileRunBase):
+    """getint / getfloat / getstruct read and parse stdin values."""
+
+    def _run_with_input(self, source, stdin, timeout=300):
+        with tempfile.TemporaryDirectory() as td:
+            src = os.path.join(td, "main.lsh")
+            exe = os.path.join(td, "prog")
+            with open(src, "w") as f:
+                f.write(source)
+            build = subprocess.run(
+                [BIN_LEASHC, "compile", src, "to", exe],
+                cwd=REPO_ROOT, capture_output=True, text=True, timeout=timeout)
+            self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
+            run = subprocess.run(
+                [exe], input=stdin, cwd=REPO_ROOT, capture_output=True,
+                text=True, timeout=timeout)
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            return run.stdout
+
+    def test_getint_and_getfloat(self):
+        out = self._run_with_input(
+            'fnc main() : void {\n'
+            '  n := getint("n: ");\n'
+            '  f := getfloat("f: ");\n'
+            '  show(n + 1);\n'
+            '  show(f + 0.5);\n'
+            '}\n', "41\n1.25\n")
+        self.assertIn("42", out)
+        self.assertIn("1.750000", out)
+
+    def test_getstruct_scalar_fields(self):
+        out = self._run_with_input(
+            'def P : struct { x: float; y: float; };\n'
+            'fnc main() : void {\n'
+            '  p: P = getstruct(P, "p: ");\n'
+            '  show(p.x);\n'
+            '  show(p.y);\n'
+            '}\n', "1.5\n2.5\n")
+        self.assertIn("1.500000", out)
+        self.assertIn("2.500000", out)
+
+    def test_example_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            exe = os.path.join(td, "moregets")
+            build = subprocess.run(
+                [BIN_LEASHC, "compile",
+                 os.path.join(REPO_ROOT, "examples", "moregets.lsh"), "to", exe],
+                cwd=REPO_ROOT, capture_output=True, text=True, timeout=300)
+            self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
+            run = subprocess.run(
+                [exe], input="5\n2.5\n1.5\n3.5\n", cwd=REPO_ROOT,
+                capture_output=True, text=True, timeout=300)
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            self.assertIn("You chose number 5 and 2.500000", run.stdout)
+            self.assertIn("The position you chose was 1.500000 and 3.500000", run.stdout)
+
+
+class TestStringStartEnd(_CompileRunBase):
+    """s.start([n]) / s.end([n]) return the first/last n characters."""
+
+    def test_start_and_end_default_and_count(self):
+        out = self._compile_and_run(
+            'fnc main() : void {\n'
+            '    s: string = "Hello, world!";\n'
+            '    show(s.end());\n'
+            '    show(s.end(3));\n'
+            '    show(s.start());\n'
+            '    show(s.start(5));\n'
+            '}\n'
+        )
+        self.assertEqual(out.split("\n")[:4], ["!", "ld!", "H", "Hello"])
+
+    def test_out_of_range_and_utf8_boundaries(self):
+        out = self._compile_and_run(
+            'fnc main() : void {\n'
+            '    s: string = "héllo";\n'
+            '    show(s.start(2));\n'
+            '    show(s.end(2));\n'
+            '    show(s.start(99));\n'
+            '    show(s.end(99));\n'
+            '}\n'
+        )
+        self.assertEqual(out.split("\n")[:4], ["hé", "lo", "héllo", "héllo"])
+
+    def test_example_file(self):
+        exe = os.path.join(tempfile.mkdtemp(prefix="leash_example_"), "morestrstuff")
+        build = subprocess.run(
+            [BIN_LEASHC, "compile", os.path.join(REPO_ROOT, "examples", "morestrstuff.lsh"),
+             "to", exe],
+            cwd=REPO_ROOT, capture_output=True, text=True, timeout=300)
+        self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
+        run = subprocess.run([exe], cwd=REPO_ROOT, capture_output=True, text=True, timeout=300)
+        self.assertEqual(run.stdout.split("\n")[:4], ["!", "ld!", "H", "Hello"])
+
+
 class TestFileReplace(_CompileRunBase):
     def test_empty_old_is_noop_and_empty_new_deletes(self):
         with tempfile.TemporaryDirectory() as td:
@@ -596,6 +691,8 @@ class TestHeapValueAliasing(_CompileRunBase):
             cmd = [BIN_LEASHC, "compile", src, "to", exe]
             if arena:
                 cmd.append("--arena")
+            else:
+                cmd.append("--gc")
             build = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True,
                                    text=True, timeout=300)
             self.assertEqual(build.returncode, 0,

@@ -3,75 +3,96 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="color-scheme" content="dark">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Crect width=%27100%27 height=%27100%27 rx=%2722%27 fill=%27%237c3aed%27/%3E%3Ctext x=%2750%27 y=%2768%27 font-size=%2752%27 text-anchor=%27middle%27 font-family=%27monospace%27 fill=%27white%27%3EL%3C/text%3E%3C/svg%3E">
-<title>Getting Started - Leash</title>
+<title>Installation &amp; Setup - Leash documentation</title>
+<meta name="description" content="Get Leash 2.0.0 onto your machine, verify the self-hosted compiler, and go from a single source file to a native binary or a full project.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Crect width=%27100%27 height=%27100%27 rx=%2722%27 fill=%27%23241f4d%27/%3E%3Ctext x=%2750%27 y=%2770%27 font-size=%2760%27 text-anchor=%27middle%27 font-family=%27monospace%27 fill=%27white%27%3EL%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
+<script src="docs.js" defer></script>
 </head>
 <body>
+<a class="skip-link" href="#main-content">Skip to content</a>
 
-<button class="menu-toggle" onclick="document.querySelector('.sidebar').classList.toggle('open')">&#9776;</button>
+<header class="topbar">
+  <a class="topbar-brand" href="index.html"><img src="leash-icon-light.svg" alt="" onerror="this.style.display='none'"><span>Leash</span></a>
+  <nav class="topbar-nav" aria-label="Top navigation">
+    <a href="index.html" class="">Docs</a>
+    <a href="getting-started.html" class="current" aria-current="page">Tutorial</a>
+    <a href="language-guide.html" class="">Reference</a>
+    <a href="compiler.html" class="">Spec</a>
+    <a href="stdlib.html" class="">Library</a>
+    <a href="package-manager.html" class="">Packages</a>
+    <a href="../benchmarking/README.md" class="">Benchmarks</a>
+    <a href="https://github.com/foksiny/leash">GitHub</a>
+  </nav>
+  <button class="menu-toggle" type="button" aria-label="Toggle navigation" aria-expanded="false">&#9776;</button>
+  <input id="doc-search" class="topbar-search" type="search" placeholder="Search docs" aria-label="Search documentation" autocomplete="off">
+  <button class="theme-toggle" type="button" aria-label="Toggle color theme" title="Toggle theme">&#9680;</button>
+</header>
 
-<aside class="sidebar">
-    <div class="sidebar-header">
-        <h1>Leash</h1>
-        <div class="version">v1.12.0 Release</div>
-        <div class="subtitle">Programming Language</div>
+<div class="layout">
+  <aside class="sidenav">
+    <div class="sidenav-title">Leash documentation</div>
+    <div class="sidenav-group">
+      <a href="index.html" class="">Overview</a>
+      <a href="getting-started.html" class="current">The language, in reading order</a>
+      <a href="language-guide.html" class="">Language reference</a>
+      <a href="compiler.html" class="">The compiler</a>
     </div>
-    <nav class="sidebar-nav">
-        <div class="nav-section">
-            <div class="nav-section-title">Getting Started</div>
-            <a href="index.html">Overview</a>
-            <a href="getting-started.html" class="active">Installation &amp; Setup</a>
+    <div class="sidenav-group">
+      <a href="self-hosted.html" class="">Getting the compiler</a>
+      <a href="stdlib.html" class="">Library and tools</a>
+      <a href="package-manager.html" class="">Building programs and using packages</a>
+      <a href="concurrency.html" class="">Concurrency</a>
+    </div>
+    <div class="sidenav-group">
+      <a href="advanced.html" class="">Standalone pages</a>
+      <a href="limitations.html" class="">Known limitations</a>
+    </div>
+    <div class="sidenav-foot">Leash 2.0.0</div>
+  </aside>
+
+  <main class="content" id="main-content">
+    <div class="progress" id="progress-bar" aria-hidden="true"></div>
+    <article>
+        <h1>Installation &amp; Setup</h1>
+
+        <p>Leash is a self-hosted, LLVM-based compiler. The only prerequisite is a working C compiler (<code>clang</code> or <code>gcc</code>) used for linking; the compiler itself ships as a native binary and needs no Python, LLVM development libraries, or pip. Version 2.0.0 compiles with the scoped arena as the default native memory layout, while <code>--gc</code> opts into the mark-and-sweep collector.</p>
+        <p>Leash was made with the help of AI, but its design and ideas come from a human. The AI&rsquo;s role was to implement the language and toolchain and to write the documentation. The human and the AI stress-tested Leash &mdash; checking where it fails and where it wins, then fixing quirks as they were found &mdash; so bugs are addressed right away and features are kept stable and reliable.</p>
+
+        <h2 id="prerequisites">Prerequisites</h2>
+        <p>Only two tools are required for a standard native install. Everything else is optional and unlocks a specific workflow.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Dependency</th><th>Required for</th><th>Version</th></tr></thead>
+            <tbody>
+              <tr><td><strong>C compiler</strong> (<code>gcc</code> / <code>clang</code>)</td><td>Linking compiled programs and bootstrapping the compiler</td><td>Any recent version</td></tr>
+              <tr><td><strong>Git</strong></td><td><code>leash pkg publish</code>, <code>leash pkg install</code>, <code>leash update</code></td><td>Any recent version</td></tr>
+            </tbody>
+          </table>
         </div>
-        <div class="nav-section">
-            <div class="nav-section-title">Language Guide</div>
-            <a href="language-guide.html">Language Reference</a>
-            <a href="compiler.html">Compiler &amp; CLI</a>
-            <a href="self-hosted.html">Self-Hosted Compiler</a>
-            <a href="stdlib.html">Standard Library</a>
+
+        <h3>Prerequisites matrix by platform</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Platform</th><th>Install command</th><th>Notes</th></tr></thead>
+            <tbody>
+              <tr><td>Linux (Debian/Ubuntu)</td><td><code>sudo apt install build-essential clang git</code></td><td>Native x64 and ARM64 supported</td></tr>
+              <tr><td>Linux (Fedora/RHEL)</td><td><code>sudo dnf install gcc clang git</code></td><td>&mdash;</td></tr>
+              <tr><td>Linux (Arch)</td><td><code>sudo pacman -S base-devel clang git</code></td><td>&mdash;</td></tr>
+              <tr><td>Windows</td><td><code>winget install mingw</code> (or <code>LLVM.LLVM</code>) and <code>winget install Git.Git</code></td><td>MinGW-w64 recommended</td></tr>
+              <tr><td>macOS</td><td><code>xcode-select --install</code>, then <code>brew install git</code> if needed</td><td>Xcode command-line tools provide clang</td></tr>
+            </tbody>
+          </table>
         </div>
-        <div class="nav-section">
-            <div class="nav-section-title">Ecosystem</div>
-            <a href="package-manager.html">Package Manager</a>
-            <a href="concurrency.html">Concurrency Model</a>
-            <a href="advanced.html">Advanced Topics</a>
-            <a href="limitations.html">Known Limitations</a>
-        </div>
-    </nav>
-</aside>
 
-<main class="main">
-
-<div class="breadcrumb">
-    <a href="index.html">Home</a> <span class="sep">/</span> <span class="current">Installation &amp; Setup</span>
-</div>
-
-<h1>Installation &amp; Setup</h1>
-
-<p>Leash is a self-hosted, LLVM-based compiler. The only prerequisite is a working C compiler (<code>clang</code> or <code>gcc</code>) used for linking; the compiler itself ships as a native binary and needs no Python, LLVM development libraries, or pip.</p>
-
-<p>Leash was made with the help of AI, but its design and ideas come from a human. The AI&rsquo;s role was to implement the language and toolchain and to write the documentation. The human and the AI stress-tested Leash &mdash; checking where it fails and where it wins, then fixing quirks as they were found &mdash; so bugs are addressed right away and features are kept stable and reliable.</p>
-
-<h2>Prerequisites</h2>
-
-<table>
-    <tr><th>Dependency</th><th>Required for</th><th>Version</th></tr>
-    <tr><td><strong>C compiler</strong> (<code>gcc</code> / <code>clang</code>)</td><td>Linking compiled programs and bootstrapping the compiler</td><td>Any recent version</td></tr>
-    <tr><td><strong>Git</strong></td><td><code>leash pkg publish</code>, <code>leash pkg install</code>, <code>leash update</code></td><td>Any recent version</td></tr>
-</table>
-
-<h3>Linux (Debian/Ubuntu)</h3>
-<pre><code>sudo apt install build-essential clang git</code></pre>
-
-<h3>Linux (Fedora/RHEL)</h3>
-<pre><code>sudo dnf install gcc clang git</code></pre>
-
-<h3>Linux (Arch)</h3>
-<pre><code>sudo pacman -S base-devel clang git</code></pre>
-
-<h3>Windows</h3>
-<pre><code><span class="cm"># Option 1: MinGW-w64 (recommended)</span>
+        <h3>Linux (Debian/Ubuntu)</h3>
+        <pre><code>sudo apt install build-essential clang git</code></pre>
+        <h3>Linux (Fedora/RHEL)</h3>
+        <pre><code>sudo dnf install gcc clang git</code></pre>
+        <h3>Linux (Arch)</h3>
+        <pre><code>sudo pacman -S base-devel clang git</code></pre>
+        <h3>Windows</h3>
+        <pre><code><span class="cm"># Option 1: MinGW-w64 (recommended)</span>
 winget install mingw
 
 <span class="cm"># Option 2: LLVM + clang</span>
@@ -79,80 +100,98 @@ winget install LLVM.LLVM
 
 <span class="cm"># Git</span>
 winget install Git.Git</code></pre>
-
-<h3>macOS</h3>
-<pre><code><span class="cm"># Xcode command-line tools provide clang</span>
+        <h3>macOS</h3>
+        <pre><code><span class="cm"># Xcode command-line tools provide clang</span>
 xcode-select --install
 
 <span class="cm"># Git (if not already present)</span>
 brew install git</code></pre>
 
-<h3>Optional Dependencies</h3>
-<table>
-    <tr><th>Dependency</th><th>Used by</th><th>Notes</th></tr>
-    <tr><td><strong>GitHub CLI (<code>gh</code>)</strong></td><td><code>leash pkg publish</code></td><td>Required to create repos and PRs</td></tr>
-    <tr><td><strong>Wine</strong></td><td><code>leash run --target win64</code> on Linux</td><td>Run Windows binaries on Linux</td></tr>
-    <tr><td><strong>MinGW (<code>gcc-mingw-w64</code>)</strong></td><td><code>leash compile/run --target win64</code> on Linux</td><td>Cross-compile for Windows</td></tr>
-    <tr><td><strong>gcc-aarch64-linux-gnu</strong> (+ <code>qemu-user</code>)</td><td><code>leash compile/run --target linux-arm</code></td><td>Cross-compile to Linux ARM64; qemu runs the produced binary on x86 hosts</td></tr>
-    <tr><td><strong>Java runtime (JRE 5+; JRE 8+ for <code>async</code>/<code>spawn</code>)</strong></td><td><code>leash compile/run --target jvm</code></td><td>Emit JVM bytecode &mdash; no C toolchain needed; runs anywhere Java runs</td></tr>
-</table>
+        <h3>Optional dependencies</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Dependency</th><th>Used by</th><th>Notes</th></tr></thead>
+            <tbody>
+              <tr><td><strong>GitHub CLI (<code>gh</code>)</strong></td><td><code>leash pkg publish</code></td><td>Required to create repos and PRs</td></tr>
+              <tr><td><strong>Wine</strong></td><td><code>leash run --target win64</code> on Linux</td><td>Run Windows binaries on Linux</td></tr>
+              <tr><td><strong>MinGW (<code>gcc-mingw-w64</code>)</strong></td><td><code>leash compile/run --target win64</code> on Linux</td><td>Cross-compile for Windows</td></tr>
+              <tr><td><strong>gcc-aarch64-linux-gnu</strong> (+ <code>qemu-user</code>)</td><td><code>leash compile/run --target linux-arm</code></td><td>Cross-compile to Linux ARM64; qemu runs the produced binary on x86 hosts</td></tr>
+              <tr><td><strong>Java runtime (JRE 5+; JRE 8+ for <code>async</code>/<code>spawn</code>)</strong></td><td><code>leash compile/run --target jvm</code></td><td>Emit JVM bytecode &mdash; no C toolchain needed; runs anywhere Java runs</td></tr>
+            </tbody>
+          </table>
+        </div>
 
-<h2>Install Leash</h2>
+        <h2 id="install-leash">Install Leash</h2>
+        <p>Leash compiles itself. The repository ships a checked-in bootstrap seed (<code>bootstrap/leash-&lt;version&gt;-target-*</code>) that compiles the current sources; that binary then compiles itself and the result is <code>bin/leashc</code>. No Python, no pip, no LLVM development libraries.</p>
+        <div class="steps">
+          <div class="step">
+            <h3>Clone the repository</h3>
+            <pre><code>git clone https://github.com/foksiny/leash &amp;&amp; cd leash</code></pre>
+          </div>
+          <div class="step">
+            <h3>Build the compiler</h3>
+            <p>The Python-free bootstrap takes roughly two to four minutes.</p>
+            <pre><code>./scripts/bootstrap.sh</code></pre>
+          </div>
+          <div class="step">
+            <h3>Verify the build</h3>
+            <pre><code>bin/leashc version
+<span class="cm"># leash 2.0.0 (self-hosted)</span></code></pre>
+          </div>
+        </div>
+        <div class="callout callout-info"><strong>What gets built.</strong> The bootstrap performs a three-stage build and fixed-point check, then installs <code>bin/leashc</code>. You can repeat it at any time with <code>leash self-host</code>.</div>
 
-<p>Leash compiles itself. The repository ships a checked-in bootstrap seed (<code>bootstrap/leash-&lt;version&gt;-target-*</code>) that compiles the current sources; that binary then compiles itself and the result is <code>bin/leashc</code>. No Python, no pip, no LLVM development libraries.</p>
+        <h3>Rebuild the compiler from source</h3>
+        <pre><code>leash self-host   <span class="cm"># 3-stage bootstrap + fixed-point check, reinstalls bin/leashc</span></code></pre>
 
-<pre><code><span class="cm"># 1. Clone the repository</span>
-git clone https://github.com/foksiny/leash && cd leash
-
-<span class="cm"># 2. Build the compiler (Python-free, ~2-4 minutes)</span>
-./scripts/bootstrap.sh
-
-<span class="cm"># 3. Verify</span>
-bin/leashc version
-<span class="cm"># leash 1.12.0 (self-hosted)</span></code></pre>
-
-<h3>Put <code>leash</code> on your PATH (global install)</h3>
-
-<p>Once <code>bin/leashc</code> exists, install the toolchain globally so <code>leash</code> / <code>leashc</code> work from any directory. The built-in installer builds the compiler into <code>~/.leash/bin</code> and also installs the Leash runtime (the C sources programs are compiled against) to <code>~/.leash/leash</code> and the bundled standard library to <code>~/.leash/libs</code>, so the installed toolchain is self-contained:</p>
-
-<pre><code><span class="cm"># Option A (recommended): built-in global installer</span>
+        <h2 id="put-on-path">Put <code>leash</code> on your PATH</h2>
+        <p>Once <code>bin/leashc</code> exists, install the toolchain globally so <code>leash</code> / <code>leashc</code> work from any directory. The built-in installer builds the compiler into <code>~/.leash/bin</code> and also installs the Leash runtime (the C sources programs are compiled against) to <code>~/.leash/leash</code> and the bundled standard library to <code>~/.leash/libs</code>, so the installed toolchain is self-contained.</p>
+        <pre><code><span class="cm"># Option A (recommended): built-in global installer</span>
 leash install compiler
 export PATH="$HOME/.leash/bin:$PATH"       <span class="cm"># add to ~/.bashrc / ~/.zshrc (use $HOME, not ~)</span>
 
 <span class="cm"># Option B: copy the binary onto your PATH</span>
 cp bin/leashc ~/.local/bin/leash          <span class="cm"># works anywhere once Option A has installed the runtime</span>
 cp bin/leashc ~/.local/bin/leashc</code></pre>
+        <p>The compiler looks for its runtime next to the executable, then in <code>~/.leash/leash</code>, then wherever <code>LEASH_RUNTIME</code> points &mdash; so a plain copy of the binary works from any directory once the global install has run (or while a repository checkout is nearby).</p>
+        <div class="callout callout-warning"><strong>Use <code>$HOME</code>, not <code>~</code>.</strong> Write <code>export PATH="$HOME/.leash/bin:$PATH"</code>. The tilde stays literal inside quotes, and shells that do not expand it in <code>PATH</code> would break the compiler&rsquo;s runtime lookups.</div>
 
-<p>The compiler looks for its runtime next to the executable, then in <code>~/.leash/leash</code>, then wherever <code>LEASH_RUNTIME</code> points — so a plain copy of the binary works from any directory once the global install has run (or while a repository checkout is nearby). Use <code>export PATH="$HOME/.leash/bin:$PATH"</code> rather than <code>"~/.leash/bin"</code>: the tilde stays literal inside quotes, and shells that don&rsquo;t expand it in <code>PATH</code> would break the compiler&rsquo;s lookups.</p>
-
-<h4>Windows (PowerShell)</h4>
-<pre><code><span class="cm"># Option A (recommended): global installer</span>
+        <h3>Windows (PowerShell)</h3>
+        <pre><code><span class="cm"># Option A (recommended): global installer</span>
 leash install compiler
 $env:PATH = "$env:USERPROFILE\.leash\bin;$env:PATH"   <span class="cm"># persist via System Settings</span>
 
 <span class="cm"># Option B: copy onto PATH</span>
 Copy-Item bin\leashc.exe $env:USERPROFILE\bin\leash.exe</code></pre>
-
-<h4>macOS</h4>
-<pre><code>leash install compiler
+        <h3>macOS</h3>
+        <pre><code>leash install compiler
 export PATH="$HOME/.leash/bin:$PATH"</code></pre>
+        <p>Afterwards, <code>leash version</code> (or <code>leashc version</code>) should print <code>leash 2.0.0 (self-hosted)</code> from any directory.</p>
 
-<p>Afterwards, <code>leash version</code> (or <code>leashc version</code>) should print <code>leash 1.12.0 (self-hosted)</code> from any directory.</p>
+        <h2 id="first-program">Your first program</h2>
+        <p>Create <code>hello.lsh</code> with a <code>main</code> entry point. <code>show</code> writes its arguments to standard output.</p>
+        <pre><code><span class="kw">fnc</span> <span class="fn">main</span>() : <span class="kw">void</span> {
+    <span class="fn">show</span>(<span class="str">"Hello, Leash 2.0.0!"</span>);
+}</code></pre>
+        <p>Run it directly, then compile it to a standalone executable:</p>
+        <pre><code>leash run hello.lsh
+<span class="cm"># Hello, Leash 2.0.0!</span>
 
-<h3>Rebuild the compiler from source</h3>
-<pre><code>leash self-host   <span class="cm"># 3-stage bootstrap + fixed-point check, reinstalls bin/leashc</span></code></pre>
+leash compile hello.lsh to hello
+./hello
+<span class="cm"># Hello, Leash 2.0.0!</span></code></pre>
+        <div class="callout callout-success"><strong>That&rsquo;s the whole loop.</strong> Edit <code>.lsh</code> files, run with <code>leash run</code> while iterating, and compile with <code>leash compile</code> when you want a distributable binary. Memory uses the scoped arena by default; add <code>--gc</code> if you need the mark-and-sweep collector.</div>
 
-<h2>Running Leash Programs</h2>
+        <h2 id="running-programs">Running programs</h2>
+        <p>You can run Leash files (<code>.lsh</code>) directly using the <code>run</code> command, or compile them to a native executable using the <code>compile</code> command. Leash also supports project-level workflows with <code>init</code>, <code>build</code>, and <code>run</code> (without a file) for larger projects with configuration files. The old <code>runp</code> command has been removed; use <code>run</code> without a file instead.</p>
 
-<p>You can run Leash files (<code>.lsh</code>) directly using the <code>run</code> command, or compile them to a native executable using the <code>compile</code> command. Leash also supports project-level workflows with <code>init</code>, <code>build</code>, and <code>run</code> (without a file) for larger projects with configuration files. The old <code>runp</code> command has been removed; use <code>run</code> without a file instead.</p>
-
-<h3>Direct Execution</h3>
-<p>To execute a Leash program without creating an output binary (and optionally pass command line arguments):</p>
-<pre><code>leash run program.lsh [arguments...]
+        <h3>Direct execution</h3>
+        <p>To execute a Leash program without creating an output binary (and optionally pass command line arguments):</p>
+        <pre><code>leash run program.lsh [arguments...]
 leash run program.lsh -- arg1 arg2</code></pre>
 
-<h3>Compiling to a Binary</h3>
-<pre><code><span class="cm"># Default output (same name as input)</span>
+        <h3>Compiling to a binary</h3>
+        <pre><code><span class="cm"># Default output (same name as input)</span>
 leash compile program.lsh
 ./program
 
@@ -163,50 +202,41 @@ leash compile program.lsh to my_custom_binary
 <span class="cm"># Link with external libraries</span>
 leash compile program.lsh -lm
 leash run program.lsh -lcurl</code></pre>
+        <p>Dynamic (<code>.so</code>/<code>.dll</code>) and static (<code>.a</code>/<code>.lib</code>) library outputs are built natively: <code>leash compile program.lsh to-dynamic mylib</code> / <code>to-static mylib</code>. C consumers link the library together with the Leash runtime and call <code>leash_init()</code> once before any other library function (see <a href="compiler.html#library-outputs">the compiler page</a> for details).</p>
 
-<p>Dynamic (<code>.so</code>/<code>.dll</code>) and static (<code>.a</code>/<code>.lib</code>) library outputs are built natively: <code>leash compile program.lsh to-dynamic mylib</code> / <code>to-static mylib</code>. C consumers link the library together with the Leash runtime and call <code>leash_init()</code> once before any other library function (see <a href="compiler.html">the compiler page</a> for details).</p>
+        <h3>Dumping LLVM IR</h3>
+        <pre><code>leash dump program.lsh</code></pre>
 
-<h3>Dumping LLVM IR</h3>
-<pre><code>leash dump program.lsh</code></pre>
+        <h2 id="project-workflow">Project workflow</h2>
+        <p>For anything larger than a scratch file, a project gives you a consistent layout and a single configuration file that drives builds and runs.</p>
 
-<h2>Project Workflow</h2>
-
-<h3>Project Init (<code>init</code>)</h3>
-<p>The <code>init</code> command scaffolds a new Leash project with the standard directory structure, including a main entry point, import and output directories, and a project configuration file. This provides a consistent starting point for any new Leash project.</p>
-<pre><code>leash init my_project</code></pre>
-
-<p>Creates the standard project structure:</p>
-<pre><code>my_project/
+        <h3>Project init (<code>init</code>)</h3>
+        <p>The <code>init</code> command scaffolds a new Leash project with the standard directory structure, including a main entry point, import and output directories, and a project configuration file.</p>
+        <pre><code>leash init my_project</code></pre>
+        <p>Creates the standard project structure:</p>
+        <pre><code>my_project/
 &#x251C;&#x2500; src/
 &#x2502;   &#x2514;&#x2500; main.lsh          <span class="cm"># Entry point</span>
 &#x251C;&#x2500; imports/               <span class="cm"># Local import directory</span>
 &#x251C;&#x2500; out/                   <span class="cm"># Compiled output directory</span>
 &#x2514;&#x2500; config.lshc            <span class="cm"># Project configuration</span></code></pre>
-
-<p>Generated <code>main.lsh</code>:</p>
-<pre><code><span class="kw">fnc</span> <span class="fn">main</span> |> <span class="fn">show</span>(<span class="str">"Hello, World!"</span>);</code></pre>
-
-<p>Generated <code>config.lshc</code>:</p>
-<pre><code>main: <span class="str">"src/main.lsh"</span>
+        <p>Generated <code>main.lsh</code>:</p>
+        <pre><code><span class="kw">fnc</span> <span class="fn">main</span>() |&gt; <span class="fn">show</span>(<span class="str">"Hello, World!"</span>);</code></pre>
+        <p>Generated <code>config.lshc</code>:</p>
+        <pre><code>main: <span class="str">"src/main.lsh"</span>
 clibs: {}
 imports: <span class="str">"imports/"</span>
 opt_level: <span class="str">"O3"</span></code></pre>
 
-<h3>Global Install (<code>install</code> / <code>rm</code>)</h3>
-<p>Add a single-line <code>global_install</code> map to <code>config.lshc</code>, then run <code>leash install</code> with no arguments to compile each entry to a host binary in <code>~/.leash/bin/</code> (<code>.exe</code> on Windows) so it runs straight from the terminal. Remove them again with <code>leash rm</code>, which asks for confirmation first (an empty answer means yes):</p>
-<pre><code>global_install: {tester: src/main_test.lsh, tester_unsafe: src/main_test_unsafe.lsh}</code></pre>
-<pre><code>leash install
-leash rm tester tester_unsafe</code></pre>
-
-<h3>Project Build (<code>build</code>)</h3>
-<p>The <code>build</code> command reads <code>config.lshc</code> from the current directory and compiles the project. This uses the project configuration to find the main entry file, resolve imports, link C libraries, and apply the configured optimization level.</p>
-<pre><code>leash build
+        <h3>Project build (<code>build</code>)</h3>
+        <p>The <code>build</code> command reads <code>config.lshc</code> from the current directory and compiles the project. This uses the project configuration to find the main entry file, resolve imports, link C libraries, and apply the configured optimization level.</p>
+        <pre><code>leash build
 leash build --other-imports path/to/imports
 leash build -oi path/to/imports</code></pre>
 
-<h3>Project Run (<code>run</code> without file)</h3>
-<p>The <code>run</code> command without a file argument compiles and runs a project in one step, using <code>config.lshc</code>. The output binary is temporary and cleaned up after execution, making it ideal for development and testing. The old <code>runp</code> command has been removed; <code>run</code> without a file is the supported form.</p>
-<pre><code><span class="cm"># Compile and run project (project mode)</span>
+        <h3>Project run (<code>run</code> without file)</h3>
+        <p>The <code>run</code> command without a file argument compiles and runs a project in one step, using <code>config.lshc</code>. The output binary is temporary and cleaned up after execution, making it ideal for development and testing. The old <code>runp</code> command has been removed; <code>run</code> without a file is the supported form.</p>
+        <pre><code><span class="cm"># Compile and run project (project mode)</span>
 leash run
 
 <span class="cm"># Pass arguments to the program (after --)</span>
@@ -218,17 +248,73 @@ leash run --other-imports path/to/imports -- arg1 arg2
 <span class="cm"># Run a single file (file mode)</span>
 leash run src/main.lsh -- arg1 arg2</code></pre>
 
-<h2>Updating Leash</h2>
-<p>The <code>update</code> command checks for new releases on the Leash GitHub repository and pulls the latest changes. It fetches the latest release tag from <code>github.com/foksiny/leash</code> via the GitHub API, then runs <code>git pull</code> to update your local clone to the latest commit. Requires Git to be installed and the Leash repo to have been cloned from GitHub.</p>
-<pre><code>leash update</code></pre>
+        <h2 id="global-install">Global install (<code>install</code> / <code>rm</code>)</h2>
+        <p>Add a single-line <code>global_install</code> map to <code>config.lshc</code>, then run <code>leash install</code> with no arguments to compile each entry to a host binary in <code>~/.leash/bin/</code> (<code>.exe</code> on Windows) so it runs straight from the terminal. Remove them again with <code>leash rm</code>, which asks for confirmation first (an empty answer means yes).</p>
+        <pre><code>global_install: {tester: src/main_test.lsh, tester_unsafe: src/main_test_unsafe.lsh}</code></pre>
+        <pre><code>leash install
+leash rm tester tester_unsafe</code></pre>
 
-<h2>Additional Import Paths</h2>
-<p>The <code>--other-imports</code> (or <code>-oi</code>) flag adds extra directories to the module search path for <code>use ...;</code> statements. This is available on <code>compile</code>, <code>run</code>, <code>dump</code>, and <code>build</code>. These directories are searched before <code>~/.leash/libs/</code>, making it useful when working outside a project setup or when you need to import from non-standard locations.</p>
-<pre><code>leash compile program.lsh --other-imports mylibs/
+        <h2 id="additional-imports">Additional import paths</h2>
+        <p>The <code>--other-imports</code> (or <code>-oi</code>) flag adds extra directories to the module search path for <code>use ...;</code> statements. This is available on <code>compile</code>, <code>run</code>, <code>dump</code>, and <code>build</code>. These directories are searched before <code>~/.leash/libs/</code>, making it useful when working outside a project setup or when you need to import from non-standard locations.</p>
+        <pre><code>leash compile program.lsh --other-imports mylibs/
 leash run program.lsh -oi mylibs/ -oi other_libs/</code></pre>
 
-</main>
+        <h2 id="updating">Updating Leash</h2>
+        <p>The <code>update</code> command checks for new releases on the Leash GitHub repository and pulls the latest changes. It fetches the latest release tag from <code>github.com/foksiny/leash</code> via the GitHub API, then runs <code>git pull</code> to update your local clone to the latest commit. Requires Git to be installed and the Leash repo to have been cloned from GitHub.</p>
+        <pre><code>leash update</code></pre>
+        <p>After a large update, rebuild the compiler so the installed binary matches the sources:</p>
+        <pre><code>leash self-host</code></pre>
 
-<script src="docs.js"></script>
+        <h2 id="troubleshooting">Troubleshooting</h2>
+        <h3><code>leash: command not found</code></h3>
+        <p>The compiler is not on your <code>PATH</code>. Add <code>$HOME/.leash/bin</code> (see <a href="#put-on-path">Put leash on your PATH</a>) and open a new shell. Confirm with <code>leash version</code>, which should print <code>leash 2.0.0 (self-hosted)</code>.</p>
+
+        <h3>Runtime not found when running from a copied binary</h3>
+        <p>The compiler searches next to the executable, then <code>~/.leash/leash</code>, then <code>LEASH_RUNTIME</code>. Run <code>leash install compiler</code> once to install the runtime and stdlib, or point <code>LEASH_RUNTIME</code> at an existing checkout.</p>
+
+        <h3>Linker errors such as <code>cannot find -lclang</code></h3>
+        <p>A C compiler is required for linking. Install <code>clang</code> or <code>build-essential</code> for your platform (see the prerequisites matrix), then retry the build.</p>
+
+        <h3>A lifetime diagnostic like <code>E_ARENA_LIFETIME</code></h3>
+        <p>In the default arena, an <em>unprovable</em> raw-pointer escape is a compile error, not a warning. Proven-safe pointers (nil, <code>&amp;local</code>, native handles and libc heap addresses) may be returned, stored, or passed to workers — the compiler roots the pointee for you. Return values by value when you can; use <code>--gc</code> only if you specifically want mark-and-sweep. See <a href="compiler.html#memory-management-modes">memory management modes</a>.</p>
+
+        <h3>JVM target fails with an async/spawn error</h3>
+        <p><code>async</code> and <code>spawn</code> on the <code>jvm</code> target need a Java 8 or newer runtime; everything else verifies on Java 5+. The arena is native-only &mdash; the JVM target uses its own GC.</p>
+        <div class="callout callout-info"><strong>Still stuck?</strong> <code>leash check program.lsh --verbose</code> prints detailed, step-by-step diagnostics, and <code>leash help &lt;command&gt;</code> documents each CLI command.</div>
+
+        <h2 id="editor-support">Editor support</h2>
+        <p>The VS Code extension ships a full language server: completion, hover, go to definition, references, rename, semantic tokens, folding, inlay hints and compiler diagnostics. Diagnostics come from <code>leash check</code>, so arena lifetime errors appear as you type, with <code>why:</code> and <code>help:</code> text in the hover.</p>
+        <pre><code><span class="cm"># Install the packaged extension (or use the VSIX from syntax_highlighters/vscode)</span>
+code --install-extension syntax_highlighters/vscode/leash-2.0.0.vsix --force
+<span class="cm"># From that directory: compile, lint and run the LSP regression suite</span>
+npm test</code></pre>
+        <p>Point <code>leash.lsp.executablePath</code> at your compiler if it is not on <code>PATH</code>, and use <code>leash.lsp.compilerArgs</code> for flags such as <code>--other-imports</code>. The server sends those flags after <code>check &lt;file&gt;</code>, matching the compiler CLI.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Setting</th><th>Default</th><th>Purpose</th></tr></thead>
+            <tbody>
+              <tr><td><code>leash.lsp.enabled</code></td><td><code>true</code></td><td>Master switch for diagnostics.</td></tr>
+              <tr><td><code>leash.lsp.executablePath</code></td><td><code>leash</code></td><td>Compiler binary used for checks.</td></tr>
+              <tr><td><code>leash.lsp.compilerArgs</code></td><td><code>[]</code></td><td>Extra flags appended after the input file.</td></tr>
+              <tr><td><code>leash.lsp.diagnostics.mode</code></td><td><code>onType</code></td><td>Choose <code>onType</code>, <code>onSave</code> or <code>onOpen</code>.</td></tr>
+              <tr><td><code>leash.lsp.diagnostics.debounceMs</code></td><td><code>500</code></td><td>Delay before an on-type check.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>The extension has an offline regression suite of <strong>9 checks</strong> covering compiler argument order, parser and diagnostic formats, real <code>leash check</code> output (including <code>E_ARENA_LIFETIME</code>), macro/<code>async</code> parsing, new builtins and server startup with a minimal LSP client. Run it with <code>npm test</code> from the extension directory.</p>
+        <div class="callout callout-info"><strong>Tip.</strong> <code>leash check file.lsh</code> works on its own too: it type-checks and runs the arena audit without emitting a binary. This is the same path the editor uses.</div>
+
+        <h2 id="next-steps">Next steps</h2>
+        <div class="quick-links">
+          <a class="quick-link" href="language-guide.html"><strong>Language reference</strong><span>Types, functions, control flow &rarr;</span></a>
+          <a class="quick-link" href="compiler.html"><strong>Compiler &amp; CLI</strong><span>Flags, targets, optimization, memory modes &rarr;</span></a>
+          <a class="quick-link" href="stdlib.html"><strong>Standard library</strong><span>Collections, math, net, SQL &rarr;</span></a>
+          <a class="quick-link" href="package-manager.html"><strong>Package manager</strong><span>Publishing and installing libraries &rarr;</span></a>
+          <a class="quick-link" href="concurrency.html"><strong>Concurrency</strong><span>Workers, shared, and fusion variables &rarr;</span></a>
+          <a class="quick-link" href="advanced.html"><strong>Advanced topics</strong><span>FFI, memory, escapes, unsafe &rarr;</span></a>
+        </div>
+    </article>
+  </main>
+</div>
 </body>
 </html>

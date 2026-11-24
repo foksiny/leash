@@ -79,7 +79,7 @@ class TestJvmTarget(unittest.TestCase):
         with open(path, "w") as f:
             f.write(src)
         out = os.path.join(self.tmp, name)
-        r = _sh([BIN_LEASHC, "compile", path, "to", out])
+        r = _sh([BIN_LEASHC, "compile", path, "--gc", "to", out])
         self.assertEqual(r.returncode, 0, msg=r.stdout + r.stderr)
         return subprocess.run([out], capture_output=True, text=True,
                               errors="replace", timeout=60)
@@ -100,7 +100,7 @@ class TestJvmTarget(unittest.TestCase):
         rj = subprocess.run([JAVA, "-cp", self.tmp, name], capture_output=True,
                             text=True, errors="replace", timeout=60)
         out_n = os.path.join(self.tmp, name + "n")
-        rn_c = _sh([BIN_LEASHC, "compile", path, "to", out_n])
+        rn_c = _sh([BIN_LEASHC, "compile", path, "--gc", "to", out_n])
         self.assertEqual(rn_c.returncode, 0, msg=rn_c.stdout + rn_c.stderr)
         rn = subprocess.run([out_n], capture_output=True, text=True,
                             errors="replace", timeout=60)
@@ -619,7 +619,7 @@ class TestJvmTarget(unittest.TestCase):
         self.assertEqual(rj_c.returncode, 0, msg=rj_c.stdout + rj_c.stderr)
         rj = self._run_jvm(self.tmp, name)
         out_n = os.path.join(self.tmp, name + "n")
-        rn_c = _sh([BIN_LEASHC, "compile", path, "--other-imports", stdlib,
+        rn_c = _sh([BIN_LEASHC, "compile", path, "--gc", "--other-imports", stdlib,
                     "to", out_n])
         self.assertEqual(rn_c.returncode, 0, msg=rn_c.stdout + rn_c.stderr)
         rn = subprocess.run([out_n], capture_output=True, text=True,
@@ -975,7 +975,7 @@ class TestJvmTarget(unittest.TestCase):
                             errors="replace", timeout=60)
         self.assertEqual(pj.returncode, 0, msg=pj.stdout + pj.stderr)
         out_n = os.path.join(self.tmp, "sqln")
-        rn_c = _sh([BIN_LEASHC, "compile", path,
+        rn_c = _sh([BIN_LEASHC, "compile", path, "--gc",
                     "--other-imports", os.path.join(REPO_ROOT, "installthis"),
                     "to", out_n])
         self.assertEqual(rn_c.returncode, 0, msg=rn_c.stdout + rn_c.stderr)

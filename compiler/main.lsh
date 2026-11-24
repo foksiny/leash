@@ -8,7 +8,7 @@ use leashed::*;
 // Single source of truth for the release version. Bump discipline:
 // README, docs badges, CHANGELOG.
 fnc leash_version() : string {
-    return "1.12.0";
+    return "2.0.0";
 }
 
 // Prefix test (no stdlib dependency this early in main.lsh).
@@ -365,7 +365,8 @@ fnc print_usage() : void {
     show("  --treat-from-as-safe / -tfs      Suppress @from native-library security warnings (W_SECURITY)");
     show("  --no-garbage-collector / -ngc    Disable garbage collector (plain C malloc/free runtime)");
     show("  --autofree / -af                Track allocations and free them at function exit (GC-free)");
-    show("  --arena                         Scoped bump-arena allocator (experimental, native-only)");
+    show("  --arena                         Scoped bump-arena allocator (default, native-only)");
+    show("  --gc                            Use the mark-and-sweep GC instead of the arena");
     show("  --arena-emit                    Emit arena IR but link the GC runtime (self-host bridge)");
     show("  --static / -static               Fully-static musl-linked binary (linux64/linux32 only)");
     show("  --emit-llvm                      Emit LLVM IR instead of linking");
@@ -376,7 +377,7 @@ fnc print_usage() : void {
     show("");
     show("Note: 'runp' has been removed -- use 'leash run' without a file to run the current project.");
     show("Note: --autofree (-af) tracks heap allocations and frees them at function exit (no GC).");
-    show("Note: --arena (experimental) uses a scoped bump arena instead of the GC (native-only).");
+    show("Note: the default memory layout is the scoped bump arena; --gc selects the mark-and-sweep GC (native-only for arena).");
 }
 
 fnc print_command_help(topic string) : bool {
@@ -609,13 +610,20 @@ fnc cmd_build(args string[]) : int {
             b_autofree = true;
         }
     }
-    b_arena: bool = false;
+    b_arena: bool = true;   // default memory layout
     if cfg.isin("arena") {
         ar_val: string = str_lower_ascii(cfg["arena"]);
-        if ar_val == "true" || ar_val == "yes" || ar_val == "1" {
-            b_arena = true;
+        if ar_val == "false" || ar_val == "no" || ar_val == "0" {
+            b_arena = false;
         }
     }
+    if cfg.isin("gc") {
+        bg_val: string = str_lower_ascii(cfg["gc"]);
+        if bg_val == "true" || bg_val == "yes" || bg_val == "1" {
+            b_arena = false;
+        }
+    }
+    if b_autofree { b_arena = false; }
 
     exec("mkdir -p out", nil);
     driver: CompilerDriver = CompilerDriver.make();
@@ -752,11 +760,17 @@ fnc cmd_run(args string[]) : int {
         drv.self_path = args[0];
         drv.treat_from_safe = r_tfs;
         foreach _, d in<vector> extra_dirs { drv.add_import_dir(d); }
-        p_arena: bool = false;
+        p_arena: bool = true;   // default memory layout
         if cfg.isin("arena") {
             par_val: string = str_lower_ascii(cfg["arena"]);
-            if par_val == "true" || par_val == "yes" || par_val == "1" {
-                p_arena = true;
+            if par_val == "false" || par_val == "no" || par_val == "0" {
+                p_arena = false;
+            }
+        }
+        if cfg.isin("gc") {
+            pg_val: string = str_lower_ascii(cfg["gc"]);
+            if pg_val == "true" || pg_val == "yes" || pg_val == "1" {
+                p_arena = false;
             }
         }
         rc: int = drv.compile_file(main_rel, tmp, false, true, prog_args, p_opt, false, extra_libs, false, false, false, "", false, false, "", false, p_arena);
@@ -769,7 +783,8 @@ fnc cmd_run(args string[]) : int {
     r_ngc: bool = false;
     r_static: bool = false;
     r_autofree: bool = false;
-    r_arena: bool = false;
+    r_arena: bool = true;   // default memory layout
+    r_explicit_arena: bool = false;
     ri3: int = 2;
     while ri3 < sep_idx {
         ra: string = args[ri3];
@@ -780,12 +795,18 @@ fnc cmd_run(args string[]) : int {
         }
         if ra == "--no-garbage-collector" || ra == "-ngc" {
             r_ngc = true;
+            r_arena = false;
         }
         if ra == "--autofree" || ra == "-af" {
             r_autofree = true;
+            r_arena = false;
+        }
+        if ra == "--gc" {
+            r_arena = false;
         }
         if ra == "--arena" {
             r_arena = true;
+            r_explicit_arena = true;
         }
         if ra == "--static" || ra == "-static" {
             r_static = true;
@@ -796,6 +817,9 @@ fnc cmd_run(args string[]) : int {
         }
         ri3 = ri3 + 1;
     }
+
+    if r_explicit_arena { r_arena = true; }
+    if r_target == "jvm" && !r_explicit_arena { r_arena = false; }
 
     tmp2: string = host_is_win() ? "__leash_tmp_" + xsuffix() + ".exe" : "./.__temp_run_leash_exe_" + xsuffix();
     drv2: CompilerDriver = CompilerDriver.make();
@@ -1169,13 +1193,20 @@ fnc cmd_install_global(args string[]) : int {
             gi_autofree = true;
         }
     }
-    gi_arena: bool = false;
+    gi_arena: bool = true;   // default memory layout
     if cfg.isin("arena") {
         gi_ar: string = str_lower_ascii(cfg["arena"]);
-        if gi_ar == "true" || gi_ar == "yes" || gi_ar == "1" {
-            gi_arena = true;
+        if gi_ar == "false" || gi_ar == "no" || gi_ar == "0" {
+            gi_arena = false;
         }
     }
+    if cfg.isin("gc") {
+        gi_gc: string = str_lower_ascii(cfg["gc"]);
+        if gi_gc == "true" || gi_gc == "yes" || gi_gc == "1" {
+            gi_arena = false;
+        }
+    }
+    if gi_autofree { gi_arena = false; }
     driver: CompilerDriver = CompilerDriver.make();
     driver.self_path = args[0];
     fails: int = 0;
@@ -1608,12 +1639,15 @@ fnc cmd_dbg(args string[]) : int {
     drv.self_path = args[0];
     foreach _, d in<vector> extra_dirs { drv.add_import_dir(d); }
     d_ngc: bool = false;
+    d_arena: bool = true;   // default memory layout
     di3: int = 2;
     while di3 < sep_idx {
-        if args[di3] == "--no-garbage-collector" || args[di3] == "-ngc" { d_ngc = true; }
+        if args[di3] == "--no-garbage-collector" || args[di3] == "-ngc" { d_ngc = true; d_arena = false; }
+        if args[di3] == "--gc" { d_arena = false; }
+        if args[di3] == "--arena" { d_arena = true; }
         di3 = di3 + 1;
     }
-    rc: int = drv.compile_file(target_file, tmp, false, false, "", opt_level, false, empty_libs_global(), false, false, true, "", d_ngc, false, "", false, false);
+    rc: int = drv.compile_file(target_file, tmp, false, false, "", opt_level, false, empty_libs_global(), false, false, true, "", d_ngc, false, "", false, d_arena);
     if rc != 0 {
         exec("rm -f " + tmp, nil);
         return rc;
@@ -1694,7 +1728,9 @@ fnc main(args string[]) : int {
         static_link: bool = false;
         output_type: string = "";
         autofree: bool = false;
-        arena_f: bool = false;
+        gc_f: bool = false;
+        arena_f: bool = true;   // arena is the default memory layout
+        explicit_arena: bool = false;
         arena_emit_f: bool = false;
 
         i: int = loop_start;
@@ -1783,16 +1819,26 @@ fnc main(args string[]) : int {
             }
             if arg == "--no-garbage-collector" || arg == "-ngc" {
                 no_gc = true;
+                arena_f = false;
                 i = i + 1;
                 continue;
             }
             if arg == "--autofree" || arg == "-af" {
                 autofree = true;
+                arena_f = false;
+                i = i + 1;
+                continue;
+            }
+            if arg == "--gc" {
+                gc_f = true;
+                arena_f = false;
                 i = i + 1;
                 continue;
             }
             if arg == "--arena" {
                 arena_f = true;
+                explicit_arena = true;
+                gc_f = false;
                 i = i + 1;
                 continue;
             }
@@ -1826,6 +1872,22 @@ fnc main(args string[]) : int {
             }
             i = i + 1;
         }
+
+        // C-ABI libraries are linked by external toolchains that provide
+        // their own runtime, so they default to the GC layout (the arena
+        // helpers would be undefined at link time). --arena opts back in.
+        if (output_type == "dynamic" || output_type == "static") && !explicit_arena {
+            arena_f = false;
+        }
+
+        // An explicit --arena always wins: conflicting mode flags are a
+        // driver-level build error, not a silent mode switch.
+        if explicit_arena { arena_f = true; gc_f = false; }
+
+        // The JVM target always uses the JVM GC: the default arena layout
+        // is silently ignored there, while an explicit --arena is still
+        // rejected by the driver (native-only).
+        if target_name == "jvm" && !explicit_arena { arena_f = false; }
 
         // Self-hosting bridge: when the compiler builds itself with
         // --arena, emit arena IR but link the GC runtime. The resulting

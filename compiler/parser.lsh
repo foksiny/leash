@@ -291,6 +291,23 @@ pub def Parser : class {
         return false;
     }
 
+    // Semicolons are optional statement terminators. Consume one when it
+    // is present; its absence is not a parse error because the statement
+    // parser already knows where the statement ends (closing `)` / `}`, or
+    // the next line for a simple statement). Grammar separators (for-loop
+    // headers, struct/class field lists) still use consume() and remain
+    // mandatory where they are syntactically required.
+    pub fnc consume_stmt_end() : void {
+        this.match_tok(Tok.SEMI);
+    }
+
+    // True when a keyword statement (e.g. `return`) has no value: either a
+    // `;`, the end of a block/file, or a token on a LATER source line.
+    pub fnc at_stmt_end(after_tok Token) : bool {
+        if this.check(Tok.SEMI) || this.check(Tok.EOF) || this.check(Tok.RBRACE) { return true; }
+        return this.current().line > after_tok.line;
+    }
+
     pub fnc consume(kind int, err_msg string) : Token {
         tok: Token = this.current();
         if tok.kind == kind {
@@ -436,7 +453,7 @@ pub def Parser : class {
             values.pushb(lit);
             if !this.match_tok(Tok.COMMA) { stop; }
         }
-        this.consume(Tok.SEMI, "expected ';' after restricted type");
+        this.consume_stmt_end();
         if base.bsize == 0 { base = "string"; }
         rtd: RestrictedTypeDecl = RestrictedTypeDecl.make(name_tok.val, base, values);
         rtd.line = name_tok.line;
@@ -1685,7 +1702,7 @@ pub def Parser : class {
                 }
                 this.consume(Tok.ASSIGN, "expected '=' in multi-assignment");
                 ma_expr: Expr = this.parse_expression(Precedence.LOWEST);
-                this.consume(Tok.SEMI, "expected ';' after multi-assignment");
+                this.consume_stmt_end();
                 ma_block: vec<Stmt>;
                 tmp_decl: Stmt = Stmt.make_var_decl("__tup_tmp", "", true, false, ma_expr);
                 ma_block.pushb(tmp_decl);
@@ -1723,17 +1740,22 @@ pub def Parser : class {
             return Stmt.make_block(no_op_m);
         }
 
-        // `empty;` — a deliberate no-op statement (python EMPTY token)
-        if this.check(Tok.IDENT) && this.current().val == "empty" && this.peek(1).kind == Tok.SEMI {
-            this.pos = this.pos + 2;
-            no_op: vec<Stmt>;
-            return Stmt.make_block(no_op);
-        }
-        // `ignore;` — return immediately with the default value (python
-        // IGNORE statement; nil becomes a typed zero at codegen)
-        if this.check(Tok.IDENT) && this.current().val == "ignore" && this.peek(1).kind == Tok.SEMI {
-            this.pos = this.pos + 2;
-            return Stmt.make_return(Expr.make_nil());
+        // `empty` / `ignore` — no-op / default-return statements (python
+        // EMPTY / IGNORE tokens). With optional semicolons, the keyword
+        // still owns its whole line.
+        if this.check(Tok.IDENT) && (this.current().val == "empty" || this.current().val == "ignore") {
+            kw_tok: Token = this.current();
+            nxt: Token = this.peek(1);
+            is_empty: bool = kw_tok.val == "empty";
+            if nxt.kind == Tok.SEMI || nxt.kind == Tok.EOF || nxt.kind == Tok.RBRACE || nxt.line > kw_tok.line {
+                this.pos = this.pos + 1;
+                if nxt.kind == Tok.SEMI { this.pos = this.pos + 1; }
+                if is_empty {
+                    no_op: vec<Stmt>;
+                    return Stmt.make_block(no_op);
+                }
+                return Stmt.make_return(Expr.make_nil());
+            }
         }
         // throw ErrorName(args);
         if this.check(Tok.IDENT) && this.current().val == "throw"
@@ -1752,7 +1774,7 @@ pub def Parser : class {
             }
             if !this.check(Tok.RPAREN) && !this.fatal { this.sep_fatal(")", "throw argument list"); }
             this.consume(Tok.RPAREN, "expected ')' after throw arguments");
-            this.consume(Tok.SEMI, "expected ';' after throw");
+            this.consume_stmt_end();
             throw_stmt: Stmt = Stmt.make_throw(tname_tok.val, targs);
             throw_stmt.line = throw_tok.line;
             throw_stmt.col = throw_tok.col;
@@ -1824,7 +1846,7 @@ pub def Parser : class {
             if rt_size.bsize > 0 && init_val == null {
                 this.deferred_errors.pushb("Array '" + name_tok.val + "' has a non-constant size '" + rt_size + "' but no initializer.");
             }
-            this.consume(Tok.SEMI, "expected ';' after variable declaration");
+            this.consume_stmt_end();
             return Stmt.make_var_decl(name_tok.val, var_type, false, is_imut, init_val);
         }
 
@@ -1833,7 +1855,7 @@ pub def Parser : class {
             name_tok: Token = this.current();
             this.pos = this.pos + 2; // consume name and ':='
             init_val: Expr = this.parse_expression(Precedence.LOWEST);
-            this.consume(Tok.SEMI, "expected ';' after variable declaration");
+            this.consume_stmt_end();
             return Stmt.make_var_decl(name_tok.val, "", true, false, init_val);
         }
 
@@ -1852,17 +1874,20 @@ pub def Parser : class {
                 }
                 this.consume(Tok.RPAREN, "expected ')' after spawn arguments");
             }
-            this.consume(Tok.SEMI, "expected ';' after spawn statement");
+            this.consume_stmt_end();
             sp_op: string = "";
             if was_call { sp_op = "call"; }
             sp_stmt: Stmt = Stmt { kind: StmtKind.SPAWN, name: n_tok.val, var_type: "", is_infer: false, is_imut: false, op: sp_op, target: null, value: null, cond: null, for_init: null, for_step: null, args: sp_args, is_showb: false };
             return sp_stmt;
         }
 
-        // Return statement
+        // Return statement. Without a semicolon, a return value must be on
+        // the SAME line as `return`; otherwise `return` is bare and the
+        // next line starts a new statement.
+        ret_tok: Token = this.current();
         if this.match_tok(Tok.RETURN) {
             val: Expr = null;
-            if !this.check(Tok.SEMI) {
+            if !this.at_stmt_end(ret_tok) {
                 val = this.parse_expression(Precedence.LOWEST);
                 // Multi-value return: return e1, e2, ...;
                 if this.check(Tok.COMMA) {
@@ -1876,7 +1901,7 @@ pub def Parser : class {
                     val = tup;
                 }
             }
-            this.consume(Tok.SEMI, "expected ';' after return");
+            this.consume_stmt_end();
             return Stmt.make_return(val);
         }
 
@@ -2041,7 +2066,7 @@ pub def Parser : class {
                 del_stmt0: Stmt = Stmt.make_expr(del_target);
                 return del_stmt0;
             }
-            this.consume(Tok.SEMI, "expected ';' after 'del'");
+            this.consume_stmt_end();
             del_stmt: Stmt = Stmt.make_expr(del_target);
             del_stmt.name = "__del__";
             return del_stmt;
@@ -2049,13 +2074,13 @@ pub def Parser : class {
 
         // Stop statement: stop;
         if this.match_tok(Tok.STOP) {
-            this.consume(Tok.SEMI, "expected ';' after stop");
+            this.consume_stmt_end();
             return Stmt.make_stop();
         }
 
         // Continue statement: continue; or skip;
         if this.match_tok(Tok.CONTINUE) {
-            this.consume(Tok.SEMI, "expected ';' after continue");
+            this.consume_stmt_end();
             return Stmt.make_skip();
         }
 
@@ -2109,7 +2134,7 @@ pub def Parser : class {
                 else { this.sep_fatal(")", "show() argument list"); }
             }
             this.consume(Tok.RPAREN, "expected ')' after show arguments");
-            this.consume(Tok.SEMI, "expected ';' after show call");
+            this.consume_stmt_end();
             st: Stmt = Stmt.make_show(args, is_showb);
             st.show_end = show_end;
             return st;
@@ -2146,7 +2171,7 @@ pub def Parser : class {
 
         if this.match_tok(Tok.ASSIGN) {
             val: Expr = this.parse_expression(Precedence.LOWEST);
-            this.consume(Tok.SEMI, "expected ';' after assignment");
+            this.consume_stmt_end();
             return Stmt.make_assign(expr, "=", val);
         }
         cs_op: string = "";
@@ -2165,19 +2190,19 @@ pub def Parser : class {
             // (python parity): `x += y` becomes `x = x + y`, so string
             // concat / pointer arithmetic / matrix ops all apply.
             val: Expr = this.parse_expression(Precedence.LOWEST);
-            this.consume(Tok.SEMI, "expected ';' after compound assignment");
+            this.consume_stmt_end();
             return Stmt.make_assign(expr, "=", Expr.make_binop(cs_op, expr, val));
         }
         if this.match_tok(Tok.PLUSPLUS) {
-            this.consume(Tok.SEMI, "expected ';' after '++'");
+            this.consume_stmt_end();
             return Stmt.make_assign(expr, "++", Expr.make_int(1));
         }
         if this.match_tok(Tok.MINUSMINUS) {
-            this.consume(Tok.SEMI, "expected ';' after '--'");
+            this.consume_stmt_end();
             return Stmt.make_assign(expr, "--", Expr.make_int(1));
         }
 
-        this.consume(Tok.SEMI, "expected ';' after expression statement");
+        this.consume_stmt_end();
         return Stmt.make_expr(expr);
     }
 
@@ -3083,7 +3108,7 @@ pub def Parser : class {
                     this.import_aliases.push(alias_tok.val, mod_path);
                     prog.import_aliases.push(mod_path, alias_tok.val);
                 }
-                this.consume(Tok.SEMI, "expected ';' after 'use'");
+                this.consume_stmt_end();
                 prog.imports.pushb(mod_path);
                 continue;
             }
@@ -3150,7 +3175,7 @@ pub def Parser : class {
                         continue;
                     }
                     alias_target: string = this.parse_type();
-                    this.consume(Tok.SEMI, "expected ';' after type alias");
+                    this.consume_stmt_end();
                     this.type_aliases.push(alias_name.val, alias_target);
                     // Ride on the Program so imported aliases resolve at
                     // type-check time (python registers them post-splice).
@@ -3195,7 +3220,7 @@ pub def Parser : class {
                         } also this.match_tok(Tok.ARROW) {
                             nret = this.parse_type();
                         }
-                        this.consume(Tok.SEMI, "expected ';' after native declaration");
+                        this.consume_stmt_end();
                         nf: FuncDecl = FuncDecl.make(nf_tok.val, nparams, nret, this.empty_body, false, true);
                         nf.is_external = true;
                         prog.funcs.pushb(nf);
@@ -3226,7 +3251,7 @@ pub def Parser : class {
                                 continue;
                             }
                             ta_target: string = this.parse_type();
-                            this.consume(Tok.SEMI, "expected ';' after type alias");
+                            this.consume_stmt_end();
                             this.type_aliases.push(ta_name.val, ta_target);
                             continue;
                         }
@@ -3235,7 +3260,7 @@ pub def Parser : class {
                         nv_tok: Token = this.consume(Tok.IDENT, "expected native name");
                         this.consume(Tok.COLON, "expected ':' after native name");
                         nv_type: string = this.parse_type();
-                        this.consume(Tok.SEMI, "expected ';' after native declaration");
+                        this.consume_stmt_end();
                         gd_native: GlobalDecl = GlobalDecl.make(nv_tok.val, nv_type, null);
                         gd_native.line = nv_tok.line;
                         prog.globals.pushb(gd_native);
@@ -3246,7 +3271,7 @@ pub def Parser : class {
                         gn_tok: Token = this.current();
                         this.pos = this.pos + 2;
                         gtype: string = this.parse_type();
-                        this.consume(Tok.SEMI, "expected ';' after native global");
+                        this.consume_stmt_end();
                         gd_ext: GlobalDecl = GlobalDecl.make(gn_tok.val, gtype, null);
                         gd_ext.line = gn_tok.line;
                         prog.globals.pushb(gd_ext);
@@ -3286,7 +3311,7 @@ pub def Parser : class {
                 this.consume(Tok.RPAREN, "expected ')' after error parameters");
                 this.consume(Tok.ARROW, "expected '->' after error parameters");
                 emsg: Expr = this.parse_expression(Precedence.LOWEST);
-                this.consume(Tok.SEMI, "expected ';' after error definition");
+                this.consume_stmt_end();
                 ebody: vec<Stmt>;
                 ebody.pushb(Stmt.make_return(emsg));
                 prog.funcs.pushb(FuncDecl.make("_error_" + ename_tok.val, eparams, "string", ebody, false, true));
@@ -3314,7 +3339,7 @@ pub def Parser : class {
                 if this.match_tok(Tok.ASSIGN) {
                     sh_init = this.parse_expression(Precedence.LOWEST);
                 }
-                this.consume(Tok.SEMI, "expected ';' after shared/fusion global");
+                this.consume_stmt_end();
                 gd_shared: GlobalDecl = GlobalDecl.make_concurrent(sh_name.val, sh_type, sh_init, is_fusion);
                 gd_shared.line = sh_name.line;
                 prog.globals.pushb(gd_shared);
@@ -3330,7 +3355,7 @@ pub def Parser : class {
                 if this.match_tok(Tok.ASSIGN) {
                     init_val = this.parse_expression(Precedence.LOWEST);
                 }
-                this.consume(Tok.SEMI, "expected ';' after global variable");
+                this.consume_stmt_end();
                 gd: GlobalDecl = GlobalDecl.make(name_tok.val, var_type, init_val);
                 gd.line = name_tok.line;
                 prog.globals.pushb(gd);

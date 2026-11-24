@@ -38,11 +38,13 @@ import {
     DidSaveTextDocumentParams,
     DidCloseTextDocumentParams,
     DidChangeWatchedFilesParams,
+    WorkspaceFoldersChangeEvent,
     FileChangeType,
     Diagnostic
 } from 'vscode-languageserver/node';
 
 import { TextDocument } from 'vscode-languageserver-textdocument';
+import * as fs from 'fs';
 
 import { WorkspaceIndex } from './index';
 import { DiagnosticsRunner } from './diagnostics';
@@ -74,6 +76,7 @@ const documents: TextDocuments<TextDocument> = new TextDocuments(TextDocument);
 let settings: LspSettings = DEFAULT_SETTINGS;
 let hasConfigurationCapability = false;
 let hasWorkspaceFolderCapability = false;
+let supportsWorkspaceFolderChange = false;
 
 const index = new WorkspaceIndex();
 const diagnostics = new DiagnosticsRunner((uri, diags) => {
@@ -93,6 +96,12 @@ connection.onInitialize((params: InitializeParams) => {
     const capabilities = params.capabilities;
     hasConfigurationCapability = !!(capabilities.workspace && !!capabilities.workspace.configuration);
     hasWorkspaceFolderCapability = !!(capabilities.workspace && !!capabilities.workspace.workspaceFolders);
+    // Only advertise (and subscribe to) folder-change notifications when
+    // the client actually declared support. Otherwise the LSP library's
+    // getter throws during module load and the server crash-loops.
+    const folderOpts = capabilities.workspace?.workspaceFolders as
+        { changeNotifications?: boolean } | undefined;
+    supportsWorkspaceFolderChange = folderOpts?.changeNotifications === true;
 
     const initOptions = (params.initializationOptions ?? {}) as { settings?: unknown };
     updateSettings(initOptions.settings);
@@ -129,8 +138,8 @@ connection.onInitialize((params: InitializeParams) => {
             inlayHintProvider: true,
             workspace: {
                 workspaceFolders: {
-                    supported: true,
-                    changeNotifications: true
+                    supported: hasWorkspaceFolderCapability,
+                    changeNotifications: supportsWorkspaceFolderChange
                 }
             }
         }
@@ -154,6 +163,16 @@ connection.onInitialized(async () => {
         }
     } else {
         index.setWorkspaceFolders([]);
+    }
+    if (supportsWorkspaceFolderChange) {
+        // Register only after initialize declared this capability: reading
+        // the getter on an unsupported client throws and crash-loops.
+        connection.workspace.onDidChangeWorkspaceFolders(async (event: WorkspaceFoldersChangeEvent) => {
+            for (const folder of event.removed) index.removeFolder(uriToFsPath(folder.uri));
+            const folders = await connection.workspace.getWorkspaceFolders();
+            index.setWorkspaceFolders(folders ? folders.map(f => uriToFsPath(f.uri)) : []);
+            if (settings.index.workspace) await index.scanWorkspace();
+        });
     }
 });
 
@@ -200,7 +219,10 @@ documents.onDidSave((e) => {
 });
 
 documents.onDidClose((e) => {
-    index.remove(e.document.uri);
+    // Closing an editor tab must not drop a file that still exists on disk:
+    // it is part of the workspace index and may be imported elsewhere.
+    const fsPath = uriToFsPath(e.document.uri);
+    if (!fsPath || !fs.existsSync(fsPath)) index.remove(e.document.uri);
     connection.sendDiagnostics({ uri: e.document.uri, diagnostics: [] });
 });
 

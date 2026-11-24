@@ -71,10 +71,11 @@ export class WorkspaceIndex {
     }
 
     remove(uri: string): void {
-        const model = this.docs.get(uri);
+        const model = this.docs.get(uri) ?? this.moduleDocs.get(uri);
         if (model) {
             this.unregister(model);
             this.docs.delete(uri);
+            this.moduleDocs.delete(uri);
         }
     }
 
@@ -166,6 +167,12 @@ export class WorkspaceIndex {
         }
         try {
             const text = fs.readFileSync(fsPath, 'utf-8');
+            // An imported file may also be cached as a module; refresh that
+            // copy too or cross-file symbols stay stale after edits.
+            if (this.moduleDocs.has(uri)) {
+                this.moduleDocs.delete(uri);
+                this.loadModuleFile(fsPath);
+            }
             this.upsert(uri, text, model.version + 1);
         } catch {
             // ignore
@@ -175,6 +182,14 @@ export class WorkspaceIndex {
     onFileDeleted(fsPath: string): void {
         if (!fsPath.endsWith('.lsh') || isTempCheckFile(fsPath)) return;
         this.remove(fsPathToUri(fsPath));
+    }
+
+    /** Drop indexed documents that lived under a removed workspace folder. */
+    removeFolder(folder: string): void {
+        const root = folder.endsWith(path.sep) ? folder : folder + path.sep;
+        for (const uri of [...this.docs.keys(), ...this.moduleDocs.keys()]) {
+            if (uriToFsPath(uri).startsWith(root)) this.remove(uri);
+        }
     }
 
     loadModuleFile(moduleFile: string): DocModel | null {

@@ -127,6 +127,37 @@ class TestDocs(unittest.TestCase):
         # Sanity: the harness must actually be checking something
         self.assertGreater(checked, 0, "no doc snippets were checked")
 
+    def test_html_structure_and_links(self):
+        problems = []
+        ids_by_file = {}
+        for name in sorted(os.listdir(DOCS)):
+            if not name.endswith(".html"):
+                continue
+            path = os.path.join(DOCS, name)
+            text = open(path, encoding="utf-8").read()
+            desc = re.search(r'<meta name="description" content="([^"]*)"', text)
+            if not desc or len(desc.group(1)) < 50 or desc.group(1).rstrip().endswith(","):
+                problems.append(f"{name}: incomplete meta description")
+            if text.count("<h1") != 1:
+                problems.append(f"{name}: expected exactly one h1")
+            if text.count("<article>") != 1 or text.count("</article>") != 1:
+                problems.append(f"{name}: article tags are not balanced")
+            if 'id="main-content"' not in text:
+                problems.append(f"{name}: missing main-content anchor")
+            if re.search(r"</main>\s*</article>", text):
+                problems.append(f"{name}: stray article closing after main")
+            ids_by_file[name] = set(re.findall(r'\bid="([^"]+)"', text))
+        for name, ids in ids_by_file.items():
+            text = open(os.path.join(DOCS, name), encoding="utf-8").read()
+            for href in re.findall(r'href="([^"]+)"', text):
+                if href.startswith("#") and href[1:] not in ids:
+                    problems.append(f"{name}: broken anchor {href}")
+                elif "#" in href and href.split("#")[0].endswith(".html"):
+                    target, frag = href.split("#", 1)
+                    if target in ids_by_file and frag not in ids_by_file[target]:
+                        problems.append(f"{name}: broken anchor {href}")
+        self.assertEqual(problems, [], "\n".join(problems))
+
     def test_package_manager_page(self):
         # package-manager.html documents machine-checked contracts (the
         # leash.lock shape, the --version output), so it gets its own

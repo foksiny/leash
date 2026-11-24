@@ -1,0 +1,9 @@
+fnc main {
+  str: string = "Hello, world!";
+
+  show(str.end()); // shows '!'
+  show(str.end(3)); // shows 'ld!'
+
+  show(str.start()) // shows 'H'
+  show(str.start(5)) // shows 'Hello'
+}

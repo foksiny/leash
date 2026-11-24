@@ -403,5 +403,59 @@ class TestParserStatementWhitelist(FrontendTestCase):
         self.assertParseOk(self._check_body("i := 0; ++i;"), "++i")
 
 
+class TestParserOptionalSemicolons(FrontendTestCase):
+    """`;` is an optional statement terminator (not a grammar separator)."""
+
+    def test_simple_statements_without_semicolons(self):
+        src = """fnc main() : void {
+  a := 1
+  b := 2
+  a = a + b
+  show(a)
+}
+"""
+        self.assertParseOk(self._check(src), src)
+        self.assertEqual(self._run(src), "3")
+
+    def test_top_level_declarations_without_semicolons(self):
+        src = """g: int = 7
+fnc main() : void {
+  show(g)
+}
+"""
+        self.assertParseOk(self._check(src), src)
+        self.assertEqual(self._run(src), "7")
+
+    def test_bare_return_uses_line_boundary(self):
+        src = """fnc f() : void {
+  show(1)
+  return
+  show(2)
+}
+fnc main() : void { f(); }
+"""
+        self.assertParseOk(self._check(src), src)
+        self.assertEqual(self._run(src), "1")
+
+    def test_semicolons_still_work(self):
+        src = 'fnc main() : void { a := 1; b := 2; show(a + b); }'
+        self.assertParseOk(self._check(src), src)
+        self.assertEqual(self._run(src), "3")
+
+    def test_for_header_semicolons_still_required(self):
+        # The two semicolons inside a C-style for header are grammar
+        # separators, not statement terminators.
+        src = "fnc main() : void { for i := 0; i < 2; i = i + 1 { show(i); } }"
+        self.assertParseOk(self._check(src), src)
+        self.assertEqual(self._run(src), "0\n1")
+
+    def test_struct_field_semicolons_still_work(self):
+        src = """def Pos : struct { x: float; y: float; };
+fnc main() : void { p: Pos; p.x = 1.5; p.y = 2.5; show(p.x); }
+"""
+        self.assertParseOk(self._check(src), src)
+        self.assertEqual(self._run(src), "1.500000")
+
+
 if __name__ == "__main__":
     unittest.main()

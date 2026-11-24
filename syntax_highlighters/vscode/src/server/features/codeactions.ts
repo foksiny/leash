@@ -16,7 +16,7 @@ export function codeActionsHandler(
             const action = makeSemicolonAction(uri, pos, diag);
             if (action) actions.push(action);
         }
-        if (/let|var/.test(message) && /don/.test(message) && /keyword/.test(message)) {
+        if (/\b(let|var)\b/.test(message) && /don/.test(message) && /keyword/.test(message)) {
             const action = makeRemoveLetVarAction(uri, pos, diag);
             if (action) actions.push(action);
         }

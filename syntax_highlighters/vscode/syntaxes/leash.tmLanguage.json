@@ -107,11 +107,11 @@
             "patterns": [
                 {
                     "name": "keyword.control.leash",
-                    "match": "\\b(return|if|else|unless|also|alsou|while|with|for|do|foreach|loop|in|stop|continue|empty|ignore|switch|case|default|defer|throw|works|otherwise|spawn|async|await)\\b"
+                    "match": "\\b(return|if|else|unless|also|alsou|while|with|for|do|foreach|loop|in|stop|skip|continue|empty|ignore|switch|case|default|defer|throw|works|otherwise|spawn|async|await)\\b"
                 },
                 {
                     "name": "keyword.declaration.leash",
-                    "match": "\\b(fnc|def|struct|union|enum|class|type|template|macro|opdef|error|pub|priv|static|pubif|unsafe|nogc|as|inline|imut|create|del|extern|use|alias|worker|shared|fusion)\\b"
+                    "match": "\\b(fnc|def|struct|union|enum|class|type|template|macro|opdef|error|pub|priv|static|pubif|unsafe|nogc|as|inline|imut|create|del|delete|extern|import|use|alias|worker|shared|fusion|async)\\b"
                 },
                 {
                     "name": "keyword.other.leash",
@@ -151,7 +151,7 @@
             "patterns": [
                 {
                     "name": "support.function.builtin.leash",
-                    "match": "\\b(show|showb|get|keyget|set|toint|tofloat|tounion|scast|tostring|cstr|lstr|normescape|sizeof|typeof|size|cur|name|pushb|popb|pushf|popf|insert|insertv|inserta|clear|remove|extend|extendv|isin|rand|randf|seed|choose|wait|timepass|exit|exec|gc_collect|gc_stats|print|println|panic|assert|inttobytes|bytestoint|floattobytes|bytestofloat|getKey|getkey|keys|values|push|pop|front|back|malloc|calloc|realloc|free|atoi|atol|atoll|strtol|strtoul|strtof|strtod|abs|labs|abort|atexit|getenv|qsort|bsearch|printf|sprintf|snprintf|fprintf|scanf|fscanf|sscanf|fopen|fclose|fread|fwrite|fgets|fputs|fgetc|fputc|ungetc|fseek|ftell|rewind|rename|remove|fflush|feof|perror|puts|getchar|putchar|tmpfile|setbuf|setvbuf|popen|pclose|fileno|strlen|strcpy|strncpy|strcat|strncat|strcmp|strncmp|strcasecmp|strchr|strrchr|strstr|strtok|strdup|memcpy|memmove|memset|memcmp|memchr|strpbrk|strspn|strcspn|isalnum|isalpha|iscntrl|isdigit|isgraph|islower|isprint|ispunct|isspace|isupper|isxdigit|tolower|toupper|sqrt|cbrt|fabs|ceil|floor|round|trunc|exp|log|log10|sin|cos|tan|asin|acos|atan|sinh|cosh|tanh|pow|atan2|fmod|clock|difftime|time|mktime|localtime|gmtime|asctime|ctime|panic|assert|swap|min|max|clamp|len|trim|split|join|replace|contains|startswith|endswith|upper|lower|substr|find|parseint|parsefloat|tobool|tochar|isnum|println|print)\\b"
+                    "match": "\\b(show|showb|get|keyget|getint|getfloat|getstruct|set|toint|tofloat|tounion|scast|tostring|cstr|lstr|normescape|sizeof|typeof|size|cur|name|pushb|popb|pushf|popf|insert|insertv|inserta|clear|remove|extend|extendv|isin|rand|randf|seed|choose|wait|timepass|exit|exec|gc_collect|gc_stats|print|println|panic|assert|inttobytes|bytestoint|floattobytes|bytestofloat|getKey|getkey|keys|values|push|pop|front|back|malloc|calloc|realloc|free|atoi|atol|atoll|strtol|strtoul|strtof|strtod|abs|labs|abort|atexit|getenv|qsort|bsearch|printf|sprintf|snprintf|fprintf|scanf|fscanf|sscanf|fopen|fclose|fread|fwrite|fgets|fputs|fgetc|fputc|ungetc|fseek|ftell|rewind|rename|remove|fflush|feof|perror|puts|getchar|putchar|tmpfile|setbuf|setvbuf|popen|pclose|fileno|strlen|strcpy|strncpy|strcat|strncat|strcmp|strncmp|strcasecmp|strchr|strrchr|strstr|strtok|strdup|memcpy|memmove|memset|memcmp|memchr|strpbrk|strspn|strcspn|isalnum|isalpha|iscntrl|isdigit|isgraph|islower|isprint|ispunct|isspace|isupper|isxdigit|tolower|toupper|sqrt|cbrt|fabs|ceil|floor|round|trunc|exp|log|log10|sin|cos|tan|asin|acos|atan|sinh|cosh|tanh|pow|atan2|fmod|clock|difftime|time|mktime|localtime|gmtime|asctime|ctime|panic|assert|swap|min|max|clamp|len|trim|split|join|replace|contains|startswith|endswith|upper|lower|substr|find|parseint|parsefloat|tobool|tochar|isnum|println|print)\\b"
                 }
             ]
         },
@@ -175,15 +175,15 @@
             "patterns": [
                 {
                     "name": "constant.numeric.hex.leash",
-                    "match": "\\b0[xX][0-9a-fA-F]+(?:\\.[0-9a-fA-F]*)?(?:[pP][+-]?\\d+)?\\b"
+                    "match": "\\b0[xX](?:_?[0-9a-fA-F])+(?:\\.(?:_?[0-9a-fA-F])*)?(?:[pP][+-]?\\d+)?\\b"
                 },
                 {
                     "name": "constant.numeric.binary.leash",
-                    "match": "\\b0[bB][01]+\\b"
+                    "match": "\\b0[bB](?:_?[01])+\\b"
                 },
                 {
                     "name": "constant.numeric.octal.leash",
-                    "match": "\\b0[oO][0-7]+\\b"
+                    "match": "\\b0[oO](?:_?[0-7])+\\b"
                 },
                 {
                     "name": "constant.numeric.float.leash",
@@ -191,7 +191,7 @@
                 },
                 {
                     "name": "constant.numeric.decimal.leash",
-                    "match": "\\b\\d+\\b"
+                    "match": "\\b\\d(?:_?\\d)*\\b"
                 }
             ]
         },

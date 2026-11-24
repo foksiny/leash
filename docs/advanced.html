@@ -3,261 +3,365 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="color-scheme" content="dark">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Crect width=%27100%27 height=%27100%27 rx=%2722%27 fill=%27%237c3aed%27/%3E%3Ctext x=%2750%27 y=%2768%27 font-size=%2752%27 text-anchor=%27middle%27 font-family=%27monospace%27 fill=%27white%27%3EL%3C/text%3E%3C/svg%3E">
-<title>Advanced Topics - Leash</title>
+<title>Advanced Topics - Leash documentation</title>
+<meta name="description" content="Advanced Leash topics: the default scoped arena, compile-time lifetime audit, escape snapshots, FFI and unsafe code, runtime internals, and editor support.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Crect width=%27100%27 height=%27100%27 rx=%2722%27 fill=%27%23241f4d%27/%3E%3Ctext x=%2750%27 y=%2770%27 font-size=%2760%27 text-anchor=%27middle%27 font-family=%27monospace%27 fill=%27white%27%3EL%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
+<script src="docs.js" defer></script>
 </head>
 <body>
+<a class="skip-link" href="#main-content">Skip to content</a>
 
-<button class="menu-toggle" onclick="document.querySelector('.sidebar').classList.toggle('open')">&#9776;</button>
+<header class="topbar">
+  <a class="topbar-brand" href="index.html"><img src="leash-icon-light.svg" alt="" onerror="this.style.display='none'"><span>Leash</span></a>
+  <nav class="topbar-nav" aria-label="Top navigation">
+    <a href="index.html" class="">Docs</a>
+    <a href="getting-started.html" class="">Tutorial</a>
+    <a href="language-guide.html">Reference</a>
+    <a href="compiler.html" class="">Spec</a>
+    <a href="stdlib.html" class="">Library</a>
+    <a href="package-manager.html" class="">Packages</a>
+    <a href="../benchmarking/README.md" class="">Benchmarks</a>
+    <a href="https://github.com/foksiny/leash">GitHub</a>
+  </nav>
+  <button class="menu-toggle" type="button" aria-label="Toggle navigation" aria-expanded="false">&#9776;</button>
+  <input id="doc-search" class="topbar-search" type="search" placeholder="Search docs" aria-label="Search documentation" autocomplete="off">
+  <button class="theme-toggle" type="button" aria-label="Toggle color theme" title="Toggle theme">&#9680;</button>
+</header>
 
-<aside class="sidebar">
-    <div class="sidebar-header">
-        <h1>Leash</h1>
-        <div class="version">v1.12.0 Release</div>
-        <div class="subtitle">Programming Language</div>
+<div class="layout">
+  <aside class="sidenav">
+    <div class="sidenav-title">Leash documentation</div>
+    <div class="sidenav-group">
+      <a href="index.html" class="">Overview</a>
+      <a href="getting-started.html" class="">The language, in reading order</a>
+      <a href="language-guide.html" class="">Language reference</a>
+      <a href="compiler.html" class="">The compiler</a>
     </div>
-    <nav class="sidebar-nav">
-        <div class="nav-section">
-            <div class="nav-section-title">Getting Started</div>
-            <a href="index.html">Overview</a>
-            <a href="getting-started.html">Installation &amp; Setup</a>
+    <div class="sidenav-group">
+      <a href="self-hosted.html" class="">Getting the compiler</a>
+      <a href="stdlib.html" class="">Library and tools</a>
+      <a href="package-manager.html" class="">Building programs and using packages</a>
+      <a href="concurrency.html" class="">Concurrency</a>
+    </div>
+    <div class="sidenav-group">
+      <a href="advanced.html" class="current">Standalone pages</a>
+      <a href="limitations.html" class="">Known limitations</a>
+    </div>
+    <div class="sidenav-foot">Leash 2.0.0</div>
+  </aside>
+
+  <main class="content" id="main-content">
+    <div class="progress" id="progress-bar" aria-hidden="true"></div>
+    <article>
+        <h1>Advanced Topics</h1>
+
+
+        <h2 id="memory-model">Memory model at a glance</h2>
+
+        <p>Leash has one source language and several memory backends. On native targets the <strong>scoped arena is the default layout</strong>: allocation is an aligned bump, reclamation is a scope or loop rewind, and there is no tracing collector in the hot path. If your ownership pattern does not fit the arena's frame model, <code>--gc</code> selects the original mark-and-sweep collector. The JVM target is a separate case &mdash; it always uses the JVM's own garbage collector and ignores arena flags.</p>
+
+        <div class="stat-grid">
+          <div class="stat"><div class="value">32 KB</div><div class="label">Steady-state arena block</div></div>
+          <div class="stat"><div class="value">4 KB</div><div class="label">Lazy initial block</div></div>
+          <div class="stat"><div class="value">0xDD</div><div class="label">Reclaim poison byte</div></div>
+          <div class="stat"><div class="value">O(blocks)</div><div class="label">Scope release cost</div></div>
+          <div class="stat"><div class="value">2.0.0</div><div class="label">Documentation version</div></div>
         </div>
-        <div class="nav-section">
-            <div class="nav-section-title">Language Guide</div>
-            <a href="language-guide.html">Language Reference</a>
-            <a href="compiler.html">Compiler &amp; CLI</a>
-            <a href="self-hosted.html">Self-Hosted Compiler</a>
-            <a href="stdlib.html">Standard Library</a>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Mode</th><th>How to select it</th><th>Target</th><th>Reclamation</th></tr></thead>
+            <tbody>
+              <tr><td><strong>Scoped arena</strong> (default)</td><td>nothing &mdash; it is the native default</td><td>native</td><td>frame/loop checkpoint rewind, LIFO</td></tr>
+              <tr><td>Mark-and-sweep GC</td><td><code>--gc</code></td><td>native</td><td>tracing cycle from precise + conservative roots</td></tr>
+              <tr><td>Smart auto-free</td><td><code>--autofree</code> / <code>-af</code> or <code>autofree: true</code></td><td>native</td><td>compiler-inserted <code>free()</code> at function exit</td></tr>
+              <tr><td>No collector</td><td><code>--no-garbage-collector</code> / <code>-ngc</code> or a <code>nogc</code> function</td><td>native</td><td>manual, direct C heap</td></tr>
+              <tr><td>JVM GC</td><td><code>--target jvm</code></td><td>JVM</td><td>the JVM's own collector</td></tr>
+            </tbody>
+          </table>
         </div>
-        <div class="nav-section">
-            <div class="nav-section-title">Ecosystem</div>
-            <a href="package-manager.html">Package Manager</a>
-            <a href="concurrency.html">Concurrency Model</a>
-            <a href="advanced.html" class="active">Advanced Topics</a>
-            <a href="limitations.html">Known Limitations</a>
-        </div>
-    </nav>
-</aside>
 
-<main class="main">
+        <div class="callout callout-warning"><strong>Modes are exclusive.</strong> Do not combine <code>--gc</code>, <code>--no-garbage-collector</code> and <code>--autofree</code> in one build. The JVM target always uses its own GC and has no arena; the native arena is selected by default.</div>
 
-<div class="breadcrumb">
-    <a href="index.html">Home</a> <span class="sep">/</span> <span class="current">Advanced Topics</span>
-</div>
+        <h3 id="gc-mode">Mark-and-sweep GC (<code>--gc</code>)</h3>
 
-<h1>Advanced Topics</h1>
+        <p>When you opt out of the arena with <code>--gc</code>, Leash uses a custom mark-and-sweep collector with a slab allocator and hybrid root finding. Memory is managed automatically &mdash; there is no <code>free()</code> for the programmer to call. Since 1.0, container storage is <strong>unboxed and element-width-aware</strong>: a <code>vec&lt;int&gt;</code> is one raw 8-byte-per-element array (values stored inline, not heap-boxed), wide integers such as <code>int&lt;128&gt;</code> live inline at their exact width, and reference-typed elements (strings, structs, nested vectors) are stored as 8-byte handles. Element buffers of pointer-free types are allocated <strong>ATOMIC</strong>: the collector never scans them, so integer payloads cannot falsely pin unrelated objects and marking a vector costs nothing.</p>
 
-<h2>Memory Management</h2>
-
-<p>Leash uses a <strong>custom garbage collector</strong> with a mark-and-sweep algorithm, a slab-based allocator, and hybrid root finding. Memory is managed automatically &mdash; you never need to call <code>free()</code> or worry about memory leaks.</p>
-
-<p>Since 1.0, container storage is <strong>unboxed and element-width-aware</strong>: a <code>vec<int></code> is one raw 8-byte-per-element array (values stored inline, not heap-boxed), wide integers (<code>int<128></code> etc.) live inline at their exact width, and reference-typed elements (strings, structs, nested vectors) are stored as 8-byte handles. Element buffers of pointer-free types are allocated <strong>ATOMIC</strong> &mdash; the collector never scans them, so integer payloads can never falsely pin unrelated objects and marking a vector costs nothing.</p>
-
-<h3>How It Works</h3>
-<ol>
-    <li><strong>Mark Phase</strong>: Starting from root pointers (globals, stack variables), the GC traces all reachable objects</li>
-    <li><strong>Sweep Phase</strong>: Any object not marked as reachable is freed automatically</li>
-</ol>
-
-<h3>Features</h3>
-<ul>
-    <li>Hybrid root finding &mdash; globals and class statics are registered precisely by the compiler, plus conservative scanning of the calling thread's stack</li>
-    <li>Explicit root management via <code>leash_gc_register_root()</code> / <code>leash_gc_unregister_root()</code></li>
-    <li>Automatic collection when allocation since the last cycle exceeds a threshold (deferred while worker threads are busy; steady-state peak stays near 2&times; live + 256 KB; disable with <code>LEASH_GC_AUTO=0</code>, exit-time stats with <code>LEASH_GC_STATS=1</code>)</li>
-    <li>Manual control from Leash code via the <code>gc_collect()</code> and <code>gc_stats()</code> builtins</li>
-    <li>Slab allocator with per-size-class free lists &mdash; no per-object <code>malloc</code>, and no lock while the program is single-threaded</li>
-    <li>Type-aware: strings, vectors, arrays, structs, classes, unions all handled properly</li>
-    <li>Precise container tracing (1.0) &mdash; pointer-free vector/matrix/array buffers are never scanned; only buffers that can hold references are</li>
-    <li>Lazy buffers &mdash; a vector that never grows costs one small header; the data array is allocated on first push</li>
-    <li>Built-in GC stats via <code>leash_gc_print_stats()</code></li>
-</ul>
-
-<h3>Memory Lifecycle</h3>
-<p>The GC is <strong>automatically initialized</strong> when your program starts, and all memory allocation in Leash goes through the custom GC (<code>leash_gc_malloc</code>, <code>leash_gc_realloc</code>). The GC runtime is compiled and linked with every Leash program automatically &mdash; no external GC library (like Boehm) is needed. When variables go out of scope or become unreachable, memory is automatically reclaimed on the next GC cycle.</p>
-
-<pre><code><span class="kw">fnc</span> <span class="fn">main</span>() : <span class="kw">void</span> {
-    <span class="cm">// Strings are GC-managed</span>
+        <pre><code><span class="kw">fnc</span> <span class="fn">main</span>() : <span class="kw">void</span> {
+    <span class="cm">// In --gc mode strings and containers are collector-managed.</span>
     name: <span class="kw">string</span> = <span class="str">"Leash"</span>;
-
-    <span class="cm">// Vectors grow dynamically, GC handles reallocation</span>
     v: <span class="kw">vec</span>&lt;<span class="kw">int</span>&gt;;
     <span class="kw">for</span> i: <span class="kw">int</span> = 0; i &lt; 1000; i = i + 1 {
         v.<span class="fn">pushb</span>(i);
     }
-    <span class="cm">// Memory is automatically reclaimed when variables go out of scope</span>
+    <span class="fn">show</span>(name, <span class="str">" "</span>, v.size);
 }</code></pre>
 
-<h3>Manual Memory Management (<code>nogc</code>)</h3>
+        <div class="feature-grid">
+          <div class="feature-card"><h3>Hybrid root finding</h3><p>Globals and class statics are registered precisely by the compiler, plus conservative scanning of the calling thread's stack. Explicit roots use <code>leash_gc_register_root()</code> / <code>leash_gc_unregister_root()</code>.</p></div>
+          <div class="feature-card"><h3>Automatic cycles</h3><p>Collection runs when allocation since the last cycle exceeds a threshold, deferred while workers are busy. Steady-state peak stays near 2&times; live + 256 KB. Tune with <code>LEASH_GC_AUTO=0</code>; print exit stats with <code>LEASH_GC_STATS=1</code>.</p></div>
+          <div class="feature-card"><h3>Manual control</h3><p>From Leash code, <code>gc_collect()</code> forces a cycle and <code>gc_stats()</code> reports allocator state. The C API adds <code>leash_gc_print_stats()</code>.</p></div>
+          <div class="feature-card"><h3>Slab allocator</h3><p>Per-size-class free lists with no per-object <code>malloc</code> and no lock while single-threaded. The runtime is compiled into every program; no external collector library is required.</p></div>
+          <div class="feature-card"><h3>Precise container tracing</h3><p>Pointer-free vector/matrix/array buffers are never scanned; only buffers that can hold references are. Lazy buffers mean a vector that never grows costs one small header.</p></div>
+          <div class="feature-card"><h3>Type-aware</h3><p>Strings, vectors, arrays, structs, classes and unions are all handled properly; mark traverses the type graph rather than guessing at word patterns.</p></div>
+        </div>
 
-<p>For low-level systems programming, Leash supports manual memory management via the <code>nogc</code> function modifier. Mark a function with <code>nogc</code> to use C's <code>malloc</code>/<code>free</code> instead of the GC allocator:</p>
+        <p>Under the hood the mark phase is iterative (an explicit worklist over an open-addressed page directory) so deep object graphs cannot overflow the C stack. The collector is initialized automatically at program start, and all allocation goes through <code>leash_gc_malloc</code> / <code>leash_gc_realloc</code> unless a mode explicitly opts out.</p>
 
-<pre><code><span class="kw">unsafe</span> <span class="kw">nogc</span> <span class="kw">fnc</span> <span class="fn">main</span> : <span class="kw">int</span> {
-    buf: *<span class="kw">char</span> = (*<span class="kw">char</span>)<span class="fn">malloc</span>(256);
-    <span class="fn">strcpy</span>(buf, <span class="str">"Hello, raw heap!"</span>);
-    <span class="fn">printf</span>(<span class="str">"%s\n"</span>, buf);
-    <span class="fn">free</span>(buf);
-    <span class="kw">return</span> 0;
-}</code></pre>
+        <h3 id="nogc-autofree">No collector and smart auto-free</h3>
 
-<h4>Key Behaviors</h4>
-<ul>
-    <li>Memory uses the <strong>C heap</strong> directly</li>
-    <li>GC is <strong>not initialized</strong> for <code>nogc main</code> (saves startup time)</li>
-    <li>Calling <code>nogc</code> from GC-managed code produces a warning</li>
-    <li>Use <code>unsafe nogc</code> together to suppress safety checks</li>
-</ul>
+        <p>For low-level work, the <code>nogc</code> function modifier switches a function to C's <code>malloc</code>/<code>free</code>. The GC is not initialized for a <code>nogc main</code> (saving startup time), calling <code>nogc</code> from managed code produces a warning, and <code>unsafe nogc</code> suppresses the remaining safety checks. The global equivalent is <code>--no-garbage-collector</code> / <code>-ngc</code>, intended for embedded, real-time or minimal-binary scenarios.</p>
 
-<h4>Global <code>--no-garbage-collector</code> / <code>-ngc</code> Flag</h4>
-<pre><code>leash run myprogram.lsh --no-garbage-collector
+        <pre><code><span class="cm"># Manual heap for the whole program</span>
+leash run myprogram.lsh --no-garbage-collector
 leash compile myprogram.lsh -ngc</code></pre>
 
-<div class="callout callout-warning"><code>-ngc</code> is intended for embedded, real-time, or minimal-binary-size scenarios. Use with extreme care.</div>
+        <p><code>--autofree</code> is stricter: it disables the collector <em>and</em> frees everything for you. The compiler records every heap allocation (strings, vectors, matrices, class instances, buffers) in a per-function tracking array and emits a null-safe cleanup loop at function exit. Allocations that are returned to the caller are excluded from the free set, so returned values stay valid. The GC runtime is reduced to a thin <code>malloc</code>/<code>free</code> stub, which makes this mode attractive for FFI libraries and deterministic per-thread cleanup.</p>
 
-<h3>Smart Auto-Free (<code>--autofree</code> / <code>-af</code>)</h3>
-
-<p>Leash also offers a <strong>garbage-collector-free</strong> mode that still frees memory automatically. Instead of relying on a mark-and-sweep collector, the compiler <strong>tracks every heap allocation</strong> at code-generation time and <strong>inserts <code>free()</code> calls automatically</strong> when the allocating function exits. This gives you deterministic, GC-free memory management without writing a single <code>free()</code> by hand.</p>
-
-<pre><code>leash run myprogram.lsh --autofree
+        <pre><code>leash run myprogram.lsh --autofree
 leash compile myprogram.lsh -af
 leash compile myprogram.lsh --opt 3 -af</code></pre>
 
-<p>You can also enable it per-project by adding <code>autofree: true</code> to your <code>config.lshc</code>:</p>
-
-<pre><code>main: "src/main.lsh"
+        <pre><code><span class="cm"># config.lshc — enable per project</span>
+main: "src/main.lsh"
 clibs: {}
 imports: "imports/"
 opt_level: "O3"
 out_name: "myprogram"
 autofree: true</code></pre>
 
-<h4>How It Works</h4>
-<ul>
-    <li><strong>Compile-time tracking</strong> &mdash; every allocation (strings, vectors, matrices, class instances, buffers) is recorded in a per-function tracking array</li>
-    <li><strong>Deterministic cleanup</strong> &mdash; at function exit the compiler emits a cleanup loop that <code>free()</code>s every tracked, non-returned allocation</li>
-    <li><strong>Return-value aware</strong> &mdash; allocations returned to the caller are automatically excluded from the free set, so returned strings/vectors remain valid</li>
-    <li><strong>Zero GC runtime</strong> &mdash; the GC runtime is compiled in stub mode (<code>malloc</code>/<code>free</code> only), producing binaries with no GC machinery</li>
-    <li><strong>Null-safe</strong> &mdash; the cleanup loop checks each slot before freeing, so partially-filled tracking arrays are safe</li>
-</ul>
+        <div class="callout callout-info">Since 1.2.0 the self-hosted compiler implements <code>--autofree</code> and the <code>to-dynamic</code> / <code>to-static</code> library outputs natively &mdash; there is no Python fallback. C consumers of a Leash library call <code>leash_init()</code> once before any other library function; in <code>--autofree</code> builds returned values are excluded from the automatic <code>free()</code>.</div>
 
-<h4>When to Use It</h4>
-<ul>
-    <li><strong>Embedded &amp; real-time systems</strong> &mdash; no GC pauses, fully deterministic memory behaviour</li>
-    <li><strong>Minimal binaries</strong> &mdash; the GC runtime is reduced to a thin malloc/free stub</li>
-    <li><strong>FFI with non-GC languages</strong> &mdash; produced code integrates cleanly with C, C++, Rust, Zig, and other languages that expect raw <code>malloc</code>/<code>free</code> ownership semantics (e.g. when compiling <code>to-dynamic</code>/<code>to-static</code> libraries)</li>
-    <li><strong>Per-thread determinism</strong> &mdash; memory is reclaimed when the function returns, not at an arbitrary collection point</li>
-</ul>
+        <hr>
 
-<div class="callout callout-info"><code>--autofree</code> is stricter than <code>-ngc</code>: it not only disables the GC but also <em>frees everything for you</em>. Use it whenever you want GC-free semantics without manual memory management.</div>
+        <h2 id="arena">The scoped arena (default)</h2>
 
-<h3>Scoped Arena (<code>--arena</code>, experimental)</h3>
+        <p>The arena backend is a <strong>scoped bump allocator</strong>, enabled by default for native builds. It replaces tracing with thread-local bump allocation and deterministic, scope-based reclamation: an allocation is an aligned bump plus bookkeeping, and leaving a function or an instrumented loop rewinds the bump and frees the blocks above its checkpoint. Release is O(blocks) with <strong>no per-object free, no heap scan, no lock and no stop-the-world pause</strong>. There is no borrow checker &mdash; correctness comes from compiler-emitted framing, escapes and root copies, backed by runtime checks.</p>
 
-<p>Since 1.8.0 Leash ships a <strong>scoped bump arena</strong> backend (native-only, opt-in per program). It replaces mark-and-sweep with thread-local bump allocation and deterministic, scope-based reclamation: allocations are an aligned bump + memset, and leaving a function or an instrumented loop rewinds the bump and frees the blocks above its checkpoint. Release is O(blocks) with <strong>no per-object free, no heap scan, no lock, and no stop-the-world pause</strong>. There is no GC and no borrow checker &mdash; correctness relies on compiler-emitted framing, escapes, and root copies, plus runtime safety checks.</p>
+        <pre><code>leash run myprogram.lsh            <span class="cm"># arena (default)</span>
+leash run myprogram.lsh --gc       <span class="cm"># mark-and-sweep GC (opt-out)</span>
+leash compile myprogram.lsh        <span class="cm"># arena (default)</span>
+leash compile myprogram.lsh --gc   <span class="cm"># GC</span>
 
-<p>Enable it per program (modes are exclusive: do not combine with <code>--no-garbage-collector</code> or <code>--autofree</code>; the JVM target rejects <code>--arena</code>):</p>
+<span class="cm"># config.lshc — opt back into the collector</span>
+gc: true</code></pre>
 
-<pre><code>leash run myprogram.lsh --arena
-leash compile myprogram.lsh --arena
-<span class="cm"># config.lshc</span>
-arena: true</code></pre>
+        <div class="callout callout-success"><strong>Default and verified.</strong> In 2.0.0 the arena is the default native layout, not an experiment or a planned feature. Strict lifetime auditing is compile-or-fail, escape snapshots are on by default, frame-exit verification is on by default, and every staging read is resolved through a single coherent snapshot image.</div>
 
-<h4>Allocation model &amp; lifetimes</h4>
-<ul>
-    <li><strong>Blocks:</strong> malloc-backed thread-local blocks, 32&nbsp;KB steady-state with a 4&nbsp;KB lazy initial block (<code>ARENA_BLOCK_SIZE</code>/<code>ARENA_INIT_BLOCK_SIZE</code>). Strings use a 16-byte arena header layout (<code>ARENA_STR_HDR</code>) with a magic tag in the header word, so a string payload pointer is never confused with another kind of pointer.</li>
-    <li><strong>Scopes:</strong> generated code pushes a frame on function entry and pops on exit. Eligible loops get checkpoints so temporaries can be reclaimed at iteration boundaries instead of only at function exit.</li>
-    <li><strong>Frameless fast paths:</strong> allocation-free functions and allocation-free loops can skip framing/reset overhead entirely, so pure/compute paths can run at GC parity.</li>
-    <li><strong>Pointer validity:</strong> a pointer is valid until the allocating frame/iteration scope exits (or until a loop reset reclaims that iteration). Pointers are plain C pointers with no collector metadata/barriers.</li>
-    <li><strong>Root slots:</strong> a value that outlives its frame &mdash; a global, or an outer local written from a loop body &mdash; is copied into the program-lifetime root arena and the slot keeps that root copy (<code>leasharena_root_store_string</code>/<code>_vec_typed</code>/<code>_hash_typed</code>/<code>_blob</code>). While the slot is the only owner of its copy, the copy is reused in place, so storing into the same global in a loop does not grow the permanent footprint. The root arena is never rewound; it grows geometrically and releases a block once the slot that owned it is gone.</li>
-    <li><strong>Owned-outside-the-frame targets grow in the root arena:</strong> a vector or hash owned by a caller (a parameter or a global) must keep its storage alive after the growing frame exits, so the compiler emits the rooted runtime entry points (<code>leash_sh_vec_reserve_rooted</code>, <code>leash_sh_vec_extend_rooted</code>, <code>leash_sh_vec_insertv_rooted</code>) and <code>leash_sh_hash_make_rooted</code> (which relocates the table into the program-lifetime root arena and marks it rooted, so later inserts allocate there as well).</li>
-    <li><strong>Threads:</strong> each worker thread owns its arena; the arena blocks and the per-thread stage cache are released when the thread exits (thread-local destructor), not at process exit.</li>
-    <li><strong>No zero-fill:</strong> the arena never scans or traces its memory, so the runtime does not memset the memory it hands out; every skipped fill is covered by a verified &ldquo;fully initialised before read&rdquo; contract. The poison fill on <em>reclaim</em> is unchanged.</li>
-</ul>
+        <p>Conceptually the frame lifecycle looks like this:</p>
 
-<h4>Escape rules (no borrow checker)</h4>
-<p>Values that must outlive their allocating scope are <strong>copied</strong>, not borrowed:</p>
-<ul>
-    <li><strong>Returns:</strong> strings, vecs, hashes, structs/classes (deep over heap-typed and nested fields), slices, and multi-heap tuples are staged, the frame(s) pop, and the value is committed into the caller&rsquo;s frame.</li>
-    <li><strong>Staging is cheap:</strong> small escape payloads are staged on the C stack (inside the escape helper&rsquo;s own frame, which outlives the scope pop); larger ones come from a small per-thread stage cache that recycles released stage blocks. The escape path therefore performs far fewer heap allocations than a malloc-per-value implementation.</li>
-    <li><strong>Persistent / concurrent data:</strong> <code>spawn</code> argument blocks and futures/async results are copied/rooted in the <em>program-lifetime root arena</em> so workers and callers read stable storage. The <code>spawn</code> hand-off itself is one compact private transfer block (a <code>leash_xfer</code> header, the argument block and a small copy area): string arguments travel through it (<code>leasharena_xfer_copy_string</code>), container and aggregate arguments keep their root copies, and the worker releases the transfer right after unpacking it (<code>leasharena_adopt_string</code> + <code>leasharena_xfer_free</code>). Root copies use the compiler's type tree for nested fields; a union is copied as its boxed value (tag plus payload bytes), not as a pointer.</li>
-    <li><strong>Aliasing after a global store:</strong> storing a mutable container into a global re-points the source local at the global&rsquo;s root copy (<code>g = v; g.pushb(4)</code> is visible through both names). Because the root copy is reused in place, <code>g = v; g = X</code> leaves <code>v</code> observing <code>X</code>&rsquo;s contents; the GC keeps <code>v</code> pointing at the old vector. Strings are immutable/copy-on-write and are never re-pointed this way.</li>
-    <li><strong>Caller-owned (care required):</strong> storing a frame-local temporary into a caller-owned aggregate (a heap field, global, or slice backing), raw <code>*T</code> pointers, and union payloads follow the same aggregate-escape limitation as <code>--autofree</code> &mdash; the compiler cannot track every cross-scope ownership transfer, so prefer returning values, using root/persistent storage, or GC mode when ownership must cross frames this way.</li>
-    <li><strong>Growth:</strong> superseded oversize growth buffers are reclaimed only in specific cases (dedicated single-occupant blocks with no saved frame referencing them). Growth-heavy kernels may retain waste until scope reset; churn-heavy kernels benefit from whole-scope release.</li>
-</ul>
+        <pre><code>  caller frame
+       │
+       │ arena.enter            push checkpoint
+       ▼
+  ┌────────────────────────────────────────────┐
+  │  scope arena — thread-local bump pointer   │
+  │  strings · vectors · hashes · instances    │
+  └────────────────────────────────────────────┘
+       │                            │
+       │ return / spawn             │ frame exit
+       ▼                            ▼
+  stage → commit              rewind + poison 0xDD
+       │
+       ▼
+  root arena — program lifetime, never rewound</code></pre>
 
-<h4>Safety model</h4>
-<ul>
-    <li><strong>Poison-on-reclaim (default):</strong> every reclaimed scope/loop byte is filled with <code>0xDD</code>, turning most use-after-scope reads into obvious corruption instead of silently valid-looking data. Set <code>LEASH_ARENA_POISON=0</code> to disable the memset cost (e.g. for peak-speed runs after lifetimes are validated); <code>LEASH_ARENA_POISON=1</code> is also accepted.</li>
-    <li><strong>Strict frame checks (abort with diagnostics):</strong> scope underflow / unmatched exits, <code>leasharena_exit_n</code> beyond current depth, and invalid or out-of-range loop-frame indices on reset/exit fail fast instead of silently corrupting state.</li>
-    <li><strong>Deep escape of nested heap fields:</strong> returned structs/classes deep-stage and deep-commit heap fields recursively (including nested struct/class fields) across the pop boundary, preventing reads of reclaimed/poisoned nested data after scope exit. Recursive types use a compiler-emitted type tree; the runtime stages the reachable instance graph with an identity map, so a returned cycle points at the copied instances instead of dying with the frame.</li>
-    <li><strong>Hardened <code>leash_gc_realloc</code>:</strong> ownership is checked <em>before</em> the allocation header is read (a foreign pointer would otherwise fault or yield a bogus size), and a foreign pointer aborts with a diagnostic. Arena strings are reallocated through a string-aware path that preserves the magic tag and the length; a shared string keeps its old buffer (and sole block) intact for its other holders, and a shrinking tip allocation zeroes the entire reclaimed tail. Absurd allocation sizes and non-power-of-two alignments are rejected before the bump arithmetic can wrap.</li>
-    <li><strong>Alias-safe large-string growth:</strong> when a string's buffer lives in a dedicated sole block and the appended piece aliases it (e.g. <code>s = s + s</code>), the runtime avoids the in-place <code>realloc</code> that could move the block and instead copies into a fresh buffer, so the source is never read through a freed pointer.</li>
-    <li><strong>Ergonomic lifetime audit:</strong> the compiler copies/roots values whose types it knows how to move, and only flags what it cannot prove safe. Direct libc heap calls, raw-pointer returns, raw pointers stored into long-lived slots and raw pointers passed to workers are all <code>E_ARENA_LIFETIME</code> errors &mdash; arena mode is compile-or-fail, never warning-only.</li>
-    <li><strong>Validated header layout:</strong> every generic allocation carries a tagged 8-byte size header (bits 63&ndash;48 are the <code>'LH'</code> tag), and the codegen's inline bump allocator writes the same tag. A shared, block-bounded validator rejects interior pointers, forged string lengths and corrupt totals before any copy; the codegen and runtime cannot drift apart here again.</li>
-    <li><strong>Residual risk:</strong> arena is experimental. A 193-program GC-vs-arena corpus sweep found three reproducible lifetime bugs in ownership patterns the compiler does not model (<code>collections_lru</code>, <code>text_regex</code>, <code>llvm_ir</code> in the stdlib/example corpus): a reclaimed-frame pointer is dereferenced or a stale string header is realloc'd. Lifetime errors that the compiler does not model (notably caller-owned aggregate stores of frame-local temps, raw pointers, and some union patterns) can still be unsafe in principle; poison/default checks make many bugs detectable, but <strong>GC remains the safest default</strong> for untrusted, highly dynamic, or hard-to-reason-about ownership. Aggregate escape of a container whose producing frame has already popped is covered by <code>tests/test_arena_escape_asan.c</code>; bounded byte snapshots of reclaimed blocks (enabled by default, disable with <code>LEASH_ARENA_ESCAPE_SNAPSHOT=0</code>) let staging read exact copies instead of freed memory; snapshots are invalidated when their address range is reused. Pointer-valued locals are registered as exact roots and unregistered on frame exit, so <code>ETRACE</code> traces the full root graph without seeding from the C stack. Layout corruption is now a loud abort instead of silent memory damage.</li>
-</ul>
+        <h3 id="arena-allocation">Allocation model and lifetimes</h3>
 
-<h4>Optimization levels &amp; arena-exclusive optimizations</h4>
-<p>The <code>-O</code> level controls frontend/LLVM/runtime as usual and also selects arena-aware behavior (compiled with <code>-DLEASH_ARENA</code>; <code>-DLEASH_ARENA_O2</code> at <code>-O2/-O3/-O4/-Os/-Oz</code>; <code>-DLEASH_ARENA_O3</code> at <code>-O3/-O4</code>):</p>
-<ul>
-    <li><strong>O0/O1:</strong> conservative runtime reserves/sizing to preserve predictable behavior.</li>
-    <li><strong>O2+ (arena-aware):</strong> exact trip-count vector/collection reserves and arena-only hash pre-sizing (<code>leash_sh_hash_reserve</code>) to reduce realloc/growth churn where counts are provable.</li>
-    <li><strong>O3+ (arena-exclusive):</strong> nested counted-loop push analysis with hoisted reserves (never hoisted above a loop-local receiver), compact 24-byte hash nodes, and fused hash keys that build <code>&quot;&lt;prefix&gt;&quot;+int</code> directly in a stack buffer for push/get/index-set (<code>leash_sh_hash_push_int</code>/<code>get_int</code>), avoiding per-iteration temporary key-string allocations. Measured arena block peaks improve or stay flat vs O2 where applicable (e.g. <code>hash_lookup</code> 1,873,960 &rarr; 1,152,184 block bytes; reduced peaks for <code>matrix_mul</code>/<code>matrix_transpose</code>).</li>
-</ul>
+        <div class="feature-grid">
+          <div class="feature-card"><h3>Blocks</h3><p>Malloc-backed thread-local blocks: 32 KB steady-state with a 4 KB lazy initial block (<code>ARENA_BLOCK_SIZE</code> / <code>ARENA_INIT_BLOCK_SIZE</code>). Strings use a 16-byte arena header (<code>ARENA_STR_HDR</code>) with a magic tag, so a payload pointer can never be confused with another kind of pointer.</p></div>
+          <div class="feature-card"><h3>Scopes</h3><p>Generated code pushes a frame on entry and pops on exit. Eligible loops get checkpoints so temporaries are reclaimed at iteration boundaries instead of only at function exit.</p></div>
+          <div class="feature-card"><h3>Frameless fast paths</h3><p>Allocation-free functions and loops skip framing/reset overhead entirely, so pure compute paths run at GC parity.</p></div>
+          <div class="feature-card"><h3>Plain pointers</h3><p>A pointer is valid until its allocating frame or iteration exits (or until a loop reset reclaims that iteration). Pointers are plain C pointers with no collector metadata or barriers.</p></div>
+          <div class="feature-card"><h3>No zero-fill on allocation</h3><p>The arena never traces its memory, so it does not memset what it hands out. Every skipped fill is covered by a verified &ldquo;fully initialised before read&rdquo; contract. Poison on <em>reclaim</em> is unchanged.</p></div>
+          <div class="feature-card"><h3>Per-thread ownership</h3><p>Each worker owns its arena; its blocks and per-thread stage cache are released by a thread-local destructor on thread exit, not at process exit.</p></div>
+        </div>
 
-<h4>Instrumentation &amp; measurement</h4>
-<ul>
-    <li><strong><code>LEASH_ARENA_STATS=1</code></strong> &mdash; prints to stderr on shutdown, with the scope arena and the program-lifetime root arena reported separately: <code>Arena stats: scope peak N block bytes (now X in Y blocks), payload P | root peak M block bytes (now R in S blocks), payload Q</code>. The scope arena is reclaimed at every scope exit; the root arena is never rewound, so its peak is the program&rsquo;s permanent footprint.</li>
-    <li><strong><code>LEASH_ARENA_POISON=0</code></strong> &mdash; disables reclaim poisoning for speed comparisons once lifetimes are validated (poison is on by default).</li>
-    <li><strong><code>LEASH_ARENA_VERIFY=0</code></strong> &mdash; disables frame-exit validation of registered global/static pointer slots. By default the arena checks every registered long-lived slot before a scope pop or loop reset and aborts if it still points into the frame being reclaimed, turning a missed root copy into a loud error instead of a silent dangling pointer.</li>
-    <li>For fair GC-vs-arena comparisons: clear <code>~/.leash/shcache</code>, do not overlap compiles with runs, interleave mode order, and record child CPU plus max peak RSS via <code>/usr/bin/time -v</code>; prefer arena block-byte peaks for allocator-level truth because RSS is page-granular/noisy on small deltas.</li>
-</ul>
+        <h3 id="arena-escapes">Escapes, staging and the root arena</h3>
 
-<h4>Where arena wins and where it can lose</h4>
-<ul>
-    <li><strong>Often wins:</strong> allocation/churn-heavy and short-lived-temporary workloads, loop bodies that can reset per iteration or skip framing, and hash/string-heavy code at O2+/O3+ (pre-sizing, compact nodes, fused keys). Whole-scope release avoids per-object frees, scans, and GC barriers/pauses; outputs must remain identical to GC.</li>
-    <li><strong>Can lose or be noisy:</strong> growth-heavy kernels that retain superseded buffers/live data until scope reset, workloads dominated by live peak rather than churn, and tiny compute-bound kernels (e.g. pure recursion or tight scalar loops) where allocator work is minimal so wall/CPU/max-RSS deltas may be run-to-run noise. Page granularity can hide small allocator wins in RSS.</li>
-    <li><strong>1.9.0 interleaved suite (15 runs, O2):</strong> aggregate GC 0.417&nbsp;s &rarr; arena 0.372&nbsp;s (<strong>1.12&times; faster</strong>) with no RSS losses; allocation-heavy <code>alloc_churn_loop</code> and <code>allocstress</code> are 3-4&times; faster. O3 runs measured 1.11-1.24&times; aggregate speedup. Tiny compute-bound cases remain noisy; see <a href="../benchmarking/README.md">benchmarking/README.md</a>.</li>
-    <li><strong>Representative historical RSS points (GC &rarr; arena, O2):</strong> <code>allocstress</code> 2.5 &rarr; 1.9&nbsp;MB, <code>vec_stress</code> 3.9 &rarr; 3.4&nbsp;MB, <code>mem_copy</code> 9.7 &rarr; 10.1&nbsp;MB (14.0&nbsp;MB before reclaim), <code>string_concat</code> 2.4 &rarr; 2.9&nbsp;MB (per-iteration temporaries outlive loop survivors). Treat cross-run timing/RSS comparisons as environment-sensitive; see <a href="../benchmarking/README.md">benchmarking/README.md</a>.</li>
-</ul>
+        <p>Values that must outlive their allocating scope are <strong>copied, not borrowed</strong>. There is no borrow checker to annotate: the compiler either knows how to move a value safely or it refuses to compile the program.</p>
 
-<h4>C ABI &amp; runtime API</h4>
-<p>Arena pointers are plain bump memory (strings keep the O(1) <code>bsize</code> prefix and a magic tag that identifies them) with deterministic, pause-free behavior. The public API in <code>leash/gc.h</code> includes <code>leasharena_enter/exit</code> and slow paths, loop ops (<code>leasharena_loop_enter/reset/exit</code>), escape/stage/commit helpers (<code>leasharena_escape_*</code>, <code>leasharena_stage_*</code>/<code>commit_*</code>), root allocation/copies (<code>leasharena_root_alloc*</code>, <code>leasharena_root_copy_*</code>), and growth-reclaim support. Rooted container entry points (<code>leash_sh_vec_reserve_rooted</code>, <code>leash_sh_vec_extend_rooted</code>, <code>leash_sh_vec_insertv_rooted</code>, <code>leash_sh_hash_make_rooted</code>) are declared by the generated module for use by the compiler. C/FFI consumers of Leash libraries should keep cross-call persistent data in the root arena and call <code>leash_init()</code> once before other library functions.</p>
+        <ul>
+          <li><strong>Returns:</strong> strings, vectors, hashes, structs/classes (deep over heap-typed and nested fields), slices and multi-heap tuples are staged, the frame(s) pop, and the value is committed into the caller's frame.</li>
+          <li><strong>Cheap staging:</strong> small escape payloads are staged on the C stack, inside the escape helper's own frame which outlives the scope pop; larger ones come from a small per-thread stage cache that recycles released stage blocks. The escape path therefore performs far fewer heap allocations than a malloc-per-value implementation.</li>
+          <li><strong>Root slots:</strong> a value that outlives its frame &mdash; a global, or an outer local written from a loop body &mdash; is copied into the program-lifetime root arena and the slot keeps that root copy (<code>leasharena_root_store_string</code>, <code>_vec_typed</code>, <code>_hash_typed</code>, <code>_blob</code>). While the slot is the only owner, the copy is reused in place, so assigning to the same global in a loop does not grow the permanent footprint. The root arena is never rewound; it grows geometrically and releases a block once its owning slot is gone.</li>
+          <li><strong>Caller-owned targets grow in the root arena:</strong> a vector or hash owned by a caller (a parameter or a global) must survive the growing frame, so the compiler emits rooted entry points &mdash; <code>leash_sh_vec_reserve_rooted</code>, <code>leash_sh_vec_extend_rooted</code>, <code>leash_sh_vec_insertv_rooted</code>, and <code>leash_sh_hash_make_rooted</code> (which relocates the table into the root arena and marks it rooted so later inserts allocate there too).</li>
+          <li><strong>Persistent and concurrent data:</strong> <code>spawn</code> argument blocks and futures/async results are copied or rooted in the program-lifetime root arena so workers and callers read stable storage. The hand-off is one compact private transfer block (a <code>leash_xfer</code> header, the argument block and a small copy area): string arguments travel through it (<code>leasharena_xfer_copy_string</code>), containers and aggregates keep their root copies, and the worker releases the transfer immediately after unpacking (<code>leasharena_adopt_string</code> + <code>leasharena_xfer_free</code>). Root copies use the compiler's type tree for nested fields; a union is copied as its boxed value (tag plus payload bytes), not as a pointer.</li>
+          <li><strong>Cross-thread root index:</strong> once the first worker is spawned, root blocks are linked into a process-wide registry and are not reclaimed until shutdown. A worker that misses in its own block index resolves the block through that registry and caches it locally; root sole strings grow by allocate-then-copy instead of <code>realloc</code>, so no other thread can observe a moved block. The registry links existing arena blocks, so it adds no per-block allocation.</li>
+          <li><strong>Aliasing after a global store:</strong> storing a mutable container into a global re-points the source local at the global's root copy, so <code>g = v; g.pushb(4)</code> is visible through both names. Because the root copy is reused in place, <code>g = v; g = X</code> leaves <code>v</code> observing <code>X</code>'s contents; GC mode keeps <code>v</code> pointing at the old vector. Strings are immutable/copy-on-write and are never re-pointed.</li>
+          <li><strong>Growth:</strong> superseded oversize growth buffers are reclaimed only in specific cases (dedicated single-occupant blocks with no saved frame referencing them). Growth-heavy kernels may retain waste until scope reset; churn-heavy kernels benefit from whole-scope release.</li>
+        </ul>
 
-<div class="callout callout-info"><strong>Summary:</strong> <code>--arena</code> trades GC&rsquo;s reachability safety for deterministic scope reclamation and low-overhead allocation. It is fastest/leanest on allocation-churn and well-structured lifetimes, ships with poison-on-by-default and strict frame checks for safer debugging, and remains experimental &mdash; validate with <code>LEASH_ARENA_STATS</code> and prefer GC when ownership is ambiguous.</div>
+        <div class="callout callout-info"><strong>Caller-owned targets and raw pointers.</strong> Native handles from <code>@from</code> externals are proven-safe (runtime provenance check); union heap payloads are rooted before boxing. Escaping <code>&amp;x</code> pointees are root-allocated; libc heap pointers are provenance-checked foreign handles.</div>
 
-<div class="callout callout-info">Since 1.2.0 the self-hosted compiler implements <code>--autofree</code> and the <code>to-dynamic</code>/<code>to-static</code> library outputs natively — no Python fallback for either. C consumers of Leash libraries call <code>leash_init()</code> once before any other library function; in <code>--autofree</code> builds returned values are excluded from the automatic <code>free()</code>, so they stay valid for the caller.</div>
+        <h3 id="arena-safety">Safety model</h3>
 
-<h2>Error Handling &amp; Safety</h2>
+        <div class="feature-grid">
+          <div class="feature-card"><h3>Poison on reclaim</h3><p>Every reclaimed scope/loop byte is filled with <code>0xDD</code>, turning most use-after-scope reads into obvious corruption instead of silently valid-looking data. <code>LEASH_ARENA_POISON=0</code> removes the memset cost once lifetimes are validated.</p></div>
+          <div class="feature-card"><h3>Strict frame checks</h3><p>Scope underflow, unmatched exits, <code>leasharena_exit_n</code> beyond the current depth, and invalid or out-of-range loop-frame indices abort with diagnostics instead of corrupting state.</p></div>
+          <div class="feature-card"><h3>Frame-exit verification</h3><p>By default, every registered global/static pointer slot is checked before a scope pop or loop reset. A slot that still points into the frame being reclaimed is a loud abort, not a silent dangling pointer.</p></div>
+          <div class="feature-card"><h3>Deep escape</h3><p>Returned structs/classes deep-stage and deep-commit heap fields recursively, including nested fields. Recursive types use a compiler-emitted type tree; the runtime stages the reachable instance graph with an identity map, so a returned cycle points at the copied instances rather than dying with the frame.</p></div>
+          <div class="feature-card"><h3>Hardened realloc</h3><p><code>leash_gc_realloc</code> checks ownership before reading the header and aborts on a foreign pointer. Arena strings use a string-aware path preserving the magic tag and length; a shared string keeps its old buffer for other holders; a shrinking tip allocation zeroes the whole reclaimed tail. Absurd sizes and non-power-of-two alignments are rejected before bump arithmetic can wrap.</p></div>
+          <div class="feature-card"><h3>Alias-safe growth</h3><p>When a string's buffer lives in a dedicated block and the appended piece aliases it (for example <code>s = s + s</code>), the runtime copies into a fresh buffer instead of moving the block through an in-place realloc.</p></div>
+        </div>
 
-<p>Leash prioritises developer experience with helpful error reporting and safety features including static type checking, smart error tips, runtime union checks, and unique error codes for every warning.</p>
+        <p><strong>Validated header layout.</strong> Every generic allocation carries a tagged 8-byte size header (bits 63&ndash;48 hold the <code>'LH'</code> tag), and codegen's inline bump allocator writes the same tag. A shared, block-bounded validator rejects interior pointers, forged string lengths and corrupt totals before any copy, so codegen and runtime cannot drift apart.</p>
 
-<h3>The Implicit Borrow Checker</h3>
-<p>Leash gives you Rust-class memory safety without annotating lifetimes or writing <code>borrow</code>/<code>mut</code>. The garbage collector removes use-after-free for heap values, and the compiler adds an <em>implicit borrow checker</em>: ordinary code needs no extra syntax, but any operation that could dangle or corrupt memory is rejected at compile time with a unique error code.</p>
-<table>
-    <tr><th>Rule</th><th>Catch</th></tr>
-    <tr><td>No stack escape</td><td><code>E010</code> &mdash; returning an address taken from a local (<code>return &amp;v;</code>) is rejected: the value lives on the current call frame and would dangle.</td></tr>
-    <tr><td>No use after delete</td><td><code>E009</code> &mdash; using a variable after <code>del</code> is an error. A <code>del</code> anywhere inside a loop poisons the variable for the whole function, because a later textual use can still run first on the next iteration.</td></tr>
-    <tr><td>No double delete</td><td><code>E008</code> &mdash; deleting the same instance twice is rejected.</td></tr>
-    <tr><td>Read-only array borrows</td><td><code>E012</code> &mdash; arrays are not copied when passed to functions: they alias the caller's storage. Without an explicit <code>&amp;</code> the parameter is a read-only borrow; mutating it requires declaring the parameter as <code>&amp;T</code>.</td></tr>
-    <tr><td>Unsafe containment</td><td><code>E011</code> &mdash; raw-pointer indexing (<code>p[i]</code>) and pointer arithmetic (<code>p + n</code>) require an <code>unsafe fnc</code>, just like dereferencing. Safe references (<code>&amp;T</code>) auto-dereference and are exempt.</td></tr>
-    <tr><td>Immutable strings</td><td><code>E013</code> &mdash; character assignment through a string index is rejected; build a new string instead.</td></tr>
-    <tr><td>Typed awaits</td><td><code>E014</code> &mdash; <code>await</code> requires a <code>future&lt;T&gt;</code>; awaiting a plain value, an <code>int</code>, or a non-future pointer is rejected instead of unboxing whatever happens to be there. Only <code>async fnc</code> calls produce futures.</td></tr>
-    <tr><td>No hidden NULs</td><td>NUL bytes cannot be embedded in strings (rejected in literals at compile time and in computed chars at runtime), so concatenation can never silently truncate.</td></tr>
-</table>
-<pre><code>fnc broken() : *<span class="kw">int</span> {
+        <div class="callout callout-danger"><strong>Escape snapshots.</strong> Bounded byte snapshots of reclaimed blocks are <strong>enabled by default</strong> (<code>LEASH_ARENA_ESCAPE_SNAPSHOT=0</code> disables them). A snapshot is <strong>invalidated as soon as its address range is reused</strong>, and <em>every</em> staging read &mdash; container headers, bucket chains, keys, string lengths and vector buffers &mdash; is resolved through the <strong>same single snapshot image</strong>, so a copied header can never be paired with bytes read back from a freed, reused block. Only the block&rsquo;s bumped prefix is copied, not its full 32 KB capacity, which keeps churn cheap. Pointer-valued locals are registered as exact roots and unregistered on frame exit, which lets <code>ETRACE</code> walk the full root graph without seeding from the C stack.</div>
+
+        <p><strong>The original lifetime bugs are fixed; the audit now rejects only proven-unsafe patterns.</strong> The three lifetime bugs found by the original corpus sweep (<code>collections_lru</code>, <code>text_regex</code>, <code>llvm_ir</code>) are fixed: field-read aliases are rooted, class instances keep their identity across root copies, and regex node chains no longer retain frame-local pointers. Raw pointers from <code>@from</code> externals are now proven-safe: a runtime provenance check allows C/static pointers and aborts on arena-frame pointers. Union payloads with heap variants are rooted before boxing. Escaping <code>&amp;x</code> pointees are root-allocated and libc heap pointers are provenance-checked, so both are supported. Provenance also flows through locals, so proven-safe raw-pointer returns, globals, stores and worker arguments are accepted; only unprovable pointers are compile-time errors. Once a program spawns workers, root blocks are registered in a process-wide index and are not reclaimed until shutdown, so containers, classes and aggregates with heap fields can be shared with workers. Aggregate escape of a container whose producing frame has already popped is covered by <code>tests/test_arena_escape_asan.c</code>. Mutating a local whose address escaped also uses the rooted growth helpers, so a later frame cannot reclaim the buffer a worker is reading.</p>
+
+        <h3 id="arena-env">Environment variables</h3>
+
+        <p>All arena knobs are environment variables read at process start; none changes the compiled program's observable output. They are diagnostics and tuning aids, not part of the language.</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Variable</th><th>Default</th><th>Effect</th></tr></thead>
+            <tbody>
+              <tr><td><code>LEASH_ARENA_POISON</code></td><td>on</td><td>Fill reclaimed scope/loop bytes with <code>0xDD</code>. <code>=0</code> disables for peak-speed runs after lifetimes are validated; <code>=1</code> is also accepted.</td></tr>
+              <tr><td><code>LEASH_ARENA_VERIFY</code></td><td>on</td><td>Frame-exit verification: check registered global/static pointer slots before every scope pop or loop reset and abort on a pointer into the frame being reclaimed. <code>=0</code> disables.</td></tr>
+              <tr><td><code>LEASH_ARENA_ESCAPE_SNAPSHOT</code></td><td>on</td><td>Byte snapshots of reclaimed blocks for staging reads. Snapshots are invalidated on address-range reuse; all staging reads share one snapshot image. <code>=0</code> disables.</td></tr>
+              <tr><td><code>LEASH_ARENA_STATS</code></td><td>off</td><td><code>=1</code> prints at shutdown: <code>Arena stats: scope peak N block bytes (now X in Y blocks), payload P | root peak M block bytes (now R in S blocks), payload Q</code>. Scope peak is reclaimed at every exit; root peak is the program's permanent footprint.</td></tr>
+              <tr><td><code>LEASH_ARENA_TRACE_ROOTS</code></td><td>off</td><td><code>=1</code> enables <code>ETRACE</code> tracing of registered pointer-valued roots (exact roots unregistered on frame exit), printing the full root graph instead of guessing from the C stack.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <pre><code><span class="cm"># Full safety instrumentation while validating a port</span>
+export LEASH_ARENA_POISON=1
+export LEASH_ARENA_VERIFY=1
+export LEASH_ARENA_ESCAPE_SNAPSHOT=1
+export LEASH_ARENA_STATS=1
+leash run myprogram.lsh
+
+<span class="cm"># Later, for a peak-speed measurement on validated lifetimes</span>
+LEASH_ARENA_POISON=0 LEASH_ARENA_STATS=1 leash run myprogram.lsh</code></pre>
+
+        <p><strong>Fair GC-vs-arena comparisons:</strong> clear <code>~/.leash/shcache</code>, do not overlap compiles with runs, interleave mode order, and record child CPU plus max peak RSS via <code>/usr/bin/time -v</code>. Prefer arena block-byte peaks for allocator-level truth &mdash; RSS is page-granular and noisy on small deltas.</p>
+
+        <h3 id="arena-performance">Where the arena wins</h3>
+
+        <ul>
+          <li><strong>Often wins:</strong> allocation/churn-heavy and short-lived-temporary workloads, loop bodies that reset per iteration or skip framing, and hash/string-heavy code at O2+/O3+. Whole-scope release avoids per-object frees, scans, GC barriers and pauses; outputs remain identical to GC mode.</li>
+          <li><strong>Can lose or be noisy:</strong> growth-heavy kernels that retain superseded buffers or live data until scope reset, workloads dominated by live peak rather than churn, and tiny compute-bound kernels where allocator work is minimal. Page granularity can hide small allocator wins in RSS.</li>
+          <li><strong>1.9.0 interleaved suite (15 runs, O2):</strong> aggregate GC 0.417 s &rarr; arena 0.372 s (<strong>1.12&times; faster</strong>) with no RSS losses; allocation-heavy <code>alloc_churn_loop</code> and <code>allocstress</code> are 3&ndash;4&times; faster. O3 runs measured 1.11&ndash;1.24&times; aggregate speedup.</li>
+          <li><strong>Representative historical RSS points (GC &rarr; arena, O2):</strong> <code>allocstress</code> 2.5 &rarr; 1.9 MB, <code>vec_stress</code> 3.9 &rarr; 3.4 MB, <code>mem_copy</code> 9.7 &rarr; 10.1 MB (14.0 MB before reclaim), <code>string_concat</code> 2.4 &rarr; 2.9 MB (per-iteration temporaries outlive loop survivors). Cross-run timing/RSS comparisons are environment-sensitive; see <code>benchmarking/README.md</code>.</li>
+        </ul>
+
+        <h4>Optimization levels and arena-exclusive optimizations</h4>
+
+        <p>The <code>-O</code> level controls frontend/LLVM/runtime behavior as usual and also selects arena-aware behavior (compiled with <code>-DLEASH_ARENA</code>; <code>-DLEASH_ARENA_O2</code> at O2/O3/O4/Os/Oz; <code>-DLEASH_ARENA_O3</code> at O3/O4):</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Level</th><th>Arena behavior</th></tr></thead>
+            <tbody>
+              <tr><td>O0 / O1</td><td>Conservative runtime reserves and sizing for predictable behavior.</td></tr>
+              <tr><td>O2+</td><td>Exact trip-count vector/collection reserves and arena-only hash pre-sizing (<code>leash_sh_hash_reserve</code>) where counts are provable.</td></tr>
+              <tr><td>O3+</td><td>Nested counted-loop push analysis with hoisted reserves (never above a loop-local receiver), compact 24-byte hash nodes, and fused keys that build <code>"&lt;prefix&gt;"+int</code> directly in a stack buffer (<code>leash_sh_hash_push_int</code> / <code>get_int</code>), avoiding per-iteration temporary key strings. <code>hash_lookup</code> block bytes improved from 1,873,960 to 1,152,184; <code>matrix_mul</code> and <code>matrix_transpose</code> peaks also dropped.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h4>C ABI and runtime API</h4>
+
+        <p>Arena pointers are plain bump memory (strings keep the O(1) <code>bsize</code> prefix and a magic tag) with deterministic, pause-free behavior. The public API in <code>leash/gc.h</code> includes <code>leasharena_enter</code>/<code>exit</code> and slow paths, loop operations (<code>leasharena_loop_enter</code>/<code>reset</code>/<code>exit</code>), escape/stage/commit helpers (<code>leasharena_escape_*</code>, <code>leasharena_stage_*</code>/<code>commit_*</code>), root allocation and copies (<code>leasharena_root_alloc*</code>, <code>leasharena_root_copy_*</code>), and growth-reclaim support. Rooted container entry points are declared by the generated module for compiler use. C/FFI consumers should keep cross-call persistent data in the root arena and call <code>leash_init()</code> once before other library functions.</p>
+
+        <hr>
+
+        <h2 id="lifetime-audit">The compile-time lifetime audit</h2>
+
+        <p>The audit is what makes the arena safe to use by default. It is <strong>compile-or-fail, never warning-only</strong>: the compiler copies or roots every value whose type it knows how to move, and only rejects the cases it cannot prove safe. A rejected program produces an <code>E_ARENA_LIFETIME</code> error with the offending location.</p>
+
+        <div class="steps">
+          <div class="step"><h3>Annotate frames</h3><p>Codegen emits an arena enter/exit pair around each allocating function and optional checkpoints around eligible loops. Frameless paths are proven allocation-free.</p></div>
+          <div class="step"><h3>Classify escapes</h3><p>Each value that crosses a pop boundary is classified: return, global store, loop-carried local, spawn argument, future result, or illegal cross-frame store.</p></div>
+          <div class="step"><h3>Move or root</h3><p>Legal escapes are staged and committed, copied into the root arena, or sent through the spawn transfer block using the compiler's type tree for nested fields.</p></div>
+          <div class="step"><h3>Reject the unprovable</h3><p>Only pointers whose provenance cannot be proven are fatal. Escaping addresses, libc heap pointers, proven-safe returns/globals/stores and proven worker arguments are made safe instead.</p></div>
+        </div>
+
+        <h3 id="audit-rules">What is audited</h3>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Pattern</th><th>Arena result</th><th>Why</th></tr></thead>
+            <tbody>
+              <tr><td>Return a string, vector, hash or struct</td><td>staged and committed</td><td>Type tree known; deep over heap-typed fields.</td></tr>
+              <tr><td>Global or loop-carried local</td><td>root copy, reused in place</td><td>Must outlive the frame; reusing the copy keeps footprint flat.</td></tr>
+              <tr><td><code>spawn</code> / async payload</td><td>rooted or transferred</td><td>Worker reads stable storage after the producing frame pops.</td></tr>
+              <tr><td>Proven-safe raw pointer (return, global, field, container, worker argument)</td><td>accepted</td><td>Origin is nil, <code>&amp;local</code>, a native handle, libc heap, or a copy of one; the pointee is rooted/immortal.</td></tr>
+              <tr><td>Unprovable raw <code>*T</code> return / long-lived store / worker argument</td><td><code>E_ARENA_LIFETIME</code></td><td>No provenance or metadata to move the pointee with the pointer.</td></tr>
+              <tr><td>Union payload</td><td>boxed copy, or error if borrowed across frames</td><td>Tag plus real-size bytes are copied, not a pointer.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3 id="reading-lifetime-diagnostics">Reading a lifetime diagnostic</h3>
+        <p>The same audit runs during <code>compile</code> and <code>leash check</code>, so editors see errors before a binary is built. A diagnostic gives a code, a location, a source snippet, and structured guidance:</p>
+        <pre class="output"><span class="cm">error[E_ARENA_LIFETIME]: raw pointer passed to a worker cannot be kept alive by the spawn transfer</span>
+  --&gt; /src/demo.lsh:2
+   |
+ 1 | worker fnc w(p *int) : void { show(1); }
+ 2 | fnc relay(p *int) : void { spawn w(p); }
+   |                            ^^^^^
+   |
+   = why: A worker may run after the spawner's frame is reclaimed.
+   = help: Pass a string, container or aggregate argument; the compiler roots those by type before the worker starts.
+   = trace: arena lifetime audit -&gt; spawn argument scan -&gt; raw pointer argument</pre>
+        <p><code>why:</code> explains the memory-safety reason, <code>help:</code> gives the usual fix, and <code>trace:</code> shows which audit pass found it. If the pointer really is stable (nil, a native handle, libc heap, or a rooted <code>&amp;local</code>), keep it — provenance now flows through locals, so no workaround is needed. Otherwise return an owned value or let the compiler root the pointee by storing it in a typed container first.</p>
+
+        <h3 id="migration">Migration guide: GC to arena</h3>
+
+        <div class="steps">
+          <div class="step"><h3>Build with full checks</h3><p>Remove any <code>--gc</code> / <code>gc: true</code> override. Run with <code>LEASH_ARENA_POISON=1</code>, <code>LEASH_ARENA_VERIFY=1</code> and <code>LEASH_ARENA_ESCAPE_SNAPSHOT=1</code> (all on by default) and enable <code>LEASH_ARENA_STATS=1</code> to see scope and root peaks.</p></div>
+          <div class="step"><h3>Fix audit errors, do not suppress them</h3><p>Return values instead of storing frame-locals into caller-owned aggregates. Replace raw pointers with owned values or root storage. Union payloads with heap variants are rooted automatically before boxing.</p></div>
+          <div class="step"><h3>Account for the global-store difference</h3><p>After <code>g = v</code>, <code>v</code> and <code>g</code> share the root copy in the arena; in GC mode <code>v</code> kept the old vector. If your code relies on the GC behavior, keep the old value explicitly.</p></div>
+          <div class="step"><h3>Measure, then tune</h3><p>Compare with cleared <code>~/.leash/shcache</code> and interleaved runs. Use O2+/O3+ for exact reserves and compact hash nodes. Only disable poison or snapshots for a final peak-speed measurement after lifetimes are validated.</p></div>
+          <div class="step"><h3>Keep GC as a fallback</h3><p>If a subsystem genuinely needs dynamic, cross-frame ownership the audit cannot model, build that program with <code>--gc</code>. Both modes ship in 2.0.0 and produce identical output.</p></div>
+        </div>
+
+        <hr>
+
+        <h2 id="error-handling">Error handling and safety</h2>
+
+        <p>Leash prioritizes developer experience with helpful diagnostics: static type checking, smart error tips, runtime union checks, and unique error codes for every warning. Safe code cannot form a dangling reference, read freed memory, or mutate through an implicit borrow &mdash; checked at compile time with no annotation burden.</p>
+
+        <h3 id="implicit-borrow">The implicit borrow checker</h3>
+
+        <p>The collector (in <code>--gc</code> mode) removes use-after-free for heap values, and the compiler adds an <em>implicit borrow checker</em>: ordinary code needs no extra syntax, but any operation that could dangle or corrupt memory is rejected with a unique error code. The arena replaces the collector with the lifetime audit above, but the same static rules about stack escapes and borrows still apply.</p>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Rule</th><th>Catch</th></tr></thead>
+            <tbody>
+              <tr><td>No stack escape</td><td><code>E010 (GC only)</code> &mdash; the static E010 check rejects <code>return &amp;v;</code>. The runtime now roots address-taken local slots in GC mode, but returning a pointer to a frame-local slot is still a static error. The arena roots the pointee and accepts it; only unprovable raw-pointer provenance is rejected there.</td></tr>
+              <tr><td>No use after delete</td><td><code>E009</code> &mdash; using a variable after <code>del</code> is an error. A <code>del</code> anywhere in a loop poisons the variable for the whole function, because a later textual use can still run first on the next iteration.</td></tr>
+              <tr><td>No double delete</td><td><code>E008</code> &mdash; deleting the same instance twice is rejected.</td></tr>
+              <tr><td>Read-only array borrows</td><td><code>E012</code> &mdash; arrays alias caller storage. Without an explicit <code>&amp;</code>, the parameter is a read-only borrow; mutating it requires <code>&amp;T</code>.</td></tr>
+              <tr><td>Unsafe containment</td><td><code>E011</code> &mdash; raw-pointer indexing (<code>p[i]</code>) and pointer arithmetic (<code>p + n</code>) require an <code>unsafe fnc</code>, as does dereferencing. Safe references (<code>&amp;T</code>) auto-dereference and are exempt.</td></tr>
+              <tr><td>Immutable strings</td><td><code>E013</code> &mdash; character assignment through a string index is rejected; build a new string instead.</td></tr>
+              <tr><td>Typed awaits</td><td><code>E014</code> &mdash; <code>await</code> requires a <code>future&lt;T&gt;</code>; awaiting a plain value or non-future pointer is rejected instead of unboxing whatever is there. Only <code>async fnc</code> calls produce futures.</td></tr>
+              <tr><td>No hidden NULs</td><td>NUL bytes cannot be embedded in strings (rejected in literals at compile time and in computed chars at runtime), so concatenation can never silently truncate.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <pre><code><span class="kw">fnc</span> <span class="fn">broken</span>() : *<span class="kw">int</span> {
     v: <span class="kw">int</span> = 42;
-    <span class="kw">return</span> &amp;v;   <span class="cm">// error [LEASH-E010]: would dangle</span>
+    <span class="kw">return</span> &amp;v;   <span class="cm">// arena roots the pointee; GC rejects this pattern</span>
 }
 
-fnc fill(a &amp;<span class="kw">int</span>[3]) {   <span class="cm">// '&amp;' declares a mutable borrow</span>
+<span class="kw">fnc</span> <span class="fn">fill</span>(a &amp;<span class="kw">int</span>[3]) {   <span class="cm">// '&amp;' declares a mutable borrow</span>
     a[0] = 999;
 }</code></pre>
-<div class="callout callout-info">The result: safe Leash code cannot form a dangling reference, read freed memory, or mutate through an implicit borrow &mdash; checked at compile time, with zero annotation burden. Raw pointers remain available as an explicit opt-in inside <code>unsafe fnc</code>, exactly like Rust's <code>unsafe</code> blocks.</div>
 
-<h3>Custom Error Definitions</h3>
-<p>Leash allows you to define custom errors with the <code>error</code> keyword. Errors can take arguments and have a message expression that is evaluated when the error is thrown. When an error is thrown, the message is printed along with file, line, and column info, and the program terminates with exit code 1 (unless caught in a <code>works</code> block).</p>
-<pre><code><span class="kw">error</span> ExpectedArguments(amount <span class="kw">int</span>, got <span class="kw">int</span>) -&gt; <span class="str">"Expected "</span> + <span class="fn">tostring</span>(amount) + <span class="str">" or more arguments but only got "</span> + <span class="fn">tostring</span>(got) + <span class="str">"."</span>;
+        <h3 id="custom-errors">Custom error definitions</h3>
+
+        <p>The <code>error</code> keyword defines a named error that can take arguments and evaluate a message expression when thrown. Throwing prints the message with file, line and column info and terminates with exit code 1, unless caught by a <code>works</code> block.</p>
+
+        <pre><code><span class="kw">error</span> ExpectedArguments(amount <span class="kw">int</span>, got <span class="kw">int</span>) -&gt; <span class="str">"Expected "</span> + <span class="fn">tostring</span>(amount) + <span class="str">" or more arguments but only got "</span> + <span class="fn">tostring</span>(got) + <span class="str">"."</span>;
 
 <span class="kw">fnc</span> <span class="fn">main</span>(args <span class="kw">string</span>[]) {
     <span class="kw">if</span> args.size &lt; 2 {
@@ -265,11 +369,11 @@ fnc fill(a &amp;<span class="kw">int</span>[3]) {   <span class="cm">// '&amp;' 
     }
 }</code></pre>
 
-<p>When an error is thrown, the message is printed with file, line, and column info, and the program terminates with exit code 1.</p>
+        <h3 id="works-otherwise">Works-otherwise error handling</h3>
 
-<h3>Works-Otherwise Error Handling</h3>
-<p>Leash provides a <code>works...otherwise</code> construct for catching errors <strong>while the compiler checks the block</strong>. Its contract is precise: <em>errors the checker sees inside the block are captured and handled; what the block proves clean runs as written</em>. Undefined variables and unknown identifiers are the canonical case &mdash; the block compiles, and at runtime control routes to the <code>otherwise</code> handler with the captured message as the <code>err</code> string. Runtime failures (bounds violations, division by zero) are <strong>not</strong> caught &mdash; they terminate the program.</p>
-<pre><code><span class="kw">fnc</span> <span class="fn">main</span>() : <span class="kw">void</span> {
+        <p><code>works...otherwise</code> catches errors <strong>while the compiler checks the block</strong>. Its contract is precise: identifier-resolution failures the checker sees inside the block &mdash; an undefined variable or unknown identifier &mdash; are captured and handled; what the block proves clean runs as written. Every other static error (a type mismatch, an unknown type, a bad call) is still reported at compile time. Runtime failures such as bounds violations or division by zero are <strong>not</strong> caught; they terminate the program. At runtime, control routes to the <code>otherwise</code> handler with the captured message in <code>err</code>.</p>
+
+        <pre><code><span class="kw">fnc</span> <span class="fn">main</span>() : <span class="kw">void</span> {
     <span class="kw">works</span> {
         a: <span class="kw">int</span> = unknown_var;  <span class="cm">// normally an error</span>
     } <span class="kw">otherwise</span> err {
@@ -278,15 +382,75 @@ fnc fill(a &amp;<span class="kw">int</span>[3]) {   <span class="cm">// '&amp;' 
     <span class="fn">show</span>(<span class="str">"Program continues..."</span>);
 }</code></pre>
 
-<p><strong>How it works:</strong> The checker runs the <code>works</code> block's statements and captures the first static error it can see there (an undefined variable, an unknown identifier). The codegen then knows at compile time which path is real: if a static error was captured, the <code>otherwise</code> block runs with <code>err</code> holding the message; if the block checked clean, the body runs as written and <code>otherwise</code> is skipped entirely. Either way the program is valid &mdash; nothing is left to chance at runtime.</p>
+        <p>The checker captures the first static error it sees in the block; codegen then knows at compile time which path is real. If a static error was captured, the <code>otherwise</code> block runs with <code>err</code> holding the message; if the block checked clean, the body runs and <code>otherwise</code> is skipped entirely. Either way the program is valid.</p>
 
-<div class="callout callout-info">If no error occurs, the <code>otherwise</code> block is skipped entirely. This makes <code>works...otherwise</code> useful for graceful error handling, fallback logic, and recovering from unexpected conditions.</div>
+        <div class="callout callout-info"><strong>Program termination.</strong> Call <code>exit(1)</code> to terminate immediately with an exit code. It is available as a builtin on native and JVM targets.</div>
 
-<h3>Unsafe Functions</h3>
+        <hr>
 
-<p>The <code>unsafe</code> keyword disables runtime safety checks and static safety warnings within a function. This is useful for low-level operations like bit manipulation, type punning through unions, or performance-critical code where you want to bypass the overhead of safety checks. <code>unsafe</code> also works on class methods.</p>
+        <h2 id="ffi">Native library imports (FFI)</h2>
 
-<pre><code><span class="kw">def</span> Memory : <span class="kw">union</span> {
+        <p>Leash imports functions from native libraries (<code>.a</code> or <code>.so</code> files) with the <code>@from</code> directive. This enables foreign function interface with C, C++, Rust, Zig and anything else that produces a static or shared library. The directive declares items as external and links the named library at build time; in <code>--check</code> mode it only affects type checking.</p>
+
+        <h3 id="ffi-declaring">Declaring native items</h3>
+
+        <p>Only signatures go inside the block: functions, typed globals, structs, unions, enums and type aliases. Parameter names use the ordinary <code>name: Type</code> form.</p>
+
+        <pre><code><span class="kw">@</span><span class="fn">from</span>(<span class="str">"mylib.a"</span>) {
+    <span class="kw">fnc</span> <span class="fn">add</span>(a: <span class="kw">int</span>, b: <span class="kw">int</span>) : <span class="kw">int</span>;
+    <span class="kw">fnc</span> <span class="fn">scale</span>(v: <span class="kw">float</span>&lt;64&gt;, k: <span class="kw">float</span>&lt;64&gt;) : <span class="kw">float</span>&lt;64&gt;;
+    version: <span class="kw">int</span>;
+
+    <span class="kw">def</span> Point : <span class="kw">struct</span> {
+        x: <span class="kw">int</span>;
+        y: <span class="kw">int</span>;
+    };
+    <span class="kw">def</span> Color : <span class="kw">enum</span> { RED, GREEN, BLUE };
+    <span class="kw">def</span> MyInt : <span class="kw">type</span> <span class="kw">int</span>;
+};
+
+<span class="kw">fnc</span> <span class="fn">main</span>() : <span class="kw">void</span> {
+    <span class="fn">show</span>(<span class="fn">add</span>(10, 20));  <span class="cm">// 30</span>
+}</code></pre>
+
+        <h3 id="ffi-building">Building the native library</h3>
+
+        <pre><code><span class="cm">// math_utils.c</span>
+<span class="kw">int</span> <span class="fn">add</span>(<span class="kw">int</span> a, <span class="kw">int</span> b) {
+    <span class="kw">return</span> a + b;
+}</code></pre>
+
+        <pre><code><span class="cm"># Static archive</span>
+gcc -c math_utils.c -o math_utils.o
+ar rcs libmath.a math_utils.o
+
+<span class="cm"># Or a shared object</span>
+gcc -shared -fPIC math_utils.c -o libmath.so</code></pre>
+
+        <h3 id="ffi-limits">Limitations</h3>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Constraint</th><th>Detail</th></tr></thead>
+            <tbody>
+              <tr><td>Exact signatures</td><td>Type signatures must match exactly between Leash and the native library.</td></tr>
+              <tr><td>Link-time availability</td><td>The library must be available at link time. Relative paths must stay inside the module directory; absolute paths and <code>..</code> segments are rejected by the security scan.</td></tr>
+              <tr><td>No initializers</td><td>Variable declarations inside <code>@from</code> cannot have initializers.</td></tr>
+              <tr><td>Basic fields only</td><td>Only basic struct/union/enum fields are supported across the boundary.</td></tr>
+              <tr><td>JVM target</td><td>Importing a native module works and signatures are checked, but calling into a native body on the JVM reports <code>not supported on the jvm target</code>. Bundled Java shims cover <code>http</code>, <code>httpserver</code> and <code>sql</code>.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout callout-info">For a complete real-world FFI-backed library &mdash; including platform dispatch (<code>_PLATFORM</code>), out-parameters, and bundled prebuilt <code>.a</code> archives per platform &mdash; see the HTTP client in <a href="stdlib.html#extended-reference"><code>installthis/http</code></a>.</div>
+
+        <hr>
+
+        <h2 id="unsafe">Unsafe code</h2>
+
+        <p>The <code>unsafe</code> keyword disables runtime safety checks and static safety warnings within a function. Use it for bit manipulation, type punning through unions, and performance-critical code where check overhead is not wanted. It also works on class methods.</p>
+
+        <pre><code><span class="kw">def</span> Memory : <span class="kw">union</span> {
     i: <span class="kw">int</span>;
     f: <span class="kw">float</span>&lt;64&gt;;
 };
@@ -297,102 +461,59 @@ fnc fill(a &amp;<span class="kw">int</span>[3]) {   <span class="cm">// '&amp;' 
     <span class="kw">return</span> mem.f;
 }</code></pre>
 
-<p>Safety checks disabled by <code>unsafe</code>:</p>
-<ul>
-    <li>Division by zero runtime check</li>
-    <li>Union tag mismatch detection</li>
-    <li>Null pointer dereference checks</li>
-    <li>Vector bounds checking</li>
-    <li>Static division-by-zero warning</li>
-    <li>Static array bounds checks</li>
-</ul>
+        <p>Checks disabled by <code>unsafe</code>:</p>
 
-<div class="callout callout-danger">Use <code>unsafe</code> only when you truly need to bypass safety checks. Unsafe code can cause undefined behavior, crashes, or memory corruption.</div>
+        <div class="feature-grid">
+          <div class="feature-card"><h3>Runtime</h3><p>Division-by-zero checks, union tag mismatch detection, null pointer dereference checks, and vector bounds checking.</p></div>
+          <div class="feature-card"><h3>Static</h3><p>The static division-by-zero warning and static array bounds checks.</p></div>
+        </div>
 
-<h2>Native Library Imports (FFI)</h2>
+        <div class="callout callout-danger">Use <code>unsafe</code> only when you truly need to bypass safety checks. Unsafe code can cause undefined behavior, crashes or memory corruption &mdash; and in arena builds it also bypasses the guarantees the lifetime audit enforces, so keep unsafe regions small and auditable.</div>
 
-<p>Leash supports importing functions from native libraries (<code>.a</code> or <code>.so</code> files) using the <code>@from</code> directive. This enables Foreign Function Interface (FFI) with C, C++, Rust, and other languages that compile to static or shared libraries. The <code>@from</code> directive tells the compiler to declare items as external and link against the specified library during compilation.</p>
+        <hr>
 
-<pre><code>@<span class="fn">from</span>(<span class="str">"mylib.so"</span>) {
-    <span class="kw">fnc</span> <span class="fn">add</span>(a <span class="kw">int</span>, b <span class="kw">int</span>) : <span class="kw">int</span>;
-    <span class="kw">fnc</span> <span class="fn">multiply</span>(a <span class="kw">int</span>, b <span class="kw">int</span>) : <span class="kw">int</span>;
-    my_global: <span class="kw">int</span>;
+        <h2 id="runtime">C runtime optimizations</h2>
 
-    <span class="kw">def</span> Point : <span class="kw">struct</span> {
-        x: <span class="kw">int</span>;
-        y: <span class="kw">int</span>;
-    };
+        <p>The Leash runtime (<code>gc.c</code> / <code>gc.h</code>) is compiled at <code>-O2</code> with <code>-ffunction-sections</code>, so the linker dead-strips unused helpers and binaries carry only the runtime they touch. Shared native optimizations include:</p>
 
-    <span class="kw">def</span> Color : <span class="kw">enum</span> { RED, GREEN, BLUE };
-    <span class="kw">def</span> MyInt : <span class="kw">type</span> <span class="kw">int</span>;
-};
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>#</th><th>Optimization</th></tr></thead>
+            <tbody>
+              <tr><td>1</td><td><strong>Function-pointer matrix dispatch</strong> &mdash; one indirect call per element-wise op instead of a switch.</td></tr>
+              <tr><td>2</td><td><strong>4&times; loop unrolling</strong> with <code>__builtin_prefetch</code>.</td></tr>
+              <tr><td>3</td><td><strong>Reusable thread pool</strong> &mdash; lazily initialized, persists for the program lifetime.</td></tr>
+              <tr><td>4</td><td><strong>Cache-blocked operations</strong> &mdash; tiles that fit in L1.</td></tr>
+              <tr><td>5</td><td><strong>Vector batch utilities</strong> &mdash; bulk copy, reverse, sort (O(n log n)).</td></tr>
+              <tr><td>6</td><td><strong>Slab allocator</strong> &mdash; 16 KB slabs split into size-class cells with free-list reuse (GC mode); one live cell pins at most 16 KB.</td></tr>
+              <tr><td>7</td><td><strong>Iterative mark phase</strong> &mdash; explicit worklist over an open-addressed page directory (GC mode).</td></tr>
+              <tr><td>8</td><td><strong>Fast memcpy</strong> &mdash; thin wrapper with <code>__restrict__</code> hints.</td></tr>
+              <tr><td>9</td><td><strong>Unboxed byte-addressed vectors (1.0)</strong> &mdash; raw element arrays at exact element width; inline fast paths for push/get/set/pop, calling the runtime only to grow.</td></tr>
+              <tr><td>10</td><td><strong>Big-integer runtime (1.0)</strong> &mdash; exact decimal formatting and parsing for <code>int&lt;N&gt;</code>/<code>uint&lt;N&gt;</code> up to 512 bits, schoolbook division over 32-bit limbs.</td></tr>
+              <tr><td>11</td><td><strong>Buffered <code>showb</code> (1.0)</strong> &mdash; output accumulates in a growable buffer flushed once at exit; vector elements unpack without separators.</td></tr>
+              <tr><td>12</td><td><strong>Portable stdin access (1.0)</strong> &mdash; generated code reaches <code>stdin</code> through <code>leash_sh_stdin()</code>, so Windows binaries build and run.</td></tr>
+            </tbody>
+          </table>
+        </div>
 
-<span class="kw">fnc</span> <span class="fn">main</span>() : <span class="kw">void</span> {
-    <span class="fn">show</span>(add(10, 20));  <span class="cm">// 30</span>
-}</code></pre>
+        <hr>
 
-<h3>Creating Native Libraries for Leash</h3>
+        <h2 id="editors">Editor support</h2>
 
-<pre><code><span class="cm">// math_utils.c</span>
-<span class="kw">int</span> <span class="fn">add</span>(<span class="kw">int</span> a, <span class="kw">int</span> b) {
-    <span class="kw">return</span> a + b;
-}</code></pre>
+        <p>Leash ships native syntax highlighting for popular editors in the <code>syntax_highlighters/</code> directory. Character literals are highlighted as <em>characters</em>, not strings &mdash; braces inside single-quoted text such as <code>'{'</code> are never treated as <code>{expr}</code> interpolation.</p>
 
-<pre><code><span class="cm"># Compile to static library</span>
-gcc -c math_utils.c -o math_utils.o
-ar rcs libmath.a math_utils.o
+        <h3>Vim / Neovim</h3>
 
-<span class="cm"># Or compile to shared library</span>
-gcc -shared -fPIC math_utils.c -o libmath.so</code></pre>
-
-<h3>Limitations</h3>
-<ul>
-    <li>Type signatures must match exactly between Leash and the native library</li>
-    <li>The library must be available at link time</li>
-    <li>Initializers are not supported for variable declarations</li>
-    <li>Only basic struct/union/enum fields supported</li>
-</ul>
-
-<div class="callout callout-info">For a complete real-world example of an FFI-backed standard library &mdash; including platform dispatch (<code>_PLATFORM</code>), out-parameters, and bundling prebuilt <code>.a</code> archives per platform &mdash; see the HTTP client in <a href="stdlib.html#extended"><code>installthis/http</code></a>.</div>
-
-<h2>Program Termination</h2>
-<pre><code><span class="fn">exit</span>(1);  <span class="cm">// terminates immediately with exit code</span></code></pre>
-
-<h2>C Runtime Optimizations</h2>
-
-<p>The Leash runtime (<code>gc.c</code> / <code>gc.h</code>) is compiled at <code>-O2</code> with <code>-ffunction-sections</code> (so the linker dead-strips unused helpers &mdash; binaries only carry the runtime they touch) and includes:</p>
-
-<table>
-    <tr><th>#</th><th>Optimization</th></tr>
-    <tr><td>1</td><td><strong>Function-pointer matrix dispatch</strong> &mdash; single indirect call per element-wise op instead of switch</td></tr>
-    <tr><td>2</td><td><strong>4&times; loop unrolling</strong> with <code>__builtin_prefetch</code></td></tr>
-    <tr><td>3</td><td><strong>Reusable thread pool</strong> &mdash; replaces per-call thread creation (lazily initialized, persists for program lifetime)</td></tr>
-    <tr><td>4</td><td><strong>Cache-blocked operations</strong> &mdash; processes tiles fitting in L1 cache</td></tr>
-    <tr><td>5</td><td><strong>Vector batch utilities</strong> &mdash; bulk copy, reverse, sort (O(n log n))</td></tr>
-    <tr><td>6</td><td><strong>Slab allocator</strong> &mdash; 16 KB slabs split into size-class cells with free-list reuse (replaces per-object <code>malloc</code>; one live cell pins at most 16 KB)</td></tr>
-    <tr><td>7</td><td><strong>Iterative mark phase</strong> &mdash; explicit worklist instead of recursion, scanning an open-addressed page directory</td></tr>
-    <tr><td>8</td><td><strong>Fast memcpy</strong> &mdash; thin wrapper with <code>__restrict__</code> hints</td></tr>
-    <tr><td>9</td><td><strong>Unboxed byte-addressed vectors (1.0)</strong> &mdash; raw element arrays at the exact element width; inline fast paths in generated code for <code>pushb</code>/<code>get</code>/<code>set</code>/<code>popb</code>, calling into the runtime only to grow</td></tr>
-    <tr><td>10</td><td><strong>Big-integer runtime (1.0)</strong> &mdash; exact decimal formatting and parsing for <code>int<N></code>/<code>uint<N></code> up to 512 bits (schoolbook division over 32-bit limbs)</td></tr>
-    <tr><td>11</td><td><strong>Buffered <code>showb</code> (1.0)</strong> &mdash; output accumulates in a growable buffer flushed once at exit; vec elements unpack without separators</td></tr>
-    <tr><td>12</td><td><strong>Portable stdin access (1.0)</strong> &mdash; generated code reaches <code>stdin</code> through <code>leash_sh_stdin()</code>, so Windows binaries (where <code>stdin</code> is not a linkable symbol) build and run</td></tr>
-</table>
-
-<h2>Syntax Highlighting</h2>
-
-<p>Leash provides native syntax highlighting for popular editors. Files are in the <code>syntax_highlighters/</code> directory. Character literals are highlighted as <em>characters</em>, not strings &mdash; braces inside single-quoted text (like <code>'{'</code>) are never treated as <code>{expr}</code> interpolation.</p>
-
-<h3>Vim / Neovim</h3>
-<pre><code>mkdir -p ~/.vim/syntax
+        <pre><code>mkdir -p ~/.vim/syntax
 cp syntax_highlighters/leash.vim ~/.vim/syntax/
 <span class="cm"># Add to .vimrc:</span>
 <span class="cm">" au BufRead,BufNewFile *.lsh set filetype=leash</span></code></pre>
 
-<h3>VS Code (with LSP Support)</h3>
-<p>The VS Code extension provides syntax highlighting, real-time diagnostics, hover tooltips, go-to-definition, and auto-completion.</p>
+        <h3>VS Code (with LSP support)</h3>
 
-<p><strong>Manual installation:</strong></p>
-<pre><code><span class="cm"># Copy to VS Code extensions folder</span>
+        <p>The VS Code extension provides syntax highlighting, real-time diagnostics, hover tooltips, go-to-definition and auto-completion. Diagnostics use <code>leash check</code>, including the arena lifetime audit. The offline regression suite has 9 checks (<code>npm test</code>), and <code>npm run package</code> builds a lean <code>.vsix</code>. See <a href="getting-started.html#editor-support">Editor support</a> for settings and installation.</p>
+
+        <pre><code><span class="cm"># Manual installation: copy to the VS Code extensions folder</span>
 <span class="cm"># Windows: %USERPROFILE%\.vscode\extensions\leash</span>
 <span class="cm"># macOS/Linux: ~/.vscode/extensions/leash</span>
 
@@ -401,15 +522,23 @@ cp syntax_highlighters/leash.vim ~/.vim/syntax/
 npm install
 npm run compile</code></pre>
 
-<h3>Emacs</h3>
-<pre><code>mkdir -p ~/.emacs.d/lisp
+        <h3>Emacs</h3>
+
+        <pre><code>mkdir -p ~/.emacs.d/lisp
 cp syntax_highlighters/leash-mode.el ~/.emacs.d/lisp/
 <span class="cm"># Add to init.el:</span>
 <span class="cm">;; (add-to-list 'load-path "~/.emacs.d/lisp/")</span>
 <span class="cm">;; (require 'leash-mode)</span></code></pre>
 
-</main>
+        <div class="quick-links">
+          <a class="quick-link" href="compiler.html"><strong>Compiler &amp; CLI</strong><span>Memory flags, targets and optimization levels &rarr;</span></a>
+          <a class="quick-link" href="concurrency.html"><strong>Concurrency model</strong><span>Spawn, workers and root escape of async data &rarr;</span></a>
+          <a class="quick-link" href="limitations.html"><strong>Known limitations</strong><span>What the arena does not model &rarr;</span></a>
+          <a class="quick-link" href="stdlib.html"><strong>Standard library</strong><span>FFI-backed modules and examples &rarr;</span></a>
+        </div>
 
-<script src="docs.js"></script>
+    </article>
+  </main>
+</div>
 </body>
 </html>

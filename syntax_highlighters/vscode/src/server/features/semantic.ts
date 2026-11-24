@@ -1,6 +1,6 @@
 import { SemanticTokens, SemanticTokensBuilder, SemanticTokensLegend } from 'vscode-languageserver';
 import { WorkspaceIndex } from '../index';
-import { tokenize } from '../util';
+import { tokenize, TextPositioner } from '../util';
 import { KEYWORDS, BUILTIN_FUNCTIONS, BUILTIN_TYPES } from '../builtins';
 
 export const SEMANTIC_TOKEN_TYPES = [
@@ -68,11 +68,11 @@ export function semanticTokensHandler(index: WorkspaceIndex, uri: string): Seman
         localDecls.add(`${local.range.start.line}:${local.range.start.character}`);
     }
 
-    const useRanges: Array<{ start: number; end: number }> = [];
-    for (const use of model.uses) {
-        const s = model.text.indexOf(use.modulePath.join('::'));
-        if (s >= 0) useRanges.push({ start: s, end: s + use.modulePath.join('::').length + 10 });
-    }
+    const positioner = new TextPositioner(model.text);
+    const useRanges = model.uses.map(use => ({
+        start: positioner.offsetAt(use.range.start),
+        end: positioner.offsetAt(use.range.end)
+    }));
 
     for (let i = 0; i < tokens.length; i++) {
         const t = tokens[i];

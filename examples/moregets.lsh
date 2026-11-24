@@ -1,0 +1,13 @@
+def Pos : struct {
+  x: float;
+  y: float;
+};
+
+fnc main {
+  num: int = getint("tell me a number (integer): "); // after pressing enter: confirms
+  num2: float = getfloat("tell me another number (floating point): "); // after pressing enter: confirms
+  pos: Pos = getstruct(Pos, "Now tell me a position (floating point, press enter to write the next value): "); // after pressing enter: asks for the next value, and if it's the last value, confirms.
+
+  show("You chose number {num} and {num2}");
+  show("The position you chose was {pos.x} and {pos.y}");
+}

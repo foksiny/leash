@@ -903,6 +903,7 @@ pub def CompilerDriver : class {
         // Typecheck
         if verbose { show("[verbose] type-checking"); }
         tc: TypeChecker = TypeChecker.make();
+        tc.arena_mode = arena || this.emit_arena_only;
         // JVM backend parity: python's propagated-divisor/overflow statics
         // live in the LLVM codegen only; the JVM path guards at runtime.
         if target_name == "jvm" { tc.propagated_checks_enabled = false; }
@@ -928,6 +929,29 @@ pub def CompilerDriver : class {
             return 1;
         }
         if check_mode {
+            // `check` must report arena lifetime errors too, otherwise the
+            // editor never sees the diagnostics that matter most in the
+            // default memory layout. The audit is pure analysis, so run it
+            // here without emitting LLVM IR.
+            if arena {
+                audit_cg: CodeGen = CodeGen.make(tc);
+                audit_cg.arena = true;
+                audit_cg.main_file = this.realpath_str(input_file);
+                foreach _, af in<vector> prog.funcs {
+                    if af.is_external { audit_cg.native_funcs.push(af.name, true); }
+                    if af.is_worker { audit_cg.has_workers = true; }
+                }
+                foreach _, ac in<vector> prog.classes {
+                    foreach _, am in<vector> ac.methods {
+                        if am.is_worker { audit_cg.has_workers = true; }
+                    }
+                }
+                audit_cg.ar_audit_program(prog);
+                audit_cg.nil_audit_program(prog);
+                if audit_cg.arena_audit_errors > 0 || audit_cg.nil_audit_errors > 0 {
+                    return 1;
+                }
+            }
             if tc.errors.size == 0 {
                 show("[leash] Type-check OK");
                 return 0;
@@ -951,10 +975,10 @@ pub def CompilerDriver : class {
                 return this.compile_jvm(input_file, output_file, prog, tc, run_mode, run_args, verbose, output_type, emit_llvm);
         }
 
-        // Memory mode exclusivity: GC (default), --no-gc, --autofree
-        // and --arena are four backends; picking two is a build error.
+        // Memory mode exclusivity: arena (default), --gc, --no-gc and
+        // --autofree are four backends; picking two is a build error.
         if arena && (no_gc || autofree) {
-            show("error: memory modes are exclusive -- use only one of --no-garbage-collector, --autofree, --arena (GC is the default)");
+            show("error: memory modes are exclusive -- use only one of --gc, --no-garbage-collector, --autofree, --arena (arena is the default)");
             return 1;
         }
 
@@ -1282,18 +1306,6 @@ pub def CompilerDriver : class {
                 if this.file_exists(env_cand) { gc_path = env_cand; }
             }
         }
-        // Standard install root (`leash install`): a binary copied to an
-        // arbitrary PATH directory still finds the runtime ~/.leash/leash.
-        if !this.file_exists(gc_path) {
-            home_rt: string = this.exec_out("printenv HOME");
-            if home_rt.bsize == 0 {
-                home_rt = this.exec_out("printenv USERPROFILE");
-            }
-            if home_rt.bsize > 0 {
-                home_cand: string = home_rt + "/.leash/leash/gc.c";
-                if this.file_exists(home_cand) { gc_path = home_cand; }
-            }
-        }
         if !this.file_exists(gc_path) && this.self_path.bsize > 0 {
             abs_exe: string = Path.resolve_exe(this.self_path);
             if abs_exe.bsize > 0 {
@@ -1306,6 +1318,18 @@ pub def CompilerDriver : class {
                 if this.file_exists(cand1) { gc_path = cand1; }
                 also this.file_exists(cand2) { gc_path = cand2; }
                 also this.file_exists(cand3) { gc_path = cand3; }
+            }
+        }
+        // Standard install root (`leash install`): a binary copied to an
+        // arbitrary PATH directory still finds the runtime ~/.leash/leash.
+        if !this.file_exists(gc_path) {
+            home_rt: string = this.exec_out("printenv HOME");
+            if home_rt.bsize == 0 {
+                home_rt = this.exec_out("printenv USERPROFILE");
+            }
+            if home_rt.bsize > 0 {
+                home_cand: string = home_rt + "/.leash/leash/gc.c";
+                if this.file_exists(home_cand) { gc_path = home_cand; }
             }
         }
         if !this.file_exists(gc_path) {

@@ -1,162 +1,172 @@
 <p align="center">
-  <img src="icons/svg/leash-logo.svg" alt="Leash" width="460">
+  <img src="icons/svg/leash-logo.svg" alt="Leash" width="420">
+</p>
+
+<p align="center">
+  <a href="https://github.com/foksiny/leash/releases"><img src="https://img.shields.io/badge/version-2.0.0-8b5cf6?style=flat-square" alt="Version 2.0.0"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22c55e?style=flat-square" alt="MIT License"></a>
+  <a href="docs/index.html"><img src="https://img.shields.io/badge/docs-full%20reference-22d3ee?style=flat-square" alt="Documentation"></a>
+  <a href="https://github.com/foksiny/leash"><img src="https://img.shields.io/badge/compiler-self--hosted-f97316?style=flat-square" alt="Self-hosted"></a>
 </p>
 
 # Leash Programming Language
 
-**Version 1.12.0** — Leash compiles itself.
+**Version 2.0.0** — a strongly typed, compiled language with deterministic memory, a self-hosted compiler, and a real standard library.
 
-Leash is a strongly-typed, modern compiled programming language built on LLVM. It features an intuitive syntax and native performance with a built-in garbage collector, package manager, and cross-platform support.
+Leash compiles to native code through LLVM. It gives you an expressive, statically checked language with generics, operator overloading, structured error handling and first-class concurrency — while keeping the memory model explicit: the **scoped arena is the default layout**, with `--gc` available for the classic mark-and-sweep collector.
 
-> **Full documentation available at [`docs/`](docs/index.html) &mdash; covers language reference, compiler CLI, standard library, package manager, concurrency, and advanced topics.**
+> **New in 2.0.0:** arena is now the default memory layout; `getint` / `getfloat` / `getstruct`, `string.start()` / `string.end()`, and optional semicolons. See the [changelog](CHANGELOG.md#200---2026-11-22).
 
-Leash was made with the help of AI, but its design and ideas come from a human. The AI's role was to implement the language and toolchain and to write the documentation. The human and the AI also stress-tested Leash &mdash; checking where it fails and where it wins, then fixing quirks as they were found. Bugs are addressed right away, which is why all features (and 90%+ of them in practice) are kept stable and reliable.
+> **Full documentation:** [`docs/index.html`](docs/index.html) — language reference, compiler CLI, standard library, package manager, concurrency, and advanced topics.
 
-## Self-Hosted since 1.0
+## Why Leash?
 
-The compiler shipped as `leash`/`leashc` is **written in Leash** and builds itself from a checked-in bootstrap seed with **no Python dependency**: the seed binary compiles the current sources, that binary then compiles itself, and the result is what gets installed — verified as a **bootstrap fixed point** (stage N emits IR byte-identical to stage N+1).
+- **Compiles itself.** The shipped `leash` / `leashc` binaries are written in Leash and rebuilt from a checked-in bootstrap seed with no Python dependency (verified three-stage fixed point, 89/89 output parity corpus).
+- **Deterministic memory by default.** Thread-local bump allocation, whole-scope release, poison-on-reclaim, escape snapshots and a compile-time lifetime audit. No stop-the-world pauses on the hot path.
+- **Familiar syntax, strong guarantees.** Full type inference, explicit bit widths (`int<128>`, `uint<512>`), generics, restricted literal types, nil-flow analysis, and range-checked numeric conversions.
+- **Batteries included.** 100+ standard-library packages, a self-service package manager with reproducible `leash.lock` builds, native HTTP/HTTPS client and server, SQL, crypto, and cross-platform compilation.
+- **Tooling that teaches.** Structured diagnostics with source snippets, why-it-happened explanations and fix hints; syntax highlighting and LSP completion for Vim, Emacs and VS Code; a native source-level debugger.
 
-- `leashc` (alias `leash`) — the **self-hosted compiler**, the whole toolchain natively: `compile`, `run` (file or project), `check`, `dump`, `init`, `build`, `install`, `update`, `pkg` (the package manager), `self-host` (3-stage bootstrap + fixed-point check), and `dbg` (the interactive source-level debugger).
+Leash was made with the help of AI, but its design and ideas come from a human. The AI implemented the language, toolchain and documentation; the human and AI stress-tested it together, fixing quirks as they were found. Features are kept stable and reliable rather than being shipped half-finished.
 
-Output parity is enforced by a frozen corpus: **89/89 example programs compile and run with identical output** (the corpus was recorded from the original reference compiler; entries added after it was retired are recorded from the current self-hosted compiler).
+## Quick start
 
-## Quick Start
+### Requirements
 
-### Prerequisites
+| Tool | Why |
+|------|-----|
+| C compiler (`clang` or `gcc`) | Links generated programs and the runtime |
+| Git | Only for `leash pkg publish`, `leash pkg install` and `leash update` |
 
-| Dependency | Version |
-|------------|---------|
-| **C compiler** (`clang`/`gcc`) | any recent (links the compiled programs) |
-| **Git** | any recent (only for `leash pkg publish`/`install` and `leash update`) |
-
-### Install
+### Install from source
 
 ```bash
 git clone https://github.com/foksiny/leash && cd leash
-./scripts/bootstrap.sh     # seeds from bootstrap/, builds bin/leashc (Python-free)
+./scripts/bootstrap.sh     # Python-free: seed -> stage1 -> stage2 -> stage3
 bin/leashc version
-# leash 1.12.0 (self-hosted)
+# leash 2.0.0 (self-hosted)
 ```
 
-Prebuilt **release bundles** are attached to every [GitHub release](https://github.com/foksiny/leash/releases) for Linux x86-64, Linux x86, Linux ARM64, Windows x86-64 and the JVM target. Each bundle ships the compiler, runtime, bundled standard library, docs, compiler sources and an `install.sh` (or `install.bat`) that lays them out under `~/.leash`:
+Prebuilt release bundles are attached to every [GitHub release](https://github.com/foksiny/leash/releases) for Linux x86-64, Linux x86, Linux ARM64, Windows x86-64 and the JVM target. Each bundle includes the compiler, runtime, standard library, docs and an installer:
 
 ```bash
-tar -xzf leash-1.12.0-linux-x86_64.tar.gz && cd leash-1.12.0-linux-x86_64
-./install.sh                 # PREFIX=/some/root overrides the destination
+tar -xzf leash-2.0.0-linux-x86_64.tar.gz && cd leash-2.0.0-linux-x86_64
+./install.sh
 export PATH="$HOME/.leash/bin:$PATH"
 ```
 
-Regenerate all bundles locally with `./scripts/make_release.sh` (output in `dist/`).
-
-The Windows bundle works from a plain `cmd` prompt: it includes small native
-shims for the POSIX utilities the self-hosted compiler shells out to, plus a
-`clang.exe` wrapper that rewrites POSIX linker flags for MinGW. A **native
-Windows clang** (LLVM for Windows or MSYS2) is required to compile programs;
-point the installer at it with `set LEASH_CLANG=C:\path\to\clang.exe` before
-running `install.bat`. Under Wine, a cross-compiler forwarding to
-`clang --target=x86_64-w64-mingw32` also works.
-
-The bootstrap compiles `compiler/*.lsh` and installs the resulting native compiler at `bin/leashc`. To install the toolchain globally — binaries into `~/.leash/bin`, plus the Leash runtime (`~/.leash/leash`) and the bundled standard library (`~/.leash/libs`) so `leash` / `leashc` work from any directory:
+For a global install from a checkout:
 
 ```bash
 bin/leashc install compiler
-export PATH="$HOME/.leash/bin:$PATH"   # add to ~/.bashrc (use $HOME, not "~")
+export PATH="$HOME/.leash/bin:$PATH"   # put this in ~/.bashrc (use $HOME, not "~")
 ```
 
-A plain `cp bin/leashc <dir-on-PATH>` also works once the runtime is installed: the compiler looks for it next to the executable, in `~/.leash/leash`, or wherever `LEASH_RUNTIME` points.
+The compiler finds its runtime next to the executable, under `~/.leash/leash`, or wherever `LEASH_RUNTIME` points.
 
-### Run a program
+### Write and run a program
 
-```bash
-bin/leashc run hello.lsh
+```leash
+fnc main() : void {
+  name := get("What is your name? ")
+  show("Hello, {name}!")
+}
 ```
 
-### Compile to a binary
-
 ```bash
+bin/leashc run hello.lsh            # arena by default
+bin/leashc run hello.lsh --gc       # classic collector
 bin/leashc compile hello.lsh to hello
 ./hello
 ```
 
-### Scaffold a project
+### Projects and rebuilding
 
 ```bash
 bin/leashc init my_project
 cd my_project
 bin/leashc build
 bin/leashc run
+
+bin/leashc self-host   # 3-stage bootstrap + fixed-point check
 ```
 
-### Rebuild the compiler from source
+## Feature tour
 
-```bash
-bin/leashc self-host   # 3-stage bootstrap + fixed-point check, installs bin/leashc
-```
+### Language
 
-## Key Features
+| Feature | Example / where to read |
+|---------|-------------------------|
+| Type inference & generics | `x := 42`, `class Box<T>`, `fnc id<T>(x: T) : T` — [language guide](docs/language-guide.html#generics) |
+| Bit-width numerics | `int<8>`, `uint<512>`, checked conversions, guarded division — [language guide](docs/language-guide.html#numeric-types) |
+| Restricted literal types | `def status : type "ok", "error", nil;` — [language guide](docs/language-guide.html#restricted-literal-types) |
+| Optional semicolons | `a := 1` followed by a newline ends the statement — [language guide](docs/language-guide.html#variables) |
+| Strings | Unicode-aware `size`, UTF-8 `bsize`, `replace`, new `start(n)` / `end(n)` — [language guide](docs/language-guide.html#string-methods) |
+| Console input | `get`, `keyget`, new `getint`, `getfloat`, `getstruct(Type, prompt)` — [language guide](docs/language-guide.html#input-handling) |
+| Structs, classes, unions | Value structs, reference classes, tagged unions with variant safety — [language guide](docs/language-guide.html#structs-and-classes) |
+| Errors | `error` types, `throw`, `works`/`otherwise`, structured diagnostics — [advanced](docs/advanced.html#error-handling) |
+| Unsafe & FFI | `@from` native libraries, `unsafe fnc`, raw pointer rules — [advanced](docs/advanced.html#ffi) |
 
-- **Self-hosted compiler** — the language's own compiler is written in the language, with a verified bootstrap fixed point and 89/89 output parity against the reference implementation
-- **Strongly typed** with full type inference, generics (`class<T>`, multi-type `[int, float, ...]` parameters), operator overloading (`opdef`) and explicit bit-width integers/floats (`int<128>`, `uint<512>`, …). Numeric conversions are range-checked at runtime (no silent truncation or poison from out-of-range floats), and dynamic division is guarded against zero and signed `MIN / -1`. Fixed-size arrays get their element defaults automatically (`a: int[1000];` allocates and fills all elements in one go). A nil-flow audit rejects `show` of a value that may be nil at compile time, with a runtime guard for paths the compiler cannot prove.
-- **Restricted literal types** — `def status : type "ok", "error", nil;` declares a type that accepts only its listed literals; invalid values and widening to the base type are compile-time errors. See [the language guide](docs/language-guide.html#restricted-literal-types).
-- **LLVM-powered** compilation with a monotonic -O scale: O0-O4, Os, Oz. O1 uses the `-O1` backend, O2 is the full `-O2` pipeline plus the arena IR tier 2 (exact trip-count reserves), O3 adds thin LTO and recursive-call unrolling, and O4 adds native code generation and a deeper unroll; no higher level disables a lower level's optimization. See [docs/compiler.html](docs/compiler.html#optimization-levels).
-- **Precise, lean garbage collection** — pointer-free vector buffers are never scanned (no false pins from integer payloads); unboxed inline element storage with reference semantics; peak resident memory stays near `2× live + 256 KB` (16 KB slabs, adaptive hash, exact string caps) with ~22 KB binaries
-- **Experimental `--arena` memory layout** — scoped bump arena (thread-local bump blocks, whole-scope release, no GC, no borrow checker) selectable per program with `leash compile <file> --arena`. It gives plain C pointers, deterministic frame lifetimes, and C-ABI-friendly storage; reclaimed scope memory is **poisoned by default** (`0xDD`, disable with `LEASH_ARENA_POISON=0`) and frame/loop misuse aborts with diagnostics. Escapes stage on the C stack (small payloads) or a per-thread stage cache, containers owned outside the current frame grow in the root arena, and each worker's arena is released when the thread exits — so the arena path stays lean on heap allocations. A value that outlives its frame (a global, an outer local written from a loop body) is copied into the program-lifetime root arena, whose slot reuses that copy in place while it is the only owner — so storing into the same global in a loop keeps a constant footprint instead of growing the program's permanent memory. `spawn` hands its arguments over in one compact private transfer that the worker releases after unpacking. Recursive aggregate returns copy the reachable instance graph with an identity map, so cycles keep their shape; spawn arguments and union values are rooted using their real type layout (a union is a boxed value, not a pointer). A strict compile-time lifetime audit rejects raw-pointer escapes and manual libc heap calls with `E_ARENA_LIFETIME` errors (there is no warning-only outcome: `--arena` is compile-or-fail), with structured source snippets and fix hints; header readers validate a tagged size word, header containment and block-bounded string lengths so forged or stale pointers abort instead of reading out of bounds. A default-on runtime verifier checks registered global/static pointer slots before every frame pop (`LEASH_ARENA_VERIFY=0` opts out), turning a missed root copy into a loud abort instead of a dangling pointer. Allocation/churn- and hash-heavy workloads often see lower peak block memory and competitive-or-better speed (measured 1.1-1.2x aggregate speedup at O2/O3, 3-4x on churn-heavy tasks), while growth-heavy kernels keep superseded buffers until scope reset and tiny compute-bound cases can be noise-dominated (planned default in a future release; see [docs/advanced.html](docs/advanced.html) and [benchmarking/README.md](benchmarking/README.md)).
-- **Package manager** (`leash pkg`) with fully self-service publishing — registry updates are validated and merged by a bot, no human review; install from the index or any git URL; **reproducible project builds** with `leash.lock`
-- **Concurrency model** with workers, `shared` and `fusion` variables — plus native **`async fnc`/`await`** returning `future<T>`
-- **Shared variables** — a function can declare program-wide storage in its signature (`fnc f() : void | result: int`), and only the functions naming it may touch it; the same storage is shared by every function that declares it. Distinct from the `shared`/`fusion` worker globals, which are module-wide and carry the one-writer/atomic rules for threads
-- **Cross-platform** compilation for Linux (x86-64, x86, ARM64), Windows, and macOS — all targets built by the native compiler (`--target win64`, `--target linux-arm`, …), with `wine`/`qemu` execution for cross binaries
-- **100+ standard-library packages** — vectors, matrices, hash tables, file I/O, string/text tools, math, crypto, SQL, HTTP, games, AI, testing helpers…
-- **Native HTTP/HTTPS client** (`http`) and **multiplexed keep-alive server** (`httpserver`) speaking HTTP/1.1 and HTTP/2 — full web stack with no external dependencies
-- **Native source-level debugger** (`leash dbg`) — step/breakpoint debugging without GDB/LLDB, breakpoints from the CLI (`-b <line>`) or interactively
-- **FFI** via `@from` directive for calling C/C++/Rust libraries (including Leash-language function-pointer callbacks)
+### Runtime & memory
 
-## Documentation
+| Mode | Flag | Notes |
+|------|------|-------|
+| **Scoped arena (default)** | *(none)* / `--arena` | Bump blocks, scope reclamation, poison by default, escape snapshots, strict lifetime audit |
+| Garbage collected | `--gc` | Precise mark-and-sweep; recommended for raw-pointer-heavy FFI code |
+| No GC | `-ngc` | Plain `malloc` / `free` |
+| Auto-free | `-af` / `--autofree` | `malloc` plus automatic free at function exit |
+
+Native programs default to the arena; the JVM target always uses its own GC. C-ABI library outputs (`to-static` / `to-dynamic`) default to GC so external linkers only need the classic runtime.
+
+### Toolchain
+
+- **LLVM pipeline** with a monotonic `-O0`…`-O4`, `-Os`, `-Oz` scale (LTO and recursive-call unrolling at O3+).
+- **Cross compilation** for Linux x86-64/x86/ARM64, Windows x86-64 and macOS from one compiler.
+- **Package manager** (`leash pkg`) with self-service publishing, git sources, semver resolution and `leash.lock`.
+- **Debugger** (`leash dbg`) with breakpoints and source-level stepping.
+- **Editor support** — [Vim](syntax_highlighters/leash.vim), [Emacs](syntax_highlighters/leash-mode.el) and [VS Code with LSP](syntax_highlighters/vscode/).
+
+## Documentation map
 
 | Topic | Location |
 |-------|----------|
-| **Installation & Setup** | [docs/getting-started.html](docs/getting-started.html) |
-| **Language Reference** | [docs/language-guide.html](docs/language-guide.html) |
-| **Compiler & CLI** | [docs/compiler.html](docs/compiler.html) |
-| **Self-Hosted Compiler** | [docs/self-hosted.html](docs/self-hosted.html) |
-| **Standard Library** | [docs/stdlib.html](docs/stdlib.html) |
-| **Package Manager** | [docs/package-manager.html](docs/package-manager.html) |
-| **Concurrency** | [docs/concurrency.html](docs/concurrency.html) |
-| **Advanced Topics** (FFI, memory, error handling) | [docs/advanced.html](docs/advanced.html) |
-| **Known Limitations** | [docs/limitations.html](docs/limitations.html) |
+| Overview & feature tour | [docs/index.html](docs/index.html) |
+| Installation & first program | [docs/getting-started.html](docs/getting-started.html) |
+| Language reference | [docs/language-guide.html](docs/language-guide.html) |
+| Compiler CLI & optimization levels | [docs/compiler.html](docs/compiler.html) |
+| Self-hosted compiler & bootstrap | [docs/self-hosted.html](docs/self-hosted.html) |
+| Standard library catalogue | [docs/stdlib.html](docs/stdlib.html) |
+| Package manager | [docs/package-manager.html](docs/package-manager.html) |
+| Concurrency model | [docs/concurrency.html](docs/concurrency.html) |
+| Advanced topics (FFI, memory, errors) | [docs/advanced.html](docs/advanced.html) |
+| Known limitations | [docs/limitations.html](docs/limitations.html) |
 
-## Known Limitations
+## Known limitations
 
-Leash 1.12.0 is a complete, self-hosted toolchain with no Python in the build or run path. The items below are the honest, currently-known limits of the platform &mdash; each is intentional and stable for 1.x.
+Leash 2.0.0 is a complete, self-hosted toolchain. The limits below are intentional and scoped; each has a documented workaround.
 
 | Limitation | Severity | Comment |
 |------------|----------|---------|
-| `--arena` is experimental (native-only) | 🟡 Medium | Opt-in scoped bump arena: lifetimes are frame/loop-based (returns/spawn escape by copy, and a value that outlives its frame is copied into the program-lifetime root arena, but stores of frame-local temps into caller-owned aggregates, raw `*T`, and unions remain caller-owned as with `--autofree`). Reclaimed memory is poisoned by default; misuse aborts. A strict compile-time lifetime audit rejects manual heap calls, raw-pointer returns, and raw pointers stored long-term or passed to workers &mdash; `--arena` is compile-or-fail, never warning-only. One accepted difference from the GC: after `g = v; g = X` the arena reuses the global's root copy in place, so `v` observes `X`'s contents. See [docs/advanced.html](docs/advanced.html). |
+| Arena is the default native layout | 🟡 Medium | Frame-based lifetimes with no borrow checker. Returns/spawn escape by copy or into the root arena; union payloads are rooted. Raw pointers keep provenance through locals: proven-safe returns, globals, stores and worker arguments are accepted, and only unprovable pointers are rejected. Escaping addresses are root-allocated (or immortal in workers) with their values rooted, so scalars, strings, vectors and structs stay valid after the producing frame pops. Reclaimed memory is poisoned by default and misuse aborts. See [docs/advanced.html](docs/advanced.html). |
 | Windows `serve_tls` is experimental | 🟢 Low | SChannel backend; cross-compiled and exercised under Wine, but not yet battle-tested on real Windows hosts. |
-| JVM `sql` is a mini engine, not SQLite | 🟢 Low | All stdlib modules now run on the JVM via bundled Java shims; the `sql` shim is a small interpreter with its own file format (not sqlite3 files). |
-| HTTP/3 / QUIC | 🟢 Low | Not implemented, but nobody expects it in 1.x. |
+| JVM `sql` is a mini engine, not SQLite | 🟢 Low | The shim is a small interpreter with its own file format, not `sqlite3` files. |
+| HTTP/3 / QUIC | 🟢 Low | Not implemented, and not planned for 2.x. |
 
-See [docs/limitations.html](docs/limitations.html) for the full explanation of each item.
+See [docs/limitations.html](docs/limitations.html) for the full explanation.
 
-## Compatibility promise (1.x)
+## Compatibility promise
 
-The 1.x series guarantees:
-- Existing GC-mode programs keep compiling (no new required syntax)
-- No feature is removed within 1.x
-- Runtime behavior is stable for correct code
+Within 2.x we guarantee:
 
-The 1.x series does NOT guarantee:
-- Bit-identical behavior for patterns that were undefined or buggy
-- Bug fixes that change observable behavior ship as patches/minors
-  (the old behavior was a defect, not a contract)
+- Existing 2.x programs keep compiling — no new required syntax.
+- `--gc` stays available so programs that rely on GC timing keep working.
+- No feature is removed within 2.x.
 
-2.0.0 will be released when `--arena` becomes the default memory
-layout. That is the first breaking change by design: programs
-relying on GC timing, GC finalization order, or GC-mode-specific
-memory growth will need review.
+We do **not** guarantee bit-identical behaviour for patterns that were undefined or defective, or that a bug fix preserves observable buggy behaviour. The 2.0.0 major bump marks the arena becoming the default layout: programs relying on GC timing, finalization order or GC-specific memory growth should be compiled with `--gc`.
 
-## Syntax Highlighting
+## Contributing
 
-Highlighting files for Vim, VS Code (with LSP), and Emacs are in [`syntax_highlighters/`](syntax_highlighters/).
+Bug reports and focused pull requests are welcome at [github.com/foksiny/leash](https://github.com/foksiny/leash). When reporting a compiler diagnostic, include the source snippet, the command line and the full diagnostic — the compiler is designed to explain itself.
 
 ## License
 

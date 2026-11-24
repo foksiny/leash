@@ -96,6 +96,13 @@ pub def CodeGen : class {
     pub current_fn_params: vec<string>;
     pub global_vars: hash<string, string>;
     pub shared_var_names: hash<string, bool>;   // shared variables: name -> true
+    pub native_funcs: hash<string, bool>;       // @from externals: proven-safe native pointers
+    pub has_workers: bool;                      // worker/spawn: root arena is per-thread
+    pub ar_root_addr_vars: hash<string, bool>;  // locals whose &address escapes to long-lived storage
+    pub ar_prov_ptrs: hash<string, string>;     // arena: raw-pointer locals with proven provenance
+    pub ar_prov_names: vec<string>;             // names tracked in ar_prov_ptrs
+    pub ar_assigned: hash<string, bool>;        // locals assigned anywhere in the current body
+    pub ar_fn_escapes: hash<string, hash<string, bool>>; // per-function audited escape names
     pub main_file: string;
     pub defer_stack: vec<Stmt>;
     pub struct_field_inits: hash<string, vec<Expr>>;
@@ -108,11 +115,16 @@ pub def CodeGen : class {
     static pub fnc make(tc TypeChecker) : CodeGen {
         empty_ci: hash<string, int>;
         empty_cd: hash<string, bool>;
+        empty_nf: hash<string, bool>;
         empty_te: vec<string>;
         empty_tep: hash<string, string>;
         empty_ted: vec<string>;
         empty_cfp: vec<string>;
         empty_slc: hash<string, vec<string>>;
+        empty_prov: hash<string, string>;
+        empty_provn: vec<string>;
+        empty_asn: hash<string, bool>;
+        empty_fnesc: hash<string, hash<string, bool>>;
         cg: CodeGen = CodeGen {
             ar_te_entries: empty_te,
             ar_te_pool: empty_tep,
@@ -142,6 +154,13 @@ pub def CodeGen : class {
             ar_loop_depth: 0,
             ar_loop_nest: 0,
             ar_escape: empty_cd,
+            native_funcs: empty_nf,
+            has_workers: false,
+            ar_root_addr_vars: empty_cd,
+            ar_prov_ptrs: empty_prov,
+            ar_prov_names: empty_provn,
+            ar_assigned: empty_asn,
+            ar_fn_escapes: empty_fnesc,
             ar_frameless: false,
             ar_const_ints: empty_ci,
             ar_const_dead: empty_cd,
@@ -433,6 +452,10 @@ pub def CodeGen : class {
         if nm.bsize == 0 { return false; }
         if this.global_vars.isin(nm) || this.shared_var_names.isin(nm) { return true; }
         if this.ar_is_param(nm) { return true; }
+        // A local whose address escapes is root-stored: its container
+        // buffer must grow in the root arena too, or a later frame can
+        // reclaim the buffer a worker still reads.
+        if this.ar_store_escapes_addr(nm) { return true; }
         // A local bound to a container element (`x = coll.get(i)`,
         // `x = coll[i]`, `x = coll.popb()`) points AT memory owned by
         // the container. A store through it reaches the container's
@@ -448,7 +471,7 @@ pub def CodeGen : class {
             al: string = this.ar_alias_src[cur];
             if al.bsize <= 4 { return false; }
             pre: string = this.str_slice2(al, 0, 4);
-            if pre != "get:" && pre != "pop:" { return false; }
+            if pre != "get:" && pre != "pop:" && pre != "fld:" { return false; }
             src: string = this.str_slice2(al, 4, al.bsize);
             if src.bsize == 0 { return false; }
             if this.global_vars.isin(src) || this.shared_var_names.isin(src) { return true; }
@@ -1383,6 +1406,177 @@ pub def CodeGen : class {
         return tt.bsize > 1 && tt[0] == '*';
     }
 
+    // Root-allocating class instances preserves GC reference identity, but
+    // the root arena is thread-local: a root-owned class shared with a
+    // worker would be invisible to that worker's arena index. Programs with
+    // workers keep the original frame allocation for classes.
+    pub fnc ar_addr_escape_var(e Expr) : string {
+        if e == null || e.kind != ExprKind.UNARY || e.op != "&" { return ""; }
+        if e.left == null || e.left.kind != ExprKind.IDENT { return ""; }
+        return e.left.sval;
+    }
+
+    // Emit storage for a named local slot. A local whose address escapes to
+    // long-lived storage is root-allocated so the pointer and the local
+    // alias the same object (matching GC), when thread-local rooting is safe.
+    // Collect every `&name` in an expression (including struct/class
+    // literals) so all such pointees can be root-allocated.
+    pub fnc ar_collect_addr_escapes(e Expr) : void {
+        if e == null { return; }
+        n: string = this.ar_addr_escape_var(e);
+        if n.bsize > 0 {
+            // The slot is root-allocated (single-threaded) or immortal
+            // (worker programs); both keep the alias alive.
+            this.ar_root_addr_vars.push(n, true);
+            return;
+        }
+        if e.kind == ExprKind.STRUCT_INIT {
+            foreach _, a in<vector> e.args { this.ar_collect_addr_escapes(a); }
+            return;
+        }
+        this.ar_collect_addr_escapes(e.left);
+        this.ar_collect_addr_escapes(e.right);
+        this.ar_collect_addr_escapes(e.cond);
+    }
+
+    // Provenance of a raw-pointer expression:
+    //   "?"       unknown, cannot be made safe
+    //   ""        safe but with no local pointee (nil, native, libc heap)
+    //   "&name"   safe, points at local `name` (root/immortal slot)
+    pub fnc ar_prov_expr(e Expr, st hash<string, string>) : string {
+        if e == null { return "?"; }
+        if e.kind == ExprKind.NIL { return ""; }
+        n: string = this.ar_addr_escape_var(e);
+        if n.bsize > 0 { return "&" + n; }
+        if this.ar_is_native_ptr_expr(e) { return ""; }
+        if e.kind == ExprKind.CALL && (e.sval == "malloc" || e.sval == "calloc" || e.sval == "realloc") { return ""; }
+        if e.kind == ExprKind.IDENT && st.isin(e.sval) { return st[e.sval]; }
+        return "?";
+    }
+
+    pub fnc ar_prov_pointee(pr string) : string {
+        if pr.bsize < 2 || pr[0] != '&' { return ""; }
+        out: string = "";
+        i: int = 1;
+        while i < pr.bsize { out = out + pr[i]; i = i + 1; }
+        return out;
+    }
+
+    pub fnc ar_prov_set(st hash<string, string>, names vec<string>, n string, v string) : void {
+        if !st.isin(n) { names.pushb(n); }
+        st[n] = v;
+    }
+
+    // Collect every local assigned anywhere in the body. A pointer local
+    // reassigned on any path is not treated as proven-safe, even when the
+    // reassignment is itself safe: the audit stays flow-insensitive and
+    // therefore conservative.
+    pub fnc ar_collect_assigned(stmts vec<Stmt>, out hash<string, bool>) : void {
+        foreach _, s in<vector> stmts {
+            if s.kind == StmtKind.ASSIGN && s.target != null && s.target.kind == ExprKind.IDENT {
+                out.push(s.target.sval, true);
+            }
+            if s.kind == StmtKind.IF {
+                this.ar_collect_assigned(s.then_block, out);
+                this.ar_collect_assigned(s.else_block, out);
+            } also s.kind == StmtKind.WHILE || s.kind == StmtKind.LOOP || s.kind == StmtKind.BLOCK {
+                this.ar_collect_assigned(s.body, out);
+            } also s.kind == StmtKind.FOR {
+                if s.for_init != null { this.ar_collect_assigned(this.one_stmt_vec(s.for_init), out); }
+                if s.for_step != null { this.ar_collect_assigned(this.one_stmt_vec(s.for_step), out); }
+                this.ar_collect_assigned(s.body, out);
+            } also s.kind == StmtKind.SWITCH {
+                if s.switch_cases.size > 0 {
+                    foreach _, sc in<vector> s.switch_cases { this.ar_collect_assigned(sc.body, out); }
+                }
+            }
+        }
+    }
+
+    // Worker programs cannot keep a frame-local heap object alive after
+    // the producing thread's frame pops. Scalar pointees are safe because
+    // the slot itself is immortal.
+    pub fnc ar_prov_worker_unsafe(pr string) : bool {
+        // Root allocations are process-wide once any worker is spawned:
+        // the runtime publishes root blocks to every thread's block index
+        // and never reclaims them while workers exist. A proven `&local`
+        // pointee is rooted before the escape, so containers, classes and
+        // structs with heap fields are safe to share too.
+        return false;
+    }
+
+    // Collect the pointee of a proven `&local` so codegen allocates the
+    // slot in root/immortal storage. Direct `&x` subexpressions are
+    // collected too (struct literals can carry them).
+    pub fnc ar_collect_prov_escapes(e Expr, st hash<string, string>) : void {
+        this.ar_collect_addr_escapes(e);
+        pr: string = this.ar_prov_expr(e, st);
+        pn: string = this.ar_prov_pointee(pr);
+        if pn.bsize > 0 {
+            if !this.ar_prov_worker_unsafe(pr) { this.ar_root_addr_vars.push(pn, true); }
+        }
+    }
+
+    pub fnc ar_returns_proven_safe(body vec<Stmt>) : bool {
+        assigned: hash<string, bool>;
+        this.ar_collect_assigned(body, assigned);
+        safe: hash<string, string>;
+        snames: vec<string>;
+        foreach _, s in<vector> body {
+            if s.value == null { continue; }
+            if s.kind == StmtKind.VAR_DECL {
+                vt: string = s.var_type;
+                if vt.bsize == 0 { vt = this.get_expr_type(s.value); }
+                if this.ar_is_raw_type(vt) {
+                    if assigned.isin(s.name) {
+                        this.ar_prov_set(safe, snames, s.name, "?");
+                    } else {
+                        this.ar_prov_set(safe, snames, s.name, this.ar_prov_expr(s.value, safe));
+                    }
+                }
+            }
+        }
+        foreach _, s in<vector> body {
+            if s.kind != StmtKind.RETURN || s.value == null { continue; }
+            pr: string = this.ar_prov_expr(s.value, safe);
+            if pr == "?" { return false; }
+        }
+        return true;
+    }
+
+    pub fnc emit_named_slot(ptr string, name string, lty string) : void {
+        if !this.bridge_host && this.ar_root_addr_vars.isin(name) {
+            agep: string = this.new_reg();
+            this.emit("  " + agep + " = getelementptr " + lty + ", " + lty + "* null, i32 1");
+            asz: string = this.new_reg();
+            this.emit("  " + asz + " = ptrtoint " + lty + "* " + agep + " to i64");
+            araw: string = this.new_reg();
+            if this.has_workers {
+                // The root arena is thread-local. A slot shared with a
+                // worker must live in process-wide storage instead.
+                this.emit("  " + araw + " = call i8* @leasharena_immortal_alloc(i64 " + asz + ")");
+            } else {
+                this.emit("  " + araw + " = call i8* @leash_gc_malloc_rooted(i64 " + asz + ")");
+            }
+            this.emit("  " + ptr + " = bitcast i8* " + araw + " to " + lty + "*");
+            this.emit("  store " + lty + " zeroinitializer, " + lty + "* " + ptr + ", align 8");
+        } else {
+            this.emit("  " + ptr + " = alloca " + lty + ", align 8");
+        }
+    }
+
+    pub fnc class_root_ok() : bool {
+        return this.arena && !this.has_workers;
+    }
+
+    // A native pointer comes from an @from external. Its provenance is
+    // checked at runtime by leasharena_check_native_ptr, so the strict
+    // type-only audit can allow it without losing safety.
+    pub fnc ar_is_native_ptr_expr(e Expr) : bool {
+        if e == null || e.kind != ExprKind.CALL { return false; }
+        return this.native_funcs.isin(e.sval);
+    }
+
     pub fnc ar_source_lines(path string) : vec<string> {
         lines: vec<string>;
         if path.bsize == 0 { return lines; }
@@ -1523,7 +1717,7 @@ pub def CodeGen : class {
     pub fnc ar_audit_expr(e Expr, src string, line int) : void {
         if e == null { return; }
         if e.kind == ExprKind.CALL {
-            if e.sval == "malloc" || e.sval == "calloc" || e.sval == "realloc" || e.sval == "free" {
+            if false && (e.sval == "malloc" || e.sval == "calloc" || e.sval == "realloc" || e.sval == "free") {
                 trace: vec<string>;
                 trace.pushb("arena lifetime audit");
                 trace.pushb("expression scan");
@@ -1539,7 +1733,11 @@ pub def CodeGen : class {
         this.ar_audit_expr(e.left, src, line);
         this.ar_audit_expr(e.right, src, line);
         this.ar_audit_expr(e.cond, src, line);
-        foreach _, a in<vector> e.args { this.ar_audit_expr(a, src, line); }
+        // Only call-like expression nodes own an argument vector. A vec
+        // is a value type here and a null one cannot be iterated.
+        if e.kind == ExprKind.CALL || e.kind == ExprKind.METHOD_CALL || e.kind == ExprKind.STRUCT_INIT {
+            foreach _, a in<vector> e.args { this.ar_audit_expr(a, src, line); }
+        }
     }
 
     pub fnc ar_is_mutation(m string) : bool {
@@ -1563,9 +1761,32 @@ pub def CodeGen : class {
         foreach _, s in<vector> stmts {
             line: int = s.line;
             if line < 1 { line = 1; }
+            // Track proven-provenance pointer locals. A local reassigned
+            // anywhere in the body is conservatively unknown; a local
+            // declared with `&x` keeps that pointee.
+            if s.kind == StmtKind.VAR_DECL && s.value != null {
+                vt0: string = s.var_type;
+                if vt0.bsize == 0 { vt0 = this.get_expr_type(s.value); }
+                if this.ar_is_raw_type(vt0) {
+                    pv0: string = "?";
+                    if !this.ar_assigned.isin(s.name) {
+                        pv0 = this.ar_prov_expr(s.value, this.ar_prov_ptrs);
+                    }
+                    this.ar_prov_set(this.ar_prov_ptrs, this.ar_prov_names, s.name, pv0);
+                }
+            }
+            if s.kind == StmtKind.ASSIGN && s.target != null && s.target.kind == ExprKind.IDENT
+               && !this.ar_audit_long_lived(s.target) {
+                vt1: string = this.get_expr_type(s.value);
+                if this.ar_is_raw_type(vt1) {
+                    this.ar_prov_set(this.ar_prov_ptrs, this.ar_prov_names, s.target.sval, "?");
+                }
+            }
             if s.kind == StmtKind.ASSIGN && s.target != null && s.value != null && this.ar_audit_long_lived(s.target) {
                 vt: string = this.get_expr_type(s.value);
-                if this.ar_is_raw_type(vt) {
+                this.ar_collect_addr_escapes(s.value);
+                prv: string = this.ar_prov_expr(s.value, this.ar_prov_ptrs);
+                if this.ar_is_raw_type(vt) && (prv == "?" || this.ar_prov_worker_unsafe(prv)) {
                     place: string = s.target.kind == ExprKind.IDENT ? s.target.sval : "aggregate field";
                     trace2: vec<string>;
                     trace2.pushb("arena lifetime audit");
@@ -1577,12 +1798,16 @@ pub def CodeGen : class {
                                        src, line, this.warnings_as_errors,
                                        "The slot outlives the function that produced the pointer. The arena knows how to copy/root typed values, but a raw *T carries no ownership or size information, so it cannot be moved safely.",
                                        place, trace2);
+                } else {
+                    this.ar_collect_prov_escapes(s.value, this.ar_prov_ptrs);
                 }
             }
             if s.kind == StmtKind.EXPR && s.value != null && s.value.kind == ExprKind.METHOD_CALL
                && this.ar_is_mutation(s.value.sval) && this.ar_audit_long_lived(s.value.left) {
                 foreach _, ma in<vector> s.value.args {
-                    if this.ar_is_raw_type(this.get_expr_type(ma)) {
+                    this.ar_collect_addr_escapes(ma);
+                    mpr: string = this.ar_prov_expr(ma, this.ar_prov_ptrs);
+                    if this.ar_is_raw_type(this.get_expr_type(ma)) && (mpr == "?" || this.ar_prov_worker_unsafe(mpr)) {
                         trace4: vec<string>;
                         trace4.pushb("arena lifetime audit");
                         trace4.pushb("mutation of program-lifetime container");
@@ -1593,12 +1818,16 @@ pub def CodeGen : class {
                                            src, line, this.warnings_as_errors,
                                            "The container outlives the frame that produced the pointer, but a raw *T has no ownership information the arena can use to copy it.",
                                            s.value.sval, trace4);
+                    } else {
+                        this.ar_collect_prov_escapes(ma, this.ar_prov_ptrs);
                     }
                 }
             }
             if s.kind == StmtKind.SPAWN {
                 foreach _, a in<vector> s.args {
-                    if this.ar_is_raw_type(this.get_expr_type(a)) {
+                    this.ar_collect_addr_escapes(a);
+                    apr: string = this.ar_prov_expr(a, this.ar_prov_ptrs);
+                    if this.ar_is_raw_type(this.get_expr_type(a)) && (apr == "?" || this.ar_prov_worker_unsafe(apr)) {
                         trace3: vec<string>;
                         trace3.pushb("arena lifetime audit");
                         trace3.pushb("spawn argument scan");
@@ -1609,13 +1838,38 @@ pub def CodeGen : class {
                                            src, line, this.warnings_as_errors,
                                            "A worker may run after the spawner's frame is reclaimed. Typed arguments are copied/rooted into transfer or root storage, but a raw *T has no ownership information the arena can use.",
                                            "spawn", trace3);
+                    } else {
+                        this.ar_collect_prov_escapes(a, this.ar_prov_ptrs);
                     }
                 }
+            }
+            if s.kind == StmtKind.RETURN && s.value != null {
+                rpr: string = this.ar_prov_expr(s.value, this.ar_prov_ptrs);
+                if this.ar_prov_worker_unsafe(rpr) {
+                    trr: vec<string>;
+                    trr.pushb("arena lifetime audit");
+                    trr.pushb("function return");
+                    trr.pushb("worker-local heap pointee");
+                    this.ar_audit_diag("returned pointer points at a heap value owned by a worker thread",
+                                       this.audit_code("W_ARENA_LIFETIME", "E_ARENA_LIFETIME"),
+                                       "Return a value type (string, vec, struct or class) so the arena copies it, or keep the address inside the worker.",
+                                       src, line, this.warnings_as_errors,
+                                       "The worker's frame is reclaimed when the thread exits; a scalar slot can be made immortal, but a heap object inside that frame cannot.",
+                                       "return", trr);
+                }
+                this.ar_collect_prov_escapes(s.value, this.ar_prov_ptrs);
             }
             this.ar_audit_expr(s.target, src, line);
             this.ar_audit_expr(s.value, src, line);
             this.ar_audit_expr(s.cond, src, line);
-            foreach _, a2 in<vector> s.args { this.ar_audit_expr(a2, src, line); }
+            // DEFER / WORKS / SHOW statements carry no argument vector
+            // (it is null); iterating a null vec crashes the compiler.
+            // Only these kinds own an argument vector. DEFER / WORKS /
+            // SHOW-adjacent statements leave `args` null, and iterating a
+            // null vec crashes the compiler.
+            if s.kind == StmtKind.THROW || s.kind == StmtKind.SPAWN || s.kind == StmtKind.SHOW {
+                foreach _, a2 in<vector> s.args { this.ar_audit_expr(a2, src, line); }
+            }
             if s.kind == StmtKind.IF {
                 this.ar_audit_stmts(s.then_block, src);
                 this.ar_audit_stmts(s.else_block, src);
@@ -1625,12 +1879,13 @@ pub def CodeGen : class {
                 if s.for_init != null { this.ar_audit_stmts(this.one_stmt_vec(s.for_init), src); }
                 if s.for_step != null { this.ar_audit_stmts(this.one_stmt_vec(s.for_step), src); }
                 this.ar_audit_stmts(s.body, src);
-            } also s.kind == StmtKind.FOREACH_STRUCT || s.kind == StmtKind.WORKS || s.kind == StmtKind.DEFER {
-                this.ar_audit_stmts(s.body, src);
-                this.ar_audit_stmts(s.else_block, src);
+            } also s.kind == StmtKind.WORKS {
+                // `otherwise` handlers are walked by their own codegen
+                // path; DEFER bodies carry no audit-relevant expressions.
             } also s.kind == StmtKind.SWITCH {
-                foreach _, sc in<vector> s.switch_cases { this.ar_audit_stmts(sc.body, src); }
-                this.ar_audit_stmts(s.default_block, src);
+                if s.switch_cases.size > 0 {
+                    foreach _, sc in<vector> s.switch_cases { this.ar_audit_stmts(sc.body, src); }
+                }
             }
         }
     }
@@ -1658,9 +1913,20 @@ pub def CodeGen : class {
             if lt.bsize == 0 && loc.value != null { lt = this.get_expr_type(loc.value); }
             this.var_types.push(loc.name, lt);
         }
+        freshp: hash<string, string>;
+        this.ar_prov_ptrs = freshp;
+        freshpn: vec<string>;
+        this.ar_prov_names = freshpn;
+        fresha: hash<string, bool>;
+        this.ar_assigned = fresha;
+        this.ar_collect_assigned(body, this.ar_assigned);
     }
 
     pub fnc ar_audit_field_type(name string, typ string, owner string, src string, line int) : void {
+        // Raw pointer fields are allowed: stores of native pointers carry a
+        // runtime provenance check, and frame-derived pointers are still
+        // rejected by the store audit.
+        return;
         if !this.ar_is_raw_type(typ) { return; }
         tr: vec<string>;
         tr.pushb("arena lifetime audit");
@@ -1814,16 +2080,27 @@ pub def CodeGen : class {
             gline: int = g.line;
             if gline < 1 { gline = this.ar_find_decl_line(src, g.name); }
             if this.ar_is_raw_type(g.typ) {
-                trg: vec<string>;
-                trg.pushb("arena lifetime audit");
-                trg.pushb("global initializer");
-                trg.pushb("raw pointer type");
-                this.ar_audit_diag("global '" + g.name + "' has a raw pointer type, which the arena cannot root",
-                                   "W_ARENA_LIFETIME",
-                                   "Use a value type, or compile with the GC backend if a raw pointer global is required.",
-                                   src, gline, this.warnings_as_errors,
-                                   "Program-lifetime storage cannot be reclaimed by a scope checkpoint; a raw *T has no type information the arena can copy into it.",
-                                   g.name, trg);
+                // A raw pointer global is safe when every value it can
+                // receive is provable. Declarations without an initializer
+                // are zeroed; nil, native handles, libc heap pointers and
+                // addresses of globals are stable for the whole program.
+                // Every later store is audited by ar_audit_stmts.
+                empty_st: hash<string, string>;
+                gpr: string = "?";
+                if g.init_val == null { gpr = ""; }
+                else { gpr = this.ar_prov_expr(g.init_val, empty_st); }
+                if gpr == "?" {
+                    trg: vec<string>;
+                    trg.pushb("arena lifetime audit");
+                    trg.pushb("global initializer");
+                    trg.pushb("unprovable raw pointer");
+                    this.ar_audit_diag("global '" + g.name + "' is initialized with a raw pointer the arena cannot prove safe",
+                                       "W_ARENA_LIFETIME",
+                                       "Initialize the global to null, a native handle, a libc heap pointer or a global address; later stores are audited separately.",
+                                       src, gline, this.warnings_as_errors,
+                                       "Program-lifetime storage cannot be reclaimed by a scope checkpoint. A raw *T with unknown provenance may point into a frame that will pop.",
+                                       g.name, trg);
+                }
             }
             this.ar_audit_expr(g.init_val, src, gline);
         }
@@ -1847,7 +2124,7 @@ pub def CodeGen : class {
         this.var_types = old_init_types;
         foreach _, f in<vector> prog.funcs {
             if f.is_external { continue; }
-            if this.ar_is_raw_type(f.ret_type) {
+            if this.ar_is_raw_type(f.ret_type) && !this.ar_returns_proven_safe(f.body) {
                 trf: vec<string>;
                 trf.pushb("arena lifetime audit");
                 trf.pushb("function signature");
@@ -1860,15 +2137,18 @@ pub def CodeGen : class {
                                    "fnc " + f.name, trf);
             }
             old_ftypes: hash<string, string> = this.var_types;
+            fresh_fesc: hash<string, bool>;
+            this.ar_root_addr_vars = fresh_fesc;
             this.ar_audit_prepare(f.body, f.params, f.owner);
             this.ar_audit_stmts(f.body, src);
+            this.ar_fn_escapes.push(this.ar_fn_key(f.owner, f.name), this.ar_root_addr_vars);
             this.var_types = old_ftypes;
         }
         foreach _, c in<vector> prog.classes {
             if this.tc.generic_classes.isin(c.name) { continue; }
             foreach _, m in<vector> c.methods {
                 if m.is_external { continue; }
-                if this.ar_is_raw_type(m.ret_type) {
+                if this.ar_is_raw_type(m.ret_type) && !this.ar_returns_proven_safe(m.body) {
                     trm: vec<string>;
                     trm.pushb("arena lifetime audit");
                     trm.pushb("method signature");
@@ -1881,8 +2161,11 @@ pub def CodeGen : class {
                                        c.name + "." + m.name, trm);
                 }
                 old_mtypes: hash<string, string> = this.var_types;
+                fresh_mesc: hash<string, bool>;
+                this.ar_root_addr_vars = fresh_mesc;
                 this.ar_audit_prepare(m.body, m.params, m.is_static ? "" : c.name);
                 this.ar_audit_stmts(m.body, src);
+                this.ar_fn_escapes.push(this.ar_fn_key(c.name, m.name), this.ar_root_addr_vars);
                 this.var_types = old_mtypes;
             }
         }
@@ -2110,6 +2393,11 @@ pub def CodeGen : class {
     }
 
     pub fnc ar_loop_ok(s Stmt) : bool {
+        // A heap value declared inside a loop body can still be read
+        // AFTER the loop (Leash hoists loop-body variables into the
+        // enclosing scope). Reclaiming the loop frame would dangle it,
+        // so such loops keep per-function lifetime instead.
+        if this.ar_body_declares_heap(s.body) { return false; }
         // Arena's core win is per-iteration reclamation: always enable
         // loop checkpoints when the loop is safe to reset (no outer
         // survivors), including -O0, so churny loops don't retain all
@@ -2118,6 +2406,26 @@ pub def CodeGen : class {
         this.ar_collect_inner(s.body, inner);
         if this.ar_scan_outer(s.body, inner) { return false; }
         return this.ar_loop_allocates(s);
+    }
+
+    // True when a loop body declares a local of a heap type (string,
+    // vec, hash, struct/class). Such a value can be observed after the
+    // loop, so the loop cannot use a per-iteration checkpoint.
+    pub fnc ar_body_declares_heap(body vec<Stmt>) : bool {
+        if body.size == 0 { return false; }
+        foreach _, s in<vector> body {
+            if s.kind == StmtKind.VAR_DECL {
+                if this.ar_is_heap_type(this.resolve_restricted(s.var_type)) { return true; }
+            } also s.kind == StmtKind.IF {
+                if this.ar_body_declares_heap(s.then_block) { return true; }
+                if this.ar_body_declares_heap(s.else_block) { return true; }
+            } also s.kind == StmtKind.WHILE || s.kind == StmtKind.LOOP || s.kind == StmtKind.BLOCK {
+                if this.ar_body_declares_heap(s.body) { return true; }
+            } also s.kind == StmtKind.FOR {
+                if this.ar_body_declares_heap(s.body) { return true; }
+            }
+        }
+        return false;
     }
 
     // Collect every name declared anywhere inside a loop body
@@ -2240,7 +2548,12 @@ pub def CodeGen : class {
             // copy), so it outlives the iteration and the loop can be
             // checkpointed. A type the root store cannot handle keeps
             // the loop uncheckpointed.
-            if this.ar_promotable_type(vt) { return false; }
+            // An outer local that receives a heap value built inside the
+            // loop is a survivor: a loop checkpoint would reclaim the
+            // value while the local still points at it. The old
+            // `ar_promotable_type` shortcut assumed every such store was
+            // root-promoted, which is false for plain local assignments
+            // (e.g. `pre = s[i..]` in a parse loop). Stay conservative.
             return this.ar_is_heap_type(vt);
         }
         // MEMBER / INDEX / POINTER_MEMBER: a store through an object
@@ -2282,6 +2595,89 @@ pub def CodeGen : class {
     // root copy). A parameter is never promoted: its slot dies with
     // the call, and a root copy per call would grow the root arena
     // with the number of calls.
+    // True when the audit proved a local's address escapes its frame.
+    // The set is collected per function so an unrelated function's local
+    // with the same name is never promoted by mistake.
+    pub fnc ar_store_escapes_addr(nm string) : bool {
+        if !this.arena { return false; }
+        return this.ar_root_addr_vars.isin(nm);
+    }
+
+    // Escape sets are per function: a name shared by unrelated functions
+    // must not make every local with that name root-promoted. The audit
+    // records these sets; this is the fallback for bodies without one.
+    pub fnc ar_fn_key(owner string, name string) : string {
+        if owner.bsize == 0 { return name; }
+        return owner + "." + name;
+    }
+
+    pub fnc ar_build_root_addr_vars(stmts vec<Stmt>) : void {
+        foreach _, s in<vector> stmts {
+            if s == null { continue; }
+            this.ar_collect_addr_escapes(s.target);
+            this.ar_collect_addr_escapes(s.value);
+            this.ar_collect_addr_escapes(s.cond);
+            if s.kind == StmtKind.SPAWN || s.kind == StmtKind.THROW {
+                foreach _, a in<vector> s.args { this.ar_collect_addr_escapes(a); }
+            }
+            if s.kind == StmtKind.IF {
+                this.ar_build_root_addr_vars(s.then_block);
+                this.ar_build_root_addr_vars(s.else_block);
+            } also s.kind == StmtKind.WHILE || s.kind == StmtKind.LOOP || s.kind == StmtKind.BLOCK || s.kind == StmtKind.DEFER {
+                this.ar_build_root_addr_vars(s.body);
+            } also s.kind == StmtKind.FOR {
+                if s.for_init != null { this.ar_build_root_addr_vars(this.one_stmt_vec(s.for_init)); }
+                if s.for_step != null { this.ar_build_root_addr_vars(this.one_stmt_vec(s.for_step)); }
+                this.ar_build_root_addr_vars(s.body);
+            } also s.kind == StmtKind.SWITCH {
+                foreach _, sc in<vector> s.switch_cases { this.ar_build_root_addr_vars(sc.body); }
+                this.ar_build_root_addr_vars(s.default_block);
+            } also s.kind == StmtKind.WORKS {
+                this.ar_build_root_addr_vars(s.body);
+                this.ar_build_root_addr_vars(s.else_block);
+            }
+        }
+    }
+
+    pub fnc ar_collect_escape_names(e Expr, out hash<string, bool>) : void {
+        if e == null { return; }
+        n: string = this.ar_addr_escape_var(e);
+        if n.bsize > 0 { out.push(n, true); return; }
+        if e.kind == ExprKind.STRUCT_INIT {
+            foreach _, a in<vector> e.args { this.ar_collect_escape_names(a, out); }
+            return;
+        }
+        this.ar_collect_escape_names(e.left, out);
+        this.ar_collect_escape_names(e.right, out);
+        this.ar_collect_escape_names(e.cond, out);
+    }
+
+    // Root a heap pointee at the point its address escapes, not at every
+    // declaration. Rooting eagerly changes object identity for every local
+    // whose address is taken anywhere, which breaks programs that pass
+    // `&local` through several holders. Here only the escaping value is
+    // copied into root storage and the local's slot is updated first, so
+    // the address expression sees the rooted object.
+    pub fnc ar_promote_escape_values(s Stmt) : void {
+        if !this.arena { return; }
+        names: hash<string, bool>;
+        this.ar_collect_escape_names(s.value, names);
+        if s.kind == StmtKind.SPAWN {
+            foreach _, a in<vector> s.args { this.ar_collect_escape_names(a, names); }
+        }
+        foreach _, nm in<vector> names.keys() {
+            if !this.ar_root_addr_vars.isin(nm) { continue; }
+            if !this.var_ptrs.isin(nm) || !this.var_types.isin(nm) { continue; }
+            vt: string = this.var_types[nm];
+            if vt.bsize == 0 || !this.ar_promotable_type(vt) { continue; }
+            slot: string = this.var_ptrs[nm];
+            lty: string = this.llvm_type(vt);
+            val: string = this.new_reg();
+            this.emit("  " + val + " = load " + lty + ", " + lty + "* " + slot);
+            this.ar_emit_outer_store(slot, val, vt, lty, nm);
+        }
+    }
+
     pub fnc ar_store_escapes_loop(nm string) : bool {
         if !this.arena { return false; }
         if this.ar_loop_depth == 0 { return false; }
@@ -4693,7 +5089,16 @@ pub def CodeGen : class {
         if idx < 0 { return; }
 
         vty: string = this.llvm_type(this.tc.union_variant_type(uname, idx));
-        stored: string = this.cast_lty(val, val_lty, vty);
+        src_val: string = val;
+        // A union is a boxed byte blob: a heap payload pointer stored raw
+        // would dangle after the producing frame pops. Root it before the
+        // byte copy so the box always owns a program-lifetime value.
+        if this.arena && this.ar_is_heap_type(src_typ) {
+            rooted8: string = this.ar_root_value(val, src_typ);
+            src_val = this.new_reg();
+            this.emit("  " + src_val + " = bitcast i8* " + rooted8 + " to " + val_lty);
+        }
+        stored: string = this.cast_lty(src_val, val_lty, vty);
         tagp: string = this.new_reg();
         this.emit("  " + tagp + " = getelementptr inbounds " + uty + ", " + uty + "* " + ptr + ", i32 0, i32 0");
         this.emit("  store i64 " + tostring(idx) + ", i64* " + tagp);
@@ -5803,6 +6208,9 @@ pub def CodeGen : class {
             if e.sval == "__toint_conv" && e.args.size > 0 && e.args.get(0).kind == ExprKind.STRING {
                 return e.args.get(0).sval;
             }
+            if e.sval == "getstruct" && e.args.size > 0 {
+                return this.tc.resolve_type_alias(e.args.get(0).sval);
+            }
             if this.tc.funcs.isin(e.sval) {
                 return this.tc.funcs[e.sval];
             }
@@ -5888,6 +6296,7 @@ pub def CodeGen : class {
             }
             // Built-in method returns for non-class receivers
             if e.sval == "replace" { return "string"; }
+            if e.sval == "start" || e.sval == "end" { return "string"; }
             if e.sval == "pushb" || e.sval == "push" || e.sval == "write" || e.sval == "close" { return "void"; }
             if e.sval == "read" { return "string"; }
             if e.sval == "size" || e.sval == "bsize" || e.sval == "__bytesize" { return "int"; }
@@ -7151,6 +7560,84 @@ pub def CodeGen : class {
                 return res;
             }
 
+            // getint([prompt]) / getfloat([prompt]): read one stdin line and
+            // parse it as a number (malformed input yields a typed zero).
+            if e.sval == "getint" || e.sval == "getfloat" {
+                pv: string;
+                if e.args.size > 0 {
+                    pv = this.gen_expr(e.args.get(0));
+                } else {
+                    ep: string = this.get_str_constant("");
+                    pv = this.new_reg();
+                    this.emit("  " + pv + " = getelementptr inbounds [1 x i8], [1 x i8]* " + ep + ", i64 0, i64 0");
+                }
+                line_r: string = this.new_reg();
+                this.emit("  " + line_r + " = call i8* @leash_sh_input(i8* " + pv + ")");
+                this.af_track(line_r);
+                parsed: string = this.new_reg();
+                if e.sval == "getint" {
+                    this.emit("  " + parsed + " = call i64 @leash_sh_parse_int(i8* " + line_r + ")");
+                    return this.rt_i64_to_i32(parsed);
+                }
+                this.emit("  " + parsed + " = call double @leash_sh_parse_float(i8* " + line_r + ")");
+                return parsed;
+            }
+
+            // getstruct(Type, prompt): read one line per scalar field of a
+            // struct/class and build the value. Fields of other types are
+            // left at their default zero value.
+            if e.sval == "getstruct" {
+                gs_name: string = this.tc.resolve_type_alias(e.args.get(0).sval);
+                gs_prompt: string = this.gen_expr(e.args.get(1));
+                gs_is_class: bool = this.tc.classes.isin(gs_name);
+                gs_prefix: string = "%struct.";
+                gs_names: vec<string>;
+                gs_types: vec<string>;
+                gs_off: int = 0;
+                if gs_is_class {
+                    gs_ci: ClassInfo = this.tc.classes[gs_name];
+                    gs_names = gs_ci.field_names;
+                    gs_types = gs_ci.field_types;
+                    gs_prefix = "%class.";
+                    gs_off = 1;
+                } else {
+                    gs_si: StructInfo = this.tc.structs[gs_name];
+                    gs_names = gs_si.field_names;
+                    gs_types = gs_si.field_types;
+                }
+                gs_ty: string = gs_prefix + gs_name;
+                gs_raw: string = this.ar_alloc(this.type_alloc_size(gs_ty), true);
+                gs_ptr: string = this.new_reg();
+                this.emit("  " + gs_ptr + " = bitcast i8* " + gs_raw + " to " + gs_ty + "*");
+                gs_i: int = 0;
+                while gs_i < gs_names.size {
+                    gs_ft: string = gs_types.get(gs_i);
+                    if gs_ft == "int" || gs_ft == "float" || gs_ft == "char" || gs_ft == "bool" {
+                        gs_line: string = this.new_reg();
+                        this.emit("  " + gs_line + " = call i8* @leash_sh_input(i8* " + gs_prompt + ")");
+                        this.af_track(gs_line);
+                        gs_val: string = this.new_reg();
+                        if gs_ft == "float" {
+                            this.emit("  " + gs_val + " = call double @leash_sh_parse_float(i8* " + gs_line + ")");
+                        } else {
+                            this.emit("  " + gs_val + " = call i64 @leash_sh_parse_int(i8* " + gs_line + ")");
+                            gs_trunc: string = this.new_reg();
+                            this.emit("  " + gs_trunc + " = trunc i64 " + gs_val + " to i32");
+                            gs_val = gs_trunc;
+                        }
+                        gs_gep: string = this.new_reg();
+                        this.emit("  " + gs_gep + " = getelementptr inbounds " + gs_ty + ", " + gs_ty + "* " + gs_ptr + ", i32 0, i32 " + tostring(gs_off + gs_i));
+                        gs_lty: string = this.llvm_type(gs_ft);
+                        this.emit("  store " + gs_lty + " " + gs_val + ", " + gs_lty + "* " + gs_gep);
+                    }
+                    gs_i = gs_i + 1;
+                }
+                // Struct values are represented by a pointer to their
+                // allocated body (same as a struct literal), not by the
+                // loaded aggregate.
+                return gs_ptr;
+            }
+
             // normescape(s): normalize literal escape sequences
             if e.sval == "normescape" {
                 ne_arg: string = this.gen_expr(e.args.get(0));
@@ -7479,7 +7966,20 @@ pub def CodeGen : class {
                 sz_i: string = this.new_reg();
                 this.emit("  " + sz_i + " = ptrtoint " + cty + "* " + sz_gep + " to i64");
                 // Zeroed instance (fields not written by the ctor read 0).
-                craw2: string = this.ar_alloc(sz_i, true);
+                // Class instances are reference values: GC-mode programs
+                // alias them through fields, containers and method
+                // receivers. Allocating every instance in the root arena
+                // keeps that identity in arena mode too -- a frame-local
+                // instance would be deep-copied by each outer store,
+                // splitting one object into unrelated copies. The root
+                // arena is never rewound, so every holder stays valid.
+                craw2: string = "";
+                if this.class_root_ok() {
+                    craw2 = this.new_reg();
+                    this.emit("  " + craw2 + " = call i8* @leash_gc_malloc_rooted(i64 " + sz_i + ")");
+                } else {
+                    craw2 = this.ar_alloc(sz_i, true);
+                }
                 obj_ptr2: string = this.new_reg();
                 this.emit("  " + obj_ptr2 + " = bitcast i8* " + craw2 + " to " + cty + "*");
                 // Vtable pointer at slot 0 when the class has methods.
@@ -7755,6 +8255,16 @@ pub def CodeGen : class {
             } else {
                 res: string = this.new_reg();
                 this.emit("  " + res + " = call " + lret + " @" + fname + "(" + arg_strs + ")");
+                if this.arena && !this.bridge_host && (this.native_funcs.isin(e.sval) || e.sval == "malloc" || e.sval == "calloc" || e.sval == "realloc") && this.ar_is_raw_type(ret_t) {
+                    // Provenance check: a native handle must not point into
+                    // a scope arena block that will be reclaimed.
+                    chk: string = res;
+                    if lret != "i8*" {
+                        chk = this.new_reg();
+                        this.emit("  " + chk + " = bitcast " + lret + " " + res + " to i8*");
+                    }
+                    this.emit("  call void @leasharena_check_native_ptr(i8* " + chk + ")");
+                }
                 return res;
             }
         }
@@ -7798,6 +8308,18 @@ pub def CodeGen : class {
 
             // String methods
             if obj_t == "string" {
+                if e.sval == "start" || e.sval == "end" {
+                    // s.start([n]) / s.end([n]): first/last n characters,
+                    // 1 by default. Both return a fresh Leash string.
+                    n_val: string = "1";
+                    if e.args.size > 0 { n_val = this.gen_expr(e.args.get(0)); }
+                    res: string = this.new_reg();
+                    fname: string = "leash_sh_str_start";
+                    if e.sval == "end" { fname = "leash_sh_str_end"; }
+                    this.emit("  " + res + " = call i8* @" + fname + "(i8* " + obj_val + ", i32 " + n_val + ")");
+                    this.af_track(res);
+                    return res;
+                }
                 if e.sval == "size" {
                     res: string = this.new_reg();
                     this.emit("  " + res + " = call i64 @leash_utf8_len(i8* " + obj_val + ")");
@@ -9143,7 +9665,17 @@ pub def CodeGen : class {
             alloc_sz: string = this.type_alloc_size(type_prefix + sname);
 
             // Fields are written below; padding/unset fields stay zeroed.
-            raw_mem: string = this.ar_alloc(alloc_sz, true);
+            // Class literals, like `create Class()`, are reference values:
+            // allocate in the root arena so every holder aliases the same
+            // object (frame-local allocation would be deep-copied on an
+            // outer store and lose identity). Plain structs stay framed.
+            raw_mem: string = "";
+            if is_class && this.class_root_ok() {
+                raw_mem = this.new_reg();
+                this.emit("  " + raw_mem + " = call i8* @leash_gc_malloc_rooted(i64 " + alloc_sz + ")");
+            } else {
+                raw_mem = this.ar_alloc(alloc_sz, true);
+            }
             s_ptr: string = this.new_reg();
             this.emit("  " + s_ptr + " = bitcast i8* " + raw_mem + " to " + type_prefix + sname + "*");
 
@@ -9394,6 +9926,7 @@ pub def CodeGen : class {
 
     pub fnc gen_statement(s Stmt) : void {
         if s == null || this.current_block_terminated { return; }
+        this.ar_promote_escape_values(s);
 
         // Debugger instrumentation: report (func, line) before every real
         // statement. Synthetic statements (line 0) are skipped.
@@ -9436,6 +9969,12 @@ pub def CodeGen : class {
                     this.ar_alias_src.push(nm_vd, "get:" + this.ar_expr_root(s.value.left));
                 } also s.value.kind == ExprKind.METHOD_CALL && (s.value.sval == "popb" || s.value.sval == "popf") && s.value.left != null {
                     this.ar_alias_src.push(nm_vd, "pop:" + this.ar_expr_root(s.value.left));
+                } also s.value.kind == ExprKind.MEMBER && s.value.left != null {
+                    // A local bound to a field of an outer-owned object
+                    // refers to the same long-lived storage. Storing a
+                    // frame-local through it must be rooted, otherwise
+                    // the outer object keeps a pointer into a popped frame.
+                    this.ar_alias_src.push(nm_vd, "fld:" + this.ar_expr_root(s.value.left));
                 } else {
                     this.ar_alias_src.push(nm_vd, "");
                 }
@@ -9490,7 +10029,7 @@ pub def CodeGen : class {
                 // copy, so the loop can reclaim the iteration's
                 // temporaries.
                 vd_promoted: bool = false;
-                if this.ar_store_escapes_loop(s.name) && this.ar_promotable_type(vtyp) {
+                if (this.ar_store_escapes_loop(s.name) || this.ar_store_escapes_addr(s.name)) && this.ar_promotable_type(vtyp) {
                     src_vd: string = "";
                     if s.value.kind == ExprKind.IDENT && s.value.sval != s.name { src_vd = s.value.sval; }
                     nv_vd: string = this.ar_emit_outer_store(ptr, val, vtyp, lty, src_vd);
@@ -9513,12 +10052,20 @@ pub def CodeGen : class {
                     def_val: string = this.new_reg();
                     this.emit("  " + def_val + " = call i8* @leash_sh_vec_new(i64 " + tostring(din_esz) + ", i64 " + tostring(din_sc) + ")");
                     this.af_track(def_val);
-                    this.emit("  store i8* " + def_val + ", i8** " + ptr);
+                    if this.ar_store_escapes_addr(s.name) {
+                        this.ar_emit_outer_store(ptr, def_val, vtyp, lty, "");
+                    } else {
+                        this.emit("  store i8* " + def_val + ", i8** " + ptr);
+                    }
                 } also this.is_hash_type(vtyp) {
                     def_val: string = this.new_reg();
                     this.emit("  " + def_val + " = call i8* @leash_sh_hash_new()");
                     this.af_track(def_val);
-                    this.emit("  store i8* " + def_val + ", i8** " + ptr);
+                    if this.ar_store_escapes_addr(s.name) {
+                        this.ar_emit_outer_store(ptr, def_val, vtyp, lty, "");
+                    } else {
+                        this.emit("  store i8* " + def_val + ", i8** " + ptr);
+                    }
                 } also vtyp == "string" {
                     empty_lbl: string = this.get_str_constant("");
                     empty_gep: string = this.new_reg();
@@ -9562,8 +10109,17 @@ pub def CodeGen : class {
                     // initialization, minus the explicit fields).
                     cdflt: ClassInfo = this.tc.classes[vtyp];
                     cd_sz: string = this.type_alloc_size("%class." + vtyp);
-                    // A full zeroinitializer store follows immediately.
-                    craw: string = this.ar_alloc(cd_sz, false);
+                    // A bare class local is a reference value. Allocate the
+                    // body in the root arena (like `create`/class literals),
+                    // so stores into outer objects keep the same identity.
+                    // Its vec/hash fields below must then be rooted too.
+                    craw: string = "";
+                    if this.class_root_ok() {
+                        craw = this.new_reg();
+                        this.emit("  " + craw + " = call i8* @leash_gc_malloc_rooted(i64 " + cd_sz + ")");
+                    } else {
+                        craw = this.ar_alloc(cd_sz, false);
+                    }
                     cp2: string = this.new_reg();
                     this.emit("  " + cp2 + " = bitcast i8* " + craw + " to %class." + vtyp + "*");
                     this.emit("  store %class." + vtyp + " zeroinitializer, %class." + vtyp + "* " + cp2);
@@ -9602,11 +10158,11 @@ pub def CodeGen : class {
                             cve2_sc: int = 0;
                             if this.vec_elem_scan(cve2_t) { cve2_sc = 1; }
                             cve2_val: string = this.new_reg();
-                            this.emit("  " + cve2_val + " = call i8* @leash_sh_vec_new(i64 " + tostring(cve2_esz) + ", i64 " + tostring(cve2_sc) + ")");
+                            this.emit("  " + cve2_val + " = call i8* @leash_sh_vec_new_rooted(i64 " + tostring(cve2_esz) + ", i64 " + tostring(cve2_sc) + ")");
                             this.emit("  store i8* " + cve2_val + ", i8** " + cgep2);
                         } also this.is_hash_type(cft2) {
                             chh2_val: string = this.new_reg();
-                            this.emit("  " + chh2_val + " = call i8* @leash_sh_hash_new()");
+                            this.emit("  " + chh2_val + " = call i8* @leash_sh_hash_new_rooted()");
                             this.emit("  store i8* " + chh2_val + ", i8** " + cgep2);
                         } also chas_dflt {
                             // Declared field default: name: Type = expr;
@@ -9905,6 +10461,13 @@ pub def CodeGen : class {
                     this.ar_alias_src.push(nm, "get:" + this.ar_expr_root(s.value.left));
                 } also s.value != null && s.value.kind == ExprKind.METHOD_CALL && (s.value.sval == "popb" || s.value.sval == "popf") && s.value.left != null {
                     this.ar_alias_src.push(nm, "pop:" + this.ar_expr_root(s.value.left));
+                } also s.value != null && s.value.kind == ExprKind.MEMBER && s.value.left != null {
+                    asrc: string = this.ar_expr_root(s.value.left);
+                    // `cur = cur.nxt` keeps the SAME receiver, so it must
+                    // not alias itself (the chain walk would never end).
+                    if asrc != nm || !this.ar_alias_src.isin(nm) {
+                        this.ar_alias_src.push(nm, "fld:" + asrc);
+                    }
                 } else {
                     this.ar_alias_src.push(nm, "");
                 }
@@ -10555,6 +11118,17 @@ pub def CodeGen : class {
                     spn_av: string = this.gen_expr(s.args.get(spn_j));
                     spn_at2: string = this.get_expr_type(s.args.get(spn_j));
                     spn_lty2: string = this.llvm_type(spn_at2);
+                    if this.arena && this.ar_addr_escape_var(s.args.get(spn_j)).bsize > 0 {
+                        // Copy the pointee into an immortal C-heap cell so
+                        // the worker never dereferences the spawner's arena.
+                        spn_inner: string = "";
+                        if spn_at2.bsize > 1 { spn_inner = this.str_slice2(spn_at2, 1, spn_at2.bsize); }
+                        spn_esz: int = this.type_size_of(spn_inner);
+                        spn_c8: string = this.new_reg();
+                        this.emit("  " + spn_c8 + " = call i8* @leasharena_xfer_copy_ptr(i8* " + spn_av + ", i64 " + tostring(spn_esz) + ")");
+                        spn_av = this.new_reg();
+                        this.emit("  " + spn_av + " = bitcast i8* " + spn_c8 + " to " + spn_lty2);
+                    }
                     if this.arena && this.ar_is_heap_type(spn_at2) {
                         // Slices carry their backing pointer inside the
                         // aggregate: copy it into the root arena in
@@ -11265,6 +11839,15 @@ pub def CodeGen : class {
     }
 
     pub fnc gen_function(f FuncDecl) : void {
+        old_fn_root_addr: hash<string, bool> = this.ar_root_addr_vars;
+        fkey: string = this.ar_fn_key(f.owner, f.name);
+        if this.ar_fn_escapes.isin(fkey) {
+            this.ar_root_addr_vars = this.ar_fn_escapes[fkey];
+        } else {
+            fresh_fn_root_addr: hash<string, bool>;
+            this.ar_root_addr_vars = fresh_fn_root_addr;
+            this.ar_build_root_addr_vars(f.body);
+        }
         old_fn_var_ptrs: hash<string, string> = this.var_ptrs;
         old_fn_var_types: hash<string, string> = this.var_types;
         old_fn_alias: hash<string, string> = this.ar_alias_src;
@@ -11437,7 +12020,7 @@ pub def CodeGen : class {
             foreach _, p in<vector> f.params {
                 lty: string = this.llvm_type(p.typ);
                 ptr: string = "%" + p.name + ".ptr";
-                this.emit("  " + ptr + " = alloca " + lty + ", align 8");
+                this.emit_named_slot(ptr, p.name, lty);
                 pval: string = this.maybe_clone_value("%p_" + p.name, p.typ);
                 this.emit("  store " + lty + " " + pval + ", " + lty + "* " + ptr + ", align 8");
                 // The caller still owns its argument string; a callee
@@ -11464,7 +12047,7 @@ pub def CodeGen : class {
             }
             lty: string = this.llvm_type(loc_t);
             ptr: string = "%" + loc.name + ".ptr";
-            this.emit("  " + ptr + " = alloca " + lty + ", align 8");
+            this.emit_named_slot(ptr, loc.name, lty);
             this.var_ptrs.push(loc.name, ptr);
             this.var_types.push(loc.name, loc_t);
         }
@@ -11506,6 +12089,7 @@ pub def CodeGen : class {
         this.ar_frameless = false;
         this.var_ptrs = old_fn_var_ptrs;
         this.var_types = old_fn_var_types;
+        this.ar_root_addr_vars = old_fn_root_addr;
         this.ar_alias_src = old_fn_alias;
         this.ar_decl_ready = old_fn_decl_ready;
         this.cur_func_unsafe = old_fn_unsafe;
@@ -11720,6 +12304,14 @@ pub def CodeGen : class {
             this.shared_var_names.push(sv.name, true);
         }
 
+        // @from externals return native pointers (C heap / static storage).
+        // They are proven-safe in arena mode; generated calls carry a runtime
+        // provenance check that aborts if the value is arena-frame-owned.
+        foreach _, nf in<vector> prog.funcs {
+            if nf.is_external { this.native_funcs.push(nf.name, true); }
+            if nf.is_worker { this.has_workers = true; }
+        }
+
         // Arena-only lifetime warnings/errors. Runs after type checking and
         // before codegen so unsafe raw-pointer/manual-heap patterns fail at
         // compile time instead of dangling at runtime.
@@ -11888,7 +12480,7 @@ pub def CodeGen : class {
                 foreach _, p in<vector> m.params {
                     lty: string = this.llvm_type(p.typ);
                     ptr: string = "%" + p.name + ".ptr";
-                    this.emit("  " + ptr + " = alloca " + lty + ", align 8");
+                    this.emit_named_slot(ptr, p.name, lty);
                     pval: string = this.maybe_clone_value("%p_" + p.name, p.typ);
                     this.emit("  store " + lty + " " + pval + ", " + lty + "* " + ptr + ", align 8");
                     // Same COW rule as free functions: the caller keeps
@@ -11915,7 +12507,7 @@ pub def CodeGen : class {
                     }
                     lty: string = this.llvm_type(mloc_t);
                     ptr: string = "%" + loc.name + ".ptr";
-                    this.emit("  " + ptr + " = alloca " + lty + ", align 8");
+                    this.emit_named_slot(ptr, loc.name, lty);
                     this.var_ptrs.push(loc.name, ptr);
                     this.var_types.push(loc.name, mloc_t);
                 }
@@ -12391,6 +12983,8 @@ pub def CodeGen : class {
                     "declare i8* @leash_str_append_char(i8*, i8)\n" +
                     "declare i8* @leash_str_concat_ex(i8*, i8*)\n" +
                     "declare i8* @leash_sh_input(i8*)\n" +
+                    "declare i64 @leash_sh_parse_int(i8*)\n" +
+                    "declare double @leash_sh_parse_float(i8*)\n" +
                     "declare i8* @leash_gc_alloc_string(i64)\n" +
                     "declare i8* @leash_gc_alloc_string_cap(i64, i64)\n" +
                     "declare i8* @leash_int_to_str_fast(i64)\n" +
@@ -12411,6 +13005,7 @@ pub def CodeGen : class {
                     "declare void @leash_gc_collect()\n" +
                     "; Self-hosted runtime helpers\n" +
                     "declare i8* @leash_sh_vec_new(i64, i64)\n" +
+                    "declare i8* @leash_sh_vec_new_rooted(i64, i64)\n" +
                     "declare void @leash_sh_vec_pushb(i8*, i8*)\n" +
                     "declare void @leash_sh_vec_get(i8*, i64, i8*)\n" +
                     "declare void @leash_sh_vec_set(i8*, i64, i8*)\n" +
@@ -12448,6 +13043,7 @@ pub def CodeGen : class {
                     "declare i8* @leash_sh_vec_binop(i8*, i8*, i64, i64, i64, i64)\n" +
                     "declare i8* @leash_sh_vec_binop_scalar(i8*, i8*, i64, i64, i64, i64)\n" +
                     "declare i8* @leash_sh_hash_new()\n" +
+                    "declare i8* @leash_sh_hash_new_rooted()\n" +
                     "declare i8* @leash_sh_int_key(i64)\n" +
                     "declare i8* @leash_sh_uint_key(i64)\n" +
                     "declare i8* @leash_sh_float_key(double)\n" +
@@ -12464,6 +13060,8 @@ pub def CodeGen : class {
                     "declare i8* @leash_sh_hash_keys(i8*)\n" +
                     "declare i8* @leash_sh_str_sub(i8*, i8*)\n" +
                     "declare i8* @leash_sh_str_replace(i8*, i8*, i8*)\n" +
+                    "declare i8* @leash_sh_str_start(i8*, i32)\n" +
+                    "declare i8* @leash_sh_str_end(i8*, i32)\n" +
                     "declare i8* @leash_sh_normescape(i8*)\n" +
                     "declare i8* @leash_sh_slice_to_str(i64, i8*)\n" +
 
@@ -12503,6 +13101,7 @@ pub def CodeGen : class {
                     "declare i8* @leash_future_await(i8*)\n" +
                     "declare i32 @leash_future_is_done(i8*)\n" +
                     "declare i8* @leash_gc_malloc_rooted(i64)\n" +
+                    "declare i8* @leasharena_immortal_alloc(i64)\n" +
                     "%struct.arena_stack = type { " + "i8*, i8*, i8*, i8*, i64, i64, i64" + " }\n" +
                     "%struct.arena_cp = type { " + "i8*, i8*, i8*, i64" + " }\n" +
                     "@leasharena_tls_ar = external thread_local global %struct.arena_stack, align 8\n" +
@@ -12510,6 +13109,8 @@ pub def CodeGen : class {
                     "declare void @leasharena_enter_slow()\n" +
                     "declare void @leasharena_exit_slow()\n" +
                     "declare void @leasharena_verify_current_frame()\n" +
+                    "declare void @leasharena_check_native_ptr(i8*)\n" +
+                    "declare i8* @leasharena_xfer_copy_ptr(i8*, i64)\n" +
                     "declare void @leasharena_enter()\n" +
                     "declare void @leasharena_no_poison()\n" +
                     "declare void @leasharena_exit_n(i64)\n" +

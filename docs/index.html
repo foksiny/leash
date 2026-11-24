@@ -3,165 +3,238 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="color-scheme" content="dark">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Crect width=%27100%27 height=%27100%27 rx=%2722%27 fill=%27%237c3aed%27/%3E%3Ctext x=%2750%27 y=%2768%27 font-size=%2752%27 text-anchor=%27middle%27 font-family=%27monospace%27 fill=%27white%27%3EL%3C/text%3E%3C/svg%3E">
-<title>Leash Programming Language</title>
+<title>Leash - Leash documentation</title>
+<meta name="description" content="Leash is a strongly typed, self-hosted language compiling to native code through LLVM. Version 2.0.0 makes the scoped arena the default memory layout, with --gc available for mark-and-sweep.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Crect width=%27100%27 height=%27100%27 rx=%2722%27 fill=%27%23241f4d%27/%3E%3Ctext x=%2750%27 y=%2770%27 font-size=%2760%27 text-anchor=%27middle%27 font-family=%27monospace%27 fill=%27white%27%3EL%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
+<script src="docs.js" defer></script>
 </head>
 <body>
+<a class="skip-link" href="#main-content">Skip to content</a>
 
-<button class="menu-toggle" onclick="document.querySelector('.sidebar').classList.toggle('open')">&#9776;</button>
+<header class="topbar">
+  <a class="topbar-brand" href="index.html"><img src="leash-icon-light.svg" alt="" onerror="this.style.display='none'"><span>Leash</span></a>
+  <nav class="topbar-nav" aria-label="Top navigation">
+    <a href="index.html" class="current" aria-current="page">Docs</a>
+    <a href="getting-started.html" class="">Tutorial</a>
+    <a href="language-guide.html" class="">Reference</a>
+    <a href="compiler.html" class="">Spec</a>
+    <a href="stdlib.html" class="">Library</a>
+    <a href="package-manager.html" class="">Packages</a>
+    <a href="../benchmarking/README.md" class="">Benchmarks</a>
+    <a href="https://github.com/foksiny/leash">GitHub</a>
+  </nav>
+  <button class="menu-toggle" type="button" aria-label="Toggle navigation" aria-expanded="false">&#9776;</button>
+  <input id="doc-search" class="topbar-search" type="search" placeholder="Search docs" aria-label="Search documentation" autocomplete="off">
+  <button class="theme-toggle" type="button" aria-label="Toggle color theme" title="Toggle theme">&#9680;</button>
+</header>
 
-<aside class="sidebar">
-    <div class="sidebar-header">
+<div class="layout">
+  <aside class="sidenav">
+    <div class="sidenav-title">Leash documentation</div>
+    <div class="sidenav-group">
+      <a href="index.html" class="current">Overview</a>
+      <a href="getting-started.html" class="">The language, in reading order</a>
+      <a href="language-guide.html" class="">Language reference</a>
+      <a href="compiler.html" class="">The compiler</a>
+    </div>
+    <div class="sidenav-group">
+      <a href="self-hosted.html" class="">Getting the compiler</a>
+      <a href="stdlib.html" class="">Library and tools</a>
+      <a href="package-manager.html" class="">Building programs and using packages</a>
+      <a href="concurrency.html" class="">Concurrency</a>
+    </div>
+    <div class="sidenav-group">
+      <a href="advanced.html" class="">Standalone pages</a>
+      <a href="limitations.html" class="">Known limitations</a>
+    </div>
+    <div class="sidenav-foot">Leash 2.0.0</div>
+  </aside>
+
+  <main class="content" id="main-content">
+    <div class="progress" id="progress-bar" aria-hidden="true"></div>
+    <article>
         <h1>Leash</h1>
-        <div class="version">v1.12.0 Release</div>
-        <div class="subtitle">Programming Language</div>
-    </div>
-    <nav class="sidebar-nav">
-        <div class="nav-section">
-            <div class="nav-section-title">Getting Started</div>
-            <a href="index.html" class="active">Overview</a>
-            <a href="getting-started.html">Installation &amp; Setup</a>
+
+        <h2 id="what-is-leash">What is Leash?</h2>
+        <p>Leash combines an intuitive syntax with native performance, targeting developers who want the control of a systems language without the ceremony. It compiles directly to machine code via LLVM, ships with a package manager and a 100+ package standard library, and supports cross-platform development from a single source tree.</p>
+        <p>Leash was made with the help of AI, but its design and ideas come from a human. The AI&rsquo;s role was to implement the language and toolchain and to write the documentation. The human and the AI also stress-tested Leash &mdash; checking where it fails and where it wins, then fixing quirks as they were found. Bugs are addressed right away, which is why all features (and 90%+ of them in practice) are kept stable and reliable.</p>
+        <p>Version 2.0.0 is a milestone for the runtime: the <strong>scoped bump arena is now the default native memory layout</strong>. It gives you plain C pointers, deterministic frame and loop lifetimes, and no stop-the-world pause. If your workload has adversarial or highly dynamic lifetimes, pass <code>--gc</code> to opt into the classic mark-and-sweep collector.</p>
+
+        <div class="callout callout-success" id="whats-new">
+          <strong>What&rsquo;s new in 2.0.0.</strong>
+          <ul>
+            <li>Pointer <strong>provenance flows through locals</strong>: proven-safe returns, globals, long-lived stores and worker arguments compile; only unprovable pointers are rejected. Escaping <code>&amp;x</code> pointees are rooted, so strings, vectors and structs stay valid after their frame pops. <a href="advanced.html#arena-escapes">How escapes work &rarr;</a></li>
+            <li><strong>Workers can share root objects.</strong> Container, class and aggregate pointees cross thread boundaries; root blocks are published process-wide once the first worker spawns. <a href="concurrency.html">Concurrency model &rarr;</a></li>
+            <li><strong>Cheap escape snapshots.</strong> Only the live prefix of a recycled block is copied, cutting CPU and memory on churn-heavy code. <a href="advanced.html#arena-env">Runtime controls &rarr;</a></li>
+            <li><strong>Diagnostics in the editor.</strong> <code>leash check</code> now runs the arena audit, so <code>E_ARENA_LIFETIME</code> reaches the VS Code language server with <code>why:</code>/<code>help:</code> guidance. <a href="advanced.html#lifetime-audit">Audit rules &rarr;</a></li>
+            <li><strong>Smaller language additions.</strong> <code>getint</code>, <code>getfloat</code> and <code>getstruct</code> read typed console input; <code>string.start()/end()</code> take UTF-8-safe prefixes and suffixes; semicolons are optional statement terminators. <a href="language-guide.html#input-handling">Input &rarr;</a> &middot; <a href="language-guide.html#string-methods">Strings &rarr;</a> &middot; <a href="language-guide.html#optional-semicolons">Syntax &rarr;</a></li>
+          </ul>
         </div>
-        <div class="nav-section">
-            <div class="nav-section-title">Language Guide</div>
-            <a href="language-guide.html">Language Reference</a>
-            <a href="compiler.html">Compiler &amp; CLI</a>
-            <a href="self-hosted.html">Self-Hosted Compiler</a>
-            <a href="stdlib.html">Standard Library</a>
+
+        <div class="stat-grid">
+          <div class="stat"><div class="value">2.0.0</div><div class="label">Current release</div></div>
+          <div class="stat"><div class="value">15</div><div class="label">Compiler pipeline stages</div></div>
+          <div class="stat"><div class="value">100+</div><div class="label">Importable packages</div></div>
+          <div class="stat"><div class="value">7</div><div class="label">Compilation targets</div></div>
         </div>
-        <div class="nav-section">
-            <div class="nav-section-title">Ecosystem</div>
-            <a href="package-manager.html">Package Manager</a>
-            <a href="concurrency.html">Concurrency Model</a>
-            <a href="advanced.html">Advanced Topics</a>
-            <a href="limitations.html">Known Limitations</a>
+
+        <h2 id="why-leash">Why Leash?</h2>
+        <p>Leash is built for people who want a small, predictable language that still offers modern conveniences. There is no virtual machine to install on native targets, no Python build step, and no external debugger to configure. The shipped compiler is itself written in Leash, so the language is continuously dogfooded by its own toolchain.</p>
+        <div class="callout callout-info"><strong>Good to know.</strong> A default <code>leash compile</code> produces a standalone native binary. The arena runtime is compiled and linked for you; you do not need to install LLVM development libraries or a garbage collector to get started.</div>
+
+        <h2 id="feature-tour">Feature tour</h2>
+        <p>Breadth is only useful if it all works together. These are the capabilities you get out of the box in 2.0.0.</p>
+
+        <div class="feature-grid">
+          <div class="feature-card">
+            <h3>Strongly Typed</h3>
+            <p>Full type inference with explicit bit-width integers, floats, generics, and tagged unions.</p>
+          </div>
+          <div class="feature-card">
+            <h3>Restricted Literal Types</h3>
+            <p><code>def status : type &quot;ok&quot;, &quot;error&quot;, nil;</code> accepts only listed literals. Invalid values and widening to the base type are compile-time errors.</p>
+          </div>
+          <div class="feature-card">
+            <h3>LLVM-Powered</h3>
+            <p>Compiles to native code via LLVM with multiple optimization levels including LTO and PGO.</p>
+          </div>
+          <div class="feature-card">
+            <h3>Self-Hosted Compiler</h3>
+            <p>Since 1.0 the shipped <code>leash</code> compiler is written in Leash: installation bootstraps it (a checked-in seed binary builds stage 1, stage 1 builds itself) and verifies the bootstrap fixed point &mdash; 89/89 example programs match the reference compiler byte-for-byte (the corpus was recorded from the original reference compiler; entries added after it was retired come from the current self-hosted compiler).</p>
+          </div>
+          <div class="feature-card">
+            <h3>Zero-Cost Abstractions</h3>
+            <p>Classes, generics, lambdas, and operator overloading compile down to efficient machine code.</p>
+          </div>
+          <div class="feature-card">
+            <h3>Built-in GC &amp; Arena</h3>
+            <p>A scoped bump arena is the <strong>default</strong> native layout, with deterministic frame/loop reclamation, poison-on-reclaim safety, C-ABI-friendly pointers, recursive graph escapes, and a compile-time lifetime audit. Opt into <code>--gc</code> mark-and-sweep, or choose <code>nogc</code> and <code>--autofree</code> for GC-free binaries.</p>
+          </div>
+          <div class="feature-card">
+            <h3>Package Manager</h3>
+            <p><code>leash pkg</code> (built into the compiler) publishes, installs and manages libraries with semantic versioning and per-project reproducible builds via <code>leash.lock</code>.</p>
+          </div>
+          <div class="feature-card">
+            <h3>Cross-Platform</h3>
+            <p>Compile for Linux (x64/ARM64), Windows, and macOS from a single source with conditional compilation.</p>
+          </div>
+          <div class="feature-card">
+            <h3>Native Web Stack</h3>
+            <p><code>http</code> ships a full HTTP/HTTPS client with HTTP/2 (h2c + h2 over TLS); <code>httpserver</code> adds a multiplexed keep-alive server speaking HTTP/1.1 and HTTP/2, plus a TLS listener &mdash; both dependency-free.</p>
+          </div>
+          <div class="feature-card">
+            <h3>Native Debugger</h3>
+            <p><code>leash dbg</code> steps or breakpoints any program without GDB/LLDB &mdash; source-level stops, set from the CLI or interactively.</p>
+          </div>
+          <div class="feature-card">
+            <h3>Concurrency</h3>
+            <p>Worker threads, <code>shared</code>/<code>fusion</code> variables, and native <code>async</code>/<code>await</code> with <code>future&lt;T&gt;</code>.</p>
+          </div>
+          <div class="feature-card">
+            <h3>Shared Variables</h3>
+            <p>A function can declare program-wide storage in its signature (<code>fnc f() : void | result: int</code>); only the functions that declare it may touch it, and every one of them sees the same storage. Distinct from the <code>shared</code>/<code>fusion</code> worker globals, which are module-wide and carry the thread-safety rules.</p>
+          </div>
+          <div class="feature-card">
+            <h3>Rich Standard Library</h3>
+            <p>100+ importable packages: vectors, hash maps, graphs, files, math, HTTP/SQL, compression, parsing, testing helpers, and more.</p>
+          </div>
         </div>
-    </nav>
-</aside>
 
-<main class="main">
-
-<div class="hero">
-    <div class="version-badge">v1.12.0 Release</div>
-    <h1>Leash</h1>
-    <p class="tagline">A strongly-typed, modern compiled programming language built on LLVM.</p>
-</div>
-
-<p>Leash combines an intuitive syntax with native performance, targeting developers who want the control of a systems language without the ceremony. It compiles directly to machine code via LLVM, features a built-in garbage collector, and ships with a package manager, standard library, and cross-platform support.</p>
-
-<p>Leash was made with the help of AI, but its design and ideas come from a human. The AI&rsquo;s role was to implement the language and toolchain and to write the documentation. The human and the AI also stress-tested Leash &mdash; checking where it fails and where it wins, then fixing quirks as they were found. Bugs are addressed right away, which is why all features (and 90%+ of them in practice) are kept stable and reliable.</p>
-
-<h2>Key Features</h2>
-
-<div class="feature-grid">
-    <div class="feature-card">
-        <h3>Strongly Typed</h3>
-        <p>Full type inference with explicit bit-width integers, floats, generics, and tagged unions.</p>
-    </div>
-    <div class="feature-card">
-        <h3>Restricted Literal Types</h3>
-        <p><code>def status : type &quot;ok&quot;, &quot;error&quot;, nil;</code> accepts only listed literals. Invalid values and widening to the base type are compile-time errors.</p>
-    </div>
-    <div class="feature-card">
-        <h3>LLVM-Powered</h3>
-        <p>Compiles to native code via LLVM with multiple optimization levels including LTO and PGO.</p>
-    </div>
-    <div class="feature-card">
-        <h3>Self-Hosted Compiler</h3>
-        <p>Since 1.0 the shipped <code>leash</code> compiler is written in Leash: installation bootstraps it (a checked-in seed binary builds stage 1, stage 1 builds itself) and verifies the bootstrap fixed point &mdash; 89/89 example programs match the reference compiler byte-for-byte (the corpus was recorded from the original reference compiler; entries added after it was retired come from the current self-hosted compiler).</p>
-    </div>
-    <div class="feature-card">
-        <h3>Zero-Cost Abstractions</h3>
-        <p>Classes, generics, lambdas, and operator overloading compile down to efficient machine code.</p>
-    </div>
-    <div class="feature-card">
-        <h3>Built-in GC &amp; Arena</h3>
-        <p>Automatic mark-and-sweep GC by default, plus optional <code>nogc</code>, <code>--autofree</code>, and an experimental scoped <code>--arena</code> backend with deterministic frame/loop reclamation, poison-on-reclaim safety, C-ABI-friendly pointers, recursive graph escapes, and a compile-time lifetime audit.</p>
-    </div>
-    <div class="feature-card">
-        <h3>Package Manager</h3>
-        <p><code>leash pkg</code> (built into the compiler) publishes, installs and manages libraries with semantic versioning and per-project reproducible builds via <code>leash.lock</code>.</p>
-    </div>
-    <div class="feature-card">
-        <h3>Cross-Platform</h3>
-        <p>Compile for Linux (x64/ARM64), Windows, and macOS from a single source with conditional compilation.</p>
-    </div>
-    <div class="feature-card">
-        <h3>Native Web Stack</h3>
-        <p><code>http</code> ships a full HTTP/HTTPS client with HTTP/2 (h2c + h2 over TLS); <code>httpserver</code> adds a multiplexed keep-alive server speaking HTTP/1.1 and HTTP/2, plus a TLS listener — both dependency-free.</p>
-    </div>
-    <div class="feature-card">
-        <h3>Native Debugger</h3>
-        <p><code>leash dbg</code> steps or breakpoints any program without GDB/LLDB — source-level stops, set from the CLI or interactively.</p>
-    </div>
-    <div class="feature-card">
-        <h3>Concurrency</h3>
-        <p>Worker threads, <code>shared</code>/<code>fusion</code> variables, and native <code>async</code>/<code>await</code> with <code>future&lt;T&gt;</code>.</p>
-    </div>
-    <div class="feature-card">
-        <h3>Shared Variables</h3>
-        <p>A function can declare program-wide storage in its signature (<code>fnc f() : void | result: int</code>); only the functions that declare it may touch it, and every one of them sees the same storage. Distinct from the <code>shared</code>/<code>fusion</code> worker globals, which are module-wide and carry the thread-safety rules.</p>
-    </div>
-    <div class="feature-card">
-        <h3>Rich Standard Library</h3>
-        <p>100+ importable packages: vectors, hash maps, graphs, files, math, HTTP/SQL, compression, parsing, testing helpers, and more.</p>
-    </div>
-</div>
-
-<h2>Quick Start</h2>
-
-<pre><code><span class="kw">fnc</span> <span class="fn">main</span>() : <span class="kw">void</span> {
-    <span class="fn">show</span>(<span class="str">"Hello, World!"</span>);
-}</code></pre>
-
-<pre><code><span class="cm"># Build the self-hosted compiler (Python-free)</span>
-git clone https://github.com/foksiny/leash && cd leash
+        <h2 id="quick-start">Quick start</h2>
+        <p>From a fresh checkout to a running native binary in four steps.</p>
+        <div class="steps">
+          <div class="step">
+            <h3>Install the toolchain</h3>
+            <p>Clone the repository and let the Python-free bootstrap script build the self-hosted compiler.</p>
+            <pre><code><span class="cm"># Build the self-hosted compiler (Python-free)</span>
+git clone https://github.com/foksiny/leash &amp;&amp; cd leash
 ./scripts/bootstrap.sh
 bin/leashc version
-
-<span class="cm"># Run directly &mdash; the compiler is written in Leash itself</span>
-leash run hello.lsh
-
-<span class="cm"># Compile to native binary</span>
+<span class="cm"># leash 2.0.0 (self-hosted)</span></code></pre>
+          </div>
+          <div class="step">
+            <h3>Write a program</h3>
+            <p>Put this in a file called <code>hello.lsh</code>. The <code>main</code> function is the entry point; <code>show</code> prints to standard output.</p>
+            <pre><code><span class="kw">fnc</span> <span class="fn">main</span>() : <span class="kw">void</span> {
+    <span class="fn">show</span>(<span class="str">"Hello, World!"</span>);
+}</code></pre>
+          </div>
+          <div class="step">
+            <h3>Run it directly</h3>
+            <p>No output binary is created in this mode &mdash; handy while iterating.</p>
+            <pre><code><span class="cm"># Run directly &mdash; the compiler is written in Leash itself</span>
+leash run hello.lsh</code></pre>
+          </div>
+          <div class="step">
+            <h3>Compile to native code</h3>
+            <p>Build a standalone executable and run it like any other program.</p>
+            <pre><code><span class="cm"># Compile to native binary</span>
 leash compile hello.lsh to hello
-./hello</code></pre>
+./hello
+<span class="cm"># Hello, World!</span></code></pre>
+          </div>
+        </div>
+        <div class="callout callout-success"><strong>Success.</strong> That binary uses the default scoped arena. To swap in the mark-and-sweep collector, add <code>--gc</code> to the compile command: <code>leash compile hello.lsh to hello --gc</code>.</div>
 
-<div class="quick-links">
-    <a href="getting-started.html" class="quick-link">
-        <strong>Installation &rarr;</strong>
-        <span>Set up Leash on your system</span>
-    </a>
-    <a href="language-guide.html" class="quick-link">
-        <strong>Language Guide &rarr;</strong>
-        <span>Learn the syntax and features</span>
-    </a>
-    <a href="compiler.html" class="quick-link">
-        <strong>Compiler &rarr;</strong>
-        <span>CLI commands and optimization</span>
-    </a>
-    <a href="stdlib.html" class="quick-link">
-        <strong>Standard Library &rarr;</strong>
-        <span>Built-in types and utilities</span>
-    </a>
-    <a href="package-manager.html" class="quick-link">
-        <strong>Package Manager &rarr;</strong>
-        <span>Publishing and installing libraries</span>
-    </a>
-    <a href="concurrency.html" class="quick-link">
-        <strong>Concurrency &rarr;</strong>
-        <span>Workers, shared, and fusion variables</span>
-    </a>
-</div>
+        <h2 id="core-concepts">Core concepts</h2>
+        <p>A few ideas recur throughout the language and the rest of this documentation.</p>
 
-<h2>Compiler Pipeline</h2>
+        <h3>Values and types</h3>
+        <p>Variables can be explicitly typed or inferred with <code>:=</code>. Integers come in explicit bit widths, and the checker catches mistakes before you link a binary.</p>
+        <pre><code><span class="kw">fnc</span> <span class="fn">main</span>() : <span class="kw">void</span> {
+    count: <span class="ty">int</span> = <span class="num">42</span>;
+    label := <span class="str">"items"</span>;
+    <span class="fn">show</span>(label, <span class="str">": "</span>, <span class="fn">tostring</span>(count));
+}</code></pre>
 
-<p>Leash transforms source code into a native executable through a multi-stage pipeline. Each stage feeds its output into the next, from raw source text all the way to a linked binary. The pipeline includes lexical analysis, parsing, type checking, optimization at both the AST and LLVM IR levels, code generation, and final linking with the garbage collector runtime.</p>
+        <h3>Collections and iteration</h3>
+        <p>Generic containers such as <code>vec&lt;T&gt;</code> are part of the core language, and <code>foreach</code> walks them with both index and value.</p>
+        <pre><code><span class="kw">fnc</span> <span class="fn">main</span>() : <span class="kw">void</span> {
+    nums: <span class="ty">vec</span>&lt;<span class="ty">int</span>&gt;;
+    nums.extend({<span class="num">3</span>, <span class="num">1</span>, <span class="num">4</span>, <span class="num">1</span>, <span class="num">5</span>});
+    <span class="kw">foreach</span> i, n <span class="kw">in</span>&lt;<span class="ty">vector</span>&gt; nums {
+        <span class="fn">show</span>(<span class="str">"["</span>, i, <span class="str">"]: "</span>, n);
+    }
+}</code></pre>
 
-<p>Here are the major stages:</p>
+        <h3>Memory and lifetimes</h3>
+        <p>In the default arena, a pointer stays valid until the frame or loop iteration that allocated it exits. Values that must outlive their frame are copied into the caller or the program-lifetime root arena. There is no borrow checker and no GC pause, but that means raw pointers and manual heap calls are audited strictly; see <a href="compiler.html#memory-management-modes">memory management modes</a>.</p>
+        <div class="callout callout-warning"><strong>Design trade-off.</strong> If your data has cycles, escapes through raw pointers, or otherwise has hard-to-express lifetimes, compile with <code>--gc</code>. The arena is fast and deterministic but intentionally compile-or-fail on unsafe lifetime patterns.</div>
 
-<pre><code><span class="cm">.lsh source</span>
+        <h3>Modules and projects</h3>
+        <p>Single files are fine for experiments. For larger programs, <code>leash init</code> scaffolds a project with a <code>config.lshc</code>, an <code>imports/</code> directory, and an <code>out/</code> directory. <code>use module::Item;</code> pulls in standard and installed packages.</p>
+
+        <h2 id="toolchain-at-a-glance">Toolchain at a glance</h2>
+        <p>The CLI is the same whichever mode you work in. Here are the commands you will reach for first.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Command</th><th>What it does</th></tr></thead>
+            <tbody>
+              <tr><td><code>leash run file.lsh</code></td><td>Compile and execute without leaving a binary behind</td></tr>
+              <tr><td><code>leash compile file.lsh</code></td><td>Produce a native executable (arena by default)</td></tr>
+              <tr><td><code>leash check file.lsh</code></td><td>Run the full type checker and safety analysis only</td></tr>
+              <tr><td><code>leash dbg file.lsh</code></td><td>Run under the built-in source-level debugger</td></tr>
+              <tr><td><code>leash build</code></td><td>Build the current project from <code>config.lshc</code></td></tr>
+              <tr><td><code>leash pkg &hellip;</code></td><td>Search, install, publish, and lock packages</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="ecosystem">Ecosystem</h2>
+        <p>Leash is more than a compiler. The standard library covers collections, math, text, networking, SQL, compression, encoding, and testing; the built-in package manager handles versioned dependencies with a reproducible <code>leash.lock</code>; and the native HTTP/HTTPS client and server make networked programs dependency-free. Concurrency is available through workers, <code>shared</code>/<code>fusion</code> globals, and <code>async</code>/<code>await</code> with <code>future&lt;T&gt;</code>.</p>
+        <div class="quick-links">
+          <a class="quick-link" href="language-guide.html"><strong>Language reference</strong><span>Types, syntax, builtins &rarr;</span></a>
+          <a class="quick-link" href="stdlib.html"><strong>Standard library</strong><span>Modules, collections, math, net, SQL &rarr;</span></a>
+          <a class="quick-link" href="package-manager.html"><strong>Package manager</strong><span>Init, publish, install, lockfiles &rarr;</span></a>
+          <a class="quick-link" href="concurrency.html"><strong>Concurrency model</strong><span>Workers, shared, fusion, async &rarr;</span></a>
+          <a class="quick-link" href="self-hosted.html"><strong>Self-hosted compiler</strong><span>Bootstrap stages and fixed point &rarr;</span></a>
+          <a class="quick-link" href="advanced.html"><strong>Advanced topics</strong><span>FFI, arenas, escapes, unsafe &rarr;</span></a>
+        </div>
+
+        <h2 id="compiler-pipeline">Compiler pipeline</h2>
+        <p>Leash transforms source code into a native executable through a multi-stage pipeline. Each stage feeds its output into the next, from raw source text all the way to a linked binary. The pipeline includes lexical analysis, parsing, type checking, optimization at both the AST and LLVM IR levels, code generation, and final linking with the selected memory runtime. The <a href="compiler.html#compiler-pipeline">compiler reference</a> documents all fifteen stages.</p>
+        <pre><code><span class="cm">.lsh source</span>
   &#x251C;&#x2500; Lexer (characters &rarr; tokens)
   &#x251C;&#x2500; Parser (tokens &rarr; AST)
   &#x251C;&#x2500; Import Resolution
@@ -179,8 +252,21 @@ leash compile hello.lsh to hello
   &#x2514;&#x2500; Linking &rarr; Native Binary
 </code></pre>
 
-</main>
-
-<script src="docs.js"></script>
+        <h2 id="faq">FAQ</h2>
+        <h3>Is the arena safe without a borrow checker?</h3>
+        <p>Yes for all programs the compiler accepts. The arena roots values that outlive a frame, tracks raw-pointer provenance through locals, publishes root blocks to workers, and rejects the few patterns it cannot prove safe with <code>E_ARENA_LIFETIME</code>. Poison-on-reclaim, frame verification and escape snapshots are on by default, so a missed root copy aborts instead of silently dangling. See <a href="advanced.html#lifetime-audit">the lifetime audit</a>.</p>
+        <h3>Is Leash garbage collected?</h3>
+        <p>Not by default in 2.0.0. Native builds use the scoped bump arena unless you pass <code>--gc</code>. You can also build fully GC-free binaries with <code>--no-garbage-collector</code> (manual <code>free()</code>) or <code>--autofree</code> (automatic release at function exit).</p>
+        <h3>Do I need Python or LLVM development libraries?</h3>
+        <p>No. The compiler ships as a native binary and the bootstrap script is Python-free. You only need a C compiler for linking; LLVM development headers are not part of the setup.</p>
+        <h3>Is the compiler really written in Leash?</h3>
+        <p>Yes. Installation builds the checked-in seed, the seed compiles the sources into stage 1, and stage 1 compiles itself to verify the fixed point. See <a href="self-hosted.html">Self-Hosted Compiler</a>.</p>
+        <h3>Which platforms can I target?</h3>
+        <p>Linux (x64 and ARM64), Windows, and macOS natively, plus a JVM bytecode target that runs anywhere Java runs. See <a href="compiler.html#compilation-targets">compilation targets</a>.</p>
+        <h3>Where should I go next?</h3>
+        <p>Start with <a href="getting-started.html">Installation &amp; Setup</a> to get a working toolchain, then read the <a href="language-guide.html">Language Reference</a> for the full syntax.</p>
+    </article>
+  </main>
+</div>
 </body>
 </html>

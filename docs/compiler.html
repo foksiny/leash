@@ -3,81 +3,117 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="color-scheme" content="dark">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Crect width=%27100%27 height=%27100%27 rx=%2722%27 fill=%27%237c3aed%27/%3E%3Ctext x=%2750%27 y=%2768%27 font-size=%2752%27 text-anchor=%27middle%27 font-family=%27monospace%27 fill=%27white%27%3EL%3C/text%3E%3C/svg%3E">
-<title>Compiler &amp; CLI - Leash</title>
+<title>Compiler &amp; CLI - Leash documentation</title>
+<meta name="description" content="The complete reference for the Leash 2.0.0 command line: every command and flag, compilation targets, memory modes, the optimization pipeline, diagnostics and targets.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Crect width=%27100%27 height=%27100%27 rx=%2722%27 fill=%27%23241f4d%27/%3E%3Ctext x=%2750%27 y=%2770%27 font-size=%2760%27 text-anchor=%27middle%27 font-family=%27monospace%27 fill=%27white%27%3EL%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
+<script src="docs.js" defer></script>
 </head>
 <body>
+<a class="skip-link" href="#main-content">Skip to content</a>
 
-<button class="menu-toggle" onclick="document.querySelector('.sidebar').classList.toggle('open')">&#9776;</button>
+<header class="topbar">
+  <a class="topbar-brand" href="index.html"><img src="leash-icon-light.svg" alt="" onerror="this.style.display='none'"><span>Leash</span></a>
+  <nav class="topbar-nav" aria-label="Top navigation">
+    <a href="index.html" class="">Docs</a>
+    <a href="getting-started.html" class="">Tutorial</a>
+    <a href="language-guide.html" class="">Reference</a>
+    <a href="compiler.html" class="current" aria-current="page">Spec</a>
+    <a href="stdlib.html" class="">Library</a>
+    <a href="package-manager.html" class="">Packages</a>
+    <a href="../benchmarking/README.md" class="">Benchmarks</a>
+    <a href="https://github.com/foksiny/leash">GitHub</a>
+  </nav>
+  <button class="menu-toggle" type="button" aria-label="Toggle navigation" aria-expanded="false">&#9776;</button>
+  <input id="doc-search" class="topbar-search" type="search" placeholder="Search docs" aria-label="Search documentation" autocomplete="off">
+  <button class="theme-toggle" type="button" aria-label="Toggle color theme" title="Toggle theme">&#9680;</button>
+</header>
 
-<aside class="sidebar">
-    <div class="sidebar-header">
-        <h1>Leash</h1>
-        <div class="version">v1.12.0 Release</div>
-        <div class="subtitle">Programming Language</div>
+<div class="layout">
+  <aside class="sidenav">
+    <div class="sidenav-title">Leash documentation</div>
+    <div class="sidenav-group">
+      <a href="index.html" class="">Overview</a>
+      <a href="getting-started.html" class="">The language, in reading order</a>
+      <a href="language-guide.html" class="">Language reference</a>
+      <a href="compiler.html" class="current">The compiler</a>
     </div>
-    <nav class="sidebar-nav">
-        <div class="nav-section">
-            <div class="nav-section-title">Getting Started</div>
-            <a href="index.html">Overview</a>
-            <a href="getting-started.html">Installation &amp; Setup</a>
+    <div class="sidenav-group">
+      <a href="self-hosted.html" class="">Getting the compiler</a>
+      <a href="stdlib.html" class="">Library and tools</a>
+      <a href="package-manager.html" class="">Building programs and using packages</a>
+      <a href="concurrency.html" class="">Concurrency</a>
+    </div>
+    <div class="sidenav-group">
+      <a href="advanced.html" class="">Standalone pages</a>
+      <a href="limitations.html" class="">Known limitations</a>
+    </div>
+    <div class="sidenav-foot">Leash 2.0.0</div>
+  </aside>
+
+  <main class="content" id="main-content">
+    <div class="progress" id="progress-bar" aria-hidden="true"></div>
+    <article>
+        <h1>Compiler &amp; CLI</h1>
+
+        <h2 id="command-overview">Command overview</h2>
+        <p>The Leash compiler transforms <code>.lsh</code> source files into native executables through a 15-stage pipeline that spans lexical analysis, type checking, optimization, code generation via LLVM, and linking. You interact with this pipeline through the <code>leash</code> CLI, which provides commands for compilation, execution, static analysis, and project management.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Command</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td><code>leash compile &lt;file&gt;</code></td><td>Compile to a native executable</td></tr>
+              <tr><td><code>leash run [&lt;file&gt;]</code></td><td>Run file or project (without file, runs <code>config.lshc</code> project)</td></tr>
+              <tr><td><code>leash dbg [&lt;file&gt;]</code></td><td>Run under the native source-level debugger (step / breakpoints)</td></tr>
+              <tr><td><code>leash dump &lt;file&gt;</code></td><td>Dump LLVM IR to a <code>.ll</code> file</td></tr>
+              <tr><td><code>leash check &lt;file&gt;</code></td><td>Static analysis without compiling</td></tr>
+              <tr><td><code>leash init [dir]</code></td><td>Scaffold a new project</td></tr>
+              <tr><td><code>leash build</code></td><td>Build project from <code>config.lshc</code></td></tr>
+              <tr><td><code>leash install [&lt;path&gt;]</code></td><td>Install library to <code>~/.leash/libs/</code> (no args: build <code>config.lshc</code> <code>global_install</code> binaries to <code>~/.leash/bin/</code>, plus the runtime to <code>~/.leash/leash/</code> and the bundled stdlib)</td></tr>
+              <tr><td><code>leash rm &lt;name&gt;...</code></td><td>Remove globally installed binaries (asks first; empty answer means yes)</td></tr>
+              <tr><td><code>leash pkg &lt;subcommand&gt;</code></td><td>Package manager: init/publish/install/uninstall/list/info/update/add/lock/search (see the <a href="package-manager.html">Package Manager</a> page)</td></tr>
+              <tr><td><code>leash self-host</code></td><td>3-stage bootstrap + fixed-point check; rebuilds <code>bin/leashc</code> from the current sources (see <a href="self-hosted.html">Self-Hosted Compiler</a>)</td></tr>
+              <tr><td><code>leash update</code></td><td>Update Leash to the latest version</td></tr>
+              <tr><td><code>leash version</code></td><td>Print version information (<code>leash 2.0.0 (self-hosted)</code>)</td></tr>
+              <tr><td><code>leash help [command]</code></td><td>Show help, optionally for one command</td></tr>
+            </tbody>
+          </table>
         </div>
-        <div class="nav-section">
-            <div class="nav-section-title">Language Guide</div>
-            <a href="language-guide.html">Language Reference</a>
-            <a href="compiler.html" class="active">Compiler &amp; CLI</a>
-            <a href="self-hosted.html">Self-Hosted Compiler</a>
-            <a href="stdlib.html">Standard Library</a>
+        <p>Leash can also compile programs into shared (<code>.so</code>) or static (<code>.a</code>) libraries for use by other programs or languages. This is useful for creating reusable components that can be linked into other projects.</p>
+
+        <h2 id="flags">All flags</h2>
+        <p>Most flags are shared across <code>compile</code>, <code>run</code>, <code>dump</code>, and <code>build</code>. A few are command-specific, as noted below.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Flag</th><th>Applies to</th><th>Effect</th></tr></thead>
+            <tbody>
+              <tr><td><code>-O &lt;level&gt;</code>, <code>--opt &lt;level&gt;</code></td><td>compile, run, build</td><td>Optimization level: <code>0</code>&ndash;<code>4</code>, <code>s</code> (size), <code>z</code> (minimum size)</td></tr>
+              <tr><td><code>--check</code></td><td>compile, run</td><td>Run the checker only; do not emit a binary</td></tr>
+              <tr><td><code>--verbose</code>, <code>-vb</code></td><td>all compile commands</td><td>Detailed, educational diagnostics and phase tracing</td></tr>
+              <tr><td><code>--optimization-verbosity</code>, <code>-ov</code></td><td>compile, run</td><td>Log optimizer phases (implies <code>--verbose</code>)</td></tr>
+              <tr><td><code>--warnings-as-errors</code>, <code>-oe</code></td><td>compile, run, build</td><td>Promote warnings to errors; a no-op in strict arena mode</td></tr>
+              <tr><td><code>--target &lt;name&gt;</code></td><td>compile, run</td><td>Select the compilation target (see below)</td></tr>
+              <tr><td><code>--other-imports &lt;dir&gt;</code>, <code>-oi</code></td><td>compile, run, dump, build</td><td>Add a module search directory before <code>~/.leash/libs/</code>; repeatable</td></tr>
+              <tr><td><code>--emit-llvm</code></td><td>compile, dump</td><td>Emit LLVM IR in addition to the normal output</td></tr>
+              <tr><td><code>-l&lt;lib&gt;</code></td><td>compile, run</td><td>Link an external C library, e.g. <code>-lm</code>, <code>-lcurl</code></td></tr>
+              <tr><td><code>--lto thin|full</code></td><td>compile</td><td>Link-time optimization mode</td></tr>
+              <tr><td><code>--pgo-generate</code>, <code>--pgo-use</code></td><td>compile</td><td>Emit or consume profile data for profile-guided optimization</td></tr>
+              <tr><td><code>--mem-cap &lt;mb&gt;</code></td><td>compile, run</td><td>Cap compile/run memory in MiB (default 1024; also <code>LEASH_MEM_CAP_MB</code>)</td></tr>
+              <tr><td><code>--gc</code></td><td>compile, run, build</td><td>Use the mark-and-sweep garbage collector instead of the default arena</td></tr>
+              <tr><td><code>--arena</code></td><td>compile, run, build</td><td>Explicitly select the scoped bump arena (the native default)</td></tr>
+              <tr><td><code>--no-garbage-collector</code>, <code>-ngc</code></td><td>compile, run, build</td><td>No GC; manual <code>free()</code> only</td></tr>
+              <tr><td><code>--autofree</code>, <code>-af</code></td><td>compile, run, build</td><td>No GC; automatic <code>free()</code> at function exit</td></tr>
+              <tr><td><code>to &lt;name&gt;</code></td><td>compile</td><td>Name the output executable</td></tr>
+              <tr><td><code>to-dynamic &lt;name&gt;</code>, <code>to-static &lt;name&gt;</code></td><td>compile</td><td>Emit a shared or static library instead of an executable</td></tr>
+              <tr><td><code>--break &lt;line&gt;</code>, <code>--run</code></td><td>dbg</td><td>Set an initial breakpoint, or skip stepping until the first breakpoint</td></tr>
+            </tbody>
+          </table>
         </div>
-        <div class="nav-section">
-            <div class="nav-section-title">Ecosystem</div>
-            <a href="package-manager.html">Package Manager</a>
-            <a href="concurrency.html">Concurrency Model</a>
-            <a href="advanced.html">Advanced Topics</a>
-            <a href="limitations.html">Known Limitations</a>
-        </div>
-    </nav>
-</aside>
+        <div class="callout callout-info"><strong>Mutually exclusive modes.</strong> Use only one of <code>--gc</code>, <code>--arena</code>, <code>--no-garbage-collector</code>, or <code>--autofree</code> per program.</div>
 
-<main class="main">
-
-<div class="breadcrumb">
-    <a href="index.html">Home</a> <span class="sep">/</span> <span class="current">Compiler &amp; CLI</span>
-</div>
-
-<h1>Compiler &amp; CLI Reference</h1>
-
-<p>The Leash compiler transforms <code>.lsh</code> source files into native executables through a 15-stage pipeline that spans lexical analysis, type checking, optimization, code generation via LLVM, and linking. You interact with this pipeline through the <code>leash</code> CLI, which provides commands for compilation, execution, static analysis, and project management.</p>
-
-<h2>Command Overview</h2>
-
-<table>
-    <tr><th>Command</th><th>Description</th></tr>
-    <tr><td><code>leash compile &lt;file&gt;</code></td><td>Compile to a native executable</td></tr>
-    <tr><td><code>leash run [&lt;file&gt;]</code></td><td>Run file or project (without file, runs <code>config.lshc</code> project)</td></tr>
-    <tr><td><code>leash dbg [&lt;file&gt;]</code></td><td>Run under the native source-level debugger (step / breakpoints)</td></tr>
-    <tr><td><code>leash dump &lt;file&gt;</code></td><td>Dump LLVM IR to a <code>.ll</code> file</td></tr>
-    <tr><td><code>leash check &lt;file&gt;</code></td><td>Static analysis without compiling</td></tr>
-    <tr><td><code>leash init [dir]</code></td><td>Scaffold a new project</td></tr>
-    <tr><td><code>leash build</code></td><td>Build project from <code>config.lshc</code></td></tr>
-    <tr><td><code>leash install [&lt;path&gt;]</code></td><td>Install library to <code>~/.leash/libs/</code> (no args: build <code>config.lshc</code> <code>global_install</code> binaries to <code>~/.leash/bin/</code>, plus the runtime to <code>~/.leash/leash/</code> and the bundled stdlib)</td></tr>
-    <tr><td><code>leash rm &lt;name&gt;...</code></td><td>Remove globally installed binaries (asks first; empty answer means yes)</td></tr>
-    <tr><td><code>leash pkg &lt;subcommand&gt;</code></td><td>Package manager: init/publish/install/uninstall/list/info/update/add/lock/search (see the <a href="package-manager.html">Package Manager</a> page)</td></tr>
-    <tr><td><code>leash self-host</code></td><td>3-stage bootstrap + fixed-point check; rebuilds <code>bin/leashc</code> from the current sources (see <a href="self-hosted.html">Self-Hosted Compiler</a>)</td></tr>
-    <tr><td><code>leash update</code></td><td>Update Leash to the latest version</td></tr>
-    <tr><td><code>leash version</code></td><td>Print version information</td></tr>
-    <tr><td><code>leash help [command]</code></td><td>Show help, optionally for one command</td></tr>
-</table>
-
-<p>Leash can also compile programs into shared (<code>.so</code>) or static (<code>.a</code>) libraries for use by other programs or languages. This is useful for creating reusable components that can be linked into other projects.</p>
-
-<h2>Compilation Targets</h2>
-
-<p>Leash supports multiple compilation targets, allowing you to compile your code for different platforms. The default target compiles to a native binary for your current system. Cross-compilation to Windows, macOS, and Linux (including ARM64) is supported when the appropriate toolchains are installed.</p>
-
-<pre><code><span class="cm"># Current system (default)</span>
+        <h2 id="compilation-targets">Compilation targets</h2>
+        <p>Leash supports multiple compilation targets, allowing you to compile your code for different platforms. The default target compiles to a native binary for your current system. Cross-compilation to Windows, macOS, and Linux (including ARM64) is supported when the appropriate toolchains are installed.</p>
+        <pre><code><span class="cm"># Current system (default)</span>
 leash compile program.lsh
 
 <span class="cm"># Windows 64-bit (cross-compile; runs under wine via `leash run`)</span>
@@ -96,34 +132,45 @@ leash compile program.lsh --target linux-arm
 <span class="cm"># JVM bytecode (runs anywhere with a Java runtime; no clang, no GC runtime)</span>
 leash compile program.lsh --target jvm
 java -cp . program</code></pre>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Target</th><th>Triple</th><th>Runs on</th></tr></thead>
+            <tbody>
+              <tr><td><code>linux64</code></td><td><code>x86_64-unknown-linux-gnu</code></td><td>Linux x86_64</td></tr>
+              <tr><td><code>linux32</code></td><td><code>i686-unknown-linux-gnu</code></td><td>Linux x86 (32-bit)</td></tr>
+              <tr><td><code>linux-arm</code></td><td><code>aarch64-unknown-linux-gnu</code></td><td>Linux ARM64 (Raspberry Pi, ARM servers)</td></tr>
+              <tr><td><code>win64</code></td><td><code>x86_64-pc-windows-msvc</code></td><td>Windows x86_64</td></tr>
+              <tr><td><code>macos</code></td><td><code>x86_64-apple-darwin</code></td><td>macOS x86_64</td></tr>
+              <tr><td><code>macos-arm</code></td><td><code>aarch64-apple-darwin</code></td><td>macOS ARM64 (Apple Silicon)</td></tr>
+              <tr><td><code>jvm</code></td><td>JVM bytecode (class file v49)</td><td>Any Java runtime (Java 5+; Java 8+ for <code>async</code>/<code>spawn</code>)</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>The <code>jvm</code> target is emitted by the self-hosted compiler only (<code>bin/leashc</code>). It writes <code>.class</code> files directly &mdash; no clang, no linking, no GC runtime &mdash; and the result runs on any JVM: <code>java -cp &lt;dir&gt; &lt;name&gt;</code> (or <code>leash run --target jvm</code>). Supported: the full core language, vectors, hashes, fixed arrays, structs, classes with inheritance and virtual dispatch, generic classes, enums, tuples, unions (including <code>int64</code>&lt;-&gt;<code>double</code> reinterpretation), <code>int128</code>/<code>uint128</code>, string/float/int conversion builtins, file I/O, <code>exec</code>, <code>getenv</code>/<code>exit</code>, the ChaCha20 random builtins (<code>seed</code>/<code>rand</code>/<code>randf</code>/<code>choose</code>, bit-identical streams to native), <code>async</code>/<code>await</code> and workers/<code>spawn</code> over a shared thread pool, and <code>main(string[])</code> with exit codes. Only <code>@from</code> native bodies (HTTP/SQLite native libraries), matrices, and native library outputs stay platform-bound: importing a native module works, but calling into it aborts with a clear <code>not supported on the jvm target</code> error instead of miscompiling, and unrepresentable signatures report a clean error only if actually called. Programs using <code>async</code>/<code>spawn</code> need a Java 8+ runtime (<code>CompletableFuture</code>); everything else verifies on Java 5+. <code>_PLATFORM</code> reports <code>"jvm"</code>.</p>
 
-<p>For <code>linux-arm</code> on a non-ARM host, install the cross toolchain (<code>gcc-aarch64-linux-gnu</code>) — <code>leash run --target linux-arm</code> executes the produced binary through <code>qemu-aarch64</code> (qemu-user) when the host is x86. On native ARM64 Linux (e.g. a Raspberry Pi) no extra setup is needed.</p>
+        <h2 id="cross-compilation">Cross-compilation</h2>
+        <p>Cross-compiling means selecting a <code>--target</code> whose toolchain is installed on the build host. The compiler emits code for the target and invokes the matching C compiler and linker.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Goal</th><th>Host setup</th><th>Notes</th></tr></thead>
+            <tbody>
+              <tr><td>Linux &rarr; Windows (<code>win64</code>)</td><td>MinGW (<code>gcc-mingw-w64</code>)</td><td><code>leash run --target win64</code> executes through Wine on Linux</td></tr>
+              <tr><td>x86 &rarr; Linux ARM64 (<code>linux-arm</code>)</td><td><code>gcc-aarch64-linux-gnu</code>, optionally <code>qemu-user</code></td><td><code>leash run --target linux-arm</code> uses <code>qemu-aarch64</code> on x86 hosts; no setup needed on native ARM64</td></tr>
+              <tr><td>Linux &rarr; macOS (<code>macos</code>, <code>macos-arm</code>)</td><td>A macOS SDK</td><td>Required only for linking</td></tr>
+              <tr><td>Any &rarr; JVM (<code>jvm</code>)</td><td>A Java runtime to execute</td><td>No C toolchain, no linking, no GC runtime</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout callout-warning"><strong>Target-specific limits.</strong> Cross targets deliberately skip LTO and recursive-call unrolling. The scoped arena is native-only; the JVM target uses its own GC. Use conditional compilation with <code>_PLATFORM</code> to keep platform-specific code isolated.</div>
 
-<table>
-    <tr><th>Target</th><th>Triple</th><th>Runs on</th></tr>
-    <tr><td><code>linux64</code></td><td><code>x86_64-unknown-linux-gnu</code></td><td>Linux x86_64</td></tr>
-    <tr><td><code>linux32</code></td><td><code>i686-unknown-linux-gnu</code></td><td>Linux x86 (32-bit)</td></tr>
-    <tr><td><code>linux-arm</code></td><td><code>aarch64-unknown-linux-gnu</code></td><td>Linux ARM64 (Raspberry Pi, ARM servers)</td></tr>
-    <tr><td><code>win64</code></td><td><code>x86_64-pc-windows-msvc</code></td><td>Windows x86_64</td></tr>
-    <tr><td><code>macos</code></td><td><code>x86_64-apple-darwin</code></td><td>macOS x86_64</td></tr>
-    <tr><td><code>macos-arm</code></td><td><code>aarch64-apple-darwin</code></td><td>macOS ARM64 (Apple Silicon)</td></tr>
-    <tr><td><code>jvm</code></td><td>JVM bytecode (class file v49)</td><td>Any Java runtime (Java 5+; Java 8+ for <code>async</code>/<code>spawn</code>)</td></tr>
-</table>
-
-<p>The <code>jvm</code> target is emitted by the self-hosted compiler only (<code>bin/leashc</code>). It writes <code>.class</code> files directly — no clang, no linking, no GC runtime — and the result runs on any JVM: <code>java -cp <dir> <name></code> (or <code>leash run --target jvm</code>). Supported: the full core language, vectors, hashes, fixed arrays, structs, classes with inheritance and virtual dispatch, generic classes, enums, tuples, unions (including <code>int64</code>&lt;-&gt;<code>double</code> reinterpretation), <code>int128</code>/<code>uint128</code>, string/float/int conversion builtins, file I/O, <code>exec</code>, <code>getenv</code>/<code>exit</code>, the ChaCha20 random builtins (<code>seed</code>/<code>rand</code>/<code>randf</code>/<code>choose</code>, bit-identical streams to native), <code>async</code>/<code>await</code> and workers/<code>spawn</code> over a shared thread pool, and <code>main(string[])</code> with exit codes. Only <code>@from</code> native bodies (HTTP/SQLite native libraries), matrices, and native library outputs stay platform-bound: importing a native module works, but calling into it aborts with a clear <code>not supported on the jvm target</code> error instead of miscompiling, and unrepresentable signatures report a clean error only if actually called. Programs using <code>async</code>/<code>spawn</code> need a Java 8+ runtime (<code>CompletableFuture</code>); everything else verifies on Java 5+. <code>_PLATFORM</code> reports <code>"jvm"</code>.</p>
-
-<h2>Debugging</h2>
-
-<p><code>leash dbg &lt;file.lsh&gt;</code> compiles the program with lightweight statement instrumentation and runs it under the <strong>native Leash debugger</strong> — no external tools needed. Every statement emits a hook that the runtime interprets interactively:</p>
-
-<pre><code>leash dbg app.lsh
+        <h2 id="debugging">Debugging</h2>
+        <p><code>leash dbg &lt;file.lsh&gt;</code> compiles the program with lightweight statement instrumentation and runs it under the <strong>native Leash debugger</strong> &mdash; no external tools needed. Every statement emits a hook that the runtime interprets interactively:</p>
+        <pre><code>leash dbg app.lsh
 leash dbg app.lsh --break 42          <span class="cm"># break at line 42</span>
 leash dbg app.lsh --run               <span class="cm"># skip initial stepping; run to the first breakpoint</span>
 leash dbg                             <span class="cm"># debug the current project (config.lshc)</span></code></pre>
-
-<p>At each stop the debugger prints the location and source line, and offers an interactive prompt:</p>
-
-<pre><code>--- Debug session for 'app.lsh' (leash dbg) ---
+        <p>At each stop the debugger prints the location and source line, and offers an interactive prompt:</p>
+        <pre><code>--- Debug session for 'app.lsh' (leash dbg) ---
 [leash-dbg] --&gt; app.lsh:8 in main
        8 |     z: int = add(x, y);
 (dbg) h                        <span class="cm"># help</span>
@@ -133,259 +180,249 @@ leash dbg                             <span class="cm"># debug the current proje
 (dbg) l                        <span class="cm"># list breakpoints</span>
 (dbg) d 12                     <span class="cm"># delete breakpoint 12</span>
 (dbg) q                        <span class="cm"># quit the program now</span></code></pre>
+        <ul>
+          <li>Debug builds default to <code>-O0</code> so statements map 1:1 to source lines (the always-on AST folding can drop <code>x: int = &hellip;</code> declarations that are fully constant-propagated &mdash; a breakpoint pinned to such a line simply never fires; prefer to step into the caller).</li>
+          <li>Break on entry is the default; use <code>--run</code> to run straight to the first breakpoint.</li>
+          <li>While stopped at the <code>(dbg)</code> prompt, stdin belongs to the debugger &mdash; the debuggee receives it once you continue (step/continue). Pipeline-style stdin (<code>printf 'c\nq\n' | leash dbg app.lsh</code>) is the recommended CI usage.</li>
+          <li>Statement-level instrumentation is provided by the toolchain itself &mdash; no external debugger is required. The binary remains a valid GDB/LLDB target at symbol level.</li>
+        </ul>
+        <p>Under the hood, <code>leash dbg</code> emits a call to the runtime&rsquo;s <code>__leash_dbg_stmt(func, line)</code> before every statement; with <code>LEASH_DBG</code> unset the hook is a no-op, so the same archive can be reused by plain <code>leash run</code>.</p>
 
-<ul>
-    <li>Debug builds default to <code>-O0</code> so statements map 1:1 to source lines (the always-on AST folding can drop <code>x: int = …</code> declarations that are fully constant-propagated — a breakpoint pinned to such a line simply never fires; prefer to step into the caller).</li>
-    <li>Break on entry is the default; use <code>--run</code> to run straight to the first breakpoint.</li>
-    <li>While stopped at the <code>(dbg)</code> prompt, stdin belongs to the debugger — the debuggee receives it once you continue (step/continue). Pipeline-style stdin (<code>printf 'c\nq\n' | leash dbg app.lsh</code>) is the recommended CI usage.</li>
-    <li>Statement-level instrumentation is provided by the toolchain itself — no external debugger is required. The binary remains a valid GDB/LLDB target at symbol level.</li>
-</ul>
-
-<p>Under the hood, <code>leash dbg</code> emits a call to the runtime's <code>__leash_dbg_stmt(func, line)</code> before every statement; with <code>LEASH_DBG</code> unset the hook is a no-op, so the same archive can be reused by plain <code>leash run</code>.</p>
-
-<h2>Library Output Types</h2>
-
-<table>
-    <tr><th>Output Type</th><th>Flag</th><th>Output File</th></tr>
-    <tr><td>Executable</td><td><code>to &lt;name&gt;</code></td><td><code>&lt;name&gt;</code></td></tr>
-    <tr><td>Dynamic Library</td><td><code>to-dynamic &lt;name&gt;</code></td><td><code>lib&lt;name&gt;.so</code></td></tr>
-    <tr><td>Static Library</td><td><code>to-static &lt;name&gt;</code></td><td><code>lib&lt;name&gt;.a</code></td></tr>
-</table>
-
-<pre><code>leash compile math.lsh to-dynamic math   <span class="cm"># math.so</span>
+        <h2 id="library-outputs">Library output types</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Output Type</th><th>Flag</th><th>Output File</th></tr></thead>
+            <tbody>
+              <tr><td>Executable</td><td><code>to &lt;name&gt;</code></td><td><code>&lt;name&gt;</code></td></tr>
+              <tr><td>Dynamic Library</td><td><code>to-dynamic &lt;name&gt;</code></td><td><code>lib&lt;name&gt;.so</code></td></tr>
+              <tr><td>Static Library</td><td><code>to-static &lt;name&gt;</code></td><td><code>lib&lt;name&gt;.a</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <pre><code>leash compile math.lsh to-dynamic math   <span class="cm"># math.so</span>
 leash compile utils.lsh to-static utils  <span class="cm"># utils.a</span></code></pre>
-
-<p>Library outputs are built natively for the host platform (<code>.so</code>/<code>.a</code> on Linux, <code>.dylib</code>/<code>.a</code> on macOS, <code>.dll</code>/<code>.lib</code> on Windows) and contain only your exported functions &mdash; no <code>main</code>. C consumers link the library together with the Leash runtime (<code>gc.c</code> + platform stubs) and call <code>leash_init()</code> once before any other library function:</p>
-
-<pre><code><span class="cm">/* consumer.c */</span>
+        <p>Library outputs are built natively for the host platform (<code>.so</code>/<code>.a</code> on Linux, <code>.dylib</code>/<code>.a</code> on macOS, <code>.dll</code>/<code>.lib</code> on Windows) and contain only your exported functions &mdash; no <code>main</code>. C consumers link the library together with the Leash runtime (<code>gc.c</code> + platform stubs) and call <code>leash_init()</code> once before any other library function:</p>
+        <pre><code><span class="cm">/* consumer.c */</span>
 <span class="kw">extern void</span> leash_init(<span class="kw">void</span>);
 <span class="kw">extern int</span> add(<span class="kw">int</span>, <span class="kw">int</span>);
-<span class="kw">int</span> main(<span class="kw">void</span>) { leash_init(); <span class="kw">return</span> add(1, 2); }</code></pre>
+<span class="kw">int</span> main(<span class="kw">void</span>) { leash_init(); <span class="kw">return</span> add(<span class="num">1</span>, <span class="num">2</span>); }</code></pre>
+        <p>Native targets produce standalone binaries with full access to the system&rsquo;s C library, garbage collector, and OS APIs.</p>
 
-<p>Native targets produce standalone binaries with full access to the system's C library, garbage collector, and OS APIs.</p>
+        <h2 id="static-analysis">Static analysis</h2>
+        <p>Leash provides thorough static analysis to catch errors and potential issues before your code runs. You can analyze a file without compiling it using the <code>check</code> command, which runs the full type checker with enhanced safety analysis.</p>
 
-<h2>Static Analysis</h2>
+        <h3>The <code>check</code> command</h3>
+        <pre><code>leash check program.lsh</code></pre>
+        <p>The checker reports:</p>
+        <ul>
+          <li>Type errors, undefined variables, unknown types</li>
+          <li>Duplicate switch cases</li>
+          <li>Shadowed globals</li>
+          <li>Missing switch defaults</li>
+          <li>Large stack arrays (&gt;10,000 elements)</li>
+          <li>Self-assignments (<code>x = x</code>)</li>
+          <li>Unused variables and parameters</li>
+          <li>Empty blocks</li>
+          <li>Unreachable code</li>
+          <li>Always-true/false conditions</li>
+          <li>Redundant operations (<code>+ 0</code>, <code>* 1</code>, <code>x == x</code>)</li>
+        </ul>
 
-<p>Leash provides thorough static analysis to catch errors and potential issues before your code runs. You can analyze a file without compiling it using the <code>check</code> command, which runs the full type checker with enhanced safety analysis.</p>
-
-<h3>The <code>check</code> Command</h3>
-<pre><code>leash check program.lsh</code></pre>
-
-<p>The checker reports:</p>
-<ul>
-    <li>Type errors, undefined variables, unknown types</li>
-    <li>Duplicate switch cases</li>
-    <li>Shadowed globals</li>
-    <li>Missing switch defaults</li>
-    <li>Large stack arrays (&gt;10,000 elements)</li>
-    <li>Self-assignments (<code>x = x</code>)</li>
-    <li>Unused variables and parameters</li>
-    <li>Empty blocks</li>
-    <li>Unreachable code</li>
-    <li>Always-true/false conditions</li>
-    <li>Redundant operations (<code>+ 0</code>, <code>* 1</code>, <code>x == x</code>)</li>
-</ul>
-
-<h3>The <code>--check</code> Flag</h3>
-<pre><code>leash compile program.lsh --check
+        <h3>The <code>--check</code> flag</h3>
+        <pre><code>leash compile program.lsh --check
 leash run program.lsh --check</code></pre>
 
-<h3>Warnings as Errors</h3>
-<pre><code>leash compile program.lsh --warnings-as-errors
-leash compile program.lsh -oe   # short form of --warnings-as-errors</code></pre>
+        <h3>Warnings as errors</h3>
+        <pre><code>leash compile program.lsh --warnings-as-errors
+leash compile program.lsh -oe   <span class="cm"># short form of --warnings-as-errors</span></code></pre>
+        <p>For strict builds (e.g., CI/CD), use the <code>--warnings-as-errors</code> flag to treat warnings as errors, ensuring your codebase stays clean. In <code>--arena</code> mode the lifetime audit is <strong>always</strong> strict: every diagnostic is an <code>E_ARENA_LIFETIME</code> error and the compile either succeeds or fails, never emits a binary with a warning. The flag is kept as a no-op for existing scripts that still pass it. Arena diagnostics print the source location, a snippet with a caret, why the rule fired, how to fix it, and a short audit trace.</p>
 
-<h3>Verbose Diagnostics</h3>
-<pre><code>leash check program.lsh --verbose
+        <h3>Verbose diagnostics (<code>--verbose</code> / <code>-vb</code>)</h3>
+        <pre><code>leash check program.lsh --verbose
 leash compile program.lsh -vb</code></pre>
+        <p>For in-depth educational guidance, the <code>--verbose</code> or <code>-vb</code> flag prompts the compiler to print highly detailed, step-by-step masterclass explanations, diagnostics, and fully validated Leash code tips for any encountered errors or warnings. This is particularly useful when learning the language or debugging complex type issues.</p>
 
-<p>For strict builds (e.g., CI/CD), use the <code>--warnings-as-errors</code> flag to treat warnings as errors, ensuring your codebase stays clean. In <code>--arena</code> mode the lifetime audit is <strong>always</strong> strict: every diagnostic is an <code>E_ARENA_LIFETIME</code> error and the compile either succeeds or fails, never emits a binary with a warning. The flag is kept as a no-op for existing scripts that still pass it. Arena diagnostics print the source location, a snippet with a caret, why the rule fired, how to fix it, and a short audit trace.</p>
+        <h2 id="compiler-pipeline">Compiler pipeline</h2>
+        <p>Leash transforms source code into a native executable through a multi-stage pipeline. Each stage feeds its output into the next, from raw source text all the way to a linked binary. Here are the 15 stages:</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>#</th><th>Stage</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td>1</td><td><strong>Lexer</strong></td><td>Characters &rarr; tokens (keywords, operators, identifiers, literals)</td></tr>
+              <tr><td>2</td><td><strong>Parser</strong></td><td>Tokens &rarr; AST (recursive-descent parser)</td></tr>
+              <tr><td>3</td><td><strong>Import Resolution</strong></td><td>Resolves <code>use module::Item;</code> statements</td></tr>
+              <tr><td>4</td><td><strong>Conditional Compilation</strong></td><td>Evaluates top-level <code>if _PLATFORM == ...</code></td></tr>
+              <tr><td>5</td><td><strong>Macro Expansion</strong></td><td>Expands <code>defmacro</code> definitions in-place</td></tr>
+              <tr><td>6</td><td><strong>Type Checker</strong></td><td>Validates types, reports warnings</td></tr>
+              <tr><td>7</td><td><strong>Low-Level Checker</strong></td><td>Validates memory layout and field invariants</td></tr>
+              <tr><td>8</td><td><strong>AST Optimization</strong></td><td>Constant folding, DCE, dead branch elimination, TRO</td></tr>
+              <tr><td>9</td><td><strong>Code Generation</strong></td><td>AST &rarr; LLVM IR in-memory module</td></tr>
+              <tr><td>10</td><td><strong>Alloca Hoisting</strong></td><td>Moves all <code>alloca</code> to entry block</td></tr>
+              <tr><td>11</td><td><strong>Re-parse &amp; Verify</strong></td><td>Parse IR and call <code>verify()</code></td></tr>
+              <tr><td>12</td><td><strong>LLVM Optimization</strong></td><td>LLVM pass pipeline (<code>-O0</code> through <code>-O4</code>)</td></tr>
+              <tr><td>13</td><td><strong>Object Emission</strong></td><td>LLVM IR &rarr; <code>.o</code> machine code</td></tr>
+              <tr><td>14</td><td><strong>Runtime Compilation</strong></td><td>Compiles <code>gc.c</code> + platform stubs (with <code>-DNO_GC</code> in <code>--autofree</code>/<code>-ngc</code> modes)</td></tr>
+              <tr><td>15</td><td><strong>Linking</strong></td><td>Links <code>.o</code> + GC (or stub) + libraries &rarr; executable</td></tr>
+            </tbody>
+          </table>
+        </div>
 
-<h3>Verbose Diagnostics (<code>--verbose</code> / <code>-vb</code>)</h3>
-<p>For in-depth educational guidance, the <code>--verbose</code> or <code>-vb</code> flag prompts the compiler to print highly detailed, step-by-step masterclass explanations, diagnostics, and fully validated Leash code tips for any encountered errors or warnings. This is particularly useful when learning the language or debugging complex type issues.</p>
-
-<h2>Compiler Pipeline</h2>
-
-<p>Leash transforms source code into a native executable through a multi-stage pipeline. Each stage feeds its output into the next, from raw source text all the way to a linked binary. Here are the 15 stages:</p>
-
-<table>
-    <tr><th>#</th><th>Stage</th><th>Description</th></tr>
-    <tr><td>1</td><td><strong>Lexer</strong></td><td>Characters &rarr; tokens (keywords, operators, identifiers, literals)</td></tr>
-    <tr><td>2</td><td><strong>Parser</strong></td><td>Tokens &rarr; AST (recursive-descent parser)</td></tr>
-    <tr><td>3</td><td><strong>Import Resolution</strong></td><td>Resolves <code>use module::Item;</code> statements</td></tr>
-    <tr><td>4</td><td><strong>Conditional Compilation</strong></td><td>Evaluates top-level <code>if _PLATFORM == ...</code></td></tr>
-    <tr><td>5</td><td><strong>Macro Expansion</strong></td><td>Expands <code>defmacro</code> definitions in-place</td></tr>
-    <tr><td>6</td><td><strong>Type Checker</strong></td><td>Validates types, reports warnings</td></tr>
-    <tr><td>7</td><td><strong>Low-Level Checker</strong></td><td>Validates memory layout and field invariants</td></tr>
-    <tr><td>8</td><td><strong>AST Optimization</strong></td><td>Constant folding, DCE, dead branch elimination, TRO</td></tr>
-    <tr><td>9</td><td><strong>Code Generation</strong></td><td>AST &rarr; LLVM IR in-memory module</td></tr>
-    <tr><td>10</td><td><strong>Alloca Hoisting</strong></td><td>Moves all <code>alloca</code> to entry block</td></tr>
-    <tr><td>11</td><td><strong>Re-parse &amp; Verify</strong></td><td>Parse IR and call <code>verify()</code></td></tr>
-    <tr><td>12</td><td><strong>LLVM Optimization</strong></td><td>LLVM pass pipeline (<code>-O0</code> through <code>-O4</code>)</td></tr>
-    <tr><td>13</td><td><strong>Object Emission</strong></td><td>LLVM IR &rarr; <code>.o</code> machine code</td></tr>
-    <tr><td>14</td><td><strong>Runtime Compilation</strong></td><td>Compiles <code>gc.c</code> + platform stubs (with <code>-DNO_GC</code> in <code>--autofree</code>/<code>-ngc</code> modes)</td></tr>
-    <tr><td>15</td><td><strong>Linking</strong></td><td>Links <code>.o</code> + GC (or stub) + libraries &rarr; executable</td></tr>
-</table>
-
-<h2>Memory Management Modes</h2>
-
-<p>Leash ships four memory management modes, selectable at compile time (only one per program). The default uses the built-in mark-and-sweep garbage collector; <code>--arena</code> is the experimental scoped bump-arena backend (native-only, planned as the default in a future release); the other two produce GC-free binaries. Modes are exclusive: use only one of <code>--no-garbage-collector</code>, <code>--autofree</code>, or <code>--arena</code> (GC is the default).</p>
-
-<table>
-    <tr><th>Mode</th><th>Flag</th><th>Allocator</th><th>Reclamation</th></tr>
-    <tr><td>Garbage Collected</td><td><em>(default)</em></td><td><code>leash_gc_malloc</code></td><td>Slab allocation; mark-and-sweep auto-triggered at threshold</td></tr>
-    <tr><td>Scoped Arena (experimental)</td><td><code>--arena</code> (or <code>arena: true</code> in project config)</td><td>Thread-local bump blocks (malloc-backed, 32&nbsp;KB steady-state, 4&nbsp;KB lazy initial)</td><td>Whole-scope/loop release by bump rewind (O(blocks)); returns/spawn/futures escape by copy or root arena; reclaimed memory poisoned by default with strict frame checks</td></tr>
-    <tr><td>No GC (raw)</td><td><code>--no-garbage-collector</code> / <code>-ngc</code></td><td>C <code>malloc</code></td><td>Manual <code>free()</code> only</td></tr>
-    <tr><td><strong>Auto-Free</strong></td><td><code>--autofree</code> / <code>-af</code></td><td>C <code>malloc</code></td><td>Automatic <code>free()</code> at function exit</td></tr>
-</table>
-
-<pre><code>leash compile myprogram.lsh              <span class="cm"># GC mode (default)</span>
+        <h2 id="memory-management-modes">Memory management modes</h2>
+        <p>Leash ships four memory management modes, selectable at compile time (only one per program). As of 2.0.0 the default is the scoped bump arena (native-only); <code>--gc</code> selects the built-in mark-and-sweep garbage collector, and the other two produce GC-free binaries. Modes are exclusive: use only one of <code>--gc</code>, <code>--no-garbage-collector</code>, <code>--autofree</code>, or <code>--arena</code>.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Mode</th><th>Flag</th><th>Allocator</th><th>Reclamation</th></tr></thead>
+            <tbody>
+              <tr><td><strong>Scoped Arena</strong> (default)</td><td><em>(default)</em> / <code>--arena</code></td><td>Thread-local bump blocks (malloc-backed, 32&nbsp;KB steady-state, 4&nbsp;KB lazy initial)</td><td>Whole-scope/loop release by bump rewind (O(blocks)); returns/spawn/futures escape by copy or root arena; reclaimed memory poisoned by default with strict frame checks</td></tr>
+              <tr><td>Garbage Collected</td><td><code>--gc</code> (or <code>gc: true</code> in project config)</td><td><code>leash_gc_malloc</code> slabs</td><td>Mark-and-sweep auto-triggered at threshold</td></tr>
+              <tr><td>No GC (raw)</td><td><code>--no-garbage-collector</code> / <code>-ngc</code></td><td>C <code>malloc</code></td><td>Manual <code>free()</code> only</td></tr>
+              <tr><td><strong>Auto-Free</strong></td><td><code>--autofree</code> / <code>-af</code></td><td>C <code>malloc</code></td><td>Automatic <code>free()</code> at function exit</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <pre><code>leash compile myprogram.lsh              <span class="cm"># arena mode (default)</span>
 leash compile myprogram.lsh -ngc        <span class="cm"># GC-free, manual free()</span>
 leash compile myprogram.lsh -af         <span class="cm"># GC-free, auto free()</span>
-leash compile myprogram.lsh --arena     <span class="cm"># scoped bump arena (experimental)</span></code></pre>
+leash compile myprogram.lsh --gc        <span class="cm"># mark-and-sweep GC</span></code></pre>
+        <p><code>--arena</code> replaces slabs and scanning with per-thread bump blocks (malloc-backed, 32&nbsp;KB steady-state with a 4&nbsp;KB lazy initial block): allocations are align + bump + memset; leaving a function (or an instrumented loop/checkpoint) rewinds the bump and frees blocks above the checkpoint, so release is O(blocks) with no per-object free, no scan, no lock, and no stop-the-world pause. There is no GC and no borrow checker: a pointer is valid until its allocating frame/iteration scope exits.</p>
+        <p><strong>Escapes &amp; lifetimes:</strong> values that must outlive a frame are copied, not borrowed. Returned strings, vecs, hashes, structs/classes (deep over heap-typed and nested fields), slices, and multi-heap tuples are staged, the scope(s) pop, and the value is committed into the caller&rsquo;s frame; small payloads are staged on the C stack and larger ones from a per-thread stage cache, so the escape path performs very few heap allocations; <code>spawn</code> argument blocks and futures/async results go to the program-lifetime <em>root arena</em>. Allocation-free functions and allocation-free loops can skip framing/reset work entirely. Containers owned outside the current frame (parameters, globals) grow in the root arena via the rooted runtime entry points (<code>leash_sh_vec_reserve_rooted</code>, <code>leash_sh_vec_extend_rooted</code>, <code>leash_sh_vec_insertv_rooted</code>, <code>leash_sh_hash_make_rooted</code>), so their storage outlives the frame that grew them. Native raw pointers are provenance-checked at runtime, and union heap payloads are rooted before boxing; escaping addresses are root-allocated and libc heap pointers are provenance-checked. Superseded oversize growth buffers are reclaimed only in specific cases (dedicated blocks with no saved frame referencing them), so growth-heavy kernels can retain waste until scope reset while churn-heavy kernels stay lean.</p>
+        <p><strong>Safety:</strong> reclaimed bytes are <strong>poisoned with <code>0xDD</code> by default</strong> to surface use-after-scope; set <code>LEASH_ARENA_POISON=0</code> to opt out (or <code>=1</code> explicitly) for peak speed once lifetimes are validated. Before every frame pop/loop reset, registered global/shared/static pointer slots are checked for pointers into the dying frame (<code>LEASH_ARENA_VERIFY=0</code> opts out), so a missed root copy aborts loudly instead of dangling. Runtime checks abort with diagnostics on scope underflow/unmatched exits, <code>exit_n</code> beyond depth, and invalid/out-of-range loop-frame operations. Deep stage/commit of nested heap fields on struct/class escape prevents post-pop reads of reclaimed nested data. Reallocation checks pointer ownership before reading the allocation header and rejects foreign pointers with a diagnostic; arena strings are reallocated through a string-aware path that preserves their length and identity. The compiler also runs an ergonomic, strict lifetime audit in arena builds: only pointers whose provenance cannot be proven are <code>E_ARENA_LIFETIME</code> errors. Proven-safe returns, globals, long-lived stores and worker arguments are accepted, and <code>leash check</code> runs the same audit. Header readers now validate a tagged size word, that the header lies inside the owning block, and that a string&rsquo;s advertised size fits that block before any copy; interior pointers, forged string lengths and size-overflow growth abort with diagnostics. Arena is the default and <strong>native-only</strong> (the JVM target uses its own GC); use <code>--gc</code> for adversarial or highly dynamic lifetime patterns.</p>
+        <p><strong>Optimization levels (arena-aware):</strong> <code>--arena</code> compiles the runtime with <code>-DLEASH_ARENA</code> and, at <code>-O2</code>/<code>-O3</code>/<code>-O4</code>/<code>-Os</code>/<code>-Oz</code>, <code>-DLEASH_ARENA_O2</code>; at <code>-O3</code>/<code>-O4</code>, <code>-DLEASH_ARENA_O3</code>. Exact trip-count vector/collection reserves and arena-only hash pre-sizing apply at O2+ (O0/O1 stay conservative). O3+ enables arena-exclusive optimizations: nested counted-loop push analysis with hoisted reserves (never above a loop-local receiver), compact 24-byte hash nodes, and fused hash keys that build <code>"&lt;prefix&gt;"+int</code> in a stack buffer (no temporary key string) for push/get/index-set.</p>
+        <p><strong>Instrumentation &amp; performance:</strong> set <code>LEASH_ARENA_STATS=1</code> to print peak block bytes, current live blocks/payload, and rooted bytes to stderr on shutdown. Arena often wins on allocation/churn- and hash/string-heavy workloads (lower allocator pressure and competitive/better speed), while growth-heavy kernels or tiny compute-bound tasks can show smaller, page-granular, or noisy RSS/timing deltas &mdash; measure with interleaved GC-vs-arena runs, cleared <code>~/.leash/shcache</code>, and CPU/max-RSS via <code>/usr/bin/time -v</code> (see <a href="../benchmarking/README.md">benchmarking/README.md</a>). The C ABI (<code>leasharena_enter/exit</code>, loop ops, <code>leasharena_escape_*</code>, stage/commit, root arena) is declared in <code>leash/gc.h</code>.</p>
+        <p><code>--autofree</code> (<code>-af</code>) tracks every heap allocation the compiler emits and inserts <code>free()</code> calls automatically when the allocating function returns &mdash; no GC and no manual memory management. Allocations that are returned to the caller are excluded automatically, so returned strings, vectors, and class instances remain valid. The GC runtime is linked in stub mode (thin <code>malloc</code>/<code>free</code> wrappers), keeping binaries small and deterministic. This is especially useful when compiling libraries (<code>to-dynamic</code> / <code>to-static</code>) for use from non-GC languages.</p>
+        <div class="callout callout-info"><strong>Static analysis includes the arena audit.</strong> With the default arena layout, <code>leash check</code> runs the same lifetime audit as a compile: proven-safe raw pointers are accepted, unprovable ones produce <code>E_ARENA_LIFETIME</code> with a source snippet, a <code>why:</code> explanation and a <code>help:</code> hint. See <a href="advanced.html#reading-lifetime-diagnostics">Reading a lifetime diagnostic</a>.</div>
+        <div class="callout callout-success"><strong>Default changed in 2.0.0.</strong> A bare <code>leash compile</code> now links the arena runtime, not the mark-and-sweep collector. Scripts that relied on the old default should pass <code>--gc</code> explicitly to keep collector semantics.</div>
+        <p>In <code>--gc</code> builds, a local whose address is taken is stored in a rooted, zeroed heap cell rather than a raw stack slot. This makes long-lived <code>&amp;local</code> pointers stable across frames and workers; the static <code>E010</code> rule still rejects returning the address of a local from its own function, so use an owned value or explicit root storage for that case.</p>
 
-<p><code>--arena</code> replaces slabs and scanning with per-thread bump blocks (malloc-backed, 32&nbsp;KB steady-state with a 4&nbsp;KB lazy initial block): allocations are align + bump + memset; leaving a function (or an instrumented loop/checkpoint) rewinds the bump and frees blocks above the checkpoint, so release is O(blocks) with no per-object free, no scan, no lock, and no stop-the-world pause. There is no GC and no borrow checker: a pointer is valid until its allocating frame/iteration scope exits.</p>
-
-<p><strong>Escapes &amp; lifetimes:</strong> values that must outlive a frame are copied, not borrowed. Returned strings, vecs, hashes, structs/classes (deep over heap-typed and nested fields), slices, and multi-heap tuples are staged, the scope(s) pop, and the value is committed into the caller&rsquo;s frame; small payloads are staged on the C stack and larger ones from a per-thread stage cache, so the escape path performs very few heap allocations; <code>spawn</code> argument blocks and futures/async results go to the program-lifetime <em>root arena</em>. Allocation-free functions and allocation-free loops can skip framing/reset work entirely. Containers owned outside the current frame (parameters, globals) grow in the root arena via the rooted runtime entry points (<code>leash_sh_vec_reserve_rooted</code>, <code>leash_sh_vec_extend_rooted</code>, <code>leash_sh_vec_insertv_rooted</code>, <code>leash_sh_hash_make_rooted</code>), so their storage outlives the frame that grew them. Storing a frame-local temporary into a caller-owned aggregate (heap field, global, slice backing), raw <code>*T</code> pointers, and union payloads remain caller-owned (same aggregate-escape limitation as <code>--autofree</code>) &mdash; use care or prefer GC when ownership crosses frames this way. Superseded oversize growth buffers are reclaimed only in specific cases (dedicated blocks with no saved frame referencing them), so growth-heavy kernels can retain waste until scope reset while churn-heavy kernels stay lean.</p>
-
-<p><strong>Safety:</strong> reclaimed bytes are <strong>poisoned with <code>0xDD</code> by default</strong> to surface use-after-scope; set <code>LEASH_ARENA_POISON=0</code> to opt out (or <code>=1</code> explicitly) for peak speed once lifetimes are validated. Before every frame pop/loop reset, registered global/shared/static pointer slots are checked for pointers into the dying frame (`LEASH_ARENA_VERIFY=0` opts out), so a missed root copy aborts loudly instead of dangling. Runtime checks abort with diagnostics on scope underflow/unmatched exits, <code>exit_n</code> beyond depth, and invalid/out-of-range loop-frame operations. Deep stage/commit of nested heap fields on struct/class escape prevents post-pop reads of reclaimed nested data. Reallocation checks pointer ownership before reading the allocation header and rejects foreign pointers with a diagnostic; arena strings are reallocated through a string-aware path that preserves their length and identity. The compiler also runs an ergonomic, strict lifetime audit in arena builds: manual libc heap calls, raw-pointer returns, and raw pointers stored long-term or passed to workers are all <code>E_ARENA_LIFETIME</code> errors. Header readers now validate a tagged size word, that the header lies inside the owning block, and that a string's advertised size fits that block before any copy; interior pointers, forged string lengths and size-overflow growth abort with diagnostics. Arena remains experimental and <strong>native-only</strong> (the JVM target rejects <code>--arena</code>); for adversarial or highly dynamic lifetime patterns, prefer GC.</p>
-
-<p><strong>Optimization levels (arena-aware):</strong> <code>--arena</code> compiles the runtime with <code>-DLEASH_ARENA</code> and, at <code>-O2</code>/<code>-O3</code>/<code>-O4</code>/<code>-Os</code>/<code>-Oz</code>, <code>-DLEASH_ARENA_O2</code>; at <code>-O3</code>/<code>-O4</code>, <code>-DLEASH_ARENA_O3</code>. Exact trip-count vector/collection reserves and arena-only hash pre-sizing apply at O2+ (O0/O1 stay conservative). O3+ enables arena-exclusive optimizations: nested counted-loop push analysis with hoisted reserves (never above a loop-local receiver), compact 24-byte hash nodes, and fused hash keys that build <code>&quot;&lt;prefix&gt;&quot;+int</code> in a stack buffer (no temporary key string) for push/get/index-set.</p>
-
-<p><strong>Instrumentation &amp; performance:</strong> set <code>LEASH_ARENA_STATS=1</code> to print peak block bytes, current live blocks/payload, and rooted bytes to stderr on shutdown. Arena often wins on allocation/churn- and hash/string-heavy workloads (lower allocator pressure and competitive/better speed), while growth-heavy kernels or tiny compute-bound tasks can show smaller, page-granular, or noisy RSS/timing deltas &mdash; measure with interleaved GC-vs-arena runs, cleared <code>~/.leash/shcache</code>, and CPU/max-RSS via <code>/usr/bin/time -v</code> (see <a href="../benchmarking/README.md">benchmarking/README.md</a>). The C ABI (<code>leasharena_enter/exit</code>, loop ops, <code>leasharena_escape_*</code>, stage/commit, root arena) is declared in <code>leash/gc.h</code>.</p>
-
-<p><code>--autofree</code> (<code>-af</code>) tracks every heap allocation the compiler emits and inserts <code>free()</code> calls automatically when the allocating function returns &mdash; no GC and no manual memory management. Allocations that are returned to the caller are excluded automatically, so returned strings, vectors, and class instances remain valid. The GC runtime is linked in stub mode (thin <code>malloc</code>/<code>free</code> wrappers), keeping binaries small and deterministic. This is especially useful when compiling libraries (<code>to-dynamic</code> / <code>to-static</code>) for use from non-GC languages.</p>
-
-<h2>Optimization Levels</h2>
-
-<p>Leash supports LLVM optimization levels via the <code>--opt</code> (or <code>-O</code>) flag, controlling the aggressiveness of the optimization pipeline across <strong>three layers</strong>: Leash AST (frontend), LLVM IR (middle-end), and C runtime (link-time). The <code>-O</code> flag controls all three simultaneously, so a single flag choice applies consistent optimization throughout the entire compilation process. In <code>--arena</code> builds the selected level also gates arena-aware runtime/codegen features (O2+: exact reserves &amp; hash pre-sizing, O3+: nested push reserve, compact hash nodes, fused hash keys) via <code>LEASH_ARENA_O2</code>/<code>LEASH_ARENA_O3</code>.</p>
-
-<table>
-    <tr><th>Level</th><th>Description</th><th>Key Passes</th></tr>
-    <tr><td><code>-O0</code></td><td>No optimization</td><td>Fastest compilation; runtime <code>-O0</code></td></tr>
-    <tr><td><code>-O1</code></td><td>Basic</td><td><code>-O1</code> backend; runtime <code>-O1</code></td></tr>
-    <tr><td><code>-O2</code></td><td>Standard</td><td><code>-O2</code> backend + arena IR tier 2 (exact trip-count reserves, hash pre-sizing); runtime <code>-O2</code></td></tr>
-    <tr><td><code>-O3</code></td><td>Aggressive</td><td>O2 + thin LTO (<code>-flto=thin -fno-plt</code>) + recursive-call unrolling (depth 4) + arena IR tier 3; runtime <code>-O3 -flto=thin</code></td></tr>
-    <tr><td><code>-O4</code></td><td>Maximum</td><td>O3 + <code>-march=native -mtune=native</code> + deeper recursive-call unrolling (depth 8); runtime <code>-O3 -flto=thin</code></td></tr>
-    <tr><td><code>-Os</code></td><td>Size</td><td>Size-oriented backend; arena IR tier 2</td></tr>
-    <tr><td><code>-Oz</code></td><td>Minimum size</td><td>Additional size reductions; arena IR tier 2</td></tr>
-</table>
-
-<p><strong>The -O scale is monotonic by construction.</strong> Every level is a strict superset of the one below it: O2 is the full <code>-O2</code> backend plus the arena's IR tier 2, O3 adds thin LTO and recursive-call unrolling, and O4 adds native code generation and a deeper unroll. No level ever disables an optimization enabled by a lower one. Earlier releases silently pinned O2/O3/O4 to <code>-O1</code> because clang's stock <code>-O2</code>/<code>-O3</code> regressed call-heavy IR; the recursive-call clone chains now give LLVM the inlining it could not perform on a genuinely recursive function, so the stock pipeline is a win again. Cross targets deliberately skip LTO/unrolling. Wall-clock numbers on tiny programs can still tie or vary with noise, but the optimization <em>contract</em> is stable and checked by <code>tests/test_opt_scale.py</code>.</p>
-
-<pre><code>leash compile program.lsh --opt 3
+        <h2 id="optimization-levels">Optimization levels</h2>
+        <p>Leash supports LLVM optimization levels via the <code>--opt</code> (or <code>-O</code>) flag, controlling the aggressiveness of the optimization pipeline across <strong>three layers</strong>: Leash AST (frontend), LLVM IR (middle-end), and C runtime (link-time). The <code>-O</code> flag controls all three simultaneously, so a single flag choice applies consistent optimization throughout the entire compilation process. In arena builds the selected level also gates arena-aware runtime/codegen features (O2+: exact reserves &amp; hash pre-sizing, O3+: nested push reserve, compact hash nodes, fused hash keys) via <code>LEASH_ARENA_O2</code>/<code>LEASH_ARENA_O3</code>.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Level</th><th>Description</th><th>Key Passes</th></tr></thead>
+            <tbody>
+              <tr><td><code>-O0</code></td><td>No optimization</td><td>Fastest compilation; runtime <code>-O0</code></td></tr>
+              <tr><td><code>-O1</code></td><td>Basic</td><td><code>-O1</code> backend; runtime <code>-O1</code></td></tr>
+              <tr><td><code>-O2</code></td><td>Standard</td><td><code>-O2</code> backend + arena IR tier 2 (exact trip-count reserves, hash pre-sizing); runtime <code>-O2</code></td></tr>
+              <tr><td><code>-O3</code></td><td>Aggressive</td><td>O2 + thin LTO (<code>-flto=thin -fno-plt</code>) + recursive-call unrolling (depth 4) + arena IR tier 3; runtime <code>-O3 -flto=thin</code></td></tr>
+              <tr><td><code>-O4</code></td><td>Maximum</td><td>O3 + <code>-march=native -mtune=native</code> + deeper recursive-call unrolling (depth 8); runtime <code>-O3 -flto=thin</code></td></tr>
+              <tr><td><code>-Os</code></td><td>Size</td><td>Size-oriented backend; arena IR tier 2</td></tr>
+              <tr><td><code>-Oz</code></td><td>Minimum size</td><td>Additional size reductions; arena IR tier 2</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p><strong>The -O scale is monotonic by construction.</strong> Every level is a strict superset of the one below it: O2 is the full <code>-O2</code> backend plus the arena&rsquo;s IR tier 2, O3 adds thin LTO and recursive-call unrolling, and O4 adds native code generation and a deeper unroll. No level ever disables an optimization enabled by a lower one. Earlier releases silently pinned O2/O3/O4 to <code>-O1</code> because clang&rsquo;s stock <code>-O2</code>/<code>-O3</code> regressed call-heavy IR; the recursive-call clone chains now give LLVM the inlining it could not perform on a genuinely recursive function, so the stock pipeline is a win again. Cross targets deliberately skip LTO/unrolling. Wall-clock numbers on tiny programs can still tie or vary with noise, but the optimization <em>contract</em> is stable and checked by <code>tests/test_opt_scale.py</code>.</p>
+        <pre><code>leash compile program.lsh --opt 3
 leash run program.lsh -O s</code></pre>
+        <div class="callout callout-info">Optimization occurs at <strong>three layers</strong>: Leash AST (frontend), LLVM IR (middle-end), and C runtime (link-time). The <code>-O</code> flag controls all three simultaneously.</div>
 
-<div class="callout callout-info">Optimization occurs at <strong>three layers</strong>: Leash AST (frontend), LLVM IR (middle-end), and C runtime (link-time). The <code>-O</code> flag controls all three simultaneously.</div>
-
-<h3>Optimization Verbosity</h3>
-<pre><code>leash compile program.lsh -ov
+        <h3>Optimization verbosity</h3>
+        <pre><code>leash compile program.lsh -ov
 leash run program.lsh --opt 3 -ov</code></pre>
+        <p>Displays detailed logs per phase:</p>
+        <ul>
+          <li><strong>[AST Opt]</strong> &mdash; AST-level pipeline phases</li>
+          <li><strong>[CF]</strong> &mdash; Constant folding</li>
+          <li><strong>[CP]</strong> &mdash; Constant propagation</li>
+          <li><strong>[DBE]</strong> &mdash; Dead branch elimination</li>
+          <li><strong>[UCE]</strong> &mdash; Unreachable code elimination</li>
+          <li><strong>[DCE]</strong> &mdash; Dead code elimination</li>
+          <li><strong>[TRO]</strong> &mdash; Tail recursion optimization</li>
+          <li><strong>[LLVM Opt]</strong> &mdash; LLVM pass pipeline</li>
+        </ul>
+        <p>The <code>-ov</code> flag is independent of <code>--verbose</code>/<code>-vb</code> &mdash; it only shows optimization-related messages, not masterclass diagnostics.</p>
 
-<p>Displays detailed logs per phase:</p>
-<ul>
-    <li><strong>[AST Opt]</strong> &mdash; AST-level pipeline phases</li>
-    <li><strong>[CF]</strong> &mdash; Constant folding</li>
-    <li><strong>[CP]</strong> &mdash; Constant propagation</li>
-    <li><strong>[DBE]</strong> &mdash; Dead branch elimination</li>
-    <li><strong>[UCE]</strong> &mdash; Unreachable code elimination</li>
-    <li><strong>[DCE]</strong> &mdash; Dead code elimination</li>
-    <li><strong>[TRO]</strong> &mdash; Tail recursion optimization</li>
-    <li><strong>[LLVM Opt]</strong> &mdash; LLVM pass pipeline</li>
-</ul>
+        <h2 id="ast-optimizations">AST-level optimizations (frontend)</h2>
+        <p>Leash runs <strong>semantics-preserving AST passes</strong> before LLVM IR generation. These passes are always safe, never change program behavior, and are applied regardless of the optimization level selected. They form the foundation of Leash&rsquo;s optimization stack, catching simplification opportunities early in the compilation process.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Pass</th><th>Effect</th></tr></thead>
+            <tbody>
+              <tr><td>Constant folding &amp; propagation</td><td>Replaces constant expressions with results at compile time</td></tr>
+              <tr><td>Dead branch elimination</td><td>Removes <code>if</code>/<code>else</code> with constant-false conditions</td></tr>
+              <tr><td>Unreachable code elimination</td><td>Removes code after <code>return</code>, <code>exit()</code>, <code>throw</code></td></tr>
+              <tr><td>Dead code elimination</td><td>Removes unused top-level functions, globals, types</td></tr>
+              <tr><td>Foreach small-loop unrolling</td><td>Annotates arrays &le;8 elements for LLVM unroller</td></tr>
+              <tr><td>Pushb fusion (future)</td><td>Detects consecutive <code>.pushb()</code> for batch insertion</td></tr>
+              <tr><td>Size call caching</td><td>Hoists <code>.size()</code> calls used 3+ times on same collection</td></tr>
+              <tr><td>Tail recursion optimization</td><td>Converts tail-recursive calls to <code>jmp</code> (<code>-O4</code>)</td></tr>
+            </tbody>
+          </table>
+        </div>
 
-<p>The <code>-ov</code> flag is independent of <code>--verbose</code>/<code>-vb</code> &mdash; it only shows optimization-related messages, not masterclass diagnostics.</p>
+        <h2 id="llvm-codegen">LLVM codegen optimizations</h2>
+        <p>At the codegen layer, Leash emits optimal LLVM IR directly, setting flags and metadata that enable LLVM&rsquo;s own optimization passes to work more effectively. These are not separate optimization passes but rather smarter code generation that gives LLVM better information to work with.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Optimization</th><th>Details</th></tr></thead>
+            <tbody>
+              <tr><td><code>nuw</code>/<code>nsw</code> flags</td><td>Index arithmetic emitted with no-wrap flags for better LLVM folding</td></tr>
+              <tr><td><code>fast</code> flag</td><td>Float operations use fast semantics (reassociation, reciprocal-math)</td></tr>
+              <tr><td>Branch weight metadata</td><td>Foreach back-edges weighted 99:1 for better register allocation</td></tr>
+              <tr><td>GC-tracked allocation</td><td>Vector buffers use <code>leash_gc_malloc</code> for reachability</td></tr>
+            </tbody>
+          </table>
+        </div>
 
-<h2>AST-Level Optimizations (Frontend)</h2>
-
-<p>Leash runs <strong>semantics-preserving AST passes</strong> before LLVM IR generation. These passes are always safe, never change program behavior, and are applied regardless of the optimization level selected. They form the foundation of Leash's optimization stack, catching simplification opportunities early in the compilation process.</p>
-
-<table>
-    <tr><th>Pass</th><th>Effect</th></tr>
-    <tr><td>Constant folding &amp; propagation</td><td>Replaces constant expressions with results at compile time</td></tr>
-    <tr><td>Dead branch elimination</td><td>Removes <code>if</code>/<code>else</code> with constant-false conditions</td></tr>
-    <tr><td>Unreachable code elimination</td><td>Removes code after <code>return</code>, <code>exit()</code>, <code>throw</code></td></tr>
-    <tr><td>Dead code elimination</td><td>Removes unused top-level functions, globals, types</td></tr>
-    <tr><td>Foreach small-loop unrolling</td><td>Annotates arrays &le;8 elements for LLVM unroller</td></tr>
-    <tr><td>Pushb fusion (future)</td><td>Detects consecutive <code>.pushb()</code> for batch insertion</td></tr>
-    <tr><td>Size call caching</td><td>Hoists <code>.size()</code> calls used 3+ times on same collection</td></tr>
-    <tr><td>Tail recursion optimization</td><td>Converts tail-recursive calls to <code>jmp</code> (<code>-O4</code>)</td></tr>
-</table>
-
-<h2>LLVM Codegen Optimizations</h2>
-
-<p>At the codegen layer, Leash emits optimal LLVM IR directly, setting flags and metadata that enable LLVM's own optimization passes to work more effectively. These are not separate optimization passes but rather smarter code generation that gives LLVM better information to work with.</p>
-
-<table>
-    <tr><th>Optimization</th><th>Details</th></tr>
-    <tr><td><code>nuw</code>/<code>nsw</code> flags</td><td>Index arithmetic emitted with no-wrap flags for better LLVM folding</td></tr>
-    <tr><td><code>fast</code> flag</td><td>Float operations use fast semantics (reassociation, reciprocal-math)</td></tr>
-    <tr><td>Branch weight metadata</td><td>Foreach back-edges weighted 99:1 for better register allocation</td></tr>
-    <tr><td>GC-tracked allocation</td><td>Vector buffers use <code>leash_gc_malloc</code> for reachability</td></tr>
-</table>
-
-<h2>Link-Time Optimization (LTO)</h2>
-
-<p>LTO enables whole-program analysis after linking, enabling optimizations across module boundaries. This is particularly powerful for projects that span multiple source files, as it allows the compiler to analyze and optimize across what were previously separate compilation units.</p>
-
-<h3>Benefits</h3>
-<ul>
-    <li><strong>Dead function elimination</strong> across modules</li>
-    <li><strong>Cross-module inlining</strong> (e.g., library functions)</li>
-    <li><strong>Devirtualization</strong> of virtual calls when the target is known</li>
-    <li><strong>Constant propagation</strong> across translation units</li>
-</ul>
-
-<pre><code><span class="cm"># ThinLTO &mdash; best balance of speed and optimization</span>
+        <h2 id="lto">Link-Time Optimization (LTO)</h2>
+        <p>LTO enables whole-program analysis after linking, enabling optimizations across module boundaries. This is particularly powerful for projects that span multiple source files, as it allows the compiler to analyze and optimize across what were previously separate compilation units.</p>
+        <h3>Benefits</h3>
+        <ul>
+          <li><strong>Dead function elimination</strong> across modules</li>
+          <li><strong>Cross-module inlining</strong> (e.g., library functions)</li>
+          <li><strong>Devirtualization</strong> of virtual calls when the target is known</li>
+          <li><strong>Constant propagation</strong> across translation units</li>
+        </ul>
+        <pre><code><span class="cm"># ThinLTO &mdash; best balance of speed and optimization</span>
 leash compile program.lsh --opt 2 --lto thin
 
 <span class="cm"># Full LTO &mdash; maximum cross-module optimization</span>
 leash compile program.lsh --opt 3 --lto full</code></pre>
 
-<h2>Profile-Guided Optimization (PGO)</h2>
+        <h2 id="pgo">Profile-Guided Optimization (PGO)</h2>
+        <p>PGO uses runtime profiling data to optimize hot paths in your program. The workflow is a three-step process: first compile with instrumentation, run the program to collect real execution data, then recompile using that data to make better optimization decisions. This enables optimizations that would be impossible with purely static analysis.</p>
+        <div class="steps">
+          <div class="step">
+            <h3>Compile with instrumentation</h3>
+            <pre><code>leash compile program.lsh --opt 2 --pgo-generate</code></pre>
+          </div>
+          <div class="step">
+            <h3>Run to collect profile data</h3>
+            <pre><code>./program</code></pre>
+          </div>
+          <div class="step">
+            <h3>Recompile with profile data</h3>
+            <pre><code>leash compile program.lsh --opt 3 --pgo-use</code></pre>
+          </div>
+        </div>
+        <p>PGO enables hot/cold code splitting, accurate branch prediction, and informed inlining and unrolling decisions based on actual execution frequency.</p>
+        <ul>
+          <li><strong>Hot/cold code splitting</strong> &mdash; frequently-executed code is packed together for better cache locality</li>
+          <li><strong>Accurate branch prediction</strong> &mdash; branches weighted by actual execution frequency</li>
+          <li><strong>Inlining decisions</strong> &mdash; functions in hot paths are inlined first</li>
+          <li><strong>Loop unrolling</strong> &mdash; unroll only hot loops based on actual trip counts</li>
+        </ul>
 
-<p>PGO uses runtime profiling data to optimize hot paths in your program. The workflow is a three-step process: first compile with instrumentation, run the program to collect real execution data, then recompile using that data to make better optimization decisions. This enables optimizations that would be impossible with purely static analysis.</p>
+        <h2 id="runtime-safety">Runtime safety checks</h2>
+        <p>Leash embeds runtime safety checks into compiled programs to catch common issues before they cause undefined behavior. All checks produce descriptive error messages with unique error codes (e.g., <code>LEASH-E004</code>) for easy reference. These checks can be disabled per-function using the <code>unsafe</code> keyword when maximum performance is needed.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Check</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td>Division by zero / signed overflow</td><td>Dynamic divisors are checked for zero and <code>MIN / -1</code> with a diagnostic; constant cases are rejected at compile time</td></tr>
+              <tr><td>Integer conversion range</td><td><code>toint(int&lt;N&gt;, s)</code> and float&rarr;int conversions reject out-of-range, NaN and infinite values instead of truncating or producing poison</td></tr>
+              <tr><td>Shift amount</td><td>Variable shift amounts outside <code>[0, width-1]</code> are rejected at runtime</td></tr>
+              <tr><td>Nil values in <code>show</code></td><td>A value that may be nil is rejected at compile time (<code>E_NIL_SHOW</code>) with branch-sensitive flow analysis; a runtime guard catches nil values the compiler cannot track</td></tr>
+              <tr><td>Vector / array bounds</td><td><code>get()</code>, <code>set()</code>, <code>popb()</code>, <code>popf()</code> and fixed-array indexing validate indices</td></tr>
+              <tr><td>Null file handle checks</td><td>File operations on unopened/closed files produce clear errors</td></tr>
+              <tr><td>Union tag mismatch</td><td>Accessing the wrong union variant halts with a runtime error</td></tr>
+            </tbody>
+          </table>
+        </div>
 
-<pre><code><span class="cm"># Step 1: Compile with instrumentation</span>
-leash compile program.lsh --opt 2 --pgo-generate
-
-<span class="cm"># Step 2: Run to collect profile data</span>
-./program
-
-<span class="cm"># Step 3: Recompile with profile data</span>
-leash compile program.lsh --opt 3 --pgo-use</code></pre>
-
-<p>PGO enables hot/cold code splitting, accurate branch prediction, and informed inlining and unrolling decisions based on actual execution frequency.</p>
-
-<p>PGO enables:</p>
-<ul>
-    <li><strong>Hot/cold code splitting</strong> &mdash; frequently-executed code is packed together for better cache locality</li>
-    <li><strong>Accurate branch prediction</strong> &mdash; branches weighted by actual execution frequency</li>
-    <li><strong>Inlining decisions</strong> &mdash; functions in hot paths are inlined first</li>
-    <li><strong>Loop unrolling</strong> &mdash; unroll only hot loops based on actual trip counts</li>
-</ul>
-
-<h2>Runtime Safety Checks</h2>
-
-<p>Leash embeds runtime safety checks into compiled programs to catch common issues before they cause undefined behavior. All checks produce descriptive error messages with unique error codes (e.g., <code>LEASH-E004</code>) for easy reference. These checks can be disabled per-function using the <code>unsafe</code> keyword when maximum performance is needed.</p>
-
-<table>
-    <tr><th>Check</th><th>Description</th></tr>
-    <tr><td>Division by zero / signed overflow</td><td>Dynamic divisors are checked for zero and <code>MIN / -1</code> with a diagnostic; constant cases are rejected at compile time</td></tr>
-    <tr><td>Integer conversion range</td><td><code>toint(int&lt;N&gt;, s)</code> and float→int conversions reject out-of-range, NaN and infinite values instead of truncating or producing poison</td></tr>
-    <tr><td>Shift amount</td><td>Variable shift amounts outside <code>[0, width-1]</code> are rejected at runtime</td></tr>
-    <tr><td>Nil values in <code>show</code></td><td>A value that may be nil is rejected at compile time (<code>E_NIL_SHOW</code>) with branch-sensitive flow analysis; a runtime guard catches nil values the compiler cannot track</td></tr>
-    <tr><td>Vector / array bounds</td><td><code>get()</code>, <code>set()</code>, <code>popb()</code>, <code>popf()</code> and fixed-array indexing validate indices</td></tr>
-    <tr><td>Null file handle checks</td><td>File operations on unopened/closed files produce clear errors</td></tr>
-    <tr><td>Union tag mismatch</td><td>Accessing the wrong union variant halts with a runtime error</td></tr>
-</table>
-
-<h2>Conditional Compilation</h2>
-
-<p>Leash supports conditional compilation using <code>if</code> statements at the top level (outside any function). When the compiler encounters a top-level <code>if</code>, it evaluates the condition at <strong>compile time</strong>. Only the branch whose condition evaluates to <code>true</code> is included in the final program; the other branches are completely ignored (no code is generated, and they are not type-checked).</p>
-
-<p>This is similar to C/C++ preprocessor <code>#if</code> but happens at the AST level, making it more integrated with the language. Conditions can check the target platform, file path, or file name, and can be combined with <code>&amp;&amp;</code>, <code>||</code>, and <code>!</code> operators.</p>
-
-<pre><code><span class="kw">if</span> _PLATFORM == <span class="str">"linux64"</span> {
+        <h2 id="conditional-compilation">Conditional compilation</h2>
+        <p>Leash supports conditional compilation using <code>if</code> statements at the top level (outside any function). When the compiler encounters a top-level <code>if</code>, it evaluates the condition at <strong>compile time</strong>. Only the branch whose condition evaluates to <code>true</code> is included in the final program; the other branches are completely ignored (no code is generated, and they are not type-checked).</p>
+        <p>This is similar to C/C++ preprocessor <code>#if</code> but happens at the AST level, making it more integrated with the language. Conditions can check the target platform, file path, or file name, and can be combined with <code>&amp;&amp;</code>, <code>||</code>, and <code>!</code> operators.</p>
+        <pre><code><span class="kw">if</span> _PLATFORM == <span class="str">"linux64"</span> {
     <span class="kw">fnc</span> <span class="fn">main</span>() : <span class="kw">void</span> {
         <span class="fn">show</span>(<span class="str">"Running on Linux"</span>);
     }
@@ -394,17 +431,88 @@ leash compile program.lsh --opt 3 --pgo-use</code></pre>
         <span class="fn">show</span>(<span class="str">"Running on Windows"</span>);
     }
 }</code></pre>
+        <h3>Built-in compile-time variables</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Variable</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td><code>_FILEPATH</code></td><td>Full path to the current source file</td></tr>
+              <tr><td><code>_FILENAME</code></td><td>Name of the current source file</td></tr>
+              <tr><td><code>_PLATFORM</code></td><td>Target platform (<code>"linux64"</code>, <code>"win64"</code>, <code>"macos"</code>, <code>"macos-arm"</code>, <code>"jvm"</code>)</td></tr>
+            </tbody>
+          </table>
+        </div>
 
-<h3>Built-in Compile-Time Variables</h3>
-<table>
-    <tr><th>Variable</th><th>Description</th></tr>
-    <tr><td><code>_FILEPATH</code></td><td>Full path to the current source file</td></tr>
-    <tr><td><code>_FILENAME</code></td><td>Name of the current source file</td></tr>
-    <tr><td><code>_PLATFORM</code></td><td>Target platform (<code>"linux64"</code>, <code>"win64"</code>, <code>"macos"</code>, <code>"macos-arm"</code>, <code>"jvm"</code>)</td></tr>
-</table>
+        <h2 id="caching">Caching</h2>
+        <p>The compiler keeps an object-file cache in <code>~/.leash/objcache/</code>. When you recompile unchanged sources, it skips the entire parse &rarr; typecheck &rarr; AST-optimize &rarr; codegen &rarr; LLVM pipeline and links the object emitted previously. On a 3,600-line file this reduces a recompile from roughly 0.74 s cold to 0.21 s warm.</p>
+        <p>The cache key covers the compiler version, a stamp of the compiler&rsquo;s own sources, the target, the optimization and GC/memory flags, and the SHA-256 of the main source plus every imported module. Editing the source or any import, transitively, invalidates the entry &mdash; so you do not need to clear the cache manually after ordinary edits.</p>
+        <pre><code><span class="cm"># Disable the object-file cache (for measuring cold builds)</span>
+LEASH_NO_OBJ_CACHE=1 leash compile program.lsh
 
-</main>
+<span class="cm"># 'check' is never cached; it always runs the full checker</span>
+leash check program.lsh</code></pre>
+        <div class="callout callout-info"><strong>Cache scope.</strong> <code>leash check</code> is never cached. When comparing arena against GC (or benchmarking in general), clear <code>~/.leash/shcache</code> and use <code>LEASH_NO_OBJ_CACHE=1</code> so every run measures a full build.</div>
 
-<script src="docs.js"></script>
+        <h2 id="environment-variables">Environment variables</h2>
+        <p>Environment variables tune runtime lookup, diagnostics, memory limits, and the arena or GC instrumentation. They are read by the compiler and by compiled programs.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Variable</th><th>Effect</th></tr></thead>
+            <tbody>
+              <tr><td><code>LEASH_RUNTIME</code></td><td>Override the runtime directory the compiler searches (after the executable&rsquo;s own directory and <code>~/.leash/leash</code>)</td></tr>
+              <tr><td><code>LEASH_MEM_CAP_MB</code></td><td>Cap compile/run memory in MiB (default 1024); equivalent to <code>--mem-cap</code></td></tr>
+              <tr><td><code>LEASH_NO_OBJ_CACHE=1</code></td><td>Disable the object-file cache</td></tr>
+              <tr><td><code>LEASH_ARENA_POISON</code></td><td><code>0</code> disables the <code>0xDD</code> poison-on-reclaim memset; <code>1</code> enables it explicitly (default on)</td></tr>
+              <tr><td><code>LEASH_ARENA_VERIFY=0</code></td><td>Disable the frame-pop verifier that checks registered pointer slots for dangling references</td></tr>
+              <tr><td><code>LEASH_ARENA_STATS=1</code></td><td>Print peak block bytes, live blocks/payload, and rooted bytes to stderr at shutdown</td></tr>
+              <tr><td><code>LEASH_GC_AUTO=0</code> (or <code>f</code>/<code>F</code>)</td><td>Disable automatic collection in <code>--gc</code> builds</td></tr>
+              <tr><td><code>LEASH_GC_STATS=1</code></td><td>Print collector statistics at exit</td></tr>
+              <tr><td><code>LEASH_MAX_WORKERS</code></td><td>Set the worker thread count (clamped to the range 1&ndash;4096)</td></tr>
+              <tr><td><code>LEASH_DBG</code></td><td>Enables the debugger statement hook installed by <code>leash dbg</code>; unset makes the hook a no-op</td></tr>
+              <tr><td><code>LEASH_CLANG</code></td><td>Point the Windows install shim at the real <code>clang.exe</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="callout callout-warning"><strong>Safety switches.</strong> Turn off <code>LEASH_ARENA_POISON</code> or <code>LEASH_ARENA_VERIFY</code> only after you have validated lifetimes; both exist to turn latent use-after-scope bugs into loud, immediate failures.</div>
+
+        <h2 id="exit-codes">Exit codes</h2>
+        <p>The CLI follows the usual convention: <code>0</code> means success and a non-zero status means something failed. A program run through <code>leash run</code> propagates its own exit code, which it can set with <code>main</code>&rsquo;s return value or <code>exit()</code>.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Status</th><th>Meaning</th></tr></thead>
+            <tbody>
+              <tr><td><code>0</code></td><td>Command succeeded; compilation produced a binary or the check passed</td></tr>
+              <tr><td><code>1</code></td><td>A compiler error was reported, for example <code>error: no entry point: ...</code>, a type error, or a failed lifetime audit</td></tr>
+              <tr><td>Program-defined</td><td><code>leash run</code> returns the debuggee&rsquo;s exit status, including values set by <code>exit()</code> or returned from <code>main(string[])</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>Because compile failures are non-zero, flags such as <code>--check</code> and <code>--warnings-as-errors</code> compose naturally with CI: a failing step stops the pipeline instead of producing a binary that should not ship.</p>
+
+        <h2 id="faq">FAQ</h2>
+        <h3>Which memory mode should I use?</h3>
+        <p>Start with the default arena. It is fast, deterministic, and requires no collector tuning. Reach for <code>--gc</code> when lifetimes are genuinely dynamic or adversarial, and use <code>-af</code> or <code>-ngc</code> when you need a GC-free binary for a non-Leash consumer.</p>
+        <h3>How does the arena stay safe without a borrow checker?</h3>
+        <p>Four layers work together: typed values that outlive a frame are copied into the root arena; raw pointers keep provenance through locals; root blocks are published to workers when threads spawn; and the compile-time audit rejects only pointers whose origin cannot be proven. Escaping <code>&amp;x</code> pointees are rooted, so strings, vectors and structs survive frame pops. Escape snapshots now copy only the live prefix of a recycled block, which keeps staging exact without paying for the whole 32 KB block. Details are in <a href="advanced.html#arena-escapes">Escapes and the root arena</a> and <a href="advanced.html#lifetime-audit">the lifetime audit</a>.</p>
+        <h3>Did the default really change in 2.0.0?</h3>
+        <p>Yes. Earlier releases linked the mark-and-sweep collector by default. In 2.0.0 the scoped arena is the default native layout; pass <code>--gc</code> to keep collector semantics explicitly.</p>
+        <h3>Why is my arena program rejected at compile time?</h3>
+        <p>The lifetime audit rejects only raw pointers whose origin cannot be proven. Return values by value (or use a proven-safe <code>&amp;local</code> whose pointee the arena roots), and compile with <code>--gc</code> only when you specifically want the mark-and-sweep layout. The audit also runs during <code>leash check</code>, so editors show <code>E_ARENA_LIFETIME</code> before you build.</p>
+        <h3>How do I inspect the generated LLVM IR?</h3>
+        <p>Use <code>leash dump program.lsh</code> to write a <code>.ll</code> file, or add <code>--emit-llvm</code> to a compile command. <code>-ov</code> logs which optimizer phases ran.</p>
+        <h3>Why does my repeated compile feel instant?</h3>
+        <p>That is the object-file cache doing its job. Set <code>LEASH_NO_OBJ_CACHE=1</code> when you need a cold build, for example in performance comparisons.</p>
+        <h3>Can I cross-compile without installing toolchains?</h3>
+        <p>Only for the <code>jvm</code> target, which needs just a Java runtime. Native cross targets require their matching C compiler/linker and, for macOS, an SDK. Use <code>if _PLATFORM == ...</code> to guard platform-specific code.</p>
+
+        <div class="quick-links">
+          <a class="quick-link" href="getting-started.html"><strong>Installation &amp; Setup</strong><span>Prerequisites, install paths, first program &rarr;</span></a>
+          <a class="quick-link" href="language-guide.html"><strong>Language reference</strong><span>Types, syntax, builtins &rarr;</span></a>
+          <a class="quick-link" href="advanced.html"><strong>Advanced topics</strong><span>FFI, escapes, root arena, unsafe &rarr;</span></a>
+          <a class="quick-link" href="self-hosted.html"><strong>Self-hosted compiler</strong><span>Bootstrap stages and fixed point &rarr;</span></a>
+        </div>
+    </article>
+  </main>
+</div>
 </body>
 </html>

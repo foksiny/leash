@@ -119,6 +119,8 @@ class TestAutofree(unittest.TestCase):
         cmd = [BIN_LEASHC, "compile", src, "to", out]
         if autofree:
             cmd += ["--autofree"]
+        else:
+            cmd += ["--gc"]
         r = _run(cmd, ROOT)
         self.assertEqual(r.returncode, 0,
                          msg=f"compile failed: {r.stderr}\n{r.stdout}")

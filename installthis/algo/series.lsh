@@ -54,9 +54,14 @@ pub def Series : class {
         if n < 0 {
             return false;
         }
-        i: int = 0;
-        while i * i <= n {
-            if i * i == n {
+        if n == 0 {
+            return true;
+        }
+        // Compare via division: i*i would overflow for n close to the
+        // integer limit and turn the loop into an endless one.
+        i: int = 1;
+        while i <= n / i {
+            if i == n / i && i * i == n {
                 return true;
             }
             i = i + 1;

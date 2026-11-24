@@ -22,6 +22,18 @@ interface ParsedProblem {
     line: number;
     col: number;
     tip?: string;
+    nameHint?: string;
+}
+
+/** Compiler CLI: argv[1] is the subcommand, argv[2] the input file, and
+ *  flags are consumed from argv[3] onward. Keep this order testable. */
+export function buildCheckArgs(
+    compilerArgs: string[], importsDirs: string[], verbose: boolean, tempFile: string
+): string[] {
+    const args: string[] = ['check', tempFile, ...compilerArgs];
+    for (const dir of importsDirs) args.push('--other-imports', dir);
+    if (verbose) args.push('--verbose');
+    return args;
 }
 
 export class DiagnosticsRunner {
@@ -82,12 +94,10 @@ export class DiagnosticsRunner {
         }
 
         const project = readProjectInfo(fsPath);
-        const args: string[] = [...settings.compilerArgs, 'check'];
-        for (const dir of project.importsDirs) {
-            args.push('--other-imports', dir);
-        }
-        if (settings.diagnostics.verbose) args.push('--verbose');
-        args.push(tempFile);
+        const args = buildCheckArgs(
+            settings.compilerArgs, project.importsDirs,
+            settings.diagnostics.verbose, tempFile
+        );
 
         const existing = this.checks.get(uri);
         if (existing && existing.proc && existing.proc.pid) {
@@ -161,7 +171,7 @@ export class DiagnosticsRunner {
 
         for (const problem of problems) {
             let uri: string;
-            if (path.resolve(problem.file) === path.resolve(tempFile)) {
+            if (!problem.file || path.resolve(problem.file) === path.resolve(tempFile)) {
                 uri = URI.file(realFile).toString();
             } else {
                 const resolved = path.isAbsolute(problem.file)
@@ -170,9 +180,15 @@ export class DiagnosticsRunner {
                 uri = URI.file(resolved).toString();
             }
 
-            const line = Math.max(0, problem.line - 1);
-            const col = Math.max(0, problem.col - 1);
-            const isCurrentFile = path.resolve(problem.file) === path.resolve(tempFile);
+            let line = Math.max(0, problem.line - 1);
+            let col = Math.max(0, problem.col - 1);
+            const isCurrentFile = !problem.file || path.resolve(problem.file) === path.resolve(tempFile);
+            // Bare typechecker errors carry no location: place them on the
+            // first occurrence of the identifier the message mentions.
+            if (isCurrentFile && problem.line === 0 && problem.nameHint) {
+                const found = positioner.findToken(problem.nameHint);
+                if (found) { line = found.line; col = found.character; }
+            }
             let range: Range;
             if (isCurrentFile) {
                 const lineText = positioner.lineText(line);
@@ -218,45 +234,55 @@ export class DiagnosticsRunner {
         const n = lines.length;
         while (i < n) {
             const line = lines[i];
-            const header = /^(error|warning)(?:\s*\[([A-Za-z0-9-]+)\])?\s*:\s*(.*)$/.exec(line);
+            const header = /^(error|warning)(?:\s*\[([A-Za-z0-9_-]+)\])?\s*:\s*(.*)$/.exec(line);
             if (!header) {
                 i++;
                 continue;
             }
             const severity = header[1] === 'error' ? DiagnosticSeverity.Error : DiagnosticSeverity.Warning;
             const code = header[2];
-            let message = header[3].trim();
+            const headline = header[3].trim();
             i++;
             let file = '';
             let lineNo = 0;
             let colNo = 0;
-            const isHeader = (l: string) => /^(error|warning)(?:\s*\[[A-Za-z0-9-]+\])?\s*:/.test(l);
-            while (i < n) {
+            const details: string[] = [];
+            const isHeader = (l: string) => /^(error|warning)(?:\s*\[[A-Za-z0-9_-]+\])?\s*:/.test(l);
+            const isStopLine = (l: string) =>
+                isHeader(l) || /^\s*-->\s*.*:\d+/.test(l) ||
+                /^Checking '.*'\.\.\.$/.test(l) || /^Summary:/.test(l);
+            while (i < n && !isHeader(lines[i])) {
                 const l = lines[i];
-                if (isHeader(l)) break;
-                const loc = /^\s*-->\s*(.*?):(\d+):(\d+)/.exec(l);
+                // Arena diagnostics use `file:line` (no column); parser and
+                // security diagnostics use `file:line:col`.
+                const loc = /^\s*-->\s*(.*?):(\d+)(?::(\d+))?/.exec(l);
                 if (loc) {
                     file = loc[1].trim();
                     lineNo = parseInt(loc[2], 10);
-                    colNo = parseInt(loc[3], 10);
+                    colNo = loc[3] ? parseInt(loc[3], 10) : 1;
                     i++;
-                    while (i < n && !isHeader(lines[i]) && !/^\s*-->\s*.*:\d+:\d+/.test(lines[i]) && !/^Checking '.*'\.\.\.$/.test(lines[i]) && !/^Summary:/.test(lines[i])) {
-                        const tip = /^\s*=\s*tip:\s*(.*)/.exec(lines[i]);
-                        const note = /^\s*=\s*note:\s*(.*)/.exec(lines[i]);
-                        if (tip) {
-                            message = message + (message ? '\n\n' : '') + `Tip: ${tip[1]}`;
-                        } else if (note) {
-                            message = message + (message ? '\n\n' : '') + `Note: ${note[1]}`;
-                        }
-                        i++;
-                    }
-                    break;
+                    continue;
+                }
+                if (isStopLine(l)) break;
+                const teaching = /^\s*=?\s*(why|help|example|trace|tip|note):\s*(.*)$/.exec(l);
+                if (teaching) {
+                    details.push(`${teaching[1]}: ${teaching[2]}`);
                 }
                 i++;
             }
-            if (file) {
-                problems.push({ severity, message, code: code ?? '', file, line: lineNo, col: colNo });
-            }
+            const message = details.length ? `${headline}\n\n${details.join('\n\n')}` : headline;
+            // Typechecker errors are bare `error: ...` lines with no source
+            // location. Keep them as a whole-file problem; parseOutput will
+            // try to place them on a quoted identifier from the message.
+            problems.push({
+                severity,
+                message,
+                code: code ?? '',
+                file,
+                line: lineNo,
+                col: colNo,
+                nameHint: /'([^']+)'|"([^"]+)"/.exec(headline)?.slice(1).find(Boolean)
+            });
         }
         return problems;
     }

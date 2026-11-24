@@ -3,120 +3,221 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta name="color-scheme" content="dark">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Crect width=%27100%27 height=%27100%27 rx=%2722%27 fill=%27%237c3aed%27/%3E%3Ctext x=%2750%27 y=%2768%27 font-size=%2752%27 text-anchor=%27middle%27 font-family=%27monospace%27 fill=%27white%27%3EL%3C/text%3E%3C/svg%3E">
-<title>Known Limitations - Leash</title>
+<title>Known Limitations - Leash documentation</title>
+<meta name="description" content="Known limitations of Leash 2.0.0: the scoped arena trade-offs, experimental Windows TLS, the JVM SQL mini engine, and HTTP/3 status, with workarounds.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Crect width=%27100%27 height=%27100%27 rx=%2722%27 fill=%27%23241f4d%27/%3E%3Ctext x=%2750%27 y=%2770%27 font-size=%2760%27 text-anchor=%27middle%27 font-family=%27monospace%27 fill=%27white%27%3EL%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
+<script src="docs.js" defer></script>
 </head>
 <body>
+<a class="skip-link" href="#main-content">Skip to content</a>
 
-<button class="menu-toggle" onclick="document.querySelector('.sidebar').classList.toggle('open')">&#9776;</button>
+<header class="topbar">
+  <a class="topbar-brand" href="index.html"><img src="leash-icon-light.svg" alt="" onerror="this.style.display='none'"><span>Leash</span></a>
+  <nav class="topbar-nav" aria-label="Top navigation">
+    <a href="index.html" class="">Docs</a>
+    <a href="getting-started.html" class="">Tutorial</a>
+    <a href="language-guide.html">Reference</a>
+    <a href="compiler.html" class="">Spec</a>
+    <a href="stdlib.html" class="">Library</a>
+    <a href="package-manager.html" class="">Packages</a>
+    <a href="../benchmarking/README.md" class="">Benchmarks</a>
+    <a href="https://github.com/foksiny/leash">GitHub</a>
+  </nav>
+  <button class="menu-toggle" type="button" aria-label="Toggle navigation" aria-expanded="false">&#9776;</button>
+  <input id="doc-search" class="topbar-search" type="search" placeholder="Search docs" aria-label="Search documentation" autocomplete="off">
+  <button class="theme-toggle" type="button" aria-label="Toggle color theme" title="Toggle theme">&#9680;</button>
+</header>
 
-<aside class="sidebar">
-    <div class="sidebar-header">
-        <h1>Leash</h1>
-        <div class="version">v1.12.0 Release</div>
-        <div class="subtitle">Programming Language</div>
+<div class="layout">
+  <aside class="sidenav">
+    <div class="sidenav-title">Leash documentation</div>
+    <div class="sidenav-group">
+      <a href="index.html" class="">Overview</a>
+      <a href="getting-started.html" class="">The language, in reading order</a>
+      <a href="language-guide.html" class="">Language reference</a>
+      <a href="compiler.html" class="">The compiler</a>
     </div>
-    <nav class="sidebar-nav">
-        <div class="nav-section">
-            <div class="nav-section-title">Getting Started</div>
-            <a href="index.html">Overview</a>
-            <a href="getting-started.html">Installation &amp; Setup</a>
-        </div>
-        <div class="nav-section">
-            <div class="nav-section-title">Language Guide</div>
-            <a href="language-guide.html">Language Reference</a>
-            <a href="compiler.html">Compiler &amp; CLI</a>
-            <a href="self-hosted.html">Self-Hosted Compiler</a>
-            <a href="stdlib.html">Standard Library</a>
-        </div>
-        <div class="nav-section">
-            <div class="nav-section-title">Ecosystem</div>
-            <a href="package-manager.html">Package Manager</a>
-            <a href="concurrency.html">Concurrency Model</a>
-            <a href="advanced.html">Advanced Topics</a>
-            <a href="limitations.html" class="active">Known Limitations</a>
-        </div>
-    </nav>
-</aside>
+    <div class="sidenav-group">
+      <a href="self-hosted.html" class="">Getting the compiler</a>
+      <a href="stdlib.html" class="">Library and tools</a>
+      <a href="package-manager.html" class="">Building programs and using packages</a>
+      <a href="concurrency.html" class="">Concurrency</a>
+    </div>
+    <div class="sidenav-group">
+      <a href="advanced.html" class="">Standalone pages</a>
+      <a href="limitations.html" class="current">Known limitations</a>
+    </div>
+    <div class="sidenav-foot">Leash 2.0.0</div>
+  </aside>
 
-<main class="main">
+  <main class="content" id="main-content">
+    <div class="progress" id="progress-bar" aria-hidden="true"></div>
+    <article>
+        <h1>Known Limitations</h1>
 
-<div class="breadcrumb">
-    <a href="index.html">Home</a> <span class="sep">/</span> <span class="current">Known Limitations</span>
+
+        <h2 id="severity">Severity at a glance</h2>
+
+        <p>Only four areas have known, documented limits. Two are platform-maturity notes (🟢 low severity), one is a deliberate non-goal (🟢 low), and one is the genuine trade-off you must understand when using the default memory layout (🟠 medium). Nothing here is an unknown crash waiting to happen in ordinary code.</p>
+
+        <div class="stat-grid">
+          <div class="stat"><div class="value">4</div><div class="label">Documented limitations</div></div>
+          <div class="stat"><div class="value">1</div><div class="label">Medium severity</div></div>
+          <div class="stat"><div class="value">3</div><div class="label">Low severity</div></div>
+          <div class="stat"><div class="value">101</div><div class="label">Stdlib parity programs</div></div>
+        </div>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Limitation</th><th>Severity</th><th>Comment</th></tr></thead>
+            <tbody>
+              <tr>
+                <td>Scoped arena is the default native layout (<code>--gc</code> selects GC)</td>
+                <td>&#128993; Medium</td>
+                <td>Default alternative to GC with deterministic scope/loop reclamation. Lifetimes are frame-based (no borrow checker): returns, spawn and futures escape by copy or into the root arena. Raw pointers flow through locals with provenance tracking: proven-safe returns, globals, long-lived stores and worker arguments are accepted, and only unprovable pointers are rejected. Union payloads are rooted. Reclaimed memory is poisoned by default (<code>LEASH_ARENA_POISON=0</code> opts out), frame misuse aborts, and frame-exit verification plus escape snapshots are on by default. Once a program spawns workers, root allocations are published to every thread, so container and class pointees can cross thread boundaries too. The JVM target rejects arena flags and uses its own GC.</td>
+              </tr>
+              <tr>
+                <td>Windows <code>serve_tls</code> is experimental</td>
+                <td>&#128994; Low</td>
+                <td>SChannel backend; cross-compiled and exercised under Wine, not yet battle-tested on real Windows.</td>
+              </tr>
+              <tr>
+                <td>JVM <code>sql</code> is a mini engine, not SQLite</td>
+                <td>&#128994; Low</td>
+                <td>Same API and semantics for the supported subset; its own file format, so sqlite3 files do not open.</td>
+              </tr>
+              <tr>
+                <td>HTTP/3 / QUIC</td>
+                <td>&#128994; Low</td>
+                <td>Not implemented, and a deliberate non-goal for the 2.x series.</td>
+              </tr>
+            </tbody>
+            <div class="callout callout-success"><strong>Raw pointers and unions are now provenance-safe.</strong> Native handles returned by <code>@from</code> externals may be stored in fields and containers: the generated call checks that the pointer is not arena-frame-owned and aborts loudly if it is. Union payloads with heap variants are rooted before boxing, so strings/vectors/classes survive the producing frame. Provenance flows through locals: a pointer initialized from <code>&amp;x</code>, nil, a native handle or libc heap can be returned, stored in a global/field/container, or passed to a worker. When <code>&amp;x</code> escapes, the compiler roots both the slot and the value it holds, so scalars, strings, vectors and structs alias the local exactly as in GC. All three original stdlib lifetime divergences are fixed and covered by arena-vs-GC parity tests.</div>
+    </table>
+        </div>
+
+        <hr>
+
+        <h2 id="arena">Scoped arena ownership &mdash; the one real trade-off</h2>
+
+        <p>The arena backend is the <strong>default for native <code>leash compile</code> and <code>leash run</code></strong>. It provides deterministic bump allocation with whole-scope and per-iteration reclamation, no GC pauses or scans, and C-ABI-friendly plain pointers. It is often leaner and faster on allocation-churn and hash/string-heavy workloads (especially with O2+ reserves/pre-sizing and O3+ compact nodes/fused keys), but it is not a universal win: growth-heavy kernels can retain superseded buffers until scope reset, and tiny compute-bound cases may show noisy or negligible deltas. The JVM target always uses its own GC and does not accept arena flags.</p>
+
+        <div class="feature-grid">
+          <div class="feature-card"><h3>Lifetime model</h3><p>No borrow checker. Pointers are valid until the allocating frame/iteration exits. Returns and spawned/async data escape by copy or into the root arena; <code>spawn</code> uses the compiler's type tree to root nested fields, and unions transfer as boxed values with their real size.</p></div>
+          <div class="feature-card"><h3>Compile-or-fail audit</h3><p>Only unprovable raw-pointer escapes are errors &mdash; there is no warning-only outcome. Libc heap calls, proven-safe returns, raw-pointer globals and stores, and proven worker arguments are accepted. Header readers validate the allocation tag, containment and block-bounded sizes, so forged or stale pointers abort instead of reading out of bounds.</p></div>
+          <div class="feature-card"><h3>Root arena</h3><p>A value that outlives its frame is copied into the program-lifetime root arena, which is never rewound. The slot reuses its copy while it is the only owner, so assigning the same global in a loop keeps a constant footprint. Stats report scope and root arenas separately.</p></div>
+          <div class="feature-card"><h3>Spawn hand-off</h3><p>Arguments are copied into one compact private transfer block; strings travel through it, containers and aggregates keep their root copies, and the worker releases the transfer immediately after unpacking.</p></div>
+        </div>
+
+        <h3>The known ownership caveat</h3>
+
+        <p>Raw pointers returned from native (FFI) code are proven-safe: a runtime check aborts if such a pointer points into an arena frame. Union payloads with heap variants are rooted before boxing. Escaping <code>&amp;x</code> pointees are root-allocated (or made immortal in worker programs), and both the slot and its value are rooted so strings, vectors and structs stay valid after the producing frame pops. Libc heap pointers are foreign and provenance-checked. A pointer keeps its provenance through local copies, so proven-safe returns, globals, long-lived stores and worker arguments are accepted; only pointers whose origin cannot be proven are rejected. The runtime publishes root blocks to every worker's block index and keeps them alive while workers exist, so container, class and heap-field struct pointees are safe to share across threads as well.</p>
+
+        <h3>One accepted difference from GC</h3>
+
+        <p>A mutable container stored into a global re-points the source local at the global's root copy, so <code>g = v; g.pushb(4)</code> is visible through both names. After <code>g = v; g = X</code> the arena reuses the global's root copy in place, so <code>v</code> observes <code>X</code>'s contents; GC mode keeps <code>v</code> pointing at the old vector. Strings are immutable/copy-on-write and are never re-pointed this way. This is the only intentional observable difference between the two native memory modes.</p>
+
+        <h3>Safety defaults</h3>
+
+        <ul>
+          <li><strong>Poison on reclaim:</strong> reclaimed memory is filled with <code>0xDD</code> by default (<code>LEASH_ARENA_POISON=0</code> disables).</li>
+          <li><strong>Frame-exit verification:</strong> before every scope pop or loop reset, registered global/shared/static pointer slots are checked for pointers into the frame being reclaimed (<code>LEASH_ARENA_VERIFY=0</code> disables this default-on check). A missed root copy becomes a loud abort instead of a silent dangling pointer.</li>
+          <li><strong>Escape snapshots:</strong> bounded byte snapshots of reclaimed blocks are enabled by default (<code>LEASH_ARENA_ESCAPE_SNAPSHOT=0</code> disables), invalidated on address-range reuse, and shared by every staging read through one snapshot image.</li>
+          <li><strong>Frame/loop misuse:</strong> underflow, over-depth exit, and invalid or out-of-range frame operations abort with diagnostics.</li>
+          <li><strong>Deep escapes:</strong> nested heap fields in returned structs/classes are deep-staged and committed across pops; recursive aggregate returns copy the reachable graph with an identity map so cycles survive. Value-copy cloning of a recursive struct is bounded at eight type levels &mdash; deeper pointer chains keep sharing the tail pointer, which is safe but not a full deep copy.</li>
+          <li><strong>Frameless paths:</strong> allocation-free functions and loops may skip framing only when allocation analysis can prove it.</li>
+        </ul>
+
+        <h3>Measurement</h3>
+
+        <p>Use <code>LEASH_ARENA_STATS=1</code> for the scope/root peak block bytes and payload. For a fair GC-vs-arena comparison, clear <code>~/.leash/shcache</code>, interleave runs, and record CPU and max RSS via <code>/usr/bin/time -v</code> &mdash; RSS is page-granular, so block-byte peaks are the more honest allocator metric.</p>
+
+        <pre><code><span class="cm"># Observe both arenas at shutdown</span>
+LEASH_ARENA_STATS=1 leash run myprogram.lsh
+
+<span class="cm"># Opt out of the default when ownership cannot be modelled</span>
+leash run myprogram.lsh --gc</code></pre>
+
+        <hr>
+
+        <h2 id="windows-tls">Windows <code>serve_tls</code> is experimental</h2>
+
+        <p>The <code>httpserver</code> module's TLS listener, <code>serve_tls(port, cert, key, handler)</code> (and <code>serve_tls_ex</code>), is available on every supported platform. On Linux, Linux ARM64 and macOS the shim uses BSD sockets plus OpenSSL and ALPN negotiates <strong>h2</strong> or HTTP/1.1 per connection. On Windows the shim uses the system <strong>SChannel</strong> stack (no external dependency): the key must be an RSA key in PEM form (PKCS#8 <code>BEGIN PRIVATE KEY</code> or PKCS#1 <code>BEGIN RSA PRIVATE KEY</code>) and the listener speaks <strong>HTTP/1.1 over TLS</strong> &mdash; Windows ALPN is not wired up, so h2 clients fall back to HTTP/1.1.</p>
+
+        <p>The Windows arm is cross-compiled with MinGW-w64 and exercised under Wine in CI; it has not yet been battle-tested on real Windows hosts, so treat it as experimental for now. Plain HTTP on Windows has no such caveat, and the Linux/macOS TLS path is the same mature OpenSSL shim used elsewhere. See <code>installthis/httpserver/README.md</code> for the per-platform matrix.</p>
+
+        <hr>
+
+        <h2 id="jvm-sql">JVM <code>sql</code> is a mini engine, not SQLite</h2>
+
+        <p>All three former <code>@from</code>-only stdlib modules now work on the JVM target through <strong>bundled Java shims</strong> (source under <code>leash/jvm/</code>, prebuilt <code>.class</code> files shipped with the runtime, the same policy as the <code>liblsh*.a</code> archives):</p>
+
+        <div class="feature-grid">
+          <div class="feature-card"><h3><code>http</code></h3><p>Rides <code>java.net.http</code>: same request API, redirect rules, error codes (<code>LSH_E_*</code>), <code>strerror</code> text, <code>leash-http/1.1</code> user agent, binary-safe downloads and TLS (with the <code>verify_tls</code> opt-out). <code>*_h2</code> calls negotiate h2 over TLS via ALPN and fall back to HTTP/1.1; cleartext h2c prior-knowledge is unavailable, so cleartext <code>*_h2</code> calls report <code>proto = "http/1.1"</code>.</p></div>
+          <div class="feature-card"><h3><code>httpserver</code></h3><p>Rides <code>jdk.httpserver</code>: same <code>serve</code>/<code>serve_ex</code>/<code>serve_tls</code> API, handler contract, <code>reply_*</code> helpers, response context, <code>shutdown()</code> semantics (stops after the current response), request quotas and <code>LSHD_E_*</code> error codes. HTTP/1.1 only (no h2/h2c); RSA keys in PEM form.</p></div>
+          <div class="feature-card"><h3><code>sql</code></h3><p>Rides a small SQL interpreter (<code>leash/jvm/LeashSql.java</code>), not SQLite. The <code>lsql_*</code> contract is faithful: sqlite3 result codes, column-type numbering, prepare-time metadata, <code>reset()</code> keeping bindings, <code>changes()</code>/<code>last_insert_rowid()</code>, <code>INTEGER PRIMARY KEY</code> rowid aliasing, transactions, and SQLite type affinity.</p></div>
+        </div>
+
+        <h3>What the JVM SQL subset supports</h3>
+
+        <p><code>CREATE TABLE</code>, <code>INSERT</code>, <code>SELECT</code> (columns, <code>*</code>, <code>COUNT(*)</code>, <code>WHERE</code>, <code>ORDER BY [DESC]</code>), <code>UPDATE</code>, <code>DELETE</code>, <code>DROP TABLE</code> and transactions with <code>?</code> parameters. The stdlib test program (<code>tests/stdlib/sql_sqlite.lsh</code>) produces byte-identical output on the JVM and natively.</p>
+
+        <div class="callout callout-warning"><strong>The two honest caveats.</strong> Expressions beyond the surface above &mdash; joins, subqueries, indexes, <code>GROUP BY</code> &mdash; are not available, and database files use the engine's own line format (<code>LEASHSQL1</code> magic), <em>not</em> sqlite3 files. Opening an existing sqlite3 file on the JVM fails cleanly, and a JVM-written file is &ldquo;not a database&rdquo; to native SQLite. Use <code>:memory:</code> or files written by the same engine.</div>
+
+        <h3>Runtime notes</h3>
+
+        <p>Function values needed to pass handlers around are supported on the JVM: <code>fnc(...)</code> types lower to single-method interfaces (the handler shape to the shim's <code>LshHttpHandler</code>, anything else to a generated <code>&lt;Main&gt;_LshFn&lt;n&gt;</code>), and <code>&amp;fname</code> lowers to a generated adapter class, so <code>&amp;handler_fn</code> locals, parameters and indirect calls work.</p>
+
+        <p>The JVM shims ride <code>java.net.http</code> (JDK 11+), so programs using <code>http</code> or <code>httpserver</code> on the JVM need a Java 11+ runtime; <code>sql</code> itself has no such floor. Programs that use none of the shims keep the JVM target's usual Java 5 class-file floor. Minor engine differences are inherent to the JDK for the web modules: response header casing/order follows the JDK (lookups stay case-insensitive), and the server's own <code>Date</code>/keep-alive handling replaces the C engine's.</p>
+
+        <hr>
+
+        <h2 id="http3">HTTP/3 and QUIC</h2>
+
+        <p>Neither the <code>http</code> client nor the <code>httpserver</code> speaks HTTP/3 or QUIC. HTTP/1.1 and HTTP/2 (h2c and h2-over-TLS) are fully supported on native, and the JVM shims cover the HTTP/1.1 and h2-over-TLS subset described above. HTTP/3 is a deliberate non-goal for the 2.x series, not an oversight &mdash; it would require a QUIC transport stack that does not fit the dependency-free design of the web modules.</p>
+
+        <hr>
+
+        <h2 id="workarounds">Workarounds at a glance</h2>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>If you hit this&hellip;</th><th>Do this</th></tr></thead>
+            <tbody>
+              <tr><td>An <code>E_ARENA_LIFETIME</code> error for a cross-frame store</td><td>Return the value instead, keep it in root/persistent storage, or build that program with <code>--gc</code>.</td></tr>
+              <tr><td>A stale-looking pointer or string after scope reuse</td><td>Keep poison and frame-exit verification on (both default), and leave escape snapshots enabled so staging reads one coherent image.</td></tr>
+              <tr><td>Need joins, subqueries or sqlite3 files on the JVM</td><td>Build natively with the SQLite-backed <code>sql</code> module; the JVM engine intentionally covers only the core subset.</td></tr>
+              <tr><td>Need h2 on real Windows TLS</td><td>Use Linux/macOS for the h2 TLS path, or HTTP/1.1 on Windows until ALPN is wired into the SChannel shim.</td></tr>
+              <tr><td>Need HTTP/3</td><td>Front Leash with a proxy that terminates QUIC and speaks HTTP/1.1 or HTTP/2 to the server.</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h2 id="stable">What is stable</h2>
+
+        <p>It is easier to list what is <em>not</em> covered than what is. The following are stable, supported contracts in 2.0.0 and are not &ldquo;limitations&rdquo;:</p>
+
+        <div class="feature-grid">
+          <div class="feature-card"><h3>The toolchain</h3><p>Self-hosted compiler, bootstrap from a checked-in seed with no Python, fixed-point verification, and the 89/89 output-parity corpus.</p></div>
+          <div class="feature-card"><h3>Both native memory modes</h3><p>Arena by default and mark-and-sweep via <code>--gc</code>, with identical program output. <code>--autofree</code>, <code>nogc</code> and the JVM's own GC are stable alternatives.</p></div>
+          <div class="feature-card"><h3>Core language and libraries</h3><p>Types, generics, unions, classes, async/await, workers, the file API, the full standard library and the package manager.</p></div>
+          <div class="feature-card"><h3>Web stack on native</h3><p>HTTP/1.1 and HTTP/2 (h2c + h2-over-TLS) for client and server, plus the TLS listener on Linux, Linux ARM64 and macOS.</p></div>
+        </div>
+
+        <h2 id="reporting">Reporting a limit</h2>
+
+        <div class="callout callout-info">Documented here deliberately: shipping a compiler means being explicit about what it does <em>not</em> do. If any of these becomes important, or you find a lifetime pattern the audit should model but does not, open an issue at <a href="https://github.com/foksiny/leash">github.com/foksiny/leash</a> with a minimal reproducer and the memory mode you used.</div>
+
+        <div class="quick-links">
+          <a class="quick-link" href="advanced.html"><strong>Advanced Topics</strong><span>Arena internals, audit rules and migration &rarr;</span></a>
+          <a class="quick-link" href="compiler.html"><strong>Compiler &amp; CLI</strong><span>Memory flags and target selection &rarr;</span></a>
+          <a class="quick-link" href="self-hosted.html"><strong>Self-Hosted Compiler</strong><span>Bootstrap stages and parity harness &rarr;</span></a>
+          <a class="quick-link" href="stdlib.html"><strong>Standard Library</strong><span>HTTP, HTTPS server and SQL modules &rarr;</span></a>
+        </div>
+
+    </article>
+  </main>
 </div>
-
-<h1>Known Limitations</h1>
-
-<p>Leash 1.12.0 is a complete, self-hosted toolchain: the compiler is written in Leash, builds itself from a checked-in bootstrap seed with no Python, and passes an 89/89 output-parity corpus. The items below are the honest, currently-known limits of the platform &mdash; each is intentional, scoped, and stable for 1.x.</p>
-
-<table>
-    <tr><th>Limitation</th><th>Severity</th><th>Comment</th></tr>
-    <tr>
-        <td><code>--arena</code> scoped bump arena is experimental (native-only)</td>
-        <td>&#128993; Medium</td>
-        <td>Opt-in alternative to GC with deterministic scope/loop reclamation. Lifetimes are frame-based (no borrow checker): returns/spawn/futures escape by copy or root arena, but stores of frame-local temporaries into caller-owned aggregates, raw <code>*T</code> pointers, and union payloads remain caller-owned (like <code>--autofree</code>). Reclaimed memory is poisoned by default (<code>LEASH_ARENA_POISON=0</code> opts out) and frame misuse aborts; some ownership patterns are still unsafe if not modeled. JVM target rejects <code>--arena</code>.</td>
-    </tr>
-    <tr>
-        <td>Windows <code>serve_tls</code> is experimental</td>
-        <td>&#128994; Low</td>
-        <td>SChannel backend; cross-compiled and exercised under Wine, not yet battle-tested on real Windows.</td>
-    </tr>
-    <tr>
-        <td>JVM <code>sql</code> is a mini engine, not SQLite</td>
-        <td>&#128994; Low</td>
-        <td>Same API and semantics for the supported subset; own file format, so sqlite3 files don't open.</td>
-    </tr>
-    <tr>
-        <td>HTTP/3 / QUIC</td>
-        <td>&#128994; Low</td>
-        <td>Not implemented, but nobody expects it in 1.x.</td>
-    </tr>
-</table>
-
-<h2>Windows <code>serve_tls</code> is experimental</h2>
-
-<p>The <code>httpserver</code> module's TLS listener, <code>serve_tls(port, cert, key, handler)</code> (and <code>serve_tls_ex</code>), is available on every supported platform. On Linux, Linux ARM64 and macOS the shim uses BSD sockets + OpenSSL and ALPN negotiates <strong>h2</strong> or HTTP/1.1 per connection. On Windows the shim uses the system <strong>SChannel</strong> stack (no external dependency): the key must be an RSA key in PEM form (PKCS#8 <code>BEGIN PRIVATE KEY</code> or PKCS#1 <code>BEGIN RSA PRIVATE KEY</code>) and the listener speaks <strong>HTTP/1.1 over TLS</strong> &mdash; Windows ALPN is not wired up, so h2 clients fall back to HTTP/1.1. The Windows arm is cross-compiled with MinGW-w64 and exercised under Wine in CI; it has not yet been battle-tested on real Windows hosts, so treat it as experimental for now. See the <code>installthis/httpserver/README.md</code> for the per-platform matrix.</p>
-
-<h2>JVM <code>sql</code> is a mini engine, not SQLite</h2>
-
-<p>All three former <code>@from</code>-only stdlib modules now work on the JVM target through <strong>bundled Java shims</strong> (source under <code>leash/jvm/</code>, prebuilt <code>.class</code> files shipped with the runtime, the same policy as the <code>liblsh*.a</code> archives):</p>
-
-<ul>
-<li><strong><code>http</code></strong> &mdash; rides <code>java.net.http</code>: the same request API, redirect rules, error codes (<code>LSH_E_*</code>), <code>strerror</code> text, <code>leash-http/1.1</code> user agent, binary-safe downloads and TLS (with the <code>verify_tls</code> opt-out). <code>*_h2</code> calls negotiate h2 over TLS via ALPN and fall back to HTTP/1.1; <strong>h2c prior-knowledge is not available</strong> (the JDK client has no cleartext h2), so cleartext <code>*_h2</code> calls report <code>proto = "http/1.1"</code>.</li>
-<li><strong><code>httpserver</code></strong> &mdash; rides <code>jdk.httpserver</code>: same <code>serve</code>/<code>serve_ex</code>/<code>serve_tls</code> API, handler contract, <code>reply_*</code> helpers, response-body/header context, <code>shutdown()</code> semantics (stops after the current response), request quotas and <code>LSHD_E_*</code> error codes. The listener speaks <strong>HTTP/1.1 only</strong> (no h2/h2c), and accepts RSA keys in PEM form (PKCS#8 or PKCS#1).</li>
-<li><strong><code>sql</code></strong> &mdash; rides a <strong>small SQL interpreter</strong> (<code>leash/jvm/LeashSql.java</code>), not SQLite. The <code>lsql_*</code> contract is faithful: sqlite3 result codes (OK/ROW/DONE), column-type numbering, prepare-time column metadata, <code>reset()</code> keeping bindings, <code>changes()</code>/<code>last_insert_rowid()</code>, <code>INTEGER PRIMARY KEY</code> rowid aliasing, BEGIN/COMMIT/ROLLBACK, and SQLite's type-affinity rules for storage and comparisons. The supported surface is <code>CREATE TABLE</code>, <code>INSERT</code>, <code>SELECT</code> (columns, <code>*</code>, <code>COUNT(*)</code>, <code>WHERE</code>, <code>ORDER BY [DESC]</code>), <code>UPDATE</code>, <code>DELETE</code>, <code>DROP TABLE</code> and transactions with <code>?</code> parameters. The stdlib test program (<code>tests/stdlib/sql_sqlite.lsh</code>) produces byte-identical output on the JVM and natively.</li>
-</ul>
-
-<p>The two honest caveats for JVM <code>sql</code>: expressions beyond the surface above (joins, subqueries, indexes, <code>GROUP BY</code>) are not available, and database <strong>files use the engine's own line format</strong> (<code>LEASHSQL1</code> magic) &mdash; they are <em>not</em> sqlite3 files. Opening an existing sqlite3 file on the JVM fails cleanly (and a JVM-written file is "not a database" to native SQLite). Use <code>:memory:</code> or files written by the same engine.</p>
-
-<p>Function values needed to pass handlers around are supported on the JVM: <code>fnc(...)</code> types lower to single-method interfaces (the handler shape to the shim's <code>LshHttpHandler</code>, anything else to a generated <code><Main>_LshFn<n></code>), and <code>&fname</code> lowers to a generated adapter class, so <code>&handler_fn</code> locals, parameters and indirect calls work.</p>
-
-<p>Runtime note: the JVM shims ride <code>java.net.http</code> (JDK 11+), so programs using <code>http</code>/<code>httpserver</code> on the JVM need a Java 11+ runtime; <code>sql</code> itself has no such floor. Programs that use none of the shims keep the JVM target's usual Java 5 class-file floor. Minor engine differences are inherent to the JDK for the web modules: response header casing/order follows the JDK (lookups stay case-insensitive), and the server's own <code>Date</code>/keep-alive handling replaces the C engine's.</p>
-
-<h2>Scoped arena (<code>--arena</code>) is experimental</h2>
-
-<p>The arena backend (<code>leash compile/run --arena</code>, native-only) provides deterministic bump allocation with whole-scope and per-iteration reclamation, no GC pauses/scans, and C-ABI-friendly plain pointers. It is often leaner/faster on allocation-churn and hash/string-heavy workloads (especially with O2+ reserves/pre-sizing and O3+ compact nodes/fused keys), but it is not a universal win: growth-heavy kernels can retain superseded buffers until scope reset, and tiny compute-bound cases may show noisy or negligible deltas.</p>
-
-<ul>
-    <li><strong>Lifetime model:</strong> no borrow checker. Pointers are valid until the allocating frame/iteration exits. Returns and spawned/async data escape by copy or into the root arena; spawn uses the compiler's type tree to root nested fields, and unions are transferred as boxed values with their real size. The compiler audits arena builds for cases it cannot move safely: manual libc heap calls, raw-pointer returns, and raw pointers stored long-term or passed to workers are all errors &mdash; there is no warning-only outcome. Runtime header readers validate the allocation tag, header containment and block-bounded sizes, so forged or stale pointers abort instead of reading or copying out of bounds. Allocation-free functions/loops may skip framing only when allocation analysis can prove it.</li>
-    <li><strong>Root arena:</strong> a value that outlives its frame &mdash; a global, or an outer local written from a loop body &mdash; is copied into the program-lifetime root arena, which is never rewound. The root slot reuses its copy in place while it is the only owner of it, so storing into the same global in a loop keeps a constant footprint instead of growing the program&rsquo;s permanent memory. The arena stats report the scope arena and the root arena separately (<code>LEASH_ARENA_STATS=1</code>).</li>
-    <li><strong>Spawn hand-off:</strong> <code>spawn</code> copies its arguments into one compact private transfer block; string arguments travel through it, container and aggregate arguments keep their root copies. The worker releases the transfer as soon as it has unpacked it, so the transfer does not outlive the hand-off.</li>
-    <li><strong>Known ownership caveat:</strong> storing a frame-local temporary into a caller-owned aggregate (heap field, global, slice backing), raw <code>*T</code> pointers, and union payloads are caller-owned (same aggregate-escape limitation as <code>--autofree</code>). Prefer GC when ownership crosses frames in ways the compiler cannot prove.</li>
-    <li><strong>One accepted difference from the GC:</strong> a mutable container stored into a global re-points the source local at the global&rsquo;s root copy, so <code>g = v; g.pushb(4)</code> is visible through both names. After <code>g = v; g = X</code> the arena reuses the global&rsquo;s root copy in place, so <code>v</code> observes <code>X</code>&rsquo;s contents; the GC keeps <code>v</code> pointing at the old vector. Strings are immutable/copy-on-write and are never re-pointed this way.</li>
-    <li><strong>Safety defaults:</strong> reclaimed memory is poisoned with <code>0xDD</code> by default (<code>LEASH_ARENA_POISON=0</code> disables). Before every scope pop/loop reset, registered global/shared/static pointer slots are checked for pointers into the frame being reclaimed (<code>LEASH_ARENA_VERIFY=0</code> disables this default-on check); a missed root copy becomes a loud abort instead of a silent dangling pointer. Frame/loop misuse (underflow, over-depth exit, invalid/out-of-range frame ops) aborts with diagnostics. Nested heap fields in returned structs/classes are deep-staged/committed across pops; recursive aggregate returns copy the reachable graph with an identity map so cycles survive. Value-copy cloning of a recursive struct is bounded at eight type levels — deeper pointer chains keep sharing the tail pointer, which is safe but not a full deep copy.</li>
-    <li><strong>Measurement:</strong> use <code>LEASH_ARENA_STATS=1</code> for the scope/root peak block bytes and payload; compare GC vs arena with cleared <code>~/.leash/shcache</code>, interleaved runs, and CPU/max RSS via <code>/usr/bin/time -v</code> (RSS is page-granular).</li>
-</ul>
-
-<h2>HTTP/3 / QUIC</h2>
-
-<p>Neither the <code>http</code> client nor the <code>httpserver</code> speaks HTTP/3 or QUIC. HTTP/1.1 and HTTP/2 (h2c and h2-over-TLS) are fully supported; HTTP/3 is a deliberate non-goal for the 1.x series.</p>
-
-<div class="callout callout-info">Documented here deliberately: shipping a compiler means being explicit about what it does <em>not</em> do. If any of these becomes important, open an issue at <a href="https://github.com/foksiny/leash">github.com/foksiny/leash</a>.</div>
-
-</main>
-
-<script src="docs.js"></script>
 </body>
 </html>

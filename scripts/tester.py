@@ -278,7 +278,9 @@ def is_manual_input_test(file_path):
         with open(file_path, "r", encoding="utf-8", errors="ignore") as fh:
             content = fh.read()
         import re
-        if re.search(r'(?<!\.)\bget\s*\(', content) or re.search(r'\bkeyget\s*\(', content):
+        if (re.search(r'(?<!\.)\bget\s*\(', content)
+                or re.search(r'\bkeyget\s*\(', content)
+                or re.search(r'\bget(?:int|float|struct)\s*\(', content)):
             return True
     except:
         pass

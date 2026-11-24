@@ -107,6 +107,23 @@ class TestArenaCheckedGuard(unittest.TestCase):
             self.assertIn("checked guard ok", run.stdout)
 
 
+class TestArenaProvenanceGuard(unittest.TestCase):
+    def test_native_ptr_provenance(self):
+        cc = _compiler(self)
+        with tempfile.TemporaryDirectory() as td:
+            exe = os.path.join(td, "test_arena_provenance")
+            build = subprocess.run(
+                cc + ["tests/test_arena_provenance.c", "leash/gc.c",
+                      "-D_GNU_SOURCE", "-DLEASH_ARENA", "-O1", "-g", "-pthread",
+                      "-o", exe],
+                cwd=REPO_ROOT, capture_output=True, text=True, timeout=300)
+            self.assertEqual(build.returncode, 0, build.stderr)
+            run = subprocess.run([exe], cwd=REPO_ROOT, capture_output=True,
+                                 text=True, timeout=120)
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+            self.assertIn("provenance guard ok", run.stdout)
+
+
 class TestArenaContainerHandles(unittest.TestCase):
     def test_container_handles(self):
         """Container handles validate generations, COW and root copies."""
@@ -145,6 +162,38 @@ class TestArenaEscapeAsan(unittest.TestCase):
                                  env=dict(os.environ, ASAN_OPTIONS="detect_leaks=0"))
             self.assertEqual(run.returncode, 0, run.stdout + "\n" + run.stderr)
             self.assertIn("escape ok", run.stdout)
+
+
+class TestArenaStageSnapshots(unittest.TestCase):
+    """Every staging path reads a popped frame's value from its snapshot.
+
+    A value whose producing frame has already exited lives only in the
+    escape snapshot. Reading its header through the snapshot but its node
+    chain / key / payload from the freed block is a use-after-free and can
+    also produce a torn copy. The harness exercises string, vec, generic
+    hash and typed hash escapes and checks both ASan cleanliness and the
+    exact staged contents.
+    """
+
+    def test_stage_snapshots(self):
+        cc = _compiler(self)
+        if not _sanitizer_ok(cc):
+            self.skipTest("compiler does not support ASan/UBSan")
+        with tempfile.TemporaryDirectory() as td:
+            exe = os.path.join(td, "test_arena_stage_snapshot")
+            build = subprocess.run(
+                cc + ["tests/test_arena_stage_snapshot.c", "leash/gc.c",
+                      "-D_GNU_SOURCE", "-DLEASH_ARENA", "-O1", "-g", "-pthread",
+                      "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
+                      "-o", exe],
+                cwd=REPO_ROOT, capture_output=True, text=True, timeout=300)
+            self.assertEqual(build.returncode, 0, build.stderr)
+            run = subprocess.run([exe], cwd=REPO_ROOT, capture_output=True,
+                                 text=True, timeout=300,
+                                 env=dict(os.environ, ASAN_OPTIONS="detect_leaks=0"))
+            self.assertEqual(run.returncode, 0, run.stdout + "\n" + run.stderr)
+            self.assertIn("stage snapshots ok", run.stdout)
+            self.assertNotIn("AddressSanitizer", run.stdout + run.stderr)
 
 
 if __name__ == "__main__":

@@ -74,6 +74,14 @@
 #define LEASH_WITH_ASAN 1
 #endif
 
+/* The SEGV diagnostic uses x86-64 register names (REG_RIP, REG_RAX, ...).
+ * Other Linux targets (aarch64, arm, i386) have a different mcontext_t
+ * and no such registers. Arena is now the default layout, so this file
+ * is compiled for every cross target. */
+#if defined(__linux__) && !defined(LEASH_WITH_ASAN) && defined(__x86_64__)
+#define LEASH_SEGV_DIAG 1
+#endif
+
 /* Thread-local storage qualifier.
  *
  * MSVC has __declspec(thread); gcc and clang use __thread.
@@ -149,6 +157,12 @@ void leash_spipe_drop(void) {
 void leash_spipe_hold(void) {}
 void leash_spipe_drop(void) {}
 #endif
+
+/* Set once a program spawns workers: root blocks must then be resolvable
+ * from any thread, not just the thread that allocated them. Declared
+ * outside the backend switch so the thread-spawn hook exists in every
+ * runtime build. */
+static volatile int g_shared_roots;
 
 #if defined(LEASH_ARENA)
 /* ===== Scoped arena backend (experimental) =====
@@ -255,11 +269,13 @@ static inline int ar_hdr_valid(uint64_t raw) {
 
 typedef struct arena_block {
     struct arena_block* next; /* all blocks, newest first */
+    struct arena_block* root_next; /* link in the shared root-block registry */
     char* base;               /* start of the region usable for payloads */
     size_t cap;               /* usable bytes after the header */
     int sole;                 /* one dedicated large allocation fills the block */
     int frame_id;             /* checkpoint depth when this block was created */
     uint64_t seq;             /* creation order; larger is newer */
+    size_t used;              /* bytes actually bumped before this block stopped being head */
 } arena_block;
 
 typedef struct arena_cp {
@@ -312,18 +328,31 @@ typedef struct {
     const char* base;
     const char* end;
     char* bytes;
+    size_t cap;                 /* bytes valid in `bytes` */
 } ar_snap_ent;
 static ARENA_TLS ar_snap_ent ar_snaps[AR_SNAP_N];
 static ARENA_TLS size_t ar_snap_pos;
 static ARENA_TLS int ar_snapshot_on;
-static const void* ar_snap_ptr(const void* p) {
+/* Resolve `p` to the image a staging read must use. When the block that
+ * owned `p` was reclaimed, that is the exact byte copy taken at pop time;
+ * otherwise it is `p` itself. `end`, when non-NULL, receives the end of
+ * the image so header readers can bound their length/terminator checks
+ * inside the copy. Every staging pass must use this ONE resolution: a
+ * snapped header followed by a raw payload read (or the reverse) is a
+ * torn copy and, under ASan, a use-after-free. */
+static const void* ar_snap_image(const void* p, const char** end) {
     if (!ar_snapshot_on || !p) return p;
     for (size_t i = 0; i < AR_SNAP_N; i++) {
-        const char* lo = ar_snaps[i].base;
-        if (lo && (const char*)p >= lo && (const char*)p < ar_snaps[i].end)
-            return ar_snaps[i].bytes + ((const char*)p - lo);
+        ar_snap_ent* e = &ar_snaps[i];
+        if (e->base && (const char*)p >= e->base && (const char*)p < e->end) {
+            if (end) *end = e->bytes + e->cap;
+            return e->bytes + ((const char*)p - e->base);
+        }
     }
     return p;
+}
+static const void* ar_snap_ptr(const void* p) {
+    return ar_snap_image(p, NULL);
 }
 /* A recycled block can land at the same address as an old snapshot.
  * Forget the stale image as soon as that address is live again, or a
@@ -335,19 +364,24 @@ static void ar_snapshot_forget(const char* base, size_t cap) {
             free(ar_snaps[i].bytes);
             ar_snaps[i].bytes = NULL;
             ar_snaps[i].base = ar_snaps[i].end = NULL;
+            ar_snaps[i].cap = 0;
         }
     }
 }
 static void ar_snapshot_add(arena_block* b) {
     if (!ar_snapshot_on || b->cap > (size_t)128 * 1024) return;
+    /* Only the bumped prefix can hold allocations. Older blocks are full
+     * (used == cap); the outermost one often uses a small fraction. */
+    size_t n = b->used ? b->used : b->cap;
     ar_snap_ent* e = &ar_snaps[ar_snap_pos];
     free(e->bytes);
-    e->bytes = (char*)malloc(b->cap);
-    if (!e->bytes) { e->base = e->end = NULL; }
+    e->bytes = (char*)malloc(n);
+    if (!e->bytes) { e->base = e->end = NULL; e->cap = 0; }
     else {
-        memcpy(e->bytes, b->base, b->cap);
+        memcpy(e->bytes, b->base, n);
         e->base = b->base;
-        e->end = b->base + b->cap;
+        e->end = b->base + n;
+        e->cap = n;
     }
     ar_snap_pos = (ar_snap_pos + 1) & (AR_SNAP_N - 1);
 }
@@ -391,6 +425,8 @@ static void ar_btab_insert(arena_block* b, arena_stack* st) {
     arena_block_tab_len++;
 }
 
+static void ar_root_blk_cache_forget(const void* base);
+
 /* Remove by numeric base: callers use it before freeing or reallocating
  * a block, so dereferencing the block itself would be a use-after-free. */
 static void ar_btab_forget(const void* base) {
@@ -400,26 +436,12 @@ static void ar_btab_forget(const void* base) {
     pos--;
     ar_checked_epoch++;
     ar_container_epoch++;
+    ar_root_blk_cache_forget(base);
     if (pos + 1 < arena_block_tab_len) {
         memmove(&arena_block_tab[pos], &arena_block_tab[pos + 1],
                 (arena_block_tab_len - pos - 1) * sizeof(*arena_block_tab));
     }
     arena_block_tab_len--;
-}
-
-static arena_block* ar_btab_find(arena_stack* st, const void* p) {
-    size_t pos = ar_btab_upper(p);
-    if (pos == 0) return NULL;
-    arena_block_ent* e = &arena_block_tab[pos - 1];
-    if ((const char*)p >= e->end) return NULL;
-    return e->st == st ? e->b : NULL;
-}
-
-static arena_block_ent* ar_btab_find_any(const void* p) {
-    size_t pos = ar_btab_upper(p);
-    if (pos == 0) return NULL;
-    arena_block_ent* e = &arena_block_tab[pos - 1];
-    return (const char*)p >= e->end ? NULL : e;
 }
 
 ARENA_TLS arena_stack leasharena_tls_ar; /* named for IR fast paths (see gc.h) */
@@ -428,6 +450,128 @@ static ARENA_TLS int leasharena_tls_arena_dead; /* set by shutdown: further allo
 static ARENA_TLS size_t arena_live_block_bytes;
 static ARENA_TLS size_t arena_peak_block_bytes;
 static ARENA_TLS size_t arena_root_peak_block_bytes;
+
+static arena_block_ent* ar_btab_find_any(const void* p);
+
+static arena_block* ar_btab_find(arena_stack* st, const void* p) {
+    arena_block_ent* e = ar_btab_find_any(p);
+    if (!e) return NULL;
+    return e->st == st ? e->b : NULL;
+}
+
+/* ---- process-wide root-block registry -------------------------------
+ * The scope arena is thread-local, but the root arena holds values that
+ * outlive their producing frame. Once a program spawns workers, those
+ * root allocations must be resolvable from ANY thread: a worker that
+ * dereferences a container/class pointee resolves it through the same
+ * block-index lookup as its own allocations. Each thread keeps its own
+ * (fast, sorted) block table; this registry is the shared backstop that
+ * teaches a thread about root blocks it did not allocate itself.
+ *
+ * Root blocks are never reclaimed while workers exist (see
+ * arena_try_free_solo and the thread-exit destructor), so an entry
+ * published here stays valid for the whole program.
+ */
+/* Atomic spin lock (the same pattern as leash_showb_lock) so the shared
+ * registry works in every runtime build, including cross-compiled ones
+ * that do not link pthread. Critical sections are a few instructions. */
+#ifdef _WIN32
+static volatile LONG g_root_blocks_spin = 0;
+static void ar_root_lock(void) {
+    while (InterlockedCompareExchange(&g_root_blocks_spin, 1, 0) != 0) { Sleep(0); }
+}
+static void ar_root_unlock(void) { InterlockedExchange(&g_root_blocks_spin, 0); }
+#else
+static volatile int g_root_blocks_spin = 0;
+static void ar_root_lock(void) {
+    while (__sync_lock_test_and_set(&g_root_blocks_spin, 1)) { sched_yield(); }
+}
+static void ar_root_unlock(void) { __sync_lock_release(&g_root_blocks_spin); }
+#endif
+static arena_block* g_root_blocks;
+
+/* Direct-mapped TLS cache of recently resolved remote root blocks. A hit
+ * needs no lock and no walk of the shared list; root blocks are stable
+ * while workers exist, so the cached bounds cannot go stale. */
+#define AR_ROOT_BLK_CACHE_N 32
+typedef struct {
+    const char* base;
+    const char* end;
+    arena_block* b;
+} ar_root_blk_cache_ent;
+static ARENA_TLS ar_root_blk_cache_ent ar_root_blk_cache[AR_ROOT_BLK_CACHE_N];
+
+static void ar_root_blk_cache_forget(const void* base) {
+    if (!base) return;
+    for (size_t i = 0; i < AR_ROOT_BLK_CACHE_N; i++) {
+        if (ar_root_blk_cache[i].base == base) {
+            ar_root_blk_cache[i].base = NULL;
+            ar_root_blk_cache[i].end = NULL;
+            ar_root_blk_cache[i].b = NULL;
+        }
+    }
+}
+
+/* The registry links the blocks themselves: no per-block allocation, and
+ * the extra word lives in a struct that is already 32 KB-aligned. */
+static void ar_root_reg_add(arena_block* b) {
+    ar_root_lock();
+    b->root_next = g_root_blocks;
+    g_root_blocks = b;
+    ar_root_unlock();
+}
+
+static void ar_root_reg_remove(arena_block* b) {
+    ar_root_lock();
+    arena_block** link = &g_root_blocks;
+    while (*link && *link != b) link = &(*link)->root_next;
+    if (*link) *link = b->root_next;
+    b->root_next = NULL;
+    ar_root_unlock();
+    ar_root_blk_cache_forget(b->base);
+}
+
+static arena_block* ar_root_reg_find(const void* p) {
+    if (!g_shared_roots) return NULL;
+    const char* q = (const char*)p;
+    size_t slot = ((uintptr_t)p >> 6) & (AR_ROOT_BLK_CACHE_N - 1);
+    ar_root_blk_cache_ent* ce = &ar_root_blk_cache[slot];
+    if (ce->b && q >= ce->base && q < ce->end) return ce->b;
+    arena_block* found = NULL;
+    ar_root_lock();
+    for (arena_block* b = g_root_blocks; b; b = b->root_next) {
+        const char* base = b->base;
+        if (q >= base && q < base + b->cap) { found = b; break; }
+    }
+    ar_root_unlock();
+    if (found) {
+        ce->base = found->base;
+        ce->end = found->base + found->cap;
+        ce->b = found;
+    }
+    return found;
+}
+
+static arena_block_ent* ar_btab_find_any(const void* p) {
+    size_t pos = ar_btab_upper(p);
+    if (pos > 0) {
+        arena_block_ent* e = &arena_block_tab[pos - 1];
+        if ((const char*)p >= e->base && (const char*)p < e->end) return e;
+    }
+    /* A root block made by another thread is not in our table yet:
+     * publish it locally and retry. The entry's owning stack is this
+     * thread's root, which is correct for cross-thread root storage. */
+    arena_block* rb = ar_root_reg_find(p);
+    if (rb) {
+        ar_btab_insert(rb, &tls_root);
+        ar_checked_epoch++;
+        ar_container_epoch++;
+        pos = ar_btab_upper(p);
+        if (pos > 0) return &arena_block_tab[pos - 1];
+    }
+    return NULL;
+}
+
 /* Last arena block used by a string lookup. Stores raw bounds rather than
  * a block pointer so a freed block is safe to compare against. Cleared by
  * every free path that can invalidate it. */
@@ -859,9 +1003,16 @@ static arena_block* arena_new_block_sized(arena_stack* st, size_t cap, int sole)
     size_t total = sizeof(arena_block) + cap;
     arena_block* b = (arena_block*)malloc(total);
     if (!b) arena_oom("block");
+    /* The outgoing head will never be bumped again: remember exactly how
+     * much of it is live so escape snapshots need not copy the whole
+     * 32 KB block when it is reclaimed. */
+    if (st->head && st->cur >= st->head->base && st->cur <= st->head->base + st->head->cap)
+        st->head->used = (size_t)(st->cur - st->head->base);
     b->next = st->head;
+    b->root_next = NULL;
     b->base = (char*)(b + 1);
     b->cap = cap;
+    b->used = 0;
     ar_snapshot_forget(b->base, b->cap);
     b->sole = sole;
     b->frame_id = (int)st->cp_len;
@@ -870,6 +1021,7 @@ static arena_block* arena_new_block_sized(arena_stack* st, size_t cap, int sole)
     st->cur = b->base;
     st->end = b->base + cap;
     ar_btab_insert(b, st);
+    if (st == &tls_root && g_shared_roots) ar_root_reg_add(b);
     arena_block_stats_add(total);
     if (st == &tls_root && total > arena_root_peak_block_bytes) {
         arena_root_peak_block_bytes = total;
@@ -902,6 +1054,7 @@ static void arena_free_stack(arena_stack* st) {
         arena_block* n = b->next;
         arena_str_cache_forget(b);
         ar_btab_forget(b->base);
+        if (st == &tls_root && g_shared_roots) ar_root_reg_remove(b);
         free(b);
         b = n;
     }
@@ -1193,6 +1346,10 @@ static size_t arena_check_payload(arena_stack* st, const void* ptr, const char* 
  * saved checkpoint references it as its rewind block (a scope below
  * would otherwise restore through freed memory). */
 static void arena_try_free_solo(arena_stack* st, const void* ptr, size_t sub_bytes) {
+    /* Another thread may cache a pointer into a root block. Reclaiming it
+     * here would leave that thread's block index stale, so root blocks are
+     * kept until program shutdown once workers exist. */
+    if (g_shared_roots && st == &tls_root) return;
     arena_block* b = arena_block_of(st, ptr);
     if (!b || !b->sole) return;
     if (st->head == b) return;
@@ -1267,6 +1424,10 @@ static void* arena_grow_tip(arena_stack* st, void* ptr,
 static char* arena_grow_sole_string(arena_stack* st, char* s,
                                     size_t old_total, size_t new_total) {
     if (!st || !s || new_total <= old_total || new_total > ARENA_MAX_ALLOC) return NULL;
+    /* A shared root block may be referenced by every worker's block table.
+     * realloc() can move it and invalidate those entries, so force the
+     * allocate-then-copy path for root strings once workers exist. */
+    if (g_shared_roots && st == &tls_root) return NULL;
     char* alloc_base = s - 16;
     arena_block* b = arena_block_of(st, alloc_base);
     if (!b || !b->sole || b != st->head || st->cur != st->end) return NULL;
@@ -1294,6 +1455,7 @@ static char* arena_grow_sole_string(arena_stack* st, char* s,
     ar_btab_forget(old_base);
     nb->base = (char*)(nb + 1);
     nb->cap = new_cap;
+    nb->used = new_cap;
     arena_str_cache_set(nb);
     ar_btab_insert(nb, st);
     char* out = nb->base + off + 16;
@@ -1341,6 +1503,11 @@ static void arena_protect_extension(arena_stack* st, arena_block* b,
 /* Free every block newer than `keep` (NULL = free all). `keep`'s own
  * bump is left for the caller to restore. */
 static void arena_free_above(arena_stack* st, arena_block* keep) {
+    /* The head is the block the current frame was bumping; capture its
+     * exact live prefix before unlinking it. */
+    if (st->head && st->head != keep && st->cur >= st->head->base &&
+        st->cur <= st->head->base + st->head->cap)
+        st->head->used = (size_t)(st->cur - st->head->base);
     while (st->head && st->head != keep) {
         arena_block* dead = st->head;
         st->head = dead->next;
@@ -1472,7 +1639,7 @@ static void arena_reset_to(arena_stack* st, size_t frame) {
 
 /* ---- runtime entry points (same API as the GC / stub) ---- */
 
-#if defined(__linux__) && !defined(LEASH_WITH_ASAN)
+#if defined(LEASH_SEGV_DIAG)
 #include <ucontext.h>
 static void leash_segv_diag_handler(int sig, siginfo_t* info, void* ctx) {
     (void)sig;
@@ -1495,7 +1662,7 @@ static void leash_segv_diag_handler(int sig, siginfo_t* info, void* ctx) {
 #endif
 
 void leash_gc_init(void) {
-#if defined(__linux__) && !defined(LEASH_WITH_ASAN)
+#if defined(LEASH_SEGV_DIAG)
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
     sa.sa_sigaction = leash_segv_diag_handler;
@@ -1555,7 +1722,7 @@ void leash_gc_shutdown(void) {
     for (size_t i=0;i<ar_istr_nchunk;i++) free(ar_istr_chunks[i]);
     free(ar_istr_chunks); ar_istr_chunks=NULL; ar_istr_nchunk=ar_istr_chunk_cap=ar_istr_off=0;
     free(ar_istr_len); ar_istr_len=NULL;
-    for (size_t i = 0; i < AR_SNAP_N; i++) { free(ar_snaps[i].bytes); ar_snaps[i].bytes = NULL; ar_snaps[i].base = ar_snaps[i].end = NULL; }
+    for (size_t i = 0; i < AR_SNAP_N; i++) { free(ar_snaps[i].bytes); ar_snaps[i].bytes = NULL; ar_snaps[i].base = ar_snaps[i].end = NULL; ar_snaps[i].cap = 0; }
     free(arena_block_tab);
     arena_block_tab = NULL;
 #if defined(LEASH_ARENA)
@@ -1644,7 +1811,10 @@ static void* ah_container_ptr(uint32_t h) {
 
 uint32_t leasharena_container_handle(void* p) {
     if (!p) return AH_NULL;
-    size_t slot = ((uintptr_t)p >> 4) & (AR_CONT_HANDLE_N - 1);
+    /* Mix differently from the checked-access cache: both tables used the
+     * same index, so a pointer always evicted its own handle entry. */
+    size_t slot = (((uintptr_t)p >> 5) ^ ((uintptr_t)p >> 13) ^
+                   ((uintptr_t)p >> 21)) & (AR_CONT_HANDLE_N - 1);
     ar_cont_ent* ce = &ar_cont_cache[slot];
     uint32_t h = ce->h;
     if (ce->p == p && ce->epoch == ar_container_epoch &&
@@ -1877,6 +2047,7 @@ void* leash_gc_realloc(void* ptr, size_t new_size) {
                     ar_btab_forget(old_base);
                     nb->base = (char*)(nb + 1);
                     nb->cap = new_cap;
+                    nb->used = new_cap;
                     arena_str_cache_set(nb);
                     ar_btab_insert(nb, &leasharena_tls_ar);
                     char* np = nb->base + off;
@@ -2127,6 +2298,28 @@ static void ar_str_require(const char* s, const char* region_end,
     }
 }
 
+/* Length/source of a string that is ABOUT TO BE STAGED. A value whose
+ * producing frame already popped is read from its escape snapshot: the
+ * live lookup helpers correctly reject a stale pointer (it is in no live
+ * block), but a staging path must still copy its exact bytes instead of
+ * falling back to strlen() on freed memory. The snapshot's own extent is
+ * passed to ar_str_read so a forged header cannot read past the copy. */
+static size_t ar_stage_str_len(const char* s) {
+    if (!s) return 0;
+    const char* end = NULL;
+    const char* img = (const char*)ar_snap_image(s, &end);
+    if (end) {
+        uint64_t total = 0, len = 0;
+        if (ar_str_read(img, end, &total, &len)) return (size_t)len;
+        return strlen(img);         /* NUL-terminated inside the snapshot */
+    }
+    int64_t n = leash_str_bsize(s);
+    return n > 0 ? (size_t)n : 0;
+}
+static const char* ar_stage_str_src(const char* s) {
+    return (const char*)ar_snap_ptr(s);
+}
+
 /* Capacity policy for arena strings.
  *
  * Short strings dominate real workloads (tokens, keys, formatted fields),
@@ -2215,6 +2408,12 @@ static int ar_str_info_bounded(const char* s, const char* region_end,
 static int arena_str_info(const char* s, size_t* out_len, size_t* out_cap) {
     if (!s || (uintptr_t)s < 16) return 0;
     const char* base = s - 16;
+    /* Last block used by a string lookup. The bounds are invalidated on
+     * every free/realloc that can invalidate them, so a hit avoids the
+     * head checks and the block-index binary search entirely. */
+    if (arena_str_cache_base && base >= arena_str_cache_base &&
+        base < arena_str_cache_end)
+        return ar_str_info_bounded(s, arena_str_cache_end, out_len, out_cap);
     /* Hot path: most strings live in the newest block of one of the two
      * arenas. Those pointer checks are strictly cheaper than even the
      * block cache lookup below. */
@@ -2235,6 +2434,23 @@ static int arena_str_info(const char* s, size_t* out_len, size_t* out_cap) {
         return ar_str_info_bounded(s, owner->base + owner->cap, out_len, out_cap);
     }
     return 0;
+}
+
+/* Staging counterpart of arena_str_info: a value staged after its frame
+ * popped is read from its snapshot, bounded by the snapshot copy. Live
+ * values keep the exact same bounded lookup as before. */
+static int ar_stage_str_info(const char* s, size_t* out_len, size_t* out_cap) {
+    if (!s) return 0;
+    const char* end = NULL;
+    const char* img = (const char*)ar_snap_image(s, &end);
+    if (end) {
+        uint64_t total = 0, len = 0;
+        if (!ar_str_read(img, end, &total, &len)) return 0;
+        if (out_len) *out_len = (size_t)len;
+        if (out_cap) *out_cap = (size_t)(total - 17);
+        return 1;
+    }
+    return arena_str_info(s, out_len, out_cap);
 }
 
 int64_t leash_str_bsize(const char* s) {
@@ -2534,7 +2750,14 @@ void* leash_gc_alloc_vector_data(size_t elem_size, size_t capacity) {
     return arena_alloc_nz(&leasharena_tls_ar, elem_size * capacity, ARENA_ALIGN);
 }
 
-void leash_gc_thread_spawned(void) {}
+void leash_gc_thread_spawned(void) {
+    /* Publish root blocks to all workers from this point on. Blocks
+     * created before the first spawn are registered here; later ones
+     * are registered as they are allocated. */
+    if (g_shared_roots) return;
+    g_shared_roots = 1;
+    for (arena_block* b = tls_root.head; b; b = b->next) ar_root_reg_add(b);
+}
 
 /* Worker threads own an arena of their own (the scope arena is
  * thread-local). When such a thread exits, its blocks and its
@@ -2562,7 +2785,10 @@ static void arena_tls_dtor(void* p) {
     pthread_setspecific(arena_tls_key, NULL);
     xfer_free_all();
     arena_free_stack((arena_stack*)p);
-    arena_free_stack(&tls_root);
+    /* Root blocks are shared once workers exist: a worker may have stored
+     * an escaping pointee that other threads still read. Keep them alive
+     * until process shutdown instead of freeing them at thread exit. */
+    if (!g_shared_roots) arena_free_stack(&tls_root);
     /* Match the Windows path: after thread exit this thread's TLS arena is
      * gone, so any later allocation must fail loudly instead of silently
      * rebuilding an arena behind unwound frames. */
@@ -2582,8 +2808,8 @@ static void NTAPI arena_tls_fls_cb(void* p) {
     if (!p) return;
     xfer_free_all();
     arena_free_stack((arena_stack*)p);
-    /* The worker's own root arena goes with it (see the POSIX path). */
-    arena_free_stack(&tls_root);
+    /* Root blocks are shared once workers exist (see the POSIX path). */
+    if (!g_shared_roots) arena_free_stack(&tls_root);
     /* The thread is on its way out: any further allocation from it
      * would rebuild an arena behind the (already unwound) frames, so
      * fail loudly instead, exactly like the main-thread shutdown. */
@@ -2864,6 +3090,8 @@ static int gc_is_main_thread(void) {
 }
 
 void leash_gc_thread_spawned(void) {
+    /* Root allocations become visible to every thread from here on. */
+    g_shared_roots = 1;
 #ifdef _WIN32
     InterlockedExchange(&gc_is_multithreaded, 1);
 #else
@@ -5640,6 +5868,21 @@ void* leash_sh_stdin(void) {
     return (void*)stdin;
 }
 
+/* Numeric parsing for the `getint` / `getfloat` / `getstruct` builtins.
+ * These operate on the exact string returned by leash_sh_input(), so an
+ * empty or malformed line yields a typed zero instead of UB. */
+int64_t leash_sh_parse_int(const char* s) {
+    if (!s) return 0;
+    char* end = NULL;
+    long long v = strtoll(s, &end, 10);
+    return (int64_t)v;
+}
+
+double leash_sh_parse_float(const char* s) {
+    if (!s) return 0.0;
+    return strtod(s, NULL);
+}
+
 /* The console input helper.
  *
  * This is a STRONG definition on purpose: it used to be weak so a
@@ -5673,6 +5916,21 @@ void* leash_sh_vec_new(int64_t elem_size, int64_t scan) {
     v->scan = scan ? 1 : 0;
     /* Lazy data: never-pushed vectors cost one small header only. The
      * first reserve/ensure allocates the buffer. */
+    v->cap = 0;
+    v->size = 0;
+    v->data = NULL;
+    v->shared = 0;
+    return (void*)v;
+}
+
+/* Like leash_sh_vec_new, but the header lives in the root arena. Used
+ * when a root-owned class default is constructed: its field containers
+ * must outlive the frame that runs the initializer. */
+void* leash_sh_vec_new_rooted(int64_t elem_size, int64_t scan) {
+    LeashVec* v = (LeashVec*)leash_gc_malloc_rooted_nz(sizeof(LeashVec), (size_t)8);
+    if (!v) return NULL;
+    v->elem_size = elem_size > 0 ? elem_size : 8;
+    v->scan = scan ? 1 : 0;
     v->cap = 0;
     v->size = 0;
     v->data = NULL;
@@ -6167,6 +6425,52 @@ typedef struct LeashHash {
     int64_t rooted;
 } LeashHash;
 
+/* Snapshot helpers live in the arena section; the GC/no-GC builds compile
+ * the shared container helpers too, so give them an identity fallback. */
+#if !defined(LEASH_ARENA)
+static inline const void* ar_snap_ptr(const void* p) { return p; }
+static inline const void* ar_snap_image(const void* p, const char** end) {
+    (void)end; return p;
+}
+#endif
+
+/* ---- snapshot-aware staging views ------------------------------------
+ * Escape staging reads a value that may have outlived the frame that
+ * built it. Once that frame is popped the live block is gone; only the
+ * escape snapshot still holds the exact bytes. Every read below goes
+ * through ar_snap_ptr so header and payload always come from the SAME
+ * image. The helpers are no-ops when snapshots are off or the value is
+ * still live, so this adds no behaviour to the normal escape path. */
+static const LeashVec* ar_stage_vec(const void* v) {
+    return (const LeashVec*)ar_snap_ptr(v);
+}
+static const char* ar_stage_vec_data(const LeashVec* v) {
+    return v ? (const char*)ar_snap_ptr((const void*)v->data) : NULL;
+}
+static const LeashHash* ar_stage_hash(const void* h) {
+    return (const LeashHash*)ar_snap_ptr(h);
+}
+/* A bucket array is itself a heap allocation: the pointer stored in the
+ * snapped header still names the ORIGINAL array, so resolve it through
+ * the snapshot before indexing it. */
+static LeashHashNode* ar_hash_head(const LeashHash* h, int64_t b) {
+    if (!h || !h->buckets || b < 0 || b >= h->num_buckets) return NULL;
+    const LeashHashNode* const* buckets =
+        (const LeashHashNode* const*)ar_snap_ptr((const void*)h->buckets);
+    return (LeashHashNode*)ar_snap_ptr((const void*)buckets[b]);
+}
+static LeashHashNode* ar_hash_next(const LeashHashNode* c) {
+    return c ? (LeashHashNode*)ar_snap_ptr((const void*)c->next) : NULL;
+}
+/* In the default layout a node's key is an absolute pointer into the
+ * node's own (now freed) allocation. The byte copy keeps that pointer
+ * value, so it must be resolved into the snapshot too. In the O3 inline
+ * layout the key is derived from the node address and already lives in
+ * the snapshot image; resolving it is then a no-op. */
+static const char* ar_hash_key(const LeashHashNode* c) {
+    return c ? (const char*)ar_snap_ptr((const void*)LEASH_HASH_KEY(c)) : NULL;
+}
+
 /* LeashHash.rooted is a bit set: bit 0 marks a table whose storage
  * lives in the root arena, bit 1 marks a header that a second holder
  * can still reach (see leash_sh_hash_share), bit 2 marks a table owned
@@ -6261,6 +6565,19 @@ void* leash_sh_hash_new(void) {
     h->count = 0;
     h->rooted = 0;
     h->buckets = (LeashHashNode**)leash_gc_malloc_compact(h->num_buckets * sizeof(LeashHashNode*));
+    return (void*)h;
+}
+
+/* Root-arena counterpart of leash_sh_hash_new, for fields of a
+ * root-owned class default. */
+void* leash_sh_hash_new_rooted(void) {
+    LeashHash* h = (LeashHash*)leash_gc_malloc_rooted_nz(sizeof(LeashHash), (size_t)8);
+    if (!h) return NULL;
+    h->num_buckets = 64;
+    h->count = 0;
+    h->rooted = LH_HASH_ROOTED;
+    h->buckets = (LeashHashNode**)leash_gc_malloc_rooted((size_t)h->num_buckets * sizeof(LeashHashNode*));
+    if (h->buckets) memset(h->buckets, 0, (size_t)h->num_buckets * sizeof(LeashHashNode*));
     return (void*)h;
 }
 
@@ -6915,15 +7232,14 @@ void leasharena_escape_string(void** slot, int64_t nframes) {
         leasharena_exit_n(nframes);
         return;
     }
-    int64_t len_i = leash_str_bsize(s);
-    size_t len = len_i > 0 ? (size_t)len_i : 0;
+    size_t len = ar_stage_str_len(s);
     int heap = 0;
     size_t stage_cap = 0;
     char* stage = NULL;
     ARENA_STAGE_BYTES(len + 1, heap, stage_cap, stage);
     arena_escape_cutoff = -1;
     if (!stage) { leasharena_exit_n(nframes); return; }
-    memcpy(stage, s, len + 1);
+    memcpy(stage, ar_stage_str_src(s), len + 1);
     leasharena_exit_n(nframes);
     char* out = leash_gc_alloc_string_cap(len, len);
     memcpy(out, stage, len + 1);
@@ -6944,6 +7260,9 @@ void leasharena_escape_vec(void** slot, int64_t nframes) {
         leasharena_exit_n(nframes);
         return;
     }
+    /* The header may belong to a frame that already popped: stage from
+     * its exact snapshot image, never from the reclaimed block. */
+    v = (LeashVec*)ar_snap_ptr(v);
     /* Stage into the helper's own stack frame: the frame outlives the
      * scope pop below, so the copy stays valid until the commit and
      * no allocator is involved at all for a small vec. */
@@ -6972,13 +7291,21 @@ void leasharena_commit_hash(void** slot, void* stage);
 
 void leasharena_escape_hash(void** slot, int64_t nframes) {
     if (!slot) return;
-    LeashHash* h = (LeashHash*)*slot;
-    if (!h || !h->buckets) {
+    LeashHash* raw = (LeashHash*)*slot;
+    if (!raw) {
         leasharena_exit_n(nframes);
         return;
     }
     arena_escape_cutoff = (int64_t)leasharena_tls_ar.cp_len - nframes;
-    if (ar_outlives_escape(h)) {
+    if (ar_outlives_escape(raw)) {
+        arena_escape_cutoff = -1;
+        leasharena_exit_n(nframes);
+        return;
+    }
+    /* Resolve the header BEFORE reading any field: a stale header lives
+     * in a reclaimed block, so even `h->buckets` here would be a UAF. */
+    LeashHash* h = (LeashHash*)ar_snap_ptr(raw);
+    if (!h->buckets) {
         arena_escape_cutoff = -1;
         leasharena_exit_n(nframes);
         return;
@@ -6989,8 +7316,8 @@ void leasharena_escape_hash(void** slot, int64_t nframes) {
     int64_t nb = h->num_buckets;
     size_t node_bytes = 0;
     for (int64_t i = 0; i < nb; i++) {
-        for (LeashHashNode* cur = h->buckets[i]; cur; cur = cur->next) {
-            size_t klen = strlen(LEASH_HASH_KEY(cur));
+        for (LeashHashNode* cur = ar_hash_head(h, i); cur; cur = ar_hash_next(cur)) {
+            size_t klen = strlen(ar_hash_key(cur));
             node_bytes += AR_HASH_NODE_SZ(klen);
         }
     }
@@ -7133,14 +7460,13 @@ void leasharena_commit_hash_h(void** slot, uint32_t hh) {
 }
 void* leasharena_stage_string(void* s) {
     if (!s) return NULL;
-    int64_t len_i = leash_str_bsize((const char*)s);
-    size_t len = len_i > 0 ? (size_t)len_i : 0;
+    size_t len = ar_stage_str_len((const char*)s);
     size_t bytes = sizeof(size_t) + len + 1;
     size_t cap = 0;
     char* block = (char*)arena_stage_alloc(bytes, &cap);
     *(size_t*)(void*)block = cap;
     char* stage = block + sizeof(size_t);
-    memcpy(stage, s, len + 1);
+    memcpy(stage, ar_stage_str_src((const char*)s), len + 1);
     return (void*)stage;
 }
 
@@ -7157,17 +7483,19 @@ void leasharena_commit_string(void** slot, void* stage) {
 /* Size of the three payload areas a vec stage needs. */
 static void lv_stage_sizes(const LeashVec* v, size_t* live_bytes,
                            size_t* pool_bytes, size_t* n_entries) {
+    v = ar_stage_vec(v);
     int64_t esz = v->elem_size > 0 ? v->elem_size : 8;
     size_t total = v->cap > 0 ? (size_t)v->cap * (size_t)esz : 0;
     size_t live = (size_t)(v->size > 0 ? v->size : 0) * (size_t)esz;
     if (live > total) live = total;
     size_t pool = 0, n = 0;
-    if (v->scan && v->data && v->size > 0) {
+    const char* data = ar_stage_vec_data(v);
+    if (v->scan && data && v->size > 0) {
         for (int64_t i = 0; i < v->size; i++) {
-            void* ent = *(void**)((char*)v->data + (size_t)i * (size_t)esz);
+            void* ent = *(void**)(data + (size_t)i * (size_t)esz);
             if (!ent) continue;
             size_t elen = 0, ecap = 0;
-            if (!arena_str_info((const char*)ent, &elen, &ecap)) continue;
+            if (!ar_stage_str_info((const char*)ent, &elen, &ecap)) continue;
             pool += elen + 1;
             n++;
         }
@@ -7187,6 +7515,8 @@ static size_t lv_stage_bytes(size_t live, size_t pool, size_t n) {
 /* Fill a vec stage in `buf` (sized by lv_stage_bytes). The block is
  * laid out as [header][element copy][string pool][entry table]. */
 static arena_vec_stage* lv_stage_vec_into(char* buf, LeashVec* v) {
+    v = (LeashVec*)ar_snap_ptr(v);
+    const char* src_data = ar_stage_vec_data(v);
     int64_t esz = v->elem_size > 0 ? v->elem_size : 8;
     size_t live, pool, n;
     lv_stage_sizes(v, &live, &pool, &n);
@@ -7207,16 +7537,16 @@ static arena_vec_stage* lv_stage_vec_into(char* buf, LeashVec* v) {
     st->entry_stage = n ? (char**)cur : NULL;
     st->entry_cap = n;
     st->entry_n = 0;
-    if (live && v->data) memcpy(st->data, v->data, live);
+    if (live && src_data) memcpy(st->data, src_data, live);
     /* Carve the string images out of the pool. */
     if (pool) {
         char* pool_cur = st->pool;
         for (int64_t i = 0; i < v->size; i++) {
-            void* ent = *(void**)((char*)v->data + (size_t)i * (size_t)esz);
+            void* ent = src_data ? *(void**)(src_data + (size_t)i * (size_t)esz) : NULL;
             if (!ent) continue;
             size_t elen = 0, ecap = 0;
-            if (!arena_str_info((const char*)ent, &elen, &ecap)) continue;
-            memcpy(pool_cur, ent, elen + 1);
+            if (!ar_stage_str_info((const char*)ent, &elen, &ecap)) continue;
+            memcpy(pool_cur, ar_stage_str_src((const char*)ent), elen + 1);
             st->entry_idx[st->entry_n] = i;
             st->entry_stage[st->entry_n] = pool_cur;
             pool_cur += elen + 1;
@@ -7227,7 +7557,7 @@ static arena_vec_stage* lv_stage_vec_into(char* buf, LeashVec* v) {
 }
 
 void* leasharena_stage_vec(void* vec) {
-    LeashVec* v = (LeashVec*)vec;
+    LeashVec* v = (LeashVec*)ar_snap_ptr(vec);
     if (!v) return NULL;
     size_t live, pool, n;
     lv_stage_sizes(v, &live, &pool, &n);
@@ -7281,12 +7611,13 @@ static size_t lh_stage_bytes(int64_t nbuckets, size_t pool_bytes) {
 
 /* Fill a hash stage in `buf` (sized by lh_stage_bytes). */
 static arena_hash_stage* lh_stage_hash_into(char* buf, LeashHash* h) {
+    h = (LeashHash*)ar_snap_ptr(h);
     int64_t nb = h->num_buckets;
     /* Pass 1: size the node pool. */
     size_t node_bytes = 0;
     for (int64_t i = 0; i < nb; i++) {
-        for (LeashHashNode* cur = h->buckets[i]; cur; cur = cur->next) {
-            size_t klen = strlen(LEASH_HASH_KEY(cur));
+        for (LeashHashNode* cur = ar_hash_head(h, i); cur; cur = ar_hash_next(cur)) {
+            size_t klen = strlen(ar_hash_key(cur));
             node_bytes += AR_HASH_NODE_SZ(klen);
         }
     }
@@ -7302,34 +7633,35 @@ static arena_hash_stage* lh_stage_hash_into(char* buf, LeashHash* h) {
     /* Pass 2: carve the node images out of the pool. */
     char* pool_cur = st->pool;
     for (int64_t i = 0; i < nb; i++) {
-        LeashHashNode* node = h->buckets[i];
+        LeashHashNode* node = ar_hash_head(h, i);
         LeashHashNode** tail = &st->buckets[i];
         while (node) {
-            size_t klen = strlen(LEASH_HASH_KEY(node));
+            const char* key = ar_hash_key(node);
+            size_t klen = strlen(key);
             size_t sz = AR_HASH_NODE_SZ(klen);
             LeashHashNode* sn = (LeashHashNode*)pool_cur;
             pool_cur += sz;
             LEASH_HASH_KEY_INIT(sn);
-            memcpy(LEASH_HASH_KEY(sn), LEASH_HASH_KEY(node), klen + 1);
+            memcpy(LEASH_HASH_KEY(sn), key, klen + 1);
             sn->val = node->val;
             sn->hash = node->hash;
             sn->next = NULL;
             *tail = sn;
             tail = &sn->next;
-            node = node->next;
+            node = ar_hash_next(node);
         }
     }
     return st;
 }
 
 void* leasharena_stage_hash(void* hash) {
-    LeashHash* h = (LeashHash*)hash;
+    LeashHash* h = (LeashHash*)ar_snap_ptr(hash);
     if (!h || !h->buckets) return NULL;
     int64_t nb = h->num_buckets;
     size_t node_bytes = 0;
     for (int64_t i = 0; i < nb; i++) {
-        for (LeashHashNode* cur = h->buckets[i]; cur; cur = cur->next) {
-            size_t klen = strlen(LEASH_HASH_KEY(cur));
+        for (LeashHashNode* cur = ar_hash_head(h, i); cur; cur = ar_hash_next(cur)) {
+            size_t klen = strlen(ar_hash_key(cur));
             node_bytes += AR_HASH_NODE_SZ(klen);
         }
     }
@@ -7583,16 +7915,16 @@ static te_stage* te_stage_hash(void* hp, const ar_te* tree, int32_t node, int de
     int64_t count = 0;
     size_t pool = 0;
     for (int64_t b = 0; b < st->nbuckets; b++) {
-        for (LeashHashNode* c = (LeashHashNode*)ar_snap_ptr(h->buckets[b]); c; c = (LeashHashNode*)ar_snap_ptr(c->next)) {
+        for (LeashHashNode* c = ar_hash_head(h, b); c; c = ar_hash_next(c)) {
             count++;
-            pool += AR_HASH_NODE_SZ(strlen(LEASH_HASH_KEY(c)));
+            pool += AR_HASH_NODE_SZ(strlen(ar_hash_key(c)));
         }
     }
     st->n_nodes = count;
     st->bucket_len = (int64_t*)arena_stage_alloc((size_t)(st->nbuckets > 0 ? st->nbuckets : 1) * sizeof(int64_t), &st->bucket_len_cap);
     memset(st->bucket_len, 0, (size_t)(st->nbuckets > 0 ? st->nbuckets : 1) * sizeof(int64_t));
     for (int64_t b = 0; b < st->nbuckets; b++) {
-        for (LeashHashNode* c = (LeashHashNode*)ar_snap_ptr(h->buckets[b]); c; c = (LeashHashNode*)ar_snap_ptr(c->next)) st->bucket_len[b]++;
+        for (LeashHashNode* c = ar_hash_head(h, b); c; c = ar_hash_next(c)) st->bucket_len[b]++;
     }
     if (count > 0 && (vk == TE_STR || vk == TE_VEC || vk == TE_HASH || vk == TE_AGG)) {
         st->hval = (void**)arena_stage_alloc((size_t)count * sizeof(void*), &st->hval_cap);
@@ -7607,13 +7939,14 @@ static te_stage* te_stage_hash(void* hp, const ar_te* tree, int32_t node, int de
     char* cur = st->node_pool;
     int64_t ni = 0;
     for (int64_t b = 0; b < st->nbuckets; b++) {
-        for (LeashHashNode* c = h->buckets[b]; c; c = c->next, ni++) {
-            size_t klen = strlen(LEASH_HASH_KEY(c));
+        for (LeashHashNode* c = ar_hash_head(h, b); c; c = ar_hash_next(c), ni++) {
+            const char* key = ar_hash_key(c);
+            size_t klen = strlen(key);
             size_t sz = AR_HASH_NODE_SZ(klen);
             LeashHashNode* nn = (LeashHashNode*)cur;
             cur += sz;
             LEASH_HASH_KEY_INIT(nn);
-            memcpy(LEASH_HASH_KEY(nn), LEASH_HASH_KEY(c), klen + 1);
+            memcpy(LEASH_HASH_KEY(nn), key, klen + 1);
             nn->hash = c->hash;
             nn->next = NULL;
             nn->val = c->val;
@@ -7673,44 +8006,50 @@ static int te_any_dies(void* val, const ar_te* tree, int32_t node, int depth) {
     if (ar_dies_in_escape(val)) return 1;
     int32_t k = tree[node].kind;
     if (k == TE_VEC) {
-        LeashVec* v = (LeashVec*)val;
+        /* Read the header and buffer through the snapshot when the frame
+         * that built the vec is already gone. The pointer values inside
+         * the snapshot still name the original allocations, so age checks
+         * (ar_dies_in_escape) keep using them, not the snapshot address. */
+        const LeashVec* sv = ar_stage_vec(val);
+        const char* sdata = ar_stage_vec_data(sv);
         int32_t ec = tree[node].child;
-        if (!v || ec < 0 || v->size <= 0 || !v->data) return 0;
+        if (!sv || ec < 0 || sv->size <= 0 || !sdata) return 0;
         /* A header may outlive the pop while its BUFFER was allocated in
          * the dying frame. The old header-only check skipped staging in
          * that case and left the escaped vec with a dangling data ptr. */
-        if (ar_dies_in_escape(v->data)) return 1;
+        if (ar_dies_in_escape(sv->data)) return 1;
         int32_t ek = tree[ec].kind;
         if (ek != TE_STR && ek != TE_VEC && ek != TE_HASH && ek != TE_AGG) return 0;
-        size_t esz = v->elem_size > 0 ? (size_t)v->elem_size : 8;
-        for (int64_t i = 0; i < v->size; i++) {
-            void* e = *(void**)((char*)v->data + (size_t)i * esz);
+        size_t esz = sv->elem_size > 0 ? (size_t)sv->elem_size : 8;
+        for (int64_t i = 0; i < sv->size; i++) {
+            void* e = *(void**)(sdata + (size_t)i * esz);
             if (e && te_any_dies(e, tree, ec, depth + 1)) return 1;
         }
     } else if (k == TE_HASH) {
-        LeashHash* h = (LeashHash*)val;
+        const LeashHash* sh = ar_stage_hash(val);
         int32_t vc = tree[node].child;
-        if (!h || !h->buckets || vc < 0) return 0;
+        if (!sh || !sh->buckets || vc < 0) return 0;
         /* Same rule as vec buffers: the table and its nodes may live in
          * the frame being popped even when the header survives. */
-        if (ar_dies_in_escape(h->buckets)) return 1;
-        for (int64_t bi = 0; bi < h->num_buckets; bi++)
-            for (LeashHashNode* cn = h->buckets[bi]; cn; cn = cn->next)
+        if (ar_dies_in_escape(sh->buckets)) return 1;
+        for (int64_t bi = 0; bi < sh->num_buckets; bi++)
+            for (LeashHashNode* cn = ar_hash_head(sh, bi); cn; cn = ar_hash_next(cn))
                 if (ar_dies_in_escape(cn)) return 1;
         int32_t vk = tree[vc].kind;
         if (vk != TE_STR && vk != TE_VEC && vk != TE_HASH && vk != TE_AGG) return 0;
-        for (int64_t b = 0; b < h->num_buckets; b++)
-            for (LeashHashNode* c = (LeashHashNode*)ar_snap_ptr(h->buckets[b]); c; c = (LeashHashNode*)ar_snap_ptr(c->next))
+        for (int64_t b = 0; b < sh->num_buckets; b++)
+            for (LeashHashNode* c = ar_hash_head(sh, b); c; c = ar_hash_next(c))
                 if (c->val && te_any_dies(c->val, tree, vc, depth + 1)) return 1;
     } else if (k == TE_AGG) {
         size_t bsz = tree[node].off ? (size_t)(uintptr_t)tree[node].off : 0;
         int32_t nf = tree[node].aux, first = tree[node].child;
         if (!bsz || nf <= 0 || first < 0) return 0;
+        const char* body = (const char*)ar_snap_ptr(val);
         for (int32_t i = 0; i < nf; i++) {
             const ar_te* f = &tree[first + i];
             size_t off = f->off ? (size_t)(uintptr_t)f->off : 0;
             if (off + sizeof(void*) > bsz) continue;
-            void* fv = *(void**)((char*)val + off);
+            void* fv = *(void**)(body + off);
             if (fv && te_any_dies(fv, tree, f->child, depth + 1)) return 1;
         }
     }
@@ -7964,9 +8303,13 @@ void leasharena_escape_vec_typed_d(void** slot, int64_t nframes,
 void leasharena_escape_hash_typed_d(void** slot, int64_t nframes,
                                      const ar_te* tree, int32_t te_node) {
     if (!slot) { leasharena_exit_n(nframes); return; }
-    LeashHash* h = (LeashHash*)*slot;
-    if (!h || !h->buckets) { leasharena_exit_n(nframes); return; }
+    LeashHash* raw = (LeashHash*)*slot;
+    if (!raw) { leasharena_exit_n(nframes); return; }
     if (te_node < 0 || !tree) { leasharena_escape_hash(slot, nframes); return; }
+    /* Resolve before reading h->buckets: a stale header is only readable
+     * through the escape snapshot. */
+    LeashHash* h = (LeashHash*)ar_snap_ptr(raw);
+    if (!h->buckets) { leasharena_exit_n(nframes); return; }
     /* Same rule as the vec escape: the table may be caller-owned while
      * values in it were rebuilt during this frame. Stage the header and
      * every dying value, keep surviving values in place. */
@@ -8160,6 +8503,10 @@ static void gcopy_stage_inst(gcopy_graph* g, void* inst, const ar_te* tree,
                              int32_t node, ptr_map* seen, int depth) {
     if (!inst || node < 0 || !tree || depth > TE_MAX_DEPTH) return;
     if (tree[node].kind != TE_AGG) return;
+    /* The instance may have outlived the frame that built it: stage from
+     * its exact snapshot image rather than the reclaimed block. The image
+     * is stable, so it is also a safe identity key for cycle detection. */
+    inst = (void*)ar_snap_ptr(inst);
     /* Callers only walk fields that die in this escape, and the escape
      * root is staged unconditionally: a surviving caller-owned value
      * still needs a new body because the callee may have written
@@ -8290,6 +8637,9 @@ static void gcopy_commit_graph(void** slot, gcopy_graph* g, const ar_te* tree) {
  * copied into the caller's frame, and the graph keeps its shape -- an
  * instance that is reachable twice is copied once, and a cycle points
  * at the copy. */
+static void* te_root_val(void* val, const ar_te* tree, int32_t node, int depth,
+                         ptr_map* seen);
+
 void leasharena_escape_agg_typed(void** slot, int64_t nframes,
                                  const ar_te* tree, int32_t node) {
     if (!slot) { leasharena_exit_n(nframes); return; }
@@ -8297,6 +8647,30 @@ void leasharena_escape_agg_typed(void** slot, int64_t nframes,
     if (!inst || node < 0 || !tree || tree[node].kind != TE_AGG) {
         leasharena_exit_n(nframes);
         if (slot) *slot = NULL;
+        return;
+    }
+    /* A class instance that already lives in the root arena is a stable
+     * reference value: keep its identity (copying it would split one
+     * object into unrelated root copies) but root any heap fields that
+     * still point into a frame about to pop. */
+    if (arena_owns(&tls_root, inst)) {
+        size_t rbody = tree[node].off ? (size_t)(uintptr_t)tree[node].off : 0;
+        int32_t rnf = tree[node].aux, rfirst = tree[node].child;
+        if (rbody > 0 && rnf > 0 && rfirst >= 0) {
+            ptr_map rseen;
+            ptr_map_init(&rseen, 32);
+            for (int32_t ri = 0; ri < rnf; ri++) {
+                const ar_te* rf = &tree[rfirst + ri];
+                size_t roff = rf->off ? (size_t)(uintptr_t)rf->off : 0;
+                if (roff + sizeof(void*) > rbody) continue;
+                void** rslot = (void**)((char*)inst + roff);
+                if (!*rslot) continue;
+                *rslot = te_root_val(*rslot, tree, rf->child, 1, &rseen);
+            }
+            ptr_map_free(&rseen);
+        }
+        arena_escape_cutoff = -1;
+        leasharena_exit_n(nframes);
         return;
     }
     /* Stage the returned instance even when it belongs to an older
@@ -8331,7 +8705,7 @@ static void* te_root_agg(void* bp, const ar_te* tree, int32_t node, int depth,
 
 static void* te_root_vec(void* vp, const ar_te* tree, int32_t node, int depth,
                          ptr_map* seen) {
-    LeashVec* v = (LeashVec*)vp;
+    LeashVec* v = (LeashVec*)ar_snap_ptr(vp);
     if (!v) return NULL;
     /* Containers participate in the identity map just like aggregate
      * bodies: two fields holding the same vec must still alias after the
@@ -8356,7 +8730,7 @@ static void* te_root_vec(void* vp, const ar_te* tree, int32_t node, int depth,
     nv->shared = 0;
     if (data_bytes && v->data) {
         void* nd = leash_gc_malloc_rooted(data_bytes);
-        memcpy(nd, v->data, data_bytes);
+        memcpy(nd, ar_stage_vec_data(v), data_bytes);
         nv->data = nd;
     } else {
         nv->data = NULL;
@@ -8379,7 +8753,7 @@ static void* te_root_vec(void* vp, const ar_te* tree, int32_t node, int depth,
 
 static void* te_root_hash(void* hp, const ar_te* tree, int32_t node, int depth,
                           ptr_map* seen) {
-    LeashHash* h = (LeashHash*)hp;
+    LeashHash* h = (LeashHash*)ar_snap_ptr(hp);
     if (!h || !h->buckets) return NULL;
     /* Same identity rule as vecs and aggregates: preserve aliasing and
      * break cycles through a root-copied table. */
@@ -8399,12 +8773,13 @@ static void* te_root_hash(void* hp, const ar_te* tree, int32_t node, int depth,
     int32_t vk = vc >= 0 ? tree[vc].kind : TE_LEAF;
     for (int64_t b = 0; b < h->num_buckets; b++) {
         LeashHashNode** tail = &nh->buckets[b];
-        for (LeashHashNode* c = (LeashHashNode*)ar_snap_ptr(h->buckets[b]); c; c = (LeashHashNode*)ar_snap_ptr(c->next)) {
-            size_t klen = strlen(LEASH_HASH_KEY(c));
+        for (LeashHashNode* c = ar_hash_head(h, b); c; c = ar_hash_next(c)) {
+            const char* key = ar_hash_key(c);
+            size_t klen = strlen(key);
             size_t sz = sizeof(LeashHashNode) + klen + 1;
             LeashHashNode* nn = (LeashHashNode*)leash_gc_malloc_rooted(sz);
             LEASH_HASH_KEY_INIT(nn);
-            memcpy(LEASH_HASH_KEY(nn), LEASH_HASH_KEY(c), klen + 1);
+            memcpy(LEASH_HASH_KEY(nn), key, klen + 1);
             nn->hash = c->hash;
             nn->next = NULL;
             nn->val = c->val;
@@ -8436,7 +8811,7 @@ static void* te_root_agg(void* bp, const ar_te* tree, int32_t node, int depth,
         if (prev) return prev;
     }
     void* nb = leash_gc_malloc_rooted(body_bytes);
-    memcpy(nb, bp, body_bytes);
+    memcpy(nb, ar_snap_ptr(bp), body_bytes);
     if (seen) ptr_map_put(seen, bp, nb);
     int32_t nf = tree[node].aux;
     int32_t first = tree[node].child;
@@ -8464,7 +8839,9 @@ static void* te_root_val(void* val, const ar_te* tree, int32_t node, int depth,
     if (arena_owns(&tls_root, val)) return val;
     int32_t k = tree[node].kind;
     if (k == TE_STR) {
-        void* s = val;
+        /* The string can come from an aggregate body that outlived its
+         * frame: resolve it before the (hot, snapshot-free) root copy. */
+        void* s = (void*)ar_snap_ptr(val);
         leasharena_root_copy_string(&s);
         return s;
     }
@@ -8716,6 +9093,10 @@ uint32_t leasharena_container_cow(uint32_t h, int kind) {
 
 void leasharena_root_copy_blob(void** slot, int64_t size) {
     if (!slot || !*slot || size <= 0) return;
+    /* A value that already lives in the root arena is immortal: copying
+     * it again would split a reference value (a class instance) into
+     * unrelated objects and lose aliasing with the GC backend. */
+    if (arena_owns(&tls_root, *slot)) return;
     void* np = leash_gc_malloc_rooted((size_t)size);
     memcpy(np, *slot, (size_t)size);
     *slot = np;
@@ -8730,6 +9111,47 @@ void leasharena_root_copy_slice(void* agg, int64_t elem_size) {
     void* nb = leash_gc_malloc_rooted(bytes);
     memcpy(nb, sv->data, bytes);
     sv->data = nb;
+}
+
+/* Process-lifetime storage for a local whose address escapes in a program
+ * with workers. The root arena is thread-local, so a root-allocated slot is
+ * not visible to another worker; C heap storage is visible everywhere and
+ * never reclaimed. One allocation per escaping declaration site, not per
+ * loop iteration. */
+void* leasharena_immortal_alloc(size_t size) {
+    void* p = calloc(1, size ? size : 1);
+    if (!p) {
+        fprintf(stderr, "Leash arena: out of memory allocating immortal escape slot\n");
+        abort();
+    }
+    return p;
+}
+
+/* Copy a pointee into an immortal C-heap cell so a raw pointer can be
+ * handed to a worker thread. The worker's arena root is thread-local, so a
+ * pointer into the spawner's arena cannot be used there; a malloc'd cell is
+ * foreign to every arena and stays valid for the process lifetime. */
+void* leasharena_xfer_copy_ptr(const void* p, int64_t size) {
+    if (!p || size <= 0) return NULL;
+    void* copy = malloc((size_t)size);
+    if (!copy) return NULL;
+    memcpy(copy, p, (size_t)size);
+    return copy;
+}
+
+/* Provenance check for raw pointers kept in long-lived slots.
+ * A pointer into a scoped arena block dies with its frame; root-arena and
+ * foreign (C heap / static) pointers are stable. Generated code calls this
+ * for native FFI pointers so an FFI handle may live in a field while an
+ * accidental arena pointer is a loud, deterministic abort. */
+void leasharena_check_native_ptr(const void* p) {
+    if (!p) return;
+    int owner = ar_ptr_owner(p);
+    if (owner >= 1) {
+        fprintf(stderr, "Leash arena: raw pointer %p points into a scoped frame that will be reclaimed; "
+                        "it cannot be stored as a native handle\n", p);
+        abort();
+    }
 }
 
 /* ---- root slots -------------------------------------------------
@@ -9963,6 +10385,54 @@ char* leash_sh_str_sub(const char* a, const char* b) {
     return out;
 }
 
+/* Character (not byte) offset of the first of `n` code points from the
+ * start/end of a UTF-8 string. Keeps `start()`/`end()` from splitting a
+ * multi-byte sequence. */
+static size_t ar_str_char_off(const char* s, size_t len, size_t n, int from_end) {
+    if (n == 0) return from_end ? len : 0;
+    if (from_end) {
+        size_t off = len, chars = 0;
+        while (off > 0 && chars < n) {
+            off--;
+            while (off > 0 && ((unsigned char)s[off] & 0xC0) == 0x80) off--;
+            chars++;
+        }
+        return off;
+    }
+    size_t off = 0, chars = 0;
+    while (off < len && chars < n) {
+        chars++;
+        off++;
+        while (off < len && ((unsigned char)s[off] & 0xC0) == 0x80) off++;
+    }
+    return off;
+}
+
+/* s.start([n]) / s.end([n]): the first / last n characters (1 by default).
+ * `n` beyond the string length yields the whole string. */
+char* leash_sh_str_start(const char* s, int32_t n) {
+    if (!s) return NULL;
+    size_t len = (size_t)leash_str_bsize(s);
+    size_t cnt = n > 0 ? (size_t)n : 1;
+    size_t off = ar_str_char_off(s, len, cnt, 0);
+    char* out = (char*)leash_gc_alloc_string_cap(off, off);
+    if (off) memcpy(out, s, off);
+    out[off] = '\0';
+    return out;
+}
+
+char* leash_sh_str_end(const char* s, int32_t n) {
+    if (!s) return NULL;
+    size_t len = (size_t)leash_str_bsize(s);
+    size_t cnt = n > 0 ? (size_t)n : 1;
+    size_t off = ar_str_char_off(s, len, cnt, 1);
+    size_t take = len - off;
+    char* out = (char*)leash_gc_alloc_string_cap(take, take);
+    if (take) memcpy(out, s + off, take);
+    out[take] = '\0';
+    return out;
+}
+
 char* leash_sh_str_replace(const char* s, const char* from, const char* to) {
     if (!s) return NULL;
     size_t slen = (size_t)leash_str_bsize(s);
@@ -10625,6 +11095,14 @@ void leasharena_exit(void) {}
 void leasharena_exit_slow(void) {}
 void leasharena_exit_n(int64_t n) { (void)n; }
 void leasharena_verify_current_frame(void) {}
+/* Arena codegen uses C-heap slots for addresses shared with workers.
+ * Under the GC those slots are simply rooted GC cells: stable for the
+ * whole program and traced, so a worker can never see a reclaimed slot. */
+void* leasharena_immortal_alloc(size_t size) {
+    return leash_gc_malloc_rooted(size);
+}
+void* leasharena_xfer_copy_ptr(const void* p, int64_t size) { (void)p; (void)size; return NULL; }
+void leasharena_check_native_ptr(const void* p) { (void)p; }
 void leasharena_escape_string(void** slot, int64_t n) { (void)slot; (void)n; }
 void leasharena_escape_vec(void** slot, int64_t n) { (void)slot; (void)n; }
 void leasharena_escape_hash(void** slot, int64_t n) { (void)slot; (void)n; }

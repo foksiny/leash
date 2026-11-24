@@ -36,7 +36,7 @@ syn keyword leashSelf		self
 syn match	leashSelfOpType	/\<thisop\.typ\>/
 
 " Built-in Functions ---------------------------------------------------------
-syn keyword leashBuiltin	show showb get keyget set toint tofloat tounion tostring cstr lstr scast
+syn keyword leashBuiltin	show showb get getint getfloat getstruct keyget set toint tofloat tounion tostring cstr lstr scast
 syn keyword leashBuiltin	normescape sizeof typeof size cur name pushb popb pushf popf insert
 syn keyword leashBuiltin	insertv inserta clear remove extend extendv isin rand randf seed choose
 syn keyword leashBuiltin	wait timepass exit exec gc_collect gc_stats getenv inttobytes bytestoint floattobytes bytestofloat

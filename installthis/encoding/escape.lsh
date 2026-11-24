@@ -4,7 +4,7 @@
 //   show(Escape.json("a\"b\nc"));   // a\"b\nc
 
 pub def Escape : class {
-    // JSON string escaping: \", \\, \n, \t, \r, control chars to \xNN.
+    // JSON string escaping: \", \\, \n, \t, \r, control chars to \u00NN.
     static pub fnc json(s string) : string {
         out: string = "";
         foreach _, c in<string> s {
@@ -14,7 +14,7 @@ pub def Escape : class {
             also c == '\t' { out = out + "\\t"; }
             also c == '\r' { out = out + "\\r"; }
             also c < ' ' {
-                out = out + "\\x";
+                out = out + "\\u00";
                 v: int = toint(int, c);
                 if v < 0 {
                     v = v + 256;
@@ -29,7 +29,7 @@ pub def Escape : class {
         return out;
     }
 
-    // Reverse of json(): unescape \" \\ \n \t \r \xXX.
+    // Reverse of json(): unescape \" \\ \n \t \r \xXX and \u00NN.
     static pub fnc unjson(s string) : string {
         out: string = "";
         i: int = 0;
@@ -51,6 +51,22 @@ pub def Escape : class {
                         out = out + (char)(hi * 16 + lo);
                     }
                     i = i + 4;
+                    done_here = true;
+                } also nc == 'u' && i + 5 < n {
+                    ok: bool = true;
+                    v: int = 0;
+                    for k: int = 0; k < 4; k = k + 1 {
+                        hd: int = Escape.hexval(s[i + 2 + k]);
+                        if hd < 0 {
+                            ok = false;
+                        } else {
+                            v = v * 16 + hd;
+                        }
+                    }
+                    if ok {
+                        out = out + (char)v;
+                    }
+                    i = i + 6;
                     done_here = true;
                 } else {
                     if !done_here {

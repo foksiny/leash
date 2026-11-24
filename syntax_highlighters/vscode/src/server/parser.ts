@@ -11,9 +11,9 @@ import {
     NativeImport
 } from './types';
 
-const MODIFIERS = new Set(['pub', 'priv', 'static', 'imut', 'unsafe', 'inline', 'nogc', 'shared', 'fusion']);
+const MODIFIERS = new Set(['pub', 'priv', 'static', 'imut', 'unsafe', 'inline', 'nogc', 'shared', 'fusion', 'async']);
 
-const TYPE_KINDS = new Set(['struct', 'class', 'union', 'enum', 'type', 'template']);
+const TYPE_KINDS = new Set(['struct', 'class', 'union', 'enum', 'type', 'template', 'macro']);
 
 function idOf(uri: string, name: string, line: number, col: number, kind: SymKind): string {
     return `${uri}|${kind}|${name}|${line}:${col}`;

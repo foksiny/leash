@@ -10,6 +10,9 @@ export const BUILTIN_DOCS: Record<string, BuiltinDoc> = {
     'show': { sig: 'show(...args)', desc: 'Prints arguments to console with spaces and a newline.' },
     'showb': { sig: 'showb(...args)', desc: 'Prints arguments to console buffer without spaces/newlines.' },
     'get': { sig: 'get(prompt?: string) : string', desc: 'Reads a line of user input from the console.' },
+    'getint': { sig: 'getint(prompt?: string) : int', desc: 'Reads a line and parses it as an integer.' },
+    'getfloat': { sig: 'getfloat(prompt?: string) : float', desc: 'Reads a line and parses it as a float.' },
+    'getstruct': { sig: 'getstruct(Type, prompt) : T', desc: 'Reads one line per scalar field of a struct.' },
     'keyget': { sig: 'keyget() : char', desc: 'Reads a single key press immediately.' },
     'size': { sig: 'size(collection) : int', desc: 'Returns the number of elements in an array, vector, or string.' },
     'pushb': { sig: 'pushb(val: T)', desc: 'Appends an element to the back of a vector.' },
@@ -177,7 +180,7 @@ export const KEYWORD_DOCS: Record<string, string> = {
 export const KEYWORDS = Object.keys(KEYWORD_DOCS);
 
 export const BUILTIN_FUNCTIONS = [
-    'show', 'showb', 'get', 'keyget', 'set', 'toint', 'tofloat', 'tounion', 'scast', 'tostring',
+    'show', 'showb', 'get', 'getint', 'getfloat', 'getstruct', 'keyget', 'set', 'toint', 'tofloat', 'tounion', 'scast', 'tostring',
     'cstr', 'lstr', 'normescape', 'sizeof', 'typeof', 'size', 'cur', 'pushb', 'popb', 'pushf', 'popf',
     'insert', 'clear', 'remove', 'extend', 'extendv', 'insertv', 'inserta', 'isin', 'rand', 'randf',
     'seed', 'choose', 'wait', 'timepass', 'exit', 'exec', 'inttobytes', 'bytestoint', 'floattobytes',
@@ -238,6 +241,11 @@ export const BUILTIN_MEMBERS: Record<string, BuiltinMember[]> = {
     ],
     'string': [
         { name: 'size', kind: 'field', sig: 'size : int', desc: 'Length of the string in characters.', params: [], returnType: 'int', isStatic: false },
+        { name: 'size', kind: 'method', sig: 'size() : int', desc: 'Length of the string in Unicode code points.', params: [], returnType: 'int', isStatic: false },
+        { name: 'bsize', kind: 'method', sig: 'bsize() : int', desc: 'Length of the string in UTF-8 bytes.', params: [], returnType: 'int', isStatic: false },
+        { name: 'start', kind: 'method', sig: 'start(n?: int) : string', desc: 'First n characters (1 by default) as a new string.', params: [{ name: 'n', type: 'int', variadic: false, hasDefault: true }], returnType: 'string', isStatic: false },
+        { name: 'end', kind: 'method', sig: 'end(n?: int) : string', desc: 'Last n characters (1 by default) as a new string.', params: [{ name: 'n', type: 'int', variadic: false, hasDefault: true }], returnType: 'string', isStatic: false },
+        { name: 'replace', kind: 'method', sig: 'replace(old: string, new: string) : string', desc: 'Replaces text in the string.', params: [{ name: 'old', type: 'string', variadic: false, hasDefault: false }, { name: 'new', type: 'string', variadic: false, hasDefault: false }], returnType: 'string', isStatic: false },
         { name: 'cstr', kind: 'method', sig: 'cstr() : *char', desc: 'C-style null-terminated pointer to the string data.', params: [], returnType: '*char', isStatic: false }
     ],
     'File': [
