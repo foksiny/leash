@@ -3,6 +3,27 @@ pub def Path : class {
         return '/';
     }
 
+    // Join a user-supplied component under a trusted base. Rejects
+    // absolute paths, ".." segments, backslashes and control bytes.
+    static pub fnc safe_join(base string, user string) : string {
+        if user.bsize == 0 || user[0] == '/' || user[0] == '\\' { return ""; }
+        i: int = 0;
+        seg: string = "";
+        while i < user.bsize {
+            c: char = user[i];
+            if c == '/' || c == '\\' {
+                if seg == ".." { return ""; }
+                seg = "";
+            } else {
+                if c < ' ' || c == '\x7f' { return ""; }
+                seg = seg + c;
+            }
+            i = i + 1;
+        }
+        if seg == ".." { return ""; }
+        return Path.normalize(Path.join(base, user));
+    }
+
     static pub fnc join(a string, b string) : string {
         if b.bsize > 0 && b[0] == '/' {
             return b;

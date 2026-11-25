@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Leash - Leash documentation</title>
-<meta name="description" content="Leash is a strongly typed, self-hosted language compiling to native code through LLVM. Version 2.0.0 makes the scoped arena the default memory layout, with --gc available for mark-and-sweep.">
+<meta name="description" content="Leash is a strongly typed, self-hosted language compiling to native code through LLVM. Version 2.1.0 continues with the scoped arena the default memory layout, with --gc available for mark-and-sweep.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Crect width=%27100%27 height=%27100%27 rx=%2722%27 fill=%27%23241f4d%27/%3E%3Ctext x=%2750%27 y=%2770%27 font-size=%2760%27 text-anchor=%27middle%27 font-family=%27monospace%27 fill=%27white%27%3EL%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
 <script src="docs.js" defer></script>
@@ -48,7 +48,7 @@
       <a href="advanced.html" class="">Standalone pages</a>
       <a href="limitations.html" class="">Known limitations</a>
     </div>
-    <div class="sidenav-foot">Leash 2.0.0</div>
+    <div class="sidenav-foot">Leash 2.1.0</div>
   </aside>
 
   <main class="content" id="main-content">
@@ -59,21 +59,21 @@
         <h2 id="what-is-leash">What is Leash?</h2>
         <p>Leash combines an intuitive syntax with native performance, targeting developers who want the control of a systems language without the ceremony. It compiles directly to machine code via LLVM, ships with a package manager and a 100+ package standard library, and supports cross-platform development from a single source tree.</p>
         <p>Leash was made with the help of AI, but its design and ideas come from a human. The AI&rsquo;s role was to implement the language and toolchain and to write the documentation. The human and the AI also stress-tested Leash &mdash; checking where it fails and where it wins, then fixing quirks as they were found. Bugs are addressed right away, which is why all features (and 90%+ of them in practice) are kept stable and reliable.</p>
-        <p>Version 2.0.0 is a milestone for the runtime: the <strong>scoped bump arena is now the default native memory layout</strong>. It gives you plain C pointers, deterministic frame and loop lifetimes, and no stop-the-world pause. If your workload has adversarial or highly dynamic lifetimes, pass <code>--gc</code> to opt into the classic mark-and-sweep collector.</p>
+        <p>Version 2.0.0 made the <strong>scoped bump arena the default native memory layout</strong>. It gives you plain C pointers, deterministic frame and loop lifetimes, and no stop-the-world pause. If your workload has adversarial or highly dynamic lifetimes, pass <code>--gc</code> to opt into the classic mark-and-sweep collector.</p>
 
         <div class="callout callout-success" id="whats-new">
-          <strong>What&rsquo;s new in 2.0.0.</strong>
+          <strong>What&rsquo;s new in 2.1.0.</strong>
           <ul>
-            <li>Pointer <strong>provenance flows through locals</strong>: proven-safe returns, globals, long-lived stores and worker arguments compile; only unprovable pointers are rejected. Escaping <code>&amp;x</code> pointees are rooted, so strings, vectors and structs stay valid after their frame pops. <a href="advanced.html#arena-escapes">How escapes work &rarr;</a></li>
-            <li><strong>Workers can share root objects.</strong> Container, class and aggregate pointees cross thread boundaries; root blocks are published process-wide once the first worker spawns. <a href="concurrency.html">Concurrency model &rarr;</a></li>
-            <li><strong>Cheap escape snapshots.</strong> Only the live prefix of a recycled block is copied, cutting CPU and memory on churn-heavy code. <a href="advanced.html#arena-env">Runtime controls &rarr;</a></li>
-            <li><strong>Diagnostics in the editor.</strong> <code>leash check</code> now runs the arena audit, so <code>E_ARENA_LIFETIME</code> reaches the VS Code language server with <code>why:</code>/<code>help:</code> guidance. <a href="advanced.html#lifetime-audit">Audit rules &rarr;</a></li>
-            <li><strong>Smaller language additions.</strong> <code>getint</code>, <code>getfloat</code> and <code>getstruct</code> read typed console input; <code>string.start()/end()</code> take UTF-8-safe prefixes and suffixes; semicolons are optional statement terminators. <a href="language-guide.html#input-handling">Input &rarr;</a> &middot; <a href="language-guide.html#string-methods">Strings &rarr;</a> &middot; <a href="language-guide.html#optional-semicolons">Syntax &rarr;</a></li>
+            <li><strong>Safer compiler and dependencies.</strong> Verified CLI command-injection paths are closed, `@from` and `-l` names are strictly validated, temp files use private directories, JSON/HTTP parsing is bounded, and the package registry validator runs from trusted code. <a href="advanced.html#lifetime-audit">Audit rules &rarr;</a></li>
+            <li><strong>Arena roots cross threads.</strong> Container, class and aggregate pointees are safe in workers; snapshots copy only the live prefix of a block. <a href="advanced.html#arena-escapes">How escapes work &rarr;</a></li>
+            <li><strong>Lower compile memory.</strong> IR bodies stream to disk instead of living in a 435k-line vector: peak RSS on a self-host build fell about 38%, with byte-identical IR. <a href="compiler.html#compiler-pipeline">Compiler pipeline &rarr;</a></li>
+            <li><strong>Editor diagnostics work.</strong> <code>leash check</code> runs the arena audit and the VS Code LSP shows <code>E_ARENA_LIFETIME</code> with <code>why:</code>/<code>help:</code> guidance. <a href="advanced.html#reading-lifetime-diagnostics">Diagnostic guide &rarr;</a></li>
+            <li><strong>More exhaustive testing.</strong> Seeded generated differential programs, cross-thread ASan/UBSan harnesses and security regression tests run in the full suite. <a href="limitations.html">Known limitations &rarr;</a></li>
           </ul>
         </div>
 
         <div class="stat-grid">
-          <div class="stat"><div class="value">2.0.0</div><div class="label">Current release</div></div>
+          <div class="stat"><div class="value">2.1.0</div><div class="label">Current release</div></div>
           <div class="stat"><div class="value">15</div><div class="label">Compiler pipeline stages</div></div>
           <div class="stat"><div class="value">100+</div><div class="label">Importable packages</div></div>
           <div class="stat"><div class="value">7</div><div class="label">Compilation targets</div></div>
@@ -151,7 +151,7 @@
 git clone https://github.com/foksiny/leash &amp;&amp; cd leash
 ./scripts/bootstrap.sh
 bin/leashc version
-<span class="cm"># leash 2.0.0 (self-hosted)</span></code></pre>
+<span class="cm"># leash 2.1.0 (self-hosted)</span></code></pre>
           </div>
           <div class="step">
             <h3>Write a program</h3>

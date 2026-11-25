@@ -277,3 +277,12 @@ export function normalizeTypeName(name: string): string {
     const base = name.replace(/<.*$/, '').trim();
     return base;
 }
+/** Neutralise Markdown/HTML in source-derived text shown in hovers and
+ *  completions. Doc comments are untrusted input from a workspace file. */
+export function markdownSafe(s: string): string {
+    let out = s.replace(/[\u0000-\u001f\u007f]/g, ' ');
+    out = out.replace(/`/g, '\\`');
+    out = out.replace(/\]\s*\(\s*(?:command|javascript|data|vbscript):/gi, '](blocked:');
+    out = out.replace(/<\s*\/?\s*(script|iframe|img|a|style)\b[^>]*>/gi, '');
+    return out;
+}

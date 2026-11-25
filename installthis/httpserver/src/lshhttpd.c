@@ -134,6 +134,13 @@ typedef int (*lshhttpd_handler_t)(
     const char *headers,
     const char *body
 );
+/* Clamp RFC 9113 flow-control window increments: a signed int addition
+ * would overflow after two large WINDOW_UPDATE frames. */
+static int lsh_add_window(int cur, unsigned int incr) {
+    long long v = (long long)cur + (long long)(incr & 0x7fffffffu);
+    return v > 0x7fffffffLL ? 0x7fffffff : (int)v;
+}
+
 static long long lshd_now_ms(void);
 
 
@@ -1984,10 +1991,10 @@ static int h2d_pump(lshd_conn *c, lshd_h2ctx *h, lshhttpd_handler_t handler,
                                 0x7fffffff;
             if (incr == 0) return LSHD_E_ACCEPT;
             if (sid == 0) {
-                h->conn_send_window += (int)incr;
+                h->conn_send_window = lsh_add_window(h->conn_send_window, incr);
             } else {
                 h2d_stream *st = h2d_find_stream(h, sid);
-                if (st) st->send_window += (int)incr;
+                if (st) st->send_window = lsh_add_window(st->send_window, incr);
             }
         } else if (type == H2D_FTYPE_GOAWAY) {
             h->peer_goaway = 1;

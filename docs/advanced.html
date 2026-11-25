@@ -48,7 +48,7 @@
       <a href="advanced.html" class="current">Standalone pages</a>
       <a href="limitations.html" class="">Known limitations</a>
     </div>
-    <div class="sidenav-foot">Leash 2.0.0</div>
+    <div class="sidenav-foot">Leash 2.1.0</div>
   </aside>
 
   <main class="content" id="main-content">
@@ -66,7 +66,7 @@
           <div class="stat"><div class="value">4 KB</div><div class="label">Lazy initial block</div></div>
           <div class="stat"><div class="value">0xDD</div><div class="label">Reclaim poison byte</div></div>
           <div class="stat"><div class="value">O(blocks)</div><div class="label">Scope release cost</div></div>
-          <div class="stat"><div class="value">2.0.0</div><div class="label">Documentation version</div></div>
+          <div class="stat"><div class="value">2.1.0</div><div class="label">Documentation version</div></div>
         </div>
 
         <div class="table-wrap">
@@ -336,7 +336,7 @@ LEASH_ARENA_POISON=0 LEASH_ARENA_STATS=1 leash run myprogram.lsh</code></pre>
           <table>
             <thead><tr><th>Rule</th><th>Catch</th></tr></thead>
             <tbody>
-              <tr><td>No stack escape</td><td><code>E010 (GC only)</code> &mdash; the static E010 check rejects <code>return &amp;v;</code>. The runtime now roots address-taken local slots in GC mode, but returning a pointer to a frame-local slot is still a static error. The arena roots the pointee and accepts it; only unprovable raw-pointer provenance is rejected there.</td></tr>
+              <tr><td>No stack escape</td><td><code>E010 (GC only)</code> &mdash; the collector does not extend a stack slot's lifetime, so <code>return &amp;v;</code> is a static error; the default arena roots the pointee instead. The arena roots the pointee and accepts it; only unprovable raw-pointer provenance is rejected there.</td></tr>
               <tr><td>No use after delete</td><td><code>E009</code> &mdash; using a variable after <code>del</code> is an error. A <code>del</code> anywhere in a loop poisons the variable for the whole function, because a later textual use can still run first on the next iteration.</td></tr>
               <tr><td>No double delete</td><td><code>E008</code> &mdash; deleting the same instance twice is rejected.</td></tr>
               <tr><td>Read-only array borrows</td><td><code>E012</code> &mdash; arrays alias caller storage. Without an explicit <code>&amp;</code>, the parameter is a read-only borrow; mutating it requires <code>&amp;T</code>.</td></tr>

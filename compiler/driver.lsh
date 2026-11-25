@@ -8,6 +8,60 @@ use codegen::*;
 use jvm::*;
 
 pub def Path : class {
+    // Single-quote a shell argument. Every path/name interpolated into an
+    // exec() command must pass through this helper: exec() uses /bin/sh.
+    static pub fnc shq(s string) : string {
+        out: string = "'";
+        i: int = 0;
+        while i < s.bsize {
+            if s[i] == '\'' {
+                out = out + "'\\''";
+            } else {
+                out = out + s[i];
+            }
+            i = i + 1;
+        }
+        return out + "'";
+    }
+
+    // Strict allowlist for user-supplied names and relative paths. Rejects
+    // shell metacharacters, whitespace, control bytes, absolute paths and
+    // leading '-' (which would become a linker/compiler option).
+    static pub fnc safe_name(s string) : bool {
+        if s.bsize == 0 || s[0] == '-' { return false; }
+        i: int = 0;
+        while i < s.bsize {
+            c: char = s[i];
+            ok: bool = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                       (c >= '0' && c <= '9') || c == '_' || c == '.' ||
+                       c == '-' || c == '+';
+            if !ok { return false; }
+            i = i + 1;
+        }
+        return s != "." && s != "..";
+    }
+
+    static pub fnc safe_rel_path(s string) : bool {
+        if s.bsize == 0 || s[0] == '/' || s[0] == '-' { return false; }
+        i: int = 0;
+        seg: string = "";
+        while i < s.bsize {
+            c: char = s[i];
+            if c == '/' {
+                if seg == ".." { return false; }
+                seg = "";
+            } else {
+                ok: bool = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                           (c >= '0' && c <= '9') || c == '_' || c == '.' ||
+                           c == '-' || c == '+';
+                if !ok { return false; }
+                seg = seg + c;
+            }
+            i = i + 1;
+        }
+        return seg != "..";
+    }
+
     // First line of a command's output, trimmed.
     static pub fnc sh_out(cmd string) : string {
         out: string = exec(cmd, "wait");
@@ -167,6 +221,7 @@ pub def CompilerDriver : class {
     pub imports_fatal: bool;     // a use-import failed to resolve (python raises)
     pub deferred_parse_errors: vec<string>;  // parser diagnostics surfaced as typecheck errors (M5)
     pub emit_arena_only: bool;   // emit arena IR but link the GC runtime (self-host bridge)
+    pub private_tmp: string;     // lazily created 0700 temp dir for intermediate files
 
     static pub fnc make() : CompilerDriver {
         return CompilerDriver {};
@@ -209,7 +264,7 @@ pub def CompilerDriver : class {
     }
 
     pub fnc realpath_str(p string) : string {
-        out: string = exec("realpath -m " + p, "wait");
+        out: string = exec("realpath -m " + Path.shq(p), "wait");
         trimmed: string = "";
         ti: int = 0;
         while ti < out.bsize && out[ti] != '\n' {
@@ -284,7 +339,7 @@ pub def CompilerDriver : class {
             if fg2 != null { fg2.close(); return pg2; }
 
             if last_seg.bsize > 0 {
-                f_out: string = exec("find " + libs + " -type f -name '" + last_seg + ".lsh' 2>/dev/null", "wait");
+                f_out: string = exec("find " + Path.shq(libs) + " -type f -name " + Path.shq(last_seg + ".lsh") + " 2>/dev/null", "wait");
                 f_count: int = 0;
                 f_first: string = "";
                 foi: int = 0;
@@ -621,6 +676,10 @@ pub def CompilerDriver : class {
                 si = si + 1;
             }
             if seg == ".." { bad = true; }
+            // Shell/argv safety: @from names are interpolated into linker
+            // commands and response files. Reject every character outside
+            // the portable name alphabet, including whitespace and newlines.
+            if !Path.safe_rel_path(lib) { bad = true; }
 
             base_dir: string = Path.dirname(main_file);
             if src.bsize > 0 { base_dir = Path.dirname(src); }
@@ -631,7 +690,7 @@ pub def CompilerDriver : class {
 
             if bad {
                 this.print_sec_error(
-                    "Security: native library path '" + lib + "' in @from must be a relative path that stays inside the module directory — absolute paths and '..' segments can link an arbitrary binary into your program",
+                    "Security: native library path '" + lib + "' in @from must be a safe relative name inside the module directory — absolute paths, '..' segments, whitespace, newlines and shell metacharacters are rejected",
                     "Place the library next to the source file and reference it by file name, e.g. @from(\"libfoo.a\").",
                     disp, sline, scol);
                 fatal = fatal + 1;
@@ -778,8 +837,14 @@ pub def CompilerDriver : class {
     // detect the actual host shell at runtime. `%OS%` expands to Windows_NT
     // under cmd and stays literal under POSIX sh.
     pub fnc temp_dir() : string {
+        if this.private_tmp.bsize > 0 { return this.private_tmp; }
         if this.exec_out("echo %OS%") == "Windows_NT" { return "."; }
-        return "/tmp";
+        // Deterministic /tmp/leashc_<name>.* files can be symlinked by
+        // another local user. mktemp gives us a private 0700 directory.
+        d: string = this.exec_out("mktemp -d ${TMPDIR:-/tmp}/leashc.XXXXXX");
+        if d.bsize == 0 { return "/tmp"; }
+        this.private_tmp = d;
+        return d;
     }
 
     pub fnc exec_out(cmd string) : string {
@@ -985,7 +1050,7 @@ pub def CompilerDriver : class {
         // Codegen
         if verbose { show("[verbose] generating LLVM IR"); }
         cg: CodeGen = CodeGen.make(tc);
-        abs_file: string = exec("realpath " + input_file, "wait");
+        abs_file: string = exec("realpath " + Path.shq(input_file), "wait");
         if abs_file.bsize > 0 {
             trimmed: string = "";
             ai: int = 0;
@@ -1007,11 +1072,88 @@ pub def CompilerDriver : class {
         // Library outputs omit the @main wrapper (a consumer linking its
         // own main would otherwise get a duplicate symbol).
         cg.is_lib = output_type == "dynamic" || output_type == "static";
-        ir_lines: vec<string> = cg.generate_module(prog);
         // LTO is only used for host-native targets: cross toolchains do
         // not always ship the matching LLVM linker plugin, and a failed
         // LTO link would make O3/O4 unusable there.
         is_native_tgt: bool = target_name.bsize == 0 || target_name == "linux64" || target_name == "linux32";
+        // O3/O4 need the line vector for recursive-call unrolling; every
+        // other level streams IR straight to disk to keep a 400k-line IR
+        // out of memory.
+        ir_stream: bool = !(is_native_tgt && (opt_level == "3" || opt_level == "4"));
+        stream_ir: string = "";
+        if ir_stream {
+            stream_ir = this.temp_dir() + "/leashc_stream_" + tostring(this.fnv_str(input_file)) + ".ll";
+            body_tmp: string = stream_ir + ".body";
+            f_out: File = File.open(stream_ir, "w");
+            f_body: File = File.open(body_tmp, "w");
+            if f_out != null && f_body != null {
+                cg.out_file = f_out;
+                cg.body_file = f_body;
+                cg.body_path = body_tmp;
+                cg.out_path = stream_ir;
+            } else {
+                ir_stream = false;
+                if f_out != null { f_out.close(); }
+                if f_body != null { f_body.close(); }
+            }
+        }
+        cache_ok: bool = ir_stream && prog.imports.size == 0 && this.extra_import_dirs.size == 0;
+        cache_dir: string = this.home_dir() + "/.leash/ircache";
+        cache_key: string = "";
+        cache_ir: string = "";
+        cache_meta: string = "";
+        cache_hit: bool = false;
+        if cache_ok {
+            stamp: string = this.exec_out("stat -c '%Y' " + Path.shq(this.self_path));
+            flags_key: string = input_file + "|" + opt_level + "|" + (arena ? "arena" : "gc") + "|" +
+                                target_name + "|" + output_type + "|" +
+                                (debug_instrument ? "dbg" : "") + "|" +
+                                (no_gc ? "nogc" : "") + "|" + (autofree ? "autofree" : "") +
+                                "|" + (this.emit_arena_only ? "bridge" : "") +
+                                "|" + (cg.is_lib ? "lib" : "") + "|" + stamp;
+            cache_key = tostring(this.fnv_str(source)) + "_" + tostring(source.bsize) +
+                        "_" + tostring(this.fnv_str(flags_key));
+            exec("mkdir -p " + Path.shq(cache_dir), nil);
+            cache_ir = cache_dir + "/" + cache_key + ".ll";
+            cache_meta = cache_dir + "/" + cache_key + ".meta";
+            if this.file_exists(cache_ir) && this.file_exists(cache_meta) {
+                mf: File = File.open(cache_meta, "r");
+                meta: string = mf == null ? "" : mf.read();
+                if mf != null { mf.close(); }
+                sep: int = -1;
+                mi: int = 0;
+                while mi < meta.bsize {
+                    if meta[mi] == '|' { sep = mi; stop; }
+                    mi = mi + 1;
+                }
+                head: string = sep < 0 ? meta : this.str_slice(meta, 0, sep);
+                if head == "1" || head == "0" {
+                    cg.has_entry = head == "1";
+                    if sep >= 0 {
+                        cg.ir_hash = toint(int, this.str_slice(meta, sep + 1, meta.bsize));
+                    }
+                    if this.exec_code("cp " + Path.shq(cache_ir) + " " + Path.shq(stream_ir)) == "0" {
+                        cache_hit = true;
+                    }
+                }
+            }
+        }
+        ir_lines: vec<string>;
+        if cache_hit {
+            empty_ir: vec<string>;
+            ir_lines = empty_ir;
+        } else {
+            ir_lines = cg.generate_module(prog);
+        }
+        if cache_ok && !cache_hit && cg.arena_audit_errors == 0 && cg.nil_audit_errors == 0 {
+            if this.exec_code("cp " + Path.shq(stream_ir) + " " + Path.shq(cache_ir)) == "0" {
+                mf: File = File.open(cache_meta, "w");
+                if mf != null {
+                    mf.write((cg.has_entry ? "1|" : "0|") + tostring(cg.ir_hash));
+                    mf.close();
+                }
+            }
+        }
         // Recursive-call unrolling (see CodeGen.unroll_recursive_ir).
         // Only native O3/O4 use LTO, which is what lets LLVM inline the
         // alwaysinline clone cycle; applying the pass without LTO would
@@ -1029,7 +1171,7 @@ pub def CompilerDriver : class {
             show("error: ", tostring(cg.nil_audit_errors), " nil-value error(s); not emitting output");
             return 1;
         }
-        if verbose { show("[verbose] generated ", tostring(ir_lines.size), " IR lines"); }
+        if verbose { show("[verbose] generated ", tostring(ir_stream ? cg.ir_lines_count : ir_lines.size), " IR lines"); }
         if output_type == "" && !emit_llvm && !check_mode && !cg.has_entry {
             show("error: no entry point: '", input_file, "' defines no 'main' function (build a library with to-dynamic/to-static, or add 'fnc main')");
             return 1;
@@ -1072,16 +1214,23 @@ pub def CompilerDriver : class {
         if emit_llvm {
             ll_path: string = out_bin + ".ll";
             if this.refuse_symlink_output(ll_path) { return 1; }
-            f_ll: File = File.open(ll_path, "w");
-            if f_ll == null {
-                show("error: cannot write to '", ll_path, "'");
-                return 1;
+            if ir_stream {
+                if this.exec_code("cp " + Path.shq(stream_ir) + " " + Path.shq(ll_path)) != "0" {
+                    show("error: cannot write to '", ll_path, "'");
+                    return 1;
+                }
+            } else {
+                f_ll: File = File.open(ll_path, "w");
+                if f_ll == null {
+                    show("error: cannot write to '", ll_path, "'");
+                    return 1;
+                }
+                foreach _, ir_ln in<vector> ir_lines {
+                    f_ll.write(ir_ln);
+                    f_ll.write("\n");
+                }
+                f_ll.close();
             }
-            foreach _, ir_ln in<vector> ir_lines {
-                f_ll.write(ir_ln);
-                f_ll.write("\n");
-            }
-            f_ll.close();
             show("[leash] Wrote LLVM IR to ", ll_path);
             return 0;
         }
@@ -1135,6 +1284,10 @@ pub def CompilerDriver : class {
         also opt_level == "z" { opt_flag = "-Oz"; }
         lib_flags: string = "";
         foreach _, lib in<vector> extra_libs {
+            if !Path.safe_name(lib) {
+                show("error: unsafe library name '", lib, "'");
+                return 1;
+            }
             lib_flags = lib_flags + " -l" + lib;
         }
         // @from("lib.so"/"lib.a") paths link directly; bare names link as -l.
@@ -1142,6 +1295,10 @@ pub def CompilerDriver : class {
         // (python parity: resolve_native_lib_path joins source_dir).
         nl_i: int = 0;
         foreach _, nlib in<vector> prog.native_libs {
+            if !Path.safe_rel_path(nlib) {
+                show("error: unsafe @from library name '", nlib, "'");
+                return 1;
+            }
             resolved: string = nlib;
             if nlib.bsize > 0 && nlib[0] != '/' && nl_i < prog.native_lib_files.size {
                 nlib_dir: string = Path.dirname(prog.native_lib_files[nl_i]);
@@ -1289,7 +1446,7 @@ pub def CompilerDriver : class {
         home_dir: string = this.exec_out("echo $HOME");
         cache_dir: string = home_dir + "/.leash/shcache";
         if home_dir.bsize > 0 {
-            exec("mkdir -p " + cache_dir, nil);
+            exec("mkdir -p " + Path.shq(cache_dir), nil);
         }
 
         // Find leash gc.c location
@@ -1399,7 +1556,7 @@ pub def CompilerDriver : class {
                 // interrupted clang can otherwise leave a truncated object
                 // in the cache that every later compile silently reuses.
                 tmp_gc: string = rt_gc + ".tmp";
-                ec_rt: string = this.exec_code(cc_bin + " " + gc_path + " -c -o " + tmp_gc + " @" + rsp_rt);
+                ec_rt: string = this.exec_code(Path.shq(cc_bin) + " " + Path.shq(gc_path) + " -c -o " + Path.shq(tmp_gc) + " @" + Path.shq(rsp_rt));
                 if ec_rt != "0" {
                     show("error: cannot compile runtime gc.c");
                     return 1;
@@ -1416,7 +1573,7 @@ pub def CompilerDriver : class {
                 rt_stubs: string = cache_dir + "/rt" + tostring(this.fnv_str(stubs_tag)) + "_stubs.o";
                 if !this.file_exists(rt_stubs) {
                     tmp_stubs: string = rt_stubs + ".tmp";
-                    ec_st: string = this.exec_code(cc_bin + " " + stubs_path + " -c -o " + tmp_stubs + " @" + rsp_rt);
+                    ec_st: string = this.exec_code(Path.shq(cc_bin) + " " + Path.shq(stubs_path) + " -c -o " + Path.shq(tmp_stubs) + " @" + Path.shq(rsp_rt));
                     if ec_st != "0" {
                         show("error: cannot compile runtime stubs");
                         return 1;
@@ -1436,22 +1593,24 @@ pub def CompilerDriver : class {
             if output_type == "dynamic" || output_type == "static" {
                 pic_flag = "-fPIC";
             }
-            ir_key: int = this.fnv_lines(ir_lines);
+            ir_key: int = ir_stream ? cg.ir_hash : this.fnv_lines(ir_lines);
             obj_path = cache_dir + "/o" + tostring(this.fnv_str(opt_flag + "|" + cc_flags + "|" + pic_flag + "|" + tostring(ir_key))) + ".o";
 
             if verbose { show("[verbose] object cache: ", this.file_exists(obj_path) ? "hit" : "miss"); }
             if !this.file_exists(obj_path) {
-                temp_ll: string = this.temp_dir() + "/leashc_" + Path.basename(out_bin) + ".ll";
-                f_tmp: File = File.open(temp_ll, "w");
-                if f_tmp == null {
-                    show("error: cannot write to '", temp_ll, "'");
-                    return 1;
+                temp_ll: string = ir_stream ? stream_ir : this.temp_dir() + "/leashc_" + Path.basename(out_bin) + ".ll";
+                f_tmp: File = ir_stream ? null : File.open(temp_ll, "w");
+                if !ir_stream {
+                    if f_tmp == null {
+                        show("error: cannot write to '", temp_ll, "'");
+                        return 1;
+                    }
+                    foreach _, ir_ln2 in<vector> ir_lines {
+                        f_tmp.write(ir_ln2);
+                        f_tmp.write("\n");
+                    }
+                    f_tmp.close();
                 }
-                foreach _, ir_ln2 in<vector> ir_lines {
-                    f_tmp.write(ir_ln2);
-                    f_tmp.write("\n");
-                }
-                f_tmp.close();
                 rsp_obj: string = this.temp_dir() + "/leashc_" + Path.basename(out_bin) + "_obj.rsp";
                 f_obj_rsp: File = File.open(rsp_obj, "w");
                 if f_obj_rsp != null {
@@ -1460,7 +1619,7 @@ pub def CompilerDriver : class {
                     f_obj_rsp.write(pic_flag + "\n");
                     f_obj_rsp.close();
                     tmp_obj: string = obj_path + ".tmp";
-                    ec_obj: string = this.exec_code(cc_bin + " " + temp_ll + " -c -o " + tmp_obj + " @" + rsp_obj);
+                    ec_obj: string = this.exec_code(Path.shq(cc_bin) + " " + Path.shq(temp_ll) + " -c -o " + Path.shq(tmp_obj) + " @" + Path.shq(rsp_obj));
                     if ec_obj != "0" {
                         show("error: clang IR compilation failed");
                         return 1;
@@ -1471,7 +1630,7 @@ pub def CompilerDriver : class {
                     }
                 } else {
                     tmp_obj2: string = obj_path + ".tmp";
-                    ec_obj2: string = this.exec_code(cc_bin + " " + temp_ll + " -c -o " + tmp_obj2 + " " + opt_flag + " " + cc_flags + " " + pic_flag);
+                    ec_obj2: string = this.exec_code(Path.shq(cc_bin) + " " + Path.shq(temp_ll) + " -c -o " + Path.shq(tmp_obj2) + " " + opt_flag + " " + cc_flags + " " + pic_flag);
                     if ec_obj2 != "0" {
                         show("error: clang IR compilation failed");
                         return 1;
@@ -1484,8 +1643,8 @@ pub def CompilerDriver : class {
             }
         } else {
             // Cold path, no usable cache dir: compile + link in one go
-            temp_ll: string = this.temp_dir() + "/leashc_" + Path.basename(out_bin) + ".ll";
-            f_tmp: File = File.open(temp_ll, "w");
+            temp_ll: string = ir_stream ? stream_ir : this.temp_dir() + "/leashc_" + Path.basename(out_bin) + ".ll";
+            f_tmp: File = ir_stream ? null : File.open(temp_ll, "w");
             if f_tmp == null {
                 show("error: cannot write to '", temp_ll, "'");
                 return 1;
@@ -1499,7 +1658,7 @@ pub def CompilerDriver : class {
                 // Cold-path libraries: PIC object first, then shared/ar.
                 cold_pic: string = "-fPIC";
                 cold_obj: string = this.temp_dir() + "/leashc_" + Path.basename(out_bin) + ".o";
-                ec_cobj: string = this.exec_code(cc_bin + " " + temp_ll + " -c -o " + cold_obj + " " + opt_flag + " " + cc_flags + " " + cold_pic);
+                ec_cobj: string = this.exec_code(Path.shq(cc_bin) + " " + Path.shq(temp_ll) + " -c -o " + Path.shq(cold_obj) + " " + opt_flag + " " + cc_flags + " " + cold_pic);
                 if ec_cobj != "0" {
                     show("error: clang IR compilation failed");
                     return 1;
@@ -1515,7 +1674,7 @@ pub def CompilerDriver : class {
                             cold_rt = cold_rt + " " + stubs_path;
                         }
                     }
-                    ec_cd: string = this.exec_code(cc_bin + " " + cold_obj + " " + cold_rt + " -shared -o " + out_bin + " " + opt_flag + " " + cc_flags + " " + lib_flags);
+                    ec_cd: string = this.exec_code(Path.shq(cc_bin) + " " + Path.shq(cold_obj) + " " + Path.shq(cold_rt) + " -shared -o " + Path.shq(out_bin) + " " + opt_flag + " " + cc_flags + " " + lib_flags);
                     if ec_cd != "0" {
                         show("error: clang shared-library link failed");
                         return 1;
@@ -1523,7 +1682,7 @@ pub def CompilerDriver : class {
                 } else {
                     cold_ar: string = "ar";
                     if target_name == "win64" { cold_ar = "x86_64-w64-mingw32-ar"; }
-                    ec_ca: string = this.exec_code(cold_ar + " rcs " + out_bin + " " + cold_obj);
+                    ec_ca: string = this.exec_code(Path.shq(cold_ar) + " rcs " + Path.shq(out_bin) + " " + Path.shq(cold_obj));
                     if ec_ca != "0" {
                         show("error: static archive build failed");
                         return 1;
@@ -1540,12 +1699,12 @@ pub def CompilerDriver : class {
             }
             rsp_cold: string = this.temp_dir() + "/leashc_" + Path.basename(out_bin) + ".rsp";
             f_rc: File = File.open(rsp_cold, "w");
-            clang_cmd: string = cc_bin + " " + temp_ll + " " + rt_files_cold + " -o " + out_bin + " " + opt_flag + " " + cc_flags + link_flags_inline + tail_flags + lib_flags;
+            clang_cmd: string = Path.shq(cc_bin) + " " + Path.shq(temp_ll) + " " + rt_files_cold + " -o " + Path.shq(out_bin) + " " + opt_flag + " " + cc_flags + link_flags_inline + tail_flags + lib_flags;
             if f_rc != null {
                 f_rc.write(link_rsp_flags);
                 f_rc.write(lib_flags + "\n");
                 f_rc.close();
-                clang_cmd = cc_bin + " " + temp_ll + " " + rt_files_cold + " @" + rsp_cold + " -o " + out_bin + " " + opt_flag + " " + cc_flags + tail_flags;
+                clang_cmd = Path.shq(cc_bin) + " " + Path.shq(temp_ll) + " " + rt_files_cold + " @" + Path.shq(rsp_cold) + " -o " + Path.shq(out_bin) + " " + opt_flag + " " + cc_flags + tail_flags;
             }
             ec_cold: string = this.exec_code(clang_cmd);
             if ec_cold != "0" {
@@ -1566,6 +1725,7 @@ pub def CompilerDriver : class {
                 if xpre.bsize == 0 && this.temp_dir() != "." && run_cmd.bsize > 0 && run_cmd[0] != '/' && run_cmd[0] != '.' {
                     run_cmd = "./" + run_cmd;
                 }
+                run_cmd = Path.shq(run_cmd);
                 if run_args.bsize > 0 {
                     run_cmd = run_cmd + " " + run_args;
                 }
@@ -1609,7 +1769,7 @@ pub def CompilerDriver : class {
             // stubs); PE does not, so Windows DLLs link the runtime in.
             dyn_rt: string = "";
             if target_name == "win64" { dyn_rt = runtime_objs; }
-            dyn_cmd: string = cc_bin + " " + obj_path + " " + dyn_rt + " -shared -o " + out_bin + " " + opt_flag + " " + cc_flags + " " + lib_flags;
+            dyn_cmd: string = Path.shq(cc_bin) + " " + Path.shq(obj_path) + " " + dyn_rt + " -shared -o " + Path.shq(out_bin) + " " + opt_flag + " " + cc_flags + " " + lib_flags;
             ec_dyn: string = this.exec_code(dyn_cmd);
             if ec_dyn != "0" {
                 show("error: clang shared-library link failed");
@@ -1623,7 +1783,7 @@ pub def CompilerDriver : class {
         if output_type == "static" {
             ar_bin: string = "ar";
             if target_name == "win64" { ar_bin = "x86_64-w64-mingw32-ar"; }
-            ec_ar: string = this.exec_code(ar_bin + " rcs " + out_bin + " " + obj_path);
+            ec_ar: string = this.exec_code(Path.shq(ar_bin) + " rcs " + Path.shq(out_bin) + " " + Path.shq(obj_path));
             if ec_ar != "0" {
                 show("error: static archive build failed");
                 return 1;
@@ -1634,7 +1794,7 @@ pub def CompilerDriver : class {
             return 0;
         }
         rsp_file: string = this.temp_dir() + "/leashc_" + Path.basename(out_bin) + ".rsp";
-        link_cmd: string = cc_bin + " " + obj_path + " " + runtime_objs + " -o " + out_bin + " " + opt_flag + " " + cc_flags + link_flags_inline + tail_flags + lib_flags;
+        link_cmd: string = Path.shq(cc_bin) + " " + Path.shq(obj_path) + " " + runtime_objs + " -o " + Path.shq(out_bin) + " " + opt_flag + " " + cc_flags + link_flags_inline + tail_flags + lib_flags;
         f_rsp: File = File.open(rsp_file, "w");
         if f_rsp != null {
             f_rsp.write(obj_path + "\n");
@@ -1642,7 +1802,7 @@ pub def CompilerDriver : class {
             f_rsp.write(link_rsp_flags);
             f_rsp.write(lib_flags + "\n");
             f_rsp.close();
-            link_cmd = cc_bin + " @" + rsp_file + " -o " + out_bin + " " + opt_flag + " " + cc_flags + tail_flags;
+            link_cmd = Path.shq(cc_bin) + " @" + Path.shq(rsp_file) + " -o " + Path.shq(out_bin) + " " + opt_flag + " " + cc_flags + tail_flags;
         }
 
         // Link-only: prebuilt program object + runtime objects
@@ -1669,6 +1829,7 @@ pub def CompilerDriver : class {
             if xpre.bsize == 0 && this.temp_dir() != "." && run_cmd.bsize > 0 && run_cmd[0] != '/' && run_cmd[0] != '.' {
                 run_cmd = "./" + run_cmd;
             }
+            run_cmd = Path.shq(run_cmd);
             if run_args.bsize > 0 {
                 run_cmd = run_cmd + " " + run_args;
             }
@@ -1735,7 +1896,7 @@ pub def CompilerDriver : class {
         }
         bytes: vec<int>;
         bytes = cls.write_to();
-        exec("mkdir -p " + dir, nil);
+        exec("mkdir -p " + Path.shq(dir), nil);
         f: File = File.open(class_path, "w");
         if f == null {
             show("error: cannot write to '", class_path, "'");
@@ -1765,7 +1926,7 @@ pub def CompilerDriver : class {
                 show("       run from the repository root, or install the leash package");
                 return 1;
             }
-            if this.exec_code("cp " + jvm_rt + "/*.class " + dir + "/") != "0" {
+            if this.exec_code("cp " + Path.shq(jvm_rt) + "/*.class " + Path.shq(dir) + "/") != "0" {
                 show("error: cannot copy the JVM runtime shims into '" + dir + "'");
                 return 1;
             }

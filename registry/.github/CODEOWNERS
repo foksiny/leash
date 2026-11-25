@@ -1,0 +1,5 @@
+# Registry integrity: changes to the validator, workflows or index require
+# maintainer review. PRs cannot self-approve these paths.
+/scripts/                 @foksiny
+/.github/workflows/       @foksiny
+/index.json               @foksiny

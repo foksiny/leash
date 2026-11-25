@@ -18,6 +18,10 @@ pub def Reloader : class {
         }
         
         f: File = File.open(this.filename, "r");
+        if f == null {
+            show("Hot Reloader Error: cannot open '", this.filename, "'");
+            exit(1);
+        }
 
         old_code: string = "";
 
@@ -28,7 +32,17 @@ pub def Reloader : class {
             if new_code != old_code {
                 show("\n======== Reloading... ========\n");
                 old_code = new_code;
-                exec("leash run " + this.filename, nil);
+                // exec() uses /bin/sh: quote the path so a filename cannot
+                // inject additional commands.
+                quoted: string = "'";
+                qi: int = 0;
+                while qi < this.filename.bsize {
+                    if this.filename[qi] == '\'' { quoted = quoted + "'\\''"; }
+                    else { quoted = quoted + this.filename[qi]; }
+                    qi = qi + 1;
+                }
+                quoted = quoted + "'";
+                exec("leash run " + quoted, nil);
                 show("\n========== Reloaded ==========\n");
             }
 

@@ -310,6 +310,7 @@ pub def JsonParser : class {
     pos: int;
     failed: bool;
     err: string;
+    depth: int;  // recursion guard for untrusted JSON
 
     pub fnc skip_ws() : void {
         while this.pos < this.text.bsize {
@@ -358,6 +359,18 @@ pub def JsonParser : class {
     }
 
     pub fnc parse_value() : JsonValue {
+        this.depth = this.depth + 1;
+        if this.depth > 128 {
+            this.depth = this.depth - 1;
+            this.fail("json: maximum nesting depth exceeded");
+            return JsonValue { ok: false, err: this.err };
+        }
+        v: JsonValue = this.parse_value_inner();
+        this.depth = this.depth - 1;
+        return v;
+    }
+
+    fnc parse_value_inner() : JsonValue {
         if this.pos >= this.text.bsize {
             return JsonValue { ok: false, err: "json: unexpected end of input" };
         }
@@ -612,10 +625,20 @@ pub def JsonParser : class {
                 this.fail("json: malformed number (missing exponent digits)");
                 return JsonValue { ok: false, err: this.err };
             }
+            edigits: int = 0;
             while this.is_digit(this.peek()) {
+                edigits = edigits + 1;
+                if edigits > 4 {
+                    this.fail("json: exponent out of range");
+                    return JsonValue { ok: false, err: this.err };
+                }
                 expo = expo * 10 + toint(int<64>, JsonValue.hexval(this.peek()));
                 this.pos = this.pos + 1;
             }
+        }
+        if dec > 18 || expo > 308 {
+            this.fail("json: number out of range");
+            return JsonValue { ok: false, err: this.err };
         }
         if !isf {
             if neg {
@@ -626,6 +649,10 @@ pub def JsonParser : class {
         sh: int<64> = dec - expo;
         if eneg {
             sh = dec + expo;
+        }
+        if sh > 308 || sh < -308 {
+            this.fail("json: number out of range");
+            return JsonValue { ok: false, err: this.err };
         }
         d: float = tofloat(float, mant);
         if sh > 0 {

@@ -2,7 +2,7 @@
     "name": "leash",
     "displayName": "Leash",
     "description": "Leash Programming Language Support",
-    "version": "2.0.0",
+    "version": "2.1.0",
     "publisher": "leash-lang",
     "engines": {
         "vscode": "^1.75.0"
@@ -68,7 +68,8 @@
                 "leash.lsp.executablePath": {
                     "type": "string",
                     "default": "leash",
-                    "description": "Path to the Leash compiler executable. Defaults to 'leash' on your PATH."
+                    "description": "Path to the Leash compiler executable. Defaults to 'leash' on your PATH.",
+                    "scope": "machine"
                 },
                 "leash.lsp.compilerArgs": {
                     "type": "array",
@@ -76,7 +77,8 @@
                         "type": "string"
                     },
                     "default": [],
-                    "description": "Extra command line arguments passed to the compiler for diagnostics."
+                    "description": "Extra command line arguments passed to the compiler for diagnostics.",
+                    "scope": "machine"
                 },
                 "leash.lsp.diagnostics.enabled": {
                     "type": "boolean",
@@ -172,5 +174,11 @@
         "vscode-languageserver": "^8.1.0",
         "vscode-languageserver-textdocument": "^1.0.8",
         "vscode-uri": "^3.0.7"
+    },
+    "capabilities": {
+        "untrustedWorkspaces": {
+            "supported": false,
+            "description": "The Leash LSP spawns the compiler and needs trusted workspace settings."
+        }
     }
 }

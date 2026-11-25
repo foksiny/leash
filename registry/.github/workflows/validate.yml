@@ -29,10 +29,20 @@ jobs:
     name: Validate registry changes
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout PR merge commit
+      # Check out the trusted base ref: never execute validator code from
+      # the PR under review. The PR head is fetched read-only as a ref and
+      # used only as the diff target.
+      - name: Checkout trusted base
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.pull_request.base.sha }}
           fetch-depth: 0
+
+      - name: Fetch PR head as a read-only ref
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: git fetch origin "pull/$PR_NUMBER/head:refs/remotes/origin/pr-head"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -47,7 +57,7 @@ jobs:
         run: |
           python scripts/validate_index.py \
             --base "$BASE_SHA" \
-            --head HEAD \
+            --head refs/remotes/origin/pr-head \
             --pr-author "$PR_AUTHOR" \
             --report validation_report.md
 

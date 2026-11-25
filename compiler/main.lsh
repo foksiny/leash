@@ -8,7 +8,7 @@ use leashed::*;
 // Single source of truth for the release version. Bump discipline:
 // README, docs badges, CHANGELOG.
 fnc leash_version() : string {
-    return "2.0.0";
+    return "2.1.0";
 }
 
 // Prefix test (no stdlib dependency this early in main.lsh).
@@ -77,6 +77,11 @@ fnc xfile_exists(p string) : bool {
 
 fnc xis_dir(p string) : bool {
     return xout("test -d " + shq(p) + " && echo 1") == "1";
+}
+
+// Reject a tree that contains symlinks before copying it into ~/.leash/libs.
+fnc xhas_symlinks(p string) : bool {
+    return xout("find " + shq(p) + " -type l -print -quit 2>/dev/null").bsize > 0;
 }
 
 // Single-quote a shell argument (paths with spaces or metacharacters).
@@ -214,16 +219,47 @@ fnc xstrip_ws2(s string, a int, b int) : string {
     return out;
 }
 
-// Conservative containment for config.lshc values: no absolute paths and
-// no ".." segments (mirrors the Python toolchain's project-sandbox rules).
+// Conservative containment for config.lshc / CLI path values. Values are
+// interpolated into shell commands by the driver, so allow only an explicit
+// safe character set in addition to the historical no-absolute/no-".." rules.
+fnc xsafe_chars(p string, allow_slash bool) : bool {
+    if p.bsize == 0 { return false; }
+    i: int = 0;
+    while i < p.bsize {
+        c: char = p[i];
+        ok: bool = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                   (c >= '0' && c <= '9') || c == '_' || c == '.' ||
+                   c == '-' || c == '+';
+        if allow_slash && c == '/' { ok = true; }
+        if !ok { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
 fnc xpath_contained(p string) : bool {
-    if p.bsize > 0 && p[0] == '/' { return false; }
+    if p.bsize == 0 || p[0] == '/' { return false; }
+    if !xsafe_chars(p, true) { return false; }
     i: int = 0;
     while i < p.bsize {
         if p[i] == '.' && i + 1 < p.bsize && p[i + 1] == '.' { return false; }
         i = i + 1;
     }
     return true;
+}
+
+// Output names are a single path component; never accept flags or separators.
+fnc xsafe_out_name(p string) : bool {
+    if p.bsize == 0 || p[0] == '-' { return false; }
+    if !xsafe_chars(p, false) { return false; }
+    if p == "." || p == ".." { return false; }
+    return true;
+}
+
+// Library names from -l / clibs: a single ld-style token, no shell syntax.
+fnc xsafe_lib(p string) : bool {
+    if p.bsize == 0 || p[0] == '-' { return false; }
+    return xsafe_chars(p, false);
 }
 
 // ---------------------------------------------------------------------------
@@ -560,7 +596,7 @@ fnc cmd_build(args string[]) : int {
             return 1;
         }
         if xis_dir(imp) {
-            extra_dirs.pushb(xout("realpath " + imp));
+            extra_dirs.pushb(xout("realpath " + shq(imp)));
         }
     }
 
@@ -568,7 +604,11 @@ fnc cmd_build(args string[]) : int {
     ai: int = 2;
     while ai + 1 < args.size {
         if args[ai] == "--other-imports" || args[ai] == "-oi" {
-            extra_dirs.pushb(xout("realpath -m " + args[ai + 1]));
+            if !xpath_contained(args[ai + 1]) {
+                show("error: invalid --other-imports path '", args[ai + 1], "'");
+                return 1;
+            }
+            extra_dirs.pushb(xout("realpath -m " + shq(args[ai + 1])));
         }
         ai = ai + 1;
     }
@@ -581,7 +621,13 @@ fnc cmd_build(args string[]) : int {
         while li <= clibs.bsize {
             if li == clibs.bsize || clibs[li] == ',' {
                 lib: string = xstrip_ws(part);
-                if lib.bsize > 0 { extra_libs.pushb(lib); }
+                if lib.bsize > 0 {
+                    if !xsafe_lib(lib) {
+                        show("error: unsafe library name in config.lshc 'clibs': '", lib, "'");
+                        return 1;
+                    }
+                    extra_libs.pushb(lib);
+                }
                 part = "";
             } else {
                 part = part + clibs[li];
@@ -594,7 +640,7 @@ fnc cmd_build(args string[]) : int {
     if cfg.isin("out_name") && cfg["out_name"].bsize > 0 {
         out_base = cfg["out_name"];
     }
-    if !xpath_contained(out_base) {
+    if !xsafe_out_name(out_base) {
         show("error: invalid 'out_name' in config.lshc ('", out_base, "') — must stay inside out/");
         return 1;
     }
@@ -880,11 +926,11 @@ fnc cmd_install(args string[]) : int {
     if args.size == 3 {
         d: string = args[2];
         if d == "compiler" {
-            root: string = find_repo_root(Path.dirname(xout("realpath " + args[0])));
+            root: string = find_repo_root(Path.dirname(xout("realpath " + shq(args[0]))));
             if root.bsize == 0 && xfile_exists("compiler/main.lsh") { root = xout("realpath ."); }
             if root.bsize > 0 { d = root + "/compiler"; }
         }
-        abs: string = xout("realpath -m " + d);
+        abs: string = xout("realpath -m " + shq(d));
         if xis_dir(abs) && xfile_exists(abs + "/config.lshc") {
             show("Installing from ", abs, " ...");
             self: string = Path.resolve_exe(args[0]);
@@ -893,7 +939,7 @@ fnc cmd_install(args string[]) : int {
                 show("       Invoke it by path, e.g. ./leashc install <dir>, or put it on PATH.");
                 return 1;
             }
-            rc: int = xrun("cd " + abs + " && " + self + " install");
+            rc: int = xrun("cd " + shq(abs) + " && " + shq(self) + " install");
             if rc == 0 {
                 show("Global install from ", abs, " complete (binaries in ", leash_bin_dir(), ")");
             }
@@ -905,12 +951,12 @@ fnc cmd_install(args string[]) : int {
         return cmd_install_global(args);
     }
     libs: string = xout("echo $HOME") + "/.leash/libs";
-    exec("mkdir -p " + libs, nil);
+    exec("mkdir -p " + shq(libs), nil);
     ai: int = 2;
     installed: int = 0;
     while ai < args.size {
         p: string = args[ai];
-        abs: string = xout("realpath -m " + p);
+        abs: string = xout("realpath -m " + shq(p));
         if xis_symlink(abs) {
             show("error: refusing to install a symlink: ", abs);
             return 1;
@@ -920,7 +966,11 @@ fnc cmd_install(args string[]) : int {
             return 1;
         }
         if xis_dir(abs) {
-            exec("cp -r " + abs + "/. " + libs + "/", nil);
+            if xhas_symlinks(abs) {
+                show("error: refusing to install a directory containing symlinks: ", abs);
+                return 1;
+            }
+            exec("cp -r " + shq(abs) + "/. " + shq(libs) + "/", nil);
             show("Installed items from ", abs, " -> ", libs);
             installed = installed + 1;
         } else {
@@ -1150,7 +1200,7 @@ fnc cmd_install_global(args string[]) : int {
         show("error: cannot determine home directory (HOME is not set)");
         return 1;
     }
-    exec("mkdir -p " + bindir, nil);
+    exec("mkdir -p " + shq(bindir), nil);
     // Project build settings mirror `build`.
     opt_level: string = "2";
     if cfg.isin("opt_level") && cfg["opt_level"].bsize > 0 {
@@ -1275,7 +1325,7 @@ fnc cmd_install_global(args string[]) : int {
         }
         if root.bsize > 0 && xis_dir(root + "/installthis") {
             libs: string = xout("echo $HOME") + "/.leash/libs";
-            exec("mkdir -p " + libs, nil);
+            exec("mkdir -p " + shq(libs), nil);
             if xcode("cp -r " + root + "/installthis/. " + libs + "/") == 0 {
                 show("Installed the standard library -> ", libs);
             } else {
@@ -1430,7 +1480,7 @@ fnc cmd_update(args string[]) : int {
     }
     show("");
     show("Pulling latest changes from GitHub...");
-    root: string = find_git_root(Path.dirname(xout("realpath " + args[0])));
+    root: string = find_git_root(Path.dirname(xout("realpath " + shq(args[0]))));
     if root.bsize == 0 && xis_dir(".git") { root = xout("realpath ."); }
     if root.bsize == 0 {
         show("error: Leash is not installed from a git checkout; cannot self-update via git pull.");
@@ -1498,7 +1548,7 @@ fnc find_repo_root(start_dir string) : string {
 }
 
 fnc cmd_self_host(args string[]) : int {
-    root: string = find_repo_root(Path.dirname(xout("realpath " + args[0])));
+    root: string = find_repo_root(Path.dirname(xout("realpath " + shq(args[0]))));
     if root.bsize == 0 && xfile_exists("compiler/main.lsh") { root = xout("realpath ."); }
     if root.bsize == 0 {
         show("error: self-host needs a repository checkout (compiler/main.lsh not found)");
@@ -1800,6 +1850,10 @@ fnc main(args string[]) : int {
                 while bi < arg.bsize {
                     lib = lib + arg[bi];
                     bi = bi + 1;
+                }
+                if !xsafe_lib(lib) {
+                    show("error: unsafe library name '", lib, "'");
+                    return 1;
                 }
                 extra_libs.pushb(lib);
                 i = i + 1;

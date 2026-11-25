@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Compiler &amp; CLI - Leash documentation</title>
-<meta name="description" content="The complete reference for the Leash 2.0.0 command line: every command and flag, compilation targets, memory modes, the optimization pipeline, diagnostics and targets.">
+<meta name="description" content="The complete reference for the Leash 2.1.0 command line: every command and flag, compilation targets, memory modes, the optimization pipeline, diagnostics and targets.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Crect width=%27100%27 height=%27100%27 rx=%2722%27 fill=%27%23241f4d%27/%3E%3Ctext x=%2750%27 y=%2770%27 font-size=%2760%27 text-anchor=%27middle%27 font-family=%27monospace%27 fill=%27white%27%3EL%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
 <script src="docs.js" defer></script>
@@ -48,7 +48,7 @@
       <a href="advanced.html" class="">Standalone pages</a>
       <a href="limitations.html" class="">Known limitations</a>
     </div>
-    <div class="sidenav-foot">Leash 2.0.0</div>
+    <div class="sidenav-foot">Leash 2.1.0</div>
   </aside>
 
   <main class="content" id="main-content">
@@ -74,7 +74,7 @@
               <tr><td><code>leash pkg &lt;subcommand&gt;</code></td><td>Package manager: init/publish/install/uninstall/list/info/update/add/lock/search (see the <a href="package-manager.html">Package Manager</a> page)</td></tr>
               <tr><td><code>leash self-host</code></td><td>3-stage bootstrap + fixed-point check; rebuilds <code>bin/leashc</code> from the current sources (see <a href="self-hosted.html">Self-Hosted Compiler</a>)</td></tr>
               <tr><td><code>leash update</code></td><td>Update Leash to the latest version</td></tr>
-              <tr><td><code>leash version</code></td><td>Print version information (<code>leash 2.0.0 (self-hosted)</code>)</td></tr>
+              <tr><td><code>leash version</code></td><td>Print version information (<code>leash 2.1.0 (self-hosted)</code>)</td></tr>
               <tr><td><code>leash help [command]</code></td><td>Show help, optionally for one command</td></tr>
             </tbody>
           </table>
@@ -292,7 +292,7 @@ leash compile myprogram.lsh --gc        <span class="cm"># mark-and-sweep GC</sp
         <p><code>--autofree</code> (<code>-af</code>) tracks every heap allocation the compiler emits and inserts <code>free()</code> calls automatically when the allocating function returns &mdash; no GC and no manual memory management. Allocations that are returned to the caller are excluded automatically, so returned strings, vectors, and class instances remain valid. The GC runtime is linked in stub mode (thin <code>malloc</code>/<code>free</code> wrappers), keeping binaries small and deterministic. This is especially useful when compiling libraries (<code>to-dynamic</code> / <code>to-static</code>) for use from non-GC languages.</p>
         <div class="callout callout-info"><strong>Static analysis includes the arena audit.</strong> With the default arena layout, <code>leash check</code> runs the same lifetime audit as a compile: proven-safe raw pointers are accepted, unprovable ones produce <code>E_ARENA_LIFETIME</code> with a source snippet, a <code>why:</code> explanation and a <code>help:</code> hint. See <a href="advanced.html#reading-lifetime-diagnostics">Reading a lifetime diagnostic</a>.</div>
         <div class="callout callout-success"><strong>Default changed in 2.0.0.</strong> A bare <code>leash compile</code> now links the arena runtime, not the mark-and-sweep collector. Scripts that relied on the old default should pass <code>--gc</code> explicitly to keep collector semantics.</div>
-        <p>In <code>--gc</code> builds, a local whose address is taken is stored in a rooted, zeroed heap cell rather than a raw stack slot. This makes long-lived <code>&amp;local</code> pointers stable across frames and workers; the static <code>E010</code> rule still rejects returning the address of a local from its own function, so use an owned value or explicit root storage for that case.</p>
+        <p>In <code>--gc</code> builds, the collector keeps its original conservative stack semantics: a pointer to a frame-local slot is not made permanent, and the static <code>E010</code> rule rejects returning the address of a local from its own function. For cross-frame or cross-thread addresses, use the default arena layout — it roots the pointee explicitly and accepts proven-safe <code>&amp;local</code> escapes.</p>
 
         <h2 id="optimization-levels">Optimization levels</h2>
         <p>Leash supports LLVM optimization levels via the <code>--opt</code> (or <code>-O</code>) flag, controlling the aggressiveness of the optimization pipeline across <strong>three layers</strong>: Leash AST (frontend), LLVM IR (middle-end), and C runtime (link-time). The <code>-O</code> flag controls all three simultaneously, so a single flag choice applies consistent optimization throughout the entire compilation process. In arena builds the selected level also gates arena-aware runtime/codegen features (O2+: exact reserves &amp; hash pre-sizing, O3+: nested push reserve, compact hash nodes, fused hash keys) via <code>LEASH_ARENA_O2</code>/<code>LEASH_ARENA_O3</code>.</p>

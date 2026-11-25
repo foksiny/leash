@@ -77,25 +77,34 @@ export class DiagnosticsRunner {
         const fsPath = URI.parse(uri).fsPath;
         if (fsPath && isTempCheckFile(fsPath)) return;
 
-        let tempFile: string;
-        let baseDir: string;
-        if (fsPath && fs.existsSync(fsPath)) {
-            baseDir = path.dirname(fsPath);
-            tempFile = path.join(baseDir, `.leash-lsp-${path.basename(fsPath)}`);
-        } else {
-            baseDir = path.join(os.tmpdir(), 'leash-lsp');
-            if (!fs.existsSync(baseDir)) fs.mkdirSync(baseDir, { recursive: true });
-            tempFile = path.join(baseDir, path.basename(fsPath || 'untitled.lsh'));
-        }
+        const baseDir = fsPath && fs.existsSync(fsPath)
+            ? path.dirname(fsPath)
+            : path.join(os.tmpdir(), 'leash-lsp');
+        // Predictable temp names next to the source were symlink targets:
+        // use a private 0700 directory and an exclusive 0600 file.
+        let tempDir: string;
         try {
-            fs.writeFileSync(tempFile, text);
+            tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'leash-lsp-'));
         } catch {
+            return;
+        }
+        const tempFile = path.join(tempDir, path.basename(fsPath || 'untitled.lsh'));
+        let fd: number;
+        try {
+            fd = fs.openSync(tempFile, fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600);
+            fs.writeFileSync(fd, text);
+            fs.closeSync(fd);
+        } catch {
+            try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch { /* ignore */ }
             return;
         }
 
         const project = readProjectInfo(fsPath);
+        // The temp file no longer sits next to the source: pass its original
+        // directory as an import root so relative imports still resolve.
+        const importDirs = Array.from(new Set([...project.importsDirs, baseDir]));
         const args = buildCheckArgs(
-            settings.compilerArgs, project.importsDirs,
+            settings.compilerArgs, importDirs,
             settings.diagnostics.verbose, tempFile
         );
 
@@ -136,7 +145,7 @@ export class DiagnosticsRunner {
             clearTimeout(entry.timer);
             this.checks.delete(uri);
             try {
-                fs.unlinkSync(tempFile);
+                fs.rmSync(tempDir, { recursive: true, force: true });
             } catch {
                 // ignore
             }
@@ -148,6 +157,7 @@ export class DiagnosticsRunner {
             if (this.checks.get(uri) !== entry) return;
             clearTimeout(entry.timer);
             this.checks.delete(uri);
+            try { fs.rmSync(tempDir, { recursive: true, force: true }); } catch { /* ignore */ }
         });
         proc.on('close', finish);
     }

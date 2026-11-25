@@ -1,3 +1,4 @@
+import { markdownSafe } from './util';
 import { LshSymbol, ParamInfo } from './types';
 
 export interface BuiltinDoc {
@@ -300,9 +301,9 @@ export function symbolToMarkdown(sym: LshSymbol): string {
     if (sym.visibility) {
         md += `  \n_${sym.visibility}_`;
     }
-    md += `  \n\`\`\`leash\n${sym.signature}\n\`\`\``;
+    md += `  \n\`\`\`leash\n${markdownSafe(sym.signature)}\n\`\`\``;
     if (sym.docs) {
-        md += `\n${sym.docs}`;
+        md += `\n${markdownSafe(sym.docs)}`;
     }
     return md;
 }

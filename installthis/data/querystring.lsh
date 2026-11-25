@@ -81,7 +81,7 @@ pub def QueryString : class {
                 out = out + ' ';
                 i = i + 1;
             } else {
-                if c == '%' && i + 2 < n + 1 {
+                if c == '%' && i + 2 < n {
                     hi: int = QueryString.hv(s[i + 1]);
                     lo: int = QueryString.hv(s[i + 2]);
                     if hi >= 0 && lo >= 0 {

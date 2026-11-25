@@ -311,10 +311,12 @@ static int hpk_get_int(const unsigned char *p, size_t n, size_t *pos,
     for (;;) {
         if (*pos >= n) return 0;
         unsigned char c = p[(*pos)++];
+        if (m > 28) return 0; /* wrapped shifts / oversized integer */
+        if ((unsigned int)(c & 127) > ((UINT_MAX - v) >> m)) return 0;
         v += (unsigned int)(c & 127) << m;
         m += 7;
         if (!(c & 128)) break;
-        if (m > 28) return 0; /* overflow guard */
+        if (m > 28) return 0;
     }
     *out = v;
     return 1;
@@ -493,6 +495,7 @@ static void hpk_hdrs_free(hpk_hdrs *h) {
 }
 
 static int hpk_hdrs_add(hpk_hdrs *h, char *name, char *value) {
+    if (h->n >= 256) return 0; /* bound decoded header count per block */
     if (h->n + 1 > h->cap) {
         int nc = h->cap ? h->cap * 2 : 8;
         hpk_hdr *nv = (hpk_hdr *)realloc(h->v, (size_t)nc * sizeof(hpk_hdr));

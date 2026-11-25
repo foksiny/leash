@@ -74,8 +74,15 @@ pub def CodeGen : class {
     pub opdef_inner: string;     // concrete inner type of the opdef container being compiled
     pub cur_tmap_names: vec<string>;   // instantiated-class params (flat name,type pairs)
     pub lines: vec<string>;
+    pub out_file: File;      // final IR sink when streaming
+    pub body_file: File;     // temporary body sink when streaming
+    pub body_path: string;
+    pub out_path: string;
+    pub ir_hash: int;
+    pub ir_lines_count: int;
     pub str_constants: vec<string>;
     pub str_pool: hash<string, string>;
+    pub type_cache2: hash<string, string>;   // memoized complex llvm_type spellings
     pub str_counter: int;
     pub reg_counter: int;
     pub label_counter: int;
@@ -125,10 +132,17 @@ pub def CodeGen : class {
         empty_provn: vec<string>;
         empty_asn: hash<string, bool>;
         empty_fnesc: hash<string, hash<string, bool>>;
+        empty_tcache2: hash<string, string>;
         cg: CodeGen = CodeGen {
             ar_te_entries: empty_te,
             ar_te_pool: empty_tep,
             ar_te_defined: empty_ted,
+            out_file: null,
+            body_file: null,
+            body_path: "",
+            out_path: "",
+            ir_hash: -2128831035,
+            ir_lines_count: 0,
             str_counter: 0,
             reg_counter: 1,
             label_counter: 1,
@@ -161,6 +175,7 @@ pub def CodeGen : class {
             ar_prov_names: empty_provn,
             ar_assigned: empty_asn,
             ar_fn_escapes: empty_fnesc,
+            type_cache2: empty_tcache2,
             ar_frameless: false,
             ar_const_ints: empty_ci,
             ar_const_dead: empty_cd,
@@ -179,8 +194,45 @@ pub def CodeGen : class {
         return cg;
     }
 
+    pub fnc hash_ir_line(line string) : void {
+        i: int = 0;
+        while i < line.bsize {
+            this.ir_hash = this.fnva(this.ir_hash, line[i]);
+            i = i + 1;
+        }
+        this.ir_hash = this.fnva(this.ir_hash, '\n');
+    }
+
+    static pub fnc fnva(h int, c char) : int {
+        x: int = h ^ (int)c;
+        return (x * 16777619) & 0x7fffffff;
+    }
+
     pub fnc emit(line string) : void {
-        this.lines.pushb(line);
+        this.ir_lines_count = this.ir_lines_count + 1;
+        this.hash_ir_line(line);
+        if this.body_file != null {
+            this.body_file.write(line);
+            this.body_file.write("\n");
+        } else {
+            this.lines.pushb(line);
+        }
+    }
+
+    static pub fnc fnv_char(h int, c char) : int {
+        x: int = h ^ (int)c;
+        return (x * 16777619) & 0x7fffffff;
+    }
+
+    static pub fnc shq(s string) : string {
+        out: string = "'";
+        i: int = 0;
+        while i < s.bsize {
+            if s[i] == '\'' { out = out + "'\\''"; }
+            else { out = out + s[i]; }
+            i = i + 1;
+        }
+        return out + "'";
     }
 
     // Plain `int`/`uint` are 32-bit (Python reference semantics). These
@@ -1545,7 +1597,7 @@ pub def CodeGen : class {
     }
 
     pub fnc emit_named_slot(ptr string, name string, lty string) : void {
-        if !this.bridge_host && this.ar_root_addr_vars.isin(name) {
+        if this.arena && !this.bridge_host && this.ar_root_addr_vars.isin(name) {
             agep: string = this.new_reg();
             this.emit("  " + agep + " = getelementptr " + lty + ", " + lty + "* null, i32 1");
             asz: string = this.new_reg();
@@ -2611,32 +2663,89 @@ pub def CodeGen : class {
         return owner + "." + name;
     }
 
-    pub fnc ar_build_root_addr_vars(stmts vec<Stmt>) : void {
+    pub fnc ar_collect_idents(e Expr, out hash<string, bool>) : void {
+        if e == null { return; }
+        if e.kind == ExprKind.IDENT { out.push(e.sval, true); }
+        if e.args.size > 0 {
+            foreach _, a in<vector> e.args { this.ar_collect_idents(a, out); }
+        }
+        this.ar_collect_idents(e.left, out);
+        this.ar_collect_idents(e.right, out);
+        this.ar_collect_idents(e.cond, out);
+    }
+
+    // First pass: names whose address/value actually leaves the frame.
+    pub fnc ar_scan_escape_idents(stmts vec<Stmt>, ptrs hash<string, bool>) : void {
         foreach _, s in<vector> stmts {
             if s == null { continue; }
-            this.ar_collect_addr_escapes(s.target);
-            this.ar_collect_addr_escapes(s.value);
-            this.ar_collect_addr_escapes(s.cond);
-            if s.kind == StmtKind.SPAWN || s.kind == StmtKind.THROW {
-                foreach _, a in<vector> s.args { this.ar_collect_addr_escapes(a); }
+            if s.kind == StmtKind.ASSIGN && s.target != null && this.ar_audit_long_lived(s.target) {
+                this.ar_collect_addr_escapes(s.value);
+                this.ar_collect_idents(s.value, ptrs);
+            } also s.kind == StmtKind.EXPR && s.value != null && s.value.kind == ExprKind.METHOD_CALL
+               && this.ar_is_mutation(s.value.sval) && this.ar_audit_long_lived(s.value.left) {
+                foreach _, a in<vector> s.value.args {
+                    this.ar_collect_addr_escapes(a);
+                    this.ar_collect_idents(a, ptrs);
+                }
+            } also s.kind == StmtKind.SPAWN || s.kind == StmtKind.THROW {
+                foreach _, a in<vector> s.args {
+                    this.ar_collect_addr_escapes(a);
+                    this.ar_collect_idents(a, ptrs);
+                }
+            } also s.kind == StmtKind.RETURN {
+                this.ar_collect_addr_escapes(s.value);
+                this.ar_collect_idents(s.value, ptrs);
             }
             if s.kind == StmtKind.IF {
-                this.ar_build_root_addr_vars(s.then_block);
-                this.ar_build_root_addr_vars(s.else_block);
+                this.ar_scan_escape_idents(s.then_block, ptrs);
+                this.ar_scan_escape_idents(s.else_block, ptrs);
             } also s.kind == StmtKind.WHILE || s.kind == StmtKind.LOOP || s.kind == StmtKind.BLOCK || s.kind == StmtKind.DEFER {
-                this.ar_build_root_addr_vars(s.body);
+                this.ar_scan_escape_idents(s.body, ptrs);
             } also s.kind == StmtKind.FOR {
-                if s.for_init != null { this.ar_build_root_addr_vars(this.one_stmt_vec(s.for_init)); }
-                if s.for_step != null { this.ar_build_root_addr_vars(this.one_stmt_vec(s.for_step)); }
-                this.ar_build_root_addr_vars(s.body);
+                if s.for_init != null { this.ar_scan_escape_idents(this.one_stmt_vec(s.for_init), ptrs); }
+                if s.for_step != null { this.ar_scan_escape_idents(this.one_stmt_vec(s.for_step), ptrs); }
+                this.ar_scan_escape_idents(s.body, ptrs);
             } also s.kind == StmtKind.SWITCH {
-                foreach _, sc in<vector> s.switch_cases { this.ar_build_root_addr_vars(sc.body); }
-                this.ar_build_root_addr_vars(s.default_block);
+                foreach _, sc in<vector> s.switch_cases { this.ar_scan_escape_idents(sc.body, ptrs); }
+                this.ar_scan_escape_idents(s.default_block, ptrs);
             } also s.kind == StmtKind.WORKS {
-                this.ar_build_root_addr_vars(s.body);
-                this.ar_build_root_addr_vars(s.else_block);
+                this.ar_scan_escape_idents(s.body, ptrs);
+                this.ar_scan_escape_idents(s.else_block, ptrs);
             }
         }
+    }
+
+    // Second pass: a pointer local used in an escape may have taken the
+    // address in its own declaration (`p = &x; g.p = p`).
+    pub fnc ar_scan_prov_decls(stmts vec<Stmt>, ptrs hash<string, bool>) : void {
+        foreach _, s in<vector> stmts {
+            if s == null { continue; }
+            if s.kind == StmtKind.VAR_DECL && ptrs.isin(s.name) {
+                this.ar_collect_addr_escapes(s.value);
+            }
+            if s.kind == StmtKind.IF {
+                this.ar_scan_prov_decls(s.then_block, ptrs);
+                this.ar_scan_prov_decls(s.else_block, ptrs);
+            } also s.kind == StmtKind.WHILE || s.kind == StmtKind.LOOP || s.kind == StmtKind.BLOCK || s.kind == StmtKind.DEFER {
+                this.ar_scan_prov_decls(s.body, ptrs);
+            } also s.kind == StmtKind.FOR {
+                if s.for_init != null { this.ar_scan_prov_decls(this.one_stmt_vec(s.for_init), ptrs); }
+                if s.for_step != null { this.ar_scan_prov_decls(this.one_stmt_vec(s.for_step), ptrs); }
+                this.ar_scan_prov_decls(s.body, ptrs);
+            } also s.kind == StmtKind.SWITCH {
+                foreach _, sc in<vector> s.switch_cases { this.ar_scan_prov_decls(sc.body, ptrs); }
+                this.ar_scan_prov_decls(s.default_block, ptrs);
+            } also s.kind == StmtKind.WORKS {
+                this.ar_scan_prov_decls(s.body, ptrs);
+                this.ar_scan_prov_decls(s.else_block, ptrs);
+            }
+        }
+    }
+
+    pub fnc ar_build_root_addr_vars(stmts vec<Stmt>) : void {
+        ptrs: hash<string, bool>;
+        this.ar_scan_escape_idents(stmts, ptrs);
+        this.ar_scan_prov_decls(stmts, ptrs);
     }
 
     pub fnc ar_collect_escape_names(e Expr, out hash<string, bool>) : void {
@@ -5579,7 +5688,20 @@ pub def CodeGen : class {
         return val;
     }
 
+    // Complex type spellings (generics, function pointers, references)
+    // are built with char-by-char loops; memoize only those. Short common
+    // types stay on the direct comparison path (a hash lookup was slower).
     pub fnc llvm_type(typ string) : string {
+        if typ.bsize > 8 {
+            if this.type_cache2.isin(typ) { return this.type_cache2[typ]; }
+            res: string = this.llvm_type_uncached(typ);
+            this.type_cache2.push(typ, res);
+            return res;
+        }
+        return this.llvm_type_uncached(typ);
+    }
+
+    pub fnc llvm_type_uncached(typ string) : string {
         if this.tc.restricted_base.isin(typ) { return this.llvm_type(this.tc.restricted_base[typ]); }
         if typ.bsize > 1 && typ[0] == '&' {
             inner: string = "";
@@ -6061,6 +6183,7 @@ pub def CodeGen : class {
     }
 
     pub fnc get_expr_type(e Expr) : string {
+
         if e == null { return "void"; }
         if e.kind == ExprKind.INT { return "int"; }
         if e.kind == ExprKind.FLOAT { return "float"; }
@@ -12421,7 +12544,7 @@ pub def CodeGen : class {
                 this.defer_stack = empty_mdefers;
                 fn_name: string = c.name + "_" + m.name;
                 this.current_func_name = fn_name;
-                empty_cur_params2: vec<string>;
+                        empty_cur_params2: vec<string>;
                 this.current_fn_params = empty_cur_params2;
                 if !m.is_static { this.current_fn_params.pushb("this"); }
                 foreach _, p in<vector> m.params { this.current_fn_params.pushb(p.name); }
@@ -13433,6 +13556,28 @@ pub def CodeGen : class {
                     "  ret i8* %r\n" +
                     "}\n\n");
 
+        if this.body_file != null {
+            // Header declarations depend on string constants discovered
+            // while emitting bodies, so write them first, then append the
+            // body stream without materialising it in memory.
+            foreach _, hl in<vector> header_lines {
+                this.hash_ir_line(hl);
+                this.out_file.write(hl);
+                this.out_file.write("\n");
+            }
+            if this.arena {
+                foreach _, ml in<vector> this.loop_meta_lines {
+                    this.hash_ir_line(ml);
+                    this.out_file.write(ml);
+                    this.out_file.write("\n");
+                }
+            }
+            this.out_file.close();
+            this.body_file.close();
+            exec("cat " + CodeGen.shq(this.body_path) + " >> " + CodeGen.shq(this.out_path));
+            out: vec<string>;
+            return out;
+        }
         foreach _, body_ln in<vector> this.lines {
             header_lines.pushb(body_ln);
         }
@@ -13441,7 +13586,6 @@ pub def CodeGen : class {
                 header_lines.pushb(ml);
             }
         }
-
         return header_lines;
     }
 }

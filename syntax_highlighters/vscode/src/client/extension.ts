@@ -51,8 +51,10 @@ function readSettings(): LspSettings {
     const diagnostics = workspace.getConfiguration('leash.lsp.diagnostics');
     return {
         enabled: cfg.get<boolean>('enabled', true),
-        executablePath: cfg.get<string>('executablePath', 'leash'),
-        compilerArgs: cfg.get<string[]>('compilerArgs', []),
+        // These settings spawn a process: ignore workspace/folder overrides
+        // from an untrusted repository (.vscode/settings.json).
+        executablePath: cfg.inspect<string>('executablePath')?.globalValue ?? 'leash',
+        compilerArgs: cfg.inspect<string[]>('compilerArgs')?.globalValue ?? [],
         diagnostics: {
             enabled: diagnostics.get<boolean>('enabled', true),
             mode: diagnostics.get<'onType' | 'onSave' | 'onOpen'>('mode', 'onType'),

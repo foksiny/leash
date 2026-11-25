@@ -18,6 +18,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <stdarg.h>
 
 /* Strings handed back to Leash come from the Leash runtime allocator. */
 extern void *leash_gc_alloc_string(long long len);
@@ -86,10 +87,20 @@ enum {
     LSH_E_FILE      = -11  /* cannot open destination file          */
 };
 
+/* Clamp RFC 9113 flow-control window increments: a signed int addition
+ * would overflow after two large WINDOW_UPDATE frames. */
+static int lsh_add_window(int cur, unsigned int incr) {
+    long long v = (long long)cur + (long long)(incr & 0x7fffffffu);
+    return v > 0x7fffffffLL ? 0x7fffffff : (int)v;
+}
+
 static LSH_THREADLOCAL char lsh_detail[LSH_DETAIL_LEN] = "";
 
-static void lsh_set_detail(const char *fmt, const char *a, const char *b) {
-    snprintf(lsh_detail, sizeof(lsh_detail), fmt, a ? a : "", b ? b : "");
+static void lsh_set_detail(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(lsh_detail, sizeof(lsh_detail), fmt, ap);
+    va_end(ap);
 }
 
 static void lsh_clear_detail(void) {
@@ -389,6 +400,68 @@ static char *lsh_normalize_headers(const char *raw, size_t raw_len) {
     return out;
 }
 
+/* Reject request-line/header injection from untrusted method, path or
+ * custom header strings. RFC 7230 tokens contain no controls or separators. */
+static int lsh_safe_request_text(const char *s, int allow_space) {
+    if (!s) return 1;
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        if (*p == '\r' || *p == '\n' || *p == '\0') return 0;
+        if (*p < 0x20 || *p == 0x7f) return 0;
+        if (*p == ' ' && !allow_space) return 0;
+    }
+    return 1;
+}
+
+static int lsh_safe_method(const char *m) {
+    if (!m || !*m) return 0;
+    if (strlen(m) >= 16) return 0; /* method buffer in posix_perform */
+    if (!lsh_safe_request_text(m, 0)) return 0;
+    const char *sep = "()<>@,;:\\\"/[]?={} \t";
+    for (const char *p = m; *p; p++) if (strchr(sep, *p)) return 0;
+    return 1;
+}
+
+/* Drop credential-bearing headers before following a cross-origin redirect. */
+static int lsh_ci_prefix(const char *p, const char *lit) {
+    while (*lit) {
+        unsigned char a = (unsigned char)*p++;
+        unsigned char b = (unsigned char)*lit++;
+        if (a >= 'A' && a <= 'Z') a = (unsigned char)(a + 32);
+        if (b >= 'A' && b <= 'Z') b = (unsigned char)(b + 32);
+        if (a != b) return 0;
+    }
+    return 1;
+}
+
+static char *lsh_strip_sensitive_headers(const char *headers) {
+    if (!headers || !*headers) return NULL;
+    size_t cap = strlen(headers) + 1;
+    char *out = (char *)malloc(cap);
+    if (!out) return NULL;
+    size_t n = 0;
+    const char *p = headers;
+    while (*p) {
+        const char *eol = strchr(p, '\n');
+        size_t ll = eol ? (size_t)(eol - p) : strlen(p);
+        while (ll > 0 && (p[ll - 1] == '\r')) ll--;
+        int sensitive = 0;
+        if (ll >= 14 && lsh_ci_prefix(p, "Authorization:")) sensitive = 1;
+        if (ll >= 7 && lsh_ci_prefix(p, "Cookie:")) sensitive = 1;
+        if (ll >= 20 && lsh_ci_prefix(p, "Proxy-Authorization:")) sensitive = 1;
+        int first = (n == 0);
+        if (!sensitive && ll > 0 && n + ll + 3 <= cap) {
+            memcpy(out + n, p, ll); n += ll;
+            out[n++] = '\n'; out[n] = 0;
+        }
+        (void)first;
+        p = eol ? eol + 1 : NULL;
+        if (!p) break;
+    }
+    if (n == 0) { free(out); out = (char *)strdup(""); }
+    return out;
+}
+
+
 #ifndef _WIN32
 static int lsh_header_find(const char *headers, const char *name, char *dst, size_t dstcap) {
     size_t nlen = strlen(name);
@@ -423,6 +496,7 @@ static int lsh_build_request(lsh_buf *req, const char *method, const lsh_url *u,
                              const char *headers, const char *body) {
     buf_init(req);
     char line[2800];
+    if (!lsh_safe_method(method) || !lsh_safe_request_text(u->path, 1)) return 0;
 
     snprintf(line, sizeof(line), "%s %s HTTP/1.1\r\n", method, u->path);
     if (!buf_append(req, line, strlen(line))) return 0;
@@ -450,6 +524,7 @@ static int lsh_build_request(lsh_buf *req, const char *method, const lsh_url *u,
             const char *eol = strchr(p, '\n');
             size_t ll = eol ? (size_t)(eol - p) : strlen(p);
             while (ll > 0 && (p[ll - 1] == '\r')) ll--;
+            if (!lsh_safe_request_text(p, 1) || memchr(p, '\r', ll) != NULL) return 0;
             if (ll > 0 && !(ll == 0)) {
                 if (!buf_append(req, p, ll)) return 0;
                 if (!buf_append(req, "\r\n", 2)) return 0;
@@ -864,7 +939,7 @@ static int pump_body_fixed(struct lsh_conn *c, long long deadline, body_sink *si
         int n = conn_read_some(c, chunk, take, deadline);
         if (n < 0) return n;
         if (n == 0) {
-            lsh_set_detail("connection closed mid-body (%lld/%lld bytes)", "", NULL);
+            lsh_set_detail("connection closed mid-body (%lld/%lld bytes)", 0LL, 0LL);
             return LSH_E_PROTO;
         }
         if (!sink_write(sink, chunk, (size_t)n, got + n)) return LSH_E_MEMORY;
@@ -1087,8 +1162,20 @@ static int posix_perform(const char *method0, const char *url0, const char *head
                          int verify_tls, body_sink *sink, char **out_headers) {
     char method[16];
     char url[2800];
+    if (!lsh_safe_method(method0)) {
+        lsh_set_detail("unsafe HTTP method", NULL, NULL);
+        return LSH_E_URL;
+    }
     snprintf(method, sizeof(method), "%s", method0);
     snprintf(url, sizeof(url), "%s", url0);
+    lsh_url origin;
+    if (!lsh_parse_url(url0, &origin)) {
+        lsh_set_detail("unsupported or malformed URL: %.96s", url0, NULL);
+        return LSH_E_URL;
+    }
+    const char *cur_headers = headers;
+    const char *cur_body = body;
+    char *owned_headers = NULL;
 
     if (timeout_ms <= 0) timeout_ms = 30000;
     if (max_redirects < 0) max_redirects = 10;
@@ -1123,7 +1210,7 @@ static int posix_perform(const char *method0, const char *url0, const char *head
         lsh_socket_timeout(conn.fd, lsh_deadline_left(deadline));
 
         lsh_buf req;
-        if (!lsh_build_request(&req, method, &u, headers, body)) {
+        if (!lsh_build_request(&req, method, &u, cur_headers, cur_body)) {
             buf_free(&req);
             conn_close(&conn);
             return LSH_E_MEMORY;
@@ -1159,7 +1246,7 @@ static int posix_perform(const char *method0, const char *url0, const char *head
             status == 308) {
             char loc[2600];
             if (hop >= max_redirects) {
-                lsh_set_detail("more than %d redirects", "", NULL);
+                lsh_set_detail("more than %d redirects", 0);
                 free(hdr_raw);
                 buf_free(&tmp_sink.mem);
                 conn_close(&conn);
@@ -1167,7 +1254,7 @@ static int posix_perform(const char *method0, const char *url0, const char *head
             }
             if (!lsh_header_find(hdr_raw, "Location", loc, sizeof(loc)) ||
                 loc[0] == '\0') {
-                lsh_set_detail("%d redirect without Location header", "", NULL);
+                lsh_set_detail("%d redirect without Location header", 0);
                 free(hdr_raw);
                 buf_free(&tmp_sink.mem);
                 conn_close(&conn);
@@ -1181,6 +1268,24 @@ static int posix_perform(const char *method0, const char *url0, const char *head
                 conn_close(&conn);
                 return LSH_E_URL;
             }
+            int cross_origin = strcmp(next.host, origin.host) != 0 ||
+                               strcmp(next.scheme, origin.scheme) != 0 ||
+                               next.port_num != origin.port_num;
+            if (cross_origin && strcmp(origin.scheme, "https") == 0 &&
+                strcmp(next.scheme, "http") == 0) {
+                lsh_set_detail("refusing HTTPS to HTTP cross-origin redirect", NULL, NULL);
+                free(hdr_raw);
+                buf_free(&tmp_sink.mem);
+                conn_close(&conn);
+                return LSH_E_URL;
+            }
+            if (cross_origin) {
+                /* Credentials and bodies must not follow a cross-origin hop. */
+                free(owned_headers);
+                owned_headers = lsh_strip_sensitive_headers(cur_headers);
+                cur_headers = owned_headers ? owned_headers : "";
+                cur_body = "";
+            }
             int next_default_port =
                 (next.port_num == 443 && strcmp(next.scheme, "https") == 0) ||
                 (next.port_num == 80 && strcmp(next.scheme, "http") == 0);
@@ -1191,7 +1296,7 @@ static int posix_perform(const char *method0, const char *url0, const char *head
             if (status == 303 ||
                 ((status == 301 || status == 302) && strcmp(method, "POST") == 0)) {
                 strcpy(method, "GET");
-                body = "";
+                cur_body = "";
             }
             free(hdr_raw);
             buf_free(&tmp_sink.mem);
@@ -1572,8 +1677,8 @@ static int h2_send_request(struct lsh_conn *c, h2c_conn *h, unsigned int sid,
                                     ((unsigned int)f.payload[2] << 8) |
                                     (unsigned int)f.payload[3];
                 incr &= 0x7fffffff;
-                if (f.sid == 0) h->peer_window += (int)incr;
-                else if (f.sid == sid) h->stream_window += (int)incr;
+                if (f.sid == 0) h->peer_window = lsh_add_window(h->peer_window, incr);
+                else if (f.sid == sid) h->stream_window = lsh_add_window(h->stream_window, incr);
             } else if (f.type == H2_FTYPE_SETTINGS && !(f.flags & H2_FLAG_ACK)) {
                 h2_send_settings_ack(c, deadline);
             } else if (f.type == H2_FTYPE_PING && !(f.flags & H2_FLAG_ACK) && f.len == 8) {
@@ -1666,7 +1771,7 @@ static int h2_read_response(struct lsh_conn *c, h2c_conn *h, unsigned int sid,
                                 ((unsigned int)f.payload[2] << 8) |
                                 (unsigned int)f.payload[3];
             incr &= 0x7fffffff;
-            if (f.sid == 0) h->peer_window += (int)incr;
+            if (f.sid == 0) h->peer_window = lsh_add_window(h->peer_window, incr);
             h2_frame_free(&f);
             continue;
         }
@@ -1897,8 +2002,20 @@ static int h2_perform(const char *method0, const char *url0,
                       body_sink *sink, char **out_headers, int *out_proto) {
     char method[16];
     char url[2800];
+    if (!lsh_safe_method(method0)) {
+        lsh_set_detail("unsafe HTTP method", NULL, NULL);
+        return LSH_E_URL;
+    }
     snprintf(method, sizeof(method), "%s", method0);
     snprintf(url, sizeof(url), "%s", url0);
+    lsh_url origin;
+    if (!lsh_parse_url(url0, &origin)) {
+        lsh_set_detail("unsupported or malformed URL: %.96s", url0, NULL);
+        return LSH_E_URL;
+    }
+    const char *cur_headers = headers;
+    const char *cur_body = body;
+    char *owned_headers = NULL;
 
     if (timeout_ms <= 0) timeout_ms = 30000;
     if (max_redirects < 0) max_redirects = 10;
@@ -1940,7 +2057,7 @@ static int h2_perform(const char *method0, const char *url0,
                 /* Server has no h2: finish over HTTP/1.1. */
                 conn_close(&conn);
                 long long left = lsh_deadline_left(deadline);
-                int sub = lsh_perform(method, url, headers, body,
+                int sub = lsh_perform(method, url, cur_headers, cur_body,
                                       left > 0 ? left : 1,
                                       max_redirects - hop, verify_tls, sink,
                                       out_headers);
@@ -1954,7 +2071,7 @@ static int h2_perform(const char *method0, const char *url0,
         body_sink tmp_sink;
         buf_init(&tmp_sink.mem);
         tmp_sink.file = NULL;
-        int status = h2_exchange(&conn, method, &u, headers, body, deadline,
+        int status = h2_exchange(&conn, method, &u, cur_headers, cur_body, deadline,
                                  &tmp_sink, &hop_headers, !is_https);
         conn_close(&conn);
         if (status < 0) {
@@ -1967,14 +2084,14 @@ static int h2_perform(const char *method0, const char *url0,
             status == 308) {
             char loc[2600];
             if (hop >= max_redirects) {
-                lsh_set_detail("more than %d redirects", "", NULL);
+                lsh_set_detail("more than %d redirects", 0);
                 buf_free(&tmp_sink.mem);
                 return LSH_E_REDIRECT;
             }
             if (!hop_headers ||
                 !lsh_header_find(hop_headers, "Location", loc, sizeof(loc)) ||
                 loc[0] == '\0') {
-                lsh_set_detail("%d redirect without Location header", "", NULL);
+                lsh_set_detail("%d redirect without Location header", 0);
                 buf_free(&tmp_sink.mem);
                 return LSH_E_PROTO;
             }
@@ -1983,6 +2100,21 @@ static int h2_perform(const char *method0, const char *url0,
                 lsh_set_detail("bad redirect Location: %.96s", loc, NULL);
                 buf_free(&tmp_sink.mem);
                 return LSH_E_URL;
+            }
+            int cross_origin = strcmp(next.host, origin.host) != 0 ||
+                               strcmp(next.scheme, origin.scheme) != 0 ||
+                               next.port_num != origin.port_num;
+            if (cross_origin && strcmp(origin.scheme, "https") == 0 &&
+                strcmp(next.scheme, "http") == 0) {
+                lsh_set_detail("refusing HTTPS to HTTP cross-origin redirect", NULL, NULL);
+                buf_free(&tmp_sink.mem);
+                return LSH_E_URL;
+            }
+            if (cross_origin) {
+                free(owned_headers);
+                owned_headers = lsh_strip_sensitive_headers(cur_headers);
+                cur_headers = owned_headers ? owned_headers : "";
+                cur_body = "";
             }
             int next_default_port =
                 (next.port_num == 443 && strcmp(next.scheme, "https") == 0) ||
@@ -1993,7 +2125,7 @@ static int h2_perform(const char *method0, const char *url0,
             if (status == 303 ||
                 ((status == 301 || status == 302) && strcmp(method, "POST") == 0)) {
                 strcpy(method, "GET");
-                body = "";
+                cur_body = "";
             }
             buf_free(&tmp_sink.mem);
             continue;
@@ -2108,8 +2240,20 @@ static int win_perform_h2(const char *method0, const char *url0, const char *hea
                        int *out_proto) {
     char method[16];
     char url[2800];
+    if (!lsh_safe_method(method0)) {
+        lsh_set_detail("unsafe HTTP method", NULL, NULL);
+        return LSH_E_URL;
+    }
     snprintf(method, sizeof(method), "%s", method0);
     snprintf(url, sizeof(url), "%s", url0);
+    lsh_url origin;
+    if (!lsh_parse_url(url0, &origin)) {
+        lsh_set_detail("unsupported or malformed URL: %.96s", url0, NULL);
+        return LSH_E_URL;
+    }
+    const char *cur_headers = headers;
+    const char *cur_body = body;
+    char *owned_headers = NULL;
 
     if (timeout_ms <= 0) timeout_ms = 30000;
     if (max_redirects < 0) max_redirects = 10;
@@ -2141,7 +2285,7 @@ static int win_perform_h2(const char *method0, const char *url0, const char *hea
         wchar_t *whost = utf8_to_wide(u.host);
         wchar_t *wpath = utf8_to_wide(u.path);
         wchar_t *wmethod = utf8_to_wide(method);
-        wchar_t *whdr = headers && headers[0] ? utf8_to_wide(headers) : NULL;
+        wchar_t *whdr = headers && headers[0] ? utf8_to_wide(cur_headers) : NULL;
         wchar_t *wbody_hdr = NULL;
         if (!whost || !wpath || !wmethod) {
             if (whost) HeapFree(GetProcessHeap(), 0, whost);
@@ -2289,17 +2433,31 @@ static int win_perform_h2(const char *method0, const char *url0, const char *hea
             WinHttpCloseHandle(req);
             WinHttpCloseHandle(conn);
             if (hop >= max_redirects) {
-                lsh_set_detail("more than %d redirects", "", NULL);
+                lsh_set_detail("more than %d redirects", 0);
                 return LSH_E_REDIRECT;
             }
             if (!loc[0]) {
-                lsh_set_detail("%d redirect without Location header", "", NULL);
+                lsh_set_detail("%d redirect without Location header", 0);
                 return LSH_E_PROTO;
             }
             lsh_url next;
             if (!lsh_resolve_location(&u, loc, &next)) {
                 lsh_set_detail("bad redirect Location: %.96s", loc, NULL);
                 return LSH_E_URL;
+            }
+            int cross_origin = strcmp(next.host, origin.host) != 0 ||
+                               strcmp(next.scheme, origin.scheme) != 0 ||
+                               next.port_num != origin.port_num;
+            if (cross_origin && strcmp(origin.scheme, "https") == 0 &&
+                strcmp(next.scheme, "http") == 0) {
+                lsh_set_detail("refusing HTTPS to HTTP cross-origin redirect", NULL, NULL);
+                return LSH_E_URL;
+            }
+            if (cross_origin) {
+                free(owned_headers);
+                owned_headers = lsh_strip_sensitive_headers(cur_headers);
+                cur_headers = owned_headers ? owned_headers : "";
+                cur_body = "";
             }
             int defport = (next.port_num == 443 && strcmp(next.scheme, "https") == 0) ||
                           (next.port_num == 80 && strcmp(next.scheme, "http") == 0);
@@ -2308,7 +2466,7 @@ static int win_perform_h2(const char *method0, const char *url0, const char *hea
             if (status == 303 ||
                 ((status == 301 || status == 302) && strcmp(method, "POST") == 0)) {
                 strcpy(method, "GET");
-                body = "";
+                cur_body = "";
             }
             continue;
         }

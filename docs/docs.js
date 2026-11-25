@@ -1,4 +1,4 @@
-/* Leash documentation — shared behaviour, version 2.0.0
+/* Leash documentation — shared behaviour, version 2.1.0
  * - theme toggle (persisted in localStorage)
  * - client-side search over a compact topic index
  * - reading progress, heading anchors, copy buttons, mobile nav
@@ -126,7 +126,7 @@
     if (main) {
         var foot = document.createElement('div');
         foot.className = 'page-footer';
-        foot.innerHTML = 'Leash 2.0.0 documentation &middot; <a href="index.html">Overview</a>' +
+        foot.innerHTML = 'Leash 2.1.0 documentation &middot; <a href="index.html">Overview</a>' +
             ' &middot; <a href="https://github.com/foksiny/leash">Source</a>';
         main.appendChild(foot);
     }
@@ -166,7 +166,7 @@
         ['Runtime environment variables', 'advanced.html#arena-env', 'LEASH_ARENA_POISON, VERIFY, ESCAPE_SNAPSHOT, STATS'],
         ['Editor support', 'getting-started.html#editor-support', 'vscode, lsp, diagnostics, completion, hover, npm test'],
         ['Cross-thread roots', 'concurrency.html', 'spawn, worker pointee, container, class, shared registry'],
-        ['New in 2.0.0', 'index.html#whats-new', 'arena default, provenance, workers, snapshots, editor diagnostics']
+        ['New in 2.1.0', 'index.html#whats-new', 'arena default, provenance, workers, snapshots, editor diagnostics']
     ];
     var input = document.getElementById('doc-search');
     if (!input) return;

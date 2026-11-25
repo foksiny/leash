@@ -126,6 +126,32 @@ check('new builtins are advertised', () => {
     assert.ok(BUILTIN_FUNCTIONS.some(b => b.startsWith('getstruct')));
 });
 
+
+check('LSP settings cannot be overridden by workspace config', () => {
+    const pkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../package.json'), 'utf8'));
+    const props = pkg.contributes.configuration.properties;
+    assert.strictEqual(props['leash.lsp.executablePath'].scope, 'machine');
+    assert.strictEqual(props['leash.lsp.compilerArgs'].scope, 'machine');
+    assert.strictEqual(pkg.capabilities.untrustedWorkspaces.supported, false);
+    const ext = fs.readFileSync(path.resolve(__dirname, '../../src/client/extension.ts'), 'utf8');
+    assert.ok(ext.includes("inspect<string>('executablePath')"));
+});
+
+check('LSP diagnostics use a private exclusive temp file', () => {
+    const d = fs.readFileSync(path.resolve(__dirname, '../../src/server/diagnostics.ts'), 'utf8');
+    assert.ok(d.includes('mkdtempSync'));
+    assert.ok(d.includes('O_EXCL'));
+    assert.ok(d.includes('0o600'));
+});
+
+check('source-derived hover text is markdown-sanitized', () => {
+    const util = fs.readFileSync(path.resolve(__dirname, '../../src/server/util.ts'), 'utf8');
+    assert.ok(util.includes('export function markdownSafe'));
+    const builtins = fs.readFileSync(path.resolve(__dirname, '../../src/server/builtins.ts'), 'utf8');
+    assert.ok(builtins.includes('markdownSafe(sym.signature)'));
+    assert.ok(builtins.includes('markdownSafe(sym.docs)'));
+});
+
 async function serverStartsWithoutFolderChangeSupport(): Promise<void> {
     const exe = process.execPath;
     const server = path.resolve(__dirname, '../server/server.js');
