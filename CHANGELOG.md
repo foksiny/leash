@@ -5,6 +5,18 @@ All notable changes to the Leash compiler are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.2.0] - 2026-11-25
+
+### Added
+- **AI-model benchmark.** `benchmarking/tasks/ai_mlp.lsh` plus a Python reference and `tests/test_ai_model_benchmark.py` check a two-layer MLP for numeric parity, runtime (O0 vs O4 vs Python) and implementation size. Measured on 400k samples: O4 ~0.006 s vs Python ~0.16 s, with identical predictions and fewer source lines.
+
+### Changed
+- **Smarter O4.** Loop unrolling is now selected from the emitted IR: only FP-heavy kernels (AI/ML inference and numeric transforms) add `-funroll-loops`; integer call-heavy code keeps the faster O2-based pipeline. Measured across fib, hash lookup, matrix multiply, allocation stress and the MLP: O4 is faster or equal in every case, and never slower than O0.
+
+### Security
+- **Config safety:** `clibs` names are validated in the remaining project-mode path as well as `build`.
+- **Post-release safety regressions.** Added checks that a warm IR cache is keyed by source path (`_FILEPATH` cannot leak between programs) and that project-mode `clibs` names reject shell metacharacters.
+
 ## [2.1.0] - 2026-11-24
 
 ### Added

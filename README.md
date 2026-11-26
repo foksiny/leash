@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/foksiny/leash/releases"><img src="https://img.shields.io/badge/version-2.1.0-8b5cf6?style=flat-square" alt="Version 2.1.0"></a>
+  <a href="https://github.com/foksiny/leash/releases"><img src="https://img.shields.io/badge/version-2.2.0-8b5cf6?style=flat-square" alt="Version 2.2.0"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22c55e?style=flat-square" alt="MIT License"></a>
   <a href="docs/index.html"><img src="https://img.shields.io/badge/docs-full%20reference-22d3ee?style=flat-square" alt="Documentation"></a>
   <a href="https://github.com/foksiny/leash"><img src="https://img.shields.io/badge/compiler-self--hosted-f97316?style=flat-square" alt="Self-hosted"></a>
@@ -11,11 +11,11 @@
 
 # Leash Programming Language
 
-**Version 2.1.0** — a strongly typed, compiled language with deterministic memory, a self-hosted compiler, and a real standard library.
+**Version 2.2.0** — a strongly typed, compiled language with deterministic memory, a self-hosted compiler, and a real standard library.
 
 Leash compiles to native code through LLVM. It gives you an expressive, statically checked language with generics, operator overloading, structured error handling and first-class concurrency — while keeping the memory model explicit: the **scoped arena is the default layout**, with `--gc` available for the classic mark-and-sweep collector.
 
-> **New in 2.1.0:** hardened compiler/HTTP/package-manager security, cross-thread arena roots, cheaper escape snapshots, streamed IR emission (~38% less compile memory), and a fixed VS Code LSP. See the [changelog](CHANGELOG.md#210---2026-11-24).
+> **New in 2.2.0:** an AI-model benchmark with Python parity and speed/size comparison, smarter IR-guided O4 optimization, and extra safety regressions for the warm IR cache and project `clibs` config. See the [changelog](CHANGELOG.md#220---2026-11-25).
 
 > **Full documentation:** [`docs/index.html`](docs/index.html) — language reference, compiler CLI, standard library, package manager, concurrency, and advanced topics.
 
@@ -44,13 +44,13 @@ Leash was made with the help of AI, but its design and ideas come from a human. 
 git clone https://github.com/foksiny/leash && cd leash
 ./scripts/bootstrap.sh     # Python-free: seed -> stage1 -> stage2 -> stage3
 bin/leashc version
-# leash 2.1.0 (self-hosted)
+# leash 2.2.0 (self-hosted)
 ```
 
 Prebuilt release bundles are attached to every [GitHub release](https://github.com/foksiny/leash/releases) for Linux x86-64, Linux x86, Linux ARM64, Windows x86-64 and the JVM target. Each bundle includes the compiler, runtime, standard library, docs and an installer:
 
 ```bash
-tar -xzf leash-2.1.0-linux-x86_64.tar.gz && cd leash-2.1.0-linux-x86_64
+tar -xzf leash-2.2.0-linux-x86_64.tar.gz && cd leash-2.2.0-linux-x86_64
 ./install.sh
 export PATH="$HOME/.leash/bin:$PATH"
 ```
@@ -143,7 +143,7 @@ Native programs default to the arena; the JVM target always uses its own GC. C-A
 
 ## Known limitations
 
-Leash 2.1.0 is a complete, self-hosted toolchain. The limits below are intentional and scoped; each has a documented workaround.
+Leash 2.2.0 is a complete, self-hosted toolchain. The limits below are intentional and scoped; each has a documented workaround.
 
 | Limitation | Severity | Comment |
 |------------|----------|---------|

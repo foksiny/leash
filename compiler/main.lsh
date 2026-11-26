@@ -8,7 +8,7 @@ use leashed::*;
 // Single source of truth for the release version. Bump discipline:
 // README, docs badges, CHANGELOG.
 fnc leash_version() : string {
-    return "2.1.0";
+    return "2.2.0";
 }
 
 // Prefix test (no stdlib dependency this early in main.lsh).
@@ -793,7 +793,13 @@ fnc cmd_run(args string[]) : int {
             while li <= clibs.bsize {
                 if li == clibs.bsize || clibs[li] == ',' {
                     lib: string = xstrip_ws(part);
-                    if lib.bsize > 0 { extra_libs.pushb(lib); }
+                    if lib.bsize > 0 {
+                        if !xsafe_lib(lib) {
+                            show("error: unsafe library name in config.lshc 'clibs': '", lib, "'");
+                            return 1;
+                        }
+                        extra_libs.pushb(lib);
+                    }
                     part = "";
                 } else {
                     part = part + clibs[li];

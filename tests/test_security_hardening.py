@@ -101,5 +101,43 @@ fnc main() : void {
         self.assertIn("false json: maximum nesting depth exceeded", r.stdout)
 
 
+
+    def test_warm_ir_cache_is_keyed_by_source_path(self):
+        # Two identical programs in different paths embed different
+        # _FILEPATH values; a cache keyed only on source text leaked one
+        # path into the other program.
+        src = 'fnc main() : void { show(_FILEPATH); }\n'
+        outs = []
+        for name in ("cache_a", "cache_b"):
+            path = os.path.join(self.tmp, name + ".lsh")
+            with open(path, "w") as fh:
+                fh.write(src)
+            exe = os.path.join(self.tmp, name + "_bin")
+            r = subprocess.run([BIN, "compile", path, "to", exe], cwd=self.tmp,
+                               capture_output=True, text=True,
+                               errors="replace", timeout=120)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            run = subprocess.run([exe], cwd=self.tmp, capture_output=True,
+                                 text=True, errors="replace", timeout=120)
+            self.assertEqual(run.returncode, 0, run.stderr)
+            outs.append(run.stdout.strip())
+        self.assertNotEqual(outs[0], outs[1])
+
+    def test_project_clibs_name_cannot_inject_shell(self):
+        marker = os.path.join(self.tmp, "PWNED_CLIBS")
+        if os.path.exists(marker):
+            os.remove(marker)
+        proj = os.path.join(self.tmp, "clibs_proj")
+        os.makedirs(proj, exist_ok=True)
+        with open(os.path.join(proj, "config.lshc"), "w") as fh:
+            fh.write('main: "main.lsh"\nclibs: { "x;touch %s": "1.0" }\n' % marker)
+        with open(os.path.join(proj, "main.lsh"), "w") as fh:
+            fh.write("fnc main() : void { show(1); }\n")
+        r = subprocess.run([BIN, "build"], cwd=proj, capture_output=True,
+                           text=True, errors="replace", timeout=120)
+        self.assertNotEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("unsafe library name", r.stdout + r.stderr)
+        self.assertFalse(os.path.exists(marker))
+
 if __name__ == "__main__":
     unittest.main()

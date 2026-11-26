@@ -163,5 +163,35 @@ fnc main() { show(fib(20)); }
                 self.assertEqual(run.stdout.strip(), "ok", f"O{o} output")
 
 
+
+    def test_o4_unroll_is_selected_from_fp_density(self):
+        """O4 adds -funroll-loops only for FP-heavy kernels; the gate must
+        exist in the driver and both program classes must still build."""
+        with open(DRIVER) as fh:
+            driver = fh.read()
+        self.assertIn("fp_ops > 64", driver)
+        self.assertIn('-funroll-loops', driver)
+        with tempfile.TemporaryDirectory() as td:
+            for name, src in (
+                ("mlp", 'fnc main() : void { x: float = 1.5; i: int = 0;\n'
+                        '  while i < 200 { x = x + tofloat(float, i) * 0.25; i = i + 1; }\n'
+                        '  show(x);\n}'),
+                ("int", 'fnc main() : void { x: int = 0; i: int = 0;\n'
+                        '  while i < 200 { x = x + i; i = i + 1; }\n'
+                        '  show(x);\n}'),
+            ):
+                path = os.path.join(td, name + ".lsh")
+                with open(path, "w") as fh:
+                    fh.write(src)
+                exe = os.path.join(td, name + "_O4")
+                r = subprocess.run([LEASHC, "compile", path, "-O4", "to", exe],
+                                   cwd=ROOT, capture_output=True, text=True,
+                                   timeout=180)
+                self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+                run = subprocess.run([exe], capture_output=True, text=True,
+                                     timeout=60)
+                self.assertEqual(run.returncode, 0, run.stderr)
+                self.assertTrue(run.stdout.strip())
+
 if __name__ == "__main__":
     unittest.main()

@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Leash - Leash documentation</title>
-<meta name="description" content="Leash is a strongly typed, self-hosted language compiling to native code through LLVM. Version 2.1.0 continues with the scoped arena the default memory layout, with --gc available for mark-and-sweep.">
+<meta name="description" content="Leash is a strongly typed, self-hosted language compiling to native code through LLVM. Version 2.2.0 continues with the scoped arena the default memory layout, with --gc available for mark-and-sweep.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Crect width=%27100%27 height=%27100%27 rx=%2722%27 fill=%27%23241f4d%27/%3E%3Ctext x=%2750%27 y=%2770%27 font-size=%2760%27 text-anchor=%27middle%27 font-family=%27monospace%27 fill=%27white%27%3EL%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
 <script src="docs.js" defer></script>
@@ -48,7 +48,7 @@
       <a href="advanced.html" class="">Standalone pages</a>
       <a href="limitations.html" class="">Known limitations</a>
     </div>
-    <div class="sidenav-foot">Leash 2.1.0</div>
+    <div class="sidenav-foot">Leash 2.2.0</div>
   </aside>
 
   <main class="content" id="main-content">
@@ -62,18 +62,17 @@
         <p>Version 2.0.0 made the <strong>scoped bump arena the default native memory layout</strong>. It gives you plain C pointers, deterministic frame and loop lifetimes, and no stop-the-world pause. If your workload has adversarial or highly dynamic lifetimes, pass <code>--gc</code> to opt into the classic mark-and-sweep collector.</p>
 
         <div class="callout callout-success" id="whats-new">
-          <strong>What&rsquo;s new in 2.1.0.</strong>
+          <strong>What&rsquo;s new in 2.2.0.</strong>
           <ul>
-            <li><strong>Safer compiler and dependencies.</strong> Verified CLI command-injection paths are closed, `@from` and `-l` names are strictly validated, temp files use private directories, JSON/HTTP parsing is bounded, and the package registry validator runs from trusted code. <a href="advanced.html#lifetime-audit">Audit rules &rarr;</a></li>
-            <li><strong>Arena roots cross threads.</strong> Container, class and aggregate pointees are safe in workers; snapshots copy only the live prefix of a block. <a href="advanced.html#arena-escapes">How escapes work &rarr;</a></li>
-            <li><strong>Lower compile memory.</strong> IR bodies stream to disk instead of living in a 435k-line vector: peak RSS on a self-host build fell about 38%, with byte-identical IR. <a href="compiler.html#compiler-pipeline">Compiler pipeline &rarr;</a></li>
-            <li><strong>Editor diagnostics work.</strong> <code>leash check</code> runs the arena audit and the VS Code LSP shows <code>E_ARENA_LIFETIME</code> with <code>why:</code>/<code>help:</code> guidance. <a href="advanced.html#reading-lifetime-diagnostics">Diagnostic guide &rarr;</a></li>
-            <li><strong>More exhaustive testing.</strong> Seeded generated differential programs, cross-thread ASan/UBSan harnesses and security regression tests run in the full suite. <a href="limitations.html">Known limitations &rarr;</a></li>
+            <li><strong>AI-model benchmark.</strong> A two-layer MLP and its Python reference are checked for numeric parity, runtime and implementation size: Leash O4 runs about 25&times; faster than Python on the same model. <a href="compiler.html#optimization-levels">Optimization levels &rarr;</a></li>
+            <li><strong>Smarter O4 release profile.</strong> Loop unrolling is selected from the emitted IR, so floating-point kernels get the extra optimization while integer call-heavy programs keep the faster pipeline; O4 stays the best level for arena builds. <a href="compiler.html#optimization-levels">O4 details &rarr;</a></li>
+            <li><strong>Extra safety regressions.</strong> Warm IR cache entries are keyed by source path, and project <code>clibs</code> names are validated in every command path. <a href="advanced.html#lifetime-audit">Audit rules &rarr;</a></li>
+            <li><strong>Built on 2.1.0.</strong> Cross-thread arena roots, cheap escape snapshots, streamed IR emission and working editor diagnostics remain part of the release. <a href="advanced.html#arena-escapes">Escapes &rarr;</a> &middot; <a href="advanced.html#reading-lifetime-diagnostics">Diagnostics &rarr;</a></li>
           </ul>
         </div>
 
         <div class="stat-grid">
-          <div class="stat"><div class="value">2.1.0</div><div class="label">Current release</div></div>
+          <div class="stat"><div class="value">2.2.0</div><div class="label">Current release</div></div>
           <div class="stat"><div class="value">15</div><div class="label">Compiler pipeline stages</div></div>
           <div class="stat"><div class="value">100+</div><div class="label">Importable packages</div></div>
           <div class="stat"><div class="value">7</div><div class="label">Compilation targets</div></div>
@@ -151,7 +150,7 @@
 git clone https://github.com/foksiny/leash &amp;&amp; cd leash
 ./scripts/bootstrap.sh
 bin/leashc version
-<span class="cm"># leash 2.1.0 (self-hosted)</span></code></pre>
+<span class="cm"># leash 2.2.0 (self-hosted)</span></code></pre>
           </div>
           <div class="step">
             <h3>Write a program</h3>
