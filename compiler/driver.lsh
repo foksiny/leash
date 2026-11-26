@@ -782,6 +782,26 @@ pub def CompilerDriver : class {
         return h;
     }
 
+    pub fnc count_fp_ops(lines vec<string>) : int {
+        n: int = 0;
+        foreach _, ln in<vector> lines {
+            i: int = 0;
+            while i + 4 <= ln.bsize {
+                if ln[i] == 'f' && (
+                   (ln[i+1] == 'a' && ln[i+2] == 'd' && ln[i+3] == 'd') ||
+                   (ln[i+1] == 'm' && ln[i+2] == 'u' && ln[i+3] == 'l') ||
+                   (ln[i+1] == 's' && ln[i+2] == 'u' && ln[i+3] == 'b') ||
+                   (ln[i+1] == 'd' && ln[i+2] == 'i' && ln[i+3] == 'v')) {
+                    n = n + 1;
+                    i = i + 4;
+                } else {
+                    i = i + 1;
+                }
+            }
+        }
+        return n;
+    }
+
     pub fnc file_exists(p string) : bool {
         f: File = File.open(p, "r");
         if f != null {
@@ -1278,12 +1298,17 @@ pub def CompilerDriver : class {
                 opt_flag = "-O2 -flto=thin -fno-plt -march=native -mtune=native";
                 // Select the loop-unroll flag from the emitted IR: it helps
                 // FP-heavy AI kernels but regresses integer call-heavy code.
-                fp_count: string = this.exec_out("grep -c -E ' f(add|mul|sub|div) ' " + Path.shq(stream_ir));
                 fp_ops: int = 0;
-                fi: int = 0;
-                while fi < fp_count.bsize && fp_count[fi] >= '0' && fp_count[fi] <= '9' {
-                    fp_ops = fp_ops * 10 + (fp_count[fi] - '0');
-                    fi = fi + 1;
+                if ir_stream {
+                    fp_count: string = this.exec_out("grep -c -E ' f(add|mul|sub|div) ' " + Path.shq(stream_ir));
+                    fi: int = 0;
+                    while fi < fp_count.bsize && fp_count[fi] >= '0' && fp_count[fi] <= '9' {
+                        fp_ops = fp_ops * 10 + (fp_count[fi] - '0');
+                        fi = fi + 1;
+                    }
+                } else {
+                    // O3/O4 keep the IR in memory for recursive unrolling.
+                    fp_ops = this.count_fp_ops(ir_lines);
                 }
                 if fp_ops > 64 { opt_flag = opt_flag + " -funroll-loops"; }
             } else {

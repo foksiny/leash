@@ -5,6 +5,12 @@ All notable changes to the Leash compiler are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [2.2.1] - 2026-11-26
+
+### Fixed
+- **Wide integers (128/256/512 bits) now use their declared width everywhere.** C-spelling aliases such as `int128`/`uint512` are resolved in `llvm_type`, `is_sized_int_type`, `sized_int_width` and `sized_int_is_signed`, so a recursive `int128` function no longer compiles with an `i64` signature while its callers pass `i128` (which produced `18446744073709551617` for `ackermann(4,1)` instead of `65533`). Implicit function returns now emit zero for any integer width instead of `ret i128 null`. Added `tests/test_wide_ints.py` covering all six aliases, shifts beyond 64 bits and the recursive Ackermann case.
+- **O4 compile no longer runs `grep` with an empty path.** FP-density detection now scans the in-memory IR when O4 keeps it for recursive unrolling; no `grep: : Arquivo ou diretório inexistente` warning is emitted.
+
 ## [2.2.0] - 2026-11-25
 
 ### Added

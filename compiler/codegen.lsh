@@ -208,6 +208,20 @@ pub def CodeGen : class {
         return (x * 16777619) & 0x7fffffff;
     }
 
+    // Default value for an implicit function return. Integer types of any
+    // bit width must return zero, not `null` (LLVM rejects `ret i128 null`).
+    pub fnc emit_default_ret(lret string) : void {
+        if lret == "void" {
+            this.emit("  ret void");
+        } also this.lty_width(lret) > 0 {
+            this.emit("  ret " + lret + " 0");
+        } also lret == "float" || lret == "double" {
+            this.emit("  ret " + lret + " 0.0");
+        } else {
+            this.emit("  ret " + lret + " null");
+        }
+    }
+
     pub fnc emit(line string) : void {
         this.ir_lines_count = this.ir_lines_count + 1;
         this.hash_ir_line(line);
@@ -5541,6 +5555,7 @@ pub def CodeGen : class {
 
     // int<N> or uint<N> (N > 0)?
     pub fnc is_sized_int_type(t string) : bool {
+        if this.tc.prog_aliases.isin(t) { t = this.tc.prog_aliases[t]; }
         if t.bsize < 6 { return false; }
         if t[t.bsize - 1] != '>' { return false; }
         if t[0] == 'i' && t[1] == 'n' && t[2] == 't' && t[3] == '<' { return true; }
@@ -5549,6 +5564,8 @@ pub def CodeGen : class {
     }
 
     pub fnc sized_int_width(t string) : int {
+        if this.tc.prog_aliases.isin(t) { t = this.tc.prog_aliases[t]; }
+        if t.bsize < 5 || t[0] == '\0' { return 0; }
         if t[0] == 'u' {
             return this.parse_int_str(this.str_slice2(t, 5, t.bsize - 1));
         }
@@ -5556,7 +5573,8 @@ pub def CodeGen : class {
     }
 
     pub fnc sized_int_is_signed(t string) : bool {
-        return t[0] == 'i';
+        if this.tc.prog_aliases.isin(t) { t = this.tc.prog_aliases[t]; }
+        return t.bsize > 0 && t[0] == 'i';
     }
 
     // Bit width of an llvm integer type ("i128" -> 128); 0 if not int-like.
@@ -5702,6 +5720,10 @@ pub def CodeGen : class {
     }
 
     pub fnc llvm_type_uncached(typ string) : string {
+        // C-spelling aliases from `def int128 : type int<128>;` are stored
+        // as type aliases, not restricted literal types. Resolve them here
+        // so signatures, locals and call sites all agree on `i128`.
+        if this.tc.prog_aliases.isin(typ) { return this.llvm_type(this.tc.prog_aliases[typ]); }
         if this.tc.restricted_base.isin(typ) { return this.llvm_type(this.tc.restricted_base[typ]); }
         if typ.bsize > 1 && typ[0] == '&' {
             inner: string = "";
@@ -12197,13 +12219,7 @@ pub def CodeGen : class {
             } else {
                 this.af_cleanup("");
             }
-            if lret == "void" {
-                this.emit("  ret void");
-            } also lret == "i64" || lret == "i32" || lret == "i1" || lret == "i8" {
-                this.emit("  ret " + lret + " 0");
-            } else {
-                this.emit("  ret " + lret + " null");
-            }
+            this.emit_default_ret(lret);
         }
 
         this.emit("}\n");
@@ -12657,13 +12673,7 @@ pub def CodeGen : class {
                     } else {
                         this.af_cleanup("");
                     }
-                    if lret == "void" {
-                        this.emit("  ret void");
-                    } also lret == "i64" || lret == "i32" || lret == "i1" || lret == "i8" {
-                        this.emit("  ret " + lret + " 0");
-                    } else {
-                        this.emit("  ret " + lret + " null");
-                    }
+                    this.emit_default_ret(lret);
                 }
                 this.emit("}\n");
                 this.af_reset();

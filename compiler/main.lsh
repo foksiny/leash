@@ -8,7 +8,7 @@ use leashed::*;
 // Single source of truth for the release version. Bump discipline:
 // README, docs badges, CHANGELOG.
 fnc leash_version() : string {
-    return "2.2.0";
+    return "2.2.1";
 }
 
 // Prefix test (no stdlib dependency this early in main.lsh).
