@@ -1,0 +1,237 @@
+// Native OpenGL bindings. The static shim creates either a surfaceless EGL
+// context (headless) or a real X11/GLX window, and loads system GL/EGL/X11
+// at runtime; no linker flags or development packages are needed.
+@from("liblshgl.a") {
+    fnc lshgl_create_context() : pointer<void>;
+    fnc lshgl_destroy_context(ctx pointer<void>) : void;
+    fnc lshgl_open_window(w int, h int, title string) : pointer<void>;
+    fnc lshgl_close_window() : void;
+    fnc lshgl_poll_events() : void;
+    fnc lshgl_should_close() : bool;
+    fnc lshgl_request_close() : void;
+    fnc lshgl_swap_buffers() : void;
+    fnc lshgl_key_down(key int) : bool;
+    fnc lshgl_key_pressed(key int) : bool;
+    fnc lshgl_window_width() : int;
+    fnc lshgl_window_height() : int;
+    fnc lshgl_time_ms() : int<64>;
+    fnc lshgl_sleep_ms(ms int) : void;
+    fnc lshgl_set_vsync(enabled int) : void;
+    fnc lshgl_mouse_capture(on int) : void;
+    fnc lshgl_mouse_captured() : bool;
+    fnc lshgl_mouse_dx() : int;
+    fnc lshgl_mouse_dy() : int;
+    fnc lshgl_mouse_down(button int) : bool;
+    fnc lshgl_mouse_pressed(button int) : bool;
+    fnc lshgl_version() : string;
+    fnc lshgl_renderer() : string;
+    fnc lshgl_vendor() : string;
+    fnc lshgl_viewport(w int, h int) : void;
+    fnc lshgl_clear_color(r float, g float, b float, a float) : void;
+    fnc lshgl_clear() : void;
+    fnc lshgl_read_pixel(x int, y int) : int<64>;
+    fnc lshgl_error() : int;
+    fnc lshgl_ortho(l float, r float, b float, t float, n float, f float) : void;
+    fnc lshgl_frustum(l float, r float, b float, t float, n float, f float) : void;
+    fnc lshgl_begin(mode int) : void;
+    fnc lshgl_end() : void;
+    fnc lshgl_color(r float, g float, b float, a float) : void;
+    fnc lshgl_vertex2(x float, y float) : void;
+    fnc lshgl_vertex3(x float, y float, z float) : void;
+    fnc lshgl_normal3(x float, y float, z float) : void;
+    fnc lshgl_translate(x float, y float, z float) : void;
+    fnc lshgl_rotate(angle float, x float, y float, z float) : void;
+    fnc lshgl_scale(x float, y float, z float) : void;
+    fnc lshgl_matrix(mode int) : void;
+    fnc lshgl_identity() : void;
+    fnc lshgl_enable(cap int) : void;
+    fnc lshgl_disable(cap int) : void;
+    fnc lshgl_depth_func(mode int) : void;
+    fnc lshgl_depth_mask(on int) : void;
+    fnc lshgl_blend(on int) : void;
+    fnc lshgl_line_width(w float) : void;
+    fnc lshgl_shade_flat() : void;
+    fnc lshgl_shade_smooth() : void;
+    fnc lshgl_lighting(on int) : void;
+    fnc lshgl_light_directional(x float, y float, z float,
+                                r float, g float, b float) : void;
+    fnc lshgl_light_ambient(r float, g float, b float, a float) : void;
+    fnc lshgl_fog(start float, end float,
+                  r float, g float, b float) : void;
+    fnc lshgl_no_fog() : void;
+    fnc lshgl_new_list() : int;
+    fnc lshgl_end_list() : void;
+    fnc lshgl_call_list(id int) : void;
+    fnc lshgl_delete_list(id int) : void;
+}
+
+
+
+pub def Gl : class {
+    static pub fnc init() : pointer<void> {
+        return lshgl_create_context()
+    }
+
+    // Opens a double-buffered window. Returns null when no usable display or
+    // GLX visual exists, so callers can fall back to the headless context.
+    static pub fnc open_window(w int, h int, title string) : pointer<void> {
+        return lshgl_open_window(w, h, title)
+    }
+
+    // Works for both window and headless contexts.
+    static pub fnc close(ctx pointer<void>) : void {
+        lshgl_destroy_context(ctx)
+    }
+
+    static pub fnc close_window() : void {
+        lshgl_close_window()
+    }
+
+    static pub fnc poll_events() : void {
+        lshgl_poll_events()
+    }
+
+    static pub fnc should_close() : bool {
+        return lshgl_should_close()
+    }
+
+    static pub fnc request_close() : void {
+        lshgl_request_close()
+    }
+
+    static pub fnc swap_buffers() : void {
+        lshgl_swap_buffers()
+    }
+
+    static pub fnc key_down(key int) : bool {
+        return lshgl_key_down(key)
+    }
+
+    static pub fnc key_pressed(key int) : bool {
+        return lshgl_key_pressed(key)
+    }
+
+    static pub fnc width() : int { return lshgl_window_width() }
+    static pub fnc height() : int { return lshgl_window_height() }
+
+    // Monotonic clock and a bounded sleep for frame pacing.
+    static pub fnc time_ms() : int<64> { return lshgl_time_ms() }
+    static pub fnc sleep_ms(ms int) : void { lshgl_sleep_ms(ms) }
+
+    // VSync is enabled by default; turn it off to measure an uncapped frame
+    // rate. The shim uses GLX_EXT/MESA/SGI swap control when available.
+    static pub fnc set_vsync(on bool) : void { lshgl_set_vsync(on ? 1 : 0) }
+
+    // Relative mouse mode: hides the cursor, grabs the pointer and reports
+    // motion deltas. Capture is released automatically when focus is lost.
+    static pub fnc mouse_capture(on bool) : void { lshgl_mouse_capture(on ? 1 : 0) }
+    static pub fnc mouse_captured() : bool { return lshgl_mouse_captured() }
+    static pub fnc mouse_dx() : int { return lshgl_mouse_dx() }
+    static pub fnc mouse_dy() : int { return lshgl_mouse_dy() }
+    static pub fnc mouse_down(button int) : bool { return lshgl_mouse_down(button) }
+    static pub fnc mouse_pressed(button int) : bool { return lshgl_mouse_pressed(button) }
+    static pub fnc mouse_left() : int { return 1; }
+    static pub fnc mouse_right() : int { return 2; }
+    static pub fnc mouse_middle() : int { return 3; }
+
+    // X11 keysyms and GL modes, exposed as functions so they cross module imports.
+    static pub fnc key_w() : int { return 0x057; }
+    static pub fnc key_a() : int { return 0x061; }
+    static pub fnc key_s() : int { return 0x073; }
+    static pub fnc key_d() : int { return 0x064; }
+    static pub fnc key_q() : int { return 0x071; }
+    static pub fnc key_e() : int { return 0x065; }
+    static pub fnc key_f() : int { return 0x066; }
+    static pub fnc key_g() : int { return 0x067; }
+    static pub fnc key_r() : int { return 0x072; }
+    static pub fnc key_space() : int { return 0x020; }
+    static pub fnc key_escape() : int { return 0xFF1B; }
+    static pub fnc key_shift() : int { return 0xFFE1; }
+    static pub fnc key_num(n int) : int { return 0x030 + n; }
+    static pub fnc quads() : int { return 0x0007; }
+    static pub fnc triangles() : int { return 0x0004; }
+    static pub fnc lines() : int { return 0x0001; }
+    static pub fnc projection() : int { return 0x1701; }
+    static pub fnc modelview() : int { return 0x1700; }
+    static pub fnc depth_test() : int { return 0x0B71; }
+    static pub fnc fog_cap() : int { return 0x0B60; }
+    static pub fnc lighting_cap() : int { return 0x0B50; }
+    static pub fnc blend_cap() : int { return 0x0BE2; }
+    static pub fnc lequal() : int { return 0x0203; }
+
+    static pub fnc version() : string {
+        return lshgl_version()
+    }
+
+    static pub fnc renderer() : string {
+        return lshgl_renderer()
+    }
+
+    static pub fnc vendor() : string {
+        return lshgl_vendor()
+    }
+
+    static pub fnc viewport(w int, h int) : void {
+        lshgl_viewport(w, h)
+    }
+
+    static pub fnc clear_color(r float, g float, b float, a float) : void {
+        lshgl_clear_color(r, g, b, a)
+    }
+
+    static pub fnc clear() : void {
+        lshgl_clear()
+    }
+
+    static pub fnc pixel(x int, y int) : int<64> {
+        return lshgl_read_pixel(x, y)
+    }
+
+    static pub fnc error() : int {
+        return lshgl_error()
+    }
+    static pub fnc begin(mode int) : void { lshgl_begin(mode) }
+    static pub fnc end() : void { lshgl_end() }
+    static pub fnc color(r float, g float, b float, a float) : void { lshgl_color(r, g, b, a) }
+    static pub fnc vertex2(x float, y float) : void { lshgl_vertex2(x, y) }
+    static pub fnc matrix(mode int) : void { lshgl_matrix(mode) }
+    static pub fnc identity() : void { lshgl_identity() }
+    static pub fnc ortho(l float, r float, b float, t float, n float, f float) : void {
+        lshgl_ortho(l, r, b, t, n, f)
+    }
+    static pub fnc frustum(l float, r float, b float, t float, n float, f float) : void {
+        lshgl_frustum(l, r, b, t, n, f)
+    }
+    static pub fnc vertex3(x float, y float, z float) : void { lshgl_vertex3(x, y, z) }
+    static pub fnc normal3(x float, y float, z float) : void { lshgl_normal3(x, y, z) }
+    static pub fnc translate(x float, y float, z float) : void { lshgl_translate(x, y, z) }
+    static pub fnc rotate(angle float, x float, y float, z float) : void {
+        lshgl_rotate(angle, x, y, z)
+    }
+    static pub fnc scale(x float, y float, z float) : void { lshgl_scale(x, y, z) }
+    static pub fnc enable(cap int) : void { lshgl_enable(cap) }
+    static pub fnc disable(cap int) : void { lshgl_disable(cap) }
+    static pub fnc depth_func(mode int) : void { lshgl_depth_func(mode) }
+    static pub fnc depth_mask(on bool) : void { lshgl_depth_mask(on ? 1 : 0) }
+    static pub fnc blend(on bool) : void { lshgl_blend(on ? 1 : 0) }
+    static pub fnc line_width(w float) : void { lshgl_line_width(w) }
+    static pub fnc shade_flat() : void { lshgl_shade_flat() }
+    static pub fnc shade_smooth() : void { lshgl_shade_smooth() }
+    static pub fnc lighting(on bool) : void { lshgl_lighting(on ? 1 : 0) }
+    static pub fnc light_directional(x float, y float, z float,
+                                     r float, g float, b float) : void {
+        lshgl_light_directional(x, y, z, r, g, b)
+    }
+    static pub fnc light_ambient(r float, g float, b float, a float) : void {
+        lshgl_light_ambient(r, g, b, a)
+    }
+    static pub fnc fog(start float, end float,
+                       r float, g float, b float) : void {
+        lshgl_fog(start, end, r, g, b)
+    }
+    static pub fnc no_fog() : void { lshgl_no_fog() }
+    static pub fnc new_list() : int { return lshgl_new_list() }
+    static pub fnc end_list() : void { lshgl_end_list() }
+    static pub fnc call_list(id int) : void { lshgl_call_list(id) }
+    static pub fnc delete_list(id int) : void { lshgl_delete_list(id) }
+}

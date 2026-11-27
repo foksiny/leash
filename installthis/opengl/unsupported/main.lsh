@@ -1,0 +1,95 @@
+// OpenGL is supported on native Linux x86_64. Other targets get a clear
+// runtime signal instead of a link failure.
+
+
+pub def Gl : class {
+    static pub fnc init() : pointer<void> { return null }
+    static pub fnc open_window(w int, h int, title string) : pointer<void> { return null }
+    static pub fnc close(ctx pointer<void>) : void { }
+    static pub fnc close_window() : void { }
+    static pub fnc poll_events() : void { }
+    static pub fnc should_close() : bool { return true }
+    static pub fnc request_close() : void { }
+    static pub fnc swap_buffers() : void { }
+    static pub fnc key_down(key int) : bool { return false }
+    static pub fnc key_pressed(key int) : bool { return false }
+    static pub fnc width() : int { return 0 }
+    static pub fnc height() : int { return 0 }
+    static pub fnc time_ms() : int<64> { return 0 }
+    static pub fnc sleep_ms(ms int) : void { }
+    static pub fnc set_vsync(on bool) : void { }
+    static pub fnc mouse_capture(on bool) : void { }
+    static pub fnc mouse_captured() : bool { return false }
+    static pub fnc mouse_dx() : int { return 0 }
+    static pub fnc mouse_dy() : int { return 0 }
+    static pub fnc mouse_down(button int) : bool { return false }
+    static pub fnc mouse_pressed(button int) : bool { return false }
+    static pub fnc mouse_left() : int { return 1; }
+    static pub fnc mouse_right() : int { return 2; }
+    static pub fnc mouse_middle() : int { return 3; }
+    // X11 keysyms and GL modes, exposed as functions so they cross module imports.
+    static pub fnc key_w() : int { return 0x057; }
+    static pub fnc key_a() : int { return 0x061; }
+    static pub fnc key_s() : int { return 0x073; }
+    static pub fnc key_d() : int { return 0x064; }
+    static pub fnc key_q() : int { return 0x071; }
+    static pub fnc key_e() : int { return 0x065; }
+    static pub fnc key_f() : int { return 0x066; }
+    static pub fnc key_g() : int { return 0x067; }
+    static pub fnc key_r() : int { return 0x072; }
+    static pub fnc key_space() : int { return 0x020; }
+    static pub fnc key_escape() : int { return 0xFF1B; }
+    static pub fnc key_shift() : int { return 0xFFE1; }
+    static pub fnc key_num(n int) : int { return 0x030 + n; }
+    static pub fnc quads() : int { return 0x0007; }
+    static pub fnc triangles() : int { return 0x0004; }
+    static pub fnc lines() : int { return 0x0001; }
+    static pub fnc projection() : int { return 0x1701; }
+    static pub fnc modelview() : int { return 0x1700; }
+    static pub fnc depth_test() : int { return 0x0B71; }
+    static pub fnc fog_cap() : int { return 0x0B60; }
+    static pub fnc lighting_cap() : int { return 0x0B50; }
+    static pub fnc blend_cap() : int { return 0x0BE2; }
+    static pub fnc lequal() : int { return 0x0203; }
+
+    static pub fnc version() : string { return "OpenGL is not available on this target" }
+    static pub fnc renderer() : string { return "" }
+    static pub fnc vendor() : string { return "" }
+    static pub fnc viewport(w int, h int) : void { }
+    static pub fnc clear_color(r float, g float, b float, a float) : void { }
+    static pub fnc clear() : void { }
+    static pub fnc pixel(x int, y int) : int<64> { return 0 }
+    static pub fnc error() : int { return 1 }
+    static pub fnc begin(mode int) : void { }
+    static pub fnc end() : void { }
+    static pub fnc color(r float, g float, b float, a float) : void { }
+    static pub fnc vertex2(x float, y float) : void { }
+    static pub fnc vertex3(x float, y float, z float) : void { }
+    static pub fnc normal3(x float, y float, z float) : void { }
+    static pub fnc translate(x float, y float, z float) : void { }
+    static pub fnc rotate(angle float, x float, y float, z float) : void { }
+    static pub fnc scale(x float, y float, z float) : void { }
+    static pub fnc matrix(mode int) : void { }
+    static pub fnc identity() : void { }
+    static pub fnc ortho(l float, r float, b float, t float, n float, f float) : void { }
+    static pub fnc frustum(l float, r float, b float, t float, n float, f float) : void { }
+    static pub fnc enable(cap int) : void { }
+    static pub fnc disable(cap int) : void { }
+    static pub fnc depth_func(mode int) : void { }
+    static pub fnc depth_mask(on bool) : void { }
+    static pub fnc blend(on bool) : void { }
+    static pub fnc line_width(w float) : void { }
+    static pub fnc shade_flat() : void { }
+    static pub fnc shade_smooth() : void { }
+    static pub fnc lighting(on bool) : void { }
+    static pub fnc light_directional(x float, y float, z float,
+                                     r float, g float, b float) : void { }
+    static pub fnc light_ambient(r float, g float, b float, a float) : void { }
+    static pub fnc fog(start float, end float,
+                       r float, g float, b float) : void { }
+    static pub fnc no_fog() : void { }
+    static pub fnc new_list() : int { return 0 }
+    static pub fnc end_list() : void { }
+    static pub fnc call_list(id int) : void { }
+    static pub fnc delete_list(id int) : void { }
+}

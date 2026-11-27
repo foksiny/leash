@@ -1,0 +1,28 @@
+// Use case: JSON config pipeline
+// Compile (linux64):   leash compile examples/usecases/json_pipeline.lsh to out/usecases/json_pipeline-linux64 --target linux64
+// Compile (linux32  ): leash compile examples/usecases/json_pipeline.lsh to out/usecases/json_pipeline-linux32 --target linux32
+// Compile (linux-arm): leash compile examples/usecases/json_pipeline.lsh to out/usecases/json_pipeline-linux-arm --target linux-arm
+// Compile (win64    ): leash compile examples/usecases/json_pipeline.lsh to out/usecases/json_pipeline-win64 --target win64
+// Compile (macos    ): leash compile examples/usecases/json_pipeline.lsh to out/usecases/json_pipeline-macos --target macos
+// Compile (macos-arm): leash compile examples/usecases/json_pipeline.lsh to out/usecases/json_pipeline-macos-arm --target macos-arm
+// Compile (jvm      ): leash compile examples/usecases/json_pipeline.lsh to out/usecases/json_pipeline-jvm --target jvm
+// Run:                  leash run examples/usecases/json_pipeline.lsh --other-imports installthis
+
+use json::Json;
+
+fnc main() {
+    raw: string = "{\"service\":\"api\",\"port\":8080,\"features\":[\"http2\",\"tls\"],\"debug\":false}";
+    cfg := Json.parse(raw);
+    show("valid=", cfg.ok);
+    show("service=", cfg.get("service").as_string());
+    show("port=", cfg.get("port").as_int());
+    feats: vec<JsonValue> = cfg.get("features").arr;
+    show("features=", feats.size, " first=", feats.get(0).as_string());
+
+    cfg.set("debug", JsonValue { typ: JsonType::JBOOL, bval: true, ok: true });
+    out: string = Json.stringify(cfg);
+    show("out=", out);
+    show("saved=", Json.save("usecase_config.json", cfg));
+    again := Json.parse_file("usecase_config.json");
+    show("reloaded=", again.get("port").as_int());
+}

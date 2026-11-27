@@ -3206,19 +3206,31 @@ pub def Parser : class {
                         if !this.check(Tok.RPAREN) {
                             npn: Token = this.consume(Tok.IDENT, "expected parameter name");
                             this.match_tok(Tok.COLON);
-                            nparams.pushb(FuncParam.make(npn.val, this.parse_type(), false, null));
+                            // Keep `float<32>`/`int<32>` spellings in native
+                            // signatures: they describe the C ABI width.
+                            this.keep_sized = true;
+                            np_typ: string = this.parse_type();
+                            this.keep_sized = false;
+                            nparams.pushb(FuncParam.make(npn.val, np_typ, false, null));
                             while this.match_tok(Tok.COMMA) {
                                 npn2: Token = this.consume(Tok.IDENT, "expected parameter name");
                                 this.match_tok(Tok.COLON);
-                                nparams.pushb(FuncParam.make(npn2.val, this.parse_type(), false, null));
+                                this.keep_sized = true;
+                                np_typ2: string = this.parse_type();
+                                this.keep_sized = false;
+                                nparams.pushb(FuncParam.make(npn2.val, np_typ2, false, null));
                             }
                         }
                         this.consume(Tok.RPAREN, "expected ')' after parameters");
                         nret: string = "void";
                         if this.match_tok(Tok.COLON) {
+                            this.keep_sized = true;
                             nret = this.parse_type();
+                            this.keep_sized = false;
                         } also this.match_tok(Tok.ARROW) {
+                            this.keep_sized = true;
                             nret = this.parse_type();
+                            this.keep_sized = false;
                         }
                         this.consume_stmt_end();
                         nf: FuncDecl = FuncDecl.make(nf_tok.val, nparams, nret, this.empty_body, false, true);

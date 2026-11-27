@@ -1,0 +1,27 @@
+// Use case: SQLite task tracker
+// Compile (linux64):   leash compile examples/usecases/sql_todo.lsh to out/usecases/sql_todo-linux64 --target linux64
+// Compile (linux32  ): leash compile examples/usecases/sql_todo.lsh to out/usecases/sql_todo-linux32 --target linux32
+// Compile (linux-arm): leash compile examples/usecases/sql_todo.lsh to out/usecases/sql_todo-linux-arm --target linux-arm
+// Compile (win64    ): leash compile examples/usecases/sql_todo.lsh to out/usecases/sql_todo-win64 --target win64
+// Compile (macos    ): leash compile examples/usecases/sql_todo.lsh to out/usecases/sql_todo-macos --target macos
+// Compile (macos-arm): leash compile examples/usecases/sql_todo.lsh to out/usecases/sql_todo-macos-arm --target macos-arm
+// Compile (jvm      ): leash compile examples/usecases/sql_todo.lsh to out/usecases/sql_todo-jvm --target jvm
+// Run:                  leash run examples/usecases/sql_todo.lsh --other-imports installthis
+
+use sql::sql::*;
+
+fnc main() {
+    db: Db = Db.open_memory();
+    show(db.exec("CREATE TABLE tasks (id INTEGER PRIMARY KEY, title TEXT, done INTEGER)"));
+    show(db.exec("INSERT INTO tasks (title, done) VALUES ('write docs', 0)"));
+    show(db.exec("INSERT INTO tasks (title, done) VALUES ('ship release', 1)"));
+    show(db.exec("UPDATE tasks SET done = 1 WHERE title = 'write docs'"));
+
+    res: QueryResult = db.query("SELECT id, title, done FROM tasks ORDER BY id");
+    show("rows=", res.rows.size);
+    foreach _, row in<vector> res.rows {
+        show(row.get(0).as_int(), " ", row.get(1).as_text(), " ", row.get(2).as_int());
+    }
+    show("changes=", db.changes());
+    db.close();
+}

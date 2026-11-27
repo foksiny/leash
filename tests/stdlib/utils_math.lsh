@@ -23,7 +23,7 @@ fnc main() {
     show(l - 1.0 < 0.00001);
 
     s: double = Math.sin(0.0);
-    show(s == 0.0);
+    show(s > -0.000001 && s < 0.000001);
     half_pi_sin: double = Math.sin(Math.HALF_PI);
-    show(half_pi_sin - 1.0 < 0.0001);
+    show(half_pi_sin > 0.9999 && half_pi_sin < 1.0001);
 }

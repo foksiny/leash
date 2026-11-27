@@ -102,6 +102,8 @@ pub def ClassInfo : class {
 pub def TypeChecker : class {
     pub funcs: hash<string, string>;            // name -> return type
     pub func_params: hash<string, vec<string>>; // name -> param types (for ref-arg passing)
+    pub native_raw_params: hash<string, vec<string>>; // @from: original C spellings
+    pub native_raw_return: hash<string, string>;      // @from: original C return spelling
     pub func_param_names: hash<string, vec<string>>; // name -> param names
     pub func_defaults: hash<string, Expr>;          // "name::i" -> default expr
     pub globals: hash<string, string>;          // name -> type
@@ -187,6 +189,10 @@ pub def TypeChecker : class {
         tc.cur_shared = empty_cur_shared;
         no_shared_list: vec<SharedVarDecl>;
         tc.shared_var_list = no_shared_list;
+        empty_np: hash<string, vec<string>>;
+        empty_nr: hash<string, string>;
+        tc.native_raw_params = empty_np;
+        tc.native_raw_return = empty_nr;
         tc.init_builtins();
         return tc;
     }
@@ -5072,6 +5078,16 @@ pub def TypeChecker : class {
                 pi_i = pi_i + 1;
             }
             this.func_params.push(fkey, ptypes);
+            if f.is_external {
+                rawp: vec<string>;
+                ri: int = 0;
+                while ri < f.params.size {
+                    rawp.pushb(f.params.get(ri).typ);
+                    ri = ri + 1;
+                }
+                this.native_raw_params.push(fkey, rawp);
+                this.native_raw_return.push(fkey, f.ret_type);
+            }
             this.func_param_names.push(fkey, pnames);
             if f.is_async { this.async_funcs.push(fkey, true); }
             if f.is_worker { this.worker_funcs.push(fkey, true); }

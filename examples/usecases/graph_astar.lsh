@@ -1,0 +1,85 @@
+// Use case: Grid pathfinding with A-star
+// Compile (linux64):   leash compile examples/usecases/graph_astar.lsh to out/usecases/graph_astar-linux64 --target linux64
+// Compile (linux32  ): leash compile examples/usecases/graph_astar.lsh to out/usecases/graph_astar-linux32 --target linux32
+// Compile (linux-arm): leash compile examples/usecases/graph_astar.lsh to out/usecases/graph_astar-linux-arm --target linux-arm
+// Compile (win64    ): leash compile examples/usecases/graph_astar.lsh to out/usecases/graph_astar-win64 --target win64
+// Compile (macos    ): leash compile examples/usecases/graph_astar.lsh to out/usecases/graph_astar-macos --target macos
+// Compile (macos-arm): leash compile examples/usecases/graph_astar.lsh to out/usecases/graph_astar-macos-arm --target macos-arm
+// Compile (jvm      ): leash compile examples/usecases/graph_astar.lsh to out/usecases/graph_astar-jvm --target jvm
+// Run:                  leash run examples/usecases/graph_astar.lsh --other-imports installthis
+
+// A* on a 12x8 grid with walls, diagonals and a reconstructed path.
+
+def Node : struct { x: int; y: int; g: int; f: int; parent: int; }
+
+fnc walkable(x int, y int) : bool {
+    if x < 0 || x >= 12 || y < 0 || y >= 8 { return false; }
+    if x >= 4 && x <= 7 && y != 6 { return false; }
+    return true;
+}
+
+fnc heuristic(x int, y int) : int {
+    ax: int = 11 - x;
+    ay: int = 7 - y;
+    if ax < 0 { ax = 0 - ax; }
+    if ay < 0 { ay = 0 - ay; }
+    return ax + ay;
+}
+
+fnc find_node(open vec<Node>, x int, y int) : int {
+    i: int = 0;
+    while i < open.size {
+        n: Node = open.get(i);
+        if n.x == x && n.y == y { return i; }
+        i = i + 1;
+    }
+    return -1;
+}
+
+fnc main() {
+    open: vec<Node>;
+    closed: hash<string, bool>;
+    start: Node = Node { x: 0, y: 0, g: 0, f: heuristic(0, 0), parent: -1 };
+    open.pushb(start);
+    found: Node = start;
+    steps: int = 0;
+    while open.size > 0 && steps < 400 {
+        best: int = 0;
+        i: int = 1;
+        while i < open.size {
+            if open.get(i).f < open.get(best).f { best = i; }
+            i = i + 1;
+        }
+        cur: Node = open.get(best);
+        open.set(best, open.get(open.size - 1));
+        open.popb();
+        key: string = tostring(cur.x) + "," + tostring(cur.y);
+        if closed.isin(key) { continue; }
+        closed[key] = true;
+        if cur.x == 11 && cur.y == 7 { found = cur; stop; }
+        dx: vec<int> = {1, -1, 0, 0, 1, 1, -1, -1};
+        dy: vec<int> = {0, 0, 1, -1, 1, -1, 1, -1};
+        k: int = 0;
+        while k < dx.size {
+            nx: int = cur.x + dx.get(k);
+            ny: int = cur.y + dy.get(k);
+            if walkable(nx, ny) {
+                nk: string = tostring(nx) + "," + tostring(ny);
+                if !closed.isin(nk) {
+                    ng: int = cur.g + 1;
+                    at: int = find_node(open, nx, ny);
+                    if at < 0 {
+                        open.pushb(Node { x: nx, y: ny, g: ng,
+                                          f: ng + heuristic(nx, ny), parent: best });
+                    } also ng < open.get(at).g {
+                        open.set(at, Node { x: nx, y: ny, g: ng,
+                                            f: ng + heuristic(nx, ny), parent: best });
+                    }
+                }
+            }
+            k = k + 1;
+        }
+        steps = steps + 1;
+    }
+    show("found=", found.x, ",", found.y, " cost=", found.g, " explored=", closed.size);
+}

@@ -1,0 +1,74 @@
+// Use case: Bitmap image editor
+// Compile (linux64):   leash compile examples/usecases/bitmap_editor.lsh to out/usecases/bitmap_editor-linux64 --target linux64
+// Compile (linux32  ): leash compile examples/usecases/bitmap_editor.lsh to out/usecases/bitmap_editor-linux32 --target linux32
+// Compile (linux-arm): leash compile examples/usecases/bitmap_editor.lsh to out/usecases/bitmap_editor-linux-arm --target linux-arm
+// Compile (win64    ): leash compile examples/usecases/bitmap_editor.lsh to out/usecases/bitmap_editor-win64 --target win64
+// Compile (macos    ): leash compile examples/usecases/bitmap_editor.lsh to out/usecases/bitmap_editor-macos --target macos
+// Compile (macos-arm): leash compile examples/usecases/bitmap_editor.lsh to out/usecases/bitmap_editor-macos-arm --target macos-arm
+// Compile (jvm      ): leash compile examples/usecases/bitmap_editor.lsh to out/usecases/bitmap_editor-jvm --target jvm
+// Run:                  leash run examples/usecases/bitmap_editor.lsh --other-imports installthis
+
+// Draw a small PPM image with lines and circles, save it, and verify the
+// file by reading it back. No image library required.
+
+def Bitmap : struct { w: int; h: int; px: vec<int>; }
+
+fnc blank(w int, h int) : Bitmap {
+    p: vec<int>;
+    i: int = 0;
+    while i < w * h { p.pushb(0); i = i + 1; }
+    return Bitmap { w: w, h: h, px: p };
+}
+
+fnc put(b Bitmap, x int, y int, v int) : void {
+    if x < 0 || x >= b.w || y < 0 || y >= b.h { return; }
+    b.px.set(y * b.w + x, v);
+}
+
+fnc circle(b Bitmap, cx int, cy int, r int, v int) : void {
+    y: int = cy - r;
+    while y <= cy + r {
+        x: int = cx - r;
+        while x <= cx + r {
+            dx: int = x - cx;
+            dy: int = y - cy;
+            if dx * dx + dy * dy <= r * r { put(b, x, y, v); }
+            x = x + 1;
+        }
+        y = y + 1;
+    }
+}
+
+fnc rect(b Bitmap, x0 int, y0 int, x1 int, y1 int, v int) : void {
+    x: int = x0;
+    while x <= x1 { put(b, x, y0, v); put(b, x, y1, v); x = x + 1; }
+    y: int = y0;
+    while y <= y1 { put(b, x0, y, v); put(b, x1, y, v); y = y + 1; }
+}
+
+fnc encode(b Bitmap) : string {
+    out: string = "P3\n" + tostring(b.w) + " " + tostring(b.h) + "\n255\n";
+    i: int = 0;
+    while i < b.px.size {
+        c: int = b.px.get(i);
+        out = out + tostring((c >> 16) & 255) + " " + tostring((c >> 8) & 255) +
+              " " + tostring(c & 255) + "\n";
+        i = i + 1;
+    }
+    return out;
+}
+
+fnc main() {
+    img: Bitmap = blank(32, 16);
+    rect(img, 1, 1, 30, 14, 0x2020FF);
+    circle(img, 10, 8, 5, 0xFF2020);
+    circle(img, 22, 8, 4, 0x20FF20);
+    data: string = encode(img);
+    f: File = File.open("usecase_bitmap.ppm", "w");
+    f.write(data);
+    f.close();
+    f2: File = File.open("usecase_bitmap.ppm", "r");
+    back: string = f2.read();
+    f2.close();
+    show("pixels=", img.px.size, " bytes=", back.bsize, " roundtrip=", back == data);
+}

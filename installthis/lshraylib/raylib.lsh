@@ -5,3 +5,372 @@ if _PLATFORM == "win64" {
 } also _PLATFORM == "linux-arm" {
     pub use arm64::main::*;
 }
+
+def LIGHTGRAY : macro() |> Color { r: 200, g: 200, b: 200, a: 255 };
+def GRAY : macro() |> Color { r: 130, g: 130, b: 130, a: 255 };
+def DARKGRAY : macro() |> Color { r: 80, g: 80, b: 80, a: 255 };
+def YELLOW : macro() |> Color { r: 253, g: 249, b: 0, a: 255 };
+def GOLD : macro() |> Color { r: 255, g: 203, b: 0, a: 255 };
+def ORANGE : macro() |> Color { r: 255, g: 161, b: 0, a: 255 };
+def PINK : macro() |> Color { r: 255, g: 109, b: 194, a: 255 };
+def RED : macro() |> Color { r: 230, g: 41, b: 55, a: 255 };
+def MAROON : macro() |> Color { r: 190, g: 33, b: 55, a: 255 };
+def GREEN : macro() |> Color { r: 0, g: 228, b: 48, a: 255 };
+def LIME : macro() |> Color { r: 0, g: 158, b: 47, a: 255 };
+def DARKGREEN : macro() |> Color { r: 0, g: 117, b: 44, a: 255 };
+def SKYBLUE : macro() |> Color { r: 102, g: 191, b: 255, a: 255 };
+def BLUE : macro() |> Color { r: 0, g: 121, b: 241, a: 255 };
+def DARKBLUE : macro() |> Color { r: 0, g: 82, b: 172, a: 255 };
+def PURPLE : macro() |> Color { r: 200, g: 122, b: 255, a: 255 };
+def VIOLET : macro() |> Color { r: 135, g: 60, b: 190, a: 255 };
+def DARKPURPLE : macro() |> Color { r: 112, g: 31, b: 126, a: 255 };
+def BEIGE : macro() |> Color { r: 211, g: 176, b: 131, a: 255 };
+def BROWN : macro() |> Color { r: 127, g: 106, b: 79, a: 255 };
+def DARKBROWN : macro() |> Color { r: 76, g: 63, b: 47, a: 255 };
+def WHITE : macro() |> Color { r: 255, g: 255, b: 255, a: 255 };
+def BLACK : macro() |> Color { r: 0, g: 0, b: 0, a: 255 };
+def BLANK : macro() |> Color { r: 0, g: 0, b: 0, a: 0 };
+def MAGENTA : macro() |> Color { r: 255, g: 0, b: 255, a: 255 };
+def RAYWHITE : macro() |> Color { r: 245, g: 245, b: 245, a: 255 };
+
+//====================================================
+// Keyboard keys (alphanumeric)
+//====================================================
+def KEY_APOSTROPHE : macro() |> 39;
+def KEY_COMMA : macro() |> 44;
+def KEY_MINUS : macro() |> 45;
+def KEY_PERIOD : macro() |> 46;
+def KEY_SLASH : macro() |> 47;
+def KEY_ZERO : macro() |> 48;
+def KEY_ONE : macro() |> 49;
+def KEY_TWO : macro() |> 50;
+def KEY_THREE : macro() |> 51;
+def KEY_FOUR : macro() |> 52;
+def KEY_FIVE : macro() |> 53;
+def KEY_SIX : macro() |> 54;
+def KEY_SEVEN : macro() |> 55;
+def KEY_EIGHT : macro() |> 56;
+def KEY_NINE : macro() |> 57;
+def KEY_SEMICOLON : macro() |> 59;
+def KEY_EQUAL : macro() |> 61;
+def KEY_A : macro() |> 65;
+def KEY_B : macro() |> 66;
+def KEY_C : macro() |> 67;
+def KEY_D : macro() |> 68;
+def KEY_E : macro() |> 69;
+def KEY_F : macro() |> 70;
+def KEY_G : macro() |> 71;
+def KEY_H : macro() |> 72;
+def KEY_I : macro() |> 73;
+def KEY_J : macro() |> 74;
+def KEY_K : macro() |> 75;
+def KEY_L : macro() |> 76;
+def KEY_M : macro() |> 77;
+def KEY_N : macro() |> 78;
+def KEY_O : macro() |> 79;
+def KEY_P : macro() |> 80;
+def KEY_Q : macro() |> 81;
+def KEY_R : macro() |> 82;
+def KEY_S : macro() |> 83;
+def KEY_T : macro() |> 84;
+def KEY_U : macro() |> 85;
+def KEY_V : macro() |> 86;
+def KEY_W : macro() |> 87;
+def KEY_X : macro() |> 88;
+def KEY_Y : macro() |> 89;
+def KEY_Z : macro() |> 90;
+def KEY_LEFT_BRACKET : macro() |> 91;
+def KEY_BACKSLASH : macro() |> 92;
+def KEY_RIGHT_BRACKET : macro() |> 93;
+def KEY_GRAVE : macro() |> 96;
+
+//====================================================
+// Keyboard keys (function keys)
+//====================================================
+def KEY_SPACE : macro() |> 32;
+def KEY_ESCAPE : macro() |> 256;
+def KEY_ENTER : macro() |> 257;
+def KEY_TAB : macro() |> 258;
+def KEY_BACKSPACE : macro() |> 259;
+def KEY_INSERT : macro() |> 260;
+def KEY_DELETE : macro() |> 261;
+def KEY_RIGHT : macro() |> 262;
+def KEY_LEFT : macro() |> 263;
+def KEY_DOWN : macro() |> 264;
+def KEY_UP : macro() |> 265;
+def KEY_PAGE_UP : macro() |> 266;
+def KEY_PAGE_DOWN : macro() |> 267;
+def KEY_HOME : macro() |> 268;
+def KEY_END : macro() |> 269;
+def KEY_CAPS_LOCK : macro() |> 280;
+def KEY_SCROLL_LOCK : macro() |> 281;
+def KEY_NUM_LOCK : macro() |> 282;
+def KEY_PRINT_SCREEN : macro() |> 283;
+def KEY_PAUSE : macro() |> 284;
+def KEY_F1 : macro() |> 290;
+def KEY_F2 : macro() |> 291;
+def KEY_F3 : macro() |> 292;
+def KEY_F4 : macro() |> 293;
+def KEY_F5 : macro() |> 294;
+def KEY_F6 : macro() |> 295;
+def KEY_F7 : macro() |> 296;
+def KEY_F8 : macro() |> 297;
+def KEY_F9 : macro() |> 298;
+def KEY_F10 : macro() |> 299;
+def KEY_F11 : macro() |> 300;
+def KEY_F12 : macro() |> 301;
+def KEY_LEFT_SHIFT : macro() |> 340;
+def KEY_LEFT_CONTROL : macro() |> 341;
+def KEY_LEFT_ALT : macro() |> 342;
+def KEY_LEFT_SUPER : macro() |> 343;
+def KEY_RIGHT_SHIFT : macro() |> 344;
+def KEY_RIGHT_CONTROL : macro() |> 345;
+def KEY_RIGHT_ALT : macro() |> 346;
+def KEY_RIGHT_SUPER : macro() |> 347;
+def KEY_KB_MENU : macro() |> 348;
+def KEY_KP_0 : macro() |> 320;
+def KEY_KP_1 : macro() |> 321;
+def KEY_KP_2 : macro() |> 322;
+def KEY_KP_3 : macro() |> 323;
+def KEY_KP_4 : macro() |> 324;
+def KEY_KP_5 : macro() |> 325;
+def KEY_KP_6 : macro() |> 326;
+def KEY_KP_7 : macro() |> 327;
+def KEY_KP_8 : macro() |> 328;
+def KEY_KP_9 : macro() |> 329;
+def KEY_KP_DECIMAL : macro() |> 330;
+def KEY_KP_DIVIDE : macro() |> 331;
+def KEY_KP_MULTIPLY : macro() |> 332;
+def KEY_KP_SUBTRACT : macro() |> 333;
+def KEY_KP_ADD : macro() |> 334;
+def KEY_KP_ENTER : macro() |> 335;
+def KEY_KP_EQUAL : macro() |> 336;
+def KEY_BACK : macro() |> 4;
+def KEY_MENU : macro() |> 5;
+def KEY_VOLUME_UP : macro() |> 24;
+def KEY_VOLUME_DOWN : macro() |> 25;
+
+//====================================================
+// Mouse buttons
+//====================================================
+def MOUSE_BUTTON_LEFT : macro() |> 0;
+def MOUSE_BUTTON_RIGHT : macro() |> 1;
+def MOUSE_BUTTON_MIDDLE : macro() |> 2;
+def MOUSE_BUTTON_SIDE : macro() |> 3;
+def MOUSE_BUTTON_EXTRA : macro() |> 4;
+def MOUSE_BUTTON_FORWARD : macro() |> 5;
+def MOUSE_BUTTON_BACK : macro() |> 6;
+
+//====================================================
+// Mouse cursors
+//====================================================
+def MOUSE_CURSOR_DEFAULT : macro() |> 0;
+def MOUSE_CURSOR_ARROW : macro() |> 1;
+def MOUSE_CURSOR_IBEAM : macro() |> 2;
+def MOUSE_CURSOR_CROSSHAIR : macro() |> 3;
+def MOUSE_CURSOR_POINTING_HAND : macro() |> 4;
+def MOUSE_CURSOR_RESIZE_EW : macro() |> 5;
+def MOUSE_CURSOR_RESIZE_NS : macro() |> 6;
+def MOUSE_CURSOR_RESIZE_NWSE : macro() |> 7;
+def MOUSE_CURSOR_RESIZE_NESW : macro() |> 8;
+def MOUSE_CURSOR_RESIZE_ALL : macro() |> 9;
+def MOUSE_CURSOR_NOT_ALLOWED : macro() |> 10;
+
+//====================================================
+// Gamepad buttons
+//====================================================
+def GAMEPAD_BUTTON_UNKNOWN : macro() |> 0;
+def GAMEPAD_BUTTON_LEFT_FACE_UP : macro() |> 1;
+def GAMEPAD_BUTTON_LEFT_FACE_RIGHT : macro() |> 2;
+def GAMEPAD_BUTTON_LEFT_FACE_DOWN : macro() |> 3;
+def GAMEPAD_BUTTON_LEFT_FACE_LEFT : macro() |> 4;
+def GAMEPAD_BUTTON_RIGHT_FACE_UP : macro() |> 5;
+def GAMEPAD_BUTTON_RIGHT_FACE_RIGHT : macro() |> 6;
+def GAMEPAD_BUTTON_RIGHT_FACE_DOWN : macro() |> 7;
+def GAMEPAD_BUTTON_RIGHT_FACE_LEFT : macro() |> 8;
+def GAMEPAD_BUTTON_LEFT_TRIGGER_1 : macro() |> 9;
+def GAMEPAD_BUTTON_LEFT_TRIGGER_2 : macro() |> 10;
+def GAMEPAD_BUTTON_RIGHT_TRIGGER_1 : macro() |> 11;
+def GAMEPAD_BUTTON_RIGHT_TRIGGER_2 : macro() |> 12;
+def GAMEPAD_BUTTON_MIDDLE_LEFT : macro() |> 13;
+def GAMEPAD_BUTTON_MIDDLE : macro() |> 14;
+def GAMEPAD_BUTTON_MIDDLE_RIGHT : macro() |> 15;
+def GAMEPAD_BUTTON_LEFT_THUMB : macro() |> 16;
+def GAMEPAD_BUTTON_RIGHT_THUMB : macro() |> 17;
+
+//====================================================
+// Gamepad axis
+//====================================================
+def GAMEPAD_AXIS_LEFT_X : macro() |> 0;
+def GAMEPAD_AXIS_LEFT_Y : macro() |> 1;
+def GAMEPAD_AXIS_RIGHT_X : macro() |> 2;
+def GAMEPAD_AXIS_RIGHT_Y : macro() |> 3;
+def GAMEPAD_AXIS_LEFT_TRIGGER : macro() |> 4;
+def GAMEPAD_AXIS_RIGHT_TRIGGER : macro() |> 5;
+
+//====================================================
+// Gestures
+//====================================================
+def GESTURE_NONE : macro() |> 0;
+def GESTURE_TAP : macro() |> 1;
+def GESTURE_DOUBLETAP : macro() |> 2;
+def GESTURE_HOLD : macro() |> 4;
+def GESTURE_DRAG : macro() |> 8;
+def GESTURE_SWIPE_RIGHT : macro() |> 16;
+def GESTURE_SWIPE_LEFT : macro() |> 32;
+def GESTURE_SWIPE_UP : macro() |> 64;
+def GESTURE_SWIPE_DOWN : macro() |> 128;
+def GESTURE_PINCH_IN : macro() |> 256;
+def GESTURE_PINCH_OUT : macro() |> 512;
+
+//====================================================
+// Config flags
+//====================================================
+def FLAG_VSYNC_HINT : macro() |> 64;
+def FLAG_FULLSCREEN_MODE : macro() |> 2;
+def FLAG_WINDOW_RESIZABLE : macro() |> 4;
+def FLAG_WINDOW_UNDECORATED : macro() |> 8;
+def FLAG_WINDOW_HIDDEN : macro() |> 128;
+def FLAG_WINDOW_MINIMIZED : macro() |> 512;
+def FLAG_WINDOW_MAXIMIZED : macro() |> 1024;
+def FLAG_WINDOW_UNFOCUSED : macro() |> 2048;
+def FLAG_WINDOW_TOPMOST : macro() |> 4096;
+def FLAG_WINDOW_ALWAYS_RUN : macro() |> 256;
+def FLAG_WINDOW_TRANSPARENT : macro() |> 16;
+def FLAG_WINDOW_HIGHDPI : macro() |> 8192;
+def FLAG_WINDOW_MOUSE_PASSTHROUGH : macro() |> 16384;
+def FLAG_BORDERLESS_WINDOWED_MODE : macro() |> 32768;
+def FLAG_MSAA_4X_HINT : macro() |> 32;
+def FLAG_INTERLACED_HINT : macro() |> 65536;
+
+//====================================================
+// Trace log levels
+//====================================================
+def LOG_ALL : macro() |> 0;
+def LOG_TRACE : macro() |> 1;
+def LOG_DEBUG : macro() |> 2;
+def LOG_INFO : macro() |> 3;
+def LOG_WARNING : macro() |> 4;
+def LOG_ERROR : macro() |> 5;
+def LOG_FATAL : macro() |> 6;
+def LOG_NONE : macro() |> 7;
+
+//====================================================
+// Shader location indices
+//====================================================
+def SHADER_LOC_VERTEX_POSITION : macro() |> 0;
+def SHADER_LOC_VERTEX_TEXCOORD01 : macro() |> 1;
+def SHADER_LOC_VERTEX_TEXCOORD02 : macro() |> 2;
+def SHADER_LOC_VERTEX_NORMAL : macro() |> 3;
+def SHADER_LOC_VERTEX_TANGENT : macro() |> 4;
+def SHADER_LOC_VERTEX_COLOR : macro() |> 5;
+def SHADER_LOC_MATRIX_MVP : macro() |> 6;
+def SHADER_LOC_MATRIX_VIEW : macro() |> 7;
+def SHADER_LOC_MATRIX_PROJECTION : macro() |> 8;
+def SHADER_LOC_MATRIX_MODEL : macro() |> 9;
+def SHADER_LOC_VECTOR_VIEW : macro() |> 10;
+def SHADER_LOC_COLOR_DIFFUSE : macro() |> 11;
+def SHADER_LOC_COLOR_SPECULAR : macro() |> 12;
+def SHADER_LOC_COLOR_AMBIENT : macro() |> 13;
+def SHADER_LOC_MAP_ALBEDO : macro() |> 14;
+def SHADER_LOC_MAP_METALNESS : macro() |> 15;
+def SHADER_LOC_MAP_NORMAL : macro() |> 16;
+def SHADER_LOC_MAP_ROUGHNESS : macro() |> 17;
+def SHADER_LOC_MAP_OCCLUSION : macro() |> 18;
+def SHADER_LOC_MAP_EMISSION : macro() |> 19;
+def SHADER_LOC_MAP_HEIGHT : macro() |> 20;
+def SHADER_LOC_MAP_CUBEMAP : macro() |> 21;
+def SHADER_LOC_MAP_IRRADIANCE : macro() |> 22;
+def SHADER_LOC_MAP_PREFILTER : macro() |> 23;
+def SHADER_LOC_MAP_BRDF : macro() |> 24;
+
+//====================================================
+// Material map types
+//====================================================
+def MATERIAL_MAP_ALBEDO : macro() |> 0;
+def MATERIAL_MAP_METALNESS : macro() |> 1;
+def MATERIAL_MAP_NORMAL : macro() |> 2;
+def MATERIAL_MAP_ROUGHNESS : macro() |> 3;
+def MATERIAL_MAP_OCCLUSION : macro() |> 4;
+def MATERIAL_MAP_EMISSION : macro() |> 5;
+def MATERIAL_MAP_HEIGHT : macro() |> 6;
+def MATERIAL_MAP_CUBEMAP : macro() |> 7;
+def MATERIAL_MAP_IRRADIANCE : macro() |> 8;
+def MATERIAL_MAP_PREFILTER : macro() |> 9;
+def MATERIAL_MAP_BRDF : macro() |> 10;
+
+//====================================================
+// Pixel formats
+//====================================================
+def PIXELFORMAT_UNCOMPRESSED_GRAYSCALE : macro() |> 1;
+def PIXELFORMAT_UNCOMPRESSED_GRAY_ALPHA : macro() |> 2;
+def PIXELFORMAT_UNCOMPRESSED_R5G6B5 : macro() |> 3;
+def PIXELFORMAT_UNCOMPRESSED_R8G8B8 : macro() |> 4;
+def PIXELFORMAT_UNCOMPRESSED_R5G5B5A1 : macro() |> 5;
+def PIXELFORMAT_UNCOMPRESSED_R4G4B4A4 : macro() |> 6;
+def PIXELFORMAT_UNCOMPRESSED_R8G8B8A8 : macro() |> 7;
+def PIXELFORMAT_UNCOMPRESSED_R32 : macro() |> 8;
+def PIXELFORMAT_UNCOMPRESSED_R32G32B32 : macro() |> 9;
+def PIXELFORMAT_UNCOMPRESSED_R32G32B32A32 : macro() |> 10;
+def PIXELFORMAT_UNCOMPRESSED_R16 : macro() |> 11;
+def PIXELFORMAT_UNCOMPRESSED_R16G16B16 : macro() |> 12;
+def PIXELFORMAT_UNCOMPRESSED_R16G16B16A16 : macro() |> 13;
+def PIXELFORMAT_COMPRESSED_DXT1_RGB : macro() |> 14;
+def PIXELFORMAT_COMPRESSED_DXT1_RGBA : macro() |> 15;
+def PIXELFORMAT_COMPRESSED_DXT3_RGBA : macro() |> 16;
+def PIXELFORMAT_COMPRESSED_DXT5_RGBA : macro() |> 17;
+def PIXELFORMAT_COMPRESSED_ETC1_RGB : macro() |> 18;
+def PIXELFORMAT_COMPRESSED_ETC2_RGB : macro() |> 19;
+def PIXELFORMAT_COMPRESSED_ETC2_EAC_RGBA : macro() |> 20;
+def PIXELFORMAT_COMPRESSED_PVRT_RGB : macro() |> 21;
+def PIXELFORMAT_COMPRESSED_PVRT_RGBA : macro() |> 22;
+def PIXELFORMAT_COMPRESSED_ASTC_4x4_RGBA : macro() |> 23;
+def PIXELFORMAT_COMPRESSED_ASTC_8x8_RGBA : macro() |> 24;
+
+//====================================================
+// Texture filters
+//====================================================
+def TEXTURE_FILTER_POINT : macro() |> 0;
+def TEXTURE_FILTER_BILINEAR : macro() |> 1;
+def TEXTURE_FILTER_TRILINEAR : macro() |> 2;
+def TEXTURE_FILTER_ANISOTROPIC_4X : macro() |> 3;
+def TEXTURE_FILTER_ANISOTROPIC_8X : macro() |> 4;
+def TEXTURE_FILTER_ANISOTROPIC_16X : macro() |> 5;
+
+//====================================================
+// Texture wrap modes
+//====================================================
+def TEXTURE_WRAP_REPEAT : macro() |> 0;
+def TEXTURE_WRAP_CLAMP : macro() |> 1;
+def TEXTURE_WRAP_MIRROR_REPEAT : macro() |> 2;
+def TEXTURE_WRAP_MIRROR_CLAMP : macro() |> 3;
+
+//====================================================
+// Font types
+//====================================================
+def FONT_DEFAULT : macro() |> 0;
+def FONT_BITMAP : macro() |> 1;
+def FONT_SDF : macro() |> 2;
+
+//====================================================
+// Blend modes
+//====================================================
+def BLEND_ALPHA : macro() |> 0;
+def BLEND_ADDITIVE : macro() |> 1;
+def BLEND_MULTIPLIED : macro() |> 2;
+def BLEND_ADD_COLORS : macro() |> 3;
+def BLEND_SUBTRACT_COLORS : macro() |> 4;
+def BLEND_ALPHA_PREMULTIPLY : macro() |> 5;
+def BLEND_CUSTOM : macro() |> 6;
+def BLEND_CUSTOM_SEPARATE : macro() |> 7;
+
+//====================================================
+// Other constants
+//====================================================
+def MAX_TOUCH_POINTS : macro() |> 12;
+def MAX_KEY_PRESSED_QUEUE : macro() |> 16;
+def MAX_CHAR_PRESSED_QUEUE : macro() |> 16;
+def DEG2RAD : macro() |> (3.141592653589793 / 180.0);
+def RAD2DEG : macro() |> (180.0 / 3.141592653589793);
+def PI : macro() |> 3.141592653589793;
+def EPSILON : macro() |> 0.000001;

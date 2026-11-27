@@ -1,0 +1,12 @@
+use opengl::opengl::*;
+
+fnc main() {
+    ctx: pointer<void> = Gl.init();
+    show(Gl.version().bsize > 0);
+    Gl.viewport(16, 16);
+    Gl.clear_color(1.0, 0.0, 0.0, 1.0);
+    Gl.clear();
+    show(Gl.pixel(8, 8));
+    show(Gl.error());
+    Gl.close(ctx);
+}

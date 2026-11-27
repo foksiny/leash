@@ -1,0 +1,36 @@
+// Use case: Regex log miner
+// Compile (linux64):   leash compile examples/usecases/regex_log_miner.lsh to out/usecases/regex_log_miner-linux64 --target linux64
+// Compile (linux32  ): leash compile examples/usecases/regex_log_miner.lsh to out/usecases/regex_log_miner-linux32 --target linux32
+// Compile (linux-arm): leash compile examples/usecases/regex_log_miner.lsh to out/usecases/regex_log_miner-linux-arm --target linux-arm
+// Compile (win64    ): leash compile examples/usecases/regex_log_miner.lsh to out/usecases/regex_log_miner-win64 --target win64
+// Compile (macos    ): leash compile examples/usecases/regex_log_miner.lsh to out/usecases/regex_log_miner-macos --target macos
+// Compile (macos-arm): leash compile examples/usecases/regex_log_miner.lsh to out/usecases/regex_log_miner-macos-arm --target macos-arm
+// Compile (jvm      ): leash compile examples/usecases/regex_log_miner.lsh to out/usecases/regex_log_miner-jvm --target jvm
+// Run:                  leash run examples/usecases/regex_log_miner.lsh --other-imports installthis
+
+use text::regex::Regex;
+
+fnc main() {
+    log: string =
+        "10:01 INFO  user=alice path=/api/login status=200\n" +
+        "10:02 WARN  user=bob path=/api/login status=401\n" +
+        "10:03 ERROR user=alice path=/api/data status=500\n" +
+        "10:04 INFO  user=carol path=/api/data status=200\n";
+
+    show("warn_or_error=", Regex.count_matches("(?m)^(.*)(WARN|ERROR)(.*)$", log));
+    users: vec<string> = Regex.find_all("user=[a-z]+", log);
+    show("matches=", users.size);
+    foreach _, u in<vector> users { show(u); }
+
+    statuses: vec<string> = Regex.find_all("status=[0-9][0-9][0-9]", log);
+    codes: hash<string, int>;
+    foreach _, s in<vector> statuses {
+        if !codes.isin(s) { codes[s] = 0; }
+        codes[s] = codes[s] + 1;
+    }
+    show("200=", codes["status=200"], " 401=", codes["status=401"],
+         " 500=", codes["status=500"]);
+
+    clean := Regex.sub("user=", "owner=", log);
+    show("rewritten=", Regex.find_all("owner=", clean).size, " original=", Regex.find_all("user=", clean).size);
+}

@@ -48,7 +48,7 @@
       <a href="advanced.html" class="">Standalone pages</a>
       <a href="limitations.html" class="">Known limitations</a>
     </div>
-    <div class="sidenav-foot">Leash 2.2.1</div>
+    <div class="sidenav-foot">Leash 2.3.0</div>
   </aside>
 
   <main class="content" id="main-content">
@@ -58,12 +58,12 @@
 
 
         <h2 id="overview">Overview</h2>
-        <p>The standard libraries provide common utilities like type widths, math functions, string manipulation, tuple containers, JSON, UTF-8, hex, Base64, UUID generation and a windowing API. An extended set covers collections, algorithms, text processing, cryptography, encoding, native HTTP/HTTPS networking, embedded SQL (SQLite), date/time, math extensions, system helpers, logging and a programmatic <a href="#llvm-ir-builder">LLVM IR builder</a> for generating assembly text from within Leash itself.</p>
+        <p>The standard libraries provide common utilities like type widths, math functions, string manipulation, tuple containers, JSON, UTF-8, hex, Base64, UUID generation and a windowing API. An extended set covers collections, algorithms, text processing, cryptography, encoding, native HTTP/HTTPS networking, embedded SQL (SQLite), OpenGL rendering, date/time, math extensions, system helpers, logging and a programmatic <a href="#llvm-ir-builder">LLVM IR builder</a> for generating assembly text from within Leash itself.</p>
 
         <div class="stat-grid">
           <div class="stat"><div class="value">100+</div><div class="label">packages in the distribution</div></div>
           <div class="stat"><div class="value">8+</div><div class="label">families: algo, collections, text, crypto, net, sys, mathx, utils</div></div>
-          <div class="stat"><div class="value">3</div><div class="label">native FFI modules: http, httpserver, sql</div></div>
+          <div class="stat"><div class="value">4</div><div class="label">native FFI modules: http, httpserver, sql, opengl</div></div>
           <div class="stat"><div class="value">1</div><div class="label">pure-Leash LLVM IR builder</div></div>
         </div>
 
@@ -222,6 +222,7 @@ leash install installthis/
               <tr><td><code>http/http.lsh</code></td><td><code>Http</code> / <code>HttpResponse</code> — HTTP/1.1 and HTTP/2 client</td><td><code>use http::http::*;</code></td></tr>
               <tr><td><code>httpserver/httpserver.lsh</code></td><td><code>HttpServer</code> / <code>HttpQuery</code> — HTTP server</td><td><code>use httpserver::httpserver::*;</code></td></tr>
               <tr><td><code>sql/sql.lsh</code></td><td><code>Db</code> / <code>Stmt</code> / <code>QueryResult</code> — embedded SQLite</td><td><code>use sql::sql::*;</code></td></tr>
+              <tr><td><code>opengl/opengl.lsh</code></td><td><code>Gl</code> — headless-capable OpenGL rendering and readback</td><td><code>use opengl::opengl::*;</code></td></tr>
               <tr><td><code>net/ip.lsh</code>, <code>net/email.lsh</code>, <code>net/mac.lsh</code></td><td>IP/CIDR, email and MAC address helpers</td><td><code>use net::ip::Ip;</code></td></tr>
               <tr><td><code>data/ini.lsh</code>, <code>data/env.lsh</code>, <code>data/querystring.lsh</code></td><td>INI, <code>.env</code> and query-string parsing</td><td><code>use data::ini::Ini;</code></td></tr>
             </tbody>
@@ -1259,6 +1260,67 @@ entry:
               <tr><td><code>get(name)</code></td><td>Parameter value, or "" (percent-decoded by <code>encoding::url::Url.decode</code> yourself if needed)</td></tr>
               <tr><td><code>has(name)</code></td><td>True when the query has that key</td></tr>
               <tr><td><code>count()</code></td><td>Number of parsed parameters</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3 id="opengl">OpenGL (<code>opengl::opengl</code>)</h3>
+        <p>A small native OpenGL binding with two targets: an EGL framebuffer for headless rendering and readback (the system EGL may still connect to an X display), and a real double-buffered X11/GLX window for interactive programs. The voxel sandbox in <code>examples/usecases/minecraft_clone.lsh</code> opens a first-person window when a display is available (WASD move, mouse look, Shift sprint, Space jump, LMB mine, RMB place, 1–9 select, G/F mine/place as keyboard alternatives, R reset, Esc or the title-bar X to quit) and shows an uncapped FPS/frame-time counter with VSync disabled. Without a display it falls back to the deterministic offscreen renderer. A static shim loads the system GL/EGL/X11 libraries at runtime with <code>dlopen</code>; no development packages or linker flags are needed. Native Linux x86_64 supports both modes; other targets return a clear message from <code>Gl.version()</code>.</p>
+
+        <pre><code><span class="kw">use</span> opengl::opengl::*;
+
+<span class="kw">fnc</span> <span class="fn">main</span>() : <span class="kw">void</span> {
+    ctx: <span class="ty">pointer</span>&lt;<span class="ty">void</span>&gt; = Gl.<span class="fn">init</span>();
+    <span class="fn">show</span>(Gl.<span class="fn">version</span>());
+    Gl.<span class="fn">viewport</span>(16, 16);
+    Gl.<span class="fn">clear_color</span>(1.0, 0.0, 0.0, 1.0);
+    Gl.<span class="fn">clear</span>();
+    <span class="fn">show</span>(Gl.<span class="fn">pixel</span>(8, 8));
+    Gl.<span class="fn">close</span>(ctx);
+}</code></pre>
+
+        <p>For an interactive window, open one explicitly and drive a frame loop. Input uses X11 keysyms; <code>Gl.key_w()</code> and friends are exported so they survive module imports. Escape closes the example loop, and the window manager's close button sets <code>Gl.should_close()</code>. The shim understands the ICCCM <code>WM_PROTOCOLS</code>/<code>WM_DELETE_WINDOW</code> client message, so the title-bar X and <code>wmctrl -c</code> both work.</p>
+
+        <pre><code><span class="kw">use</span> opengl::opengl::*;
+
+<span class="kw">fnc</span> <span class="fn">main</span>() : <span class="kw">void</span> {
+    ctx: <span class="ty">pointer</span>&lt;<span class="ty">void</span>&gt; = Gl.<span class="fn">open_window</span>(640, 480, <span class="str">"Leash"</span>);
+    <span class="kw">if</span> ctx == <span class="kw">null</span> { <span class="kw">return</span>; }
+    <span class="kw">while</span> !Gl.<span class="fn">should_close</span>() {
+        Gl.<span class="fn">poll_events</span>();
+        <span class="kw">if</span> Gl.<span class="fn">key_pressed</span>(Gl.<span class="fn">key_escape</span>()) { <span class="kw">stop</span>; }
+        Gl.<span class="fn">viewport</span>(Gl.<span class="fn">width</span>(), Gl.<span class="fn">height</span>());
+        Gl.<span class="fn">clear_color</span>(0.1, 0.1, 0.15, 1.0);
+        Gl.<span class="fn">clear</span>();
+        Gl.<span class="fn">swap_buffers</span>();
+    }
+    Gl.<span class="fn">close</span>(ctx);
+}</code></pre>
+
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Method</th><th>Description</th></tr></thead>
+            <tbody>
+              <tr><td><code>init()</code> / <code>close(ctx)</code></td><td>Create / release the context created by <code>init()</code> or <code>open_window()</code></td></tr>
+              <tr><td><code>open_window(w, h, title)</code> / <code>close_window()</code></td><td>Open / close a real double-buffered X11/GLX window; returns <code>null</code> when no display or GLX visual is usable</td></tr>
+              <tr><td><code>poll_events()</code>, <code>should_close()</code>, <code>request_close()</code></td><td>Drain input events and query or set the close state (window-manager close button included)</td></tr>
+              <tr><td><code>swap_buffers()</code>, <code>width()</code>, <code>height()</code></td><td>Present a window frame and query the current drawable size</td></tr>
+              <tr><td><code>key_down(key)</code>, <code>key_pressed(key)</code></td><td>Held / newly pressed X11 keysym; <code>Gl.key_w()</code>, <code>key_a()</code>, <code>key_space()</code>, <code>key_escape()</code>, etc.</td></tr>
+              <tr><td><code>time_ms()</code>, <code>sleep_ms(ms)</code></td><td>Monotonic clock and bounded sleep for frame pacing</td></tr>
+              <tr><td><code>version()</code>, <code>renderer()</code>, <code>vendor()</code></td><td>GL capability strings</td></tr>
+              <tr><td><code>viewport(w, h)</code></td><td>Set the render target viewport</td></tr>
+              <tr><td><code>clear_color(r, g, b, a)</code> / <code>clear()</code></td><td>Set clear color and clear the current drawable (window or offscreen framebuffer)</td></tr>
+              <tr><td><code>pixel(x, y)</code></td><td>Read one RGBA pixel as <code>0xRRGGBBAA</code></td></tr>
+              <tr><td><code>error()</code></td><td>Last GL error (0 = none)</td></tr>
+              <tr><td><code>begin(mode)</code> / <code>end()</code></td><td>Immediate-mode drawing (<code>Gl.quads() = 0x0007</code>, <code>Gl.triangles() = 0x0004</code>)</td></tr>
+              <tr><td><code>color(r, g, b, a)</code> / <code>vertex2(x, y)</code></td><td>Vertex colors and 2D vertices for geometry</td></tr>
+              <tr><td><code>matrix(mode)</code>, <code>identity()</code>, <code>ortho(...)</code>, <code>frustum(...)</code></td><td>Projection/modelview setup (perspective frustum built directly for portable dispatch)</td></tr>
+              <tr><td><code>vertex3(x, y, z)</code>, <code>normal3(x, y, z)</code>, <code>translate(...)</code>, <code>rotate(...)</code>, <code>scale(...)</code></td><td>3D vertices, normals and fixed-function transforms</td></tr>
+              <tr><td><code>lighting(on)</code>, <code>light_ambient(...)</code>, <code>light_directional(...)</code>, <code>fog(...)</code>, <code>no_fog()</code></td><td>Per-face flat shading, one directional light, ambient color and linear fog. <code>lighting(true)</code> enables the light and color material; enabling only <code>lighting_cap()</code> leaves surfaces unlit.</td></tr>
+              <tr><td><code>enable(cap)</code>, <code>disable(cap)</code>, <code>depth_func(mode)</code>, <code>depth_mask(on)</code>, <code>blend(on)</code>, <code>shade_flat()</code>, <code>shade_smooth()</code></td><td>Render-state controls; capability helpers include <code>depth_test()</code>, <code>fog_cap()</code>, <code>lighting_cap()</code> and <code>blend_cap()</code></td></tr>
+              <tr><td><code>new_list()</code>, <code>end_list()</code>, <code>call_list(id)</code>, <code>delete_list(id)</code></td><td>Compiled display lists for static geometry (chunked voxel meshes)</td></tr>
+              <tr><td><code>set_vsync(on)</code></td><td>Disable VSync via GLX swap control to measure an uncapped frame rate; called with <code>false</code> by the voxel sandbox</td></tr>
+              <tr><td><code>mouse_capture(on)</code>, <code>mouse_captured()</code>, <code>mouse_dx()</code>, <code>mouse_dy()</code>, <code>mouse_down(button)</code>, <code>mouse_pressed(button)</code></td><td>Relative pointer mode: warp-to-centre, blank cursor, button state and automatic release on real focus loss. <code>mouse_left()</code>/<code>mouse_right()</code>/<code>mouse_middle()</code> name the buttons.</td></tr>
             </tbody>
           </table>
         </div>

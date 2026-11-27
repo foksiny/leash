@@ -5709,6 +5709,176 @@ pub def CodeGen : class {
     // Complex type spellings (generics, function pointers, references)
     // are built with char-by-char loops; memoize only those. Short common
     // types stay on the direct comparison path (a hash lookup was slower).
+
+    // C ABI: clang lowers POD struct arguments into packed register values
+    // (e.g. {u8,u8,u8,u8} -> i32, {float,float} -> <2 x float>, {i64,i64} ->
+    // two i64 registers). Classify fields into eightbytes, as the SysV/Win64
+    // register rules do, and emit the corresponding packed types. A bare LLVM
+    // aggregate explodes field-by-field into the wrong registers.
+    // `@from` keeps sized spellings such as `float<32>`; Leash stores them
+    // as doubles, but the C function expects a 32-bit float scalar.
+    pub fnc native_declared_param(fname string, idx int) : string {
+        if this.tc.native_raw_params.isin(fname) {
+            ps: vec<string> = this.tc.native_raw_params[fname];
+            if idx < ps.size { return ps.get(idx); }
+        }
+        return "";
+    }
+
+    pub fnc native_declared_return(fname string) : string {
+        if this.tc.native_raw_return.isin(fname) { return this.tc.native_raw_return[fname]; }
+        return "";
+    }
+
+    pub fnc native_scalar_type(typ string) : string {
+        if typ == "float<32>" || typ == "float32" { return "float"; }
+        return this.llvm_type(typ);
+    }
+
+    pub fnc native_is_double(typ string) : bool {
+        return typ == "double" || typ == "float64" || typ == "float<64>";
+    }
+
+    pub fnc native_field_size(typ string) : int {
+        if this.native_is_float32(typ) { return 4; }
+        if this.native_is_double(typ) { return 8; }
+        if typ == "bool" || typ == "char" || typ == "int<8>" || typ == "uint<8>" { return 1; }
+        if typ.bsize > 1 && (typ[0] == '*' || typ[0] == '&') { return 8; }
+        if this.is_sized_int_type(typ) {
+            bits: int = this.sized_int_width(typ);
+            sz: int = bits / 8;
+            if sz < 1 { sz = 1; }
+            return sz;
+        }
+        if typ == "int" || typ == "uint" || typ == "int32" || typ == "uint32" { return 4; }
+        if typ == "int64" || typ == "uint64" { return 8; }
+        return 8;
+    }
+
+    pub fnc native_field_is_sse(typ string) : bool {
+        return this.native_is_float32(typ) || this.native_is_double(typ);
+    }
+
+    pub fnc native_abi_types(typ string) : vec<string> {
+        parts: vec<string>;
+        if !this.tc.structs.isin(typ) {
+            parts.pushb(this.native_scalar_type(typ));
+            return parts;
+        }
+        si: StructInfo = this.tc.structs[typ];
+        classes: vec<int>;
+        classes.pushb(0);
+        classes.pushb(0);
+        offset: int = 0;
+        sse_counts: vec<int>;
+        sse_counts.pushb(0);
+        sse_counts.pushb(0);
+        sse_sizes: vec<int>;
+        sse_sizes.pushb(0);
+        sse_sizes.pushb(0);
+        fi: int = 0;
+        while fi < si.field_types.size {
+            ft: string = si.field_types.get(fi);
+            fsz: int = this.native_field_size(ft);
+            align: int = fsz;
+            if align > 8 { align = 8; }
+            if align > 1 { offset = ((offset + align - 1) / align) * align; }
+            idx: int = offset / 8;
+            if idx < 2 {
+                if this.native_field_is_sse(ft) {
+                    classes.set(idx, classes.get(idx) | 2);
+                    sse_counts.set(idx, sse_counts.get(idx) + 1);
+                    sse_sizes.set(idx, fsz);
+                } else {
+                    classes.set(idx, classes.get(idx) | 1);
+                }
+            }
+            offset = offset + fsz;
+            fi = fi + 1;
+        }
+        nwords: int = (offset + 7) / 8;
+        if nwords < 1 { nwords = 1; }
+        if nwords > 2 { parts.pushb("BYVAL"); return parts; }
+        wi: int = 0;
+        while wi < nwords {
+            cl: int = classes.get(wi);
+            if cl == 3 {
+                // Mixed integer/SSE eightbyte: not covered by the packed
+                // fast path; keep the by-value pointer fallback.
+                parts.pushb("BYVAL");
+                return parts;
+            } also cl == 1 {
+                if nwords == 1 && offset <= 4 {
+                    bits: int = offset * 8;
+                    if bits < 8 { bits = 8; }
+                    parts.pushb("i" + tostring(bits));
+                } else {
+                    parts.pushb("i64");
+                }
+            } else {
+                cnt: int = sse_counts.get(wi);
+                fsz: int = sse_sizes.get(wi);
+                if fsz == 4 && cnt == 2 { parts.pushb("<2 x float>"); }
+                also fsz == 4 { parts.pushb("float"); }
+                also fsz == 8 && cnt == 2 { parts.pushb("<2 x double>"); }
+                else { parts.pushb("double"); }
+            }
+            wi = wi + 1;
+        }
+        return parts;
+    }
+
+    // True when a struct consists only of float32 fields. Leash stores those
+    // fields as doubles, so the packed native form must be converted per field.
+    pub fnc native_float_struct(typ string) : bool {
+        if !this.tc.structs.isin(typ) { return false; }
+        si: StructInfo = this.tc.structs[typ];
+        if si.field_types.size == 0 { return false; }
+        fi: int = 0;
+        while fi < si.field_types.size {
+            if !this.native_is_float32(si.field_types.get(fi)) { return false; }
+            fi = fi + 1;
+        }
+        return true;
+    }
+
+    pub fnc native_is_float32(typ string) : bool {
+        return typ == "float" || typ == "float<32>" || typ == "float32";
+    }
+    pub fnc native_double_struct(typ string) : bool {
+        if !this.tc.structs.isin(typ) { return false; }
+        si: StructInfo = this.tc.structs[typ];
+        if si.field_types.size == 0 { return false; }
+        fi: int = 0;
+        while fi < si.field_types.size {
+            if !this.native_is_double(si.field_types.get(fi)) { return false; }
+            fi = fi + 1;
+        }
+        return true;
+    }
+
+
+    pub fnc native_load_double_field(ptr string, sty string, idx int) : string {
+        gp: string = this.new_reg();
+        this.emit("  " + gp + " = getelementptr inbounds " + sty + ", " + sty + "* " + ptr +
+                  ", i32 0, i32 " + tostring(idx));
+        d: string = this.new_reg();
+        this.emit("  " + d + " = load double, double* " + gp);
+        return d;
+    }
+
+    pub fnc native_load_float_field(ptr string, sty string, idx int) : string {
+        gp: string = this.new_reg();
+        this.emit("  " + gp + " = getelementptr inbounds " + sty + ", " + sty + "* " + ptr +
+                  ", i32 0, i32 " + tostring(idx));
+        d: string = this.new_reg();
+        this.emit("  " + d + " = load double, double* " + gp);
+        f: string = this.new_reg();
+        this.emit("  " + f + " = fptrunc double " + d + " to float");
+        return f;
+    }
+
+
     pub fnc llvm_type(typ string) : string {
         if typ.bsize > 8 {
             if this.type_cache2.isin(typ) { return this.type_cache2[typ]; }
@@ -8382,8 +8552,96 @@ pub def CodeGen : class {
                         }
                     }
                 }
-                if i > 0 { arg_strs = arg_strs + ", "; }
-                arg_strs = arg_strs + alty + " " + aval;
+                // C float scalars: Leash holds them as doubles, truncate at
+                // the call boundary.
+                if this.native_funcs.isin(e.sval) {
+                    raw_pt: string = this.native_declared_param(e.sval, i);
+                    if raw_pt == "float<32>" || raw_pt == "float32" {
+                        cv: string = this.new_reg();
+                        this.emit("  " + cv + " = fptrunc double " + aval + " to float");
+                        aval = cv;
+                        alty = "float";
+                    }
+                }
+                // Native boundary: load the packed register form of a POD
+                // struct argument from the Leash struct pointer (clang does
+                // the same packing on the C side).
+                native_args: vec<string>;
+                has_native_struct: bool = false;
+                if this.native_funcs.isin(e.sval) && this.tc.func_params.isin(e.sval) {
+                    fparamsN: vec<string> = this.tc.func_params[e.sval];
+                    if i < fparamsN.size {
+                        ptN: string = fparamsN.get(i);
+                        if this.tc.structs.isin(ptN) {
+                            sty: string = "%struct." + ptN;
+                            partsN: vec<string> = this.native_abi_types(ptN);
+                            j: int = 0;
+                            field_base: int = 0;
+                            float_struct: bool = this.native_float_struct(ptN);
+                            while j < partsN.size {
+                                part: string = partsN.get(j);
+                                if part == "BYVAL" {
+                                    native_args.pushb(sty + "* " + aval);
+                                } also float_struct && part == "<2 x float>" {
+                                    f0: string = this.native_load_float_field(aval, sty, field_base);
+                                    f1: string = this.native_load_float_field(aval, sty, field_base + 1);
+                                    vec: string = this.new_reg();
+                                    this.emit("  " + vec + " = insertelement <2 x float> undef, float " + f0 + ", i32 0");
+                                    vec2: string = this.new_reg();
+                                    this.emit("  " + vec2 + " = insertelement <2 x float> " + vec + ", float " + f1 + ", i32 1");
+                                    native_args.pushb("<2 x float> " + vec2);
+                                } also float_struct && part == "float" {
+                                    f: string = this.native_load_float_field(aval, sty, field_base);
+                                    native_args.pushb("float " + f);
+                                } also this.native_double_struct(ptN) && part == "<2 x double>" {
+                                    d0: string = this.native_load_double_field(aval, sty, field_base);
+                                    d1: string = this.native_load_double_field(aval, sty, field_base + 1);
+                                    vec: string = this.new_reg();
+                                    this.emit("  " + vec + " = insertelement <2 x double> undef, double " + d0 + ", i32 0");
+                                    vec2: string = this.new_reg();
+                                    this.emit("  " + vec2 + " = insertelement <2 x double> " + vec + ", double " + d1 + ", i32 1");
+                                    native_args.pushb("<2 x double> " + vec2);
+                                } also this.native_double_struct(ptN) && part == "double" {
+                                    d: string = this.native_load_double_field(aval, sty, field_base);
+                                    native_args.pushb("double " + d);
+                                } else {
+                                    offset: int = 8 * j;
+                                    ptr: string = this.new_reg();
+                                    if offset > 0 {
+                                        base: string = this.new_reg();
+                                        this.emit("  " + base + " = bitcast " + sty + "* " + aval + " to i8*");
+                                        gep: string = this.new_reg();
+                                        this.emit("  " + gep + " = getelementptr i8, i8* " + base + ", i64 " + tostring(offset));
+                                        this.emit("  " + ptr + " = bitcast i8* " + gep + " to " + part + "*");
+                                    } else {
+                                        this.emit("  " + ptr + " = bitcast " + sty + "* " + aval + " to " + part + "*");
+                                    }
+                                    val: string = this.new_reg();
+                                    this.emit("  " + val + " = load " + part + ", " + part + "* " + ptr);
+                                    native_args.pushb(part + " " + val);
+                                }
+                                if part == "<2 x float>" || part == "<2 x double>" {
+                                    field_base = field_base + 2;
+                                } else if part != "BYVAL" {
+                                    field_base = field_base + 1;
+                                }
+                                j = j + 1;
+                            }
+                            has_native_struct = true;
+                        }
+                    }
+                }
+                if has_native_struct {
+                    j: int = 0;
+                    while j < native_args.size {
+                        if i > 0 || j > 0 { arg_strs = arg_strs + ", "; }
+                        arg_strs = arg_strs + native_args.get(j);
+                        j = j + 1;
+                    }
+                } else {
+                    if i > 0 { arg_strs = arg_strs + ", "; }
+                    arg_strs = arg_strs + alty + " " + aval;
+                }
             }
 
             ret_t: string = "void";
@@ -8399,7 +8657,135 @@ pub def CodeGen : class {
                 return "";
             } else {
                 res: string = this.new_reg();
-                this.emit("  " + res + " = call " + lret + " @" + fname + "(" + arg_strs + ")");
+                call_ret: string = lret;
+                if this.native_funcs.isin(e.sval) && !this.tc.structs.isin(ret_t) {
+                    raw_rt: string = this.native_declared_return(e.sval);
+                    if raw_rt.bsize > 0 { call_ret = this.native_scalar_type(raw_rt); }
+                    else { call_ret = this.native_scalar_type(ret_t); }
+                }
+                struct_native: bool = this.native_funcs.isin(e.sval) && this.tc.structs.isin(ret_t);
+                native_ret_parts: vec<string>;
+                if struct_native {
+                    native_ret_parts = this.native_abi_types(ret_t);
+                    if native_ret_parts.size != 0 && native_ret_parts.get(0) != "BYVAL" {
+                        if native_ret_parts.size == 1 {
+                            call_ret = native_ret_parts.get(0);
+                        } else {
+                            agg: string = "{ ";
+                            ri: int = 0;
+                            while ri < native_ret_parts.size {
+                                if ri > 0 { agg = agg + ", "; }
+                                agg = agg + native_ret_parts.get(ri);
+                                ri = ri + 1;
+                            }
+                            call_ret = agg + " }";
+                        }
+                    } else {
+                        struct_native = false;  // large sret: keep old path
+                    }
+                }
+                this.emit("  " + res + " = call " + call_ret + " @" + fname + "(" + arg_strs + ")");
+                if call_ret == "float" && lret == "double" {
+                    ext: string = this.new_reg();
+                    this.emit("  " + ext + " = fpext float " + res + " to double");
+                    res = ext;
+                }
+                if struct_native {
+                    // C returned the packed aggregate; copy it into a Leash
+                    // struct slot (callers expect a pointer).
+                    sty: string = "%struct." + ret_t;
+                    slot: string = this.new_reg();
+                    this.emit("  " + slot + " = alloca " + sty);
+                    if native_ret_parts.size > 1 {
+                        pj: int = 0;
+                        rfield_base: int = 0;
+                        while pj < native_ret_parts.size {
+                            p: string = native_ret_parts.get(pj);
+                            elem: string = this.new_reg();
+                            this.emit("  " + elem + " = extractvalue " + call_ret + " " + res + ", " + tostring(pj));
+                            if p == "<2 x float>" {
+                                k: int = 0;
+                                while k < 2 {
+                                    f: string = this.new_reg();
+                                    this.emit("  " + f + " = extractelement <2 x float> " + elem + ", i32 " + tostring(k));
+                                    d: string = this.new_reg();
+                                    this.emit("  " + d + " = fpext float " + f + " to double");
+                                    gp: string = this.new_reg();
+                                    this.emit("  " + gp + " = getelementptr inbounds " + sty + ", " + sty + "* " + slot + ", i32 0, i32 " + tostring(rfield_base + k));
+                                    this.emit("  store double " + d + ", double* " + gp);
+                                    k = k + 1;
+                                }
+                            } also p == "<2 x double>" {
+                                k: int = 0;
+                                while k < 2 {
+                                    d: string = this.new_reg();
+                                    this.emit("  " + d + " = extractelement <2 x double> " + elem + ", i32 " + tostring(k));
+                                    gp: string = this.new_reg();
+                                    this.emit("  " + gp + " = getelementptr inbounds " + sty + ", " + sty + "* " + slot + ", i32 0, i32 " + tostring(rfield_base + k));
+                                    this.emit("  store double " + d + ", double* " + gp);
+                                    k = k + 1;
+                                }
+                            } also p == "double" {
+                                gp: string = this.new_reg();
+                                this.emit("  " + gp + " = getelementptr inbounds " + sty + ", " + sty + "* " + slot + ", i32 0, i32 " + tostring(rfield_base));
+                                this.emit("  store double " + elem + ", double* " + gp);
+                            } else {
+                                d: string = this.new_reg();
+                                this.emit("  " + d + " = fpext float " + elem + " to double");
+                                gp: string = this.new_reg();
+                                this.emit("  " + gp + " = getelementptr inbounds " + sty + ", " + sty + "* " + slot + ", i32 0, i32 " + tostring(rfield_base));
+                                this.emit("  store double " + d + ", double* " + gp);
+                            }
+                            if p == "<2 x float>" || p == "<2 x double>" {
+                                rfield_base = rfield_base + 2;
+                            } else {
+                                rfield_base = rfield_base + 1;
+                            }
+                            pj = pj + 1;
+                        }
+                    } also this.native_float_struct(ret_t) && call_ret == "<2 x float>" {
+                        fi0: string = this.new_reg();
+                        this.emit("  " + fi0 + " = extractelement <2 x float> " + res + ", i32 0");
+                        d0: string = this.new_reg();
+                        this.emit("  " + d0 + " = fpext float " + fi0 + " to double");
+                        gp0: string = this.new_reg();
+                        this.emit("  " + gp0 + " = getelementptr inbounds " + sty + ", " + sty + "* " + slot + ", i32 0, i32 0");
+                        this.emit("  store double " + d0 + ", double* " + gp0);
+                        fi1: string = this.new_reg();
+                        this.emit("  " + fi1 + " = extractelement <2 x float> " + res + ", i32 1");
+                        d1: string = this.new_reg();
+                        this.emit("  " + d1 + " = fpext float " + fi1 + " to double");
+                        gp1: string = this.new_reg();
+                        this.emit("  " + gp1 + " = getelementptr inbounds " + sty + ", " + sty + "* " + slot + ", i32 0, i32 1");
+                        this.emit("  store double " + d1 + ", double* " + gp1);
+                    } also this.native_float_struct(ret_t) && call_ret == "float" {
+                        d: string = this.new_reg();
+                        this.emit("  " + d + " = fpext float " + res + " to double");
+                        gp: string = this.new_reg();
+                        this.emit("  " + gp + " = getelementptr inbounds " + sty + ", " + sty + "* " + slot + ", i32 0, i32 0");
+                        this.emit("  store double " + d + ", double* " + gp);
+                    } also this.native_double_struct(ret_t) && call_ret == "<2 x double>" {
+                        d0: string = this.new_reg();
+                        this.emit("  " + d0 + " = extractelement <2 x double> " + res + ", i32 0");
+                        gp0: string = this.new_reg();
+                        this.emit("  " + gp0 + " = getelementptr inbounds " + sty + ", " + sty + "* " + slot + ", i32 0, i32 0");
+                        this.emit("  store double " + d0 + ", double* " + gp0);
+                        d1: string = this.new_reg();
+                        this.emit("  " + d1 + " = extractelement <2 x double> " + res + ", i32 1");
+                        gp1: string = this.new_reg();
+                        this.emit("  " + gp1 + " = getelementptr inbounds " + sty + ", " + sty + "* " + slot + ", i32 0, i32 1");
+                        this.emit("  store double " + d1 + ", double* " + gp1);
+                    } also this.native_double_struct(ret_t) && call_ret == "double" {
+                        gp: string = this.new_reg();
+                        this.emit("  " + gp + " = getelementptr inbounds " + sty + ", " + sty + "* " + slot + ", i32 0, i32 0");
+                        this.emit("  store double " + res + ", double* " + gp);
+                    } else {
+                        castslot: string = this.new_reg();
+                        this.emit("  " + castslot + " = bitcast " + sty + "* " + slot + " to " + call_ret + "*");
+                        this.emit("  store " + call_ret + " " + res + ", " + call_ret + "* " + castslot);
+                    }
+                    return slot;
+                }
                 if this.arena && !this.bridge_host && (this.native_funcs.isin(e.sval) || e.sval == "malloc" || e.sval == "calloc" || e.sval == "realloc") && this.ar_is_raw_type(ret_t) {
                     // Provenance check: a native handle must not point into
                     // a scope arena block that will be reclaimed.
@@ -12069,14 +12455,48 @@ pub def CodeGen : class {
         } else {
             if has_this { param_sigs = this.llvm_type(f.owner) + "* %p_this"; }
             foreach i, p in<vector> f.params {
-                if param_sigs.bsize > 0 { param_sigs = param_sigs + ", "; }
-                param_sigs = param_sigs + this.llvm_type(p.typ) + " %p_" + p.name;
+                pts: vec<string>;
+                if f.is_external { pts = this.native_abi_types(p.typ); }
+                else { pts.pushb(this.llvm_type(p.typ)); }
+                j: int = 0;
+                while j < pts.size {
+                    if param_sigs.bsize > 0 { param_sigs = param_sigs + ", "; }
+                    pt: string = pts.get(j);
+                    pname: string = "%p_" + p.name;
+                    if f.is_external {
+                        pname = "%p_" + p.name + "_" + tostring(j);
+                        if pt == "BYVAL" {
+                            pt = "%struct." + p.typ + "* byval(%struct." + p.typ + ")";
+                        }
+                    }
+                    param_sigs = param_sigs + pt + " " + pname;
+                    j = j + 1;
+                }
             }
         }
 
         // @from externals are declared, never defined (the library provides them)
         if f.is_external {
-            this.emit("declare " + lret + " @" + llvm_fn_name + "(" + param_sigs + ");");
+            decl_ret: string = lret;
+            if !this.tc.structs.isin(f.ret_type) { decl_ret = this.native_scalar_type(f.ret_type); }
+            if this.tc.structs.isin(f.ret_type) {
+                ret_parts: vec<string> = this.native_abi_types(f.ret_type);
+                if ret_parts.size != 0 && ret_parts.get(0) != "BYVAL" {
+                    if ret_parts.size == 1 {
+                        decl_ret = ret_parts.get(0);
+                    } else {
+                        agg: string = "{ ";
+                        ri: int = 0;
+                        while ri < ret_parts.size {
+                            if ri > 0 { agg = agg + ", "; }
+                            agg = agg + ret_parts.get(ri);
+                            ri = ri + 1;
+                        }
+                        decl_ret = agg + " }";
+                    }
+                }
+            }
+            this.emit("declare " + decl_ret + " @" + llvm_fn_name + "(" + param_sigs + ");");
             return;
         }
         this.emit("define " + lret + " @" + llvm_fn_name + "(" + param_sigs + ") align 64 {");

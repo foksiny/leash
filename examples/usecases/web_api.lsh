@@ -1,0 +1,44 @@
+// Use case: One-shot JSON web API
+// Compile (linux64):   leash compile examples/usecases/web_api.lsh to out/usecases/web_api-linux64 --target linux64
+// Compile (linux32  ): leash compile examples/usecases/web_api.lsh to out/usecases/web_api-linux32 --target linux32
+// Compile (linux-arm): leash compile examples/usecases/web_api.lsh to out/usecases/web_api-linux-arm --target linux-arm
+// Compile (win64    ): leash compile examples/usecases/web_api.lsh to out/usecases/web_api-win64 --target win64
+// Compile (macos    ): leash compile examples/usecases/web_api.lsh to out/usecases/web_api-macos --target macos
+// Compile (macos-arm): leash compile examples/usecases/web_api.lsh to out/usecases/web_api-macos-arm --target macos-arm
+// Compile (jvm      ): leash compile examples/usecases/web_api.lsh to out/usecases/web_api-jvm --target jvm
+// Run:                  leash run examples/usecases/web_api.lsh --other-imports installthis
+
+use httpserver::httpserver::*;
+use http::http::*;
+
+fnc handle(method string, path string, query string, headers string, body string) : int {
+    if HttpServer.path_matches(path, "/api/health") {
+        return HttpServer.reply_json(200, "{\"status\":\"ok\"}");
+    }
+    if HttpServer.path_matches(path, "/api/echo") {
+        HttpServer.set_content_type("text/plain");
+        HttpServer.set_body(method + ":" + body);
+        return 200;
+    }
+    return HttpServer.reply_json(404, "{\"error\":\"not found\"}");
+}
+
+worker fnc probe(port int) {
+    base: string = "http://127.0.0.1:" + tostring(port);
+    r: HttpResponse = Http.get(base + "/api/health");
+    tries: int = 0;
+    while !r.ok && tries < 40 {
+        tries = tries + 1;
+        r = Http.get(base + "/api/health");
+    }
+    show(r.status, " ", r.body);
+    p := Http.post(base + "/api/echo", "payload=42");
+    show(p.status, " ", p.body);
+}
+
+fnc main() {
+    port: int = 19311;
+    spawn probe(port);
+    served: int = HttpServer.serve_ex(port, 2, &handle);
+    show("requests=", served);
+}

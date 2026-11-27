@@ -1,0 +1,55 @@
+// Use case: Terminal metrics dashboard
+// Compile (linux64):   leash compile examples/usecases/terminal_dashboard.lsh to out/usecases/terminal_dashboard-linux64 --target linux64
+// Compile (linux32  ): leash compile examples/usecases/terminal_dashboard.lsh to out/usecases/terminal_dashboard-linux32 --target linux32
+// Compile (linux-arm): leash compile examples/usecases/terminal_dashboard.lsh to out/usecases/terminal_dashboard-linux-arm --target linux-arm
+// Compile (win64    ): leash compile examples/usecases/terminal_dashboard.lsh to out/usecases/terminal_dashboard-win64 --target win64
+// Compile (macos    ): leash compile examples/usecases/terminal_dashboard.lsh to out/usecases/terminal_dashboard-macos --target macos
+// Compile (macos-arm): leash compile examples/usecases/terminal_dashboard.lsh to out/usecases/terminal_dashboard-macos-arm --target macos-arm
+// Compile (jvm      ): leash compile examples/usecases/terminal_dashboard.lsh to out/usecases/terminal_dashboard-jvm --target jvm
+// Run:                  leash run examples/usecases/terminal_dashboard.lsh --other-imports installthis
+
+def Metric : struct { name: string; value: int; limit: int; }
+
+fnc bar(m Metric) : string {
+    cells: int = m.value * 20 / m.limit;
+    if cells > 20 { cells = 20; }
+    out: string = "[";
+    i: int = 0;
+    while i < cells { out = out + "#"; i = i + 1; }
+    while i < 20 { out = out + "."; i = i + 1; }
+    return out + "]";
+}
+
+fnc by_value(a Metric, b Metric) : bool { return a.value > b.value; }
+
+fnc main() {
+    data: vec<Metric>;
+    data.pushb(Metric { name: "cpu", value: 73, limit: 100 });
+    data.pushb(Metric { name: "mem", value: 41, limit: 100 });
+    data.pushb(Metric { name: "disk", value: 88, limit: 100 });
+    data.pushb(Metric { name: "net", value: 12, limit: 100 });
+    i: int = 0;
+    while i < data.size {
+        best: int = i;
+        j: int = i + 1;
+        while j < data.size {
+            if by_value(data.get(j), data.get(best)) { best = j; }
+            j = j + 1;
+        }
+        tmp: Metric = data.get(i);
+        data.set(i, data.get(best));
+        data.set(best, tmp);
+        i = i + 1;
+    }
+
+    show("=== SERVICE DASHBOARD ===");
+    total: int = 0;
+    i = 0;
+    while i < data.size {
+        m: Metric = data.get(i);
+        total = total + m.value;
+        show(m.name, " ", bar(m), " ", tostring(m.value) + "%");
+        i = i + 1;
+    }
+    show("samples=", data.size, " average=", total / data.size);
+}

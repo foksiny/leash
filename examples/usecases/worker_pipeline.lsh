@@ -1,0 +1,37 @@
+// Use case: Parallel map-reduce with futures
+// Compile (linux64):   leash compile examples/usecases/worker_pipeline.lsh to out/usecases/worker_pipeline-linux64 --target linux64
+// Compile (linux32  ): leash compile examples/usecases/worker_pipeline.lsh to out/usecases/worker_pipeline-linux32 --target linux32
+// Compile (linux-arm): leash compile examples/usecases/worker_pipeline.lsh to out/usecases/worker_pipeline-linux-arm --target linux-arm
+// Compile (win64    ): leash compile examples/usecases/worker_pipeline.lsh to out/usecases/worker_pipeline-win64 --target win64
+// Compile (macos    ): leash compile examples/usecases/worker_pipeline.lsh to out/usecases/worker_pipeline-macos --target macos
+// Compile (macos-arm): leash compile examples/usecases/worker_pipeline.lsh to out/usecases/worker_pipeline-macos-arm --target macos-arm
+// Compile (jvm      ): leash compile examples/usecases/worker_pipeline.lsh to out/usecases/worker_pipeline-jvm --target jvm
+// Run:                  leash run examples/usecases/worker_pipeline.lsh --other-imports installthis
+
+// Four async workers each score a slice of a dataset; the caller awaits
+// every future and folds the results. Real worker threads, no manual locks.
+
+async fnc score_slice(start int, count int) : int {
+    total: int = 0;
+    i: int = start;
+    while i < start + count {
+        v: int = (i * 37) % 101;
+        if v % 2 == 0 { total = total + v / 2; }
+        else { total = total - v; }
+        i = i + 1;
+    }
+    return total;
+}
+
+fnc main() {
+    f1 := score_slice(0, 250);
+    f2 := score_slice(250, 250);
+    f3 := score_slice(500, 250);
+    f4 := score_slice(750, 250);
+    a: int = await f1;
+    b: int = await f2;
+    c: int = await f3;
+    d: int = await f4;
+    show("partials=", a, ",", b, ",", c, ",", d);
+    show("total=", a + b + c + d);
+}
