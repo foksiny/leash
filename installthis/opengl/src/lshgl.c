@@ -5,127 +5,30 @@
  * Rendering can target either a surfaceless EGL framebuffer (headless) or a
  * real double-buffered X11/GLX window (interactive).
  */
-#define _GNU_SOURCE
-#include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
-#include <string.h>
-#include <time.h>
-#include <dlfcn.h>
+#include "lshgl_common.h"
 
-typedef void* EGLDisplay;
-typedef void* EGLContext;
-typedef void* EGLConfig;
-typedef int EGLint;
-typedef unsigned int EGLBoolean;
-typedef int EGLenum;
-typedef void (*PFNGLVIEWPORT)(int, int, int, int);
-typedef void (*PFNGLGENTEXTURES)(int, unsigned int*);
-typedef void (*PFNGLBINDTEXTURE)(unsigned int, unsigned int);
-typedef void (*PFNGLTEXIMAGE2D)(unsigned int, int, int, int, int, int, unsigned int, unsigned int, const void*);
-typedef void (*PFNGLTEXPARAMETERI)(unsigned int, unsigned int, int);
-typedef void (*PFNGLGENFRAMEBUFFERS)(int, unsigned int*);
-typedef void (*PFNGLBINDFRAMEBUFFER)(unsigned int, unsigned int);
-typedef void (*PFNGLFRAMEBUFFERTEXTURE2D)(unsigned int, unsigned int, unsigned int, unsigned int, int);
-typedef unsigned int (*PFNGLCHECKFRAMEBUFFERSTATUS)(unsigned int);
-typedef void (*PFNGLCLEARCOLOR)(float, float, float, float);
-typedef void (*PFNGLCLEAR)(unsigned int);
-typedef void (*PFNGLREADPIXELS)(int, int, int, int, unsigned int, unsigned int, void*);
-typedef unsigned int (*PFNGLGETERROR)(void);
-typedef const unsigned char* (*PFNGLGETSTRING)(unsigned int);
-typedef void (*PFNGLBEGIN)(unsigned int);
-typedef void (*PFNGLEND)(void);
-typedef void (*PFNGLCOLOR4F)(float, float, float, float);
-typedef void (*PFNGLVERTEX2F)(float, float);
-typedef void (*PFNGLMATRIXMODE)(unsigned int);
-typedef void (*PFNGLLOADIDENTITY)(void);
-typedef void (*PFNGLORTHO)(double, double, double, double, double, double);
-typedef void (*PFNGLSWAPBUFFERS)(void*, unsigned long);
-typedef void (*PFNGLVERTEX3F)(float, float, float);
-typedef void (*PFNGLNORMAL3F)(float, float, float);
-typedef void (*PFNGLTRANSLATEF)(float, float, float);
-typedef void (*PFNGLROTATEF)(float, float, float, float);
-typedef void (*PFNGLSCALEF)(float, float, float);
-typedef void (*PFNGLFRUSTUM)(double, double, double, double, double, double);
-typedef void (*PFNGLENABLE)(unsigned int);
-typedef void (*PFNGLDISABLE)(unsigned int);
-typedef void (*PFNGLDEPTHFUNC)(unsigned int);
-typedef void (*PFNGLDEPTHMASK)(unsigned char);
-typedef void (*PFNGLBLENDFUNC)(unsigned int, unsigned int);
-typedef void (*PFNGLLINEWIDTH)(float);
-typedef void (*PFNGLSHADEMODEL)(unsigned int);
-typedef void (*PFNGLCOLORMATERIAL)(unsigned int, unsigned int);
-typedef void (*PFNGLLIGHTFV)(unsigned int, unsigned int, const float*);
-typedef void (*PFNGLLIGHTMODELFV)(unsigned int, const float*);
-typedef void (*PFNGLFOGF)(unsigned int, float);
-typedef void (*PFNGLFOGFV)(unsigned int, const float*);
-typedef void (*PFNGLNEWLIST)(unsigned int, unsigned int);
-typedef void (*PFNGLENDLIST)(void);
-typedef void (*PFNGLCALLLIST)(unsigned int);
-typedef void (*PFNGLDELETELISTS)(unsigned int, int);
-typedef unsigned int (*PFNGLGENLISTS)(int);
-typedef void (*PFNGLGENRENDERBUFFERS)(int, unsigned int*);
-typedef void (*PFNGLBINDRENDERBUFFER)(unsigned int, unsigned int);
-typedef void (*PFNGLRENDERBUFFERSTORAGE)(unsigned int, unsigned int, int, int);
-typedef void (*PFNGLFRAMEBUFFERRENDERBUFFER)(unsigned int, unsigned int, unsigned int, unsigned int);
-typedef void (*PFNGLDELETERENDERBUFFERS)(int, const unsigned int*);
-typedef void (*PFNGLDELETEFRAMEBUFFERS)(int, const unsigned int*);
-typedef void (*PFNGLDELETETEXTURES)(int, const unsigned int*);
-typedef void* (*PFNGLXGETPROCADDRESSARB)(const unsigned char*);
-typedef void (*PFNGLXSWAPINTERVALEXT)(void*, unsigned long, int);
-typedef int (*PFNGLXSWAPINTERVALMESA)(unsigned int);
-typedef int (*PFNGLXSWAPINTERVALSGI)(int);
+/* Declared locally: these types/functions exist on every supported Linux ABI
+ * and avoid pulling glibc headers into 32-bit cross builds. */
+extern void* dlopen(const char*, int);
+extern void* dlsym(void*, const char*);
+#define RTLD_LAZY 1
+#define RTLD_LOCAL 0
+typedef struct { long tv_sec; long tv_usec; } LshTimeval;
+extern int gettimeofday(LshTimeval*, void*);
+extern int usleep(unsigned int);
 
-#define EGL_NO_DISPLAY ((EGLDisplay)0)
-#define EGL_NO_CONTEXT ((EGLContext)0)
-#define EGL_DEFAULT_DISPLAY ((void*)0)
-#define EGL_OPENGL_API 0x30A2
-#define EGL_OPENGL_BIT 0x0008
-#define EGL_RENDERABLE_TYPE 0x3040
-#define EGL_NONE 0x3038
-#define EGL_PLATFORM_SURFACELESS_MESA 0x30FD
-#define GL_VERSION 0x1F02
-#define GL_RENDERER 0x1F01
-#define GL_VENDOR 0x1F00
-#define GL_COLOR_BUFFER_BIT 0x00004000
-#define GL_RGBA 0x1908
-#define GL_UNSIGNED_BYTE 0x1401
-#define GL_TEXTURE_2D 0x0DE1
-#define GL_RGBA8 0x8058
-#define GL_TEXTURE_MIN_FILTER 0x2801
-#define GL_TEXTURE_MAG_FILTER 0x2800
-#define GL_NEAREST 0x2600
-#define GL_FRAMEBUFFER 0x8D40
-#define GL_COLOR_ATTACHMENT0 0x8CE0
-#define GL_FRAMEBUFFER_COMPLETE 0x8CD5
-#define GL_PROJECTION 0x1701
-#define GL_MODELVIEW 0x1700
-#define GL_DEPTH_BUFFER_BIT 0x0100
-#define GL_DEPTH_TEST 0x0B71
-#define GL_LEQUAL 0x0203
-#define GL_FOG 0x0B60
-#define GL_FOG_START 0x0B63
-#define GL_FOG_END 0x0B64
-#define GL_FOG_MODE 0x0B65
-#define GL_FOG_COLOR 0x0B66
-#define GL_LINEAR 0x2601
-#define GL_LIGHTING 0x0B50
-#define GL_LIGHT0 0x4000
-#define GL_COLOR_MATERIAL 0x0B57
-#define GL_AMBIENT 0x1200
-#define GL_DIFFUSE 0x1201
-#define GL_SPECULAR 0x1202
-#define GL_POSITION 0x1203
-#define GL_LIGHT_MODEL_AMBIENT 0x0B53
-#define GL_FRONT_AND_BACK 0x0408
-#define GL_AMBIENT_AND_DIFFUSE 0x1602
-#define GL_FLAT 0x1D00
-#define GL_BLEND 0x0BE2
-#define GL_SRC_ALPHA 0x0302
-#define GL_ONE_MINUS_SRC_ALPHA 0x0303
-#define GL_RENDERBUFFER 0x8D41
-#define GL_DEPTH_ATTACHMENT 0x8D00
-#define GL_DEPTH_COMPONENT24 0x81A6
+static void* lsh_memset(void* dst, int c, unsigned long n) {
+    unsigned char* p = (unsigned char*)dst;
+    while (n > 0) { *p++ = (unsigned char)c; n--; }
+    return dst;
+}
+#define memset lsh_memset
+#ifndef NULL
+#define NULL ((void*)0)
+#endif
+
 
 /* Xlib ABI structs. Xlib is opened dynamically, so the layouts are declared
  * here; they are the exact public layouts of XSetWindowAttributes,
@@ -440,6 +343,7 @@ typedef void* (*FN_GETPROC)(const char*);
 
 static void* sym_egl(const char* name) { return dlsym(g_egl, name); }
 static void* sym_gl(const char* name) { return dlsym(g_gl, name); }
+void* lshgl_gl_symbol(const char* name) { return sym_gl(name); }
 static void destroy_headless_context(void);
 
 static bool load_x11(void) {
@@ -886,18 +790,15 @@ void lshgl_swap_buffers(void) {
 }
 
 int64_t lshgl_time_ms(void) {
-    struct timespec ts;
-    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return 0;
-    return (int64_t)ts.tv_sec * 1000 + (int64_t)ts.tv_nsec / 1000000;
+    LshTimeval tv;
+    if (gettimeofday(&tv, NULL) != 0) return 0;
+    return (int64_t)tv.tv_sec * 1000 + (int64_t)tv.tv_usec / 1000;
 }
 
 void lshgl_sleep_ms(int ms) {
     if (ms < 0) ms = 0;
     if (ms > 1000) ms = 1000;
-    struct timespec req;
-    req.tv_sec = ms / 1000;
-    req.tv_nsec = (long)(ms % 1000) * 1000000L;
-    while (nanosleep(&req, &req) == -1 && errno == EINTR) { }
+    usleep((unsigned int)(ms * 1000));
 }
 
 void* lshgl_create_context(void) {
@@ -958,65 +859,13 @@ void* lshgl_create_context(void) {
         return NULL;
     }
 
-    /* Surfaceless EGL has no default framebuffer: render into a texture. */
-    PFNGLGENTEXTURES gen_tex = (PFNGLGENTEXTURES)sym_gl("glGenTextures");
-    PFNGLBINDTEXTURE bind_tex = (PFNGLBINDTEXTURE)sym_gl("glBindTexture");
-    PFNGLTEXIMAGE2D tex_image = (PFNGLTEXIMAGE2D)sym_gl("glTexImage2D");
-    PFNGLTEXPARAMETERI tex_param = (PFNGLTEXPARAMETERI)sym_gl("glTexParameteri");
-    PFNGLGENFRAMEBUFFERS gen_fb = (PFNGLGENFRAMEBUFFERS)sym_gl("glGenFramebuffers");
-    PFNGLBINDFRAMEBUFFER bind_fb = (PFNGLBINDFRAMEBUFFER)sym_gl("glBindFramebuffer");
-    PFNGLFRAMEBUFFERTEXTURE2D fb_tex = (PFNGLFRAMEBUFFERTEXTURE2D)sym_gl("glFramebufferTexture2D");
-    PFNGLCHECKFRAMEBUFFERSTATUS check_fb = (PFNGLCHECKFRAMEBUFFERSTATUS)sym_gl("glCheckFramebufferStatus");
-    PFNGLGENRENDERBUFFERS gen_rb = (PFNGLGENRENDERBUFFERS)sym_gl("glGenRenderbuffers");
-    PFNGLBINDRENDERBUFFER bind_rb = (PFNGLBINDRENDERBUFFER)sym_gl("glBindRenderbuffer");
-    PFNGLRENDERBUFFERSTORAGE rb_storage = (PFNGLRENDERBUFFERSTORAGE)sym_gl("glRenderbufferStorage");
-    PFNGLFRAMEBUFFERRENDERBUFFER fb_rb = (PFNGLFRAMEBUFFERRENDERBUFFER)sym_gl("glFramebufferRenderbuffer");
-    if (!gen_tex || !bind_tex || !tex_image || !tex_param || !gen_fb || !bind_fb || !fb_tex || !check_fb)
-        return (void*)g_ctx;
-    gen_tex(1, &g_tex);
-    bind_tex(GL_TEXTURE_2D, g_tex);
-    tex_image(GL_TEXTURE_2D, 0, GL_RGBA8, g_fb_w, g_fb_h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-    tex_param(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-    tex_param(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    gen_fb(1, &g_fbo);
-    bind_fb(GL_FRAMEBUFFER, g_fbo);
-    fb_tex(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_tex, 0);
-    if (gen_rb && bind_rb && rb_storage && fb_rb) {
-        gen_rb(1, &g_depth_rb);
-        bind_rb(GL_RENDERBUFFER, g_depth_rb);
-        rb_storage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, g_fb_w, g_fb_h);
-        fb_rb(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, g_depth_rb);
-    }
-    if (check_fb(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
-        PFNGLDELETEFRAMEBUFFERS del_fb =
-            (PFNGLDELETEFRAMEBUFFERS)sym_gl("glDeleteFramebuffers");
-        PFNGLDELETERENDERBUFFERS del_rb =
-            (PFNGLDELETERENDERBUFFERS)sym_gl("glDeleteRenderbuffers");
-        PFNGLDELETETEXTURES del_tex =
-            (PFNGLDELETETEXTURES)sym_gl("glDeleteTextures");
-        if (g_fbo && del_fb) del_fb(1, &g_fbo);
-        if (g_depth_rb && del_rb) del_rb(1, &g_depth_rb);
-        if (g_tex && del_tex) del_tex(1, &g_tex);
-        g_fbo = 0;
-        g_tex = 0;
-        g_depth_rb = 0;
-    }
+    lshgl_setup_framebuffer();
     return (void*)g_ctx;
 }
 
 static void destroy_headless_context(void) {
     if (g_dpy == EGL_NO_DISPLAY || !g_egl) return;
-    if (g_gl) {
-        PFNGLDELETEFRAMEBUFFERS del_fb =
-            (PFNGLDELETEFRAMEBUFFERS)sym_gl("glDeleteFramebuffers");
-        PFNGLDELETERENDERBUFFERS del_rb =
-            (PFNGLDELETERENDERBUFFERS)sym_gl("glDeleteRenderbuffers");
-        PFNGLDELETETEXTURES del_tex =
-            (PFNGLDELETETEXTURES)sym_gl("glDeleteTextures");
-        if (g_fbo && del_fb) del_fb(1, &g_fbo);
-        if (g_depth_rb && del_rb) del_rb(1, &g_depth_rb);
-        if (g_tex && del_tex) del_tex(1, &g_tex);
-    }
+    lshgl_teardown_framebuffer();
     FN_MAKECURRENT make_current = (FN_MAKECURRENT)sym_egl("eglMakeCurrent");
     FN_DESTROYCONTEXT destroy = (FN_DESTROYCONTEXT)sym_egl("eglDestroyContext");
     FN_TERMINATE terminate = (FN_TERMINATE)sym_egl("eglTerminate");
@@ -1041,250 +890,4 @@ void lshgl_destroy_context(void* ctx) {
     destroy_headless_context();
 }
 
-const char* lshgl_version(void) {
-    PFNGLGETSTRING f = g_gl ? (PFNGLGETSTRING)sym_gl("glGetString") : NULL;
-    const unsigned char* s = f ? f(GL_VERSION) : NULL;
-    return s ? (const char*)s : "";
-}
-
-const char* lshgl_renderer(void) {
-    PFNGLGETSTRING f = g_gl ? (PFNGLGETSTRING)sym_gl("glGetString") : NULL;
-    const unsigned char* s = f ? f(GL_RENDERER) : NULL;
-    return s ? (const char*)s : "";
-}
-
-const char* lshgl_vendor(void) {
-    PFNGLGETSTRING f = g_gl ? (PFNGLGETSTRING)sym_gl("glGetString") : NULL;
-    const unsigned char* s = f ? f(GL_VENDOR) : NULL;
-    return s ? (const char*)s : "";
-}
-
-void lshgl_viewport(int w, int h) {
-    PFNGLVIEWPORT f = g_gl ? (PFNGLVIEWPORT)sym_gl("glViewport") : NULL;
-    if (f) f(0, 0, w, h);
-}
-
-void lshgl_clear_color(double r, double g, double b, double a) {
-    PFNGLCLEARCOLOR f = g_gl ? (PFNGLCLEARCOLOR)sym_gl("glClearColor") : NULL;
-    if (f) f((float)r, (float)g, (float)b, (float)a);
-}
-
-void lshgl_clear(void) {
-    PFNGLCLEAR f = g_gl ? (PFNGLCLEAR)sym_gl("glClear") : NULL;
-    if (f) f(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-}
-
-int64_t lshgl_read_pixel(int x, int y) {
-    unsigned char px[4] = {0, 0, 0, 0};
-    PFNGLREADPIXELS f = g_gl ? (PFNGLREADPIXELS)sym_gl("glReadPixels") : NULL;
-    if (f) f(x, y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, px);
-    return (int64_t)(((uint32_t)px[0] << 24) | ((uint32_t)px[1] << 16) |
-                     ((uint32_t)px[2] << 8) | (uint32_t)px[3]);
-}
-
-int lshgl_error(void) {
-    PFNGLGETERROR f = g_gl ? (PFNGLGETERROR)sym_gl("glGetError") : NULL;
-    return f ? (int)f() : 1;
-}
-
-void lshgl_begin(int mode) {
-    PFNGLBEGIN f = g_gl ? (PFNGLBEGIN)sym_gl("glBegin") : NULL;
-    if (f) f((unsigned int)mode);
-}
-
-void lshgl_end(void) {
-    PFNGLEND f = g_gl ? (PFNGLEND)sym_gl("glEnd") : NULL;
-    if (f) f();
-}
-
-void lshgl_color(double r, double g, double b, double a) {
-    PFNGLCOLOR4F f = g_gl ? (PFNGLCOLOR4F)sym_gl("glColor4f") : NULL;
-    if (f) f((float)r, (float)g, (float)b, (float)a);
-}
-
-void lshgl_vertex2(double x, double y) {
-    PFNGLVERTEX2F f = g_gl ? (PFNGLVERTEX2F)sym_gl("glVertex2f") : NULL;
-    if (f) f((float)x, (float)y);
-}
-
-void lshgl_matrix(int mode) {
-    PFNGLMATRIXMODE f = g_gl ? (PFNGLMATRIXMODE)sym_gl("glMatrixMode") : NULL;
-    if (f) f((unsigned int)mode);
-}
-
-void lshgl_identity(void) {
-    PFNGLLOADIDENTITY f = g_gl ? (PFNGLLOADIDENTITY)sym_gl("glLoadIdentity") : NULL;
-    if (f) f();
-}
-
-void lshgl_ortho(double l, double r, double b, double t, double n, double f) {
-    PFNGLORTHO fn = g_gl ? (PFNGLORTHO)sym_gl("glOrtho") : NULL;
-    if (fn) fn(l, r, b, t, n, f);
-}
-
-void lshgl_frustum(double l, double r, double b, double t, double n, double f) {
-    /* Build the frustum matrix explicitly. Calling glFrustum through dlsym is
-     * unreliable on some Mesa/libGLdispatch builds, while glLoadMatrixf is
-     * always dispatched correctly. Column-major, replaces the current matrix. */
-    typedef void (*PFNGLLOADMATRIXD)(const double*);
-    PFNGLLOADMATRIXD load = g_gl ? (PFNGLLOADMATRIXD)sym_gl("glLoadMatrixd") : NULL;
-    if (!load || l == r || b == t || n <= 0.0 || f <= n) return;
-    double m[16] = {
-        2.0 * n / (r - l), 0.0, 0.0, 0.0,
-        0.0, 2.0 * n / (t - b), 0.0, 0.0,
-        (r + l) / (r - l), (t + b) / (t - b),
-        -(f + n) / (f - n), -1.0,
-        0.0, 0.0, -2.0 * f * n / (f - n), 0.0
-    };
-    load(m);
-}
-
-void lshgl_vertex3(double x, double y, double z) {
-    PFNGLVERTEX3F f = g_gl ? (PFNGLVERTEX3F)sym_gl("glVertex3f") : NULL;
-    if (f) f((float)x, (float)y, (float)z);
-}
-
-void lshgl_normal3(double x, double y, double z) {
-    PFNGLNORMAL3F f = g_gl ? (PFNGLNORMAL3F)sym_gl("glNormal3f") : NULL;
-    if (f) f((float)x, (float)y, (float)z);
-}
-
-void lshgl_translate(double x, double y, double z) {
-    PFNGLTRANSLATEF f = g_gl ? (PFNGLTRANSLATEF)sym_gl("glTranslatef") : NULL;
-    if (f) f((float)x, (float)y, (float)z);
-}
-
-void lshgl_rotate(double angle, double x, double y, double z) {
-    PFNGLROTATEF f = g_gl ? (PFNGLROTATEF)sym_gl("glRotatef") : NULL;
-    if (f) f((float)angle, (float)x, (float)y, (float)z);
-}
-
-void lshgl_scale(double x, double y, double z) {
-    PFNGLSCALEF f = g_gl ? (PFNGLSCALEF)sym_gl("glScalef") : NULL;
-    if (f) f((float)x, (float)y, (float)z);
-}
-
-void lshgl_enable(int cap) {
-    PFNGLENABLE f = g_gl ? (PFNGLENABLE)sym_gl("glEnable") : NULL;
-    if (f) f((unsigned int)cap);
-}
-
-void lshgl_disable(int cap) {
-    PFNGLDISABLE f = g_gl ? (PFNGLDISABLE)sym_gl("glDisable") : NULL;
-    if (f) f((unsigned int)cap);
-}
-
-void lshgl_depth_func(int func) {
-    PFNGLDEPTHFUNC f = g_gl ? (PFNGLDEPTHFUNC)sym_gl("glDepthFunc") : NULL;
-    if (f) f((unsigned int)func);
-}
-
-void lshgl_depth_mask(int on) {
-    PFNGLDEPTHMASK f = g_gl ? (PFNGLDEPTHMASK)sym_gl("glDepthMask") : NULL;
-    if (f) f(on ? 1 : 0);
-}
-
-void lshgl_blend(int on) {
-    PFNGLENABLE enable = g_gl ? (PFNGLENABLE)sym_gl("glEnable") : NULL;
-    PFNGLDISABLE disable = g_gl ? (PFNGLDISABLE)sym_gl("glDisable") : NULL;
-    PFNGLBLENDFUNC blend = g_gl ? (PFNGLBLENDFUNC)sym_gl("glBlendFunc") : NULL;
-    if (blend) blend(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    if (on && enable) enable(GL_BLEND);
-    else if (!on && disable) disable(GL_BLEND);
-}
-
-void lshgl_line_width(double width) {
-    PFNGLLINEWIDTH f = g_gl ? (PFNGLLINEWIDTH)sym_gl("glLineWidth") : NULL;
-    if (f) f((float)width);
-}
-
-void lshgl_shade_flat(void) {
-    PFNGLSHADEMODEL f = g_gl ? (PFNGLSHADEMODEL)sym_gl("glShadeModel") : NULL;
-    if (f) f(GL_FLAT);
-}
-
-void lshgl_shade_smooth(void) {
-    PFNGLSHADEMODEL f = g_gl ? (PFNGLSHADEMODEL)sym_gl("glShadeModel") : NULL;
-    if (f) f(0x1D01);  /* GL_SMOOTH */
-}
-
-void lshgl_lighting(int on) {
-    PFNGLENABLE enable = g_gl ? (PFNGLENABLE)sym_gl("glEnable") : NULL;
-    PFNGLDISABLE disable = g_gl ? (PFNGLDISABLE)sym_gl("glDisable") : NULL;
-    PFNGLCOLORMATERIAL color_material =
-        g_gl ? (PFNGLCOLORMATERIAL)sym_gl("glColorMaterial") : NULL;
-    PFNGLSHADEMODEL shade = g_gl ? (PFNGLSHADEMODEL)sym_gl("glShadeModel") : NULL;
-    if (!on) {
-        if (disable) disable(GL_LIGHTING);
-        return;
-    }
-    if (enable) {
-        enable(GL_LIGHTING);
-        enable(GL_LIGHT0);
-        enable(GL_COLOR_MATERIAL);
-    }
-    if (color_material) color_material(GL_FRONT_AND_BACK, GL_AMBIENT_AND_DIFFUSE);
-    if (shade) shade(GL_FLAT);
-}
-
-void lshgl_light_directional(double x, double y, double z,
-                             double r, double g, double b) {
-    PFNGLLIGHTFV f = g_gl ? (PFNGLLIGHTFV)sym_gl("glLightfv") : NULL;
-    if (!f) return;
-    float position[4] = { (float)x, (float)y, (float)z, 0.0f };
-    float diffuse[4] = { (float)r, (float)g, (float)b, 1.0f };
-    float specular[4] = { 0.0f, 0.0f, 0.0f, 1.0f };
-    f(GL_LIGHT0, GL_POSITION, position);
-    f(GL_LIGHT0, GL_DIFFUSE, diffuse);
-    f(GL_LIGHT0, GL_SPECULAR, specular);
-}
-
-void lshgl_light_ambient(double r, double g, double b, double a) {
-    PFNGLLIGHTMODELFV f = g_gl ? (PFNGLLIGHTMODELFV)sym_gl("glLightModelfv") : NULL;
-    if (!f) return;
-    float ambient[4] = { (float)r, (float)g, (float)b, (float)a };
-    f(GL_LIGHT_MODEL_AMBIENT, ambient);
-}
-
-void lshgl_fog(double start, double end, double r, double g, double b) {
-    PFNGLFOGF fogf = g_gl ? (PFNGLFOGF)sym_gl("glFogf") : NULL;
-    PFNGLFOGFV fogfv = g_gl ? (PFNGLFOGFV)sym_gl("glFogfv") : NULL;
-    PFNGLENABLE enable = g_gl ? (PFNGLENABLE)sym_gl("glEnable") : NULL;
-    if (!fogf || !fogfv) return;
-    float color[4] = { (float)r, (float)g, (float)b, 1.0f };
-    fogf(GL_FOG_MODE, GL_LINEAR);
-    fogf(GL_FOG_START, (float)start);
-    fogf(GL_FOG_END, (float)end);
-    fogfv(GL_FOG_COLOR, color);
-    if (enable) enable(GL_FOG);
-}
-
-void lshgl_no_fog(void) {
-    PFNGLDISABLE f = g_gl ? (PFNGLDISABLE)sym_gl("glDisable") : NULL;
-    if (f) f(GL_FOG);
-}
-
-int lshgl_new_list(void) {
-    PFNGLGENLISTS gen = g_gl ? (PFNGLGENLISTS)sym_gl("glGenLists") : NULL;
-    PFNGLNEWLIST begin = g_gl ? (PFNGLNEWLIST)sym_gl("glNewList") : NULL;
-    if (!gen || !begin) return 0;
-    unsigned int id = gen(1);
-    if (id == 0) return 0;
-    begin(id, 0x1300);  /* GL_COMPILE */
-    return (int)id;
-}
-
-void lshgl_end_list(void) {
-    PFNGLENDLIST f = g_gl ? (PFNGLENDLIST)sym_gl("glEndList") : NULL;
-    if (f) f();
-}
-
-void lshgl_call_list(int id) {
-    PFNGLCALLLIST f = g_gl ? (PFNGLCALLLIST)sym_gl("glCallList") : NULL;
-    if (f && id != 0) f((unsigned int)id);
-}
-
-void lshgl_delete_list(int id) {
-    PFNGLDELETELISTS f = g_gl ? (PFNGLDELETELISTS)sym_gl("glDeleteLists") : NULL;
-    if (f && id != 0) f((unsigned int)id, 1);
-}
+#include "lshgl_gl.inc"

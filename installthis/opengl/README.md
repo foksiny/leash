@@ -1,6 +1,9 @@
 # opengl
 
-Headless-capable OpenGL bindings for native Leash programs.
+Headless-capable OpenGL bindings for every Leash target. Native backends
+use GLX/EGL on Linux (x86-64, x86, ARM64), WGL on Windows x86-64 and
+CGL/AppKit on macOS (x86-64 and ARM64). The JVM target, which cannot load
+native libraries, uses a pure-Leash software renderer with the same API.
 
 ```leash
 use opengl::opengl::*;
@@ -61,7 +64,11 @@ use `Gl.time_ms()` to count FPS. 3D rendering uses `Gl.frustum()`,
 `GL_LIGHT0` and color material; `Gl.enable(Gl.lighting_cap())` alone only
 turns on the lighting model and leaves faces unlit.
 
-The shim loads the system OpenGL, EGL and X11 libraries at runtime with
-`dlopen`; no development packages or linker flags are needed. Build the
-native archive with `sh src/build.sh`. Unsupported targets get no-op stubs
-and a clear message from `Gl.version()`.
+The native shims load system libraries at runtime (`dlopen` on POSIX,
+`LoadLibraryA` on Windows), so no development packages or linker flags are
+needed. Build the archives with `sh src/build.sh all` (or a single target:
+`linux64`, `linux32`, `linux-arm`, `win64`, `macos`, `macos-arm`). Archives
+are placed in `linux/`, `linux32/`, `arm64/`, `win/`, `macos/` and
+`macosarm64/`. `Gl.version()` reports the active backend. On JVM,
+`open_window()`, key and mouse methods are unavailable; use the offscreen
+renderer through `Gl.init()`.

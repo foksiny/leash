@@ -422,7 +422,7 @@ pub def CompilerDriver : class {
         return true;
     }
 
-    pub fnc resolve_imports(prog Program, base_dir string, check_mode bool) : void {
+    pub fnc resolve_imports(prog Program, base_dir string, check_mode bool, target_name string) : void {
         imports_to_process: vec<string> = prog.imports;
         empty_imps: vec<string>;
         prog.imports = empty_imps; // clear so we don't duplicate
@@ -457,6 +457,7 @@ pub def CompilerDriver : class {
                 return;
             }
             mod_parser: Parser = Parser.make(mod_toks);
+            mod_parser.platform_name = target_name.bsize > 0 ? target_name : "linux64";
             mod_parser.src_file = this.realpath_str(mod_file);
             mod_prog: Program = mod_parser.parse_program();
             foreach _, mde in<vector> mod_parser.deferred_errors {
@@ -476,7 +477,7 @@ pub def CompilerDriver : class {
             }
 
             // Recursively resolve sub-imports
-            this.resolve_imports(mod_prog, Path.dirname(mod_file), check_mode);
+            this.resolve_imports(mod_prog, Path.dirname(mod_file), check_mode, target_name);
             if this.imports_fatal { return; }
 
             // A module imported with an alias gets its contents namespaced
@@ -939,6 +940,7 @@ pub def CompilerDriver : class {
         if verbose { show("[verbose] parsing (", tostring(tokens.size), " tokens)"); }
         abs_main: string = this.realpath_str(input_file);
         parser: Parser = Parser.make(tokens);
+        parser.platform_name = target_name.bsize > 0 ? target_name : "linux64";
         parser.src_file = abs_main;
         prog: Program = parser.parse_program();
         if parser.fatal {
@@ -966,7 +968,7 @@ pub def CompilerDriver : class {
 
         // Resolve imports
         if verbose { show("[verbose] resolving imports (", tostring(prog.imports.size), ")"); }
-        this.resolve_imports(prog, base_dir, check_mode);
+        this.resolve_imports(prog, base_dir, check_mode, target_name);
         if this.imports_fatal {
             if verbose { show("[verbose] import resolution failed"); }
             return 1;

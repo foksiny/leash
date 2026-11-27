@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.3.1] - 2026-11-27
+
+### Added
+- **OpenGL is now a full cross-platform stdlib module.** Native backends cover Linux x86-64/x86/ARM64 (GLX/EGL), Windows x86-64 (WGL) and macOS x86-64/ARM64 (CGL/AppKit), each with offscreen framebuffer readback and a real double-buffered window with keyboard and relative-mouse input. The JVM target uses a pure-Leash software renderer with the same `Gl` API. `_PLATFORM` now reflects the selected compile target, so conditional module dispatch works for every target. `sh installthis/opengl/src/build.sh all` builds every archive; tests check API parity on all seven targets and execute the JVM software renderer.
+
 ## [2.3.0] - 2026-11-27
 
 ### Added

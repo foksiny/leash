@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Leash - Leash documentation</title>
-<meta name="description" content="Leash is a strongly typed, self-hosted language compiling to native code through LLVM. Version 2.3.0 continues with the scoped arena the default memory layout, with --gc available for mark-and-sweep.">
+<meta name="description" content="Leash is a strongly typed, self-hosted language compiling to native code through LLVM. Version 2.3.1 continues with the scoped arena the default memory layout, with --gc available for mark-and-sweep.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Crect width=%27100%27 height=%27100%27 rx=%2722%27 fill=%27%23241f4d%27/%3E%3Ctext x=%2750%27 y=%2770%27 font-size=%2760%27 text-anchor=%27middle%27 font-family=%27monospace%27 fill=%27white%27%3EL%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
 <script src="docs.js" defer></script>
@@ -48,7 +48,7 @@
       <a href="advanced.html" class="">Standalone pages</a>
       <a href="limitations.html" class="">Known limitations</a>
     </div>
-    <div class="sidenav-foot">Leash 2.3.0</div>
+    <div class="sidenav-foot">Leash 2.3.1</div>
   </aside>
 
   <main class="content" id="main-content">
@@ -62,16 +62,17 @@
         <p>Version 2.0.0 made the <strong>scoped bump arena the default native memory layout</strong>. It gives you plain C pointers, deterministic frame and loop lifetimes, and no stop-the-world pause. If your workload has adversarial or highly dynamic lifetimes, pass <code>--gc</code> to opt into the classic mark-and-sweep collector.</p>
 
         <div class="callout callout-success" id="whats-new">
-          <strong>What&rsquo;s new in 2.3.0.</strong>
+          <strong>What&rsquo;s new in 2.3.1.</strong>
           <ul>
-            <li><strong>Real interactive graphics.</strong> The <code>opengl</code> module opens X11/GLX windows with perspective 3D, lighting, fog, mouse look, VSync control and an FPS counter; the voxel sandbox is a playable first-person game. <a href="stdlib.html#opengl">OpenGL module &rarr;</a></li>
+            <li><strong>OpenGL everywhere.</strong> Native GLX/WGL/CGL backends cover Linux, Windows and macOS; the JVM gets a pure-Leash software renderer with the same <code>Gl</code> API. <a href="stdlib.html#opengl">OpenGL module &rarr;</a></li>
+            <li><strong>Real interactive graphics.</strong> Perspective 3D, lighting, fog, mouse look, VSync control and an FPS counter power the playable voxel sandbox. <a href="stdlib.html#opengl">Details &rarr;</a></li>
             <li><strong>Correct C ABI.</strong> POD structs and <code>float&lt;32&gt;</code> scalars now cross <code>@from</code> in clang-compatible registers, so raylib colors and vectors render correctly. <a href="advanced.html">Native interop &rarr;</a></li>
             <li><strong>Correct math.</strong> <code>Math.sin</code> and <code>Math.sqrt</code> were numerically broken and are now fixed, including re-recorded stdlib baselines. <a href="stdlib.html#math-utilities">Math &rarr;</a></li>
           </ul>
         </div>
 
         <div class="stat-grid">
-          <div class="stat"><div class="value">2.3.0</div><div class="label">Current release</div></div>
+          <div class="stat"><div class="value">2.3.1</div><div class="label">Current release</div></div>
           <div class="stat"><div class="value">15</div><div class="label">Compiler pipeline stages</div></div>
           <div class="stat"><div class="value">100+</div><div class="label">Importable packages</div></div>
           <div class="stat"><div class="value">7</div><div class="label">Compilation targets</div></div>
@@ -149,7 +150,7 @@
 git clone https://github.com/foksiny/leash &amp;&amp; cd leash
 ./scripts/bootstrap.sh
 bin/leashc version
-<span class="cm"># leash 2.3.0 (self-hosted)</span></code></pre>
+<span class="cm"># leash 2.3.1 (self-hosted)</span></code></pre>
           </div>
           <div class="step">
             <h3>Write a program</h3>

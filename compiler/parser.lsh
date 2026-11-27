@@ -41,6 +41,7 @@ pub def Parser : class {
     pub empty_body: vec<Stmt>;   // shared, never mutated (@from externs)
     pub tokens: vec<Token>;
     pub src_file: string;   // file being parsed (for @from security attribution)
+    pub platform_name: string; // target selected at compile time for _PLATFORM
     pub pos: int;
     pub len: int;
     pub fe_counter: int;
@@ -81,7 +82,8 @@ pub def Parser : class {
         empty_ml: vec<MacroDef>;
         empty_de: vec<string>;
         empty_dt: vec<string>;
-        return Parser { tokens: tokens, pos: 0, len: tokens.size, fe_counter: 0, no_struct_init: false, type_aliases: empty_aliases, import_aliases: empty_import_aliases, quiet: false, parse_errs: 0, depth: 0, last_err_msg: "", parse_fail: false, param_what: "parameter list", fatal: false, fatal_msg: "", fatal_tip: "", fatal_line: 0, fatal_col: 0, deferred_errors: empty_de, arr_rt_size: "", keep_sized: false, mod_unsafe: false, mod_nogc: false, mod_inline: false, mod_async: false, mod_worker: false, hoisted_funcs: empty_hf, hoisted_mark: 0, macros: empty_macros, lambda_counter: 0, macro_list: empty_ml, deferred_templates: empty_dt };
+        platform_name: string = "linux64";
+        return Parser { tokens: tokens, platform_name: platform_name, pos: 0, len: tokens.size, fe_counter: 0, no_struct_init: false, type_aliases: empty_aliases, import_aliases: empty_import_aliases, quiet: false, parse_errs: 0, depth: 0, last_err_msg: "", parse_fail: false, param_what: "parameter list", fatal: false, fatal_msg: "", fatal_tip: "", fatal_line: 0, fatal_col: 0, deferred_errors: empty_de, arr_rt_size: "", keep_sized: false, mod_unsafe: false, mod_nogc: false, mod_inline: false, mod_async: false, mod_worker: false, hoisted_funcs: empty_hf, hoisted_mark: 0, macros: empty_macros, lambda_counter: 0, macro_list: empty_ml, deferred_templates: empty_dt };
     }
 
     // Function literal: fnc(a int, b int) : int { ... }  (hoisted, used as a value)
@@ -3445,7 +3447,7 @@ pub def Parser : class {
     pub fnc eval_const_str(e Expr) : string {
         if e == null { return ""; }
         if e.kind == ExprKind.STRING { return e.sval; }
-        if e.kind == ExprKind.IDENT && e.sval == "_PLATFORM" { return "linux64"; }
+        if e.kind == ExprKind.IDENT && e.sval == "_PLATFORM" { return this.platform_name; }
         if e.kind == ExprKind.BOOL { if e.bval { return "true"; } return "false"; }
         if e.kind == ExprKind.INT { return tostring(e.ival); }
         return "";

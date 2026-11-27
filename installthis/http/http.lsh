@@ -10,4 +10,6 @@ if _PLATFORM == "win64" {
     pub use macos::main::*;
 } also _PLATFORM == "macos-arm" {
     pub use macos::main::*;
+} else {
+    pub use jvm::main::*;
 }

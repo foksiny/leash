@@ -1,0 +1,604 @@
+// Pure-Leash software OpenGL fallback for the JVM target.
+//
+// The JVM cannot load a native GL shim, so this backend implements the Gl API
+// in software: a 4x4 projection/modelview pipeline, flat-shaded triangle and
+// line rasterisation with a depth buffer, fog, display lists and RGBA pixel
+// readback. Windows are intentionally unavailable (open_window returns null);
+// programs use the deterministic headless path instead.
+use utils::math::Math;
+
+pub def Gl : class {
+    static pub w: int = 64;
+    static pub h: int = 64;
+    static pub px: vec<int>;
+    static pub depth: vec<float>;
+    static pub clear_col: int = 0xFFFFFFFF;
+    static pub cur_col: int = 0xFFFFFFFF;
+    static pub mode: int = 0;
+    static pub vx: vec<float>;
+    static pub vy: vec<float>;
+    static pub vz: vec<float>;
+    static pub vc: vec<int>;
+    static pub nx: vec<float>;
+    static pub ny: vec<float>;
+    static pub nz: vec<float>;
+    static pub proj: vec<float>;
+    static pub model: vec<float>;
+    static pub matrix_mode: int = 0;
+    static pub ambient: vec<float>;
+    static pub light_dir: vec<float>;
+    static pub diffuse: vec<float>;
+    static pub light_on: bool = false;
+    static pub fog_on: bool = false;
+    static pub fog_start: float = 20.0;
+    static pub fog_end: float = 70.0;
+    static pub fog_col: int = 0xFFFFFFFF;
+    static pub list_ids: vec<int>;
+    static pub list_modes: vec<int>;
+    static pub list_vx: vec<vec<float>>;
+    static pub list_vy: vec<vec<float>>;
+    static pub list_vz: vec<vec<float>>;
+    static pub list_vc: vec<vec<int>>;
+    static pub list_next: int = 1;
+    static pub recording: int = 0;
+    static pub line_width: int = 1;
+
+    static pub fnc empty_int() : vec<int> {
+        v: vec<int>;
+        return v;
+    }
+
+    static pub fnc empty_float() : vec<float> {
+        v: vec<float>;
+        return v;
+    }
+
+    static pub fnc empty_float_list() : vec<vec<float>> {
+        v: vec<vec<float>>;
+        return v;
+    }
+
+    static pub fnc empty_int_list() : vec<vec<int>> {
+        v: vec<vec<int>>;
+        return v;
+    }
+
+    static pub fnc minf(a float, b float) : float { return a < b ? a : b; }
+    static pub fnc maxf(a float, b float) : float { return a > b ? a : b; }
+
+    static pub fnc clamp255(v float) : int {
+        n: int = toint(int, v * 255.0);
+        if n < 0 { return 0; }
+        if n > 255 { return 255; }
+        return n;
+    }
+
+    static pub fnc pack(r float, g float, b float, a float) : int {
+        return (Gl.clamp255(r) << 24) | (Gl.clamp255(g) << 16) |
+               (Gl.clamp255(b) << 8) | Gl.clamp255(a);
+    }
+
+    static pub fnc init() : pointer<void> {
+        Gl.px = Gl.empty_int();
+        Gl.depth = Gl.empty_float();
+        i: int = 0;
+        while i < Gl.w * Gl.h {
+            Gl.px.pushb(Gl.clear_col);
+            Gl.depth.pushb(2.0);
+            i = i + 1;
+        }
+        Gl.vx = Gl.empty_float();
+        Gl.vy = Gl.empty_float();
+        Gl.vz = Gl.empty_float();
+        Gl.vc = Gl.empty_int();
+        Gl.nx = Gl.empty_float();
+        Gl.ny = Gl.empty_float();
+        Gl.nz = Gl.empty_float();
+        Gl.proj = Gl.empty_float();
+        Gl.model = Gl.empty_float();
+        Gl.ambient = Gl.empty_float();
+        Gl.light_dir = Gl.empty_float();
+        Gl.diffuse = Gl.empty_float();
+        i = 0;
+        while i < 16 {
+            Gl.proj.pushb(0.0);
+            Gl.model.pushb(0.0);
+            if i == 0 || i == 5 || i == 10 || i == 15 {
+                Gl.proj.set(i, 1.0);
+                Gl.model.set(i, 1.0);
+            }
+            i = i + 1;
+        }
+        i = 0;
+        while i < 3 {
+            Gl.ambient.pushb(0.3);
+            Gl.light_dir.pushb(0.0);
+            Gl.diffuse.pushb(0.7);
+            i = i + 1;
+        }
+        Gl.list_ids = Gl.empty_int();
+        Gl.list_modes = Gl.empty_int();
+        Gl.list_vx = Gl.empty_float_list();
+        Gl.list_vy = Gl.empty_float_list();
+        Gl.list_vz = Gl.empty_float_list();
+        Gl.list_vc = Gl.empty_int_list();
+        return null;
+    }
+
+    static pub fnc close(ctx pointer<void>) : void {
+
+    }
+    static pub fnc open_window(w int, h int, title string) : pointer<void> {
+
+
+
+        return null;
+    }
+    static pub fnc close_window() : void { }
+    static pub fnc poll_events() : void { }
+    static pub fnc should_close() : bool { return true; }
+    static pub fnc request_close() : void { }
+    static pub fnc swap_buffers() : void { }
+
+    static pub fnc version() : string { return "Leash software OpenGL (JVM)" }
+    static pub fnc renderer() : string { return "leash-softgl" }
+    static pub fnc vendor() : string { return "Leash" }
+    static pub fnc error() : int { return 0 }
+    static pub fnc time_ms() : int<64> { return 0 }
+    static pub fnc sleep_ms(ms int) : void { (void)ms; }
+    static pub fnc set_vsync(on bool) : void { (void)on; }
+    static pub fnc mouse_capture(on bool) : void { (void)on; }
+    static pub fnc mouse_captured() : bool { return false }
+    static pub fnc mouse_dx() : int { return 0 }
+    static pub fnc mouse_dy() : int { return 0 }
+    static pub fnc mouse_down(button int) : bool { (void)button; return false }
+    static pub fnc mouse_pressed(button int) : bool { (void)button; return false }
+    static pub fnc mouse_left() : int { return 1; }
+    static pub fnc mouse_right() : int { return 2; }
+    static pub fnc mouse_middle() : int { return 3; }
+    static pub fnc key_down(key int) : bool { (void)key; return false }
+    static pub fnc key_pressed(key int) : bool { (void)key; return false }
+    static pub fnc width() : int { return Gl.w }
+    static pub fnc height() : int { return Gl.h }
+
+    static pub fnc key_w() : int { return 0x057; }
+    static pub fnc key_a() : int { return 0x061; }
+    static pub fnc key_s() : int { return 0x073; }
+    static pub fnc key_d() : int { return 0x064; }
+    static pub fnc key_q() : int { return 0x071; }
+    static pub fnc key_e() : int { return 0x065; }
+    static pub fnc key_f() : int { return 0x066; }
+    static pub fnc key_g() : int { return 0x067; }
+    static pub fnc key_r() : int { return 0x072; }
+    static pub fnc key_space() : int { return 0x020; }
+    static pub fnc key_escape() : int { return 0xFF1B; }
+    static pub fnc key_shift() : int { return 0xFFE1; }
+    static pub fnc key_num(n int) : int { return 0x030 + n; }
+    static pub fnc quads() : int { return 0x0007; }
+    static pub fnc triangles() : int { return 0x0004; }
+    static pub fnc lines() : int { return 0x0001; }
+    static pub fnc projection() : int { return 0x1701; }
+    static pub fnc modelview() : int { return 0x1700; }
+    static pub fnc depth_test() : int { return 0x0B71; }
+    static pub fnc fog_cap() : int { return 0x0B60; }
+    static pub fnc lighting_cap() : int { return 0x0B50; }
+    static pub fnc blend_cap() : int { return 0x0BE2; }
+    static pub fnc lequal() : int { return 0x0203; }
+
+    static pub fnc viewport(w int, h int) : void {
+        if w < 1 { w = 1; }
+        if h < 1 { h = 1; }
+        if w > 2048 { w = 2048; }
+        if h > 2048 { h = 2048; }
+        if Gl.px.size == w * h && Gl.w == w && Gl.h == h { return; }
+        Gl.w = w;
+        Gl.h = h;
+        Gl.px = Gl.empty_int();
+        Gl.depth = Gl.empty_float();
+        i: int = 0;
+        while i < w * h {
+            Gl.px.pushb(Gl.clear_col);
+            Gl.depth.pushb(2.0);
+            i = i + 1;
+        }
+    }
+
+    static pub fnc clear_color(r float, g float, b float, a float) : void {
+        Gl.clear_col = Gl.pack(r, g, b, a);
+    }
+
+    static pub fnc clear() : void {
+        i: int = 0;
+        while i < Gl.px.size {
+            Gl.px.set(i, Gl.clear_col);
+            Gl.depth.set(i, 2.0);
+            i = i + 1;
+        }
+    }
+
+    static pub fnc pixel(x int, y int) : int<64> {
+        if x < 0 || y < 0 || x >= Gl.w || y >= Gl.h { return 0; }
+        idx: int = (Gl.h - 1 - y) * Gl.w + x;
+        return toint(int<64>, Gl.px.get(idx));
+    }
+
+    static pub fnc matrix(mode int) : void { Gl.matrix_mode = mode; }
+    static pub fnc identity() : void {
+        m: vec<float> = Gl.matrix_mode == Gl.projection() ? Gl.proj : Gl.model;
+        i: int = 0;
+        while i < 16 {
+            v: float = 0.0;
+            if i == 0 || i == 5 || i == 10 || i == 15 { v = 1.0; }
+            m.set(i, v);
+            i = i + 1;
+        }
+    }
+
+    static pub fnc ortho(l float, r float, b float, t float, n float, f float) : void {
+        m: vec<float> = Gl.matrix_mode == Gl.projection() ? Gl.proj : Gl.model;
+        Gl.identity();
+        m.set(0, 2.0 / (r - l));
+        m.set(5, 2.0 / (t - b));
+        m.set(10, -2.0 / (f - n));
+        m.set(12, -(r + l) / (r - l));
+        m.set(13, -(t + b) / (t - b));
+        m.set(14, -(f + n) / (f - n));
+    }
+
+    static pub fnc frustum(l float, r float, b float, t float, n float, f float) : void {
+        m: vec<float> = Gl.matrix_mode == Gl.projection() ? Gl.proj : Gl.model;
+        Gl.identity();
+        m.set(0, 2.0 * n / (r - l));
+        m.set(5, 2.0 * n / (t - b));
+        m.set(8, (r + l) / (r - l));
+        m.set(9, (t + b) / (t - b));
+        m.set(10, -(f + n) / (f - n));
+        m.set(11, -1.0);
+        m.set(14, -2.0 * f * n / (f - n));
+    }
+
+    static pub fnc translate(x float, y float, z float) : void {
+        m: vec<float> = Gl.matrix_mode == Gl.projection() ? Gl.proj : Gl.model;
+        m.set(12, m.get(12) + m.get(0) * x + m.get(4) * y + m.get(8) * z);
+        m.set(13, m.get(13) + m.get(1) * x + m.get(5) * y + m.get(9) * z);
+        m.set(14, m.get(14) + m.get(2) * x + m.get(6) * y + m.get(10) * z);
+    }
+
+    static pub fnc scale(x float, y float, z float) : void {
+        m: vec<float> = Gl.matrix_mode == Gl.projection() ? Gl.proj : Gl.model;
+        i: int = 0;
+        while i < 3 {
+            m.set(i, m.get(i) * x);
+            m.set(4 + i, m.get(4 + i) * y);
+            m.set(8 + i, m.get(8 + i) * z);
+            i = i + 1;
+        }
+    }
+
+    static pub fnc rotate(angle float, x float, y float, z float) : void {
+        len: float = Math.sqrt(x * x + y * y + z * z);
+        if len < 0.000001 { return; }
+        ax: float = x / len;
+        ay: float = y / len;
+        az: float = z / len;
+        a: float = angle * Math.PI / 180.0;
+        c: float = Math.cos(a);
+        s: float = Math.sin(a);
+        t: float = 1.0 - c;
+        r: vec<float> = Gl.empty_float();
+        i: int = 0;
+        while i < 16 { r.pushb(0.0); i = i + 1; }
+        r.set(0, t * ax * ax + c);
+        r.set(1, t * ax * ay + s * az);
+        r.set(2, t * ax * az - s * ay);
+        r.set(4, t * ax * ay - s * az);
+        r.set(5, t * ay * ay + c);
+        r.set(6, t * ay * az + s * ax);
+        r.set(8, t * ax * az + s * ay);
+        r.set(9, t * ay * az - s * ax);
+        r.set(10, t * az * az + c);
+        r.set(15, 1.0);
+        Gl.multiply(r);
+    }
+
+    static pub fnc multiply(right vec<float>) : void {
+        m: vec<float> = Gl.matrix_mode == Gl.projection() ? Gl.proj : Gl.model;
+        out: vec<float> = Gl.empty_float();
+        col: int = 0;
+        while col < 4 {
+            row: int = 0;
+            while row < 4 {
+                sum: float = 0.0;
+                k: int = 0;
+                while k < 4 {
+                    sum = sum + m.get(row + k * 4) * right.get(col * 4 + k);
+                    k = k + 1;
+                }
+                out.pushb(sum);
+                row = row + 1;
+            }
+            col = col + 1;
+        }
+        i: int = 0;
+        while i < 16 { m.set(i, out.get(i)); i = i + 1; }
+    }
+
+    static pub fnc begin(mode int) : void {
+        Gl.mode = mode;
+        Gl.vx = Gl.empty_float();
+        Gl.vy = Gl.empty_float();
+        Gl.vz = Gl.empty_float();
+        Gl.vc = Gl.empty_int();
+        Gl.nx = Gl.empty_float();
+        Gl.ny = Gl.empty_float();
+        Gl.nz = Gl.empty_float();
+    }
+
+    static pub fnc color(r float, g float, b float, a float) : void {
+        Gl.cur_col = Gl.pack(r, g, b, a);
+    }
+    static pub fnc normal3(x float, y float, z float) : void {
+        Gl.nx.pushb(x);
+        Gl.ny.pushb(y);
+        Gl.nz.pushb(z);
+    }
+    static pub fnc line_width(w float) : void { Gl.line_width = toint(int, w); if Gl.line_width < 1 { Gl.line_width = 1; } }
+    static pub fnc enable(cap int) : void { (void)cap; }
+    static pub fnc disable(cap int) : void { (void)cap; }
+    static pub fnc depth_func(mode int) : void { (void)mode; }
+    static pub fnc depth_mask(on bool) : void { (void)on; }
+    static pub fnc blend(on bool) : void { (void)on; }
+    static pub fnc shade_flat() : void { }
+    static pub fnc shade_smooth() : void { }
+    static pub fnc lighting(on bool) : void { Gl.light_on = on; }
+    static pub fnc light_ambient(r float, g float, b float, a float) : void {
+
+        Gl.ambient.set(0, r);
+        Gl.ambient.set(1, g);
+        Gl.ambient.set(2, b);
+    }
+    static pub fnc light_directional(x float, y float, z float,
+                                     r float, g float, b float) : void {
+        Gl.light_dir.set(0, x);
+        Gl.light_dir.set(1, y);
+        Gl.light_dir.set(2, z);
+        Gl.diffuse.set(0, r);
+        Gl.diffuse.set(1, g);
+        Gl.diffuse.set(2, b);
+    }
+    static pub fnc fog(start float, end float, r float, g float, b float) : void {
+        Gl.fog_on = true;
+        Gl.fog_start = start;
+        Gl.fog_end = end;
+        Gl.fog_col = Gl.pack(r, g, b, 1.0);
+    }
+    static pub fnc no_fog() : void { Gl.fog_on = false; }
+
+    static pub fnc vertex2(x float, y float) : void { Gl.vertex3(x, y, 0.0); }
+    static pub fnc vertex3(x float, y float, z float) : void {
+        mx: float = Gl.model.get(0) * x + Gl.model.get(4) * y +
+                    Gl.model.get(8) * z + Gl.model.get(12);
+        my: float = Gl.model.get(1) * x + Gl.model.get(5) * y +
+                    Gl.model.get(9) * z + Gl.model.get(13);
+        mz: float = Gl.model.get(2) * x + Gl.model.get(6) * y +
+                    Gl.model.get(10) * z + Gl.model.get(14);
+        cx: float = Gl.proj.get(0) * mx + Gl.proj.get(4) * my +
+                    Gl.proj.get(8) * mz + Gl.proj.get(12);
+        cy: float = Gl.proj.get(1) * mx + Gl.proj.get(5) * my +
+                    Gl.proj.get(9) * mz + Gl.proj.get(13);
+        cz: float = Gl.proj.get(2) * mx + Gl.proj.get(6) * my +
+                    Gl.proj.get(10) * mz + Gl.proj.get(14);
+        cw: float = Gl.proj.get(3) * mx + Gl.proj.get(7) * my +
+                    Gl.proj.get(11) * mz + Gl.proj.get(15);
+        if cw == 0.0 { cw = 1.0; }
+        sx: float = (cx / cw + 1.0) * tofloat(float, Gl.w) / 2.0;
+        sy: float = (cy / cw + 1.0) * tofloat(float, Gl.h) / 2.0;
+        if Gl.recording != 0 {
+            id: int = Gl.recording;
+            k: int = 0;
+            while k < Gl.list_ids.size {
+                if Gl.list_ids.get(k) == id {
+                    Gl.list_vx.get(k).pushb(sx);
+                    Gl.list_vy.get(k).pushb(sy);
+                    Gl.list_vz.get(k).pushb(-cz / cw);
+                    Gl.list_vc.get(k).pushb(Gl.cur_col);
+                    stop;
+                }
+                k = k + 1;
+            }
+            return;
+        }
+        Gl.vx.pushb(sx);
+        Gl.vy.pushb(sy);
+        Gl.vz.pushb(-cz / cw);
+        Gl.vc.pushb(Gl.cur_col);
+    }
+
+    static pub fnc shade_color(c int, z float) : int {
+        r: int = (c >> 24) & 255;
+        g: int = (c >> 16) & 255;
+        b: int = (c >> 8) & 255;
+        a: int = c & 255;
+        if Gl.light_on && Gl.nx.size > 0 {
+            i: int = Gl.nx.size - 1;
+            d: float = Gl.nx.get(i) * Gl.light_dir.get(0) +
+                       Gl.ny.get(i) * Gl.light_dir.get(1) +
+                       Gl.nz.get(i) * Gl.light_dir.get(2);
+            if d < 0.0 { d = 0.0; }
+            factor: float = Gl.ambient.get(0) + Gl.diffuse.get(0) * d;
+            r = toint(int, tofloat(float, r) * factor);
+            g = toint(int, tofloat(float, g) * factor);
+            b = toint(int, tofloat(float, b) * factor);
+        }
+        if Gl.fog_on {
+            t: float = (z - Gl.fog_start) / (Gl.fog_end - Gl.fog_start);
+            if t < 0.0 { t = 0.0; }
+            if t > 1.0 { t = 1.0; }
+            fr: int = (Gl.fog_col >> 24) & 255;
+            fg: int = (Gl.fog_col >> 16) & 255;
+            fb: int = (Gl.fog_col >> 8) & 255;
+            r = toint(int, tofloat(float, r) * (1.0 - t) + tofloat(float, fr) * t);
+            g = toint(int, tofloat(float, g) * (1.0 - t) + tofloat(float, fg) * t);
+            b = toint(int, tofloat(float, b) * (1.0 - t) + tofloat(float, fb) * t);
+        }
+        if r < 0 { r = 0; }
+        if g < 0 { g = 0; }
+        if b < 0 { b = 0; }
+        if r > 255 { r = 255; }
+        if g > 255 { g = 255; }
+        if b > 255 { b = 255; }
+        return (r << 24) | (g << 16) | (b << 8) | a;
+    }
+
+    static pub fnc plot(x int, y int, z float, c int) : void {
+        if x < 0 || y < 0 || x >= Gl.w || y >= Gl.h { return; }
+        idx: int = (Gl.h - 1 - y) * Gl.w + x;
+        if z > Gl.depth.get(idx) { return; }
+        Gl.depth.set(idx, z);
+        Gl.px.set(idx, c);
+    }
+
+    static pub fnc triangle(i0 int, i1 int, i2 int) : void {
+        x0: float = Gl.vx.get(i0);
+        y0: float = Gl.vy.get(i0);
+        x1: float = Gl.vx.get(i1);
+        y1: float = Gl.vy.get(i1);
+        x2: float = Gl.vx.get(i2);
+        y2: float = Gl.vy.get(i2);
+        area: float = (x1 - x0) * (y2 - y0) - (x2 - x0) * (y1 - y0);
+        if area == 0.0 { return; }
+        minx: int = toint(int, Math.floor(Gl.minf(x0, Gl.minf(x1, x2))));
+        maxx: int = toint(int, Math.ceil(Gl.maxf(x0, Gl.maxf(x1, x2))));
+        miny: int = toint(int, Math.floor(Gl.minf(y0, Gl.minf(y1, y2))));
+        maxy: int = toint(int, Math.ceil(Gl.maxf(y0, Gl.maxf(y1, y2))));
+        if minx < 0 { minx = 0; }
+        if miny < 0 { miny = 0; }
+        if maxx >= Gl.w { maxx = Gl.w - 1; }
+        if maxy >= Gl.h { maxy = Gl.h - 1; }
+        c: int = Gl.shade_color(Gl.vc.get(i0), Gl.vz.get(i0));
+        z: float = (Gl.vz.get(i0) + Gl.vz.get(i1) + Gl.vz.get(i2)) / 3.0;
+        py: int = miny;
+        while py <= maxy {
+            px: int = minx;
+            while px <= maxx {
+                fx: float = tofloat(float, px) + 0.5;
+                fy: float = tofloat(float, py) + 0.5;
+                w0: float = ((x1 - fx) * (y2 - fy) - (x2 - fx) * (y1 - fy)) / area;
+                w1: float = ((x2 - fx) * (y0 - fy) - (x0 - fx) * (y2 - fy)) / area;
+                w2: float = 1.0 - w0 - w1;
+                if w0 >= 0.0 && w1 >= 0.0 && w2 >= 0.0 {
+                    Gl.plot(px, py, z, c);
+                }
+                px = px + 1;
+            }
+            py = py + 1;
+        }
+    }
+
+    static pub fnc line(i0 int, i1 int) : void {
+        x0: int = toint(int, Gl.vx.get(i0));
+        y0: int = toint(int, Gl.vy.get(i0));
+        x1: int = toint(int, Gl.vx.get(i1));
+        y1: int = toint(int, Gl.vy.get(i1));
+        dx: int = x1 - x0;
+        dy: int = y1 - y0;
+        steps: int = dx >= 0 ? dx : -dx;
+        sy: int = dy >= 0 ? dy : -dy;
+        if sy > steps { steps = sy; }
+        if steps == 0 { Gl.plot(x0, y0, Gl.vz.get(i0), Gl.vc.get(i0)); return; }
+        i: int = 0;
+        while i <= steps {
+            x: int = x0 + dx * i / steps;
+            y: int = y0 + dy * i / steps;
+            Gl.plot(x, y, Gl.vz.get(i0), Gl.shade_color(Gl.vc.get(i0), Gl.vz.get(i0)));
+            i = i + 1;
+        }
+    }
+
+    static pub fnc end() : void {
+        n: int = Gl.vx.size;
+        if Gl.mode == Gl.lines() {
+            i: int = 0;
+            while i + 1 < n {
+                Gl.line(i, i + 1);
+                i = i + 2;
+            }
+            return;
+        }
+        if Gl.mode == Gl.triangles() {
+            i: int = 0;
+            while i + 2 < n {
+                Gl.triangle(i, i + 1, i + 2);
+                i = i + 3;
+            }
+            return;
+        }
+        i: int = 0;
+        while i + 3 < n {
+            Gl.triangle(i, i + 1, i + 2);
+            Gl.triangle(i, i + 2, i + 3);
+            i = i + 4;
+        }
+    }
+
+    static pub fnc new_list() : int {
+        id: int = Gl.list_next;
+        Gl.list_next = Gl.list_next + 1;
+        Gl.list_ids.pushb(id);
+        Gl.list_modes.pushb(Gl.mode);
+        Gl.list_vx.pushb(Gl.empty_float());
+        Gl.list_vy.pushb(Gl.empty_float());
+        Gl.list_vz.pushb(Gl.empty_float());
+        Gl.list_vc.pushb(Gl.empty_int());
+        Gl.recording = id;
+        Gl.begin(Gl.mode);
+        return id;
+    }
+
+    static pub fnc end_list() : void {
+        k: int = 0;
+        while k < Gl.list_ids.size {
+            if Gl.list_ids.get(k) == Gl.recording {
+                Gl.list_modes.set(k, Gl.mode);
+                stop;
+            }
+            k = k + 1;
+        }
+        Gl.recording = 0;
+    }
+
+    static pub fnc call_list(id int) : void {
+        if id <= 0 { return; }
+        k: int = 0;
+        while k < Gl.list_ids.size {
+            if Gl.list_ids.get(k) == id {
+                saved_mode: int = Gl.mode;
+                Gl.mode = Gl.list_modes.get(k);
+                Gl.vx = Gl.list_vx.get(k);
+                Gl.vy = Gl.list_vy.get(k);
+                Gl.vz = Gl.list_vz.get(k);
+                Gl.vc = Gl.list_vc.get(k);
+                Gl.end();
+                Gl.mode = saved_mode;
+                return;
+            }
+            k = k + 1;
+        }
+    }
+
+    static pub fnc delete_list(id int) : void {
+        k: int = 0;
+        while k < Gl.list_ids.size {
+            if Gl.list_ids.get(k) == id {
+                Gl.list_ids.remove(k);
+                Gl.list_modes.remove(k);
+                Gl.list_vx.remove(k);
+                Gl.list_vy.remove(k);
+                Gl.list_vz.remove(k);
+                Gl.list_vc.remove(k);
+                return;
+            }
+            k = k + 1;
+        }
+    }
+}

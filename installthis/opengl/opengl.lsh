@@ -1,6 +1,19 @@
-// Built-in OpenGL module: offscreen and windowed native bindings.
+// Built-in OpenGL module. Every native target gets a real backend:
+// GLX/EGL on Linux (x86-64, x86, ARM64), WGL on Windows, CGL/AppKit on
+// macOS (x86-64 and ARM64). The JVM uses a pure-Leash software renderer
+// because it cannot load a native library.
 if _PLATFORM == "linux64" {
     pub use linux::main::*;
+} also _PLATFORM == "linux32" {
+    pub use linux32::main::*;
+} also _PLATFORM == "linux-arm" {
+    pub use arm64::main::*;
+} also _PLATFORM == "win64" {
+    pub use win::main::*;
+} also _PLATFORM == "macos" {
+    pub use macos::main::*;
+} also _PLATFORM == "macos-arm" {
+    pub use macosarm64::main::*;
 } else {
-    pub use unsupported::main::*;
+    pub use jvm::main::*;
 }

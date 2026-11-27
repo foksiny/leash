@@ -48,7 +48,7 @@
       <a href="advanced.html" class="">Standalone pages</a>
       <a href="limitations.html" class="">Known limitations</a>
     </div>
-    <div class="sidenav-foot">Leash 2.3.0</div>
+    <div class="sidenav-foot">Leash 2.3.1</div>
   </aside>
 
   <main class="content" id="main-content">
@@ -1265,7 +1265,7 @@ entry:
         </div>
 
         <h3 id="opengl">OpenGL (<code>opengl::opengl</code>)</h3>
-        <p>A small native OpenGL binding with two targets: an EGL framebuffer for headless rendering and readback (the system EGL may still connect to an X display), and a real double-buffered X11/GLX window for interactive programs. The voxel sandbox in <code>examples/usecases/minecraft_clone.lsh</code> opens a first-person window when a display is available (WASD move, mouse look, Shift sprint, Space jump, LMB mine, RMB place, 1–9 select, G/F mine/place as keyboard alternatives, R reset, Esc or the title-bar X to quit) and shows an uncapped FPS/frame-time counter with VSync disabled. Without a display it falls back to the deterministic offscreen renderer. A static shim loads the system GL/EGL/X11 libraries at runtime with <code>dlopen</code>; no development packages or linker flags are needed. Native Linux x86_64 supports both modes; other targets return a clear message from <code>Gl.version()</code>.</p>
+        <p>The OpenGL module is available on every target. Native backends use GLX/EGL on Linux (x86-64, x86 and ARM64), WGL on Windows x86-64, and CGL/AppKit on macOS (x86-64 and ARM64). Each backend offers an offscreen framebuffer with pixel readback and a real double-buffered window with keyboard and relative-mouse input; system libraries are loaded at runtime, so no development packages or linker flags are needed. The JVM target, which cannot load native libraries, uses a pure-Leash software renderer with the same <code>Gl</code> API (window and input methods are unavailable there). The voxel sandbox in <code>examples/usecases/minecraft_clone.lsh</code> opens a first-person window when a display is available (WASD move, mouse look, Shift sprint, Space jump, LMB mine, RMB place, 1–9 select, G/F mine/place as keyboard alternatives, R reset, Esc or the title-bar X to quit) and shows an uncapped FPS/frame-time counter with VSync disabled. Without a window it falls back to the deterministic offscreen renderer.</p>
 
         <pre><code><span class="kw">use</span> opengl::opengl::*;
 
@@ -1301,8 +1301,8 @@ entry:
           <table>
             <thead><tr><th>Method</th><th>Description</th></tr></thead>
             <tbody>
-              <tr><td><code>init()</code> / <code>close(ctx)</code></td><td>Create / release the context created by <code>init()</code> or <code>open_window()</code></td></tr>
-              <tr><td><code>open_window(w, h, title)</code> / <code>close_window()</code></td><td>Open / close a real double-buffered X11/GLX window; returns <code>null</code> when no display or GLX visual is usable</td></tr>
+              <tr><td><code>init()</code> / <code>close(ctx)</code></td><td>Create / release the native or software context</td></tr>
+              <tr><td><code>open_window(w, h, title)</code> / <code>close_window()</code></td><td>Open / close a real double-buffered window on native targets; returns <code>null</code> when no display is usable (always <code>null</code> on JVM, which uses the software renderer)</td></tr>
               <tr><td><code>poll_events()</code>, <code>should_close()</code>, <code>request_close()</code></td><td>Drain input events and query or set the close state (window-manager close button included)</td></tr>
               <tr><td><code>swap_buffers()</code>, <code>width()</code>, <code>height()</code></td><td>Present a window frame and query the current drawable size</td></tr>
               <tr><td><code>key_down(key)</code>, <code>key_pressed(key)</code></td><td>Held / newly pressed X11 keysym; <code>Gl.key_w()</code>, <code>key_a()</code>, <code>key_space()</code>, <code>key_escape()</code>, etc.</td></tr>

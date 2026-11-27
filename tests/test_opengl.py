@@ -307,6 +307,83 @@ fnc main() {
             self.assertLess(int(m.group(2)), 80)      # red material tracked
             self.assertEqual(int(m.group(3)), 0)
 
+    def test_all_targets_expose_the_same_api(self):
+        src = """use opengl::opengl::*;
+fnc main() {
+    Gl.init();
+    Gl.viewport(16, 16);
+    Gl.clear_color(0.0, 0.0, 1.0, 1.0);
+    Gl.clear();
+    Gl.matrix(Gl.projection());
+    Gl.identity();
+    Gl.ortho(-1.0, 1.0, -1.0, 1.0, -1.0, 1.0);
+    Gl.matrix(Gl.modelview());
+    Gl.identity();
+    Gl.color(1.0, 0.0, 0.0, 1.0);
+    Gl.begin(Gl.quads());
+    Gl.vertex3(-0.5, -0.5, 0.0);
+    Gl.vertex3(0.5, -0.5, 0.0);
+    Gl.vertex3(0.5, 0.5, 0.0);
+    Gl.vertex3(-0.5, 0.5, 0.0);
+    Gl.end();
+    show(Gl.pixel(8, 8));
+}
+"""
+        targets = ("linux64", "linux32", "linux-arm", "win64",
+                   "macos", "macos-arm", "jvm")
+        with tempfile.TemporaryDirectory(prefix="leash_gl_targets_") as td:
+            path = os.path.join(td, "main.lsh")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(src)
+            for target in targets:
+                with self.subTest(target=target):
+                    r = subprocess.run([LEASHC, "check", path, "--target", target,
+                                        "--other-imports", STD],
+                                       cwd=ROOT, capture_output=True, text=True,
+                                       errors="replace", timeout=180)
+                    self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+
+    def test_jvm_software_fallback(self):
+        if shutil.which("java") is None:
+            self.skipTest("java not available")
+        src = """use opengl::opengl::*;
+fnc main() {
+    Gl.init();
+    Gl.viewport(16, 16);
+    Gl.clear_color(0.0, 0.0, 1.0, 1.0);
+    Gl.clear();
+    Gl.matrix(Gl.projection());
+    Gl.identity();
+    Gl.ortho(-1.0, 1.0, -1.0, 1.0, -1.0, 1.0);
+    Gl.matrix(Gl.modelview());
+    Gl.identity();
+    Gl.color(1.0, 0.0, 0.0, 1.0);
+    Gl.begin(Gl.quads());
+    Gl.vertex3(-0.5, -0.5, 0.0);
+    Gl.vertex3(0.5, -0.5, 0.0);
+    Gl.vertex3(0.5, 0.5, 0.0);
+    Gl.vertex3(-0.5, 0.5, 0.0);
+    Gl.end();
+    show("center=", Gl.pixel(8, 8), " corner=", Gl.pixel(1, 1));
+}
+"""
+        with tempfile.TemporaryDirectory(prefix="leash_gl_jvm_") as td:
+            path = os.path.join(td, "main.lsh")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write(src)
+            compiled = subprocess.run([LEASHC, "compile", path, "to",
+                                       os.path.join(td, "jvmgl"), "--target", "jvm",
+                                       "--other-imports", STD],
+                                      cwd=ROOT, capture_output=True, text=True,
+                                      errors="replace", timeout=180)
+            self.assertEqual(compiled.returncode, 0,
+                             compiled.stdout + compiled.stderr)
+            r = subprocess.run(["java", "-cp", td, "jvmgl"], cwd=td,
+                               capture_output=True, text=True, errors="replace",
+                               timeout=120)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("center=-16776961 corner=65535", r.stdout)
+
     @unittest.skipUnless(XVFB, "xvfb-run not available")
     def test_real_window_render_and_lifecycle(self):
         src = """use opengl::opengl::*;

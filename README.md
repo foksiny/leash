@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/foksiny/leash/releases"><img src="https://img.shields.io/badge/version-2.3.0-8b5cf6?style=flat-square" alt="Version 2.3.0"></a>
+  <a href="https://github.com/foksiny/leash/releases"><img src="https://img.shields.io/badge/version-2.3.1-8b5cf6?style=flat-square" alt="Version 2.3.1"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22c55e?style=flat-square" alt="MIT License"></a>
   <a href="docs/index.html"><img src="https://img.shields.io/badge/docs-full%20reference-22d3ee?style=flat-square" alt="Documentation"></a>
   <a href="https://github.com/foksiny/leash"><img src="https://img.shields.io/badge/compiler-self--hosted-f97316?style=flat-square" alt="Self-hosted"></a>
@@ -11,17 +11,17 @@
 
 # Leash Programming Language
 
-**Version 2.3.0** — a strongly typed, compiled language with deterministic memory, a self-hosted compiler, and a real standard library.
+**Version 2.3.1** — a strongly typed, compiled language with deterministic memory, a self-hosted compiler, and a real standard library.
 
 Leash compiles to native code through LLVM. It gives you an expressive, statically checked language with generics, operator overloading, structured error handling and first-class concurrency — while keeping the memory model explicit: the **scoped arena is the default layout**, with `--gc` available for the classic mark-and-sweep collector.
 
-> **New in 2.3.0:** a first-person voxel sandbox with an OpenGL window, 3D rendering and an uncapped FPS counter; correct C struct/float ABI for `@from` (raylib colors and vectors); fixed `Math.sin`/`Math.sqrt` and working window close and mouse look. See the [changelog](CHANGELOG.md#230---2026-11-27).
+> **New in 2.3.1:** the OpenGL module works on every target (native GLX/WGL/CGL backends plus a JVM software renderer), with correct C struct/float ABI for `@from` (raylib colors and vectors), a playable voxel sandbox and fixed `Math.sin`/`Math.sqrt`. See the [changelog](CHANGELOG.md#231---2026-11-27).
 
 > **Full documentation:** [`docs/index.html`](docs/index.html) — language reference, compiler CLI, standard library, package manager, concurrency, and advanced topics.
 
 ## Use cases
 
-Ten complete, runnable examples live in [`examples/usecases/`](examples/usecases/): a first-person voxel sandbox game (interactive OpenGL window with mouse look, mining/placing, an uncapped FPS counter with VSync off, and an offscreen fallback), a JSON web API, a SQLite task tracker, a neural-net trainer, a regex log miner, a JSON pipeline, A* pathfinding, parallel map-reduce, a bitmap editor and a terminal dashboard. Every file starts with the exact compile command for all supported targets.
+Ten complete, runnable examples live in [`examples/usecases/`](examples/usecases/): a first-person voxel sandbox game (interactive OpenGL window on Linux/Windows/macOS with mouse look, mining/placing, an uncapped FPS counter with VSync off, and a software/offscreen fallback on JVM), a JSON web API, a SQLite task tracker, a neural-net trainer, a regex log miner, a JSON pipeline, A* pathfinding, parallel map-reduce, a bitmap editor and a terminal dashboard. Every file starts with the exact compile command for all supported targets.
 
 ## Why Leash?
 
@@ -48,13 +48,13 @@ Leash was made with the help of AI, but its design and ideas come from a human. 
 git clone https://github.com/foksiny/leash && cd leash
 ./scripts/bootstrap.sh     # Python-free: seed -> stage1 -> stage2 -> stage3
 bin/leashc version
-# leash 2.3.0 (self-hosted)
+# leash 2.3.1 (self-hosted)
 ```
 
 Prebuilt release bundles are attached to every [GitHub release](https://github.com/foksiny/leash/releases) for Linux x86-64, Linux x86, Linux ARM64, Windows x86-64 and the JVM target. Each bundle includes the compiler, runtime, standard library, docs and an installer:
 
 ```bash
-tar -xzf leash-2.3.0-linux-x86_64.tar.gz && cd leash-2.3.0-linux-x86_64
+tar -xzf leash-2.3.1-linux-x86_64.tar.gz && cd leash-2.3.1-linux-x86_64
 ./install.sh
 export PATH="$HOME/.leash/bin:$PATH"
 ```
@@ -147,7 +147,7 @@ Native programs default to the arena; the JVM target always uses its own GC. C-A
 
 ## Known limitations
 
-Leash 2.3.0 is a complete, self-hosted toolchain. The limits below are intentional and scoped; each has a documented workaround.
+Leash 2.3.1 is a complete, self-hosted toolchain. The limits below are intentional and scoped; each has a documented workaround.
 
 | Limitation | Severity | Comment |
 |------------|----------|---------|
