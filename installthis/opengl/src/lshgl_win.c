@@ -57,6 +57,7 @@ static bool g_should_close = false;
 
 static unsigned char g_key_down[256];
 static unsigned char g_key_pressed[256];
+static bool g_pause_requested = false;
 static unsigned char g_mouse_down[8];
 static unsigned char g_mouse_pressed[8];
 static bool g_mouse_captured = false;
@@ -69,6 +70,7 @@ static int g_mouse_cy = 0;
 static const unsigned long g_keysyms[] = {
     0x057, 0x061, 0x073, 0x064, 0x071, 0x065, 0x066, 0x067, 0x072,
     0x020, 0xFF1B, 0xFFE1,
+    0x043, 0xFFBE, 0xFFBD, 0xFFB3, 0xFFC2,
     0x031, 0x032, 0x033, 0x034, 0x035, 0x036, 0x037, 0x038, 0x039
 };
 #define KEY_COUNT ((int)(sizeof(g_keysyms) / sizeof(g_keysyms[0])))
@@ -77,6 +79,7 @@ static const unsigned long g_keysyms[] = {
 static const int g_vk[] = {
     'W', 'A', 'S', 'D', 'Q', 'E', 'F', 'G', 'R',
     VK_SPACE, VK_ESCAPE, VK_SHIFT,
+    'C', VK_F1, VK_F2, VK_F3, VK_F5,
     '1', '2', '3', '4', '5', '6', '7', '8', '9'
 };
 
@@ -148,6 +151,7 @@ static LRESULT CALLBACK wnd_proc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         }
         return 0;
     }
+    if (msg == WM_KEYDOWN && wp == VK_ESCAPE) g_pause_requested = true;
     if (msg == WM_KEYDOWN || msg == WM_KEYUP) {
         int i = 0;
         while (i < KEY_COUNT) {
@@ -312,6 +316,11 @@ int lshgl_window_height(void) { return g_win_h; }
 bool lshgl_key_down(int keysym) {
     int k = keycode_for((unsigned long)keysym);
     return k >= 0 && g_key_down[k] != 0;
+}
+bool lshgl_pause_requested(void) {
+    bool v = g_pause_requested;
+    g_pause_requested = false;
+    return v;
 }
 bool lshgl_key_pressed(int keysym) {
     int k = keycode_for((unsigned long)keysym);

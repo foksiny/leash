@@ -324,6 +324,8 @@ static const unsigned long g_keysyms[] = {
     0x020,  /* space */
     0xFF1B, /* Escape */
     0xFFE1, /* left Shift */
+    0x043,  /* C */
+    0xFFBE, 0xFFBD, 0xFFB3, 0xFFC2, /* F1, F2, F3, F5 */
     0x031, 0x032, 0x033, 0x034, 0x035, /* 1-5 */
     0x036, 0x037, 0x038, 0x039            /* 6-9 */
 };
@@ -331,6 +333,8 @@ static const unsigned long g_keysyms[] = {
 static unsigned char g_keycode[KEY_COUNT];
 static unsigned char g_key_down[256];
 static unsigned char g_key_pressed[256];
+static bool g_pause_requested = false;
+static unsigned char g_escape_code = 0;
 
 typedef EGLDisplay (*FN_GETDISPLAY)(void*);
 typedef EGLDisplay (*FN_GETPLATFORMDISPLAY)(EGLenum, void*, const int*);
@@ -526,6 +530,7 @@ void* lshgl_open_window(int w, int h, const char* title) {
         g_keycode[i] = x_keysym_to_keycode(g_xdpy, g_keysyms[i]);
         i = i + 1;
     }
+    g_escape_code = x_keysym_to_keycode(g_xdpy, 0xFF1B);
     memset(g_key_down, 0, sizeof(g_key_down));
     memset(g_key_pressed, 0, sizeof(g_key_pressed));
     memset(g_mouse_down, 0, sizeof(g_mouse_down));
@@ -585,6 +590,8 @@ void lshgl_poll_events(void) {
         x_next_event(g_xdpy, &ev);
         if (ev.key.type == X_KEYPRESS || ev.key.type == X_KEYRELEASE) {
             unsigned int code = ev.key.keycode;
+            if (ev.key.type == X_KEYPRESS && g_escape_code != 0 &&
+                code == g_escape_code) g_pause_requested = true;
             if (code < 256) {
                 if (ev.key.type == X_KEYPRESS) {
                     g_key_down[code] = 1;
@@ -668,6 +675,12 @@ int lshgl_window_height(void) { return g_win_h; }
 bool lshgl_key_down(int keysym) {
     int code = keycode_for((unsigned long)keysym);
     return code != 0 && g_key_down[code] != 0;
+}
+
+bool lshgl_pause_requested(void) {
+    bool v = g_pause_requested;
+    g_pause_requested = false;
+    return v;
 }
 
 bool lshgl_key_pressed(int keysym) {

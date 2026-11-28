@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.4.3] - 2026-11-27
+
+### Fixed
+- ESC now pauses reliably through a latched platform-level signal (`Gl.pause_requested()`) instead of relying only on frame-edge key sampling. `C`, `F1`, `F2`, `F3` and `F5` keys are registered in every native shim backend.
+- Terrain generation uses gentler height ranges, fewer caves and rarer ore veins so chunks look like rolling landscapes instead of sheer perforated walls.
+- Rebuilt the `cu` binary from current sources.
+
 ## [2.4.2] - 2026-11-27
 
 ### Fixed

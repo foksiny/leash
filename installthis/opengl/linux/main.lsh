@@ -12,6 +12,7 @@
     fnc lshgl_swap_buffers() : void;
     fnc lshgl_key_down(key int) : bool;
     fnc lshgl_key_pressed(key int) : bool;
+    fnc lshgl_pause_requested() : bool;
     fnc lshgl_window_width() : int;
     fnc lshgl_window_height() : int;
     fnc lshgl_time_ms() : int<64>;
@@ -115,6 +116,7 @@ pub def Gl : class {
     static pub fnc key_pressed(key int) : bool {
         return lshgl_key_pressed(key)
     }
+    static pub fnc pause_requested() : bool { return lshgl_pause_requested() }
 
     static pub fnc width() : int { return lshgl_window_width() }
     static pub fnc height() : int { return lshgl_window_height() }

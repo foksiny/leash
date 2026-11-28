@@ -101,6 +101,7 @@ static bool g_should_close = false;
 
 static unsigned char g_key_down[256];
 static unsigned char g_key_pressed[256];
+static bool g_pause_requested = false;
 static unsigned char g_mouse_down[8];
 static unsigned char g_mouse_pressed[8];
 static bool g_mouse_captured = false;
@@ -110,12 +111,13 @@ static int g_mouse_dy = 0;
 static const unsigned long g_keysyms[] = {
     0x057, 0x061, 0x073, 0x064, 0x071, 0x065, 0x066, 0x067, 0x072,
     0x020, 0xFF1B, 0xFFE1,
+    0x043, 0xFFBE, 0xFFBD, 0xFFB3, 0xFFC2,
     0x031, 0x032, 0x033, 0x034, 0x035, 0x036, 0x037, 0x038, 0x039
 };
 /* macOS virtual keycodes in the same order. */
 static const unsigned short g_vk[] = {
     13, 0, 1, 2, 12, 14, 3, 5, 15,
-    49, 53, 56, 18, 19, 20, 21, 23, 22, 26, 28, 25
+    49, 53, 56, 8, 122, 120, 99, 96, 18, 19, 20, 21, 23, 22, 26, 28, 25
 };
 #define KEY_COUNT ((int)(sizeof(g_keysyms) / sizeof(g_keysyms[0])))
 
@@ -300,6 +302,7 @@ void lshgl_poll_events(void) {
         if (type == 10 || type == 11) {
             typedef unsigned short (*MSG_KEYCODE)(id, SEL);
             unsigned short code = ((MSG_KEYCODE)objc_msg_send)(ev, sel("keyCode"));
+            if (type == 10 && code == 53) g_pause_requested = true;  /* Escape */
             int i = 0;
             while (i < KEY_COUNT) {
                 if (g_vk[i] == code) {
@@ -336,6 +339,11 @@ int lshgl_window_height(void) { return g_win_h; }
 bool lshgl_key_down(int keysym) {
     int k = keycode_for((unsigned long)keysym);
     return k >= 0 && g_key_down[k] != 0;
+}
+bool lshgl_pause_requested(void) {
+    bool v = g_pause_requested;
+    g_pause_requested = false;
+    return v;
 }
 bool lshgl_key_pressed(int keysym) {
     int k = keycode_for((unsigned long)keysym);

@@ -160,6 +160,7 @@ pub def Gl : class {
     static pub fnc mouse_middle() : int { return 3; }
     static pub fnc key_down(key int) : bool { (void)key; return false }
     static pub fnc key_pressed(key int) : bool { (void)key; return false }
+    static pub fnc pause_requested() : bool { return false }
     static pub fnc width() : int { return Gl.w }
     static pub fnc height() : int { return Gl.h }
 

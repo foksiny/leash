@@ -180,6 +180,7 @@ def Game : struct {
     menu_cursor: int;
     return_state: int;
     started: bool;
+    input_lock: float;
 }
 
 // ------------------------------------------------------------- small helpers
@@ -274,7 +275,7 @@ fnc biome_at(w &World, x int, z int) : int {
 }
 
 fnc terrain_height(w &World, x int, z int) : int {
-    h: float = 32.0 + fbm2(tofloat(float, x), tofloat(float, z), w.seed) * 30.0;
+    h: float = 28.0 + fbm2(tofloat(float, x), tofloat(float, z), w.seed) * 18.0;
     b: int = biome_at(w, x, z);
     if b == 1 { h = h - 4.0; }
     also b == 3 { h = h + 8.0; }
@@ -303,16 +304,16 @@ fnc leaf_block(w &World, x int, z int) : int {
 }
 
 fnc cave_at(w &World, x int, y int, z int) : bool {
-    if y < 5 || y > 60 { return false; }
-    n: float = noise3(x, y, z, 17, w.seed + 555);
-    return n > 0.71;
+    if y < 6 || y > 44 { return false; }
+    n: float = noise3(x, y, z, 19, w.seed + 555);
+    return n > 0.78;
 }
 
 fnc ore_at(w &World, x int, y int, z int) : int {
     h: int = hash3(x, y, z, w.seed + 771);
-    if y < 16 && h % 220 < 4 { return DIAMOND_ORE(); }
-    if y < 40 && h % 90 < 5 { return IRON_ORE(); }
-    if y < 58 && h % 60 < 7 { return COAL_ORE(); }
+    if y < 14 && h % 420 < 2 { return DIAMOND_ORE(); }
+    if y < 34 && h % 180 < 3 { return IRON_ORE(); }
+    if y < 48 && h % 120 < 5 { return COAL_ORE(); }
     return 0;
 }
 
@@ -2095,7 +2096,7 @@ fnc draw_pause(vw int, vh int, g &Game) : void {
     bx: int = cx - 150;
     by: int = 220;
     if button(g, vw, bx, by, 300, 52, "RESUME", 0) ||
-       Gl.key_pressed(Gl.key_escape()) {
+       g.input_lock <= 0.0 && Gl.key_pressed(Gl.key_escape()) {
         g.state = state_play();
         Gl.mouse_capture(true);
         g.captured = true;
@@ -2147,7 +2148,7 @@ fnc draw_craft(vw int, vh int, g &Game) : void {
         i = i + 1;
     }
     if button(g, vw, cx - 260, 150 + names.size * 50 + 20, 520, 42, "BACK", 9) ||
-       Gl.key_pressed(Gl.key_escape()) {
+       g.input_lock <= 0.0 && Gl.key_pressed(Gl.key_escape()) {
         g.state = g.return_state;
         g.menu_cursor = 0;
     }
@@ -2173,7 +2174,7 @@ fnc draw_help(vw int, vh int, g &Game) : void {
         i = i + 1;
     }
     if button(g, vw, cx - 160, 480, 320, 48, "BACK", 0) ||
-       Gl.key_pressed(Gl.key_escape()) { g.state = g.return_state; g.menu_cursor = 0; }
+       g.input_lock <= 0.0 && Gl.key_pressed(Gl.key_escape()) { g.state = g.return_state; g.menu_cursor = 0; }
     Gl.disable(Gl.blend_cap());
 }
 
@@ -2190,7 +2191,7 @@ fnc draw_settings(vw int, vh int, g &Game) : void {
     draw_text(cx - text_width(sens, 2) / 2, 230, sens, 2, 0.92, 0.94, 0.98);
     draw_text(cx - text_width(fps, 2) / 2, 290, fps, 2, 0.92, 0.94, 0.98);
     if button(g, vw, cx - 160, 420, 320, 48, "BACK", 0) ||
-       Gl.key_pressed(Gl.key_escape()) {
+       g.input_lock <= 0.0 && Gl.key_pressed(Gl.key_escape()) {
         g.state = g.return_state;
         g.menu_cursor = 0;
     }
@@ -2371,7 +2372,8 @@ fnc new_game(seed int, headless bool) : Game {
         title: "Leash Survival", fps: 0, frame_ms: 0, faces: 0,
         chunks_drawn: 0, clock: 0.0, captured: false,
         help_timer: 8.0, message: "", message_time: 0.0, save_ok: true,
-        atlas: 0, menu_cursor: 0, return_state: state_menu(), started: false
+        atlas: 0, menu_cursor: 0, return_state: state_menu(), started: false,
+        input_lock: 0.0
     };
     i: int = 0;
     while i < MAX_ITEM() + 9 { g.dur.pushb(60); i = i + 1; }
@@ -2566,14 +2568,17 @@ fnc main(args string[]) : void {
         stream_meshes(g.world, 6);
 
         if g.state == state_play() {
-            if Gl.key_pressed(Gl.key_escape()) {
+            if Gl.pause_requested() || Gl.key_pressed(Gl.key_escape()) ||
+               Gl.key_down(Gl.key_escape()) {
                 g.state = state_pause();
+                g.input_lock = 0.3;
                 g.menu_cursor = 0;
                 g.return_state = state_play();
                 Gl.mouse_capture(false);
                 g.captured = false;
             } also Gl.key_pressed(0x0043) {  // C
                 g.state = state_craft();
+                g.input_lock = 0.3;
                 g.menu_cursor = 0;
                 g.craft_sel = 0;
                 g.return_state = state_play();
@@ -2581,12 +2586,14 @@ fnc main(args string[]) : void {
                 g.captured = false;
             } also Gl.key_pressed(0xFFBE) {  // F1 help
                 g.state = state_help();
+                g.input_lock = 0.3;
                 g.menu_cursor = 0;
                 g.return_state = state_play();
                 Gl.mouse_capture(false);
                 g.captured = false;
             } also Gl.key_pressed(0xFFBD) {  // F2 settings
                 g.state = state_settings();
+                g.input_lock = 0.3;
                 g.menu_cursor = 0;
                 g.return_state = state_play();
                 Gl.mouse_capture(false);
@@ -2635,6 +2642,7 @@ fnc main(args string[]) : void {
             if g.player.health <= 0.0 {
                 g.player.deaths = g.player.deaths + 1;
                 g.state = state_dead();
+                g.input_lock = 0.3;
                 Gl.mouse_capture(false);
                 g.captured = false;
             }
@@ -2665,6 +2673,7 @@ fnc main(args string[]) : void {
         }
         g.help_timer = maxf(0.0, g.help_timer - dt);
         g.message_time = maxf(0.0, g.message_time - dt);
+        g.input_lock = maxf(0.0, g.input_lock - dt);
 
         draw_world(g, Gl.width(), Gl.height(), now);
         ui_begin(Gl.width(), Gl.height());

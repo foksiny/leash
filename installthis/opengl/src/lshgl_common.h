@@ -139,6 +139,7 @@ int lshgl_window_width(void);
 int lshgl_window_height(void);
 bool lshgl_key_down(int keysym);
 bool lshgl_key_pressed(int keysym);
+bool lshgl_pause_requested(void);
 void lshgl_mouse_capture(int on);
 bool lshgl_mouse_captured(void);
 int lshgl_mouse_dx(void);
