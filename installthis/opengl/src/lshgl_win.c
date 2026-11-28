@@ -24,6 +24,8 @@ typedef int (*FN_CHOOSEPIXELFORMAT)(HDC, const PIXELFORMATDESCRIPTOR*);
 typedef BOOL (*FN_SETPixelFormat)(HDC, int, const PIXELFORMATDESCRIPTOR*);
 typedef BOOL (*FN_SWAPBUFFERS)(HDC);
 typedef int (*FN_GETTICKCOUNT)(void);
+typedef BOOL (*FN_GETCURSORPOS)(POINT*);
+typedef BOOL (*FN_SCREENTOCLIENT)(HWND, POINT*);
 
 static HMODULE g_opengl = NULL;
 static HMODULE g_user32 = NULL;
@@ -36,6 +38,8 @@ static FN_CHOOSEPIXELFORMAT choose_pixel_format;
 static FN_SETPixelFormat set_pixel_format;
 static FN_SWAPBUFFERS swap_buffers_fn;
 static FN_GETTICKCOUNT get_tick_count;
+static FN_GETCURSORPOS get_cursor_pos;
+static FN_SCREENTOCLIENT screen_to_client;
 
 static HWND g_hwnd = NULL;
 static HDC g_hdc = NULL;
@@ -106,6 +110,8 @@ static bool load_system(void) {
     set_pixel_format = (FN_SETPixelFormat)GetProcAddress(g_gdi32, "SetPixelFormat");
     swap_buffers_fn = (FN_SWAPBUFFERS)GetProcAddress(g_gdi32, "SwapBuffers");
     get_tick_count = (FN_GETTICKCOUNT)GetProcAddress(g_user32, "GetTickCount");
+    get_cursor_pos = (FN_GETCURSORPOS)GetProcAddress(g_user32, "GetCursorPos");
+    screen_to_client = (FN_SCREENTOCLIENT)GetProcAddress(g_user32, "ScreenToClient");
     return wgl_create && wgl_delete && wgl_make_current && wgl_get_proc &&
            choose_pixel_format && set_pixel_format && swap_buffers_fn;
 }
@@ -336,6 +342,23 @@ void lshgl_mouse_capture(int on) {
 bool lshgl_mouse_captured(void) { return g_mouse_captured; }
 int lshgl_mouse_dx(void) { int v = g_mouse_dx; g_mouse_dx = 0; return v; }
 int lshgl_mouse_dy(void) { int v = g_mouse_dy; g_mouse_dy = 0; return v; }
+static void native_cursor(int* x, int* y) {
+    *x = g_win_w / 2;
+    *y = g_win_h / 2;
+    if (get_cursor_pos && screen_to_client && g_hwnd) {
+        POINT p;
+        p.x = 0;
+        p.y = 0;
+        if (get_cursor_pos(&p) && screen_to_client(g_hwnd, &p)) {
+            *x = p.x;
+            *y = p.y;
+        }
+    }
+}
+
+int lshgl_mouse_x(void) { int x = 0, y = 0; native_cursor(&x, &y); return x; }
+int lshgl_mouse_y(void) { int x = 0, y = 0; native_cursor(&x, &y); return y; }
+
 bool lshgl_mouse_down(int button) { return button > 0 && button < 8 && g_mouse_down[button]; }
 bool lshgl_mouse_pressed(int button) { return button > 0 && button < 8 && g_mouse_pressed[button]; }
 

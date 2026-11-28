@@ -21,6 +21,8 @@
     fnc lshgl_mouse_captured() : bool;
     fnc lshgl_mouse_dx() : int;
     fnc lshgl_mouse_dy() : int;
+    fnc lshgl_mouse_x() : int;
+    fnc lshgl_mouse_y() : int;
     fnc lshgl_mouse_down(button int) : bool;
     fnc lshgl_mouse_pressed(button int) : bool;
     fnc lshgl_version() : string;
@@ -63,6 +65,9 @@
     fnc lshgl_end_list() : void;
     fnc lshgl_call_list(id int) : void;
     fnc lshgl_delete_list(id int) : void;
+    fnc lshgl_texture_create(w int, h int, data string) : int;
+    fnc lshgl_texture_bind(id int) : void;
+    fnc lshgl_tex_coord2(u float, v float) : void;
 }
 
 
@@ -128,6 +133,8 @@ pub def Gl : class {
     static pub fnc mouse_captured() : bool { return lshgl_mouse_captured() }
     static pub fnc mouse_dx() : int { return lshgl_mouse_dx() }
     static pub fnc mouse_dy() : int { return lshgl_mouse_dy() }
+    static pub fnc mouse_x() : int { return lshgl_mouse_x() }
+    static pub fnc mouse_y() : int { return lshgl_mouse_y() }
     static pub fnc mouse_down(button int) : bool { return lshgl_mouse_down(button) }
     static pub fnc mouse_pressed(button int) : bool { return lshgl_mouse_pressed(button) }
     static pub fnc mouse_left() : int { return 1; }
@@ -157,6 +164,7 @@ pub def Gl : class {
     static pub fnc fog_cap() : int { return 0x0B60; }
     static pub fnc lighting_cap() : int { return 0x0B50; }
     static pub fnc blend_cap() : int { return 0x0BE2; }
+    static pub fnc texture_cap() : int { return 0x0DE1; }
     static pub fnc lequal() : int { return 0x0203; }
 
     static pub fnc version() : string {
@@ -234,4 +242,9 @@ pub def Gl : class {
     static pub fnc end_list() : void { lshgl_end_list() }
     static pub fnc call_list(id int) : void { lshgl_call_list(id) }
     static pub fnc delete_list(id int) : void { lshgl_delete_list(id) }
+    static pub fnc texture(w int, h int, data string) : int {
+        return lshgl_texture_create(w, h, data)
+    }
+    static pub fnc bind_texture(id int) : void { lshgl_texture_bind(id) }
+    static pub fnc tex_coord2(u float, v float) : void { lshgl_tex_coord2(u, v) }
 }

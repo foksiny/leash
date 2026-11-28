@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Installation &amp; Setup - Leash documentation</title>
-<meta name="description" content="Get Leash 2.3.1 onto your machine, verify the self-hosted compiler, and go from a single source file to a native binary or a full project.">
+<meta name="description" content="Get Leash 2.4.0 onto your machine, verify the self-hosted compiler, and go from a single source file to a native binary or a full project.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Crect width=%27100%27 height=%27100%27 rx=%2722%27 fill=%27%23241f4d%27/%3E%3Ctext x=%2750%27 y=%2770%27 font-size=%2760%27 text-anchor=%27middle%27 font-family=%27monospace%27 fill=%27white%27%3EL%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
 <script src="docs.js" defer></script>
@@ -48,7 +48,7 @@
       <a href="advanced.html" class="">Standalone pages</a>
       <a href="limitations.html" class="">Known limitations</a>
     </div>
-    <div class="sidenav-foot">Leash 2.3.1</div>
+    <div class="sidenav-foot">Leash 2.4.0</div>
   </aside>
 
   <main class="content" id="main-content">
@@ -136,7 +136,7 @@ brew install git</code></pre>
           <div class="step">
             <h3>Verify the build</h3>
             <pre><code>bin/leashc version
-<span class="cm"># leash 2.3.1 (self-hosted)</span></code></pre>
+<span class="cm"># leash 2.4.0 (self-hosted)</span></code></pre>
           </div>
         </div>
         <div class="callout callout-info"><strong>What gets built.</strong> The bootstrap performs a three-stage build and fixed-point check, then installs <code>bin/leashc</code>. You can repeat it at any time with <code>leash self-host</code>.</div>
@@ -166,7 +166,7 @@ Copy-Item bin\leashc.exe $env:USERPROFILE\bin\leash.exe</code></pre>
         <h3>macOS</h3>
         <pre><code>leash install compiler
 export PATH="$HOME/.leash/bin:$PATH"</code></pre>
-        <p>Afterwards, <code>leash version</code> (or <code>leashc version</code>) should print <code>leash 2.3.1 (self-hosted)</code> from any directory.</p>
+        <p>Afterwards, <code>leash version</code> (or <code>leashc version</code>) should print <code>leash 2.4.0 (self-hosted)</code> from any directory.</p>
 
         <h2 id="first-program">Your first program</h2>
         <p>Create <code>hello.lsh</code> with a <code>main</code> entry point. <code>show</code> writes its arguments to standard output.</p>
@@ -267,7 +267,7 @@ leash run program.lsh -oi mylibs/ -oi other_libs/</code></pre>
 
         <h2 id="troubleshooting">Troubleshooting</h2>
         <h3><code>leash: command not found</code></h3>
-        <p>The compiler is not on your <code>PATH</code>. Add <code>$HOME/.leash/bin</code> (see <a href="#put-on-path">Put leash on your PATH</a>) and open a new shell. Confirm with <code>leash version</code>, which should print <code>leash 2.3.1 (self-hosted)</code>.</p>
+        <p>The compiler is not on your <code>PATH</code>. Add <code>$HOME/.leash/bin</code> (see <a href="#put-on-path">Put leash on your PATH</a>) and open a new shell. Confirm with <code>leash version</code>, which should print <code>leash 2.4.0 (self-hosted)</code>.</p>
 
         <h3>Runtime not found when running from a copied binary</h3>
         <p>The compiler searches next to the executable, then <code>~/.leash/leash</code>, then <code>LEASH_RUNTIME</code>. Run <code>leash install compiler</code> once to install the runtime and stdlib, or point <code>LEASH_RUNTIME</code> at an existing checkout.</p>
@@ -285,7 +285,7 @@ leash run program.lsh -oi mylibs/ -oi other_libs/</code></pre>
         <h2 id="editor-support">Editor support</h2>
         <p>The VS Code extension ships a full language server: completion, hover, go to definition, references, rename, semantic tokens, folding, inlay hints and compiler diagnostics. Diagnostics come from <code>leash check</code>, so arena lifetime errors appear as you type, with <code>why:</code> and <code>help:</code> text in the hover.</p>
         <pre><code><span class="cm"># Install the packaged extension (or use the VSIX from syntax_highlighters/vscode)</span>
-code --install-extension syntax_highlighters/vscode/leash-2.3.1.vsix --force
+code --install-extension syntax_highlighters/vscode/leash-2.4.0.vsix --force
 <span class="cm"># From that directory: compile, lint and run the LSP regression suite</span>
 npm test</code></pre>
         <p>Point <code>leash.lsp.executablePath</code> at your compiler if it is not on <code>PATH</code>, and use <code>leash.lsp.compilerArgs</code> for flags such as <code>--other-imports</code>. The server sends those flags after <code>check &lt;file&gt;</code>, matching the compiler CLI.</p>

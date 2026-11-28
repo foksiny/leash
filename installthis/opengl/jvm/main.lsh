@@ -151,6 +151,8 @@ pub def Gl : class {
     static pub fnc mouse_captured() : bool { return false }
     static pub fnc mouse_dx() : int { return 0 }
     static pub fnc mouse_dy() : int { return 0 }
+    static pub fnc mouse_x() : int { return Gl.w / 2; }
+    static pub fnc mouse_y() : int { return Gl.h / 2; }
     static pub fnc mouse_down(button int) : bool { (void)button; return false }
     static pub fnc mouse_pressed(button int) : bool { (void)button; return false }
     static pub fnc mouse_left() : int { return 1; }
@@ -183,6 +185,7 @@ pub def Gl : class {
     static pub fnc fog_cap() : int { return 0x0B60; }
     static pub fnc lighting_cap() : int { return 0x0B50; }
     static pub fnc blend_cap() : int { return 0x0BE2; }
+    static pub fnc texture_cap() : int { return 0x0DE1; }
     static pub fnc lequal() : int { return 0x0203; }
 
     static pub fnc viewport(w int, h int) : void {
@@ -373,6 +376,13 @@ pub def Gl : class {
         Gl.fog_col = Gl.pack(r, g, b, 1.0);
     }
     static pub fnc no_fog() : void { Gl.fog_on = false; }
+
+    static pub fnc texture(w int, h int, data string) : int {
+        (void)w; (void)h; (void)data;
+        return 0;
+    }
+    static pub fnc bind_texture(id int) : void { (void)id; }
+    static pub fnc tex_coord2(u float, v float) : void { (void)u; (void)v; }
 
     static pub fnc vertex2(x float, y float) : void { Gl.vertex3(x, y, 0.0); }
     static pub fnc vertex3(x float, y float, z float) : void {

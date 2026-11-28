@@ -298,3 +298,35 @@ void lshgl_delete_list(int id) {
     PFNGLDELETELISTS f = (PFNGLDELETELISTS)sym_gl("glDeleteLists");
     if (f && id != 0) f((unsigned int)id, 1);
 }
+
+typedef void (*PFNGLPIXELSTOREI)(unsigned int, int);
+int lshgl_texture_create(int w, int h, const char* rgba) {
+    PFNGLGENTEXTURES gen = (PFNGLGENTEXTURES)sym_gl("glGenTextures");
+    PFNGLBINDTEXTURE bind = (PFNGLBINDTEXTURE)sym_gl("glBindTexture");
+    PFNGLTEXIMAGE2D image = (PFNGLTEXIMAGE2D)sym_gl("glTexImage2D");
+    PFNGLTEXPARAMETERI param = (PFNGLTEXPARAMETERI)sym_gl("glTexParameteri");
+    PFNGLPIXELSTOREI store = (PFNGLPIXELSTOREI)sym_gl("glPixelStorei");
+    if (!gen || !bind || !image || !param || !rgba || w < 1 || h < 1) return 0;
+    unsigned int id = 0;
+    gen(1, &id);
+    if (id == 0) return 0;
+    bind(GL_TEXTURE_2D, id);
+    if (store) store(0x0CF5, 1);  /* GL_UNPACK_ALIGNMENT */
+    image(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    param(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    param(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    param(GL_TEXTURE_2D, 0x2802, 0x812F);  /* WRAP_S, CLAMP_TO_EDGE */
+    param(GL_TEXTURE_2D, 0x2803, 0x812F);  /* WRAP_T, CLAMP_TO_EDGE */
+    return (int)id;
+}
+
+void lshgl_texture_bind(int id) {
+    PFNGLBINDTEXTURE bind = (PFNGLBINDTEXTURE)sym_gl("glBindTexture");
+    if (bind) bind(GL_TEXTURE_2D, (unsigned int)id);
+}
+
+void lshgl_tex_coord2(double u, double v) {
+    typedef void (*PFNGLTEXCOORD2F)(float, float);
+    PFNGLTEXCOORD2F fn = (PFNGLTEXCOORD2F)sym_gl("glTexCoord2f");
+    if (fn) fn((float)u, (float)v);
+}

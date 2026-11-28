@@ -143,6 +143,8 @@ void lshgl_mouse_capture(int on);
 bool lshgl_mouse_captured(void);
 int lshgl_mouse_dx(void);
 int lshgl_mouse_dy(void);
+int lshgl_mouse_x(void);
+int lshgl_mouse_y(void);
 bool lshgl_mouse_down(int button);
 bool lshgl_mouse_pressed(int button);
 void lshgl_set_vsync(int enabled);
@@ -187,5 +189,8 @@ int lshgl_new_list(void);
 void lshgl_end_list(void);
 void lshgl_call_list(int id);
 void lshgl_delete_list(int id);
+int lshgl_texture_create(int w, int h, const char* rgba);
+void lshgl_texture_bind(int id);
+void lshgl_tex_coord2(double u, double v);
 
 #endif

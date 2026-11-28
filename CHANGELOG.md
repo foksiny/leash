@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-11-27
+
+### Added
+- **Voxel survival overhaul.** `examples/usecases/minecraft_clone.lsh` now streams an infinite deterministic world of chunks (biomes, caves, ores, trees, water) with display-list meshes, frustum/distance culling and a textured tile atlas. Survival adds health/hunger/air, fall and mob damage, tool durability, item drops, seven crafting recipes, day/night mobs, eating, hotbar items and text save/load. A main menu, pause/craft/settings/help/death screens and live FPS/face/chunk counters round out the game. Added `Gl.texture`, `Gl.bind_texture`, `Gl.tex_coord2`, `Gl.mouse_x`/`Gl.mouse_y` across all native backends plus software equivalents on JVM.
+
 ## [2.3.1] - 2026-11-27
 
 ### Added

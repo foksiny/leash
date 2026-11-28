@@ -1,4 +1,4 @@
-// Use case: Voxel sandbox game
+// Use case: Voxel survival sandbox
 // Compile (linux64):   leash compile examples/usecases/minecraft_clone.lsh to out/usecases/minecraft_clone-linux64 --target linux64
 // Compile (linux32  ): leash compile examples/usecases/minecraft_clone.lsh to out/usecases/minecraft_clone-linux32 --target linux32
 // Compile (linux-arm): leash compile examples/usecases/minecraft_clone.lsh to out/usecases/minecraft_clone-linux-arm --target linux-arm
@@ -7,25 +7,87 @@
 // Compile (macos-arm): leash compile examples/usecases/minecraft_clone.lsh to out/usecases/minecraft_clone-macos-arm --target macos-arm
 // Compile (jvm      ): leash compile examples/usecases/minecraft_clone.lsh to out/usecases/minecraft_clone-jvm --target jvm
 // Run:                  leash run examples/usecases/minecraft_clone.lsh --other-imports installthis
-// Optional: --headless or LEASH_VOXEL_HEADLESS=1 forces the offscreen
-// renderer; --frames N caps an interactive session after N frames (useful
-// for captures and tests).
+// Optional: --headless, LEASH_VOXEL_HEADLESS=1, --frames N, --seed N, --no-save, --autostart.
+//
+// A streaming, textured voxel survival game. Chunks are generated on demand
+// from an infinite deterministic world, meshed into display lists with
+// per-face texture atlas coordinates, and culled by distance and view cone.
+// Survival adds health, hunger, air, tools, drops, crafting, hostile mobs and
+// a day/night cycle. Progress is saved as a compact text file.
 
 use utils::math::Math;
+use utils::str::Str;
+use utils::format::Format;
 use sys::env::Env;
+use sys::fileutils::FileUtil;
 use opengl::opengl::*;
 
-// A first-person voxel sandbox. A real X11/GLX window is opened when a
-// display is available: mouse look, WASD movement, jumping, mining and
-// placing blocks, a chunked static mesh, directional light, fog, clouds and
-// an uncapped FPS counter. Without a display the same renderer runs against
-// an offscreen framebuffer and prints a deterministic preview.
+// ---------------------------------------------------------------- constants
+
+fnc chunk_size() : int { return 16; }
+fnc world_height() : int { return 96; }
+fnc sea_level() : int { return 34; }
+fnc atlas_tiles() : int { return 8; }
+fnc tile_px() : int { return 8; }
+fnc save_path() : string { return "leash_voxel_save.txt"; }
+
+// Game states.
+fnc state_menu() : int { return 0; }
+fnc state_play() : int { return 1; }
+fnc state_pause() : int { return 2; }
+fnc state_dead() : int { return 3; }
+fnc state_craft() : int { return 4; }
+fnc state_help() : int { return 5; }
+fnc state_settings() : int { return 6; }
+
+// Blocks and items.
+fnc AIR() : int { return 0; }
+fnc GRASS() : int { return 1; }
+fnc DIRT() : int { return 2; }
+fnc STONE() : int { return 3; }
+fnc LOG() : int { return 4; }
+fnc LEAVES() : int { return 5; }
+fnc SAND() : int { return 6; }
+fnc PLANKS() : int { return 7; }
+fnc COBBLE() : int { return 8; }
+fnc BRICK() : int { return 9; }
+fnc WATER() : int { return 10; }
+fnc BEDROCK() : int { return 11; }
+fnc SNOW() : int { return 12; }
+fnc COAL_ORE() : int { return 13; }
+fnc IRON_ORE() : int { return 14; }
+fnc DIAMOND_ORE() : int { return 15; }
+fnc GLOWSTONE() : int { return 16; }
+fnc STICK() : int { return 32; }
+fnc WOOD_PICK() : int { return 33; }
+fnc STONE_PICK() : int { return 34; }
+fnc IRON_PICK() : int { return 35; }
+fnc TORCH() : int { return 36; }
+fnc APPLE() : int { return 37; }
+fnc IRON_INGOT() : int { return 38; }
+fnc BREAD() : int { return 39; }
+fnc MAX_ITEM() : int { return 40; }
+
+// ------------------------------------------------------------------- structs
+
+def Chunk : struct {
+    key: string;
+    cx: int;
+    cz: int;
+    blocks: vec<int>;
+    mesh: int;
+    faces: int;
+    dirty: bool;
+    touched: int<64>;
+}
 
 def World : struct {
-    sx: int;
-    sy: int;
-    sz: int;
-    blocks: vec<int>;
+    chunks: hash<string, Chunk>;
+    edits: hash<string, int>;
+    active: vec<string>;
+    seed: int;
+    generated: int;
+    meshed: int;
 }
 
 def Player : struct {
@@ -39,9 +101,17 @@ def Player : struct {
     pitch: float;
     bob: float;
     on_ground: bool;
+    fall_start: float;
     hour: float;
+    health: float;
+    hunger: float;
+    air: float;
+    exhaust: float;
+    regen: float;
     mined: int;
     placed: int;
+    kills: int;
+    deaths: int;
 }
 
 def RayHit : struct {
@@ -54,264 +124,761 @@ def RayHit : struct {
     pz: int;
 }
 
+def Drop : struct {
+    x: float;
+    y: float;
+    z: float;
+    vx: float;
+    vy: float;
+    vz: float;
+    id: int;
+    count: int;
+    age: float;
+}
+
+def Mob : struct {
+    x: float;
+    y: float;
+    z: float;
+    vx: float;
+    vy: float;
+    vz: float;
+    yaw: float;
+    hp: float;
+    kind: int;
+    cooldown: float;
+    on_ground: bool;
+}
+
+def Game : struct {
+    world: World;
+    player: Player;
+    inv: vec<int>;
+    dur: vec<int>;
+    drops: vec<Drop>;
+    mobs: vec<Mob>;
+    state: int;
+    menu_sel: int;
+    craft_sel: int;
+    view_dist: int;
+    sensitivity: float;
+    show_fps: bool;
+    title: string;
+    fps: int;
+    frame_ms: int;
+    faces: int;
+    chunks_drawn: int;
+    clock: float;
+    captured: bool;
+    help_timer: float;
+    message: string;
+    message_time: float;
+    save_ok: bool;
+    atlas: int;
+}
+
+// ------------------------------------------------------------- small helpers
+
 fnc clampf(v float, lo float, hi float) : float {
     if v < lo { return lo; }
     if v > hi { return hi; }
     return v;
 }
+fnc absf(v float) : float { if v < 0.0 { return -v; } return v; }
+fnc minf(a float, b float) : float { return a < b ? a : b; }
+fnc maxf(a float, b float) : float { return a > b ? a : b; }
+fnc mini(a int, b int) : int { return a < b ? a : b; }
+fnc absf_i(v int) : int { return v < 0 ? -v : v; }
+fnc maxi(a int, b int) : int { return a > b ? a : b; }
+fnc mixf(a float, b float, t float) : float { return a + (b - a) * t; }
+fnc floor_i(v float) : int { return toint(int, Math.floor(v)); }
+fnc ceil_i(v float) : int { return toint(int, Math.ceil(v)); }
 
-fnc absf(v float) : float {
-    if v < 0.0 { return -v; }
-    return v;
+fnc hash3(x int, y int, z int, seed int) : int {
+    h: int = x * 374761393 + y * 668265263 + z * 1442695041 + seed * 2246822519;
+    h = (h ^ (h >> 13)) * 1274126177;
+    return (h ^ (h >> 16)) & 0x7fffffff;
+}
+fnc hash2(x int, z int, seed int) : int { return hash3(x, 0, z, seed); }
+
+fnc noise2(x float, z float, scale float, seed int) : float {
+    fx: float = x / scale;
+    fz: float = z / scale;
+    ix: int = floor_i(fx);
+    iz: int = floor_i(fz);
+    tx: float = fx - tofloat(float, ix);
+    tz: float = fz - tofloat(float, iz);
+    tx = tx * tx * (3.0 - 2.0 * tx);
+    tz = tz * tz * (3.0 - 2.0 * tz);
+    a: float = tofloat(float, hash2(ix, iz, seed) % 1024) / 1023.0;
+    b: float = tofloat(float, hash2(ix + 1, iz, seed) % 1024) / 1023.0;
+    c: float = tofloat(float, hash2(ix, iz + 1, seed) % 1024) / 1023.0;
+    d: float = tofloat(float, hash2(ix + 1, iz + 1, seed) % 1024) / 1023.0;
+    return mixf(mixf(a, b, tx), mixf(c, d, tx), tz);
 }
 
-fnc mixf(a float, b float, t float) : float {
-    return a + (b - a) * t;
+fnc noise3(x int, y int, z int, scale int, seed int) : float {
+    fx: float = tofloat(float, x) / tofloat(float, scale);
+    fy: float = tofloat(float, y) / tofloat(float, scale);
+    fz: float = tofloat(float, z) / tofloat(float, scale);
+    ix: int = floor_i(fx);
+    iy: int = floor_i(fy);
+    iz: int = floor_i(fz);
+    tx: float = fx - tofloat(float, ix);
+    ty: float = fy - tofloat(float, iy);
+    tz: float = fz - tofloat(float, iz);
+    tx = tx * tx * (3.0 - 2.0 * tx);
+    ty = ty * ty * (3.0 - 2.0 * ty);
+    tz = tz * tz * (3.0 - 2.0 * tz);
+    a: float = tofloat(float, hash3(ix, iy, iz, seed) % 1024) / 1023.0;
+    b: float = tofloat(float, hash3(ix + 1, iy, iz, seed) % 1024) / 1023.0;
+    c: float = tofloat(float, hash3(ix, iy + 1, iz, seed) % 1024) / 1023.0;
+    d: float = tofloat(float, hash3(ix + 1, iy + 1, iz, seed) % 1024) / 1023.0;
+    e: float = tofloat(float, hash3(ix, iy, iz + 1, seed) % 1024) / 1023.0;
+    f: float = tofloat(float, hash3(ix + 1, iy, iz + 1, seed) % 1024) / 1023.0;
+    g: float = tofloat(float, hash3(ix, iy + 1, iz + 1, seed) % 1024) / 1023.0;
+    h: float = tofloat(float, hash3(ix + 1, iy + 1, iz + 1, seed) % 1024) / 1023.0;
+    return mixf(mixf(mixf(a, b, tx), mixf(c, d, tx), ty),
+                mixf(mixf(e, f, tx), mixf(g, h, tx), ty), tz);
 }
 
-fnc chunk_size() : int {
-    return 16;
+fnc fbm2(x float, z float, seed int) : float {
+    return noise2(x, z, 96.0, seed) * 0.55 +
+           noise2(x, z, 38.0, seed + 11) * 0.30 +
+           noise2(x, z, 13.0, seed + 29) * 0.15;
 }
 
-fnc chunks_per_side(w World) : int {
-    return (w.sx + chunk_size() - 1) / chunk_size();
+// ------------------------------------------------------------ biome/terrain
+
+fnc biome_at(w &World, x int, z int) : int {
+    t: float = fbm2(tofloat(float, x) + 1000.0, tofloat(float, z), w.seed + 71);
+    h: float = fbm2(tofloat(float, x), tofloat(float, z) + 2000.0, w.seed + 133);
+    if t > 0.62 && h > 0.56 { return 3; }  // snowy peaks
+    if t > 0.66 { return 1; }              // desert
+    if h > 0.64 { return 2; }              // mountains
+    if t < 0.34 { return 4; }              // forest
+    return 0;                              // plains
 }
 
-// ---------------------------------------------------------------- world data
-
-fnc make_world(w int, h int, d int) : World {
-    b: vec<int>;
-    i: int = 0;
-    while i < w * h * d {
-        b.pushb(0);
-        i = i + 1;
-    }
-    return World { sx: w, sy: h, sz: d, blocks: b };
+fnc terrain_height(w &World, x int, z int) : int {
+    h: float = 32.0 + fbm2(tofloat(float, x), tofloat(float, z), w.seed) * 30.0;
+    b: int = biome_at(w, x, z);
+    if b == 1 { h = h - 4.0; }
+    also b == 3 { h = h + 8.0; }
+    also b == 4 { h = h + 2.0; }
+    i: int = floor_i(h);
+    if i < 8 { i = 8; }
+    if i > world_height() - 12 { i = world_height() - 12; }
+    return i;
 }
 
-fnc widx(w World, x int, y int, z int) : int {
-    return (y * w.sz + z) * w.sx + x;
+fnc tree_present(w &World, x int, z int) : bool {
+    b: int = biome_at(w, x, z);
+    if b == 1 || b == 3 { return false; }
+    chance: int = b == 4 ? 13 : 24;
+    return hash2(x, z, w.seed + 907) % chance == 0;
 }
 
-fnc winside(w World, x int, y int, z int) : bool {
-    return x >= 0 && x < w.sx && y >= 0 && y < w.sy && z >= 0 && z < w.sz;
+fnc tree_height(w &World, x int, z int) : int {
+    if biome_at(w, x, z) == 4 { return 5 + hash2(x, z, w.seed + 31) % 3; }
+    return 4 + hash2(x, z, w.seed + 31) % 2;
 }
 
-fnc wget(w World, x int, y int, z int) : int {
-    if !winside(w, x, y, z) { return 0; }
-    return w.blocks.get(widx(w, x, y, z));
+fnc leaf_block(w &World, x int, z int) : int {
+    if biome_at(w, x, z) == 3 { return SNOW(); }
+    return LEAVES();
 }
 
-fnc wset(w World, x int, y int, z int, v int) : void {
-    if winside(w, x, y, z) {
-        w.blocks.set(widx(w, x, y, z), v);
-    }
+fnc cave_at(w &World, x int, y int, z int) : bool {
+    if y < 5 || y > 60 { return false; }
+    n: float = noise3(x, y, z, 17, w.seed + 555);
+    return n > 0.71;
 }
 
-fnc solid_at(w World, x int, y int, z int) : bool {
-    if y < 0 { return true; }
-    if x < 0 || x >= w.sx || z < 0 || z >= w.sz { return true; }
-    if y >= w.sy { return false; }
-    return w.blocks.get(widx(w, x, y, z)) != 0;
-}
-
-fnc top_at(w World, x int, z int) : int {
-    y: int = w.sy - 1;
-    while y >= 0 {
-        if wget(w, x, y, z) != 0 { return y; }
-        y = y - 1;
-    }
+fnc ore_at(w &World, x int, y int, z int) : int {
+    h: int = hash3(x, y, z, w.seed + 771);
+    if y < 16 && h % 220 < 4 { return DIAMOND_ORE(); }
+    if y < 40 && h % 90 < 5 { return IRON_ORE(); }
+    if y < 58 && h % 60 < 7 { return COAL_ORE(); }
     return 0;
 }
 
-// ------------------------------------------------------------ terrain noise
-
-fnc hash_int(x int, z int, seed int) : int {
-    h: int = x * 374761393 + z * 668265263 + seed * 1442695041;
-    h = (h ^ (h >> 13)) * 1274126177;
-    h = h ^ (h >> 16);
-    return h & 0x7fffffff;
+fnc chunk_key(cx int, cz int) : string {
+    return tostring(cx) + "," + tostring(cz);
 }
-
-fnc noise01(x int, z int, seed int) : float {
-    return tofloat(float, hash_int(x, z, seed) % 1024) / 1023.0;
+fnc chunk_index(x int, y int, z int) : int {
+    return (y * chunk_size() + z) * chunk_size() + x;
 }
-
-fnc smoothstep(t float) : float {
-    return t * t * (3.0 - 2.0 * t);
-}
-
-fnc value_noise(x float, z float, scale float, seed int) : float {
-    fx: float = x / scale;
-    fz: float = z / scale;
-    ix: int = toint(int, Math.floor(fx));
-    iz: int = toint(int, Math.floor(fz));
-    tx: float = smoothstep(fx - tofloat(float, ix));
-    tz: float = smoothstep(fz - tofloat(float, iz));
-    a: float = noise01(ix, iz, seed);
-    b: float = noise01(ix + 1, iz, seed);
-    c: float = noise01(ix, iz + 1, seed);
-    d: float = noise01(ix + 1, iz + 1, seed);
-    top: float = a * (1.0 - tx) + b * tx;
-    bottom: float = c * (1.0 - tx) + d * tx;
-    return top * (1.0 - tz) + bottom * tz;
-}
-
-fnc wgenerate(w World) : void {
-    // Regeneration (R key) must also clear player-placed blocks.
-    clear: int = 0;
-    while clear < w.blocks.size {
-        w.blocks.set(clear, 0);
-        clear = clear + 1;
+fnc new_chunk(cx int, cz int, clock int<64>) : Chunk {
+    data: vec<int>;
+    i: int = 0;
+    total: int = chunk_size() * world_height() * chunk_size();
+    while i < total {
+        data.pushb(AIR());
+        i = i + 1;
     }
-    x: int = 0;
-    z: int = 0;
-    while x < w.sx {
-        z = 0;
-        while z < w.sz {
-            fx: float = tofloat(float, x);
-            fz: float = tofloat(float, z);
-            base: float = 6.0 + value_noise(fx, fz, 16.0, 7) * 8.0
-                              + value_noise(fx, fz, 6.0, 23) * 2.0;
-            dx: int = x - w.sx / 2;
-            dz: int = z - w.sz / 2;
-            d2: int = dx * dx + dz * dz;
-            if d2 < 25 {
-                base = 8.0;
-            } also d2 < 81 {
-                base = 8.0 + (base - 8.0) * (tofloat(float, d2 - 25) / 56.0);
-            }
-            h: int = toint(int, base);
-            if h < 3 { h = 3; }
-            if h > w.sy - 6 { h = w.sy - 6; }
+    return Chunk { key: chunk_key(cx, cz), cx: cx, cz: cz, blocks: data,
+                   mesh: 0, faces: 0, dirty: true, touched: clock };
+}
 
-            y: int = 0;
+fnc generate_chunk(w &World, cx int, cz int, clock int<64>) : void {
+    key: string = chunk_key(cx, cz);
+    c: Chunk;
+    if w.chunks.isin(key) { c = w.chunks[key]; }
+    else { c = new_chunk(cx, cz, clock); }
+    seed_x: int = cx * chunk_size();
+    seed_z: int = cz * chunk_size();
+    tz: int = 0;
+    lx: int = 0;
+    lz: int = 0;
+    oz: int = 0;
+    y: int = 0;
+    biomes: vec<int>;
+    heights: vec<int>;
+    tx: int = 0;
+    while tx < chunk_size() {
+        tz = 0;
+        while tz < chunk_size() {
+            wx: int = seed_x + tx;
+            wz: int = seed_z + tz;
+            biomes.pushb(biome_at(w, wx, wz));
+            heights.pushb(terrain_height(w, wx, wz));
+            tz = tz + 1;
+        }
+        tx = tx + 1;
+    }
+    tx = 0;
+    while tx < chunk_size() {
+        tz = 0;
+        while tz < chunk_size() {
+            wx: int = seed_x + tx;
+            wz: int = seed_z + tz;
+            b: int = biomes.get(tx * chunk_size() + tz);
+            h: int = heights.get(tx * chunk_size() + tz);
+            y = 0;
             while y <= h {
-                b: int = 3;
-                if y == h {
-                    if h <= 5 { b = 6; } else { b = 1; }
+                id: int = STONE();
+                if y == 0 { id = BEDROCK(); }
+                also y == h {
+                    if b == 1 { id = SAND(); }
+                    also b == 3 { id = SNOW(); }
+                    else { id = GRASS(); }
                 } also y >= h - 2 {
-                    if h <= 5 { b = 6; } else { b = 2; }
+                    if b == 1 { id = SAND(); }
+                    also b == 3 { id = STONE(); }
+                    else { id = DIRT(); }
                 }
-                wset(w, x, y, z, b);
+                ore: int = ore_at(w, wx, y, wz);
+                if y > 0 && y < h - 2 && ore != 0 { id = ore; }
+                if y > 3 && y < h - 3 && cave_at(w, wx, y, wz) { id = AIR(); }
+                c.blocks.set(chunk_index(tx, y, tz), id);
+                y = y + 1;
+            }
+            y = h + 1;
+            while y <= sea_level() {
+                c.blocks.set(chunk_index(tx, y, tz), WATER());
+                y = y + 1;
+            }
+            tz = tz + 1;
+        }
+        tx = tx + 1;
+    }
+    // Trees from a 2-block border so canopies cross chunk seams correctly.
+    ox: int = -2;
+    while ox < chunk_size() + 2 {
+        oz = -2;
+        while oz < chunk_size() + 2 {
+            wx: int = seed_x + ox;
+            wz: int = seed_z + oz;
+            if tree_present(w, wx, wz) {
+                top: int = terrain_height(w, wx, wz);
+                th: int = tree_height(w, wx, wz);
+                ty: int = 1;
+                while ty <= th {
+                    lx = wx - seed_x;
+                    lz = wz - seed_z;
+                    if lx >= 0 && lx < chunk_size() && lz >= 0 && lz < chunk_size() {
+                        c.blocks.set(chunk_index(lx, top + ty, lz), LOG());
+                    }
+                    ty = ty + 1;
+                }
+                ly: int = top + th - 2;
+                while ly <= top + th + 1 {
+                    lx = -2;
+                    while lx <= 2 {
+                        lz = -2;
+                        while lz <= 2 {
+                            ax: int = lx >= 0 ? lx : -lx;
+                            az: int = lz >= 0 ? lz : -lz;
+                            if ax + az < 4 || (lx == 0 && lz == 0) {
+                                bx: int = wx + lx - seed_x;
+                                bz: int = wz + lz - seed_z;
+                                if bx >= 0 && bx < chunk_size() &&
+                                   bz >= 0 && bz < chunk_size() && ly < world_height() {
+                                    idx: int = chunk_index(bx, ly, bz);
+                                    old: int = c.blocks.get(idx);
+                                    if old == AIR() || old == LEAVES() {
+                                        c.blocks.set(idx, leaf_block(w, wx, wz));
+                                    }
+                                }
+                            }
+                            lz = lz + 1;
+                        }
+                        lx = lx + 1;
+                    }
+                    ly = ly + 1;
+                }
+            }
+            oz = oz + 1;
+        }
+        ox = ox + 1;
+    }
+    // Player edits override generated terrain.
+    oz = 0;
+    while oz < chunk_size() {
+        ox = 0;
+        while ox < chunk_size() {
+            wx: int = seed_x + ox;
+            wz: int = seed_z + oz;
+            y = 0;
+            while y < world_height() {
+                ek: string = tostring(wx) + "," + tostring(y) + "," + tostring(wz);
+                if w.edits.isin(ek) {
+                    c.blocks.set(chunk_index(ox, y, oz), w.edits[ek]);
+                }
+                y = y + 1;
+            }
+            ox = ox + 1;
+        }
+        oz = oz + 1;
+    }
+    c.touched = clock;
+    w.chunks[key] = c;
+    w.generated = w.generated + 1;
+}
+
+// --------------------------------------------------------------- world access
+
+fnc ensure_chunk(w &World, cx int, cz int, clock int<64>) : void {
+    key: string = chunk_key(cx, cz);
+    // Never copy an existing chunk here: wget() calls this for every face and
+    // Chunk holds a 24k-entry vector. Only generate genuinely missing chunks.
+    if !w.chunks.isin(key) { generate_chunk(w, cx, cz, clock); }
+}
+
+fnc chunk_coord(x int) : int {
+    if x >= 0 { return x / chunk_size(); }
+    return (x - chunk_size() + 1) / chunk_size();
+}
+fnc local_coord(x int) : int { return x - chunk_coord(x) * chunk_size(); }
+
+fnc wget(w &World, x int, y int, z int, clock int<64>) : int {
+    if y < 0 || y >= world_height() { return AIR(); }
+    ek: string = tostring(x) + "," + tostring(y) + "," + tostring(z);
+    if w.edits.isin(ek) { return w.edits[ek]; }
+    cx: int = chunk_coord(x);
+    cz: int = chunk_coord(z);
+    ensure_chunk(w, cx, cz, clock);
+    key: string = chunk_key(cx, cz);
+    c: Chunk = w.chunks[key];
+    return c.blocks.get(chunk_index(local_coord(x), y, local_coord(z)));
+}
+
+fnc mark_dirty(w &World, cx int, cz int) : void {
+    key: string = chunk_key(cx, cz);
+    if !w.chunks.isin(key) { return; }
+    c: Chunk = w.chunks[key];
+    c.dirty = true;
+    w.chunks[key] = c;
+}
+
+fnc wset(w &World, x int, y int, z int, id int, clock int<64>) : void {
+    if y < 1 || y >= world_height() { return; }
+    cx: int = chunk_coord(x);
+    cz: int = chunk_coord(z);
+    ensure_chunk(w, cx, cz, clock);
+    key: string = chunk_key(cx, cz);
+    c: Chunk = w.chunks[key];
+    c.blocks.set(chunk_index(local_coord(x), y, local_coord(z)), id);
+    w.chunks[key] = c;
+    ek: string = tostring(x) + "," + tostring(y) + "," + tostring(z);
+    w.edits[ek] = id;
+    mark_dirty(w, cx, cz);
+    if local_coord(x) == 0 { mark_dirty(w, cx - 1, cz); }
+    if local_coord(x) == chunk_size() - 1 { mark_dirty(w, cx + 1, cz); }
+    if local_coord(z) == 0 { mark_dirty(w, cx, cz - 1); }
+    if local_coord(z) == chunk_size() - 1 { mark_dirty(w, cx, cz + 1); }
+}
+
+fnc solid_block(id int) : bool {
+    if id == AIR() || id == WATER() { return false; }
+    return true;
+}
+fnc solid_at(w &World, x int, y int, z int, clock int<64>) : bool {
+    if y < 0 { return true; }
+    if y >= world_height() { return false; }
+    return solid_block(wget(w, x, y, z, clock));
+}
+
+fnc top_at(w &World, x int, z int, clock int<64>) : int {
+    y: int = world_height() - 1;
+    while y >= 0 {
+        id: int = wget(w, x, y, z, clock);
+        if id != AIR() && id != WATER() { return y; }
+        y = y - 1;
+    }
+    return sea_level();
+}
+
+// --------------------------------------------------------- streaming chunks
+
+fnc update_chunks(w &World, px float, pz float, dist int, clock int<64>) : void {
+    pcx: int = chunk_coord(floor_i(px));
+    pcz: int = chunk_coord(floor_i(pz));
+    new_active: vec<string>;
+    w.active = new_active;
+    // Ring order puts the chunks around the player first, so streaming fills
+    // the visible foreground before distant landscape.
+    r: int = 0;
+    while r <= dist {
+        ox: int = -r;
+        while ox <= r {
+            oz: int = -r;
+            while oz <= r {
+                if maxi(absf_i(ox), absf_i(oz)) == r {
+                    cx: int = pcx + ox;
+                    cz: int = pcz + oz;
+                    ensure_chunk(w, cx, cz, clock);
+                    w.active.pushb(chunk_key(cx, cz));
+                }
+                oz = oz + 1;
+            }
+            ox = ox + 1;
+        }
+        r = r + 1;
+    }
+}
+
+fnc mesh_chunk(w &World, key string, budget int) : bool {
+    if budget <= 0 || !w.chunks.isin(key) { return false; }
+    c: Chunk = w.chunks[key];
+    if !c.dirty && c.mesh != 0 { return false; }
+    if c.mesh != 0 { Gl.delete_list(c.mesh); }
+    c.mesh = Gl.new_list();
+    c.faces = 0;
+    build_chunk_mesh(w, c);
+    if c.mesh != 0 { Gl.end_list(); }
+    c.dirty = false;
+    w.chunks[key] = c;
+    w.meshed = w.meshed + 1;
+    return true;
+}
+
+fnc stream_meshes(w &World, budget int) : void {
+    if w.active.size == 0 { return; }
+    done: int = 0;
+    i: int = 0;
+    while i < w.active.size && done < budget {
+        if mesh_chunk(w, w.active.get(i), budget - done) {
+            dbg_key: string = w.active.get(i);
+            dbg_c: Chunk = w.chunks[dbg_key];
+            done = done + 1;
+        }
+        i = i + 1;
+    }
+}
+
+// --------------------------------------------------------------- block looks
+
+fnc block_name(id int) : string {
+    if id == GRASS() { return "GRASS"; }
+    if id == DIRT() { return "DIRT"; }
+    if id == STONE() { return "STONE"; }
+    if id == LOG() { return "LOG"; }
+    if id == LEAVES() { return "LEAVES"; }
+    if id == SAND() { return "SAND"; }
+    if id == PLANKS() { return "PLANKS"; }
+    if id == COBBLE() { return "COBBLE"; }
+    if id == BRICK() { return "BRICK"; }
+    if id == WATER() { return "WATER"; }
+    if id == BEDROCK() { return "BEDROCK"; }
+    if id == SNOW() { return "SNOW"; }
+    if id == COAL_ORE() { return "COAL ORE"; }
+    if id == IRON_ORE() { return "IRON ORE"; }
+    if id == DIAMOND_ORE() { return "DIAMOND"; }
+    if id == GLOWSTONE() { return "GLOWSTONE"; }
+    if id == STICK() { return "STICK"; }
+    if id == WOOD_PICK() { return "WOOD PICK"; }
+    if id == STONE_PICK() { return "STONE PICK"; }
+    if id == IRON_PICK() { return "IRON PICK"; }
+    if id == TORCH() { return "TORCH"; }
+    if id == APPLE() { return "APPLE"; }
+    if id == IRON_INGOT() { return "IRON INGOT"; }
+    if id == BREAD() { return "BREAD"; }
+    return "AIR";
+}
+
+fnc block_color(id int) : (float, float, float) {
+    if id == GRASS() { return 0.30, 0.66, 0.22; }
+    if id == DIRT() { return 0.50, 0.34, 0.19; }
+    if id == STONE() { return 0.53, 0.53, 0.56; }
+    if id == LOG() { return 0.47, 0.30, 0.15; }
+    if id == LEAVES() { return 0.18, 0.46, 0.16; }
+    if id == SAND() { return 0.84, 0.76, 0.50; }
+    if id == PLANKS() { return 0.69, 0.46, 0.23; }
+    if id == COBBLE() { return 0.42, 0.42, 0.45; }
+    if id == BRICK() { return 0.56, 0.23, 0.18; }
+    if id == WATER() { return 0.16, 0.42, 0.78; }
+    if id == BEDROCK() { return 0.16, 0.16, 0.18; }
+    if id == SNOW() { return 0.92, 0.95, 0.98; }
+    if id == COAL_ORE() { return 0.34, 0.34, 0.36; }
+    if id == IRON_ORE() { return 0.68, 0.55, 0.42; }
+    if id == DIAMOND_ORE() { return 0.32, 0.82, 0.86; }
+    if id == GLOWSTONE() { return 1.00, 0.83, 0.34; }
+    if id == STICK() { return 0.60, 0.42, 0.22; }
+    if id == WOOD_PICK() { return 0.70, 0.52, 0.28; }
+    if id == STONE_PICK() { return 0.60, 0.60, 0.64; }
+    if id == IRON_PICK() { return 0.82, 0.84, 0.88; }
+    if id == TORCH() { return 0.98, 0.78, 0.28; }
+    if id == APPLE() { return 0.86, 0.18, 0.16; }
+    if id == IRON_INGOT() { return 0.88, 0.88, 0.90; }
+    if id == BREAD() { return 0.78, 0.54, 0.26; }
+    return 0.5, 0.5, 0.5;
+}
+
+fnc tile_for(id int, face int) : int {
+    if id == GRASS() { if face == 0 { return 0; } if face == 1 { return 2; } return 1; }
+    if id == DIRT() { return 2; }
+    if id == STONE() { return 3; }
+    if id == LOG() { if face == 0 || face == 1 { return 5; } return 4; }
+    if id == LEAVES() { return 6; }
+    if id == SAND() { return 7; }
+    if id == PLANKS() { return 8; }
+    if id == COBBLE() { return 9; }
+    if id == BRICK() { return 10; }
+    if id == WATER() { return 11; }
+    if id == BEDROCK() { return 12; }
+    if id == SNOW() { return 13; }
+    if id == COAL_ORE() { return 14; }
+    if id == IRON_ORE() { return 15; }
+    if id == DIAMOND_ORE() { return 16; }
+    if id == GLOWSTONE() { return 17; }
+    return 3;
+}
+
+fnc tile_u(tile int) : float {
+    return tofloat(float, tile % atlas_tiles()) / tofloat(float, atlas_tiles());
+}
+fnc tile_v(tile int) : float {
+    return tofloat(float, tile / atlas_tiles()) / tofloat(float, atlas_tiles());
+}
+
+// ------------------------------------------------------------ texture atlas
+
+fnc put_pixel(buf string, r int, g int, b int, a int) : string {
+    if r < 0 { r = 0; }
+    if g < 0 { g = 0; }
+    if b < 0 { b = 0; }
+    if a < 0 { a = 0; }
+    if r > 255 { r = 255; }
+    if g > 255 { g = 255; }
+    if b > 255 { b = 255; }
+    if a > 255 { a = 255; }
+    return buf + (char)r + (char)g + (char)b + (char)a;
+}
+
+fnc tile_pixel(tile int, px int, py int) : (int, int, int, int) {
+    n: int = hash2(px + tile * 37, py - tile * 19, 9001);
+    speck: int = n % 17;
+    if tile == 0 {  // grass top
+        if speck < 3 { return 72, 158, 48, 255; }
+        return 55, 132, 38, 255;
+    }
+    if tile == 1 {  // grass side
+        if py >= 3 { return 68, 150, 44, 255; }
+        if speck < 5 { return 118, 82, 46, 255; }
+        return 128, 88, 49, 255;
+    }
+    if tile == 2 { return 116 + speck, 80 + speck, 45 + speck, 255; }
+    if tile == 3 { return 126 + speck, 128 + speck, 132 + speck, 255; }
+    if tile == 4 { return 112 + speck, 72 + speck, 36 + speck, 255; }
+    if tile == 5 {
+        if speck < 5 { return 40, 110, 36, 255; }
+        return 52, 132, 42, 255;
+    }
+    if tile == 6 { return 208 + speck, 190 + speck, 124 + speck, 255; }
+    if tile == 7 { return 174 + speck, 118 + speck, 60 + speck, 255; }
+    if tile == 8 {
+        if px % 4 == 0 || py % 4 == 0 { return 96, 96, 100, 255; }
+        return 132 + speck, 132 + speck, 136 + speck, 255;
+    }
+    if tile == 9 {
+        if py % 3 == 0 { return 120, 58, 44, 255; }
+        return 164 + speck, 78 + speck, 58 + speck, 255;
+    }
+    if tile == 11 {
+        if (px + py) % 7 < 2 { return 72, 146, 214, 180; }
+        return 38, 106, 190, 170;
+    }
+    if tile == 12 { return 38 + speck, 38 + speck, 42 + speck, 255; }
+    if tile == 13 { return 232 + speck, 240 + speck, 250, 255; }
+    if tile == 14 {
+        if speck < 5 { return 34, 34, 38, 255; }
+        return 70, 70, 76, 255;
+    }
+    if tile == 15 {
+        if speck < 6 { return 176, 128, 88, 255; }
+        return 196, 146, 102, 255;
+    }
+    if tile == 16 {
+        if speck < 6 { return 78, 204, 214, 255; }
+        return 126, 236, 246, 255;
+    }
+    if tile == 17 { return 250, 216, 108, 255; }
+    return 128, 128, 128, 255;
+}
+
+fnc make_atlas() : string {
+    data: string = "";
+    side: int = atlas_tiles() * tile_px();
+    ty: int = 0;
+    while ty < atlas_tiles() {
+        py: int = 0;
+        while py < tile_px() {
+            tx: int = 0;
+            while tx < atlas_tiles() {
+                px: int = 0;
+                while px < tile_px() {
+                    tile: int = ty * atlas_tiles() + tx;
+                    r, g, b, a: int, int, int, int = tile_pixel(tile, px, py);
+                    data = put_pixel(data, r, g, b, a);
+                    px = px + 1;
+                }
+                tx = tx + 1;
+            }
+            py = py + 1;
+        }
+        ty = ty + 1;
+    }
+    return data;
+}
+
+// ---------------------------------------------------------------- meshing
+
+fnc opaque(id int) : bool { return solid_block(id); }
+
+fnc emit_face(w &World, wx int, wy int, wz int, face int, id int) : void {
+    tile: int = tile_for(id, face);
+    u0: float = tile_u(tile) + 0.004;
+    v0: float = tile_v(tile) + 0.004;
+    u1: float = tile_u(tile) + 0.124;
+    v1: float = tile_v(tile) + 0.124;
+    r: float = 1.0;
+    g: float = 1.0;
+    b: float = 1.0;
+    a: float = 1.0;
+    if face == 1 { r = 0.72; g = 0.72; b = 0.72; }
+    also face == 2 || face == 3 { r = 0.86; g = 0.86; b = 0.86; }
+    also face == 4 || face == 5 { r = 0.94; g = 0.94; b = 0.94; }
+    if id == WATER() { a = 0.72; }
+    if id == LEAVES() { a = 0.94; }
+    Gl.color(r, g, b, a);
+    if face == 0 { Gl.normal3(0.0, 1.0, 0.0); }
+    also face == 1 { Gl.normal3(0.0, -1.0, 0.0); }
+    also face == 2 { Gl.normal3(1.0, 0.0, 0.0); }
+    also face == 3 { Gl.normal3(-1.0, 0.0, 0.0); }
+    also face == 4 { Gl.normal3(0.0, 0.0, 1.0); }
+    else { Gl.normal3(0.0, 0.0, -1.0); }
+    x0: float = tofloat(float, wx);
+    y0: float = tofloat(float, wy);
+    z0: float = tofloat(float, wz);
+    x1: float = x0 + 1.0;
+    y1: float = y0 + 1.0;
+    z1: float = z0 + 1.0;
+    Gl.begin(Gl.quads());
+    if face == 0 {
+        Gl.tex_coord2(u0, v0); Gl.vertex3(x0, y1, z0);
+        Gl.tex_coord2(u1, v0); Gl.vertex3(x0, y1, z1);
+        Gl.tex_coord2(u1, v1); Gl.vertex3(x1, y1, z1);
+        Gl.tex_coord2(u0, v1); Gl.vertex3(x1, y1, z0);
+    } also face == 1 {
+        Gl.tex_coord2(u0, v0); Gl.vertex3(x0, y0, z1);
+        Gl.tex_coord2(u1, v0); Gl.vertex3(x0, y0, z0);
+        Gl.tex_coord2(u1, v1); Gl.vertex3(x1, y0, z0);
+        Gl.tex_coord2(u0, v1); Gl.vertex3(x1, y0, z1);
+    } also face == 2 {
+        Gl.tex_coord2(u0, v0); Gl.vertex3(x1, y0, z1);
+        Gl.tex_coord2(u1, v0); Gl.vertex3(x1, y0, z0);
+        Gl.tex_coord2(u1, v1); Gl.vertex3(x1, y1, z0);
+        Gl.tex_coord2(u0, v1); Gl.vertex3(x1, y1, z1);
+    } also face == 3 {
+        Gl.tex_coord2(u0, v0); Gl.vertex3(x0, y0, z0);
+        Gl.tex_coord2(u1, v0); Gl.vertex3(x0, y0, z1);
+        Gl.tex_coord2(u1, v1); Gl.vertex3(x0, y1, z1);
+        Gl.tex_coord2(u0, v1); Gl.vertex3(x0, y1, z0);
+    } also face == 4 {
+        Gl.tex_coord2(u0, v0); Gl.vertex3(x0, y0, z1);
+        Gl.tex_coord2(u1, v0); Gl.vertex3(x1, y0, z1);
+        Gl.tex_coord2(u1, v1); Gl.vertex3(x1, y1, z1);
+        Gl.tex_coord2(u0, v1); Gl.vertex3(x0, y1, z1);
+    } else {
+        Gl.tex_coord2(u0, v0); Gl.vertex3(x1, y0, z0);
+        Gl.tex_coord2(u1, v0); Gl.vertex3(x0, y0, z0);
+        Gl.tex_coord2(u1, v1); Gl.vertex3(x0, y1, z0);
+        Gl.tex_coord2(u0, v1); Gl.vertex3(x1, y1, z0);
+    }
+    Gl.end();
+}
+
+fnc build_chunk_mesh(w &World, c &Chunk) : int {
+    faces: int = 0;
+    x: int = 0;
+    clock: int<64> = c.touched;
+    while x < chunk_size() {
+        z: int = 0;
+        while z < chunk_size() {
+            wx: int = c.cx * chunk_size() + x;
+            wz: int = c.cz * chunk_size() + z;
+            y: int = 0;
+            while y < world_height() {
+                id: int = c.blocks.get(chunk_index(x, y, z));
+                if id != AIR() {
+                    if !opaque(wget(w, wx, y + 1, wz, clock)) {
+                        emit_face(w, wx, y, wz, 0, id);
+                        faces = faces + 1;
+                    }
+                    if y > 0 && !opaque(wget(w, wx, y - 1, wz, clock)) {
+                        emit_face(w, wx, y, wz, 1, id);
+                        faces = faces + 1;
+                    }
+                    if !opaque(wget(w, wx + 1, y, wz, clock)) {
+                        emit_face(w, wx, y, wz, 2, id);
+                        faces = faces + 1;
+                    }
+                    if !opaque(wget(w, wx - 1, y, wz, clock)) {
+                        emit_face(w, wx, y, wz, 3, id);
+                        faces = faces + 1;
+                    }
+                    if !opaque(wget(w, wx, y, wz + 1, clock)) {
+                        emit_face(w, wx, y, wz, 4, id);
+                        faces = faces + 1;
+                    }
+                    if !opaque(wget(w, wx, y, wz - 1, clock)) {
+                        emit_face(w, wx, y, wz, 5, id);
+                        faces = faces + 1;
+                    }
+                }
                 y = y + 1;
             }
             z = z + 1;
         }
         x = x + 1;
     }
-
-    // Trees are placed after the terrain so leaves are not overwritten.
-    x = 3;
-    while x < w.sx - 3 {
-        z = 3;
-        while z < w.sz - 3 {
-            dx: int = x - w.sx / 2;
-            dz: int = z - w.sz / 2;
-            if dx * dx + dz * dz > 90 && hash_int(x, z, 77) % 100 < 4 {
-                top: int = top_at(w, x, z);
-                if wget(w, x, top, z) == 1 && top + 7 < w.sy {
-                    th: int = 4 + hash_int(x, z, 78) % 3;
-                    y: int = 1;
-                    while y <= th {
-                        wset(w, x, top + y, z, 4);
-                        y = y + 1;
-                    }
-                    ly: int = top + th - 2;
-                    while ly <= top + th + 1 {
-                        lx: int = -2;
-                        while lx <= 2 {
-                            lz: int = -2;
-                            while lz <= 2 {
-                                ax: int = lx;
-                                az: int = lz;
-                                if ax < 0 { ax = -ax; }
-                                if az < 0 { az = -az; }
-                                if ax + az < 4 || (lx == 0 && lz == 0) {
-                                    if wget(w, x + lx, ly, z + lz) == 0 {
-                                        wset(w, x + lx, ly, z + lz, 5);
-                                    }
-                                }
-                                lz = lz + 1;
-                            }
-                            lx = lx + 1;
-                        }
-                        ly = ly + 1;
-                    }
-                }
-            }
-            z = z + 1;
-        }
-        x = x + 1;
-    }
+    c.faces = faces;
+    return faces;
 }
 
-// -------------------------------------------------------------- block look
-
-fnc block_name(b int) : string {
-    if b == 1 { return "GRASS"; }
-    if b == 2 { return "DIRT"; }
-    if b == 3 { return "STONE"; }
-    if b == 4 { return "WOOD"; }
-    if b == 5 { return "LEAVES"; }
-    if b == 6 { return "SAND"; }
-    if b == 7 { return "PLANKS"; }
-    if b == 8 { return "COBBLE"; }
-    if b == 9 { return "BRICK"; }
-    return "AIR";
-}
-
-fnc block_color(b int) : (float, float, float) {
-    if b == 1 { return 0.30, 0.66, 0.22; }
-    if b == 2 { return 0.50, 0.34, 0.19; }
-    if b == 3 { return 0.53, 0.53, 0.56; }
-    if b == 4 { return 0.47, 0.30, 0.15; }
-    if b == 5 { return 0.18, 0.46, 0.16; }
-    if b == 6 { return 0.84, 0.76, 0.50; }
-    if b == 7 { return 0.69, 0.46, 0.23; }
-    if b == 8 { return 0.42, 0.42, 0.45; }
-    if b == 9 { return 0.56, 0.23, 0.18; }
-    return 0.5, 0.5, 0.5;
-}
-
-fnc face_tint(b int, face int, x int, y int, z int) : (float, float, float) {
-    r, g, bl: float, float, float = block_color(b);
-    if b == 1 && face != 0 {
-        r = 0.50;
-        g = 0.34;
-        bl = 0.19;
-    }
-    if b == 4 && (face == 0 || face == 1) {
-        r = 0.62;
-        g = 0.44;
-        bl = 0.23;
-    }
-    variation: float = tofloat(float, hash_int(x * 7 + z, y, 5) % 100) / 100.0 - 0.5;
-    if b == 5 {
-        variation = variation * 0.22;
-    } else {
-        variation = variation * 0.07;
-    }
-    r = clampf(r + variation, 0.0, 1.0);
-    g = clampf(g + variation, 0.0, 1.0);
-    bl = clampf(bl + variation, 0.0, 1.0);
-    if face == 1 {
-        r = r * 0.78;
-        g = g * 0.78;
-        bl = bl * 0.78;
-    } also face == 2 || face == 3 {
-        r = r * 0.94;
-        g = g * 0.94;
-        bl = bl * 0.94;
-    } also face == 4 || face == 5 {
-        r = r * 0.86;
-        g = g * 0.86;
-        bl = bl * 0.86;
-    }
-    return r, g, bl;
-}
-
-// --------------------------------------------------------------------- font
+// ------------------------------------------------------------------ bitmap font
 
 fnc glyph_rows(c int) : int<64> {
     if c == 33 { return 0x00100421084; }
@@ -413,7 +980,7 @@ fnc text_pixels(x int, y int, s string, scale int) : void {
 
 fnc draw_text(x int, y int, s string, scale int,
               r float, g float, b float) : void {
-    Gl.color(0.0, 0.0, 0.0, 0.78);
+    Gl.color(0.0, 0.0, 0.0, 0.8);
     text_pixels(x + scale, y + scale, s, scale);
     Gl.color(r, g, b, 1.0);
     text_pixels(x, y, s, scale);
@@ -430,241 +997,42 @@ fnc fill_rect(x float, y float, w float, h float,
     Gl.end();
 }
 
-// ------------------------------------------------------------ static meshes
+fnc pad2(n int) : string { if n < 10 { return "0" + tostring(n); } return tostring(n); }
 
-fnc emit_face(w World, x int, y int, z int, face int, b int) : void {
-    r, g, bl: float, float, float = face_tint(b, face, x, y, z);
-    Gl.color(r, g, bl, 1.0);
-    if face == 0 { Gl.normal3(0.0, 1.0, 0.0); }
-    also face == 1 { Gl.normal3(0.0, -1.0, 0.0); }
-    also face == 2 { Gl.normal3(1.0, 0.0, 0.0); }
-    also face == 3 { Gl.normal3(-1.0, 0.0, 0.0); }
-    also face == 4 { Gl.normal3(0.0, 0.0, 1.0); }
-    else { Gl.normal3(0.0, 0.0, -1.0); }
+// ------------------------------------------------------------------ player
 
-    x0: float = tofloat(float, x);
-    y0: float = tofloat(float, y);
-    z0: float = tofloat(float, z);
-    x1: float = x0 + 1.0;
-    y1: float = y0 + 1.0;
-    z1: float = z0 + 1.0;
-    Gl.begin(Gl.quads());
-    if face == 0 {
-        Gl.vertex3(x0, y1, z0);
-        Gl.vertex3(x0, y1, z1);
-        Gl.vertex3(x1, y1, z1);
-        Gl.vertex3(x1, y1, z0);
-    } also face == 1 {
-        Gl.vertex3(x0, y0, z1);
-        Gl.vertex3(x0, y0, z0);
-        Gl.vertex3(x1, y0, z0);
-        Gl.vertex3(x1, y0, z1);
-    } also face == 2 {
-        Gl.vertex3(x1, y0, z1);
-        Gl.vertex3(x1, y0, z0);
-        Gl.vertex3(x1, y1, z0);
-        Gl.vertex3(x1, y1, z1);
-    } also face == 3 {
-        Gl.vertex3(x0, y0, z0);
-        Gl.vertex3(x0, y0, z1);
-        Gl.vertex3(x0, y1, z1);
-        Gl.vertex3(x0, y1, z0);
-    } also face == 4 {
-        Gl.vertex3(x0, y0, z1);
-        Gl.vertex3(x1, y0, z1);
-        Gl.vertex3(x1, y1, z1);
-        Gl.vertex3(x0, y1, z1);
-    } else {
-        Gl.vertex3(x1, y0, z0);
-        Gl.vertex3(x0, y0, z0);
-        Gl.vertex3(x0, y1, z0);
-        Gl.vertex3(x1, y1, z0);
-    }
-    Gl.end();
-}
-
-fnc build_chunk(w World, cx int, cz int) : (int, int) {
-    id: int = Gl.new_list();
-    faces: int = 0;
-    x0: int = cx * chunk_size();
-    z0: int = cz * chunk_size();
-    x1: int = x0 + chunk_size();
-    z1: int = z0 + chunk_size();
-    if x1 > w.sx { x1 = w.sx; }
-    if z1 > w.sz { z1 = w.sz; }
-
-    x: int = x0;
-    while x < x1 {
-        z: int = z0;
-        while z < z1 {
-            y: int = 0;
-            while y < w.sy {
-                b: int = wget(w, x, y, z);
-                if b != 0 {
-                    if wget(w, x, y + 1, z) == 0 {
-                        emit_face(w, x, y, z, 0, b);
-                        faces = faces + 1;
-                    }
-                    if y > 0 && wget(w, x, y - 1, z) == 0 {
-                        emit_face(w, x, y, z, 1, b);
-                        faces = faces + 1;
-                    }
-                    if wget(w, x + 1, y, z) == 0 {
-                        emit_face(w, x, y, z, 2, b);
-                        faces = faces + 1;
-                    }
-                    if wget(w, x - 1, y, z) == 0 {
-                        emit_face(w, x, y, z, 3, b);
-                        faces = faces + 1;
-                    }
-                    if wget(w, x, y, z + 1) == 0 {
-                        emit_face(w, x, y, z, 4, b);
-                        faces = faces + 1;
-                    }
-                    if wget(w, x, y, z - 1) == 0 {
-                        emit_face(w, x, y, z, 5, b);
-                        faces = faces + 1;
-                    }
-                }
-                y = y + 1;
-            }
-            z = z + 1;
-        }
-        x = x + 1;
-    }
-    if id != 0 { Gl.end_list(); }
-    return id, faces;
-}
-
-fnc build_all(w World, ids vec<int>, counts vec<int>) : int {
-    cps: int = chunks_per_side(w);
-    i: int = 0;
-    total: int = 0;
-    while i < cps * cps {
-        old: int = ids.get(i);
-        if old != 0 { Gl.delete_list(old); }
-        cx: int = i % cps;
-        cz: int = i / cps;
-        id, faces: int, int = build_chunk(w, cx, cz);
-        ids.set(i, id);
-        counts.set(i, faces);
-        total = total + faces;
-        i = i + 1;
-    }
-    return total;
-}
-
-fnc sum_counts(counts vec<int>) : int {
-    total: int = 0;
-    i: int = 0;
-    while i < counts.size {
-        total = total + counts.get(i);
-        i = i + 1;
-    }
-    return total;
-}
-
-fnc rebuild_at(w World, ids vec<int>, counts vec<int>, cx int, cz int) : void {
-    cps: int = chunks_per_side(w);
-    if cx < 0 || cz < 0 || cx >= cps || cz >= cps { return; }
-    idx: int = cz * cps + cx;
-    old: int = ids.get(idx);
-    if old != 0 { Gl.delete_list(old); }
-    id, faces: int, int = build_chunk(w, cx, cz);
-    ids.set(idx, id);
-    counts.set(idx, faces);
-}
-
-fnc rebuild_block(w World, ids vec<int>, counts vec<int>,
-                  bx int, by int, bz int) : void {
-    cx: int = bx / chunk_size();
-    cz: int = bz / chunk_size();
-    rebuild_at(w, ids, counts, cx, cz);
-    if bx % chunk_size() == 0 { rebuild_at(w, ids, counts, cx - 1, cz); }
-    if bx % chunk_size() == chunk_size() - 1 {
-        rebuild_at(w, ids, counts, cx + 1, cz);
-    }
-    if bz % chunk_size() == 0 { rebuild_at(w, ids, counts, cx, cz - 1); }
-    if bz % chunk_size() == chunk_size() - 1 {
-        rebuild_at(w, ids, counts, cx, cz + 1);
-    }
-}
-
-fnc build_clouds(w World) : int {
-    id: int = Gl.new_list();
-    if id == 0 { return 0; }
-    i: int = 0;
-    while i < 90 {
-        hx: int = hash_int(i, 3, 41) % w.sx;
-        hz: int = hash_int(i, 9, 42) % w.sz;
-        cw: int = 3 + hash_int(i, 5, 43) % 6;
-        cd: int = 3 + hash_int(i, 7, 44) % 6;
-        cy: float = 30.0 + tofloat(float, hash_int(i, 11, 45) % 3);
-        x0: float = tofloat(float, hx);
-        z0: float = tofloat(float, hz);
-        x1: float = x0 + tofloat(float, cw);
-        z1: float = z0 + tofloat(float, cd);
-        Gl.begin(Gl.quads());
-        Gl.vertex3(x0, cy, z0);
-        Gl.vertex3(x0, cy, z1);
-        Gl.vertex3(x1, cy, z1);
-        Gl.vertex3(x1, cy, z0);
-        Gl.end();
-        i = i + 1;
-    }
-    Gl.end_list();
-    return id;
-}
-
-// ------------------------------------------------------------------- player
-
-fnc spawn_player(w World, p &Player) : void {
-    cx: int = w.sx / 2;
-    cz: int = w.sz / 2;
-    top: int = top_at(w, cx, cz);
-    p.x = tofloat(float, cx) + 0.5;
-    p.z = tofloat(float, cz) + 0.5;
-    p.y = tofloat(float, top + 1);
-    p.vx = 0.0;
-    p.vy = 0.0;
-    p.vz = 0.0;
-    p.yaw = 0.72;
-    p.pitch = -0.16;
-    p.bob = 0.0;
-    p.on_ground = true;
-    p.hour = 8.0;
-    p.mined = 0;
-    p.placed = 0;
-}
-
-fnc new_player(w World) : Player {
-    p: Player = Player { x: 0.0, y: 0.0, z: 0.0,
-                         vx: 0.0, vy: 0.0, vz: 0.0,
-                         yaw: 0.0, pitch: 0.0, bob: 0.0,
-                         on_ground: false, hour: 8.0, mined: 0, placed: 0 };
-    spawn_player(w, p);
+fnc new_player(w &World, clock int<64>) : Player {
+    x: int = 0;
+    z: int = 0;
+    top: int = top_at(w, x, z, clock);
+    p: Player = Player {
+        x: tofloat(float, x) + 0.5, y: tofloat(float, top + 1),
+        z: tofloat(float, z) + 0.5,
+        vx: 0.0, vy: 0.0, vz: 0.0,
+        yaw: 0.72, pitch: -0.16, bob: 0.0, on_ground: false,
+        fall_start: 0.0, hour: 8.0,
+        health: 20.0, hunger: 20.0, air: 10.0, exhaust: 0.0,
+        regen: 0.0, mined: 0, placed: 0, kills: 0, deaths: 0
+    };
     return p;
 }
 
-fnc collides(w World, px float, py float, pz float) : bool {
+fnc collides(w &World, px float, py float, pz float, clock int<64>) : bool {
     radius: float = 0.30;
     height: float = 1.80;
-    x0: int = toint(int, Math.floor(px - radius));
-    x1: int = toint(int, Math.floor(px + radius));
-    y0: int = toint(int, Math.floor(py));
-    y1: int = toint(int, Math.floor(py + height));
-    z0: int = toint(int, Math.floor(pz - radius));
-    z1: int = toint(int, Math.floor(pz + radius));
-    if x0 < 0 || z0 < 0 || x1 >= w.sx || z1 >= w.sz || y0 < 0 {
-        return true;
-    }
+    x0: int = floor_i(px - radius);
+    x1: int = floor_i(px + radius);
+    y0: int = floor_i(py);
+    y1: int = floor_i(py + height);
+    z0: int = floor_i(pz - radius);
+    z1: int = floor_i(pz + radius);
     y: int = y0;
-    while y <= y1 && y < w.sy {
+    while y <= y1 && y < world_height() {
         x: int = x0;
         while x <= x1 {
             z: int = z0;
             while z <= z1 {
-                if wget(w, x, y, z) != 0 { return true; }
+                if solid_at(w, x, y, z, clock) { return true; }
                 z = z + 1;
             }
             x = x + 1;
@@ -674,10 +1042,17 @@ fnc collides(w World, px float, py float, pz float) : bool {
     return false;
 }
 
-fnc move_player(w World, p &Player, dt float) : void {
-    speed: float = 4.4;
-    if Gl.key_down(Gl.key_shift()) { speed = 7.2; }
+fnc has_tool(g &Game, slot int, kind int) : bool {
+    if slot < 0 || slot >= g.inv.size { return false; }
+    id: int = g.inv.get(slot);
+    if kind == 1 { return id == WOOD_PICK() || id == STONE_PICK() || id == IRON_PICK(); }
+    return false;
+}
 
+fnc move_player(w &World, p &Player, dt float, sprint bool,
+                clock int<64>) : void {
+    speed: float = 4.4;
+    if sprint && p.hunger > 6.0 { speed = 7.0; }
     fx: float = Math.sin(p.yaw);
     fz: float = -Math.cos(p.yaw);
     rx: float = Math.cos(p.yaw);
@@ -688,149 +1063,517 @@ fnc move_player(w World, p &Player, dt float) : void {
     if Gl.key_down(Gl.key_s()) { wx = wx - fx; wz = wz - fz; }
     if Gl.key_down(Gl.key_d()) { wx = wx + rx; wz = wz + rz; }
     if Gl.key_down(Gl.key_a()) { wx = wx - rx; wz = wz - rz; }
-    length: float = Math.sqrt(wx * wx + wz * wz);
-    if length > 0.001 {
-        wx = wx / length;
-        wz = wz / length;
+    len: float = Math.sqrt(wx * wx + wz * wz);
+    if len > 0.001 {
+        wx = wx / len;
+        wz = wz / len;
         p.bob = p.bob + dt * speed * 1.8;
+        p.exhaust = p.exhaust + dt * (sprint ? 1.4 : 0.35);
     }
     accel: float = dt * 12.0;
     if accel > 1.0 { accel = 1.0; }
     p.vx = p.vx + (wx * speed - p.vx) * accel;
     p.vz = p.vz + (wz * speed - p.vz) * accel;
-
     p.vy = p.vy - 25.0 * dt;
     if p.on_ground && Gl.key_down(Gl.key_space()) {
         p.vy = 8.4;
         p.on_ground = false;
+        p.exhaust = p.exhaust + 0.6;
     }
-
+    if !p.on_ground && p.vy < 0.0 && p.y < p.fall_start { p.fall_start = p.y; }
     step: float = p.vx * dt;
     p.x = p.x + step;
-    if collides(w, p.x, p.y, p.z) {
+    if collides(w, p.x, p.y, p.z, clock) {
         p.x = p.x - step;
-        if p.on_ground && !collides(w, p.x + step, p.y + 1.0, p.z) {
+        if p.on_ground && !collides(w, p.x + step, p.y + 1.0, p.z, clock) {
             p.y = p.y + 1.0;
             p.x = p.x + step;
-        } else {
-            p.vx = 0.0;
-        }
+        } else { p.vx = 0.0; }
     }
     step = p.vz * dt;
     p.z = p.z + step;
-    if collides(w, p.x, p.y, p.z) {
+    if collides(w, p.x, p.y, p.z, clock) {
         p.z = p.z - step;
-        if p.on_ground && !collides(w, p.x, p.y + 1.0, p.z + step) {
+        if p.on_ground && !collides(w, p.x, p.y + 1.0, p.z + step, clock) {
             p.y = p.y + 1.0;
             p.z = p.z + step;
-        } else {
-            p.vz = 0.0;
-        }
+        } else { p.vz = 0.0; }
     }
-
     p.on_ground = false;
     step = p.vy * dt;
     p.y = p.y + step;
-    if collides(w, p.x, p.y, p.z) {
+    if collides(w, p.x, p.y, p.z, clock) {
         p.y = p.y - step;
+        if p.vy < -13.0 {
+            p.health = p.health - (absf(p.vy) - 13.0) * 1.4;
+        }
+        p.fall_start = p.y;
         if p.vy < 0.0 { p.on_ground = true; }
         p.vy = 0.0;
     }
-    if p.y < -4.0 {
-        spawn_player(w, p);
+    head: int = floor_i(p.y + 1.6);
+    submerged: bool = wget(w, floor_i(p.x), head, floor_i(p.z), clock) == WATER();
+    if submerged {
+        p.air = p.air - dt * 1.6;
+        if p.air <= 0.0 { p.health = p.health - dt * 2.0; }
+    } else {
+        p.air = minf(10.0, p.air + dt * 3.0);
+    }
+    if p.exhaust >= 4.0 {
+        p.exhaust = p.exhaust - 4.0;
+        p.hunger = maxf(0.0, p.hunger - 1.0);
+    }
+    if p.hunger <= 0.0 { p.health = p.health - dt * 1.0; }
+    also p.hunger > 16.0 && p.health < 20.0 {
+        p.regen = p.regen + dt;
+        if p.regen > 3.0 {
+            p.regen = 0.0;
+            p.health = minf(20.0, p.health + 1.0);
+            p.hunger = maxf(0.0, p.hunger - 0.4);
+        }
     }
 }
 
-fnc look_x(p &Player) : float {
-    return Math.sin(p.yaw) * Math.cos(p.pitch);
-}
+fnc look_x(p Player) : float { return Math.sin(p.yaw) * Math.cos(p.pitch); }
+fnc look_y(p Player) : float { return Math.sin(p.pitch); }
+fnc look_z(p Player) : float { return -Math.cos(p.yaw) * Math.cos(p.pitch); }
 
-fnc look_y(p &Player) : float {
-    return Math.sin(p.pitch);
-}
-
-fnc look_z(p &Player) : float {
-    return -Math.cos(p.yaw) * Math.cos(p.pitch);
-}
-
-fnc raycast(w World, ox float, oy float, oz float,
-            dx float, dy float, dz float, maxd float) : RayHit {
+fnc raycast(w &World, ox float, oy float, oz float,
+            dx float, dy float, dz float, maxd float, clock int<64>) : RayHit {
     t: float = 0.0;
-    lastx: int = toint(int, Math.floor(ox));
-    lasty: int = toint(int, Math.floor(oy));
-    lastz: int = toint(int, Math.floor(oz));
+    lx: int = floor_i(ox);
+    ly: int = floor_i(oy);
+    lz: int = floor_i(oz);
     while t <= maxd {
-        bx: int = toint(int, Math.floor(ox + dx * t));
-        by: int = toint(int, Math.floor(oy + dy * t));
-        bz: int = toint(int, Math.floor(oz + dz * t));
-        if wget(w, bx, by, bz) != 0 {
+        bx: int = floor_i(ox + dx * t);
+        by: int = floor_i(oy + dy * t);
+        bz: int = floor_i(oz + dz * t);
+        if wget(w, bx, by, bz, clock) != AIR() {
             return RayHit { hit: true, bx: bx, by: by, bz: bz,
-                            px: lastx, py: lasty, pz: lastz };
+                            px: lx, py: ly, pz: lz };
         }
-        lastx = bx;
-        lasty = by;
-        lastz = bz;
+        lx = bx;
+        ly = by;
+        lz = bz;
         t = t + 0.02;
     }
-    return RayHit { hit: false, bx: 0, by: 0, bz: 0,
-                    px: 0, py: 0, pz: 0 };
+    return RayHit { hit: false, bx: 0, by: 0, bz: 0, px: 0, py: 0, pz: 0 };
 }
 
-fnc block_hits_player(p &Player, x int, y int, z int) : bool {
-    return p.x + 0.30 > tofloat(float, x)
-        && p.x - 0.30 < tofloat(float, x + 1)
-        && p.z + 0.30 > tofloat(float, z)
-        && p.z - 0.30 < tofloat(float, z + 1)
-        && p.y + 1.80 > tofloat(float, y)
-        && p.y < tofloat(float, y + 1);
+fnc block_hits_player(p Player, x int, y int, z int) : bool {
+    return p.x + 0.30 > tofloat(float, x) &&
+           p.x - 0.30 < tofloat(float, x + 1) &&
+           p.z + 0.30 > tofloat(float, z) &&
+           p.z - 0.30 < tofloat(float, z + 1) &&
+           p.y + 1.80 > tofloat(float, y) &&
+           p.y < tofloat(float, y + 1);
 }
 
-fnc mine_block(w World, ids vec<int>, counts vec<int>,
-               p &Player, inv vec<int>) : void {
+// --------------------------------------------------------------- inventory
+
+fnc give(g &Game, id int, count int) : void {
+    if id <= 0 || id >= MAX_ITEM() { return; }
+    i: int = 0;
+    while i < 9 && count > 0 {
+        if g.inv.get(i) == id {
+            g.inv.set(i, g.inv.get(i) + count);
+            count = 0;
+        }
+        i = i + 1;
+    }
+    i = 0;
+    while i < 9 && count > 0 {
+        if g.inv.get(i) == 0 {
+            g.inv.set(i, id);
+            g.inv.set(9 + i, count);
+            count = 0;
+        }
+        i = i + 1;
+    }
+}
+
+fnc take(g &Game, slot int, count int) : bool {
+    if slot < 0 || slot >= 9 || g.inv.get(slot) == 0 { return false; }
+    if g.inv.get(9 + slot) < count { return false; }
+    g.inv.set(9 + slot, g.inv.get(9 + slot) - count);
+    if g.inv.get(9 + slot) == 0 { g.inv.set(slot, 0); }
+    return true;
+}
+
+fnc initial_inventory() : vec<int> {
+    inv: vec<int>;
+    i: int = 0;
+    while i < MAX_ITEM() + 9 { inv.pushb(0); i = i + 1; }
+    inv.set(0, WOOD_PICK());
+    inv.set(9, 1);
+    inv.set(1, TORCH());
+    inv.set(10, 16);
+    inv.set(2, APPLE());
+    inv.set(11, 4);
+    return inv;
+}
+
+// ---------------------------------------------------------------- drops/mobs
+
+fnc spawn_drop(g &Game, x float, y float, z float, id int, count int) : void {
+    d: Drop = Drop {
+        x: x, y: y, z: z,
+        vx: (tofloat(float, hash3(floor_i(x * 8), floor_i(y * 8), floor_i(z * 8), 3) % 100) - 50.0) / 500.0,
+        vy: 1.8,
+        vz: (tofloat(float, hash3(floor_i(x * 8), floor_i(y * 8), floor_i(z * 8), 7) % 100) - 50.0) / 500.0,
+        id: id, count: count, age: 0.0
+    };
+    g.drops.pushb(d);
+}
+
+fnc update_drops(g &Game, dt float, clock int<64>) : void {
+    i: int = 0;
+    while i < g.drops.size {
+        d: Drop = g.drops.get(i);
+        d.age = d.age + dt;
+        d.vy = d.vy - 18.0 * dt;
+        d.x = d.x + d.vx * dt;
+        d.y = d.y + d.vy * dt;
+        d.z = d.z + d.vz * dt;
+        if solid_at(g.world, floor_i(d.x), floor_i(d.y), floor_i(d.z), clock) {
+            d.y = d.y - d.vy * dt;
+            d.vy = 0.0;
+            d.vx = d.vx * 0.6;
+            d.vz = d.vz * 0.6;
+        }
+        px: float = g.player.x - d.x;
+        py: float = g.player.y - d.y;
+        pz: float = g.player.z - d.z;
+        dist2: float = px * px + py * py + pz * pz;
+        if d.age > 0.6 && dist2 < 2.25 {
+            give(g, d.id, d.count);
+            g.drops.remove(i);
+        } else {
+            if d.age > 300.0 { g.drops.remove(i); }
+            else { g.drops.set(i, d); i = i + 1; }
+        }
+    }
+}
+
+fnc spawn_mob(g &Game, px float, pz float, hour float, clock int<64>) : void {
+    a: float = tofloat(float, g.mobs.size + 1) * 2.39996 + hour;
+    r: float = 18.0 + tofloat(float, hash2(g.mobs.size, toint(int, hour * 10), 55) % 12);
+    x: float = px + Math.sin(a) * r;
+    z: float = pz + Math.cos(a) * r;
+    y: float = tofloat(float, top_at(g.world, floor_i(x), floor_i(z), clock) + 1);
+    kind: int = 0;
+    if hour >= 6.0 && hour < 18.0 { kind = 1; }
+    hp: float = kind == 0 ? 12.0 : 8.0;
+    m: Mob = Mob {
+        x: x, y: y, z: z, vx: 0.0, vy: 0.0, vz: 0.0,
+        yaw: a, hp: hp,
+        kind: kind, cooldown: 0.0, on_ground: false
+    };
+    g.mobs.pushb(m);
+}
+
+fnc update_mobs(g &Game, dt float, clock int<64>) : void {
+    p: Player = g.player;
+    night: bool = p.hour < 5.5 || p.hour >= 19.0;
+    if g.mobs.size < (night ? 6 : 3) &&
+       toint(int, g.clock) % 3 == 0 {
+        spawn_mob(g, p.x, p.z, p.hour, clock);
+    }
+    i: int = 0;
+    while i < g.mobs.size {
+        m: Mob = g.mobs.get(i);
+        dx: float = p.x - m.x;
+        dz: float = p.z - m.z;
+        d: float = Math.sqrt(dx * dx + dz * dz);
+        m.cooldown = m.cooldown - dt;
+        if d < 24.0 {
+            if d > 1.05 && m.kind == 0 {
+                m.vx = (dx / d) * 2.0;
+                m.vz = (dz / d) * 2.0;
+            } else {
+                m.vx = m.vx * 0.82;
+                m.vz = m.vz * 0.82;
+            }
+            if m.kind == 1 {
+                m.vx = Math.sin(m.yaw + g.clock * 0.0003) * 0.5;
+                m.vz = Math.cos(m.yaw + g.clock * 0.0003) * 0.5;
+            }
+            if d < 1.25 && m.kind == 0 && m.cooldown <= 0.0 {
+                p.health = p.health - 2.0;
+                m.cooldown = 1.2;
+            }
+        } else {
+            m.vx = m.vx * 0.9;
+            m.vz = m.vz * 0.9;
+        }
+        m.vy = m.vy - 22.0 * dt;
+        m.x = m.x + m.vx * dt;
+        if collides(g.world, m.x, m.y, m.z, clock) { m.x = m.x - m.vx * dt; }
+        m.z = m.z + m.vz * dt;
+        if collides(g.world, m.x, m.y, m.z, clock) { m.z = m.z - m.vz * dt; }
+        m.y = m.y + m.vy * dt;
+        if collides(g.world, m.x, m.y, m.z, clock) {
+            m.y = m.y - m.vy * dt;
+            m.vy = 0.0;
+            m.on_ground = true;
+        }
+        m.yaw = atan2(dz, dx);
+        if d > 64.0 || m.y < -4.0 {
+            g.mobs.remove(i);
+        } else {
+            g.mobs.set(i, m);
+            i = i + 1;
+        }
+    }
+    g.player = p;
+}
+
+fnc hit_mob(g &Game, reach float) : bool {
+    ex: float = g.player.x;
+    ey: float = g.player.y + 1.62;
+    ez: float = g.player.z;
+    dx: float = look_x(g.player);
+    dy: float = look_y(g.player);
+    dz: float = look_z(g.player);
+    i: int = 0;
+    while i < g.mobs.size {
+        m: Mob = g.mobs.get(i);
+        ox: float = m.x - ex;
+        oy: float = m.y + 0.9 - ey;
+        oz: float = m.z - ez;
+        t: float = ox * dx + oy * dy + oz * dz;
+        if t > 0.0 && t < reach {
+            cx: float = ex + dx * t - m.x;
+            cy: float = ey + dy * t - (m.y + 0.9);
+            cz: float = ez + dz * t - m.z;
+            if cx * cx + cy * cy + cz * cz < 0.65 {
+                m.hp = m.hp - 4.0;
+                if m.hp <= 0.0 {
+                    g.mobs.remove(i);
+                    g.player.kills = g.player.kills + 1;
+                    spawn_drop(g, m.x, m.y, m.z, APPLE(), 1);
+                } else { g.mobs.set(i, m); }
+                return true;
+            }
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+// ---------------------------------------------------------- mining/placing
+
+fnc tool_speed(g &Game, id int) : float {
+    sel: int = g.inv.get(g.menu_sel);
+    if sel == WOOD_PICK() { return 2.0; }
+    if sel == STONE_PICK() { return 3.0; }
+    if sel == IRON_PICK() { return 4.5; }
+    return 1.0;
+}
+
+fnc break_block(g &Game, clock int<64>) : void {
+    p: Player = g.player;
     ex: float = p.x;
     ey: float = p.y + 1.62;
     ez: float = p.z;
-    h: RayHit = raycast(w, ex, ey, ez, look_x(p), look_y(p), look_z(p), 5.5);
+    h: RayHit = raycast(g.world, ex, ey, ez,
+                        look_x(p), look_y(p), look_z(p), 5.5, clock);
     if !h.hit { return; }
-    b: int = wget(w, h.bx, h.by, h.bz);
-    if b == 0 { return; }
-    wset(w, h.bx, h.by, h.bz, 0);
-    inv.set(b, inv.get(b) + 1);
+    id: int = wget(g.world, h.bx, h.by, h.bz, clock);
+    if id == AIR() || id == BEDROCK() || id == WATER() { return; }
+    wset(g.world, h.bx, h.by, h.bz, AIR(), clock);
+    drop: int = id;
+    if id == GRASS() { drop = DIRT(); }
+    also id == COAL_ORE() { drop = STICK(); }
+    also id == IRON_ORE() { drop = IRON_ORE(); }
+    also id == DIAMOND_ORE() { drop = DIAMOND_ORE(); }
+    also id == LOG() { drop = LOG(); }
+    spawn_drop(g, tofloat(float, h.bx) + 0.5, tofloat(float, h.by) + 0.5,
+               tofloat(float, h.bz) + 0.5, drop, 1);
     p.mined = p.mined + 1;
-    rebuild_block(w, ids, counts, h.bx, h.by, h.bz);
+    p.exhaust = p.exhaust + 0.15;
+    if tool_speed(g, id) > 1.0 && g.menu_sel >= 0 && g.menu_sel < 9 {
+        d: int = g.dur.get(g.menu_sel) - 1;
+        g.dur.set(g.menu_sel, d);
+        if d <= 0 { g.inv.set(9 + g.menu_sel, 0); g.inv.set(g.menu_sel, 0); }
+    }
 }
 
-fnc place_block(w World, ids vec<int>, counts vec<int>,
-                p &Player, inv vec<int>, sel int) : void {
-    if sel < 1 || sel > 9 { return; }
-    if inv.get(sel) <= 0 { return; }
+fnc place_block(g &Game, clock int<64>) : void {
+    slot: int = g.menu_sel;
+    if slot < 0 || slot >= 9 { return; }
+    id: int = g.inv.get(slot);
+    if id == 0 || id >= 32 { return; }
+    if g.inv.get(9 + slot) <= 0 { return; }
+    p: Player = g.player;
     ex: float = p.x;
     ey: float = p.y + 1.62;
     ez: float = p.z;
-    h: RayHit = raycast(w, ex, ey, ez, look_x(p), look_y(p), look_z(p), 5.5);
+    h: RayHit = raycast(g.world, ex, ey, ez,
+                        look_x(p), look_y(p), look_z(p), 5.5, clock);
     if !h.hit { return; }
     tx: int = h.px;
     ty: int = h.py;
     tz: int = h.pz;
-    if !winside(w, tx, ty, tz) { return; }
-    if wget(w, tx, ty, tz) != 0 { return; }
+    if wget(g.world, tx, ty, tz, clock) != AIR() { return; }
     if block_hits_player(p, tx, ty, tz) { return; }
-    wset(w, tx, ty, tz, sel);
-    inv.set(sel, inv.get(sel) - 1);
+    wset(g.world, tx, ty, tz, id, clock);
+    g.inv.set(9 + slot, g.inv.get(9 + slot) - 1);
+    if g.inv.get(9 + slot) == 0 { g.inv.set(slot, 0); }
     p.placed = p.placed + 1;
-    rebuild_block(w, ids, counts, tx, ty, tz);
 }
 
-// ------------------------------------------------------------------- sky/fx
+// ---------------------------------------------------------------- crafting
 
-fnc sun_angle(hour float) : float {
-    return (hour - 6.0) / 12.0 * 3.14159265;
+fnc recipe_count(id int) : int {
+    if id == PLANKS() { return 4; }
+    if id == STICK() { return 4; }
+    if id == WOOD_PICK() { return 1; }
+    if id == STONE_PICK() { return 1; }
+    if id == IRON_PICK() { return 1; }
+    if id == TORCH() { return 4; }
+    if id == BREAD() { return 1; }
+    return 0;
 }
 
-fnc day_amount(raw_y float) : float {
-    return clampf(raw_y * 1.6 + 0.10, 0.0, 1.0);
+fnc craft(g &Game, index int) : bool {
+    need1: int = 0;
+    count1: int = 0;
+    need2: int = 0;
+    count2: int = 0;
+    result: int = 0;
+    if index == 0 {
+        need1 = LOG(); count1 = 1; result = PLANKS();
+    } also index == 1 {
+        need1 = PLANKS(); count1 = 2; result = STICK();
+    } also index == 2 {
+        need1 = PLANKS(); count1 = 3; need2 = STICK(); count2 = 2;
+        result = WOOD_PICK();
+    } also index == 3 {
+        need1 = STONE(); count1 = 3; need2 = STICK(); count2 = 2;
+        result = STONE_PICK();
+    } also index == 4 {
+        need1 = IRON_INGOT(); count1 = 3; need2 = STICK(); count2 = 2;
+        result = IRON_PICK();
+    } also index == 5 {
+        need1 = STICK(); count1 = 1; need2 = COAL_ORE(); count2 = 1;
+        result = TORCH();
+    } also index == 6 {
+        need1 = APPLE(); count1 = 2; result = BREAD();
+    } else { return false; }
+    s1: int = -1;
+    s2: int = -1;
+    i: int = 0;
+    while i < g.inv.size && i < 9 {
+        if g.inv.get(i) == need1 && g.inv.get(9 + i) >= count1 { s1 = i; }
+        if need2 != 0 && g.inv.get(i) == need2 && g.inv.get(9 + i) >= count2 { s2 = i; }
+        i = i + 1;
+    }
+    if s1 < 0 || (need2 != 0 && s2 < 0) { return false; }
+    if need2 != 0 && s1 == s2 {
+        if g.inv.get(9 + s1) < count1 + count2 { return false; }
+        take(g, s1, count1 + count2);
+    } else {
+        take(g, s1, count1);
+        if need2 != 0 { take(g, s2, count2); }
+    }
+    give(g, result, recipe_count(result));
+    return true;
 }
 
+// ----------------------------------------------------------------- survival
+
+fnc eat(g &Game) : void {
+    if g.player.hunger >= 20.0 { return; }
+    i: int = 0;
+    while i < 9 {
+        id: int = g.inv.get(i);
+        if (id == APPLE() || id == BREAD()) && g.inv.get(9 + i) > 0 {
+            gain: float = id == BREAD() ? 8.0 : 4.0;
+            g.player.hunger = minf(20.0, g.player.hunger + gain);
+            g.player.health = minf(20.0, g.player.health + 1.0);
+            take(g, i, 1);
+            return;
+        }
+        i = i + 1;
+    }
+}
+
+// -------------------------------------------------------------------- saving
+
+fnc save_game(g &Game) : void {
+    lines: string = "";
+    p: Player = g.player;
+    lines = lines + "P," + Format.dec(p.x, 3) + "," + Format.dec(p.y, 3) + "," +
+            Format.dec(p.z, 3) + "," + Format.dec(p.yaw, 5) + "," +
+            Format.dec(p.pitch, 5) + "," + Format.dec(p.hour, 3) + "\n";
+    lines = lines + "S," + Format.dec(p.health, 2) + "," + Format.dec(p.hunger, 2) + "," +
+            tostring(g.world.seed) + "," + tostring(g.view_dist) + "\n";
+    lines = lines + "I,";
+    i: int = 0;
+    while i < 9 {
+        lines = lines + tostring(g.inv.get(i)) + ":" + tostring(g.inv.get(9 + i)) + ",";
+        i = i + 1;
+    }
+    lines = lines + "\n";
+    keys: vec<string> = g.world.edits.keys();
+    i = 0;
+    while i < keys.size {
+        k: string = keys.get(i);
+        lines = lines + "B," + k + "," + tostring(g.world.edits[k]) + "\n";
+        i = i + 1;
+    }
+    g.save_ok = FileUtil.write_text(save_path(), lines) >= 0;
+}
+
+fnc load_game(g &Game) : bool {
+    if !FileUtil.exists(save_path()) { return false; }
+    text: string = FileUtil.read_text(save_path());
+    lines: vec<string> = Str.split(text, '\n');
+    i: int = 0;
+    while i < lines.size {
+        line: string = lines.get(i);
+        parts: vec<string> = Str.split(line, ',');
+        if parts.size > 0 {
+            tag: string = parts.get(0);
+            if tag == "P" && parts.size >= 8 {
+                g.player.x = tofloat(float, parts.get(1));
+                g.player.y = tofloat(float, parts.get(2));
+                g.player.z = tofloat(float, parts.get(3));
+                g.player.yaw = tofloat(float, parts.get(4));
+                g.player.pitch = tofloat(float, parts.get(5));
+                g.player.hour = tofloat(float, parts.get(6));
+            } also tag == "S" && parts.size >= 5 {
+                g.player.health = tofloat(float, parts.get(1));
+                g.player.hunger = tofloat(float, parts.get(2));
+                g.world.seed = toint(int, parts.get(3));
+                g.view_dist = toint(int, parts.get(4));
+                if g.view_dist < 2 { g.view_dist = 2; }
+                if g.view_dist > 8 { g.view_dist = 8; }
+            } also tag == "I" && parts.size >= 10 {
+                j: int = 1;
+                while j < 10 {
+                    pair: vec<string> = Str.split(parts.get(j), ':');
+                    if pair.size >= 2 {
+                        g.inv.set(j - 1, toint(int, pair.get(0)));
+                        g.inv.set(9 + j - 1, toint(int, pair.get(1)));
+                    }
+                    j = j + 1;
+                }
+            } also tag == "B" && parts.size >= 5 {
+                k: string = parts.get(1) + "," + parts.get(2) + "," + parts.get(3);
+                g.world.edits[k] = toint(int, parts.get(4));
+            }
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+// --------------------------------------------------------------- sky effects
+
+fnc sun_angle(hour float) : float { return (hour - 6.0) / 12.0 * Math.PI; }
+fnc day_amount(raw_y float) : float { return clampf(raw_y * 1.6 + 0.10, 0.0, 1.0); }
 fnc dusk_amount(raw_y float) : float {
     d: float = clampf(1.0 - absf(raw_y) * 5.0, 0.0, 1.0);
     if raw_y < -0.05 { d = 0.0; }
@@ -853,9 +1596,7 @@ fnc project_dir(dx float, dy float, dz float, yaw float, pitch float,
     if denom < 0.08 { return false, 0.0, 0.0; }
     sx: float = (dx * rx + dz * rz) / denom;
     sy: float = (dx * ux + dy * uy + dz * uz) / denom;
-    nx: float = sx / (0.7002 * aspect);
-    ny: float = sy / 0.7002;
-    return true, nx, ny;
+    return true, sx / (0.7002 * aspect), sy / 0.7002;
 }
 
 fnc draw_stars(yaw float, pitch float, aspect float, night float) : void {
@@ -864,16 +1605,18 @@ fnc draw_stars(yaw float, pitch float, aspect float, night float) : void {
     Gl.disable(Gl.depth_test());
     Gl.begin(Gl.quads());
     i: int = 0;
-    while i < 150 {
+    while i < 120 {
         a: float = tofloat(float, i) * 2.399963;
         e: float = tofloat(float, (i * 53 + 17) % 2000) / 1000.0 - 1.0;
         ce: float = Math.sqrt(1.0 - e * e);
         dx: float = Math.cos(a) * ce;
         dy: float = e;
         dz: float = Math.sin(a) * ce;
-        visible, nx, ny: bool, float, float =
-            project_dir(dx, dy, dz, yaw, pitch, aspect);
-        if visible && absf(nx) < 1.0 && absf(ny) < 1.0 {
+        ok: bool = false;
+        nx: float = 0.0;
+        ny: float = 0.0;
+        ok, nx, ny: bool, float, float = project_dir(dx, dy, dz, yaw, pitch, aspect);
+        if ok && absf(nx) < 1.0 && absf(ny) < 1.0 {
             size: float = 0.0025 + tofloat(float, i % 3) * 0.0015;
             alpha: float = night * (0.35 + tofloat(float, i % 4) * 0.14);
             Gl.color(0.92, 0.96, 1.0, alpha);
@@ -892,33 +1635,27 @@ fnc draw_celestial(yaw float, pitch float, aspect float,
                    dx float, dy float, dz float,
                    r float, g float, b float, strength float) : void {
     if strength <= 0.02 { return; }
-    visible, nx, ny: bool, float, float =
-        project_dir(dx, dy, dz, yaw, pitch, aspect);
-    if !visible { return; }
+    ok: bool = false;
+    nx: float = 0.0;
+    ny: float = 0.0;
+    ok, nx, ny: bool, float, float = project_dir(dx, dy, dz, yaw, pitch, aspect);
+    if !ok { return; }
     if absf(nx) > 1.35 || absf(ny) > 1.35 { return; }
     Gl.enable(Gl.blend_cap());
     Gl.disable(Gl.depth_test());
-    Gl.color(r, g, b, 0.10 * strength);
-    Gl.begin(Gl.quads());
-    Gl.vertex2(nx - 0.60 / aspect, ny - 0.60);
-    Gl.vertex2(nx + 0.60 / aspect, ny - 0.60);
-    Gl.vertex2(nx + 0.60 / aspect, ny + 0.60);
-    Gl.vertex2(nx - 0.60 / aspect, ny + 0.60);
-    Gl.end();
-    Gl.color(r, g, b, 0.30 * strength);
-    Gl.begin(Gl.quads());
-    Gl.vertex2(nx - 0.26 / aspect, ny - 0.26);
-    Gl.vertex2(nx + 0.26 / aspect, ny - 0.26);
-    Gl.vertex2(nx + 0.26 / aspect, ny + 0.26);
-    Gl.vertex2(nx - 0.26 / aspect, ny + 0.26);
-    Gl.end();
-    Gl.color(r, g, b, 0.95 * strength);
-    Gl.begin(Gl.quads());
-    Gl.vertex2(nx - 0.105 / aspect, ny - 0.105);
-    Gl.vertex2(nx + 0.105 / aspect, ny - 0.105);
-    Gl.vertex2(nx + 0.105 / aspect, ny + 0.105);
-    Gl.vertex2(nx - 0.105 / aspect, ny + 0.105);
-    Gl.end();
+    k: int = 0;
+    while k < 3 {
+        size: float = 0.60 - tofloat(float, k) * 0.25;
+        alpha: float = 0.10 + tofloat(float, k) * 0.30;
+        Gl.color(r, g, b, alpha * strength);
+        Gl.begin(Gl.quads());
+        Gl.vertex2(nx - size / aspect, ny - size);
+        Gl.vertex2(nx + size / aspect, ny - size);
+        Gl.vertex2(nx + size / aspect, ny + size);
+        Gl.vertex2(nx - size / aspect, ny + size);
+        Gl.end();
+        k = k + 1;
+    }
     Gl.disable(Gl.blend_cap());
 }
 
@@ -929,81 +1666,77 @@ fnc draw_sky(yaw float, pitch float, aspect float, day float, dusk float,
     Gl.disable(Gl.fog_cap());
     Gl.disable(Gl.lighting_cap());
     Gl.disable(Gl.blend_cap());
+    Gl.disable(Gl.texture_cap());
     Gl.matrix(Gl.projection());
     Gl.identity();
     Gl.matrix(Gl.modelview());
     Gl.identity();
     Gl.shade_smooth();
-
     horizon_y: float = -Math.tan(pitch) / 0.7002;
     if horizon_y > 1.2 { horizon_y = 1.2; }
     if horizon_y < -1.2 { horizon_y = -1.2; }
-
     Gl.begin(Gl.quads());
     Gl.color(zr, zg, zb, 1.0);
-    Gl.vertex2(-1.0, 1.0);
-    Gl.vertex2(1.0, 1.0);
+    Gl.vertex2(-1.0, 1.0); Gl.vertex2(1.0, 1.0);
     Gl.color(hr, hg, hb, 1.0);
-    Gl.vertex2(1.0, horizon_y);
-    Gl.vertex2(-1.0, horizon_y);
+    Gl.vertex2(1.0, horizon_y); Gl.vertex2(-1.0, horizon_y);
     Gl.end();
-
     gr: float = hr * 0.55;
     gg: float = hg * 0.55;
     gb: float = hb * 0.55;
     Gl.begin(Gl.quads());
     Gl.color(hr, hg, hb, 1.0);
-    Gl.vertex2(-1.0, horizon_y);
-    Gl.vertex2(1.0, horizon_y);
+    Gl.vertex2(-1.0, horizon_y); Gl.vertex2(1.0, horizon_y);
     Gl.color(gr, gg, gb, 1.0);
-    Gl.vertex2(1.0, -1.0);
-    Gl.vertex2(-1.0, -1.0);
+    Gl.vertex2(1.0, -1.0); Gl.vertex2(-1.0, -1.0);
     Gl.end();
-
     Gl.shade_flat();
     draw_stars(yaw, pitch, aspect, 1.0 - day);
 }
 
-fnc draw_sun_moon(yaw float, pitch float, aspect float,
-                  sx float, sy float, sz float, day float) : void {
-    if sy > -0.03 {
-        draw_celestial(yaw, pitch, aspect, sx, sy, sz,
-                       1.0, 0.82, 0.42, clampf(day + 0.15, 0.0, 1.0));
-    }
-    if sy < 0.03 {
-        draw_celestial(yaw, pitch, aspect, -sx, -sy, -sz,
-                       0.72, 0.80, 0.95, clampf(-sy * 3.0, 0.0, 1.0));
-    }
-}
-
-fnc draw_clouds(id int, day float) : void {
-    if id == 0 { return; }
+fnc draw_clouds(seed int, clock int<64>, hour float) : void {
     Gl.disable(Gl.lighting_cap());
     Gl.disable(Gl.fog_cap());
+    Gl.disable(Gl.texture_cap());
     Gl.enable(Gl.blend_cap());
-    Gl.depth_mask(false);
+    day: float = day_amount(Math.sin(sun_angle(hour)));
     cr: float = mixf(0.10, 0.94, day);
     cg: float = mixf(0.12, 0.97, day);
     cb: float = mixf(0.20, 1.00, day);
-    Gl.color(cr, cg, cb, 0.08 + day * 0.34);
-    Gl.call_list(id);
-    Gl.depth_mask(true);
+    Gl.color(cr, cg, cb, 0.10 + day * 0.34);
+    drift: float = tofloat(float, clock % 60000) / 60000.0 * 40.0;
+    i: int = 0;
+    Gl.begin(Gl.quads());
+    while i < 90 {
+        x: float = tofloat(float, hash2(i, 3, seed) % 512) - 256.0 + drift;
+        z: float = tofloat(float, hash2(i, 9, seed) % 512) - 256.0;
+        w: float = 4.0 + tofloat(float, hash2(i, 5, seed) % 8);
+        d: float = 4.0 + tofloat(float, hash2(i, 7, seed) % 8);
+        y: float = 70.0 + tofloat(float, hash2(i, 11, seed) % 4);
+        Gl.vertex3(x, y, z);
+        Gl.vertex3(x, y, z + d);
+        Gl.vertex3(x + w, y, z + d);
+        Gl.vertex3(x + w, y, z);
+        i = i + 1;
+    }
+    Gl.end();
     Gl.disable(Gl.blend_cap());
 }
 
-fnc draw_highlight(h RayHit, day float) : void {
+
+fnc draw_highlight(h RayHit) : void {
     if !h.hit { return; }
+    Gl.disable(Gl.lighting_cap());
+    Gl.disable(Gl.fog_cap());
+    Gl.disable(Gl.texture_cap());
+    Gl.line_width(2.0);
+    Gl.color(0.02, 0.02, 0.02, 0.9);
     x0: float = tofloat(float, h.bx) - 0.003;
     y0: float = tofloat(float, h.by) - 0.003;
     z0: float = tofloat(float, h.bz) - 0.003;
     x1: float = tofloat(float, h.bx + 1) + 0.003;
     y1: float = tofloat(float, h.by + 1) + 0.003;
     z1: float = tofloat(float, h.bz + 1) + 0.003;
-    Gl.disable(Gl.lighting_cap());
-    Gl.disable(Gl.fog_cap());
-    Gl.line_width(2.0);
-    if day > 0.45 { Gl.color(0.02, 0.02, 0.02, 0.9); }
-    else { Gl.color(1.0, 1.0, 0.92, 0.9); }
     Gl.begin(Gl.lines());
     Gl.vertex3(x0, y0, z0); Gl.vertex3(x1, y0, z0);
     Gl.vertex3(x1, y0, z0); Gl.vertex3(x1, y0, z1);
@@ -1021,49 +1754,147 @@ fnc draw_highlight(h RayHit, day float) : void {
     Gl.line_width(1.0);
 }
 
-// ---------------------------------------------------------------------- HUD
-
-fnc pad2(n int) : string {
-    if n < 10 { return "0" + tostring(n); }
-    return tostring(n);
+fnc draw_entities(g &Game, day float) : void {
+    Gl.disable(Gl.texture_cap());
+    Gl.disable(Gl.fog_cap());
+    i: int = 0;
+    while i < g.mobs.size {
+        m: Mob = g.mobs.get(i);
+        r: float = 0.55;
+        h: float = 1.70;
+        if m.kind == 0 { Gl.color(0.18, 0.42, 0.22, 1.0); }
+        else { Gl.color(0.62, 0.38, 0.20, 1.0); }
+        x0: float = m.x - r;
+        x1: float = m.x + r;
+        y0: float = m.y;
+        y1: float = m.y + h;
+        z0: float = m.z - r;
+        z1: float = m.z + r;
+        Gl.begin(Gl.quads());
+        Gl.vertex3(x0, y0, z1); Gl.vertex3(x1, y0, z1);
+        Gl.vertex3(x1, y1, z1); Gl.vertex3(x0, y1, z1);
+        Gl.vertex3(x0, y0, z0); Gl.vertex3(x0, y1, z0);
+        Gl.vertex3(x1, y1, z0); Gl.vertex3(x1, y0, z0);
+        Gl.vertex3(x0, y1, z1); Gl.vertex3(x1, y1, z1);
+        Gl.vertex3(x1, y1, z0); Gl.vertex3(x0, y1, z0);
+        Gl.end();
+        Gl.color(1.0, 0.12, 0.10, 1.0);
+        Gl.begin(Gl.quads());
+        Gl.vertex3(x0 + 0.2, y1 - 0.4, z1 + 0.01);
+        Gl.vertex3(x0 + 0.35, y1 - 0.4, z1 + 0.01);
+        Gl.vertex3(x0 + 0.35, y1 - 0.27, z1 + 0.01);
+        Gl.vertex3(x0 + 0.2, y1 - 0.27, z1 + 0.01);
+        Gl.vertex3(x1 - 0.35, y1 - 0.4, z1 + 0.01);
+        Gl.vertex3(x1 - 0.2, y1 - 0.4, z1 + 0.01);
+        Gl.vertex3(x1 - 0.2, y1 - 0.27, z1 + 0.01);
+        Gl.vertex3(x1 - 0.35, y1 - 0.27, z1 + 0.01);
+        Gl.end();
+        i = i + 1;
+    }
+    i = 0;
+    while i < g.drops.size {
+        d: Drop = g.drops.get(i);
+        r, gr, b: float, float, float = block_color(d.id);
+        Gl.color(r, gr, b, 1.0);
+        sz: float = 0.22;
+        Gl.begin(Gl.quads());
+        Gl.vertex3(d.x - sz, d.y - sz, d.z);
+        Gl.vertex3(d.x + sz, d.y - sz, d.z);
+        Gl.vertex3(d.x + sz, d.y + sz, d.z);
+        Gl.vertex3(d.x - sz, d.y + sz, d.z);
+        Gl.end();
+        i = i + 1;
+    }
 }
 
-fnc draw_block_icon(cx float, cy float, size float, b int, lit bool) : void {
-    r, g, bl: float, float, float = block_color(b);
+// ------------------------------------------------------------------ HUD/UI
+
+fnc draw_hearts(vw int, vh int, p Player) : void {
+    x: float = 14.0;
+    y: float = tofloat(float, vh) - 28.0;
+    i: int = 0;
+    while i < 10 {
+        fill_rect(x + tofloat(float, i) * 18.0, y, 14.0, 12.0,
+                  0.10, 0.06, 0.06, 0.75);
+        if tofloat(float, i) * 2.0 < p.health {
+            fill_rect(x + tofloat(float, i) * 18.0 + 1.0, y + 1.0, 12.0, 10.0,
+                      0.92, 0.16, 0.18, 0.95);
+        } also tofloat(float, i) * 2.0 - 1.0 < p.health {
+            fill_rect(x + tofloat(float, i) * 18.0 + 1.0, y + 1.0, 6.0, 10.0,
+                      0.92, 0.16, 0.18, 0.95);
+        }
+        fill_rect(x + tofloat(float, i) * 18.0, y - 16.0, 14.0, 10.0,
+                  0.10, 0.08, 0.04, 0.75);
+        filled: int = toint(int, p.hunger / 2.0);
+        if i < filled {
+            fill_rect(x + tofloat(float, i) * 18.0 + 1.0, y - 15.0, 12.0, 8.0,
+                      0.76, 0.48, 0.18, 0.95);
+        }
+        i = i + 1;
+    }
+    if p.air < 9.9 {
+        draw_text(14, vh - 64, "AIR " + tostring(toint(int, p.air)), 1,
+                  0.62, 0.86, 1.0);
+    }
+}
+
+fnc draw_block_icon(cx float, cy float, size float, id int, lit bool) : void {
+    r, g, b: float, float, float = block_color(id);
     dim: float = 1.0;
     alpha: float = 1.0;
-    if !lit {
-        dim = 0.42;
-        alpha = 0.55;
-    }
+    if !lit { dim = 0.42; alpha = 0.6; }
     top: float = size * 0.52;
     side: float = size * 0.50;
-    Gl.color(r * 1.18 * dim, g * 1.18 * dim, bl * 1.18 * dim, alpha);
+    Gl.color(r * 1.18 * dim, g * 1.18 * dim, b * 1.18 * dim, alpha);
     Gl.begin(Gl.quads());
-    Gl.vertex2(cx, cy - top);
-    Gl.vertex2(cx + top, cy);
-    Gl.vertex2(cx, cy + top);
-    Gl.vertex2(cx - top, cy);
+    Gl.vertex2(cx, cy - top); Gl.vertex2(cx + top, cy);
+    Gl.vertex2(cx, cy + top); Gl.vertex2(cx - top, cy);
     Gl.end();
-    Gl.color(r * 0.66 * dim, g * 0.66 * dim, bl * 0.66 * dim, alpha);
+    Gl.color(r * 0.66 * dim, g * 0.66 * dim, b * 0.66 * dim, alpha);
     Gl.begin(Gl.quads());
-    Gl.vertex2(cx - top, cy);
-    Gl.vertex2(cx, cy + top);
-    Gl.vertex2(cx, cy + top + side);
-    Gl.vertex2(cx - top, cy + side);
+    Gl.vertex2(cx - top, cy); Gl.vertex2(cx, cy + top);
+    Gl.vertex2(cx, cy + top + side); Gl.vertex2(cx - top, cy + side);
     Gl.end();
-    Gl.color(r * 0.84 * dim, g * 0.84 * dim, bl * 0.84 * dim, alpha);
+    Gl.color(r * 0.84 * dim, g * 0.84 * dim, b * 0.84 * dim, alpha);
     Gl.begin(Gl.quads());
-    Gl.vertex2(cx + top, cy);
-    Gl.vertex2(cx, cy + top);
-    Gl.vertex2(cx, cy + top + side);
-    Gl.vertex2(cx + top, cy + side);
+    Gl.vertex2(cx + top, cy); Gl.vertex2(cx, cy + top);
+    Gl.vertex2(cx, cy + top + side); Gl.vertex2(cx + top, cy + side);
     Gl.end();
 }
 
-fnc draw_crosshair(w int, h int) : void {
-    cx: float = tofloat(float, w) / 2.0;
-    cy: float = tofloat(float, h) / 2.0;
+fnc draw_hotbar(vw int, vh int, g &Game) : void {
+    slot: float = 46.0;
+    gap: float = 4.0;
+    total: float = 9.0 * slot + 8.0 * gap;
+    x0: float = tofloat(float, vw) / 2.0 - total / 2.0;
+    y0: float = tofloat(float, vh) - 62.0;
+    fill_rect(x0 - 8.0, y0 - 8.0, total + 16.0, slot + 16.0,
+              0.02, 0.025, 0.04, 0.78);
+    i: int = 0;
+    while i < 9 {
+        id: int = g.inv.get(i);
+        x: float = x0 + tofloat(float, i) * (slot + gap);
+        if i == g.menu_sel {
+            fill_rect(x - 2.0, y0 - 2.0, slot + 4.0, slot + 4.0,
+                      1.0, 0.78, 0.26, 0.95);
+        }
+        fill_rect(x, y0, slot, slot, 0.09, 0.11, 0.15, 0.92);
+        if id != 0 { draw_block_icon(x + slot / 2.0, y0 + 18.0, 14.0, id, true); }
+        draw_text(toint(int, x + 3.0), toint(int, y0 + 2.0), tostring(i + 1), 1,
+                  0.62, 0.66, 0.74);
+        count: int = g.inv.get(9 + i);
+        if count > 0 {
+            s: string = tostring(count);
+            draw_text(toint(int, x + slot - 4.0 - tofloat(float, text_width(s, 1))),
+                      toint(int, y0 + slot - 10.0), s, 1, 0.95, 0.95, 0.95);
+        }
+        i = i + 1;
+    }
+}
+
+fnc draw_crosshair(vw int, vh int) : void {
+    cx: float = tofloat(float, vw) / 2.0;
+    cy: float = tofloat(float, vh) / 2.0;
     fill_rect(cx - 11.0, cy - 1.0, 8.0, 2.0, 0.0, 0.0, 0.0, 0.75);
     fill_rect(cx + 3.0, cy - 1.0, 8.0, 2.0, 0.0, 0.0, 0.0, 0.75);
     fill_rect(cx - 1.0, cy - 11.0, 2.0, 8.0, 0.0, 0.0, 0.0, 0.75);
@@ -1074,144 +1905,272 @@ fnc draw_crosshair(w int, h int) : void {
     fill_rect(cx - 1.0, cy + 3.0, 2.0, 6.0, 1.0, 1.0, 1.0, 0.95);
 }
 
-fnc draw_hud(vw int, vh int, p Player, sel int, inv vec<int>,
-             fps int, frame_ms int, faces int, captured bool,
-             show_help bool) : void {
+fnc ui_begin(vw int, vh int) : void {
     Gl.disable(Gl.depth_test());
     Gl.disable(Gl.lighting_cap());
     Gl.disable(Gl.fog_cap());
+    Gl.disable(Gl.texture_cap());
     Gl.enable(Gl.blend_cap());
     Gl.matrix(Gl.projection());
     Gl.identity();
     Gl.matrix(Gl.modelview());
     Gl.identity();
     Gl.ortho(0.0, tofloat(float, vw), tofloat(float, vh), 0.0, -1.0, 1.0);
+}
 
+fnc draw_hud(vw int, vh int, g &Game) : void {
+    ui_begin(vw, vh);
+    p: Player = g.player;
     draw_crosshair(vw, vh);
-
-    // FPS and frame time, measured with VSync disabled.
-    draw_text(14, 12, "FPS " + tostring(fps), 2, 1.0, 0.94, 0.72);
-    draw_text(14, 32, tostring(frame_ms) + " MS", 1, 0.78, 0.82, 0.90);
-    draw_text(14, 46, "FACES " + tostring(faces), 1, 0.62, 0.66, 0.74);
-
-    // Position and game time, top right.
-    px: int = toint(int, p.x);
-    py: int = toint(int, p.y);
-    pz: int = toint(int, p.z);
+    draw_hearts(vw, vh, p);
+    if g.show_fps {
+        draw_text(14, 12, "FPS " + tostring(g.fps), 2, 1.0, 0.94, 0.72);
+        draw_text(14, 32, tostring(g.frame_ms) + " MS  " +
+                  tostring(g.faces) + " FACES  " + tostring(g.chunks_drawn) + " CHUNKS",
+                  1, 0.78, 0.82, 0.90);
+    }
+    px: int = floor_i(p.x);
+    py: int = floor_i(p.y);
+    pz: int = floor_i(p.z);
     pos: string = "X " + tostring(px) + "  Y " + tostring(py) + "  Z " + tostring(pz);
-    pw: int = text_width(pos, 1);
-    draw_text(vw - pw - 14, 12, pos, 1, 0.78, 0.84, 0.92);
-    hour_i: int = toint(int, p.hour);
-    minute_i: int = toint(int, (p.hour - tofloat(float, hour_i)) * 60.0);
-    clock: string = pad2(hour_i) + ":" + pad2(minute_i);
-    cw: int = text_width(clock, 2);
-    draw_text(vw - cw - 14, 28, clock, 2, 1.0, 0.90, 0.62);
-    phase: string = "NIGHT";
-    if p.hour >= 6.0 && p.hour < 18.0 { phase = "DAY"; }
-    also p.hour >= 5.0 && p.hour < 20.0 { phase = "DUSK"; }
-    pw2: int = text_width(phase, 1);
-    draw_text(vw - pw2 - 14, 52, phase, 1, 0.64, 0.72, 0.86);
-
-    // Hotbar.
-    slot: float = 44.0;
-    gap: float = 4.0;
-    total: float = 9.0 * slot + 8.0 * gap;
-    x0: float = tofloat(float, vw) / 2.0 - total / 2.0;
-    y0: float = tofloat(float, vh) - 58.0;
-    fill_rect(x0 - 8.0, y0 - 8.0, total + 16.0, slot + 16.0,
-              0.02, 0.025, 0.04, 0.74);
-    i: int = 0;
-    while i < 9 {
-        bid: int = i + 1;
-        x: float = x0 + tofloat(float, i) * (slot + gap);
-        selected: bool = bid == sel;
-        if selected {
-            fill_rect(x - 2.0, y0 - 2.0, slot + 4.0, slot + 4.0,
-                      1.0, 0.78, 0.26, 0.95);
-        }
-        fill_rect(x, y0, slot, slot, 0.09, 0.11, 0.15, 0.90);
-        count: int = inv.get(bid);
-        draw_block_icon(x + slot / 2.0, y0 + slot / 2.0 - 3.0, 14.0, bid, count > 0);
-        draw_text(toint(int, x + 3.0), toint(int, y0 + 2.0),
-                  tostring(bid), 1, 0.62, 0.66, 0.74);
-        cs: string = tostring(count);
-        cw2: int = text_width(cs, 1);
-        draw_text(toint(int, x + slot - 4.0 - tofloat(float, cw2)),
-                  toint(int, y0 + slot - 10.0), cs, 1,
-                  0.95, 0.95, 0.95);
-        i = i + 1;
+    draw_text(vw - text_width(pos, 1) - 14, 12, pos, 1, 0.78, 0.84, 0.92);
+    hour: int = floor_i(p.hour);
+    minute: int = floor_i((p.hour - tofloat(float, hour)) * 60.0);
+    clock: string = pad2(hour) + ":" + pad2(minute) + "  " +
+                    (p.hour >= 6.0 && p.hour < 18.0 ? "DAY" : "NIGHT");
+    draw_text(vw - text_width(clock, 2) - 14, 28, clock, 2, 1.0, 0.90, 0.62);
+    sel: int = g.inv.get(g.menu_sel);
+    if sel != 0 {
+        name: string = block_name(sel);
+        draw_text(vw / 2 - text_width(name, 2) / 2, vh - 116, name, 2,
+                  1.0, 0.90, 0.66);
     }
-
-    name: string = block_name(sel);
-    nw: int = text_width(name, 2);
-    draw_text(vw / 2 - nw / 2, toint(int, y0 - 28.0), name, 2,
-              1.0, 0.90, 0.66);
-
-    if show_help {
-        draw_text(14, vh - 88, "WASD MOVE   SHIFT SPRINT   SPACE JUMP", 1,
+    draw_hotbar(vw, vh, g);
+    if g.help_timer > 0.0 {
+        draw_text(14, vh - 96, "WASD MOVE  SHIFT SPRINT  SPACE JUMP  LMB MINE", 1,
                   0.82, 0.86, 0.94);
-        draw_text(14, vh - 74, "LMB MINE   RMB PLACE   1-9 SELECT", 1,
+        draw_text(14, vh - 82, "RMB PLACE  E EAT  C CRAFT  F5 SAVE  ESC MENU", 1,
                   0.82, 0.86, 0.94);
-        draw_text(14, vh - 60, "R RESET   ESC QUIT", 1, 0.82, 0.86, 0.94);
     }
-
-    if !captured {
-        fill_rect(0.0, 0.0, tofloat(float, vw), tofloat(float, vh),
-                  0.01, 0.015, 0.03, 0.45);
-        click: string = "CLICK TO PLAY";
-        ckw: int = text_width(click, 3);
-        draw_text(vw / 2 - ckw / 2, vh / 2 - 42, click, 3,
-                  1.0, 0.92, 0.68);
-        sub: string = "MOUSE LOOK  /  BUILD";
-        sw: int = text_width(sub, 1);
-        draw_text(vw / 2 - sw / 2, vh / 2 + 4, sub, 1, 0.82, 0.86, 0.94);
+    if g.message_time > 0.0 {
+        draw_text(vw / 2 - text_width(g.message, 2) / 2, vh / 2 + 80,
+                  g.message, 2, 1.0, 0.86, 0.42);
     }
     Gl.disable(Gl.blend_cap());
 }
 
-// ------------------------------------------------------------------ render
+fnc button(g &Game, vw int, x int, y int, w int, h int, label string,
+           index int) : bool {
+    hovered: bool = Gl.mouse_x() >= x && Gl.mouse_x() <= x + w &&
+                    Gl.mouse_y() >= y && Gl.mouse_y() <= y + h;
+    selected: bool = g.menu_sel == index;
+    fill_rect(tofloat(float, x), tofloat(float, y), tofloat(float, w),
+              tofloat(float, h),
+              hovered || selected ? 0.20 : 0.08, 0.12, 0.18, 0.94);
+    if hovered || selected {
+        fill_rect(tofloat(float, x), tofloat(float, y), tofloat(float, w), 2.0,
+                  1.0, 0.78, 0.26, 1.0);
+    }
+    draw_text(x + 12, y + 10, label, 2, 0.94, 0.95, 0.98);
+    return hovered && Gl.mouse_pressed(Gl.mouse_left());
+}
 
-fnc draw_world_lists(w World, ids vec<int>, counts vec<int>,
-                     ex float, ey float, ez float,
-                     fx float, fy float, fz float) : int {
-    cps: int = chunks_per_side(w);
+fnc draw_menu(vw int, vh int, g &Game) : void {
+    ui_begin(vw, vh);
+    fill_rect(0.0, 0.0, tofloat(float, vw), tofloat(float, vh),
+              0.02, 0.03, 0.06, 0.96);
+    cx: int = vw / 2;
+    title: string = "LEASH SURVIVAL";
+    draw_text(cx - text_width(title, 5) / 2, 80, title, 5, 1.0, 0.86, 0.34);
+    sub: string = "infinite worlds / build / survive";
+    draw_text(cx - text_width(sub, 1) / 2, 150, sub, 1, 0.70, 0.76, 0.86);
+    bx: int = cx - 150;
+    by: int = 220;
+    clicked: bool = false;
+    if button(g, vw, bx, by, 300, 52, "NEW WORLD", 0) { clicked = true; }
+    also button(g, vw, bx, by + 70, 300, 52,
+                FileUtil.exists(save_path()) ? "CONTINUE" : "NO SAVE", 1) {
+        if FileUtil.exists(save_path()) { clicked = true; }
+    } also button(g, vw, bx, by + 140, 300, 52, "CONTROLS", 2) {
+        g.state = state_help();
+    } also button(g, vw, bx, by + 210, 300, 52, "SETTINGS", 3) {
+        g.state = state_settings();
+    } also button(g, vw, bx, by + 280, 300, 52, "QUIT", 4) {
+        Gl.request_close();
+    }
+    if clicked {
+        if g.menu_sel == 1 {
+            if load_game(g) { g.message = "WORLD LOADED"; g.message_time = 2.0; }
+        } else {
+            new_chunks: hash<string, Chunk>;
+            new_edits: hash<string, int>;
+            new_active: vec<string>;
+            g.world = World { chunks: new_chunks, edits: new_edits,
+                              active: new_active, seed: g.world.seed,
+                              generated: 0, meshed: 0 };
+            g.player = new_player(g.world, toint(int64, g.clock));
+            g.inv = initial_inventory();
+            g.message = "NEW WORLD";
+            g.message_time = 2.0;
+        }
+        g.state = state_play();
+        Gl.mouse_capture(true);
+        g.captured = true;
+    }
+    draw_text(cx - 190, vh - 70, "ARROWS SELECT   ENTER CONFIRM   CLICK WORKS", 1,
+              0.55, 0.62, 0.72);
+    Gl.disable(Gl.blend_cap());
+}
+
+fnc draw_pause(vw int, vh int, g &Game) : void {
+    ui_begin(vw, vh);
+    fill_rect(0.0, 0.0, tofloat(float, vw), tofloat(float, vh),
+              0.01, 0.02, 0.04, 0.72);
+    cx: int = vw / 2;
+    draw_text(cx - text_width("PAUSED", 5) / 2, 100, "PAUSED", 5, 1.0, 0.88, 0.40);
+    bx: int = cx - 150;
+    by: int = 220;
+    if button(g, vw, bx, by, 300, 52, "RESUME", 0) ||
+       Gl.key_pressed(Gl.key_escape()) {
+        g.state = state_play();
+        Gl.mouse_capture(true);
+        g.captured = true;
+    } also button(g, vw, bx, by + 70, 300, 52, "CRAFTING", 1) {
+        g.state = state_craft();
+    } also button(g, vw, bx, by + 140, 300, 52, "SETTINGS", 2) {
+        g.state = state_settings();
+    } also button(g, vw, bx, by + 210, 300, 52, "SAVE & MENU", 3) {
+        save_game(g);
+        g.state = state_menu();
+        Gl.mouse_capture(false);
+        g.captured = false;
+    } also button(g, vw, bx, by + 280, 300, 52, "QUIT TO DESKTOP", 4) {
+        save_game(g);
+        Gl.request_close();
+    }
+    Gl.disable(Gl.blend_cap());
+}
+
+fnc draw_craft(vw int, vh int, g &Game) : void {
+    ui_begin(vw, vh);
+    fill_rect(0.0, 0.0, tofloat(float, vw), tofloat(float, vh),
+              0.01, 0.02, 0.04, 0.86);
+    cx: int = vw / 2;
+    draw_text(cx - text_width("CRAFTING", 4) / 2, 70, "CRAFTING", 4, 1.0, 0.88, 0.40);
+    names: vec<string>;
+    names.pushb("LOG -> 4 PLANKS");
+    names.pushb("2 PLANKS -> 4 STICKS");
+    names.pushb("3 PLANKS + 2 STICKS -> WOOD PICK");
+    names.pushb("3 STONE + 2 STICKS -> STONE PICK");
+    names.pushb("3 INGOTS + 2 STICKS -> IRON PICK");
+    names.pushb("COAL ORE + STICK -> 4 TORCHES");
+    names.pushb("2 APPLES -> BREAD");
     i: int = 0;
-    drawn: int = 0;
-    while i < ids.size {
-        cx: int = i % cps;
-        cz: int = i / cps;
-        ccx: float = tofloat(float, cx * chunk_size() + chunk_size() / 2);
-        ccz: float = tofloat(float, cz * chunk_size() + chunk_size() / 2);
-        ccy: float = tofloat(float, w.sy / 2);
-        dx: float = ccx - ex;
-        dy: float = ccy - ey;
-        dz: float = ccz - ez;
-        dist2: float = dx * dx + dy * dy + dz * dz;
-        if dist2 < 82.0 * 82.0 {
-            if dx * fx + dy * fy + dz * fz > -22.0 {
-                Gl.call_list(ids.get(i));
-                drawn = drawn + 1;
+    while i < names.size {
+        y: int = 150 + i * 50;
+        if button(g, vw, cx - 260, y, 520, 42, names.get(i), i) {
+            if craft(g, i) {
+                g.message = "CRAFTED " + block_name(
+                    i == 0 ? PLANKS() : i == 1 ? STICK() :
+                    i == 2 ? WOOD_PICK() : i == 3 ? STONE_PICK() :
+                    i == 4 ? IRON_PICK() : i == 5 ? TORCH() : BREAD());
+                g.message_time = 2.0;
+            } else {
+                g.message = "MISSING INGREDIENTS";
+                g.message_time = 2.0;
             }
         }
         i = i + 1;
     }
-    return drawn;
+    if button(g, vw, cx - 260, 150 + names.size * 50 + 20, 520, 42, "BACK", 9) ||
+       Gl.key_pressed(Gl.key_escape()) {
+        g.state = state_pause();
+    }
+    Gl.disable(Gl.blend_cap());
 }
 
-fnc draw_frame(w World, ids vec<int>, counts vec<int>, p Player,
-               sel int, inv vec<int>, fps int, frame_ms int,
-               vw int, vh int, hud bool, captured bool,
-               show_help bool, clouds int) : int {
+fnc draw_help(vw int, vh int, g &Game) : void {
+    ui_begin(vw, vh);
+    fill_rect(0.0, 0.0, tofloat(float, vw), tofloat(float, vh),
+              0.01, 0.02, 0.04, 0.94);
+    cx: int = vw / 2;
+    draw_text(cx - text_width("CONTROLS", 4) / 2, 70, "CONTROLS", 4, 1.0, 0.88, 0.40);
+    lines: vec<string>;
+    lines.pushb("WASD MOVE   MOUSE LOOK   SHIFT SPRINT   SPACE JUMP");
+    lines.pushb("LMB MINE / ATTACK   RMB PLACE   E EAT   C CRAFT");
+    lines.pushb("1-9 SELECT   Q DROP   F5 SAVE   F3 FPS   ESC PAUSE");
+    lines.pushb("MINE ORE, CRAFT PICKS, BUILD SHELTER BEFORE NIGHT");
+    lines.pushb("MOBS SPAWN IN DARKNESS. TORCHES AND FOOD MATTER.");
+    i: int = 0;
+    while i < lines.size {
+        s: string = lines.get(i);
+        draw_text(cx - text_width(s, 2) / 2, 160 + i * 46, s, 2, 0.88, 0.90, 0.94);
+        i = i + 1;
+    }
+    if button(g, vw, cx - 160, 480, 320, 48, "BACK", 0) ||
+       Gl.key_pressed(Gl.key_escape()) { g.state = state_menu(); }
+    Gl.disable(Gl.blend_cap());
+}
+
+fnc draw_settings(vw int, vh int, g &Game) : void {
+    ui_begin(vw, vh);
+    fill_rect(0.0, 0.0, tofloat(float, vw), tofloat(float, vh),
+              0.01, 0.02, 0.04, 0.90);
+    cx: int = vw / 2;
+    draw_text(cx - text_width("SETTINGS", 4) / 2, 80, "SETTINGS", 4, 1.0, 0.88, 0.40);
+    rd: string = "RENDER DISTANCE: " + tostring(g.view_dist) + " CHUNKS  (LEFT/RIGHT)";
+    sens: string = "SENSITIVITY: " + Format.dec(g.sensitivity, 2) + "  (UP/DOWN)";
+    fps: string = "FPS COUNTER: " + (g.show_fps ? "ON" : "OFF") + "  (F3)";
+    draw_text(cx - text_width(rd, 2) / 2, 170, rd, 2, 0.92, 0.94, 0.98);
+    draw_text(cx - text_width(sens, 2) / 2, 230, sens, 2, 0.92, 0.94, 0.98);
+    draw_text(cx - text_width(fps, 2) / 2, 290, fps, 2, 0.92, 0.94, 0.98);
+    if button(g, vw, cx - 160, 420, 320, 48, "BACK", 0) ||
+       Gl.key_pressed(Gl.key_escape()) {
+        g.state = g.state == state_settings() ? state_menu() : state_pause();
+    }
+    Gl.disable(Gl.blend_cap());
+}
+
+fnc draw_death(vw int, vh int, g &Game) : void {
+    ui_begin(vw, vh);
+    fill_rect(0.0, 0.0, tofloat(float, vw), tofloat(float, vh),
+              0.18, 0.01, 0.02, 0.82);
+    cx: int = vw / 2;
+    draw_text(cx - text_width("YOU DIED", 5) / 2, 140, "YOU DIED", 5, 1.0, 0.30, 0.24);
+    score: string = "BLOCKS " + tostring(g.player.mined) + "  KILLS " +
+                    tostring(g.player.kills) + "  DEATHS " + tostring(g.player.deaths);
+    draw_text(cx - text_width(score, 2) / 2, 250, score, 2, 0.92, 0.86, 0.72);
+    if button(g, vw, cx - 160, 360, 320, 52, "RESPAWN", 0) {
+        p: Player = new_player(g.world, toint(int64, g.clock));
+        p.deaths = g.player.deaths;
+        p.kills = g.player.kills;
+        p.mined = g.player.mined;
+        p.placed = g.player.placed;
+        g.player = p;
+        g.state = state_play();
+        Gl.mouse_capture(true);
+        g.captured = true;
+    } also button(g, vw, cx - 160, 430, 320, 52, "SAVE & MENU", 1) {
+        save_game(g);
+        g.state = state_menu();
+        Gl.mouse_capture(false);
+        g.captured = false;
+    }
+    Gl.disable(Gl.blend_cap());
+}
+
+// ------------------------------------------------------------------- render
+
+fnc draw_world(g &Game, vw int, vh int, clock int<64>) : void {
     if vw < 8 { vw = 8; }
     if vh < 8 { vh = 8; }
     Gl.viewport(vw, vh);
     aspect: float = tofloat(float, vw) / tofloat(float, vh);
-
+    p: Player = g.player;
     ang: float = sun_angle(p.hour);
     raw_y: float = Math.sin(ang);
     day: float = day_amount(raw_y);
     dusk: float = dusk_amount(raw_y);
-
     sx: float = Math.cos(ang);
     sy: float = raw_y;
     sz: float = 0.32;
@@ -1219,44 +2178,38 @@ fnc draw_frame(w World, ids vec<int>, counts vec<int>, p Player,
     sx = sx / slen;
     sy = sy / slen;
     sz = sz / slen;
-
     zr: float = clampf(mixf(0.015, 0.17, day) + dusk * 0.10, 0.0, 1.0);
     zg: float = clampf(mixf(0.020, 0.42, day) + dusk * 0.05, 0.0, 1.0);
     zb: float = clampf(mixf(0.080, 0.86, day), 0.0, 1.0);
     hr: float = clampf(mixf(0.040, 0.63, day) + dusk * 0.55, 0.0, 1.0);
     hg: float = clampf(mixf(0.050, 0.80, day) + dusk * 0.20, 0.0, 1.0);
     hb: float = clampf(mixf(0.120, 0.98, day) + dusk * 0.02, 0.0, 1.0);
-
     Gl.clear_color(hr, hg, hb, 1.0);
     Gl.clear();
     draw_sky(p.yaw, p.pitch, aspect, day, dusk, zr, zg, zb, hr, hg, hb);
-    draw_sun_moon(p.yaw, p.pitch, aspect, sx, sy, sz, day);
+    draw_celestial(p.yaw, p.pitch, aspect, sx, sy, sz,
+                   1.0, 0.82, 0.42, clampf(day + 0.15, 0.0, 1.0));
+    draw_celestial(p.yaw, p.pitch, aspect, -sx, -sy, -sz,
+                   0.72, 0.80, 0.95, clampf(-sy * 3.0, 0.0, 1.0));
 
     Gl.enable(Gl.depth_test());
     Gl.depth_func(Gl.lequal());
     Gl.depth_mask(true);
     Gl.disable(Gl.blend_cap());
     Gl.lighting(true);
-    Gl.light_ambient(mixf(0.26, 0.48, day),
-                     mixf(0.28, 0.50, day),
+    Gl.light_ambient(mixf(0.26, 0.48, day), mixf(0.28, 0.50, day),
                      mixf(0.36, 0.58, day), 1.0);
     lx: float = sx;
     ly: float = sy;
     lz: float = sz;
-    if ly < 0.0 {
-        lx = -lx;
-        ly = -ly;
-        lz = -lz;
-    }
+    if ly < 0.0 { lx = -lx; ly = -ly; lz = -lz; }
     Gl.light_directional(lx, ly, lz,
-                         mixf(0.10, 0.78, day),
-                         mixf(0.12, 0.75, day),
+                         mixf(0.10, 0.78, day), mixf(0.12, 0.75, day),
                          mixf(0.22, 0.68, day));
-
     Gl.matrix(Gl.projection());
     Gl.identity();
     near: float = 0.08;
-    far: float = 180.0;
+    far: float = tofloat(float, g.view_dist * chunk_size() + 64);
     half: float = near * 0.7002;
     Gl.frustum(-half * aspect, half * aspect, -half, half, near, far);
     Gl.matrix(Gl.modelview());
@@ -1267,49 +2220,51 @@ fnc draw_frame(w World, ids vec<int>, counts vec<int>, p Player,
     ey: float = p.y + 1.62 + Math.sin(p.bob) * 0.035;
     ez: float = p.z;
     Gl.translate(-ex, -ey, -ez);
-    Gl.fog(26.0, 70.0, hr * 0.92, hg * 0.92, hb * 0.94);
+    Gl.fog(tofloat(float, g.view_dist * chunk_size() / 2),
+           tofloat(float, g.view_dist * chunk_size() + 24),
+           hr * 0.92, hg * 0.92, hb * 0.94);
 
+    Gl.enable(Gl.texture_cap());
+    Gl.bind_texture(g.atlas);
     fx: float = look_x(p);
     fy: float = look_y(p);
     fz: float = look_z(p);
-    draw_world_lists(w, ids, counts, ex, ey, ez, fx, fy, fz);
-
-    draw_highlight(raycast(w, ex, ey, ez, fx, fy, fz, 5.5), day);
-    draw_clouds(clouds, day);
-
-    if hud {
-        draw_hud(vw, vh, p, sel, inv, fps, frame_ms, sum_counts(counts),
-                 captured, show_help);
-    }
-    return sum_counts(counts);
-}
-
-// --------------------------------------------------------------- headless
-
-fnc preview_gl() : void {
-    out: string = "";
-    row: int = 0;
-    while row < 8 {
-        col: int = 0;
-        while col < 16 {
-            // The framebuffer origin is bottom-left; sample a grid over the
-            // whole frame instead of a strip along the lower edge.
-            px: int = Gl.pixel(2 + col * 4, 60 - row * 8);
-            r: int = (px >> 24) & 255;
-            g: int = (px >> 16) & 255;
-            bl: int = (px >> 8) & 255;
-            lum: int = (r + g + bl) / 3;
-            if lum > 190 { out = out + "#"; }
-            also lum > 140 { out = out + "*"; }
-            also lum > 90 { out = out + "+"; }
-            else { out = out + "."; }
-            col = col + 1;
+    drawn: int = 0;
+    faces: int = 0;
+    i: int = 0;
+    while i < g.world.active.size {
+        key: string = g.world.active.get(i);
+        if g.world.chunks.isin(key) {
+            c: Chunk = g.world.chunks[key];
+            ccx: float = tofloat(float, c.cx * chunk_size() + chunk_size() / 2);
+            ccz: float = tofloat(float, c.cz * chunk_size() + chunk_size() / 2);
+            ccy: float = 38.0;
+            dx: float = ccx - ex;
+            dy: float = ccy - ey;
+            dz: float = ccz - ez;
+            d2: float = dx * dx + dy * dy + dz * dz;
+            limit: float = tofloat(float, (g.view_dist + 1) * chunk_size());
+            if d2 < limit * limit &&
+               dx * fx + dy * fy + dz * fz > -tofloat(float, chunk_size() * 2) &&
+               c.mesh != 0 {
+                Gl.call_list(c.mesh);
+                drawn = drawn + 1;
+                faces = faces + c.faces;
+            }
         }
-        out = out + "\n";
-        row = row + 1;
+        i = i + 1;
     }
-    show(out);
+    draw_entities(g, day);
+    draw_clouds(g.world.seed, clock, p.hour);
+    Gl.disable(Gl.texture_cap());
+    draw_highlight(raycast(g.world, ex, ey, ez, fx, fy, fz, 5.5,
+                           toint(int64, clock)));
+    g.chunks_drawn = drawn;
+    g.faces = faces;
 }
+
+
+// ------------------------------------------------------------------- startup
 
 fnc parse_count(s string) : int {
     if s.bsize == 0 { return 0; }
@@ -1325,182 +2280,290 @@ fnc parse_count(s string) : int {
     return n;
 }
 
-fnc initial_inventory() : vec<int> {
-    inv: vec<int>;
+fnc new_game(seed int, headless bool) : Game {
+    chunks0: hash<string, Chunk>;
+    edits0: hash<string, int>;
+    active0: vec<string>;
+    w: World = World { chunks: chunks0, edits: edits0, active: active0,
+                       seed: seed, generated: 0, meshed: 0 };
+    dur0: vec<int>;
+    drops0: vec<Drop>;
+    mobs0: vec<Mob>;
+    g: Game = Game {
+        world: w, player: Player {
+            x: 0.5, y: 40.0, z: 0.5, vx: 0.0, vy: 0.0, vz: 0.0,
+            yaw: 0.72, pitch: -0.16, bob: 0.0, on_ground: false,
+            fall_start: 0.0, hour: 8.0, health: 20.0, hunger: 20.0,
+            air: 10.0, exhaust: 0.0, regen: 0.0,
+            mined: 0, placed: 0, kills: 0, deaths: 0
+        },
+        inv: initial_inventory(), dur: dur0,
+        drops: drops0, mobs: mobs0,
+        state: headless ? state_play() : state_menu(),
+        menu_sel: 0, craft_sel: 0, view_dist: 4,
+        sensitivity: 0.0023, show_fps: true,
+        title: "Leash Survival", fps: 0, frame_ms: 0, faces: 0,
+        chunks_drawn: 0, clock: 0.0, captured: false,
+        help_timer: 8.0, message: "", message_time: 0.0, save_ok: true,
+        atlas: 0
+    };
     i: int = 0;
-    while i < 10 {
-        inv.pushb(0);
-        i = i + 1;
+    while i < MAX_ITEM() + 9 { g.dur.pushb(60); i = i + 1; }
+    g.player = new_player(g.world, 0);
+    return g;
+}
+
+fnc preview_gl() : void {
+    out: string = "";
+    row: int = 0;
+    while row < 8 {
+        col: int = 0;
+        while col < 16 {
+            px: int = Gl.pixel(2 + col * 4, 60 - row * 8);
+            r: int = (px >> 24) & 255;
+            g: int = (px >> 16) & 255;
+            b: int = (px >> 8) & 255;
+            lum: int = (r + g + b) / 3;
+            if lum > 190 { out = out + "#"; }
+            also lum > 140 { out = out + "*"; }
+            also lum > 90 { out = out + "+"; }
+            else { out = out + "."; }
+            col = col + 1;
+        }
+        out = out + "\n";
+        row = row + 1;
     }
-    inv.set(1, 24);
-    inv.set(2, 24);
-    inv.set(3, 24);
-    inv.set(4, 12);
-    inv.set(5, 12);
-    inv.set(6, 24);
-    inv.set(7, 16);
-    inv.set(8, 16);
-    inv.set(9, 16);
-    return inv;
+    show(out);
+}
+
+fnc apply_menu_keys(g &Game) : void {
+    if Gl.key_pressed(0xFF52) { g.menu_sel = g.menu_sel - 1; }  // Up
+    if Gl.key_pressed(0xFF54) { g.menu_sel = g.menu_sel + 1; }  // Down
+    if g.menu_sel < 0 { g.menu_sel = 4; }
+    if g.menu_sel > 4 { g.menu_sel = 0; }
+    if Gl.key_pressed(0xFF0D) {
+        if g.state == state_menu() {
+            if g.menu_sel == 0 {
+                fresh_chunks: hash<string, Chunk>;
+                fresh_edits: hash<string, int>;
+                g.world.chunks = fresh_chunks;
+                g.world.edits = fresh_edits;
+                g.player = new_player(g.world, toint(int64, g.clock));
+                g.inv = initial_inventory();
+                g.state = state_play();
+                Gl.mouse_capture(true);
+                g.captured = true;
+            } also g.menu_sel == 1 && FileUtil.exists(save_path()) {
+                if load_game(g) { g.state = state_play(); Gl.mouse_capture(true); g.captured = true; }
+            } also g.menu_sel == 2 { g.state = state_help(); }
+            also g.menu_sel == 3 { g.state = state_settings(); }
+            else { Gl.request_close(); }
+        } also g.state == state_pause() {
+            if g.menu_sel == 0 { g.state = state_play(); Gl.mouse_capture(true); g.captured = true; }
+            also g.menu_sel == 1 { g.state = state_craft(); }
+            also g.menu_sel == 2 { g.state = state_settings(); }
+            also g.menu_sel == 3 { save_game(g); g.state = state_menu(); Gl.mouse_capture(false); g.captured = false; }
+            else { save_game(g); Gl.request_close(); }
+        }
+    }
 }
 
 fnc main(args string[]) : void {
-    w: World = make_world(64, 24, 64);
-    wgenerate(w);
-    p: Player = new_player(w);
-    inv: vec<int> = initial_inventory();
-    sel: int = 1;
-
     max_frames: int = 0;
-    force_headless: bool = Env.get_or("LEASH_VOXEL_HEADLESS", "") == "1";
+    seed: int = toint(int, Env.get_or("LEASH_VOXEL_SEED", "1337"));
+    headless: bool = Env.get_or("LEASH_VOXEL_HEADLESS", "") == "1";
+    save: bool = Env.get_or("LEASH_VOXEL_NOSAVE", "") != "1";
+    autostart: bool = false;
     i: int = 0;
     while i < args.size {
-        a: string = args[i];
+        a := args[i];
         if a == "--frames" && i + 1 < args.size {
             max_frames = parse_count(args[i + 1]);
             i = i + 1;
-        } else if a == "--headless" {
-            force_headless = true;
-        }
-        i = i + 1;
-    }
-
-    ctx: pointer<void> = null;
-    if !force_headless {
-        ctx = Gl.open_window(960, 600, "Leash Voxel Sandbox");
-    }
-
-    if ctx != null {
-        Gl.set_vsync(false);
-        Gl.mouse_capture(true);
-        ids: vec<int>;
-        counts: vec<int>;
-        cps: int = chunks_per_side(w);
-        i = 0;
-        while i < cps * cps {
-            ids.pushb(0);
-            counts.pushb(0);
+        } also a == "--headless" { headless = true; }
+        also a == "--seed" && i + 1 < args.size {
+            seed = toint(int, args[i + 1]);
             i = i + 1;
-        }
-        total_faces: int = build_all(w, ids, counts);
-        clouds: int = build_clouds(w);
-        show("window=open ", Gl.width(), "x", Gl.height(),
-             " vsync=off renderer=", Gl.renderer());
-        show("controls: WASD move, mouse look, LMB mine, RMB place, ",
-             "1-9 select, Space jump, Shift sprint, R reset, Esc quit");
-
-        start: int<64> = Gl.time_ms();
-        last_frame: int<64> = start;
-        fps_time: int<64> = start;
-        fps_frames: int = 0;
-        fps: int = 0;
-        frame_ms: int = 0;
-        frames: int = 0;
-        while !Gl.should_close() {
-            now: int<64> = Gl.time_ms();
-            dt: float = tofloat(float, now - last_frame) / 1000.0;
-            if dt < 0.001 { dt = 0.001; }
-            if dt > 0.05 { dt = 0.05; }
-            last_frame = now;
-            Gl.poll_events();
-            if Gl.should_close() || Gl.key_pressed(Gl.key_escape()) { stop; }
-
-            fps_frames = fps_frames + 1;
-            if now - fps_time >= 500 {
-                elapsed: int = toint(int, now - fps_time);
-                fps = fps_frames * 1000 / elapsed;
-                frame_ms = elapsed / fps_frames;
-                fps_frames = 0;
-                fps_time = now;
-            }
-
-            if !Gl.mouse_captured() {
-                if Gl.mouse_pressed(Gl.mouse_left()) {
-                    Gl.mouse_capture(true);
-                }
-            } else {
-                mdx: int = Gl.mouse_dx();
-                mdy: int = Gl.mouse_dy();
-                p.yaw = p.yaw + tofloat(float, mdx) * 0.0023;
-                p.pitch = clampf(p.pitch - tofloat(float, mdy) * 0.0023,
-                                 -1.50, 1.50);
-            }
-
-            move_player(w, p, dt);
-
-            n: int = 1;
-            while n <= 9 {
-                if Gl.key_pressed(Gl.key_num(n)) { sel = n; }
-                n = n + 1;
-            }
-            if Gl.key_pressed(Gl.key_r()) {
-                wgenerate(w);
-                total_faces = build_all(w, ids, counts);
-                p = new_player(w);
-            }
-            if Gl.key_pressed(Gl.key_g()) {
-                mine_block(w, ids, counts, p, inv);
-            }
-            if Gl.key_pressed(Gl.key_f()) {
-                place_block(w, ids, counts, p, inv, sel);
-            }
-            if Gl.mouse_captured() {
-                if Gl.mouse_pressed(Gl.mouse_left()) {
-                    mine_block(w, ids, counts, p, inv);
-                }
-                if Gl.mouse_pressed(Gl.mouse_right()) {
-                    place_block(w, ids, counts, p, inv, sel);
-                }
-            }
-
-            p.hour = Math.fmod(8.0 + tofloat(float, now - start) / 3000.0, 24.0);
-            total_faces = draw_frame(w, ids, counts, p, sel, inv, fps,
-                                     frame_ms, Gl.width(), Gl.height(),
-                                     true, Gl.mouse_captured(), frames < 600,
-                                     clouds);
-            if frames == 0 {
-                show("faces=", total_faces, " center_pixel=",
-                     Gl.pixel(Gl.width() / 2, Gl.height() / 2));
-            }
-            Gl.swap_buffers();
-            frames = frames + 1;
-            if max_frames > 0 && frames >= max_frames { stop; }
-        }
-        Gl.close(ctx);
-        show("window=closed frames=", frames, " mined=", p.mined,
-             " placed=", p.placed, " fps=", fps);
-        return;
-    }
-
-    show("window=unavailable; using headless renderer");
-    ctx = Gl.init();
-    ids: vec<int>;
-    counts: vec<int>;
-    cps: int = chunks_per_side(w);
-    i = 0;
-    while i < cps * cps {
-        ids.pushb(0);
-        counts.pushb(0);
+        } also a == "--no-save" { save = false; }
+        also a == "--autostart" { autostart = true; }
         i = i + 1;
     }
-    total_faces: int = build_all(w, ids, counts);
-    clouds: int = build_clouds(w);
-
-    // A deterministic session: look at the terrain, mine a block, place one.
-    mine_block(w, ids, counts, p, inv);
-    place_block(w, ids, counts, p, inv, sel);
-    total_faces = draw_frame(w, ids, counts, p, sel, inv, 0, 0,
-                             64, 64, false, false, false, clouds);
+    g: Game = new_game(seed, headless);
+    if headless || autostart {
+        g.state = state_play();
+        if headless && max_frames == 0 { max_frames = 1; }
+    }
+    ctx: pointer<void> = null;
+    if !headless { ctx = Gl.open_window(960, 600, g.title); }
+    if ctx == null {
+        headless = true;
+        if max_frames == 0 { max_frames = 1; }
+        g.state = state_play();
+        show("window=unavailable; using headless renderer");
+        ctx = Gl.init();
+    } else {
+        Gl.set_vsync(false);
+        if autostart { Gl.mouse_capture(true); g.captured = true; }
+        show("window=open 960x600 vsync=off renderer=", Gl.renderer());
+        show("controls: WASD move, mouse look, LMB mine, RMB place, E eat, C craft, F5 save, Esc menu");
+    }
+    g.atlas = Gl.texture(atlas_tiles() * tile_px(),
+                         atlas_tiles() * tile_px(), make_atlas());
     show("=== VOXEL SANDBOX ===");
     show("GL renderer=", Gl.version());
-    show("faces=", total_faces, " center=", Gl.pixel(32, 32),
-         " mid=", Gl.pixel(48, 40));
-    preview_gl();
+
+    start: int<64> = Gl.time_ms();
+    last: int<64> = start;
+    fps_start: int<64> = start;
+    fps_frames: int = 0;
+    frames: int = 0;
+    while !Gl.should_close() {
+        now: int<64> = Gl.time_ms();
+        g.clock = tofloat(float, now - start);
+        dt: float = tofloat(float, now - last) / 1000.0;
+        if dt < 0.001 { dt = 0.001; }
+        if dt > 0.05 { dt = 0.05; }
+        last = now;
+        Gl.poll_events();
+        if Gl.should_close() { stop; }
+        fps_frames = fps_frames + 1;
+        if now - fps_start >= 500 {
+            elapsed: int = toint(int, now - fps_start);
+            g.fps = fps_frames * 1000 / elapsed;
+            g.frame_ms = elapsed / fps_frames;
+            fps_frames = 0;
+            fps_start = now;
+        }
+        p: Player = g.player;
+        p.hour = Math.fmod(8.0 + g.clock / 9000.0, 24.0);
+        g.player = p;
+
+        update_chunks(g.world, p.x, p.z, g.view_dist, now);
+        stream_meshes(g.world, 6);
+
+        if g.state == state_play() {
+            if Gl.key_pressed(Gl.key_escape()) {
+                g.state = state_pause();
+                Gl.mouse_capture(false);
+                g.captured = false;
+            } also Gl.key_pressed(0x0043) {  // C
+                g.state = state_craft();
+                Gl.mouse_capture(false);
+                g.captured = false;
+            } also Gl.key_pressed(0xFFBE) {  // F1 help
+                g.state = state_help();
+                Gl.mouse_capture(false);
+                g.captured = false;
+            } also Gl.key_pressed(0xFFBD) {  // F2 settings
+                g.state = state_settings();
+                Gl.mouse_capture(false);
+                g.captured = false;
+            } also Gl.key_pressed(0xFFC2) {  // F5 save
+                if save { save_game(g); }
+                g.message = save ? "SAVED" : "SAVING DISABLED";
+                g.message_time = 2.0;
+            } also Gl.key_pressed(0xFFB3) {  // F3 toggle FPS
+                g.show_fps = !g.show_fps;
+            } also Gl.key_pressed(0x0045) {  // E eat
+                eat(g);
+            }
+            n: int = 1;
+            while n <= 9 {
+                if Gl.key_pressed(Gl.key_num(n)) { g.menu_sel = n - 1; }
+                n = n + 1;
+            }
+            if !g.captured && Gl.mouse_pressed(Gl.mouse_left()) {
+                Gl.mouse_capture(true);
+                g.captured = true;
+            } also g.captured {
+                g.player.yaw = g.player.yaw + tofloat(float, Gl.mouse_dx()) * g.sensitivity;
+                g.player.pitch = clampf(g.player.pitch - tofloat(float, Gl.mouse_dy()) * g.sensitivity,
+                                        -1.50, 1.50);
+            }
+            move_player(g.world, g.player, dt, Gl.key_down(Gl.key_shift()), now);
+            update_drops(g, dt, now);
+            update_mobs(g, dt, now);
+            if Gl.mouse_pressed(Gl.mouse_left()) && g.captured {
+                if !hit_mob(g, 5.5) { break_block(g, now); }
+            }
+            if Gl.mouse_pressed(Gl.mouse_right()) && g.captured { place_block(g, now); }
+            if Gl.key_pressed(Gl.key_g()) { break_block(g, now); }
+            if Gl.key_pressed(Gl.key_f()) { place_block(g, now); }
+            if Gl.key_pressed(0x0051) {  // Q drop one hotbar item
+                id: int = g.inv.get(g.menu_sel);
+                if id != 0 {
+                    spawn_drop(g, g.player.x + look_x(g.player) * 1.5,
+                               g.player.y + 1.0, g.player.z + look_z(g.player) * 1.5,
+                               id, 1);
+                    take(g, g.menu_sel, 1);
+                }
+            }
+            if g.player.health <= 0.0 {
+                g.player.deaths = g.player.deaths + 1;
+                g.state = state_dead();
+                Gl.mouse_capture(false);
+                g.captured = false;
+            }
+        } else {
+            apply_menu_keys(g);
+            if g.state == state_settings() {
+                if Gl.key_pressed(0xFF51) { g.view_dist = maxi(2, g.view_dist - 1); }
+                if Gl.key_pressed(0xFF53) { g.view_dist = mini(8, g.view_dist + 1); }
+                if Gl.key_pressed(0xFF52) { g.sensitivity = minf(0.01, g.sensitivity + 0.0002); }
+                if Gl.key_pressed(0xFF54) { g.sensitivity = maxf(0.0004, g.sensitivity - 0.0002); }
+            } also g.state == state_craft() {
+                if Gl.key_pressed(0xFF0D) {
+                    if craft(g, g.menu_sel) { g.message = "CRAFTED"; g.message_time = 1.5; }
+                    else { g.message = "MISSING INGREDIENTS"; g.message_time = 1.5; }
+                }
+            }
+        }
+        g.help_timer = maxf(0.0, g.help_timer - dt);
+        g.message_time = maxf(0.0, g.message_time - dt);
+
+        draw_world(g, Gl.width(), Gl.height(), now);
+        ui_begin(Gl.width(), Gl.height());
+        if g.state == state_play() { draw_hud(Gl.width(), Gl.height(), g); }
+        also g.state == state_menu() { draw_menu(Gl.width(), Gl.height(), g); }
+        also g.state == state_pause() { draw_pause(Gl.width(), Gl.height(), g); }
+        also g.state == state_craft() { draw_craft(Gl.width(), Gl.height(), g); }
+        also g.state == state_dead() { draw_death(Gl.width(), Gl.height(), g); }
+        also g.state == state_help() { draw_help(Gl.width(), Gl.height(), g); }
+        also g.state == state_settings() { draw_settings(Gl.width(), Gl.height(), g); }
+        Gl.disable(Gl.blend_cap());
+
+        if frames == 0 {
+            show("faces=", g.faces, " center_pixel=",
+                 Gl.pixel(Gl.width() / 2, Gl.height() / 2));
+        }
+        Gl.swap_buffers();
+        frames = frames + 1;
+        if max_frames > 0 && frames >= max_frames { stop; }
+    }
+    if save && !headless { save_game(g); }
+
+    // Deterministic headless replay/preview runs before the context is closed.
+    if headless {
+        replay_active: vec<string>;
+        g.world.active = replay_active;
+        update_chunks(g.world, g.player.x, g.player.z, 2, 0);
+        stream_meshes(g.world, 64);
+        Gl.viewport(64, 64);
+        draw_world(g, 64, 64, 0);
+        show("faces=", g.faces, " center=", Gl.pixel(32, 32),
+             " mid=", Gl.pixel(48, 40));
+        preview_gl();
+        p: Player = g.player;
+        show("player=", floor_i(p.x), ",", floor_i(p.z),
+             " yaw=", floor_i(p.yaw), " hour=", floor_i(p.hour));
+        show("mined=", p.mined, " placed=", p.placed,
+             " health=", floor_i(p.health), " hunger=", floor_i(p.hunger));
+        show("world=", wget(g.world, floor_i(p.x),
+                            top_at(g.world, floor_i(p.x), floor_i(p.z), 0),
+                            floor_i(p.z), 0),
+             " sky=", wget(g.world, 0, 0, 0, 0));
+    }
     Gl.close(ctx);
-    show("player=", toint(int, p.x), ",", toint(int, p.z),
-         " yaw=", toint(int, p.yaw), " hour=", toint(int, p.hour));
-    show("mined=", p.mined, " placed=", p.placed,
-         " grass=", inv.get(1), " dirt=", inv.get(2), " stone=", inv.get(3));
-    show("world=", wget(w, 32, top_at(w, 32, 32), 32),
-         " sky=", wget(w, 32, 23, 32));
+    show("window=closed frames=", frames, " mined=", g.player.mined,
+         " placed=", g.player.placed, " fps=", g.fps);
 }

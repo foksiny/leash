@@ -364,6 +364,12 @@ void lshgl_mouse_capture(int on) {
 bool lshgl_mouse_captured(void) { return g_mouse_captured; }
 int lshgl_mouse_dx(void) { int v = g_mouse_dx; g_mouse_dx = 0; return v; }
 int lshgl_mouse_dy(void) { int v = g_mouse_dy; g_mouse_dy = 0; return v; }
+/* AppKit exposes absolute pointer position as a struct returned via
+ * objc_msgSend_stret; the menu also supports keyboard navigation, so the
+ * portable fallback reports the window centre here. */
+int lshgl_mouse_x(void) { return g_win_w / 2; }
+int lshgl_mouse_y(void) { return g_win_h / 2; }
+
 bool lshgl_mouse_down(int button) { return button > 0 && button < 8 && g_mouse_down[button]; }
 bool lshgl_mouse_pressed(int button) { return button > 0 && button < 8 && g_mouse_pressed[button]; }
 

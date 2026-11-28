@@ -167,6 +167,7 @@ typedef int (*FN_XPENDING)(Display*);
 typedef int (*FN_XNEXTEVENT)(Display*, LshXEvent*);
 typedef int (*FN_XPUTBACKEVENT)(Display*, LshXEvent*);
 typedef int (*FN_XGETINPUTFOCUS)(Display*, Window*, int*);
+typedef int (*FN_XQUERYPOINTER)(Display*, Window, Window*, Window*, int*, int*, int*, int*, unsigned int*);
 typedef int (*FN_XDESTROYWINDOW)(Display*, Window);
 typedef Atom (*FN_XINTERNATOM)(Display*, const char*, int);
 typedef int (*FN_XSETWMPROTOCOLS)(Display*, Window, Atom*, int);
@@ -288,6 +289,7 @@ static FN_XPENDING x_pending;
 static FN_XNEXTEVENT x_next_event;
 static FN_XPUTBACKEVENT x_put_back_event;
 static FN_XGETINPUTFOCUS x_get_input_focus;
+static FN_XQUERYPOINTER x_query_pointer;
 static FN_XDESTROYWINDOW x_destroy_window;
 static FN_XINTERNATOM x_intern_atom;
 static FN_XSETWMPROTOCOLS x_set_wm_protocols;
@@ -373,6 +375,7 @@ static bool load_x11(void) {
     x_next_event = (FN_XNEXTEVENT)dlsym(g_x11, "XNextEvent");
     x_put_back_event = (FN_XPUTBACKEVENT)dlsym(g_x11, "XPutBackEvent");
     x_get_input_focus = (FN_XGETINPUTFOCUS)dlsym(g_x11, "XGetInputFocus");
+    x_query_pointer = (FN_XQUERYPOINTER)dlsym(g_x11, "XQueryPointer");
     x_destroy_window = (FN_XDESTROYWINDOW)dlsym(g_x11, "XDestroyWindow");
     x_intern_atom = (FN_XINTERNATOM)dlsym(g_x11, "XInternAtom");
     x_set_wm_protocols = (FN_XSETWMPROTOCOLS)dlsym(g_x11, "XSetWMProtocols");
@@ -744,6 +747,26 @@ int lshgl_mouse_dy(void) {
     int value = g_mouse_dy;
     g_mouse_dy = 0;
     return value;
+}
+
+int lshgl_mouse_x(void) {
+    if (!g_window_mode || !g_xwin || !x_query_pointer) return g_mouse_cx;
+    Window root = 0, child = 0;
+    int rx = 0, ry = 0, wx = 0, wy = 0;
+    unsigned int mask = 0;
+    if (!x_query_pointer(g_xdpy, g_xwin, &root, &child, &rx, &ry, &wx, &wy, &mask))
+        return g_mouse_cx;
+    return wx;
+}
+
+int lshgl_mouse_y(void) {
+    if (!g_window_mode || !g_xwin || !x_query_pointer) return g_mouse_cy;
+    Window root = 0, child = 0;
+    int rx = 0, ry = 0, wx = 0, wy = 0;
+    unsigned int mask = 0;
+    if (!x_query_pointer(g_xdpy, g_xwin, &root, &child, &rx, &ry, &wx, &wy, &mask))
+        return g_mouse_cy;
+    return wy;
 }
 
 bool lshgl_mouse_down(int button) {
