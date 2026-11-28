@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.4.1] - 2026-11-27
+
+### Fixed
+- Voxel inventory stacking increments the item count instead of the item ID; crafted tools reset durability and newly picked-up tools start fresh.
+- Save/load restores position, look direction and time of day (the player-clock offset is restored), and CONTINUE clears/regenerates chunks so the saved world and seed are used.
+- Mining and placing now update the player through references, so counters and exhaustion work; Q drop validates stack counts; menu cursor is separate from the hotbar slot and returns to the previous screen.
+- Chunk display lists are deleted when chunks are evicted or the world is reset, and a distance-based eviction loop bounds memory during long sessions.
+- Added a deterministic `--selftest` for inventory stacking, crafting, chunk seams and save/load, covered by `tests/test_usecases.py`.
+
 ## [2.4.0] - 2026-11-27
 
 ### Added

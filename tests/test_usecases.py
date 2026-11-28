@@ -59,6 +59,25 @@ class UseCases(unittest.TestCase):
                         self.assertIn("mined=", r.stdout)
                         self.assertIn("placed=", r.stdout)
 
+    def test_minecraft_gameplay_selftest(self):
+        with tempfile.TemporaryDirectory(prefix="leash_voxel_selftest_") as td:
+            exe = os.path.join(td, "voxel")
+            compiled = subprocess.run(
+                [LEASHC, "compile", os.path.join(DIR, "minecraft_clone.lsh"),
+                 "to", exe, "--target", "linux64",
+                 "--other-imports", os.path.join(ROOT, "installthis")],
+                cwd=ROOT, capture_output=True, text=True, errors="replace",
+                timeout=180)
+            self.assertEqual(compiled.returncode, 0,
+                             compiled.stdout + compiled.stderr)
+            r = subprocess.run([exe, "--selftest"], cwd=td,
+                               capture_output=True, text=True, errors="replace",
+                               timeout=120)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertIn("selftest inventory=true craft=true seam=true load=true",
+                          r.stdout)
+            self.assertFalse(os.path.exists(os.path.join(td, "leash_voxel_save.txt")))
+
     def test_minecraft_window(self):
         xvfb = shutil.which("xvfb-run")
         if not xvfb or not os.path.exists(LEASHC):

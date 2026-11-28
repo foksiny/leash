@@ -72,6 +72,7 @@ are placed in `linux/`, `linux32/`, `arm64/`, `win/`, `macos/` and
 `macosarm64/`. `Gl.version()` reports the active backend. Textured geometry uses
 `Gl.texture(w, h, rgba)` to upload raw RGBA bytes, `Gl.bind_texture(id)` and
 `Gl.tex_coord2(u, v)` per vertex; `Gl.mouse_x()` / `Gl.mouse_y()` provide
-absolute pointer coordinates for menus. On JVM, `open_window()`, key and
+absolute pointer coordinates for menus on Linux and Windows (macOS and JVM
+report the render centre; menus can be driven with arrow keys). On JVM, `open_window()`, key and
 mouse input are unavailable and textures are ignored; use the offscreen
 software renderer through `Gl.init()`.

@@ -7,7 +7,7 @@
 // Compile (macos-arm): leash compile examples/usecases/minecraft_clone.lsh to out/usecases/minecraft_clone-macos-arm --target macos-arm
 // Compile (jvm      ): leash compile examples/usecases/minecraft_clone.lsh to out/usecases/minecraft_clone-jvm --target jvm
 // Run:                  leash run examples/usecases/minecraft_clone.lsh --other-imports installthis
-// Optional: --headless, LEASH_VOXEL_HEADLESS=1, --frames N, --seed N, --no-save, --autostart.
+// Optional: --headless, LEASH_VOXEL_HEADLESS=1, --frames N, --seed N, --no-save, --autostart, --selftest.
 //
 // A streaming, textured voxel survival game. Chunks are generated on demand
 // from an infinite deterministic world, meshed into display lists with
@@ -88,6 +88,7 @@ def World : struct {
     seed: int;
     generated: int;
     meshed: int;
+    last_evict: int<64>;
 }
 
 def Player : struct {
@@ -175,6 +176,9 @@ def Game : struct {
     message_time: float;
     save_ok: bool;
     atlas: int;
+    menu_cursor: int;
+    return_state: int;
+    started: bool;
 }
 
 // ------------------------------------------------------------- small helpers
@@ -557,6 +561,25 @@ fnc update_chunks(w &World, px float, pz float, dist int, clock int<64>) : void 
         }
         r = r + 1;
     }
+    // Periodically drop chunks well outside the play radius. Edits live in a
+    // separate table, so regenerating later reproduces player changes.
+    if clock - w.last_evict > 4000 {
+        keys: vec<string> = w.chunks.keys();
+        kept: hash<string, Chunk>;
+        ki: int = 0;
+        while ki < keys.size {
+            k: string = keys.get(ki);
+            c: Chunk = w.chunks[k];
+            if absf_i(c.cx - pcx) <= dist + 2 && absf_i(c.cz - pcz) <= dist + 2 {
+                kept[k] = c;
+            } also c.mesh != 0 {
+                Gl.delete_list(c.mesh);
+            }
+            ki = ki + 1;
+        }
+        w.chunks = kept;
+        w.last_evict = clock;
+    }
 }
 
 fnc mesh_chunk(w &World, key string, budget int) : bool {
@@ -580,8 +603,6 @@ fnc stream_meshes(w &World, budget int) : void {
     i: int = 0;
     while i < w.active.size && done < budget {
         if mesh_chunk(w, w.active.get(i), budget - done) {
-            dbg_key: string = w.active.get(i);
-            dbg_c: Chunk = w.chunks[dbg_key];
             done = done + 1;
         }
         i = i + 1;
@@ -716,6 +737,10 @@ fnc tile_pixel(tile int, px int, py int) : (int, int, int, int) {
         if py % 3 == 0 { return 120, 58, 44, 255; }
         return 164 + speck, 78 + speck, 58 + speck, 255;
     }
+    if tile == 10 {
+        if py % 4 == 0 || (px + (py / 4) % 2 * 4) % 8 == 0 { return 118, 52, 40, 255; }
+        return 164 + speck, 76 + speck, 58 + speck, 255;
+    }
     if tile == 11 {
         if (px + py) % 7 < 2 { return 72, 146, 214, 180; }
         return 38, 106, 190, 170;
@@ -780,8 +805,7 @@ fnc emit_face(w &World, wx int, wy int, wz int, face int, id int) : void {
     if face == 1 { r = 0.72; g = 0.72; b = 0.72; }
     also face == 2 || face == 3 { r = 0.86; g = 0.86; b = 0.86; }
     also face == 4 || face == 5 { r = 0.94; g = 0.94; b = 0.94; }
-    if id == WATER() { a = 0.72; }
-    if id == LEAVES() { a = 0.94; }
+    // Water and leaves keep full alpha: the world pass is opaque and sorted per chunk.
     Gl.color(r, g, b, a);
     if face == 0 { Gl.normal3(0.0, 1.0, 0.0); }
     also face == 1 { Gl.normal3(0.0, -1.0, 0.0); }
@@ -1134,9 +1158,9 @@ fnc move_player(w &World, p &Player, dt float, sprint bool,
     }
 }
 
-fnc look_x(p Player) : float { return Math.sin(p.yaw) * Math.cos(p.pitch); }
-fnc look_y(p Player) : float { return Math.sin(p.pitch); }
-fnc look_z(p Player) : float { return -Math.cos(p.yaw) * Math.cos(p.pitch); }
+fnc look_x(p &Player) : float { return Math.sin(p.yaw) * Math.cos(p.pitch); }
+fnc look_y(p &Player) : float { return Math.sin(p.pitch); }
+fnc look_z(p &Player) : float { return -Math.cos(p.yaw) * Math.cos(p.pitch); }
 
 fnc raycast(w &World, ox float, oy float, oz float,
             dx float, dy float, dz float, maxd float, clock int<64>) : RayHit {
@@ -1160,7 +1184,7 @@ fnc raycast(w &World, ox float, oy float, oz float,
     return RayHit { hit: false, bx: 0, by: 0, bz: 0, px: 0, py: 0, pz: 0 };
 }
 
-fnc block_hits_player(p Player, x int, y int, z int) : bool {
+fnc block_hits_player(p &Player, x int, y int, z int) : bool {
     return p.x + 0.30 > tofloat(float, x) &&
            p.x - 0.30 < tofloat(float, x + 1) &&
            p.z + 0.30 > tofloat(float, z) &&
@@ -1176,7 +1200,10 @@ fnc give(g &Game, id int, count int) : void {
     i: int = 0;
     while i < 9 && count > 0 {
         if g.inv.get(i) == id {
-            g.inv.set(i, g.inv.get(i) + count);
+            g.inv.set(9 + i, g.inv.get(9 + i) + count);
+            if id == WOOD_PICK() || id == STONE_PICK() || id == IRON_PICK() {
+                g.dur.set(i, 60);
+            }
             count = 0;
         }
         i = i + 1;
@@ -1186,6 +1213,9 @@ fnc give(g &Game, id int, count int) : void {
         if g.inv.get(i) == 0 {
             g.inv.set(i, id);
             g.inv.set(9 + i, count);
+            if id == WOOD_PICK() || id == STONE_PICK() || id == IRON_PICK() {
+                g.dur.set(i, 60);
+            }
             count = 0;
         }
         i = i + 1;
@@ -1365,14 +1395,18 @@ fnc hit_mob(g &Game, reach float) : bool {
 
 fnc tool_speed(g &Game, id int) : float {
     sel: int = g.inv.get(g.menu_sel);
+    need_pick: bool = id == STONE() || id == COBBLE() || id == BEDROCK() ||
+                      id == COAL_ORE() || id == IRON_ORE() || id == DIAMOND_ORE();
+    if need_pick && sel != WOOD_PICK() && sel != STONE_PICK() && sel != IRON_PICK() {
+        return 0.45;
+    }
     if sel == WOOD_PICK() { return 2.0; }
     if sel == STONE_PICK() { return 3.0; }
     if sel == IRON_PICK() { return 4.5; }
     return 1.0;
 }
 
-fnc break_block(g &Game, clock int<64>) : void {
-    p: Player = g.player;
+fnc break_block(g &Game, p &Player, clock int<64>) : void {
     ex: float = p.x;
     ey: float = p.y + 1.62;
     ez: float = p.z;
@@ -1395,17 +1429,16 @@ fnc break_block(g &Game, clock int<64>) : void {
     if tool_speed(g, id) > 1.0 && g.menu_sel >= 0 && g.menu_sel < 9 {
         d: int = g.dur.get(g.menu_sel) - 1;
         g.dur.set(g.menu_sel, d);
-        if d <= 0 { g.inv.set(9 + g.menu_sel, 0); g.inv.set(g.menu_sel, 0); }
+        if d <= 0 { g.inv.set(9 + g.menu_sel, 0); g.inv.set(g.menu_sel, 0); g.dur.set(g.menu_sel, 60); }
     }
 }
 
-fnc place_block(g &Game, clock int<64>) : void {
+fnc place_block(g &Game, p &Player, clock int<64>) : void {
     slot: int = g.menu_sel;
     if slot < 0 || slot >= 9 { return; }
     id: int = g.inv.get(slot);
     if id == 0 || id >= 32 { return; }
     if g.inv.get(9 + slot) <= 0 { return; }
-    p: Player = g.player;
     ex: float = p.x;
     ey: float = p.y + 1.62;
     ez: float = p.z;
@@ -1526,8 +1559,28 @@ fnc save_game(g &Game) : void {
     g.save_ok = FileUtil.write_text(save_path(), lines) >= 0;
 }
 
+fnc clear_world(w &World) : void {
+    keys: vec<string> = w.chunks.keys();
+    i: int = 0;
+    while i < keys.size {
+        c: Chunk = w.chunks[keys.get(i)];
+        if c.mesh != 0 { Gl.delete_list(c.mesh); }
+        i = i + 1;
+    }
+    empty_chunks: hash<string, Chunk>;
+    empty_edits: hash<string, int>;
+    empty_active: vec<string>;
+    w.chunks = empty_chunks;
+    w.edits = empty_edits;
+    w.active = empty_active;
+    w.generated = 0;
+    w.meshed = 0;
+    w.last_evict = 0;
+}
+
 fnc load_game(g &Game) : bool {
     if !FileUtil.exists(save_path()) { return false; }
+    clear_world(g.world);
     text: string = FileUtil.read_text(save_path());
     lines: vec<string> = Str.split(text, '\n');
     i: int = 0;
@@ -1536,13 +1589,15 @@ fnc load_game(g &Game) : bool {
         parts: vec<string> = Str.split(line, ',');
         if parts.size > 0 {
             tag: string = parts.get(0);
-            if tag == "P" && parts.size >= 8 {
+            if tag == "P" && parts.size >= 7 {
                 g.player.x = tofloat(float, parts.get(1));
                 g.player.y = tofloat(float, parts.get(2));
                 g.player.z = tofloat(float, parts.get(3));
                 g.player.yaw = tofloat(float, parts.get(4));
                 g.player.pitch = tofloat(float, parts.get(5));
                 g.player.hour = tofloat(float, parts.get(6));
+                g.clock = (g.player.hour - 8.0) * 9000.0;
+                if g.clock < 0.0 { g.clock = g.clock + 24.0 * 9000.0; }
             } also tag == "S" && parts.size >= 5 {
                 g.player.health = tofloat(float, parts.get(1));
                 g.player.hunger = tofloat(float, parts.get(2));
@@ -1963,7 +2018,7 @@ fnc button(g &Game, vw int, x int, y int, w int, h int, label string,
            index int) : bool {
     hovered: bool = Gl.mouse_x() >= x && Gl.mouse_x() <= x + w &&
                     Gl.mouse_y() >= y && Gl.mouse_y() <= y + h;
-    selected: bool = g.menu_sel == index;
+    selected: bool = g.menu_cursor == index;
     fill_rect(tofloat(float, x), tofloat(float, y), tofloat(float, w),
               tofloat(float, h),
               hovered || selected ? 0.20 : 0.08, 0.12, 0.18, 0.94);
@@ -1999,17 +2054,15 @@ fnc draw_menu(vw int, vh int, g &Game) : void {
         Gl.request_close();
     }
     if clicked {
-        if g.menu_sel == 1 {
+        if g.menu_cursor == 1 {
             if load_game(g) { g.message = "WORLD LOADED"; g.message_time = 2.0; }
         } else {
-            new_chunks: hash<string, Chunk>;
-            new_edits: hash<string, int>;
-            new_active: vec<string>;
-            g.world = World { chunks: new_chunks, edits: new_edits,
-                              active: new_active, seed: g.world.seed,
-                              generated: 0, meshed: 0 };
+            seed: int = g.world.seed;
+            clear_world(g.world);
+            g.world.seed = seed;
             g.player = new_player(g.world, toint(int64, g.clock));
             g.inv = initial_inventory();
+            g.started = true;
             g.message = "NEW WORLD";
             g.message_time = 2.0;
         }
@@ -2084,7 +2137,8 @@ fnc draw_craft(vw int, vh int, g &Game) : void {
     }
     if button(g, vw, cx - 260, 150 + names.size * 50 + 20, 520, 42, "BACK", 9) ||
        Gl.key_pressed(Gl.key_escape()) {
-        g.state = state_pause();
+        g.state = g.return_state;
+        g.menu_cursor = 0;
     }
     Gl.disable(Gl.blend_cap());
 }
@@ -2108,7 +2162,7 @@ fnc draw_help(vw int, vh int, g &Game) : void {
         i = i + 1;
     }
     if button(g, vw, cx - 160, 480, 320, 48, "BACK", 0) ||
-       Gl.key_pressed(Gl.key_escape()) { g.state = state_menu(); }
+       Gl.key_pressed(Gl.key_escape()) { g.state = g.return_state; g.menu_cursor = 0; }
     Gl.disable(Gl.blend_cap());
 }
 
@@ -2126,7 +2180,8 @@ fnc draw_settings(vw int, vh int, g &Game) : void {
     draw_text(cx - text_width(fps, 2) / 2, 290, fps, 2, 0.92, 0.94, 0.98);
     if button(g, vw, cx - 160, 420, 320, 48, "BACK", 0) ||
        Gl.key_pressed(Gl.key_escape()) {
-        g.state = g.state == state_settings() ? state_menu() : state_pause();
+        g.state = g.return_state;
+        g.menu_cursor = 0;
     }
     Gl.disable(Gl.blend_cap());
 }
@@ -2285,7 +2340,7 @@ fnc new_game(seed int, headless bool) : Game {
     edits0: hash<string, int>;
     active0: vec<string>;
     w: World = World { chunks: chunks0, edits: edits0, active: active0,
-                       seed: seed, generated: 0, meshed: 0 };
+                       seed: seed, generated: 0, meshed: 0, last_evict: 0 };
     dur0: vec<int>;
     drops0: vec<Drop>;
     mobs0: vec<Mob>;
@@ -2305,7 +2360,7 @@ fnc new_game(seed int, headless bool) : Game {
         title: "Leash Survival", fps: 0, frame_ms: 0, faces: 0,
         chunks_drawn: 0, clock: 0.0, captured: false,
         help_timer: 8.0, message: "", message_time: 0.0, save_ok: true,
-        atlas: 0
+        atlas: 0, menu_cursor: 0, return_state: state_menu(), started: false
     };
     i: int = 0;
     while i < MAX_ITEM() + 9 { g.dur.pushb(60); i = i + 1; }
@@ -2337,35 +2392,87 @@ fnc preview_gl() : void {
 }
 
 fnc apply_menu_keys(g &Game) : void {
-    if Gl.key_pressed(0xFF52) { g.menu_sel = g.menu_sel - 1; }  // Up
-    if Gl.key_pressed(0xFF54) { g.menu_sel = g.menu_sel + 1; }  // Down
-    if g.menu_sel < 0 { g.menu_sel = 4; }
-    if g.menu_sel > 4 { g.menu_sel = 0; }
+    if Gl.key_pressed(0xFF52) { g.menu_cursor = g.menu_cursor - 1; }
+    if Gl.key_pressed(0xFF54) { g.menu_cursor = g.menu_cursor + 1; }
+    if g.menu_cursor < 0 { g.menu_cursor = 4; }
+    if g.menu_cursor > 4 { g.menu_cursor = 0; }
     if Gl.key_pressed(0xFF0D) {
         if g.state == state_menu() {
-            if g.menu_sel == 0 {
-                fresh_chunks: hash<string, Chunk>;
-                fresh_edits: hash<string, int>;
-                g.world.chunks = fresh_chunks;
-                g.world.edits = fresh_edits;
+            if g.menu_cursor == 0 {
+                clear_world(g.world);
                 g.player = new_player(g.world, toint(int64, g.clock));
+                g.started = true;
                 g.inv = initial_inventory();
                 g.state = state_play();
                 Gl.mouse_capture(true);
                 g.captured = true;
-            } also g.menu_sel == 1 && FileUtil.exists(save_path()) {
-                if load_game(g) { g.state = state_play(); Gl.mouse_capture(true); g.captured = true; }
-            } also g.menu_sel == 2 { g.state = state_help(); }
-            also g.menu_sel == 3 { g.state = state_settings(); }
-            else { Gl.request_close(); }
+            } also g.menu_cursor == 1 && FileUtil.exists(save_path()) {
+                if load_game(g) { g.started = true; g.state = state_play(); Gl.mouse_capture(true); g.captured = true; }
+            } also g.menu_cursor == 2 {
+                g.return_state = g.state;
+                g.state = state_help();
+            } also g.menu_cursor == 3 {
+                g.return_state = g.state;
+                g.state = state_settings();
+            } else { Gl.request_close(); }
         } also g.state == state_pause() {
-            if g.menu_sel == 0 { g.state = state_play(); Gl.mouse_capture(true); g.captured = true; }
-            also g.menu_sel == 1 { g.state = state_craft(); }
-            also g.menu_sel == 2 { g.state = state_settings(); }
-            also g.menu_sel == 3 { save_game(g); g.state = state_menu(); Gl.mouse_capture(false); g.captured = false; }
+            if g.menu_cursor == 0 { g.state = state_play(); Gl.mouse_capture(true); g.captured = true; }
+            also g.menu_cursor == 1 {
+                g.return_state = state_pause();
+                g.craft_sel = 0;
+                g.menu_cursor = 0;
+                g.state = state_craft();
+            } also g.menu_cursor == 2 {
+                g.return_state = state_pause();
+                g.state = state_settings();
+            } also g.menu_cursor == 3 { save_game(g); g.state = state_menu(); g.menu_cursor = 0; Gl.mouse_capture(false); g.captured = false; }
             else { save_game(g); Gl.request_close(); }
+        } also g.state == state_dead() {
+            if g.menu_cursor == 0 {
+                p: Player = new_player(g.world, toint(int64, g.clock));
+                p.deaths = g.player.deaths;
+                p.kills = g.player.kills;
+                p.mined = g.player.mined;
+                p.placed = g.player.placed;
+                g.player = p;
+                g.state = state_play();
+                Gl.mouse_capture(true);
+                g.captured = true;
+            } else { save_game(g); g.state = state_menu(); g.menu_cursor = 0; }
         }
     }
+}
+
+fnc selftest(g &Game) : void {
+    clear_world(g.world);
+    update_chunks(g.world, 0.5, 0.5, 1, 0);
+    stream_meshes(g.world, 64);
+    g.inv = initial_inventory();
+    give(g, APPLE(), 2);
+    give(g, APPLE(), 4);
+    inv_ok: bool = g.inv.get(2) == APPLE() && g.inv.get(11) == 10;
+    give(g, LOG(), 1);
+    craft_ok: bool = craft(g, 0);
+    planks_slot: int = -1;
+    ci: int = 0;
+    while ci < 9 {
+        if g.inv.get(ci) == PLANKS() { planks_slot = ci; }
+        ci = ci + 1;
+    }
+    craft_ok = craft_ok && planks_slot >= 0 && g.inv.get(9 + planks_slot) >= 4;
+    wset(g.world, 15, 40, 0, BRICK(), 0);
+    wset(g.world, 16, 40, 0, BRICK(), 0);
+    seam_ok: bool = wget(g.world, 15, 40, 0, 0) == BRICK() &&
+                    wget(g.world, 16, 40, 0, 0) == BRICK();
+    saved_x: float = g.player.x;
+    save_game(g);
+    g.player.x = g.player.x + 25.0;
+    load_ok: bool = load_game(g) && absf(g.player.x - saved_x) < 0.01 &&
+                    absf(g.player.hour - 8.0) < 0.01;
+    FileUtil.remove(save_path());
+    show("selftest inventory=", inv_ok, " craft=", craft_ok,
+         " seam=", seam_ok, " load=", load_ok);
+    clear_world(g.world);
 }
 
 fnc main(args string[]) : void {
@@ -2374,6 +2481,7 @@ fnc main(args string[]) : void {
     headless: bool = Env.get_or("LEASH_VOXEL_HEADLESS", "") == "1";
     save: bool = Env.get_or("LEASH_VOXEL_NOSAVE", "") != "1";
     autostart: bool = false;
+    selftest_mode: bool = false;
     i: int = 0;
     while i < args.size {
         a := args[i];
@@ -2386,9 +2494,14 @@ fnc main(args string[]) : void {
             i = i + 1;
         } also a == "--no-save" { save = false; }
         also a == "--autostart" { autostart = true; }
+        also a == "--selftest" { selftest_mode = true; }
         i = i + 1;
     }
     g: Game = new_game(seed, headless);
+    if selftest_mode {
+        selftest(g);
+        return;
+    }
     if headless || autostart {
         g.state = state_play();
         if headless && max_frames == 0 { max_frames = 1; }
@@ -2444,23 +2557,33 @@ fnc main(args string[]) : void {
         if g.state == state_play() {
             if Gl.key_pressed(Gl.key_escape()) {
                 g.state = state_pause();
+                g.menu_cursor = 0;
+                g.return_state = state_play();
                 Gl.mouse_capture(false);
                 g.captured = false;
             } also Gl.key_pressed(0x0043) {  // C
                 g.state = state_craft();
+                g.menu_cursor = 0;
+                g.craft_sel = 0;
+                g.return_state = state_play();
                 Gl.mouse_capture(false);
                 g.captured = false;
             } also Gl.key_pressed(0xFFBE) {  // F1 help
                 g.state = state_help();
+                g.menu_cursor = 0;
+                g.return_state = state_play();
                 Gl.mouse_capture(false);
                 g.captured = false;
             } also Gl.key_pressed(0xFFBD) {  // F2 settings
                 g.state = state_settings();
+                g.menu_cursor = 0;
+                g.return_state = state_play();
                 Gl.mouse_capture(false);
                 g.captured = false;
             } also Gl.key_pressed(0xFFC2) {  // F5 save
                 if save { save_game(g); }
-                g.message = save ? "SAVED" : "SAVING DISABLED";
+                g.message = !save ? "SAVING DISABLED" :
+                            (g.save_ok ? "SAVED" : "SAVE FAILED");
                 g.message_time = 2.0;
             } also Gl.key_pressed(0xFFB3) {  // F3 toggle FPS
                 g.show_fps = !g.show_fps;
@@ -2484,14 +2607,14 @@ fnc main(args string[]) : void {
             update_drops(g, dt, now);
             update_mobs(g, dt, now);
             if Gl.mouse_pressed(Gl.mouse_left()) && g.captured {
-                if !hit_mob(g, 5.5) { break_block(g, now); }
+                if !hit_mob(g, 5.5) { break_block(g, g.player, now); }
             }
-            if Gl.mouse_pressed(Gl.mouse_right()) && g.captured { place_block(g, now); }
-            if Gl.key_pressed(Gl.key_g()) { break_block(g, now); }
-            if Gl.key_pressed(Gl.key_f()) { place_block(g, now); }
+            if Gl.mouse_pressed(Gl.mouse_right()) && g.captured { place_block(g, g.player, now); }
+            if Gl.key_pressed(Gl.key_g()) { break_block(g, g.player, now); }
+            if Gl.key_pressed(Gl.key_f()) { place_block(g, g.player, now); }
             if Gl.key_pressed(0x0051) {  // Q drop one hotbar item
                 id: int = g.inv.get(g.menu_sel);
-                if id != 0 {
+                if id != 0 && g.inv.get(9 + g.menu_sel) > 0 {
                     spawn_drop(g, g.player.x + look_x(g.player) * 1.5,
                                g.player.y + 1.0, g.player.z + look_z(g.player) * 1.5,
                                id, 1);
@@ -2512,9 +2635,20 @@ fnc main(args string[]) : void {
                 if Gl.key_pressed(0xFF52) { g.sensitivity = minf(0.01, g.sensitivity + 0.0002); }
                 if Gl.key_pressed(0xFF54) { g.sensitivity = maxf(0.0004, g.sensitivity - 0.0002); }
             } also g.state == state_craft() {
+                if Gl.key_pressed(0xFF52) { g.craft_sel = g.craft_sel - 1; }
+                if Gl.key_pressed(0xFF54) { g.craft_sel = g.craft_sel + 1; }
+                if g.craft_sel < 0 { g.craft_sel = 9; }
+                if g.craft_sel > 9 { g.craft_sel = 0; }
+                g.menu_cursor = g.craft_sel;
                 if Gl.key_pressed(0xFF0D) {
-                    if craft(g, g.menu_sel) { g.message = "CRAFTED"; g.message_time = 1.5; }
-                    else { g.message = "MISSING INGREDIENTS"; g.message_time = 1.5; }
+                    if g.craft_sel == 9 {
+                        g.state = g.return_state;
+                        g.menu_cursor = 0;
+                    } also craft(g, g.craft_sel) {
+                        g.message = "CRAFTED"; g.message_time = 1.5;
+                    } else {
+                        g.message = "MISSING INGREDIENTS"; g.message_time = 1.5;
+                    }
                 }
             }
         }
@@ -2540,7 +2674,7 @@ fnc main(args string[]) : void {
         frames = frames + 1;
         if max_frames > 0 && frames >= max_frames { stop; }
     }
-    if save && !headless { save_game(g); }
+    if save && !headless && g.started && g.state != state_menu() { save_game(g); }
 
     // Deterministic headless replay/preview runs before the context is closed.
     if headless {

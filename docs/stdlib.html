@@ -48,7 +48,7 @@
       <a href="advanced.html" class="">Standalone pages</a>
       <a href="limitations.html" class="">Known limitations</a>
     </div>
-    <div class="sidenav-foot">Leash 2.4.0</div>
+    <div class="sidenav-foot">Leash 2.4.1</div>
   </aside>
 
   <main class="content" id="main-content">
@@ -1320,7 +1320,7 @@ entry:
               <tr><td><code>enable(cap)</code>, <code>disable(cap)</code>, <code>depth_func(mode)</code>, <code>depth_mask(on)</code>, <code>blend(on)</code>, <code>shade_flat()</code>, <code>shade_smooth()</code></td><td>Render-state controls; capability helpers include <code>depth_test()</code>, <code>fog_cap()</code>, <code>lighting_cap()</code> and <code>blend_cap()</code></td></tr>
               <tr><td><code>new_list()</code>, <code>end_list()</code>, <code>call_list(id)</code>, <code>delete_list(id)</code></td><td>Compiled display lists for static geometry (streaming voxel chunk meshes)</td></tr>
               <tr><td><code>texture(w, h, rgba)</code>, <code>bind_texture(id)</code>, <code>tex_coord2(u, v)</code></td><td>Create a NEAREST-filtered RGBA texture from raw bytes, bind it, and supply per-vertex atlas coordinates (software renderer on JVM ignores them)</td></tr>
-              <tr><td><code>mouse_x()</code>, <code>mouse_y()</code></td><td>Absolute pointer position for menu buttons; the JVM software backend reports the render centre</td></tr>
+              <tr><td><code>mouse_x()</code>, <code>mouse_y()</code></td><td>Absolute pointer position for menu buttons on Linux/Windows; macOS and the JVM software backend report the render centre (menus also support arrow keys and Enter)</td></tr>
               <tr><td><code>set_vsync(on)</code></td><td>Disable VSync via GLX swap control to measure an uncapped frame rate; called with <code>false</code> by the voxel sandbox</td></tr>
               <tr><td><code>mouse_capture(on)</code>, <code>mouse_captured()</code>, <code>mouse_dx()</code>, <code>mouse_dy()</code>, <code>mouse_down(button)</code>, <code>mouse_pressed(button)</code></td><td>Relative pointer mode: warp-to-centre, blank cursor, button state and automatic release on real focus loss. <code>mouse_left()</code>/<code>mouse_right()</code>/<code>mouse_middle()</code> name the buttons.</td></tr>
             </tbody>

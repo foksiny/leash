@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Leash - Leash documentation</title>
-<meta name="description" content="Leash is a strongly typed, self-hosted language compiling to native code through LLVM. Version 2.4.0 continues with the scoped arena the default memory layout, with --gc available for mark-and-sweep.">
+<meta name="description" content="Leash is a strongly typed, self-hosted language compiling to native code through LLVM. Version 2.4.1 continues with the scoped arena the default memory layout, with --gc available for mark-and-sweep.">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 100 100%27%3E%3Crect width=%27100%27 height=%27100%27 rx=%2722%27 fill=%27%23241f4d%27/%3E%3Ctext x=%2750%27 y=%2770%27 font-size=%2760%27 text-anchor=%27middle%27 font-family=%27monospace%27 fill=%27white%27%3EL%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="style.css">
 <script src="docs.js" defer></script>
@@ -48,7 +48,7 @@
       <a href="advanced.html" class="">Standalone pages</a>
       <a href="limitations.html" class="">Known limitations</a>
     </div>
-    <div class="sidenav-foot">Leash 2.4.0</div>
+    <div class="sidenav-foot">Leash 2.4.1</div>
   </aside>
 
   <main class="content" id="main-content">
@@ -62,16 +62,15 @@
         <p>Version 2.0.0 made the <strong>scoped bump arena the default native memory layout</strong>. It gives you plain C pointers, deterministic frame and loop lifetimes, and no stop-the-world pause. If your workload has adversarial or highly dynamic lifetimes, pass <code>--gc</code> to opt into the classic mark-and-sweep collector.</p>
 
         <div class="callout callout-success" id="whats-new">
-          <strong>What&rsquo;s new in 2.4.0.</strong>
+          <strong>What&rsquo;s new in 2.4.1.</strong>
           <ul>
-            <li><strong>Infinite survival sandbox.</strong> The voxel example streams textured chunks with biomes, caves, ores, crafting, mobs, health/hunger and save games. <a href="stdlib.html#opengl">OpenGL module &rarr;</a></li>
-            <li><strong>More graphics APIs.</strong> Raw RGBA textures, per-vertex atlas coordinates and absolute pointer position work across all native backends, with a software fallback on JVM. <a href="stdlib.html#opengl">Details &rarr;</a></li>
-            <li><strong>Built on 2.3.1.</strong> Cross-platform native OpenGL, correct C struct/float ABI and fixed math remain in this release. <a href="stdlib.html#math-utilities">Math &rarr;</a></li>
+            <li><strong>Survival fixes.</strong> Mining drops, crafting stacks, CONTINUE saves and chunk streaming now behave correctly in the voxel game. <a href="stdlib.html#opengl">OpenGL module &rarr;</a></li>
+            <li><strong>Built on 2.4.0.</strong> Infinite textured chunks, biomes, crafting, mobs, menus and save games remain the headline features. <a href="stdlib.html#opengl">Details &rarr;</a></li>
           </ul>
         </div>
 
         <div class="stat-grid">
-          <div class="stat"><div class="value">2.4.0</div><div class="label">Current release</div></div>
+          <div class="stat"><div class="value">2.4.1</div><div class="label">Current release</div></div>
           <div class="stat"><div class="value">15</div><div class="label">Compiler pipeline stages</div></div>
           <div class="stat"><div class="value">100+</div><div class="label">Importable packages</div></div>
           <div class="stat"><div class="value">7</div><div class="label">Compilation targets</div></div>
@@ -149,7 +148,7 @@
 git clone https://github.com/foksiny/leash &amp;&amp; cd leash
 ./scripts/bootstrap.sh
 bin/leashc version
-<span class="cm"># leash 2.4.0 (self-hosted)</span></code></pre>
+<span class="cm"># leash 2.4.1 (self-hosted)</span></code></pre>
           </div>
           <div class="step">
             <h3>Write a program</h3>
