@@ -30,6 +30,7 @@ fnc sea_level() : int { return 34; }
 fnc atlas_tiles() : int { return 8; }
 fnc tile_px() : int { return 8; }
 fnc save_path() : string { return "leash_voxel_save.txt"; }
+fnc max_chunks() : int { return 96; }
 
 // Game states.
 fnc state_menu() : int { return 0; }
@@ -195,7 +196,15 @@ fnc mini(a int, b int) : int { return a < b ? a : b; }
 fnc absf_i(v int) : int { return v < 0 ? -v : v; }
 fnc maxi(a int, b int) : int { return a > b ? a : b; }
 fnc mixf(a float, b float, t float) : float { return a + (b - a) * t; }
-fnc floor_i(v float) : int { return toint(int, Math.floor(v)); }
+fnc floor_i(v float) : int {
+    if v != v || v > 1000000.0 || v < -1000000.0 { return 0; }
+    return toint(int, Math.floor(v));
+}
+
+fnc safe_i64(v float) : int<64> {
+    if v != v || v > 1000000000000.0 || v < -1000000000000.0 { return 0; }
+    return toint(int64, v);
+}
 fnc ceil_i(v float) : int { return toint(int, Math.ceil(v)); }
 
 fnc hash3(x int, y int, z int, seed int) : int {
@@ -561,25 +570,26 @@ fnc update_chunks(w &World, px float, pz float, dist int, clock int<64>) : void 
         }
         r = r + 1;
     }
-    // Periodically drop chunks well outside the play radius. Edits live in a
-    // separate table, so regenerating later reproduces player changes.
-    if clock - w.last_evict > 4000 {
-        keys: vec<string> = w.chunks.keys();
-        kept: hash<string, Chunk>;
-        ki: int = 0;
-        while ki < keys.size {
-            k: string = keys.get(ki);
-            c: Chunk = w.chunks[k];
-            if absf_i(c.cx - pcx) <= dist + 2 && absf_i(c.cz - pcz) <= dist + 2 {
-                kept[k] = c;
-            } also c.mesh != 0 {
-                Gl.delete_list(c.mesh);
-            }
-            ki = ki + 1;
+    // Hard-bound chunk memory every frame: edits live in a separate table,
+    // so evicted chunks regenerate with player changes intact.
+    keys: vec<string> = w.chunks.keys();
+    kept: hash<string, Chunk>;
+    kept_count: int = 0;
+    ki: int = 0;
+    while ki < keys.size {
+        k: string = keys.get(ki);
+        c: Chunk = w.chunks[k];
+        if absf_i(c.cx - pcx) <= dist + 1 && absf_i(c.cz - pcz) <= dist + 1 &&
+           kept_count < max_chunks() {
+            kept[k] = c;
+            kept_count = kept_count + 1;
+        } also c.mesh != 0 {
+            Gl.delete_list(c.mesh);
         }
-        w.chunks = kept;
-        w.last_evict = clock;
+        ki = ki + 1;
     }
+    w.chunks = kept;
+    w.last_evict = clock;
 }
 
 fnc mesh_chunk(w &World, key string, budget int) : bool {
@@ -589,7 +599,9 @@ fnc mesh_chunk(w &World, key string, budget int) : bool {
     if c.mesh != 0 { Gl.delete_list(c.mesh); }
     c.mesh = Gl.new_list();
     c.faces = 0;
+    Gl.begin(Gl.quads());
     build_chunk_mesh(w, c);
+    Gl.end();
     if c.mesh != 0 { Gl.end_list(); }
     c.dirty = false;
     w.chunks[key] = c;
@@ -819,7 +831,6 @@ fnc emit_face(w &World, wx int, wy int, wz int, face int, id int) : void {
     x1: float = x0 + 1.0;
     y1: float = y0 + 1.0;
     z1: float = z0 + 1.0;
-    Gl.begin(Gl.quads());
     if face == 0 {
         Gl.tex_coord2(u0, v0); Gl.vertex3(x0, y1, z0);
         Gl.tex_coord2(u1, v0); Gl.vertex3(x0, y1, z1);
@@ -851,7 +862,7 @@ fnc emit_face(w &World, wx int, wy int, wz int, face int, id int) : void {
         Gl.tex_coord2(u1, v1); Gl.vertex3(x0, y1, z0);
         Gl.tex_coord2(u0, v1); Gl.vertex3(x1, y1, z0);
     }
-    Gl.end();
+
 }
 
 fnc build_chunk_mesh(w &World, c &Chunk) : int {
@@ -2060,7 +2071,7 @@ fnc draw_menu(vw int, vh int, g &Game) : void {
             seed: int = g.world.seed;
             clear_world(g.world);
             g.world.seed = seed;
-            g.player = new_player(g.world, toint(int64, g.clock));
+            g.player = new_player(g.world, safe_i64(g.clock));
             g.inv = initial_inventory();
             g.started = true;
             g.message = "NEW WORLD";
@@ -2196,7 +2207,7 @@ fnc draw_death(vw int, vh int, g &Game) : void {
                     tostring(g.player.kills) + "  DEATHS " + tostring(g.player.deaths);
     draw_text(cx - text_width(score, 2) / 2, 250, score, 2, 0.92, 0.86, 0.72);
     if button(g, vw, cx - 160, 360, 320, 52, "RESPAWN", 0) {
-        p: Player = new_player(g.world, toint(int64, g.clock));
+        p: Player = new_player(g.world, safe_i64(g.clock));
         p.deaths = g.player.deaths;
         p.kills = g.player.kills;
         p.mined = g.player.mined;
@@ -2313,7 +2324,7 @@ fnc draw_world(g &Game, vw int, vh int, clock int<64>) : void {
     draw_clouds(g.world.seed, clock, p.hour);
     Gl.disable(Gl.texture_cap());
     draw_highlight(raycast(g.world, ex, ey, ez, fx, fy, fz, 5.5,
-                           toint(int64, clock)));
+                           safe_i64(clock)));
     g.chunks_drawn = drawn;
     g.faces = faces;
 }
@@ -2355,7 +2366,7 @@ fnc new_game(seed int, headless bool) : Game {
         inv: initial_inventory(), dur: dur0,
         drops: drops0, mobs: mobs0,
         state: headless ? state_play() : state_menu(),
-        menu_sel: 0, craft_sel: 0, view_dist: 4,
+        menu_sel: 0, craft_sel: 0, view_dist: 3,
         sensitivity: 0.0023, show_fps: true,
         title: "Leash Survival", fps: 0, frame_ms: 0, faces: 0,
         chunks_drawn: 0, clock: 0.0, captured: false,
@@ -2400,7 +2411,7 @@ fnc apply_menu_keys(g &Game) : void {
         if g.state == state_menu() {
             if g.menu_cursor == 0 {
                 clear_world(g.world);
-                g.player = new_player(g.world, toint(int64, g.clock));
+                g.player = new_player(g.world, safe_i64(g.clock));
                 g.started = true;
                 g.inv = initial_inventory();
                 g.state = state_play();
@@ -2429,7 +2440,7 @@ fnc apply_menu_keys(g &Game) : void {
             else { save_game(g); Gl.request_close(); }
         } also g.state == state_dead() {
             if g.menu_cursor == 0 {
-                p: Player = new_player(g.world, toint(int64, g.clock));
+                p: Player = new_player(g.world, safe_i64(g.clock));
                 p.deaths = g.player.deaths;
                 p.kills = g.player.kills;
                 p.mined = g.player.mined;

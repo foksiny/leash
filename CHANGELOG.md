@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.4.2] - 2026-11-27
+
+### Fixed
+- Chunk display lists are now batched into one primitive per chunk and the resident chunk count is hard-capped at 96, with per-frame eviction. Measured 2x faster frame rendering on llvmpipe and bounded memory (~298 MB RSS over a 3-minute capped run).
+- Rebuilt the `cu` binary from current sources and added guarded float-to-int conversions to remove the stale-binary runtime overflow.
+
 ## [2.4.1] - 2026-11-27
 
 ### Fixed
