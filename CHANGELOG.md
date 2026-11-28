@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.4.5] - 2026-11-28
+
+### Fixed
+- Voxel terrain is now genuinely gentle: flat rolling grass, no surface caves, no exposed ore veins and a 64-block column. Default view distance is 2 chunks, cutting rendered faces from ~25k to ~9k and raising measured software-renderer FPS from 17 to 27.
+- Rebuilt the `cu` binary from current sources.
+
 ## [2.4.4] - 2026-11-28
 
 ### Fixed

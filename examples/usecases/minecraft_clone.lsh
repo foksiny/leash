@@ -25,7 +25,7 @@ use opengl::opengl::*;
 // ---------------------------------------------------------------- constants
 
 fnc chunk_size() : int { return 16; }
-fnc world_height() : int { return 96; }
+fnc world_height() : int { return 64; }
 fnc sea_level() : int { return 34; }
 fnc atlas_tiles() : int { return 8; }
 fnc tile_px() : int { return 8; }
@@ -277,16 +277,16 @@ fnc biome_at(w &World, x int, z int) : int {
 fnc terrain_height(w &World, x int, z int) : int {
     // One continuous height field: biomes change materials, not elevation,
     // so there are no sheer walls where biome masks overlap.
-    target: float = 27.0 + fbm2(tofloat(float, x), tofloat(float, z), w.seed) * 12.0 +
-                    noise2(tofloat(float, x), tofloat(float, z), 26.0, w.seed + 5) * 2.0;
+    target: float = 30.0 + fbm2(tofloat(float, x), tofloat(float, z), w.seed) * 8.0 +
+                    noise2(tofloat(float, x), tofloat(float, z), 32.0, w.seed + 5) * 1.2;
     d2: int = x * x + z * z;
     if d2 < 256 {
         t: float = tofloat(float, d2) / 256.0;
-        target = 34.0 * (1.0 - t) + target * t;  // gentle, flat spawn clearing
+        target = 34.0 * (1.0 - t) + target * t;
     }
     i: int = floor_i(target);
-    if i < 22 { i = 22; }
-    if i > 46 { i = 46; }
+    if i < 28 { i = 28; }
+    if i > 42 { i = 42; }
     return i;
 }
 
@@ -310,16 +310,16 @@ fnc leaf_block(w &World, x int, z int) : int {
 
 fnc cave_at(w &World, x int, y int, z int) : bool {
     if x * x + z * z < 196 { return false; }  // no pits at spawn
-    if y < 7 || y > 26 { return false; }
+    if y < 5 || y > 22 { return false; }
     n: float = noise3(x, y, z, 21, w.seed + 555);
-    return n > 0.82;
+    return n > 0.84;
 }
 
 fnc ore_at(w &World, x int, y int, z int) : int {
     h: int = hash3(x, y, z, w.seed + 771);
-    if y < 14 && h % 420 < 2 { return DIAMOND_ORE(); }
-    if y < 34 && h % 180 < 3 { return IRON_ORE(); }
-    if y < 48 && h % 120 < 5 { return COAL_ORE(); }
+    if y < 12 && h % 600 < 2 { return DIAMOND_ORE(); }
+    if y < 26 && h % 240 < 3 { return IRON_ORE(); }
+    if y < 32 && h % 160 < 4 { return COAL_ORE(); }
     return 0;
 }
 
@@ -389,8 +389,8 @@ fnc generate_chunk(w &World, cx int, cz int, clock int<64>) : void {
                     else { id = DIRT(); }
                 }
                 ore: int = ore_at(w, wx, y, wz);
-                if y > 0 && y < h - 2 && ore != 0 { id = ore; }
-                if y > 3 && y < h - 3 && cave_at(w, wx, y, wz) { id = AIR(); }
+                if y > 4 && y < h - 6 && ore != 0 { id = ore; }
+                if y > 4 && y < h - 8 && cave_at(w, wx, y, wz) { id = AIR(); }
                 c.blocks.set(chunk_index(tx, y, tz), id);
                 y = y + 1;
             }
@@ -1796,7 +1796,7 @@ fnc draw_clouds(seed int, clock int<64>, hour float) : void {
     drift: float = tofloat(float, clock % 60000) / 60000.0 * 40.0;
     i: int = 0;
     Gl.begin(Gl.quads());
-    while i < 90 {
+    while i < 40 {
         x: float = tofloat(float, hash2(i, 3, seed) % 512) - 256.0 + drift;
         z: float = tofloat(float, hash2(i, 9, seed) % 512) - 256.0;
         w: float = 4.0 + tofloat(float, hash2(i, 5, seed) % 8);
@@ -2389,7 +2389,7 @@ fnc new_game(seed int, headless bool) : Game {
         inv: initial_inventory(), dur: dur0,
         drops: drops0, mobs: mobs0,
         state: headless ? state_play() : state_menu(),
-        menu_sel: 0, craft_sel: 0, view_dist: 3,
+        menu_sel: 0, craft_sel: 0, view_dist: 2,
         sensitivity: 0.0023, show_fps: true,
         title: "Leash Survival", fps: 0, frame_ms: 0, faces: 0,
         chunks_drawn: 0, clock: 0.0, captured: false,
@@ -2587,7 +2587,7 @@ fnc main(args string[]) : void {
         g.player = p;
 
         update_chunks(g.world, p.x, p.z, g.view_dist, now);
-        stream_meshes(g.world, 6);
+        stream_meshes(g.world, 8);
 
         if g.state == state_play() {
             if Gl.pause_requested() || Gl.key_pressed(Gl.key_escape()) ||
@@ -2672,7 +2672,7 @@ fnc main(args string[]) : void {
             apply_menu_keys(g);
             if g.state == state_settings() {
                 if Gl.key_pressed(0xFF51) { g.view_dist = maxi(2, g.view_dist - 1); }
-                if Gl.key_pressed(0xFF53) { g.view_dist = mini(8, g.view_dist + 1); }
+                if Gl.key_pressed(0xFF53) { g.view_dist = mini(6, g.view_dist + 1); }
                 if Gl.key_pressed(0xFF52) { g.sensitivity = minf(0.01, g.sensitivity + 0.0002); }
                 if Gl.key_pressed(0xFF54) { g.sensitivity = maxf(0.0004, g.sensitivity - 0.0002); }
             } also g.state == state_craft() {
