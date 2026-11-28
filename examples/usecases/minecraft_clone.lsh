@@ -275,18 +275,23 @@ fnc biome_at(w &World, x int, z int) : int {
 }
 
 fnc terrain_height(w &World, x int, z int) : int {
-    h: float = 28.0 + fbm2(tofloat(float, x), tofloat(float, z), w.seed) * 18.0;
-    b: int = biome_at(w, x, z);
-    if b == 1 { h = h - 4.0; }
-    also b == 3 { h = h + 8.0; }
-    also b == 4 { h = h + 2.0; }
-    i: int = floor_i(h);
-    if i < 8 { i = 8; }
-    if i > world_height() - 12 { i = world_height() - 12; }
+    // One continuous height field: biomes change materials, not elevation,
+    // so there are no sheer walls where biome masks overlap.
+    target: float = 27.0 + fbm2(tofloat(float, x), tofloat(float, z), w.seed) * 12.0 +
+                    noise2(tofloat(float, x), tofloat(float, z), 26.0, w.seed + 5) * 2.0;
+    d2: int = x * x + z * z;
+    if d2 < 256 {
+        t: float = tofloat(float, d2) / 256.0;
+        target = 34.0 * (1.0 - t) + target * t;  // gentle, flat spawn clearing
+    }
+    i: int = floor_i(target);
+    if i < 22 { i = 22; }
+    if i > 46 { i = 46; }
     return i;
 }
 
 fnc tree_present(w &World, x int, z int) : bool {
+    if x * x + z * z < 256 { return false; }  // keep the spawn clearing open
     b: int = biome_at(w, x, z);
     if b == 1 || b == 3 { return false; }
     chance: int = b == 4 ? 13 : 24;
@@ -304,9 +309,10 @@ fnc leaf_block(w &World, x int, z int) : int {
 }
 
 fnc cave_at(w &World, x int, y int, z int) : bool {
-    if y < 6 || y > 44 { return false; }
-    n: float = noise3(x, y, z, 19, w.seed + 555);
-    return n > 0.78;
+    if x * x + z * z < 196 { return false; }  // no pits at spawn
+    if y < 7 || y > 26 { return false; }
+    n: float = noise3(x, y, z, 21, w.seed + 555);
+    return n > 0.82;
 }
 
 fnc ore_at(w &World, x int, y int, z int) : int {
@@ -1041,6 +1047,22 @@ fnc new_player(w &World, clock int<64>) : Player {
     x: int = 0;
     z: int = 0;
     top: int = top_at(w, x, z, clock);
+    // Clear a small standing space so a tree or overhang cannot trap the spawn.
+    ox: int = -1;
+    while ox <= 1 {
+        oz: int = -1;
+        while oz <= 1 {
+            oy: int = 1;
+            while oy <= 3 {
+                if wget(w, x + ox, top + oy, z + oz, clock) != BEDROCK() {
+                    wset(w, x + ox, top + oy, z + oz, AIR(), clock);
+                }
+                oy = oy + 1;
+            }
+            oz = oz + 1;
+        }
+        ox = ox + 1;
+    }
     p: Player = Player {
         x: tofloat(float, x) + 0.5, y: tofloat(float, top + 1),
         z: tofloat(float, z) + 0.5,

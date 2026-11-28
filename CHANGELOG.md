@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [2.4.4] - 2026-11-28
+
+### Fixed
+- Voxel terrain now uses one continuous height field with no biome-driven elevation jumps, no caves or trees at spawn, and a cleared standing area. The player starts on normal grassy ground instead of inside a shaft.
+- Rebuilt the `cu` binary from current sources.
+
 ## [2.4.3] - 2026-11-27
 
 ### Fixed
